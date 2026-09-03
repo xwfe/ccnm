@@ -144,6 +144,10 @@ pub struct FileChunk {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub total_lines: Option<u32>,
     pub file_bytes: u64,
+    /// What the file was when it was read. Hand it back to `apply_patch`
+    /// so an edit built on this content is refused if the file has since
+    /// changed (see [`crate::mcp::version_of`]).
+    pub version: String,
     pub line_ending: LineEnding,
     /// Whether the file's last line ends with a newline. Absent unless the
     /// end of the file was reached. `apply_patch` will need it.
@@ -184,6 +188,7 @@ pub fn read_file(root: &Path, args: &ReadFileArgs) -> Result<FileChunk> {
         )));
     }
     let file_bytes = meta.len();
+    let version = crate::mcp::version_of(&meta);
 
     let mut file = File::open(target.abs()).map_err(|e| open_error(&rel, e))?;
     if let Some(offset) = binary_offset(&mut file)? {
@@ -196,7 +201,7 @@ pub fn read_file(root: &Path, args: &ReadFileArgs) -> Result<FileChunk> {
 
     let mut scan = Scan::new(limits);
     scan.run(BufReader::new(file), &rel)?;
-    Ok(scan.finish(rel, file_bytes))
+    Ok(scan.finish(rel, file_bytes, version))
 }
 
 /// Validated, clamped arguments.
@@ -387,7 +392,7 @@ impl Scan {
         false
     }
 
-    fn finish(self, path: String, file_bytes: u64) -> FileChunk {
+    fn finish(self, path: String, file_bytes: u64, version: String) -> FileChunk {
         let start_line = self.lines.first().map_or(0, |(n, _)| *n);
         let end_line = self.lines.last().map_or(0, |(n, _)| *n);
         let line_ending = match (self.crlf, self.lf) {
@@ -437,6 +442,7 @@ impl Scan {
             next_start_line: self.next_start_line,
             total_lines: self.total_lines,
             file_bytes,
+            version,
             line_ending,
             final_newline,
             notes,

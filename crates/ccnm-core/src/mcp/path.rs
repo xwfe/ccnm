@@ -94,6 +94,100 @@ pub fn resolve_read(root: &Path, raw: &str) -> Result<WorkspacePath> {
     }
 }
 
+/// A path `apply_patch` is allowed to create, change or remove.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WriteTarget {
+    rel: String,
+    abs: PathBuf,
+    exists: bool,
+}
+
+impl WriteTarget {
+    /// The normalized workspace-relative path.
+    pub fn rel(&self) -> &str {
+        &self.rel
+    }
+
+    /// Where to write. Not canonical when the file does not exist yet: its
+    /// parent chain is, which is what containment is decided on.
+    pub fn abs(&self) -> &Path {
+        &self.abs
+    }
+
+    /// Whether something is there now.
+    pub fn exists(&self) -> bool {
+        self.exists
+    }
+}
+
+/// Resolve `raw` for writing. Never weaker than [`resolve_read`], and
+/// stricter in three ways that only matter once something can be changed:
+///
+/// ```text
+/// .git is refused           design doc section 17. Reading it is allowed
+///                           today; writing it corrupts a repository in ways
+///                           no file tool should be able to
+/// symlinks are refused      not just ones that escape. Writing "through" a
+///                           link means the commit rename would replace the
+///                           link with a regular file, quietly detaching it
+/// the parent must be inside canonicalized and checked, because the file
+///                           itself may not exist yet and so cannot be
+/// ```
+///
+/// Non-existence is not an error here: `add` needs a path with nothing at
+/// it. The caller decides what `exists` should have been.
+pub fn resolve_write(root: &Path, raw: &str) -> Result<WriteTarget> {
+    let rel = normalize(raw)?;
+    if rel.split('/').any(|segment| segment == ".git") {
+        return Err(Error::policy(format!(
+            "{rel} is inside .git; ccnm's file tools never write to a git database"
+        )));
+    }
+    let joined = root.join(&rel);
+
+    // The deepest existing ancestor decides containment. Canonicalizing it
+    // resolves every symlink on the way in, so a `src` that points at /etc
+    // fails here rather than at the write.
+    let mut ancestor = joined.as_path();
+    let canonical_ancestor = loop {
+        match std::fs::canonicalize(ancestor) {
+            Ok(canonical) => break canonical,
+            Err(_) => match ancestor.parent() {
+                Some(parent) => ancestor = parent,
+                None => {
+                    return Err(Error::invalid_args(format!("cannot resolve {rel}")));
+                }
+            },
+        }
+    };
+    contained(root, &canonical_ancestor, &rel)?;
+
+    // A symlink at the target itself is refused whatever it points at.
+    let exists = match std::fs::symlink_metadata(&joined) {
+        Ok(meta) => {
+            if meta.file_type().is_symlink() {
+                return Err(Error::policy(format!(
+                    "{rel} is a symlink; ccnm will not write through one"
+                )));
+            }
+            true
+        }
+        Err(_) => false,
+    };
+    // Rebuild the absolute path from the canonical ancestor so the parts
+    // that do exist are canonical and the parts that do not are appended.
+    // `join("")` would append a trailing separator, and a path ending in
+    // `/` is a directory as far as the OS is concerned: every stat of an
+    // existing file would come back ENOTDIR.
+    let suffix = joined.strip_prefix(ancestor).unwrap_or(Path::new(""));
+    let abs = if suffix.as_os_str().is_empty() {
+        canonical_ancestor
+    } else {
+        canonical_ancestor.join(suffix)
+    };
+    Ok(WriteTarget { rel, abs, exists })
+}
+
 /// Syntactic rules, applied to the string before it ever touches the disk.
 fn normalize(raw: &str) -> Result<String> {
     if raw.contains('\0') {
@@ -332,6 +426,83 @@ mod tests {
         assert_eq!(code(&root, &long), ErrorCode::InvalidArgs);
         let deep = vec!["a"; 2000].join("/");
         assert_eq!(code(&root, &deep), ErrorCode::InvalidArgs);
+    }
+
+    #[test]
+    fn writing_accepts_a_path_that_does_not_exist_yet() {
+        let root = fixture("write-new");
+        let target = resolve_write(&root, "src/new.rs").unwrap();
+        assert_eq!(target.rel(), "src/new.rs");
+        assert!(!target.exists());
+        assert_eq!(target.abs(), root.join("src/new.rs"));
+
+        let existing = resolve_write(&root, "src/main.rs").unwrap();
+        assert!(existing.exists());
+
+        // Several levels of missing directory still resolve: the deepest
+        // ancestor that does exist is what containment is decided on.
+        let deep = resolve_write(&root, "a/b/c/d.rs").unwrap();
+        assert!(!deep.exists());
+        assert_eq!(deep.abs(), root.join("a/b/c/d.rs"));
+    }
+
+    #[test]
+    fn writing_is_never_weaker_than_reading() {
+        let root = fixture("write-policy");
+        // Everything the reader refuses, the writer refuses with the same
+        // code. If this ever diverges, the write side is the dangerous one.
+        for raw in [
+            "/etc/passwd",
+            "../outside.txt",
+            "~/.ssh/id_ed25519",
+            "C:\\x",
+            "src/../src/main.rs",
+        ] {
+            let read = resolve_read(&root, raw).unwrap_err().code();
+            let write = resolve_write(&root, raw).unwrap_err().code();
+            assert_eq!(read, write, "{raw}");
+        }
+        for raw in ["", "   ", "src\0/x", "src\\x", "."] {
+            assert_eq!(
+                resolve_write(&root, raw).unwrap_err().code(),
+                ErrorCode::InvalidArgs,
+                "{raw:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn writing_refuses_the_git_database() {
+        let root = fixture("write-git");
+        fs::create_dir_all(root.join(".git/objects")).unwrap();
+        for raw in [".git/config", ".git/objects/x", ".git"] {
+            let err = resolve_write(&root, raw).unwrap_err();
+            assert_eq!(err.code(), ErrorCode::Policy, "{raw}");
+            assert!(err.message().contains(".git"), "{err}");
+        }
+        // A file merely called gitignore is not the git database.
+        assert!(resolve_write(&root, ".gitignore").is_ok());
+    }
+
+    #[test]
+    fn writing_refuses_any_symlink_not_only_escaping_ones() {
+        let root = fixture("write-symlink");
+        // Escaping: the same policy error reading gives.
+        let err = resolve_write(&root, "escape.txt").unwrap_err();
+        assert_eq!(err.code(), ErrorCode::Policy);
+
+        // Pointing inside: reading follows it, writing still refuses. The
+        // commit is a rename, which would replace the link with a regular
+        // file and quietly detach it from its target.
+        assert!(resolve_read(&root, "inside.txt").is_ok());
+        let err = resolve_write(&root, "inside.txt").unwrap_err();
+        assert_eq!(err.code(), ErrorCode::Policy);
+        assert!(err.message().contains("symlink"), "{err}");
+
+        // And a new file under a symlinked directory that leaves the
+        // workspace is refused even though nothing is there yet.
+        let err = resolve_write(&root, "up/planted.txt").unwrap_err();
+        assert_eq!(err.code(), ErrorCode::Policy);
     }
 
     #[test]

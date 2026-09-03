@@ -10,6 +10,7 @@
 
 pub mod glob;
 pub mod list;
+pub mod patch;
 pub mod path;
 pub mod probe;
 pub mod read;
@@ -25,6 +26,34 @@ pub mod server;
 /// accented word, a comment in Chinese or an emoji in a string hits it the
 /// moment a byte budget runs out mid-line. `str::floor_char_boundary` would
 /// do this, but it is still unstable.
+/// An opaque token that changes whenever a file is written.
+///
+/// `read_file` returns it and `apply_patch` requires it back, which is how
+/// a patch built on content the user has since changed is refused instead
+/// of applied (design doc section 15).
+///
+/// It is size and modification time, **not** a hash of the content, and the
+/// difference is deliberate. `read_file` streams: it can answer about the
+/// first 200 lines of a 2 GB file without reading the rest, and hashing
+/// would throw that away for every call. Size and mtime come out of the
+/// `stat` the tool already does, so staleness detection is free.
+///
+/// What that buys and what it costs: every write to the file changes its
+/// mtime, so no real edit slips past. A file restored from a backup, or
+/// copied with its timestamps, can look changed when its content is not —
+/// a false alarm, which is the safe direction. Two writes inside the same
+/// nanosecond that leave the size identical would slip past, which on a
+/// filesystem with nanosecond timestamps is not a thing that happens.
+pub(crate) fn version_of(meta: &std::fs::Metadata) -> String {
+    let mtime = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    format!("{}-{mtime:x}", meta.len())
+}
+
 pub(crate) fn truncate_bytes(s: &str, max: usize) -> &str {
     if s.len() <= max {
         return s;

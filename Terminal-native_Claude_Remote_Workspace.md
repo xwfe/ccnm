@@ -1007,18 +1007,50 @@ query 位置    必须在 `--` 之后。否则查 `--ignore-case` 会被当成 f
 
 ### apply_patch
 
-不提供 `write_file(full_content)` 作为主写入接口。
+已实现（`crates/ccnm-core/src/mcp/patch.rs`）。**源码修改的唯一入口。**
+
+不提供 `write_file(full_content)`：整文件写入的代价随文件大小走而不是随改动走，正好和这个架构的
+目的相反，而且会把模型上次看过之后发生的任何改动一起吞掉。
 
 ```text
-支持   Add / Update / Delete / Move / dry_run
-必须   workspace containment
-       stale baseline detection
-       same-directory temp file
-       atomic replacement
-       失败不留下半写状态
+输入   files[]（op / path / to? / version? / content? / edits[]）, dry_run?
+op     add / update / delete / move
+edits  { old, new, replace_all? }，按顺序作用在上一条的结果上
+输出   每个文件一行摘要 + 新 version；不回传任何文件内容
 ```
 
-Patch 语义不凭空重新设计，先研究 coding-tools-mcp 的 contract（第 28 节）。
+**patch 是精确替换的列表，不是 unified diff。** diff 需要一个解析器，而且实践中还得靠模糊匹配才
+扛得住模型写错的 hunk 头。精确 `old` → `new` 没有歧义，代价随改动大小走，而且白送一个 diff 要费劲
+才能保证的性质：**被替换区间之外的字节完全不变**，所以 BOM、CRLF、末尾无换行全都原样保留，不需要
+任何一行代码专门去"保持格式"。`old` 出现多次时报错而不是猜，除非显式给 `replace_all`。
+
+**stale baseline**：改动已存在的文件必须带上 `read_file` 返回的 `version`；文件在这之间被写过就拒绝，
+什么都不做。**不给 version 也拒绝**——那意味着模型压根没读过这个文件。只匹配 `old` 是不够的：它只
+证明被改的那一段没变，不证明模型对文件其余部分的理解还成立。
+
+`version` 是 size + mtime，**不是内容 hash**，这是故意的：`read_file` 是流式的，能在不读完 2 GB 文件
+的前提下回答前 200 行，做 hash 就把这个性质扔了。size 和 mtime 来自它本来就要做的 `stat`。代价：
+从备份恢复、或者带时间戳复制过来的文件会被误判为"变了"——这是安全的方向。
+
+**三个阶段，每个阶段的理由：**
+
+```text
+plan     解析路径、校验 version、读原文、算出新内容。磁盘一个字节都没碰，
+         所以任何问题都是整次调用失败且什么都没写
+stage    把每个新内容、以及每个原文，写到目标文件同目录的 temp。仍然不可见。
+         磁盘满是在这里失败，而不是在 commit 中途
+commit   只有 rename 和 unlink。同目录 rename 是原子的：读者看到的要么是旧文件
+         要么是新文件，不会是半写的，也不存在文件短暂消失的窗口
+```
+
+commit 中途失败（stage 成功之后还失败，意味着文件系统正在我们脚下出问题）就把备份 rename 回去并
+报告失败。**绝对不能报成功**——"你的一部分文件被改了"必须可见，所以连回滚也失败时报得更响，
+并列出每一个涉及的文件。
+
+顺带保住的两件事：文件权限（patch 一个脚本不能让它失去可执行位）；`add` 时创建的目录在 patch
+失败后会被删掉。
+
+写侧路径策略是读侧那套再加三条（`resolve_write`，第 17 节）。
 
 ### exec_command
 
@@ -1342,10 +1374,7 @@ home ccnm internal mcp-serve
 ```text
 名字                       exit   含义
 CCNM_E_INTERNAL             1     bug 或意外的 OS 错误，不是给用户分类用的
-CCNM_E_NOT_READY            3     没坏，但也还不能用。两种情况：doctor 没有 FAIL 但有
-                                  SKIP（没验证完）；runtime 缺一个它依赖的外部程序，
-                                  比如家庭机没装 rg。共同点是模型和用户都改不了参数，
-                                  要动的是环境
+CCNM_E_NOT_READY            3     doctor 没有 FAIL 但有 SKIP（没验证完），或者功能还没实现
 CCNM_E_CONFIG              10     config.toml 缺失、解析失败或校验不过
 CCNM_E_VERSION             11     两台机器 ccnm 版本 / protocol 不一致，或 Claude Code 太旧
 CCNM_E_AUTH                12     工作机 Claude 未登录
@@ -1359,7 +1388,13 @@ CCNM_E_POLICY              33     runtime 不允许这个操作（路径越界�
 CCNM_E_INVALID_ARGS        34     工具参数本身不能用：行号是 0、区间反了、path 指向不存在
                                   的东西/目录/二进制文件。和 33 分开是因为模型的反应不同：
                                   33 是"别试了"，34 是"改了参数再来"
+CCNM_E_DEPENDENCY          35     家庭机缺一个 runtime 依赖的外部程序（比如 search_text 要的
+                                  rg）。和 3 分开：3 是 ccnm 自己没做完，35 是那台机器上要跑
+                                  一条安装命令，ccnm 再怎么写也修不好
 ```
+
+`CCNM_E_STALE_EPOCH`(32) 原本是 Hybrid 的 session epoch 过期，现在也用于 `apply_patch` 的
+stale baseline。含义一致：**你手上那份基准过期了，先重新读**。
 
 exit 0 是成功，2 留给 clap 的用法错误。加新码可以，改名或改号不行：另一台机器上可能还跑着旧版
 ccnm。Hybrid 专有的码保留编号，不复用。
@@ -1392,6 +1427,7 @@ crates/
             ├── read.rs  read_file
             ├── list.rs  list_files
             ├── search.rs search_text（rg）
+            ├── patch.rs apply_patch（三阶段：plan / stage / commit）
             └── server.rs
 ```
 
@@ -1485,7 +1521,11 @@ list_files     已完成（2026-09-03）。真机对着 ccnm 仓库本身跑：g
 search_text    已完成（2026-09-03）。真机验证：.git/config 搜不到、literal 的 `.`
                不当通配、查 `--ignore-case` 不被当 flag、坏 regex 报 INVALID_ARGS
                且不带路径、0 命中不是错误。
-apply_patch    未开始
+apply_patch    已完成（2026-09-03）。真机验证：read → patch → read 立刻看到新内容且
+               version 对得上；重放同一个 version 报 STALE_EPOCH 且不写；不给 version
+               被拒；多文件第二个失败时第一个也没被写；CRLF+BOM+末尾无换行原样保留；
+               `..` / 绝对路径 / `.git` / 指向 ssh key 的 symlink / move 出去，五种越界
+               全部 CCNM_E_POLICY；dry_run 什么都不写；add/move/delete 各自正确。
 exec_command   未开始
 read_output    未开始
 ```
@@ -1525,7 +1565,20 @@ list_files/glob  遍历跟随 symlink、strip_dir 半段匹配、hidden 过滤�
                  字符类静默放行、git 忽略规则失效
 search_text      rg 输出的路径不再复查、literal 悄悄变 regex、exit 1 当成失败、
                  字节预算去掉、query 不放在 `--` 之后、`-g !.git` 去掉、错误文本不脱敏
+apply_patch      过期 version 放行、缺 version 放行、歧义 edit 直接改第一处、
+                 stage 失败不清理 temp、`.git` 可写、可以写穿 symlink、权限不保留、
+                 CRLF 不翻译、commit 失败不回滚
 ```
+
+其中 "stage 失败不清理 temp" 和 "commit 失败不回滚" 第一轮**没被抓到**——当时所有失败都发生在
+plan 阶段，磁盘还没被碰过。补了两个测试：把目标目录 chmod 555，第二个文件的 temp 写不进去就在
+stage 失败；而 move 不写 temp，所以 move 到只读目录能过 stage、卡在 commit，那是唯一能走到回滚
+分支的路径。
+
+**在真机上抓到、测试没抓到的一个 bug**：`git ls-files --directory` 会把整个未跟踪的目录折叠成
+一条 `src/`，而 `src/` 不是 `src` **里面**的路径，所以对一个 `git init` 之后还没 commit 的仓库
+列 `src` 会返回"空"。单测 fixture 全都 commit 过，所以一路绿灯。已去掉该 flag 并补了一个只
+`git init` 的 fixture。教训：fixture 要覆盖仓库的**各个生命周期阶段**，不只是"正常状态"。
 
 一个诚实的说明：`-g !.git` 那条只有 argv 测试红，行为测试没红——因为 `--no-hidden` 单独已经
 挡住了 `.git`。`.git` 有三层防御（`--no-hidden`、`-g !.git`、输出复查），其中第一层和第三层有

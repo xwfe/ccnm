@@ -1429,6 +1429,119 @@ mod tests {
         );
     }
 
+    /// chmod 000/555 does nothing for root, and then these tests would
+    /// assert on a failure that never happened.
+    fn cannot_write_here(dir: &Path) -> bool {
+        let probe = dir.join(".ccnm-probe");
+        match fs::write(&probe, "x") {
+            Ok(()) => {
+                let _ = fs::remove_file(&probe);
+                false
+            }
+            Err(_) => true,
+        }
+    }
+
+    fn lock(dir: &Path) {
+        let mut perms = fs::metadata(dir).unwrap().permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o555);
+        fs::set_permissions(dir, perms).unwrap();
+    }
+
+    fn unlock(dir: &Path) {
+        let mut perms = fs::metadata(dir).unwrap().permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+        fs::set_permissions(dir, perms).unwrap();
+    }
+
+    #[test]
+    fn a_staging_failure_cleans_up_what_was_already_staged() {
+        // The plan phase cannot catch a full disk or a directory that
+        // cannot be written; staging is where those land, after earlier
+        // files have already put temp files on disk.
+        let root = workspace("stage-fail");
+        fs::create_dir(root.join("locked")).unwrap();
+        fs::write(root.join("locked/b.rs"), "pub fn b() {}\n").unwrap();
+        let locked_version = version(&root, "locked/b.rs");
+        let main_version = version(&root, "src/main.rs");
+        let main_before = text(&root, "src/main.rs");
+        lock(&root.join("locked"));
+        if !cannot_write_here(&root.join("locked")) {
+            unlock(&root.join("locked"));
+            return;
+        }
+
+        let err = fails(
+            &root,
+            vec![
+                update("src/main.rs", &main_version, "let x = 1;", "let x = 8;"),
+                update("locked/b.rs", &locked_version, "pub fn b()", "pub fn c()"),
+            ],
+        );
+        assert!(err.message().contains("locked/b.rs"), "{err}");
+        assert_eq!(
+            text(&root, "src/main.rs"),
+            main_before,
+            "the first file was committed"
+        );
+        let leftovers: Vec<String> = fs::read_dir(root.join("src"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with(".ccnm-"))
+            .collect();
+        unlock(&root.join("locked"));
+        assert!(
+            leftovers.is_empty(),
+            "staging temps survived: {leftovers:?}"
+        );
+    }
+
+    #[test]
+    fn a_commit_failure_rolls_the_earlier_files_back() {
+        // A move stages nothing -- no new content, no backup -- so a move
+        // into a directory that cannot be written is the one way to get
+        // past staging and fail during the commit.
+        let root = workspace("commit-fail");
+        fs::create_dir(root.join("locked")).unwrap();
+        let main_before = text(&root, "src/main.rs");
+        let main_version = version(&root, "src/main.rs");
+        let lib_version = version(&root, "src/lib.rs");
+        lock(&root.join("locked"));
+        if !cannot_write_here(&root.join("locked")) {
+            unlock(&root.join("locked"));
+            return;
+        }
+
+        let err = fails(
+            &root,
+            vec![
+                update("src/main.rs", &main_version, "let x = 1;", "let x = 9;"),
+                FilePatch {
+                    op: Some(Op::Move),
+                    path: "src/lib.rs".into(),
+                    to: Some("locked/lib.rs".into()),
+                    version: Some(lib_version),
+                    ..Default::default()
+                },
+            ],
+        );
+        unlock(&root.join("locked"));
+        assert!(err.message().contains("rolled back"), "{err}");
+        assert!(
+            !err.message().contains("PARTIALLY CHANGED"),
+            "rollback should have succeeded: {err}"
+        );
+        // The update that had already committed is back to what it was.
+        assert_eq!(text(&root, "src/main.rs"), main_before);
+        assert!(root.join("src/lib.rs").exists());
+        let leftovers: Vec<String> = fs::read_dir(root.join("src"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with(".ccnm-"))
+            .collect();
+        assert!(leftovers.is_empty(), "{leftovers:?}");
+    }
+
     #[test]
     fn missing_dirs_lists_what_has_to_be_created() {
         let root = workspace("dirs");

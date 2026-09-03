@@ -42,11 +42,19 @@ pub enum ErrorCode {
     /// The session's epoch is older than the workspace's current epoch,
     /// typically after `ccnm maintenance`.
     StaleEpoch,
+    /// A tool was called with an argument ccnm cannot use: a line number of
+    /// zero, a range that runs backwards, a path that names nothing
+    /// readable. Deliberately separate from [`Policy`](Self::Policy),
+    /// because the reaction differs: `CCNM_E_POLICY` means "you may not do
+    /// that, stop trying", `CCNM_E_INVALID_ARGS` means "fix the argument
+    /// and call again". A model that cannot tell them apart either gives
+    /// up on a typo or keeps hammering a wall.
+    InvalidArgs,
 }
 
 impl ErrorCode {
     /// Every code, in the order they are documented.
-    pub const ALL: [ErrorCode; 12] = [
+    pub const ALL: [ErrorCode; 13] = [
         ErrorCode::Internal,
         ErrorCode::NotReady,
         ErrorCode::Config,
@@ -59,6 +67,7 @@ impl ErrorCode {
         ErrorCode::Coherence,
         ErrorCode::Policy,
         ErrorCode::StaleEpoch,
+        ErrorCode::InvalidArgs,
     ];
 
     /// The `CCNM_E_*` name Claude sees.
@@ -76,6 +85,7 @@ impl ErrorCode {
             ErrorCode::Coherence => "CCNM_E_COHERENCE",
             ErrorCode::Policy => "CCNM_E_POLICY",
             ErrorCode::StaleEpoch => "CCNM_E_STALE_EPOCH",
+            ErrorCode::InvalidArgs => "CCNM_E_INVALID_ARGS",
         }
     }
 
@@ -104,6 +114,7 @@ impl ErrorCode {
             ErrorCode::Coherence => 31,
             ErrorCode::StaleEpoch => 32,
             ErrorCode::Policy => 33,
+            ErrorCode::InvalidArgs => 34,
         }
     }
 }
@@ -148,6 +159,16 @@ impl Error {
 
     pub fn internal(message: impl Into<String>) -> Self {
         Error::new(ErrorCode::Internal, message)
+    }
+
+    /// The caller asked for something it is not allowed to have.
+    pub fn policy(message: impl Into<String>) -> Self {
+        Error::new(ErrorCode::Policy, message)
+    }
+
+    /// The caller's arguments cannot be used as given.
+    pub fn invalid_args(message: impl Into<String>) -> Self {
+        Error::new(ErrorCode::InvalidArgs, message)
     }
 
     /// Attach the underlying error. Shown after the message as `caused by:`.

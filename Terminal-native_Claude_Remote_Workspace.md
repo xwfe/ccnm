@@ -1054,37 +1054,75 @@ commit 中途失败（stage 成功之后还失败，意味着文件系统正在�
 
 ### exec_command
 
-第二个 token 成本核心。
+已实现（`crates/ccnm-core/src/mcp/exec.rs`）。第二个 token 成本核心。
 
 ```text
-输入   cmd, cwd?, timeout_ms?, max_output_bytes?, preview_bytes?
-默认   timeout 有界；preview <= 16 KiB
+输入   cmd（数组）, cwd?, timeout_ms?, preview_bytes?
+默认   timeout 120 s（上限 600 s）, preview 4 KiB（上限 16 KiB）
+输出   status / exit_code / 头尾 preview / output_ref
 ```
 
-长输出不能完整返回模型。`cargo test` 吐 2 MB 时，返回的是：
+`max_output_bytes` 没做成参数：它约束的是 ccnm 在**用户机器上**留下多少东西，那不是调用方的决定。
+内部固定单流 64 MiB，超了照样跑完、照样报 exit code，只是留存的副本到此为止并说明。
+
+#### 这不是 sandbox，代码里也没假装是
+
+第 18 节。路径校验保护 `read_file` 和 `apply_patch`，在这里**什么都保护不了**——命令能去它所运行的
+那个用户能去的任何地方：`cat ~/.ssh/id_ed25519`、`curl -d @secrets ...`、`rm -rf ~`。
+
+**这一阶段故意不做 deny list。** 一张禁止程序名的表，用 `env claude`、绝对路径、或者一个 wrapper
+脚本就能绕过；它真正的效果是让工具**看起来**被管着而其实没有。假的安全感比没有更糟，设计文档
+原话就是"command parser 不是 sandbox"。
+
+真正让它安全的是 Phase 5 而不是 Phase 2：家庭机上一个专用 Unix 用户（`ccrun`），只能碰这个项目，
+没有 sudo、没有 ssh key、没有 Claude credential、没有浏览器 profile，加上 filesystem ACL 和第 19 节的
+网络策略。在那之前，`exec_command` 的可信度**完全等于 runtime 所用账号的可信度**，而设计文档已经把
+dedicated runtime identity 写成真实日用前的硬门禁。
+
+这一阶段唯一强制的是核心 invariant：**任何 `ANTHROPIC_*` / `CLAUDE_*` 变量都不传给子进程**。家庭机
+不持有 Claude credential，也不能通过 ccnm 跑的某条命令学到一个。其余环境照常继承——要用 PATH 找
+cargo 的命令得能找到。
+
+#### argv，不是 shell
+
+`cmd` 是数组，没有 `sh -c`，所以 ccnm 里没有任何需要转义的地方，审计行就是真正跑的东西。
+想用 shell 的常见理由都已经被别的东西覆盖了：
 
 ```text
-status
-exit_code
-short preview
-output_ref
+cargo test 2>&1 | tail -50   输出本来就有上限且能分页，直接跑 cargo test
+cd sub && make               cwd 参数
+RUST_LOG=debug cargo test    ["env", "RUST_LOG=debug", "cargo", "test"]
+ls *.rs                      list_files
+grep -r x .                  search_text
 ```
 
-完整输出留在家庭机：
+#### 一个真 bug：kill 不杀进程组
 
-```text
-~/.local/state/ccnm/runtime/<session>/
-```
+`Child::kill` 只发给一个进程。`sh -c 'echo x; sleep 30'` 里 sleep 是 sh 的子进程、还握着 stdout 管道，
+所以只杀 leader 的话 drain 线程会一直读到 sleep 结束——**一个不会超时的超时**。现在两个 spawn 点都把
+子进程放进自己的进程组，杀的是整组（用 `kill(1)`，因为这个 crate 禁 unsafe）。`stream_lines` 有同样的
+毛病，所以 `search_text` 的提前终止之前也是坏的。研究记录里早就写了 coding-tools-mcp 有这个问题。
 
 ### read_output
 
+已实现（`crates/ccnm-core/src/mcp/output.rs`）。第七个、也是最后一个工具。
+
 ```text
-输入   output_ref, stream, offset, limit
-默认   limit <= 32 KiB
-必须   offset-based、stable、bounded
+输入   output_ref, stream?（stdout|stderr）, offset?, limit?
+默认   limit 16 KiB（上限 32 KiB）
+输出   这一页的内容 + next_offset / total_bytes / eof
 ```
 
-不能每次把前面的 output 重新发一遍。
+不能每次把前面的 output 重新发一遍。offset 是**字节偏移且稳定**——引用产生时文件已经写完了，一个 run
+的输出永远不变，所以一小时后 offset 4096 还是同一个地方。这就是分页便宜的原因：不用维护游标，
+不重发任何东西。
+
+`output_ref` **按形状匹配，不当路径清洗**：`..`、斜杠、长度不对，在被拼到任何东西上之前就失败了，
+所以根本没有"路径穿越"这件事要做对。而且只在**本 session 的目录**里解析——它是一个 session 内部的
+引用，不是这台机器上的句柄。
+
+每一页都回退到字符边界再切，下一个 offset 也就落在边界上。不这么做的话，任何带非 ASCII 的输出
+每个分页接缝都会多一个替换字符。limit 小到装不下一个字符时直接报错，而不是原地不前进地死循环。
 
 ---
 
@@ -1428,6 +1466,8 @@ crates/
             ├── list.rs  list_files
             ├── search.rs search_text（rg）
             ├── patch.rs apply_patch（三阶段：plan / stage / commit）
+            ├── exec.rs  exec_command（argv，无 shell；输出落盘）
+            ├── output.rs read_output（字节偏移分页）
             └── server.rs
 ```
 
@@ -1526,9 +1566,17 @@ apply_patch    已完成（2026-09-03）。真机验证：read → patch → rea
                被拒；多文件第二个失败时第一个也没被写；CRLF+BOM+末尾无换行原样保留；
                `..` / 绝对路径 / `.git` / 指向 ssh key 的 symlink / move 出去，五种越界
                全部 CCNM_E_POLICY；dry_run 什么都不写；add/move/delete 各自正确。
-exec_command   未开始
-read_output    未开始
+exec_command   已完成（2026-09-03）。真机验证：cwd 走同一套策略；非零退出是结果不是
+               错误；`env` 的输出里没有任何 ANTHROPIC_/CLAUDE_；`echo hi | rm -rf /`
+               是一个不存在的程序名而不是两条命令；重定向符号只是普通参数；
+               `sleep 30 &` 的超时 1.5 s 就回来了（修进程组之前是 30 s）。
+read_output    已完成（2026-09-03）。真机验证：128890 B 含中文的输出分 4 页取回，
+               逐字节拼回原样，首行/末行/中间行都对，没有分页接缝上的坏字符；
+               stderr 是独立的流；`../../../etc/passwd` 按形状被拒。
 ```
+
+**Phase 2 的 7 个工具到此全部完成。**`tools/list` 共 8270 B（预算 16 KiB），最大的是
+apply_patch 2487 B。
 
 真机数据（工作机 xdwmbp 起一条 ssh 到家庭机，同一会话内 50 次调用）：
 
@@ -1568,7 +1616,12 @@ search_text      rg 输出的路径不再复查、literal 悄悄变 regex、exit
 apply_patch      过期 version 放行、缺 version 放行、歧义 edit 直接改第一处、
                  stage 失败不清理 temp、`.git` 可写、可以写穿 symlink、权限不保留、
                  CRLF 不翻译、commit 失败不回滚
+exec/output      env 不剥离、只剥 ANTHROPIC_ 漏掉 CLAUDE_、kill 不到进程组、
+                 cwd 策略算了不用、preview 不截断、session id 不清洗、旧 run 不清理、
+                 output_ref 不校验、分页接缝切坏字符、limit 过小死循环、offset 越界放行
 ```
+
+累计 42 处，全部有测试红。
 
 其中 "stage 失败不清理 temp" 和 "commit 失败不回滚" 第一轮**没被抓到**——当时所有失败都发生在
 plan 阶段，磁盘还没被碰过。补了两个测试：把目标目录 chmod 555，第二个文件的 temp 写不进去就在

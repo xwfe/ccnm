@@ -1169,11 +1169,16 @@ crates/
 
 ```text
 现有        clap, serde, serde_json, toml, tracing, tracing-subscriber, base64, uuid
-MCP         官方 Rust MCP SDK（rmcp）+ 它要求的 tokio；选型依据和实测见 docs/research/
+MCP         rmcp 3.2（官方 Rust MCP SDK；features server, macros, transport-io, client, transport-child-process）
+            tokio 1（rt, io-std, process, time；current_thread runtime，只在 crates/ccnm-core/src/mcp 里）
 ```
 
-SDK 必须以很小依赖完成 stdio / initialize / tools/list / tools/call / cancellation。SDK 太重或
-行为不透明就先报告，不擅自手写半套 MCP 协议，也不擅自引入大型 async stack。
+选 rmcp 的依据（2026-09-03 实测，细节在 `docs/research/mcp-spike-2026-09-03.md`）：stdio / initialize.instructions /
+tools/list / tools/call / structuredContent / cancellation / stdin EOF 退出全部现成；server + client 共 78 个 crate，
+没有 hyper / reqwest / axum；main 仍是同步的，async 只在 `mcp/` 一个目录里。
+
+coding-tools-mcp 的研究结论在 `docs/research/coding-tools-mcp.md`：没有 headless stdio 入口，只参考 contract，
+不复用代码。
 
 TS 只能出现在 `tests/`、`tools/`、fixture 生成器里，`ccnm run` 永远不要求 node / bun 存在。
 

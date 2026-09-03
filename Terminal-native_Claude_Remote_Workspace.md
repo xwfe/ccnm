@@ -365,6 +365,98 @@ source write plane
 hash barrier
 ```
 
+### ccnm 管编排，不管网络
+
+> **ccnm owns orchestration, not networking.**
+>
+> Network connectivity is an external capability by default. Built-in connectivity
+> integrations such as Tailscale are optional adapters and conveniences, never hard
+> dependencies.
+>
+> Hosts are addressed through transport endpoints such as OpenSSH aliases. ccnm must
+> work with any underlying network — LAN, public IP, VPN, Tailscale, WireGuard,
+> ZeroTier, FRP, Cloudflare Access, ProxyJump, or user-defined transports — without
+> requiring the core to understand how reachability is established.
+
+说白了：**ccnm 不管理网络，它只消费"已经可用的连接能力"。**
+
+ccnm 真正需要的只有两件事：
+
+```text
+工作机能执行    ssh ccnm-home
+家庭机能执行    ssh work
+```
+
+这两个 hostname 最终经过什么网络到达，ccnm 不该关心，也不该有办法关心。
+
+#### 四层
+
+```text
+┌─────────────────────────────────────────────┐
+│               Claude Layer                  │
+│  工作机上的 official Claude Code            │
+└─────────────────────┬───────────────────────┘
+                      │ MCP
+┌─────────────────────▼───────────────────────┐
+│                CCNM Runtime                 │
+│  workspace / read / search / patch / exec   │
+│  policy / session / output retention        │
+└─────────────────────┬───────────────────────┘
+                      │
+┌─────────────────────▼───────────────────────┐
+│             Transport Adapter               │
+│  ssh / local / 将来的自定义 transport       │
+└─────────────────────┬───────────────────────┘
+                      │
+┌─────────────────────▼───────────────────────┐
+│          Connectivity / Infrastructure      │
+│  Tailscale / LAN / WireGuard / ZeroTier     │
+│  FRP / Cloudflare / 公网 IP / VPN / JumpHost│
+└─────────────────────────────────────────────┘
+```
+
+前三层属于 ccnm。**最后一层默认不属于 ccnm**，是用户已经准备好的基础设施。
+
+#### 落到代码上的三条硬规矩
+
+```text
+1. 依赖方向单向向下：Runtime 只认识 Transport Adapter，不认识任何具体网络方案的名字。
+   Transport Adapter 只认识 "一个 ssh endpoint"，不认识它背后是什么。
+2. V1 核心代码里不出现 tailscale 这个依赖。同理不出现 wireguard / zerotier / frp /
+   cloudflared。任何一个都只能是 optional adapter，装不装、用不用，核心逻辑都不变。
+3. 主机一律用 transport endpoint 寻址（OpenSSH alias）。不在 config 里存 IP、
+   MagicDNS 名、tailnet、隧道 URL——这些是 ~/.ssh/config 的事（第 7 节）。
+```
+
+#### 怎么验证这条原则没被破坏
+
+用户把底层从 Tailscale 换成下面任何一种，ccnm 核心代码应该一行都不用改：
+
+```text
+Tailscale + SSH        FRP + SSH             Cloudflare Access + SSH
+WireGuard + SSH        ZeroTier + SSH        公网 SSH
+LAN SSH                ProxyJump
+```
+
+换的只是用户 `~/.ssh/config` 里 `Host ccnm-home` 那几行怎么写。ccnm 看到的永远是
+`ssh ccnm-home`。
+
+#### 当前的偏差（已知，未修）
+
+```text
+crates/ccnm-core/src/tailscale.rs        201 行，只读 `tailscale status --json`
+crates/ccnm-core/src/doctor.rs:48,307,577  doctor 直接 import 它，有一行 Tailscale 检查
+crates/ccnm-cli/src/main.rs:15,118        CLI 负责找 tailscale binary
+```
+
+这段代码本身是无害的：只读、从不阻塞、找不到 `tailscale` 就报 OK 跳过，SSH 通不通由 SSH
+自己说了算，它只解释延迟（direct 还是 DERP 中转）。但**名字出现在 `ccnm-core` 里就是方向错了** ——
+Runtime 层不该认识第四层的任何一个具体方案。
+
+不为此停工。等下次动 doctor / SSH transport 时一起收拾，目标形态是：核心只有一个
+"transport 诊断"接口，Tailscale 变成一个可选 adapter，编译进不进去都不影响 `ccnm run`。
+在那之前，新代码不许再引用 `tailscale` 模块。
+
 ---
 
 ## 7. SSH 身份与 ccnm binary
@@ -1207,11 +1299,14 @@ crates/
         ├── paths.rs
         ├── process.rs
         ├── claude.rs
-        ├── tailscale.rs
+        ├── tailscale.rs 待搬走：核心不该认识具体网络方案（第 6 节"ccnm 管编排，不管网络"）
         ├── doctor.rs
         ├── protocol/    payload 编码、hello、probe 请求响应
-        ├── ssh/         ssh 命令行构造、双向探测
+        ├── ssh/         ssh 命令行构造、双向探测（Transport Adapter 层）
         └── mcp/         MCP server / probe client
+            ├── path.rs  workspace 路径策略，所有文件工具共用（第 17 节）
+            ├── read.rs  read_file
+            └── server.rs
 ```
 
 等 Minimal Coding Runtime 边界稳定后再拆 `ccnm-mcp`。不要为了架构图漂亮提前拆。
@@ -1498,7 +1593,10 @@ NOTICE / attribution。不先 copy 后补 provenance，不悄悄 copy。
 ❌ Linux first-class support
 ```
 
-先针对 macOS home + macOS work + Tailscale + OpenSSH + official Claude Code 把一个场景做透。
+先针对 macOS home + macOS work + OpenSSH + official Claude Code 把一个场景做透。
+
+开发和验收时两台机器之间用的是 Tailscale，但那只是**当前这条链路碰巧由谁提供**，不是 V1 的一部分。
+换成公网 SSH、WireGuard、FRP 或 ProxyJump，ccnm 应该一行都不用改（第 6 节）。
 
 ---
 

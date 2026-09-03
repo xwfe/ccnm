@@ -287,7 +287,13 @@ fn mcp_probe_local_speaks_to_one_persistent_server() {
     tools.sort();
     assert_eq!(
         tools,
-        vec!["list_files", "read_file", "search_text", "workspace_info"]
+        vec![
+            "apply_patch",
+            "list_files",
+            "read_file",
+            "search_text",
+            "workspace_info"
+        ]
     );
     assert_eq!(rep.calls, 25);
     assert!(rep.single_process);

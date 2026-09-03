@@ -1,7 +1,7 @@
 //! `ccnm internal mcp-serve`: the coding runtime Claude Code talks to over
 //! one ssh. Phase 2 fills in the bounded tools of design doc section 15
 //! one at a time; today that is `workspace_info`, `read_file`,
-//! `list_files` and `search_text`.
+//! `list_files`, `search_text` and `apply_patch`.
 //!
 //! Two rules are enforced here because everything later depends on them.
 //! The workspace root is canonicalized once at startup and is the only
@@ -32,6 +32,7 @@ use serde::{Deserialize, Serialize};
 // macro expands to `Result<_, ErrorData>` and would pick up the alias.
 use crate::error::{Error, ErrorCode, ErrorReport};
 use crate::mcp::list::{self, ListFilesArgs};
+use crate::mcp::patch::{self, ApplyPatchArgs};
 use crate::mcp::read::{self, ReadFileArgs};
 use crate::mcp::search::{self, SearchTextArgs};
 use crate::process::{Cmd, ProcessRunner, SystemRunner};
@@ -250,6 +251,33 @@ impl Server {
                     .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
                 let mut result = CallToolResult::structured(value);
                 result.content = vec![ContentBlock::text(found.text)];
+                Ok(result)
+            }
+            Err(err) => Ok(tool_error(&err)),
+        }
+    }
+
+    #[tool(
+        name = "apply_patch",
+        description = "Change files in the remote workspace: add, update, delete or move. This is the only way to write. An update replaces exact strings and must carry the version read_file returned, so an edit built on content that has since changed is refused. Either every file in the patch is applied or none is."
+    )]
+    async fn apply_patch(
+        &self,
+        Parameters(args): Parameters<ApplyPatchArgs>,
+    ) -> std::result::Result<CallToolResult, ErrorData> {
+        self.count_call();
+        let root = self.inner.root.clone();
+        let applied = tokio::task::spawn_blocking(move || patch::apply_patch(&root, &args))
+            .await
+            .map_err(|e| {
+                ErrorData::internal_error(format!("apply_patch task failed: {e}"), None)
+            })?;
+        match applied {
+            Ok(applied) => {
+                let value = serde_json::to_value(&applied)
+                    .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+                let mut result = CallToolResult::structured(value);
+                result.content = vec![ContentBlock::text(applied.text)];
                 Ok(result)
             }
             Err(err) => Ok(tool_error(&err)),

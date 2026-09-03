@@ -177,7 +177,13 @@ fn read_file_serves_a_whole_session_over_one_process() {
     names.sort_unstable();
     assert_eq!(
         names,
-        ["list_files", "read_file", "search_text", "workspace_info"]
+        [
+            "apply_patch",
+            "list_files",
+            "read_file",
+            "search_text",
+            "workspace_info"
+        ]
     );
     let list_bytes = serde_json::to_string(&list).unwrap().len();
     assert!(list_bytes < 16 * 1024, "schema budget: {list_bytes} bytes");
@@ -308,14 +314,94 @@ fn read_file_serves_a_whole_session_over_one_process() {
         text(&outside)
     );
 
+    // read_file -> apply_patch -> read_file over the wire: the version
+    // comes back from one tool and is accepted by the next, and the new
+    // content is visible immediately.
+    let before = s.read_file(json!({"path": "src/main.rs"}));
+    let version = before["structuredContent"]["version"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let patched = s.call(
+        "apply_patch",
+        json!({"files": [{
+            "op": "update",
+            "path": "src/main.rs",
+            "version": version,
+            "edits": [{"old": "println!(\"hi\")", "new": "println!(\"patched\")"}]
+        }]}),
+    );
+    assert!(!is_error(&patched), "{}", text(&patched));
+    assert_eq!(patched["structuredContent"]["files_changed"], 1);
+    let new_version = patched["structuredContent"]["files"][0]["version"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_ne!(new_version, version);
+    let after = s.read_file(json!({"path": "src/main.rs"}));
+    assert!(
+        text(&after).contains("println!(\"patched\")"),
+        "{}",
+        text(&after)
+    );
+    assert_eq!(after["structuredContent"]["version"], new_version);
+
+    // The same patch again is now stale, and nothing is written.
+    let stale = s.call(
+        "apply_patch",
+        json!({"files": [{
+            "op": "update",
+            "path": "src/main.rs",
+            "version": version,
+            "edits": [{"old": "println!(\"patched\")", "new": "println!(\"twice\")"}]
+        }]}),
+    );
+    assert!(is_error(&stale));
+    assert!(
+        text(&stale).starts_with("CCNM_E_STALE_EPOCH: "),
+        "{}",
+        text(&stale)
+    );
+    let unchanged = s.read_file(json!({"path": "src/main.rs"}));
+    assert!(
+        text(&unchanged).contains("println!(\"patched\")"),
+        "{}",
+        text(&unchanged)
+    );
+
+    // Writing outside the workspace is refused by the same policy reading
+    // is, and the file outside is untouched.
+    let escape = s.call(
+        "apply_patch",
+        json!({"files": [{"op": "add", "path": "../planted.txt", "content": "x"}]}),
+    );
+    assert!(is_error(&escape));
+    assert!(
+        text(&escape).starts_with("CCNM_E_POLICY: "),
+        "{}",
+        text(&escape)
+    );
+
     // Read-only, one process, and the whole session's calls counted.
     let info = s.rpc("tools/call", json!({"name": "workspace_info"}));
-    assert_eq!(info["structuredContent"]["calls_served"], 20);
-    assert_eq!(
-        std::fs::read_dir(&root).unwrap().count(),
-        4,
-        "the server created or removed files in the workspace"
+    assert_eq!(info["structuredContent"]["calls_served"], 26);
+    // apply_patch changed one file in place; nothing was created or left
+    // behind, temp files included.
+    let mut names: Vec<String> = std::fs::read_dir(&root)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    assert_eq!(names, ["binary.bin", "long.txt", "shortcut.txt", "src"]);
+    assert!(
+        !std::fs::read_dir(root.join("src")).unwrap().any(|e| e
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".ccnm-")),
+        "a staging temp file survived"
     );
+    assert!(!root.parent().unwrap().join("planted.txt").exists());
 
     // Nothing in the whole conversation leaked this machine's paths or the
     // file the symlink pointed at.

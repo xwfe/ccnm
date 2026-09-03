@@ -501,7 +501,13 @@ git grep xxx
 
 然后通过 Bash 路由到家庭机本地 SSD。
 
-Claude Code 当前支持 `permissions.deny`，而且 `--settings` 可以为单次 CLI session 注入 settings。
+V1 直接用 CLI 参数禁用：
+
+```bash
+--disallowed-tools Grep Glob
+```
+
+Claude Code 2.1.259 实测有这个参数。不需要为这两个工具动态生成 `permissions.deny`。
 
 ---
 
@@ -596,7 +602,7 @@ claude auth status
 
 ---
 
-# 11. Project CLAUDE.md 继续加载
+# 11. Project CLAUDE.md 继续加载，doctor 扫描全部 settings sources
 
 我们仍希望：
 
@@ -611,40 +617,56 @@ project skills
 因此默认：
 
 ```bash
---setting-sources user,project
+--setting-sources user,project,local
 ```
 
 Claude 官方说明 `project` source 负责加载项目级 `CLAUDE.md`、rules、skills、hooks 和 settings。
 
-因此 `ccnm doctor` 必须检查：
+## doctor 必须扫描哪些文件
+
+V1 默认使用默认 Claude config（第 10 节），启动时 `user` / `project` / `local` 三个 source 都会参与 session。所以 `ccnm doctor` 不能只看 repo 内的 `.claude/settings*.json`，必须扫描实际会参与当前 session 的全部 settings，至少：
 
 ```text
-.claude/settings.json
-.claude/settings.local.json
+~/.claude/settings.json
+~/.claude/settings.local.json     # 如果当前版本/来源实际适用
+
+<workspace>/.claude/settings.json
+<workspace>/.claude/settings.local.json
 ```
 
-是否存在与：
+如果设置了 `claude_config_dir`，user settings root 相应切到该目录。
+
+## 重点看哪些 hook
+
+事件：
 
 ```text
-PreToolUse:Bash
-PostToolUse:Edit|Write
+SessionStart
+PreToolUse
+PostToolUse
+PermissionRequest
 ```
 
-冲突的 hooks。
-
-发现冲突：
+特别是 matcher 涉及：
 
 ```text
-WARN
+Bash
+Edit
+Write
 ```
 
-严重修改 Bash input 的 hook：
+## 分类
 
 ```text
-FAIL
+只读 / 记录型 hook                    允许，doctor 显示 INFO
+会修改 Bash tool_input                默认视为冲突，FAIL
+会 deny / allow Bash、Edit、Write     WARN 或 FAIL，按是否破坏 ccnm invariant 判断
+无法静态判断行为的 command hook       至少 WARN，并显示来源文件和 command
 ```
 
-V1 不尝试自动合并复杂 hook pipeline。
+不这么做的后果：用户 `~/.claude/settings.json` 里一个改写 Bash 命令的 PreToolUse hook 会和 ccnm 的 router 抢同一个 `updatedInput`，官方规则是最后完成的那个生效，结果就是命令有时在本地跑、有时在家庭机跑，而 Claude 看不出区别。
+
+**不要尝试自动改写或合并用户已有 hooks。** 发现冲突就报出来，让人处理。
 
 ---
 
@@ -656,25 +678,19 @@ V1 不尝试自动合并复杂 hook pipeline。
 ccnm hook session-start
 ```
 
-通过 `additionalContext` 告诉 Claude：
+通过 `additionalContext` 告诉 Claude，只有这几行：
 
 ```text
 CCNM remote workspace active.
-
-Workspace:
-/Users/Shared/cc-workspaces/xshun
-
-Read/Edit/Write operate on the mounted source plane.
-
-Bash commands execute on the home execution host.
-
-Do not modify source through Bash.
-
-Do not run source-mutating git commands or formatters.
-Use `ccnm fs` for filesystem topology changes.
+Source edits use the mounted workspace.
+Bash executes on the home runner.
+Do not mutate source from Bash.
+Source-mutating git/formatter/install commands require CCNM maintenance mode.
 ```
 
-Claude Hooks 官方支持 SessionStart 以及 `additionalContext` 注入。
+Claude Hooks 官方支持 SessionStart 返回 `hookSpecificOutput.additionalContext`。
+
+保持很短的原因：hook 输出字符串上限 10,000 字符，超过会被换成一个文件路径加预览，Claude 看到的就不是你写的那段话。而且完整规则由 ccnm policy 和 OS 权限保证，不靠 prompt。
 
 ---
 

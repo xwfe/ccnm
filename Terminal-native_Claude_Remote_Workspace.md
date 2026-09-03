@@ -133,6 +133,9 @@ ccnm maintenance xshun
 内部调用：
 
 ```bash
+ccnm work probe      # doctor 的一次性探测，只读
+ccnm work mount
+ccnm work unmount
 ccnm work start
 ccnm hook session-start
 ccnm hook pre-tool
@@ -193,32 +196,48 @@ ccnm init
 ccnm doctor xshun
 ```
 
-输出类似：
+Phase 1 之后的输出（一切正常时）：
 
 ```text
 ccnm doctor: xshun
 
-Home workspace          OK
-Workspace identity      OK
-Tailscale               direct / 24 ms
-Work SSH                OK
-Work ccnm               0.1.0
-Home runner             OK
-SMB share               OK
-Work SMB mount          OK
-Reverse SSH             OK
-Claude Code             2.x
-Claude authentication   OK
-Consistency test        OK
-Execution barrier       OK
+Config                  OK     /Users/me/.config/ccnm/config.toml
+Workspace config        OK     work_host=work (ssh work), runner_host=home_runner (ssh_from_work ccnm-home)
+Home workspace          OK     /Users/Shared/cc-workspaces/xshun
+Workspace identity      OK     550e8400-e29b-41d4-a716-446655440000
+SMB share               OK     xshun -> /Users/Shared/cc-workspaces/xshun
+Tailscale               OK     direct via 203.0.113.7:41641
+Work SSH                OK     me@workmac
+Work ccnm               OK     0.1.0
+Work SMB mount          OK     mounted, SERVER_NAME=home
+Work identity view      OK     matches
+Reverse SSH             OK     ccnm-home as ccrun
+Home runner             OK     ccrun runs ccnm 0.1.0, root and runtime_root visible
+Runner identity view    OK     matches
+Claude Code             OK     2.1.259 (/usr/local/bin/claude)
+Claude authentication   OK     me@example.com via claude.ai (max)
+Consistency test        SKIP   not implemented until phase 2
+Execution barrier       SKIP   not implemented until phase 5
 
-READY
+NOT READY (0 failed, 2 not checked)
 ```
+
+每行四种状态：
+
+```text
+OK / INFO / WARN   不阻塞
+SKIP               这个版本还没实现，或者前置项失败没法查。同样阻塞 READY
+FAIL               带 CCNM_E_* 错误码和修复提示
+```
+
+exit code 取第一个 FAIL 行的错误码；没有 FAIL 就取第一个 SKIP 的。所以 doctor 骨架阶段不可能误报 READY，`ccnm run` 的 preflight 也能直接沿用这个码。
+
+从 "Work SSH" 往下的所有信息来自**一次** `ssh work ccnm work probe` 往返：工作机在本地查 mount、透过 mount 读 identity、反向 ssh 回家庭机跑 `ccnm runner health`、跑 `claude --version` 和 `claude auth status`，打包成一个 JSON 回来。工作机不需要 config 文件，它要的参数都在请求里。
 
 只要有关键项失败：
 
 ```text
-NOT READY
+NOT READY (N failed, M not checked)
 ```
 
 ## doctor 永远 read-only
@@ -325,10 +344,15 @@ ssh = "work"
 # claude_config_dir = "/optional/custom/path"
 
 [hosts.home_runner]
+# 工作机 ~/.ssh/config 里指向家庭机的 alias。它解析出的 HostName 同时用作 SMB server 地址，
+# 所以 ssh 和 SMB 永远指向同一台机器。
 ssh_from_work = "ccnm-home"
+# 工作机挂 SMB 时用的账号（家庭机上拥有 share 的账号，不是 ccrun）。密码在工作机 Keychain。
+smb_user = "fodelf"
 
 [workspaces.xshun]
 work_host = "work"
+# runner_host = "home_runner"   # 默认值，指向上面的 [hosts.home_runner]
 
 root = "/Users/Shared/cc-workspaces/xshun"
 runtime_root = "/Users/Shared/cc-runtime/xshun"
@@ -1752,6 +1776,32 @@ smbutil statshares -m /Users/Shared/cc-workspaces/xshun -f Json
 `mount_mode = "coherence"` 的含义就是：挂载时带 `nodatacache,nomdatacache,nopassprompt,soft,nobrowse`。代价是工作机每次 Read 都走网络，Read/Edit 会慢；收益是 Claude 读到的永远是家庭机当前内容，Phase 2 的 coherence 测试才有意义。第 48 节的 V2 决策点跟踪的 "SMB Read/Edit latency" 就是这个代价。
 
 不这么做的后果：自己拼 nsmb 参数或猜挂载状态，macOS 升级一次就可能错一次，而且错了 doctor 还显示 OK。
+
+## 第一次把一个 workspace 跑起来的顺序
+
+```bash
+# 家庭机
+ccnm workspace init xshun     # 在 root 里写 .ccnm-workspace-id
+ccnm mount xshun              # ssh 到工作机，让它 mount -t smbfs
+ccnm doctor xshun             # 只读，看表
+```
+
+`ccnm mount` 在工作机上做的事：`ssh -G ccnm-home` 拿 HostName 拼出 `//smb_user@<HostName>/xshun`，建挂载点（`/Users/Shared` 本来就可写，不需要 sudo），`mount -t smbfs -o <coherence 选项> url 挂载点`，再用 `smbutil statshares` 确认。已经挂着就直接返回，挂载点非空且不是 SMB mount 就拒绝。
+
+## 一个会撞的坑：非交互 ssh 的 PATH
+
+`ssh work ccnm work probe` 是通过工作机登录 shell 的 `-c` 跑的，zsh 这时只读 `~/.zshenv`，不读 `~/.zshrc`。ccnm 装在 `~/.cargo/bin` 的话远端会报 `command not found`，ssh 退出码 127。
+
+doctor 看到 127 会直接说：
+
+```text
+Work SSH   FAIL   CCNM_E_VERSION: ccnm is not on PATH for non-interactive ssh to work
+                  sshd runs the command through the login shell without ~/.zshrc; install ccnm in /usr/local/bin or export PATH from ~/.zshenv
+```
+
+`claude` 同理，所以 probe 找 claude 时除了 PATH 还会试 `~/.local/bin`、`~/.claude/local`、`/usr/local/bin`、`/opt/homebrew/bin`。
+
+另一个：SMB 挂载失败提示 "Authentication error" 时，是工作机 Keychain 里没有这个 `smb_user@HostName` 的密码。在工作机 Finder 里 Go > Connect to Server 连一次 `smb://<HostName>` 并勾 "Remember this password"，之后 `nopassprompt` 才能静默成功。ccnm 不经手密码。
 
 ---
 

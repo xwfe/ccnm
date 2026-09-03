@@ -155,6 +155,152 @@ pub trait ProcessRunner {
     fn run(&self, cmd: &Cmd) -> Result<Output>;
 }
 
+/// What [`stream_lines`] should do after handing over one line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Flow {
+    Continue,
+    /// Enough. The child is killed rather than left to finish.
+    Stop,
+}
+
+/// How a streamed command ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Streamed {
+    /// `None` when the child was killed, by [`Flow::Stop`] or by the timeout.
+    pub exit_code: Option<i32>,
+    /// The tail of stderr, bounded by [`STREAM_STDERR_KEEP`].
+    pub stderr: Vec<u8>,
+    pub timed_out: bool,
+    /// The caller asked to stop before the child was done.
+    pub stopped_early: bool,
+}
+
+/// Bytes of stderr kept from a streamed command. A child that fails in a
+/// loop can write megabytes, and none of it past the first screenful helps.
+pub const STREAM_STDERR_KEEP: usize = 8 * 1024;
+
+/// Run `cmd` and hand each line of its stdout to `on_line` as it arrives,
+/// killing the child as soon as `on_line` says [`Flow::Stop`].
+///
+/// [`ProcessRunner::run`] cannot do this: it waits for the child, so a
+/// search tool built on it would let `rg` walk a whole monorepo and then
+/// throw away all but the first fifty matches. Stopping early is the
+/// difference between bounding what is *returned* and bounding what is
+/// *done*.
+///
+/// Not a trait method. A callback does not fit [`FakeRunner`]'s scripted
+/// model, and the callers of this (search today, `exec_command` later) are
+/// better tested against the real program anyway: what they mostly have to
+/// get right is that program's output format.
+pub fn stream_lines(cmd: &Cmd, mut on_line: impl FnMut(&[u8]) -> Flow) -> Result<Streamed> {
+    let started = Instant::now();
+    let mut command = Command::new(&cmd.program);
+    command
+        .args(&cmd.args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    if let Some(dir) = &cmd.cwd {
+        command.current_dir(dir);
+    }
+    for key in &cmd.env_remove {
+        command.env_remove(key);
+    }
+    for (key, value) in &cmd.env {
+        command.env(key, value);
+    }
+
+    tracing::debug!(cmd = %cmd.display(), "stream");
+    let mut child = command.spawn().map_err(|e| {
+        Error::internal(format!("cannot spawn {}", cmd.program.to_string_lossy())).with_source(e)
+    })?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| Error::internal("child has no stdout"))?;
+    let stderr_reader = drain_bounded(child.stderr.take(), STREAM_STDERR_KEEP);
+
+    // The child is shared with the watchdog so a program that stops
+    // producing output cannot outlive its timeout. Killing by pid would
+    // need libc, and this crate forbids unsafe.
+    let child = std::sync::Arc::new(Mutex::new(child));
+    let finished = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let watchdog = {
+        let child = std::sync::Arc::clone(&child);
+        let finished = std::sync::Arc::clone(&finished);
+        let deadline = started + cmd.timeout;
+        let shown = cmd.display();
+        thread::spawn(move || {
+            let mut poll = POLL_MIN;
+            loop {
+                if finished.load(std::sync::atomic::Ordering::SeqCst) {
+                    return false;
+                }
+                if Instant::now() >= deadline {
+                    tracing::warn!(cmd = %shown, "stream timeout, killing");
+                    if let Ok(mut child) = child.lock() {
+                        let _ = child.kill();
+                    }
+                    return true;
+                }
+                thread::sleep(poll);
+                poll = (poll * 2).min(POLL_MAX);
+            }
+        })
+    };
+
+    let mut reader = std::io::BufReader::new(stdout);
+    let mut line = Vec::new();
+    let mut stopped_early = false;
+    loop {
+        line.clear();
+        let read = std::io::BufRead::read_until(&mut reader, b'\n', &mut line)?;
+        if read == 0 {
+            break;
+        }
+        while line.last().is_some_and(|b| *b == b'\n' || *b == b'\r') {
+            line.pop();
+        }
+        if on_line(&line) == Flow::Stop {
+            stopped_early = true;
+            if let Ok(mut child) = child.lock() {
+                let _ = child.kill();
+            }
+            break;
+        }
+    }
+    // Let go of the pipe so a killed child cannot block writing to it.
+    drop(reader);
+
+    finished.store(true, std::sync::atomic::Ordering::SeqCst);
+    let timed_out = watchdog.join().unwrap_or(false);
+    let status = child
+        .lock()
+        .map_err(|_| Error::internal("process mutex poisoned"))?
+        .wait()?;
+    let stderr = join(stderr_reader)?;
+    Ok(Streamed {
+        exit_code: status.code(),
+        stderr,
+        timed_out,
+        stopped_early,
+    })
+}
+
+/// Like [`drain`] but keeps only the last `keep` bytes.
+fn drain_bounded<R: Read + Send + 'static>(pipe: Option<R>, keep: usize) -> JoinHandle<Vec<u8>> {
+    thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(mut pipe) = pipe {
+            let _ = pipe.read_to_end(&mut buf);
+        }
+        if buf.len() > keep {
+            buf.drain(..buf.len() - keep);
+        }
+        buf
+    })
+}
+
 /// Runs commands for real.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct SystemRunner;
@@ -327,6 +473,97 @@ impl ProcessRunner for FakeRunner {
 mod tests {
     use super::*;
     use crate::error::ErrorCode;
+
+    /// `yes` never ends on its own. If `Flow::Stop` did not kill the child,
+    /// this test would run until the harness gave up -- which is exactly
+    /// what `search_text` would do to a Claude session against a monorepo.
+    #[test]
+    fn stop_kills_the_child_instead_of_waiting_it_out() {
+        let mut seen = 0;
+        let started = Instant::now();
+        let out = stream_lines(&Cmd::new("yes").arg("line"), |line| {
+            assert_eq!(line, b"line");
+            seen += 1;
+            if seen == 100 {
+                Flow::Stop
+            } else {
+                Flow::Continue
+            }
+        })
+        .unwrap();
+        assert_eq!(seen, 100);
+        assert!(out.stopped_early);
+        assert!(!out.timed_out);
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "took {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn a_command_that_ends_by_itself_reports_its_code_and_stderr() {
+        let mut lines = Vec::new();
+        let out = stream_lines(
+            &Cmd::new("sh").args(["-c", "printf 'a\\nb\\n'; echo oops >&2; exit 7"]),
+            |line| {
+                lines.push(String::from_utf8_lossy(line).into_owned());
+                Flow::Continue
+            },
+        )
+        .unwrap();
+        assert_eq!(lines, ["a", "b"]);
+        assert_eq!(out.exit_code, Some(7));
+        assert!(!out.stopped_early);
+        assert_eq!(String::from_utf8_lossy(&out.stderr).trim(), "oops");
+    }
+
+    #[test]
+    fn a_silent_child_is_killed_at_the_deadline() {
+        let started = Instant::now();
+        let out = stream_lines(
+            &Cmd::new("sleep")
+                .arg("30")
+                .timeout(Duration::from_millis(300)),
+            |_| Flow::Continue,
+        )
+        .unwrap();
+        assert!(out.timed_out);
+        assert!(!out.stopped_early);
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn stderr_is_kept_bounded() {
+        let out = stream_lines(
+            &Cmd::new("sh").args([
+                "-c",
+                "i=0; while [ $i -lt 2000 ]; do echo 0123456789012345678901234567890123456789 >&2; i=$((i+1)); done",
+            ]),
+            |_| Flow::Continue,
+        )
+        .unwrap();
+        assert!(
+            out.stderr.len() <= STREAM_STDERR_KEEP,
+            "{}",
+            out.stderr.len()
+        );
+        // The tail is what is kept, so the last line is intact.
+        assert!(String::from_utf8_lossy(&out.stderr).ends_with("0123456789\n"));
+    }
+
+    #[test]
+    fn an_unspawnable_program_is_an_error_not_a_hang() {
+        let err = stream_lines(&Cmd::new("ccnm-definitely-not-a-program"), |_| {
+            Flow::Continue
+        })
+        .unwrap_err();
+        assert_eq!(err.code(), ErrorCode::Internal);
+        assert!(
+            err.message().contains("ccnm-definitely-not-a-program"),
+            "{err}"
+        );
+    }
 
     fn sh(script: &str) -> Cmd {
         Cmd::new("sh").arg("-c").arg(script)

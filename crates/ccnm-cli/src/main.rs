@@ -12,7 +12,9 @@ use ccnm_core::protocol::hello::{self, HelloRequest};
 use ccnm_core::protocol::mcp::ServePayload;
 use ccnm_core::protocol::payload;
 use ccnm_core::protocol::probe::ProbeRequest;
-use ccnm_core::{Config, Result, claude, controller, doctor, launcher, mcp, paths, safety, work};
+use ccnm_core::{
+    Config, Result, claude, controller, doctor, launchagent, launcher, mcp, paths, safety, work,
+};
 
 /// Terminal-native remote workspace runtime for Claude Code.
 #[derive(Parser)]
@@ -43,6 +45,12 @@ enum Command {
         #[command(subcommand)]
         command: McpCommand,
     },
+    /// The login-session controller. Run these ON the work machine, or
+    /// over ssh to it: `ssh work ccnm work-controller install`
+    WorkController {
+        #[command(subcommand)]
+        command: WorkControllerCommand,
+    },
     /// Internal: invoked over ssh by the ccnm on the other machine
     #[command(hide = true)]
     Internal {
@@ -67,6 +75,21 @@ enum McpCommand {
         #[arg(long)]
         local: bool,
     },
+}
+
+#[derive(Subcommand)]
+enum WorkControllerCommand {
+    /// Install the LaunchAgent, start it, and check that it answers from
+    /// the login session
+    Install {
+        /// Print the plist and the launchctl commands; change nothing
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Is a controller listening, and in which security session?
+    Status,
+    /// Stop the controller and remove its LaunchAgent
+    Uninstall,
 }
 
 /// Every internal command takes exactly one base64url payload (design doc
@@ -156,6 +179,7 @@ fn run(cli: Cli) -> Result<i32> {
                 ccnm_core::ErrorCode::Internal.exit_code()
             })
         }
+        Command::WorkController { command } => work_controller(command),
         Command::Internal { command } => match command {
             InternalCommand::Hello { payload } => {
                 let req: HelloRequest = payload::decode(payload)?;
@@ -190,6 +214,69 @@ fn run(cli: Cli) -> Result<i32> {
             }
         },
     }
+}
+
+/// `ccnm work-controller ...`, run on the work machine.
+///
+/// A controller that is running but not in a login session exits
+/// `CCNM_E_NOT_READY` rather than 0: it answers, so nothing is broken, but
+/// it cannot do the one job it exists for, and a green exit code there
+/// would be the same lie this whole component was built to stop telling.
+fn work_controller(command: &WorkControllerCommand) -> Result<i32> {
+    let state = paths::state_dir()?;
+    let socket = paths::controller_socket(&state);
+    let plan = || -> Result<launchagent::Plan> {
+        launchagent::Plan::new(
+            &paths::home_dir()?,
+            &state,
+            &std::env::current_exe()?,
+            &SystemRunner,
+        )
+    };
+
+    match command {
+        WorkControllerCommand::Install { dry_run } => {
+            let plan = plan()?;
+            println!("{}", plan.describe());
+            if *dry_run {
+                println!("\n--- {} ---\n{}", plan.plist_path.display(), plan.plist);
+                return Ok(0);
+            }
+            let ctx = launchagent::install(&plan, &SystemRunner)?;
+            println!("\nlistening: {}", ctx.describe());
+            Ok(login_session_verdict(&ctx))
+        }
+        WorkControllerCommand::Status => {
+            let ctx = controller::context(&socket)?;
+            println!("{}", ctx.describe());
+            println!("socket:    {}", socket.display());
+            Ok(login_session_verdict(&ctx))
+        }
+        WorkControllerCommand::Uninstall => {
+            for line in launchagent::uninstall(&plan()?, &SystemRunner)? {
+                println!("{line}");
+            }
+            Ok(0)
+        }
+    }
+}
+
+fn login_session_verdict(ctx: &controller::Context) -> i32 {
+    if ctx.login_session() {
+        return 0;
+    }
+    eprintln!(
+        "\nthis controller is NOT in a login session ({}), so Claude started from it\n\
+         would not be able to read its own credentials.\n\
+         two ways that happens:\n\
+         - it was started by hand instead of by launchd: ccnm work-controller install\n\
+         - nobody is logged in on the work machine's screen; log in there once",
+        match &ctx.manager {
+            Ok(name) => name.as_str(),
+            Err(_) => "session unknown",
+        }
+    );
+    ccnm_core::ErrorCode::NotReady.exit_code()
 }
 
 /// Replies to the other machine go on stdout as one JSON document.

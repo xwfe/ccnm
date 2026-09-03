@@ -1,13 +1,20 @@
 //! `ccnm internal mcp-serve`: the coding runtime Claude Code talks to over
-//! one ssh. Phase 1B exposes a single tool, `workspace_info`, enough to
-//! prove the transport; the bounded read/list/search/patch/exec tools of
-//! design doc section 15 come in phase 2.
+//! one ssh. Phase 2 fills in the bounded tools of design doc section 15
+//! one at a time; today that is `workspace_info` and `read_file`.
 //!
-//! Two rules are already enforced here because everything later depends
-//! on them. The workspace root is canonicalized once at startup and is
-//! the only path the server ever reveals (section 17). And nothing is
-//! written to stdout except MCP: logs go to stderr through `tracing`, so
-//! a stray `println!` cannot corrupt the JSON-RPC stream (section 8).
+//! Two rules are enforced here because everything later depends on them.
+//! The workspace root is canonicalized once at startup and is the only
+//! path the server ever reveals (section 17). And nothing is written to
+//! stdout except MCP: logs go to stderr through `tracing`, so a stray
+//! `println!` cannot corrupt the JSON-RPC stream (section 8).
+//!
+//! A third rule shows up as soon as there is a tool that can fail. A tool
+//! whose *work* failed returns `CallToolResult::error`, not `Err`. `Err`
+//! becomes a JSON-RPC protocol error, which tells the client that the
+//! call itself was malformed; the model may never see the text and cannot
+//! react to it. "This path is outside the workspace" is a result the
+//! model has to read, so it travels as a result with `isError: true`, and
+//! its first line is the `CCNM_E_*` name from section 24.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -15,13 +22,15 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use rmcp::handler::server::router::tool::ToolRouter;
+use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ContentBlock, Implementation, ServerCapabilities, ServerInfo};
 use rmcp::{ErrorData, ServerHandler, ServiceExt, tool, tool_handler, tool_router};
 use serde::{Deserialize, Serialize};
 
 // `crate::error::Result` is deliberately not imported: the `tool_handler`
 // macro expands to `Result<_, ErrorData>` and would pick up the alias.
-use crate::error::{Error, ErrorCode};
+use crate::error::{Error, ErrorCode, ErrorReport};
+use crate::mcp::read::{self, ReadFileArgs};
 use crate::process::{Cmd, ProcessRunner, SystemRunner};
 use crate::protocol::mcp::ServePayload;
 
@@ -125,9 +134,16 @@ impl Server {
         text
     }
 
+    /// Count one served tool call and return the new total. Every tool
+    /// calls this, so `calls_served` is evidence about the whole session
+    /// rather than about `workspace_info` alone (design doc section 27).
+    fn count_call(&self) -> u64 {
+        self.inner.calls.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
     /// Current answer to `workspace_info`, counting the call.
     pub fn info(&self) -> WorkspaceInfo {
-        let calls_served = self.inner.calls.fetch_add(1, Ordering::SeqCst) + 1;
+        let calls_served = self.count_call();
         WorkspaceInfo {
             workspace: self.inner.workspace.clone(),
             git: self.inner.git,
@@ -153,6 +169,41 @@ impl Server {
         result.content = vec![ContentBlock::text(info.summary())];
         Ok(result)
     }
+
+    #[tool(
+        name = "read_file",
+        description = "Read a text file from the remote workspace, as numbered lines. Paths are relative to the workspace root. Long files come back truncated with the line to resume from; there is no way to read a file whole in one call."
+    )]
+    async fn read_file(
+        &self,
+        Parameters(args): Parameters<ReadFileArgs>,
+    ) -> std::result::Result<CallToolResult, ErrorData> {
+        self.count_call();
+        let root = self.inner.root.clone();
+        // The read is blocking and the runtime is single-threaded, so it
+        // runs on the blocking pool: a slow disk must not stop the server
+        // answering pings or a cancellation while it works.
+        let chunk = tokio::task::spawn_blocking(move || read::read_file(&root, &args))
+            .await
+            .map_err(|e| ErrorData::internal_error(format!("read_file task failed: {e}"), None))?;
+        match chunk {
+            Ok(chunk) => {
+                let value = serde_json::to_value(&chunk)
+                    .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+                let mut result = CallToolResult::structured(value);
+                result.content = vec![ContentBlock::text(chunk.text)];
+                Ok(result)
+            }
+            Err(err) => Ok(tool_error(&err)),
+        }
+    }
+}
+
+/// A failed tool call, shaped so the model can act on it: `isError` set,
+/// and one line beginning with the stable `CCNM_E_*` name.
+fn tool_error(err: &Error) -> CallToolResult {
+    tracing::debug!(code = %err.code(), message = err.message(), "tool call refused");
+    CallToolResult::error(vec![ContentBlock::text(ErrorReport::from(err).to_string())])
 }
 
 #[tool_handler(router = self.tool_router)]

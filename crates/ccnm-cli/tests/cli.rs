@@ -283,7 +283,9 @@ fn mcp_probe_local_speaks_to_one_persistent_server() {
     let rep: McpProbeReport = serde_json::from_str(lines.next().unwrap()).unwrap();
     assert_eq!(rep.server_name, "ccnm");
     assert_eq!(rep.server_version, env!("CARGO_PKG_VERSION"));
-    assert_eq!(rep.tools, vec!["workspace_info"]);
+    let mut tools = rep.tools.clone();
+    tools.sort();
+    assert_eq!(tools, vec!["read_file", "workspace_info"]);
     assert_eq!(rep.calls, 25);
     assert!(rep.single_process);
     assert!(rep.server_pid > 0);

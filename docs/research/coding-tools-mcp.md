@@ -5,15 +5,21 @@
 结论先说：
 
 ```text
-headless stdio 入口     没有。只有 HTTP（axum）transport，MCP JSON-RPC 是手写的，跑不起来就没法当 baseline
+headless stdio 入口     没有。只有 HTTP（axum）transport，MCP JSON-RPC 是手写的，跑不起来就没法当 baseline。
+                        Python 原版有 --stdio，Rust 重写时丢了
 Tauri 耦合              tools/ 里只有 exec.rs / session.rs 用了 tauri::async_runtime；其余靠 ToolContext 和 harness 状态
-apply_patch 可复用性    contract 值得抄（envelope 格式、staging → 同目录 temp → rename → 失败回滚），代码不值得抄
+读路径语义              read_file / list / search 故意允许绝对路径和 .. 读 workspace 外的文件，并有测试锁定。
+                        ccnm 第 17 节要的是反过来的，这条 contract 不能抄
+apply_patch 可复用性    contract 值得抄（envelope 格式、staging → 同目录 temp → rename → 失败回滚），代码不值得抄：
+                        多 hunk 定位有 bug、没有 Move、没有 stale baseline
 exec runtime 可复用性   contract 值得抄（argv 不走 shell、timeout、max_output_bytes、output_ref + read_output 分页），
-                        实现绑在 Tauri runtime 和内存 session store 上
-license                 Apache-2.0（package.json、README）；HEAD 根目录没有 LICENSE 文件，只在 old/ 下有
+                        实现绑在 Tauri runtime 和内存 session store 上，read_output 超过 1 MiB 后分页坐标错位
+license                 Apache-2.0（package.json、README）；HEAD 根目录没有 LICENSE / NOTICE，Cargo.toml 没有 license 字段，
+                        源文件没有版权头。old/NOTICE 表明它是 xyTom/coding-tools-mcp 的衍生，README 没有致谢上游
 ```
 
 所以 Phase 1B 直接做了 ccnm 自己的最小 MCP spike，没有 vendor 任何东西。下面是依据。
+（两位研究 subagent 的报告和我自己对源码的核对合在一起；每条都在克隆里对过行号。）
 
 ## 0. 研究对象
 
@@ -71,18 +77,24 @@ initialize 的 `instructions`（`mcp/server.rs:49`）是一整段几千字节的
 ```
 
 没有 max_lines；只靠 32 KiB 字节上限兜底。ccnm 的默认 `max_lines = 200 + max_bytes = 32 KiB` 比它多一层。
+而且 max_bytes 是把整个文件读进内存之后才生效的（file.rs:42），2 GB 的文本文件会被完整读进内存。
 
-路径规则在 `tools/workspace.rs`：
+路径规则在 `tools/workspace.rs`，**读和写是两套**：
 
 ```text
-reject_unsafe_text     168-192   拒绝以 / 或 \ 开头（177-183），拒绝任何 ".." component（187）
-resolve_read_path      200-225   canonicalize 后必须 starts_with(root)（211-217）
+resolve_read_path      200-225   读工具用。源码注释（198-199）直说："显式的绝对路径和 .. 路径允许指向 Workspace 外部"。
+                                 只有相对路径经 symlink 逃逸才拦（217-218）；显式 /etc/passwd 或 ../../x 直接放行
+                                 tests/call_tool_security.rs:34-44 的 read_file_allows_explicit_external_read_only_path
+                                 断言能读到 workspace 外的 TOP_SECRET；list_dir / list_files / search_text / view_image 各有一条同样的测试
+reject_unsafe_text     168-192   写工具用。拒绝以 / 或 \ 开头（177-183），拒绝任何 ".." component（187）
 resolve_for_write      247-327   父目录 canonicalize 后必须在 root 下（277）；目标是 symlink 且指出 root 外 → symlink_escape（320-323）
 reject_write_symlink   329       写操作额外拒绝 symlink 本身
 错误类型               absolute_path_denied(73) path_outside_workspace(82) symlink_escape(91)
 ```
 
-这套和 ccnm 第 17 节完全一致，可以照抄 contract。
+写侧和 ccnm 第 17 节一致，可以照抄。读侧正好相反：这个服务的定位是通过 FRP / Cloudflare 隧道暴露给 ChatGPT，
+拿到 bearer token 的远程调用方能读走 `~/.ssh/id_ed25519`、`~/.aws/credentials`。ccnm 的读工具必须走写侧那套规则。
+Python 原版 `old/SPEC.md:35` 写的是 "rejects absolute paths by default, rejects .."，是 Rust 重写时改掉的。
 
 ## c. search
 
@@ -99,7 +111,13 @@ reject_write_symlink   329       写操作额外拒绝 symlink 本身
 ```
 
 "只把命中结果传回"这条原则它做到了。默认 1000 条对 token 太大；ccnm 第 15 节定的 50 条 / 2 行 context / 32 KiB 更紧。
-不用 rg 意味着不吃 `.gitignore`，会扫 `node_modules` / `target`；ccnm 用 rg 就没这个问题。
+`max_results` 的 schema 默认值写的是 100（registry.rs:1138），代码默认值是 1000（file.rs:227）；MCP client 一般不代填
+默认值，所以实际生效 1000。
+
+忽略规则不读 `.gitignore`（没有 ignore crate），是一张写死的 13 项表 `DEFAULT_EXCLUDED_NAMES`（workspace.rs:6-20：
+.git .reference node_modules target dist build .venv venv .tox .mypy_cache .pytest_cache .ruff_cache __pycache__）加
+"任何以 . 开头的路径段"。search 固定以 include_hidden=false、include_ignored=false 调用（file.rs:259），没有参数能打开。
+ccnm 用 rg 走 `.gitignore`，语义更贴项目自己的定义。
 
 ## d. list / glob
 
@@ -127,8 +145,11 @@ Move：不支持。全文件没有 "Move to" / rename 的处理（grep move|rena
 定位（335-408）：
 
 ```text
-find_hunk_position    从第 0 行起找第一处与 hunk 的 context+remove 行完全相等的位置（391-408）
-fuzzy                 没有。"offset += 0; // reserved for future fuzzy offset"（381）
+@@ 行                 只用来分隔 hunk，行号完全不解析（198-204, 268-276）
+find_hunk_position    找第一处与 hunk 的 context+remove 行完全相等的位置（391-408）
+bug                   search_at 每个 hunk 都硬编码为 0（352-353），不随已应用的 hunk 前进：同一文件里两个上下文相同的
+                      hunk 会全部命中第一处。"offset += 0; // reserved for future fuzzy offset"（381-382）是死代码
+fuzzy                 没有，也不容忍空白差异
 失败                  "Hunk context did not match file content."（364）
 ```
 
@@ -178,6 +199,14 @@ write_stdin / kill_session 对同一 session 生效
 和 ccnm 第 16 节的差别：它的"完整输出"其实只是最后 1 MiB，而且在进程内存里，进程一退就没了；ccnm 要求落盘到
 `~/.local/state/ccnm/runtime/<session>/`，跨 tool call 稳定。
 
+`read_output` 还有一个真 bug（session.rs:391-397）：offset 是缓冲区相对的，`next_offset` 却拿它和全流累计字节
+`total_stream_bytes` 比较。缓冲一旦开始从头部丢弃，两个坐标系就错位，翻页会重复或跳过。ccnm 的 output_ref 分页
+必须落盘 + 绝对 offset，这正是反面教材。
+
+其它值得知道的：`tty` 参数不分配真 PTY（没有任何 pty crate，stdio 全是 piped，exec.rs:254-256）；`kill_session` 只杀
+直接子进程不杀进程组，`npm run dev` 会留孤儿；MCP 这条路径上的 mutating 工具没有写锁（Actions 路径有，
+actions/listener.rs:407-412，mcp/listener.rs:294 没有），两个并发 apply_patch 的内存备份会互相覆盖。
+
 exec 的结果契约有一份需求文档 `docs/specs/exec-contract-workspace-safety/requirements.md`：统一返回
 `command, execution_mode, exit_code, stdout, stderr, duration_ms, status`，并明确"没有真实子进程隔离时不能把
 workspace scope 当作已安全执行，必须 fail-closed"。这句话和 ccnm 第 18 节的判断一致。
@@ -196,16 +225,23 @@ git_blame    max_lines 200（351-353）
 
 这是 ccnm 第 27 节"benchmark 之后再决定要不要加 git_status / git_diff"时可以直接参考的 bounded 形态。
 
+但它的 timeout 是假的：`run_git` 收一个 `limit: Duration`，函数体里 `let _ = limit;`（git.rs:486），所有调用点传的
+5 / 10 秒全部无效。一个等凭据输入的 git 会永远挂住那个 blocking 线程。ccnm 的 exec 走 `process.rs` 的硬超时。
+
 ## h. stdio / headless 入口
 
 没有。
 
 ```text
 transport          只有 HTTP：axum Router，GET /mcp（discovery）+ POST /mcp，外加 OAuth 元数据、/register、/oauth/*（mcp/listener.rs:196-224）
+                   README 反复说 "Streamable HTTP"，实际是单发 POST：没有 SSE、没有 Mcp-Session-Id、没有服务端推送
 JSON-RPC           手写：handle_request 只认 initialize / ping / tools/list / tools/call，notifications 直接丢（mcp/server.rs:16-46）
+                   protocolVersion 硬编码 "2025-06-18"（server.rs:97）不做协商；声明了 logging capability（server.rs:100）
+                   但没有 logging/setLevel 分支
 MCP SDK            没有用 rmcp 或任何 MCP crate（Cargo.toml 里没有）
-启动               由 Tauri 桌面 app 的 runtime supervisor 起监听（runtime/supervisor.rs）；main.rs / lib.rs / mcp/ / runtime/
-                   里 grep stdio|headless|env::args|--serve 都没有
+启动               由 Tauri 桌面 app 的 runtime supervisor 起监听；Cargo.toml 只有 [lib] 没有 [[bin]]，main.rs 一行
+                   coding_tools_mcp_desktop_lib::run()，没有任何命令行参数解析；grep stdio|headless|env::args|--serve 都没有
+历史               Python 原版有 --stdio（old/coding_tools_mcp/server.py:5809，run_stdio 5713），Rust 重写时丢了
 公网               自带 Cloudflare Tunnel / FRP（tunnel/），正是 ccnm 第 1 节禁止清单里的东西
 ```
 
@@ -257,31 +293,54 @@ file.rs        read_file 的 next_start_line 语义、search 的早停
 
 ## l. license / provenance
 
-Apache-2.0。复用代码（而不是只参考 contract）时按设计文档第 28 节：先提交 `docs/third-party/coding-tools-mcp.md`
-记录 repository、commit、license、copied/derived modules、modifications，保留 attribution。因为根目录没有 LICENSE
-文件，attribution 里要写清楚依据是 package.json 和 README 的声明。
+声明是 Apache-2.0，但归属对象不清楚：
 
-目前 ccnm 没有复制它任何代码，也不打算在 Phase 2 复制：上面列的 contract 都很短，自己写比削 ToolContext 便宜。
+```text
+根目录                  没有 LICENSE，没有 NOTICE
+Cargo.toml              没有 license 字段；authors = ["Coding Tools MCP Contributors"]
+源文件                  tools/*.rs 没有任何版权头
+package.json:26         "license": "Apache-2.0"；README:478-480 同样
+old/LICENSE             Apache-2.0 全文，版权行是没填的模板 "Copyright [yyyy] [name of copyright owner]"
+old/NOTICE              "Copyright 2026 Coding Tools MCP Contributors … Source: https://github.com/xyTom/coding-tools-mcp"
+```
+
+也就是说这个仓库是 **xyTom/coding-tools-mcp** 的衍生：`old/` 是上游 Python 项目（约 6000 行）的原样内嵌，README 只把它
+叫"Python 参考实现"，致谢一节没有提上游。Rust 代码的工具名、schema、错误码和 `old/SPEC.md` 高度一致，很可能是上游
+契约的重实现。
+
+对 ccnm 的影响：Apache-2.0 对 Apache-2.0 兼容，但从这里复制 Rust 代码时没法确定该归属给 lengsukq、"Contributors" 还是
+xyTom。复用代码（而不是只参考 contract）时按设计文档第 28 节先提交 `docs/third-party/coding-tools-mcp.md`，并同时归属
+上游和本仓库。`old/` 里的东西一律不碰。
+
+目前 ccnm 没有复制它任何代码，也不打算在 Phase 2 复制：上面列的 contract 都很短，自己写比削 ToolContext 便宜，
+而且省掉归属问题。工具名和 JSON schema 属于接口，参考风险低。
 
 ## m. 值得记一笔的
 
 ```text
-1. instructions 无上限拼接（mcp/server.rs:49-95），一个工作区的 history snapshot 也塞进去
-2. search 默认 max_results = 1000，不吃 .gitignore，会扫 node_modules
-3. exec 输出只留内存尾部 1 MiB，进程重启就没了；文档里叫 "retained"
-4. patch 没有 stale baseline；restore_backups 用 fs::write 覆盖，回滚本身可能半写
-5. 命令白名单 + 正则是它的"安全边界"，需求文档自己也承认没有子进程隔离时必须 fail-closed
-   —— 和 ccnm 第 18/19 节"command parser 不是 sandbox"一致，Phase 5 的 ccrun 仍是硬门禁
+1. 读工具可以读整个文件系统（b 节），被 5 个测试锁定为期望行为，而服务本身是设计成暴露到公网的
+2. instructions 无上限拼接（mcp/server.rs:49-95），一个工作区的 history snapshot 也塞进去
+3. search 默认 max_results = 1000（schema 却写 100）；忽略表写死，不读 .gitignore
+4. exec 输出只留内存尾部 1 MiB，进程重启就没了；read_output 超过 1 MiB 后 offset 坐标错位
+5. patch 多 hunk 定位 search_at = 0；没有 stale baseline；restore_backups 用 fs::write 覆盖，回滚本身可能半写
+6. git 子进程 timeout 是 `let _ = limit;`
+7. read_file 先整文件读进内存再截 max_bytes
+8. 命令白名单 + 正则是它的"安全边界"：Windows 上 cmd / powershell / pwsh 在白名单里，引号内的内容不查，
+   `powershell -Command "..."` 整段放行；.exe/.bat/.cmd/.ps1 结尾的名字跳过白名单直接走 PATH 查找（policy.rs:290-295）。
+   需求文档自己也承认没有子进程隔离时必须 fail-closed —— 和 ccnm 第 18/19 节"command parser 不是 sandbox"一致，
+   Phase 5 的 ccrun 仍是硬门禁
+9. 没有 outputSchema（old/SPEC.md:20-24 要求有）；kill 不杀进程组；MCP 路径写操作无串行化
 ```
 
 ## 结论对照第 55 节
 
 ```text
-headless stdio 是否现成          否
-tools runtime 与 Tauri 耦合度    直接耦合小（2 个文件的 async runtime），间接耦合大（ToolContext / harness 状态）
-apply_patch 可复用性             contract 可复用；实现缺 Move / stale baseline / 原子回滚，不值得抽
-exec runtime 可复用性            contract 可复用；实现的 retention 在内存、绑 Tauri runtime，不值得抽
-license / provenance             Apache-2.0，根目录无 LICENSE 文件；未复制任何代码
-建议                             ccnm 自己实现最小 runtime，把它当 contract 参考；benchmark baseline 用
+headless stdio 是否现成          否（Python 原版有，Rust 版丢了）
+tools runtime 与 Tauri 耦合度    直接耦合小（16 处 async_runtime，集中在 2 个文件），间接耦合大（ToolContext / harness 状态）
+apply_patch 可复用性             envelope 格式和"先全算好再提交"可参考；实现缺 Move / stale baseline，多 hunk 定位有 bug，不值得抽
+exec runtime 可复用性            contract 可参考；实现的 retention 在内存且分页有 bug、绑 Tauri runtime，不值得抽
+读路径语义                       和 ccnm 相反，必须按写侧规则重做
+license / provenance             Apache-2.0 声明，根目录无 LICENSE / NOTICE，上游是 xyTom/coding-tools-mcp；未复制任何代码
+建议                             ccnm 自己实现最小 runtime，把 registry.rs 的工具名 / schema 当 contract 参考；benchmark baseline 用
                                  "工作机 local fixture + native Claude tools"（第 27 节的 A 组），不用它
 ```

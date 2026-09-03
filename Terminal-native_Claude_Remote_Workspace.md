@@ -305,6 +305,8 @@ version = 1
 
 [hosts.work]
 ssh = "work"
+# 可选。不设就复用工作机默认的 ~/.claude，见第 10 节。
+# claude_config_dir = "/optional/custom/path"
 
 [hosts.home_runner]
 ssh_from_work = "ccnm-home"
@@ -531,42 +533,57 @@ claude \
 
 ---
 
-# 10. 给 ccnm 一个独立 Claude config namespace
+# 10. Claude config namespace：默认复用，可选隔离
 
-工作机运行时：
+V1 默认**不设置** `CLAUDE_CONFIG_DIR`。
 
-```bash
-CLAUDE_CONFIG_DIR=~/.ccnm/claude
-```
-
-这样：
+工作机上的 ccnm 直接复用当前已经登录的 Claude Code：
 
 ```text
-ccnm hooks
-ccnm state
-ccnm user config
+不制造第二份 OAuth / token 生命周期
+用户现有 ~/.claude/CLAUDE.md、skills、user settings 照常生效
+hooks / settings 的隔离由 --settings <session file> 完成（第 9 节），不需要换目录
 ```
 
-不会污染普通：
+## 可选：自定义目录
+
+```toml
+[hosts.work]
+claude_config_dir = "/some/path"
+```
+
+设置后：
 
 ```text
-~/.claude
+所有 Claude 相关 preflight 和最终启动统一带 CLAUDE_CONFIG_DIR=<该路径>
+doctor 在同样的环境下执行 claude auth status
+未登录只报告一行，并给出人工登录命令
 ```
 
-当前 Claude Code 官方支持 `CLAUDE_CONFIG_DIR` 改写默认配置目录；macOS 的 Claude credentials 保存在 Keychain，因此 clean config directory 仍可以使用该 Mac 已有认证。
-
-这非常适合 `ccnm`。
-
-但：
+未登录时 doctor 的输出：
 
 ```text
-ccnm
+Claude authentication   FAIL   Claude is not authenticated in configured CLAUDE_CONFIG_DIR
+                               run on work: CLAUDE_CONFIG_DIR=/some/path claude auth login
 ```
 
-绝不调用：
+## 为什么自定义目录必须自己登录
 
-```bash
-claude auth login
+自定义目录拥有**独立**的 credentials / settings / CLAUDE.md / skills 生命周期。
+
+官方 authentication 文档明确：设置了 `CLAUDE_CONFIG_DIR` 后，`.credentials.json` 放在该目录下，macOS Keychain 条目也按该目录 key，不同目录读不同条目。官方没有跨目录共享登录的方式。
+
+2026-09-03 在 Claude Code 2.1.259 上实测：空目录下 `claude auth status` 返回 `loggedIn: false`，默认目录返回 `true`。说白了就是：换目录等于换账号环境，登录不会跟过来。
+
+所以 V1 推荐保持默认目录。
+
+## ccnm 对认证的唯一动作
+
+无论哪种情况，ccnm 绝不：
+
+```text
+执行或自动触发 claude auth login
+复制 credentials
 ```
 
 它只检查：
@@ -575,7 +592,7 @@ claude auth login
 claude auth status
 ```
 
-官方现在已经提供该命令，登录时 exit 0，未登录时 exit 1。
+登录时 exit 0，未登录时 exit 1，默认输出 JSON。
 
 ---
 
@@ -1282,12 +1299,16 @@ ccnm attach xshun
 最终由 `ccnm` 生成，用户不需要自己写：
 
 ```bash
-CLAUDE_CONFIG_DIR="$CCNM_CLAUDE_CONFIG" \
 claude \
   --settings "$CCNM_SESSION/settings.json" \
-  --setting-sources user,project \
-  --permission-mode acceptEdits
+  --setting-sources user,project,local \
+  --permission-mode acceptEdits \
+  --disallowed-tools Grep Glob
 ```
+
+配置了 `claude_config_dir` 时，额外带环境变量 `CLAUDE_CONFIG_DIR=<该路径>`；没配置就不带（第 10 节）。
+
+具体 argv 以当前 CLI 实测格式为准。代码里不拼 shell 字符串，用 `Command::args()` 逐个传参，环境变量用 `Command::env()`。
 
 并由：
 

@@ -155,6 +155,27 @@ pub trait ProcessRunner {
     fn run(&self, cmd: &Cmd) -> Result<Output>;
 }
 
+/// Kill a child *and everything it started*.
+///
+/// `Child::kill` signals one process. A command like `sh -c 'x & sleep 30'`
+/// leaves its own children holding the pipes, so killing only the leader
+/// means the drain threads read on until the grandchild finishes -- a
+/// timeout that does not time out. Both spawn sites put the child in its
+/// own process group, so a negative pid here reaches all of it.
+///
+/// `kill(1)` rather than `libc::killpg` because this crate forbids unsafe.
+/// The direct kill still runs afterwards: if `kill` is missing or the
+/// group is already gone, the leader is what matters.
+fn kill_group(child: &mut std::process::Child) {
+    let pid = child.id();
+    let _ = Command::new("kill")
+        .args(["-KILL", &format!("-{pid}")])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    let _ = child.kill();
+}
+
 /// What [`stream_lines`] should do after handing over one line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Flow {
@@ -210,6 +231,9 @@ pub fn stream_lines(cmd: &Cmd, mut on_line: impl FnMut(&[u8]) -> Flow) -> Result
         command.env(key, value);
     }
 
+    // Its own process group, so the watchdog and Flow::Stop can reach
+    // whatever the command starts, not just the command.
+    std::os::unix::process::CommandExt::process_group(&mut command, 0);
     tracing::debug!(cmd = %cmd.display(), "stream");
     let mut child = command.spawn().map_err(|e| {
         Error::internal(format!("cannot spawn {}", cmd.program.to_string_lossy())).with_source(e)
@@ -239,7 +263,7 @@ pub fn stream_lines(cmd: &Cmd, mut on_line: impl FnMut(&[u8]) -> Flow) -> Result
                 if Instant::now() >= deadline {
                     tracing::warn!(cmd = %shown, "stream timeout, killing");
                     if let Ok(mut child) = child.lock() {
-                        let _ = child.kill();
+                        kill_group(&mut child);
                     }
                     return true;
                 }
@@ -264,7 +288,7 @@ pub fn stream_lines(cmd: &Cmd, mut on_line: impl FnMut(&[u8]) -> Flow) -> Result
         if on_line(&line) == Flow::Stop {
             stopped_early = true;
             if let Ok(mut child) = child.lock() {
-                let _ = child.kill();
+                kill_group(&mut child);
             }
             break;
         }
@@ -284,6 +308,139 @@ pub fn stream_lines(cmd: &Cmd, mut on_line: impl FnMut(&[u8]) -> Flow) -> Result
         stderr,
         timed_out,
         stopped_early,
+    })
+}
+
+/// How a captured command ended, without any of its output.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Captured {
+    /// `None` when the child died from a signal, timeout included.
+    pub exit_code: Option<i32>,
+    pub timed_out: bool,
+    pub duration: Duration,
+    /// Bytes the child wrote, whether or not the sink kept them.
+    pub stdout_bytes: u64,
+    pub stderr_bytes: u64,
+}
+
+/// Run `cmd`, writing its stdout and stderr to `out` and `err` as they
+/// arrive instead of collecting them.
+///
+/// [`ProcessRunner::run`] collects into memory, which is right for the
+/// short commands ccnm asks about itself and wrong for `exec_command`: a
+/// `cargo build` on a large project can produce tens of megabytes, and
+/// holding that in the runtime to write it out afterwards is a spike
+/// nobody asked for.
+///
+/// Both pipes are drained on their own threads whatever the sink does with
+/// the bytes, because a sink that stops writing must not become a child
+/// that blocks on a full pipe and then gets killed for timing out.
+pub fn run_captured<O, E>(cmd: &Cmd, out: O, err: E) -> Result<Captured>
+where
+    O: Write + Send + 'static,
+    E: Write + Send + 'static,
+{
+    let started = Instant::now();
+    let mut command = Command::new(&cmd.program);
+    command
+        .args(&cmd.args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    if let Some(dir) = &cmd.cwd {
+        command.current_dir(dir);
+    }
+    for key in &cmd.env_remove {
+        command.env_remove(key);
+    }
+    for (key, value) in &cmd.env {
+        command.env(key, value);
+    }
+
+    std::os::unix::process::CommandExt::process_group(&mut command, 0);
+    tracing::debug!(cmd = %cmd.display(), "capture");
+    let mut child = command.spawn().map_err(|e| {
+        Error::internal(format!("cannot spawn {}", cmd.program.to_string_lossy())).with_source(e)
+    })?;
+    let stdout = pump(child.stdout.take(), out);
+    let stderr = pump(child.stderr.take(), err);
+
+    let child = std::sync::Arc::new(Mutex::new(child));
+    let finished = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let watchdog = {
+        let child = std::sync::Arc::clone(&child);
+        let finished = std::sync::Arc::clone(&finished);
+        let deadline = started + cmd.timeout;
+        let shown = cmd.display();
+        thread::spawn(move || {
+            let mut poll = POLL_MIN;
+            loop {
+                if finished.load(std::sync::atomic::Ordering::SeqCst) {
+                    return false;
+                }
+                if Instant::now() >= deadline {
+                    tracing::warn!(cmd = %shown, timeout = ?cmd_timeout(deadline, started), "capture timeout, killing");
+                    if let Ok(mut child) = child.lock() {
+                        kill_group(&mut child);
+                    }
+                    return true;
+                }
+                thread::sleep(poll);
+                poll = (poll * 2).min(POLL_MAX);
+            }
+        })
+    };
+
+    // Both pipes reach EOF when the child exits, so waiting on the pumps
+    // first means the wait below returns immediately.
+    let stdout_bytes = join(stdout)?;
+    let stderr_bytes = join(stderr)?;
+    finished.store(true, std::sync::atomic::Ordering::SeqCst);
+    let timed_out = watchdog.join().unwrap_or(false);
+    let status = child
+        .lock()
+        .map_err(|_| Error::internal("process mutex poisoned"))?
+        .wait()?;
+
+    Ok(Captured {
+        exit_code: status.code(),
+        timed_out,
+        duration: started.elapsed(),
+        stdout_bytes,
+        stderr_bytes,
+    })
+}
+
+fn cmd_timeout(deadline: Instant, started: Instant) -> Duration {
+    deadline.saturating_duration_since(started)
+}
+
+/// Copy a pipe into a sink, counting every byte the child produced even
+/// when the sink stops keeping them.
+fn pump<R, W>(pipe: Option<R>, mut sink: W) -> JoinHandle<u64>
+where
+    R: Read + Send + 'static,
+    W: Write + Send + 'static,
+{
+    thread::spawn(move || {
+        let mut total = 0u64;
+        let Some(mut pipe) = pipe else {
+            return 0;
+        };
+        let mut buf = [0u8; 32 * 1024];
+        loop {
+            match pipe.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    total += n as u64;
+                    // A sink that refuses the bytes is its own business;
+                    // the pipe still has to be drained.
+                    let _ = sink.write_all(&buf[..n]);
+                }
+            }
+        }
+        let _ = sink.flush();
+        total
     })
 }
 
@@ -499,6 +656,64 @@ mod tests {
             "took {:?}",
             started.elapsed()
         );
+    }
+
+    /// The timeout has to reach the command's own children. A shell that
+    /// starts a background process and waits leaves that process holding
+    /// the pipes, so killing only the leader means the drain threads read
+    /// on until the grandchild finishes -- a timeout that does not time
+    /// out. Both entry points get the same test.
+    #[test]
+    fn a_timeout_reaches_the_grandchildren_too() {
+        for label in ["stream", "capture"] {
+            let cmd = Cmd::new("sh")
+                .args(["-c", "sleep 30 & echo started; wait"])
+                .timeout(Duration::from_millis(400));
+            let started = Instant::now();
+            let timed_out = if label == "stream" {
+                stream_lines(&cmd, |_| Flow::Continue).unwrap().timed_out
+            } else {
+                run_captured(&cmd, std::io::sink(), std::io::sink())
+                    .unwrap()
+                    .timed_out
+            };
+            assert!(timed_out, "{label}");
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "{label} waited {:?} for a grandchild",
+                started.elapsed()
+            );
+        }
+    }
+
+    #[test]
+    fn run_captured_writes_both_streams_and_counts_them() {
+        let out = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let err = std::sync::Arc::new(Mutex::new(Vec::new()));
+
+        struct Shared(std::sync::Arc<Mutex<Vec<u8>>>);
+        impl Write for Shared {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let captured = run_captured(
+            &Cmd::new("sh").args(["-c", "printf out; printf err >&2; exit 5"]),
+            Shared(std::sync::Arc::clone(&out)),
+            Shared(std::sync::Arc::clone(&err)),
+        )
+        .unwrap();
+        assert_eq!(captured.exit_code, Some(5));
+        assert!(!captured.timed_out);
+        assert_eq!(captured.stdout_bytes, 3);
+        assert_eq!(captured.stderr_bytes, 3);
+        assert_eq!(&*out.lock().unwrap(), b"out");
+        assert_eq!(&*err.lock().unwrap(), b"err");
     }
 
     #[test]

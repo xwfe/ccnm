@@ -1,0 +1,2047 @@
+# ccnm — Terminal-native Claude Remote Workspace
+
+## 1. 产品目标
+
+`ccnm` 解决一个非常明确的问题：
+
+```text
+工作机：
+- 允许登录 Claude
+- 运行 official Claude Code
+- 所有 Anthropic 请求从这里出去
+- 磁盘空间有限
+
+家庭机：
+- 禁止 Claude 登录
+- 保存真实项目
+- Node / Rust / Docker / Git 执行环境
+- 大容量磁盘
+```
+
+用户只需要在家庭机 Terminal：
+
+```bash
+ccnm run xshun
+```
+
+获得：
+
+```text
+家庭机 Terminal
+      │
+      │ SSH TTY
+      ▼
+工作机 official Claude Code
+      │
+      ├──── HTTPS ────► api.anthropic.com
+      │
+      ├──── SMB ──────► 家庭机 source
+      │
+      └──── SSH ──────► 家庭机 execution
+```
+
+禁止：
+
+```text
+Claude Desktop
+Desktop SSH
+OAuth forwarding
+OAuth proxy
+家庭机 claude login
+自定义 Anthropic client
+ccd-cli 私有协议
+```
+
+---
+
+# 2. 技术选择
+
+正式版本：
+
+```text
+Rust = 运行时全部核心逻辑
+```
+
+TS 不进入生产链路。
+
+原因：
+
+```text
+单 binary
+启动快
+Hook 每次调用开销小
+JSON/path/hash 处理安全
+家庭机不需要 Node/Bun 才能运行 ccnm
+工作机也不用管理额外 runtime
+```
+
+TS 可以保留在：
+
+```text
+tests/
+tools/
+protocol fixtures
+开发期 PoC
+```
+
+但最终：
+
+```bash
+which ccnm
+```
+
+只对应一个 Rust executable。
+
+---
+
+# 3. 一个 binary，三个角色
+
+这是整个项目最重要的设计。
+
+不要发布：
+
+```text
+ccnm-client
+ccnm-server
+ccnm-hook
+ccnm-runner
+```
+
+而是：
+
+```text
+ccnm
+```
+
+根据 subcommand 扮演不同角色。
+
+## 家庭机 launcher
+
+用户直接调用：
+
+```bash
+ccnm run xshun
+ccnm doctor xshun
+ccnm status xshun
+ccnm maintenance xshun
+```
+
+---
+
+## 工作机 controller
+
+内部调用：
+
+```bash
+ccnm work start
+ccnm hook session-start
+ccnm hook pre-tool
+ccnm hook post-tool
+ccnm exec
+ccnm fs
+ccnm barrier
+```
+
+---
+
+## 家庭机 restricted runner
+
+由工作机 SSH 调用：
+
+```bash
+ccnm runner exec
+ccnm runner verify
+ccnm runner health
+```
+
+最终：
+
+```text
+同一份 Rust binary
+       │
+       ├── home launcher
+       ├── work controller
+       └── home runner
+```
+
+部署、版本兼容和协议升级会简单很多。
+
+---
+
+# 4. CLI 设计
+
+V1 对外只暴露少量命令。
+
+## 初始化
+
+```bash
+ccnm init
+```
+
+创建：
+
+```text
+~/.config/ccnm/config.toml
+~/.local/state/ccnm/
+```
+
+---
+
+## 检查
+
+```bash
+ccnm doctor xshun
+```
+
+输出类似：
+
+```text
+ccnm doctor: xshun
+
+Home workspace          OK
+Workspace identity      OK
+Tailscale               direct / 24 ms
+Work SSH                OK
+Work ccnm               0.1.0
+Home runner             OK
+SMB share               OK
+Work SMB mount          OK
+Reverse SSH             OK
+Claude Code             2.x
+Claude authentication   OK
+Consistency test        OK
+Execution barrier       OK
+
+READY
+```
+
+只要有关键项失败：
+
+```text
+NOT READY
+```
+
+---
+
+## 正常使用
+
+```bash
+ccnm run xshun
+```
+
+它完成全部 preflight，然后打开：
+
+```text
+Claude Code TUI
+```
+
+---
+
+## 恢复
+
+```bash
+ccnm attach xshun
+```
+
+如果工作机 Claude 放在 tmux 中，可以直接恢复。
+
+---
+
+## 状态
+
+```bash
+ccnm status xshun
+```
+
+---
+
+## 维护
+
+```bash
+ccnm maintenance xshun
+```
+
+用于：
+
+```text
+git switch
+git pull
+git checkout
+pnpm install
+cargo update
+cargo fmt
+prettier --write
+codemod
+```
+
+---
+
+## 清理
+
+```bash
+ccnm stop xshun
+```
+
+以及：
+
+```bash
+ccnm unmount xshun
+```
+
+---
+
+# 5. 配置文件
+
+家庭机作为配置 source of truth：
+
+```text
+~/.config/ccnm/config.toml
+```
+
+例如：
+
+```toml
+version = 1
+
+[hosts.work]
+ssh = "work"
+
+[hosts.home_runner]
+ssh_from_work = "ccnm-home"
+
+[workspaces.xshun]
+work_host = "work"
+
+root = "/Users/Shared/cc-workspaces/xshun"
+runtime_root = "/Users/Shared/cc-runtime/xshun"
+
+share = "xshun"
+
+mount_mode = "coherence"
+
+claude_permission_mode = "acceptEdits"
+```
+
+不存：
+
+```text
+Claude OAuth
+SSH private key
+SMB password
+```
+
+secret 继续由：
+
+```text
+macOS Keychain
+OpenSSH
+系统 SMB credential
+```
+
+负责。
+
+---
+
+# 6. 路径统一
+
+这条必须成为 ccnm invariant。
+
+两台机器：
+
+```text
+/Users/Shared/cc-workspaces/xshun
+```
+
+必须代表同一个项目。
+
+家庭机：
+
+```text
+/Users/Shared/cc-workspaces/xshun
+        ↓
+real local filesystem
+```
+
+工作机：
+
+```text
+/Users/Shared/cc-workspaces/xshun
+        ↓
+SMB mount
+        ↓
+家庭机
+```
+
+因此 Claude 看到：
+
+```text
+/Users/Shared/cc-workspaces/xshun/src/main.rs
+```
+
+家庭机 SSH runner 看到的也是：
+
+```text
+/Users/Shared/cc-workspaces/xshun/src/main.rs
+```
+
+`ccnm` V1 **不实现路径翻译**。
+
+发现两边 root 不同：
+
+```text
+doctor FAIL
+```
+
+而不是尝试修补。
+
+---
+
+# 7. Source Plane 与 Execution Plane
+
+整个架构只保留两个数据面。
+
+## Source Plane
+
+```text
+Claude native:
+
+Read
+Edit
+Write
+```
+
+↓
+
+```text
+SMB
+```
+
+↓
+
+```text
+家庭机 source
+```
+
+---
+
+## Execution Plane
+
+```text
+Claude native Bash
+```
+
+↓
+
+```text
+ccnm PreToolUse
+```
+
+↓
+
+```text
+ccnm exec
+```
+
+↓
+
+```text
+persistent OpenSSH
+```
+
+↓
+
+```text
+ccnm runner exec
+```
+
+↓
+
+```text
+家庭机
+```
+
+包括：
+
+```text
+rg
+fd
+git
+cargo
+rustc
+pnpm
+bun
+node
+docker
+tests
+build
+```
+
+---
+
+# 8. 禁掉 native Grep / Glob
+
+Claude 不允许直接：
+
+```text
+Grep
+Glob
+```
+
+因为它们会扫描 SMB。
+
+搜索统一：
+
+```bash
+rg xxx
+fd xxx
+git grep xxx
+```
+
+然后通过 Bash 路由到家庭机本地 SSD。
+
+Claude Code 当前支持 `permissions.deny`，而且 `--settings` 可以为单次 CLI session 注入 settings。
+
+---
+
+# 9. ccnm 不修改项目 `.claude/settings.json`
+
+这是一个重要原则。
+
+不能让安装 ccnm：
+
+```text
+修改 repository
+写入团队 .claude/settings.json
+```
+
+`ccnm work start` 动态生成：
+
+```text
+~/.local/state/ccnm/sessions/<id>/settings.json
+```
+
+然后：
+
+```bash
+claude \
+  --settings ~/.local/state/ccnm/sessions/<id>/settings.json
+```
+
+官方支持 `--settings <file>` 对当前 session 提供高优先级配置。
+
+---
+
+# 10. 给 ccnm 一个独立 Claude config namespace
+
+工作机运行时：
+
+```bash
+CLAUDE_CONFIG_DIR=~/.ccnm/claude
+```
+
+这样：
+
+```text
+ccnm hooks
+ccnm state
+ccnm user config
+```
+
+不会污染普通：
+
+```text
+~/.claude
+```
+
+当前 Claude Code 官方支持 `CLAUDE_CONFIG_DIR` 改写默认配置目录；macOS 的 Claude credentials 保存在 Keychain，因此 clean config directory 仍可以使用该 Mac 已有认证。
+
+这非常适合 `ccnm`。
+
+但：
+
+```text
+ccnm
+```
+
+绝不调用：
+
+```bash
+claude auth login
+```
+
+它只检查：
+
+```bash
+claude auth status
+```
+
+官方现在已经提供该命令，登录时 exit 0，未登录时 exit 1。
+
+---
+
+# 11. Project CLAUDE.md 继续加载
+
+我们仍希望：
+
+```text
+CLAUDE.md
+.claude/rules/
+project skills
+```
+
+正常工作。
+
+因此默认：
+
+```bash
+--setting-sources user,project
+```
+
+Claude 官方说明 `project` source 负责加载项目级 `CLAUDE.md`、rules、skills、hooks 和 settings。
+
+因此 `ccnm doctor` 必须检查：
+
+```text
+.claude/settings.json
+.claude/settings.local.json
+```
+
+是否存在与：
+
+```text
+PreToolUse:Bash
+PostToolUse:Edit|Write
+```
+
+冲突的 hooks。
+
+发现冲突：
+
+```text
+WARN
+```
+
+严重修改 Bash input 的 hook：
+
+```text
+FAIL
+```
+
+V1 不尝试自动合并复杂 hook pipeline。
+
+---
+
+# 12. SessionStart Hook
+
+每次 session 开始：
+
+```text
+ccnm hook session-start
+```
+
+通过 `additionalContext` 告诉 Claude：
+
+```text
+CCNM remote workspace active.
+
+Workspace:
+/Users/Shared/cc-workspaces/xshun
+
+Read/Edit/Write operate on the mounted source plane.
+
+Bash commands execute on the home execution host.
+
+Do not modify source through Bash.
+
+Do not run source-mutating git commands or formatters.
+Use `ccnm fs` for filesystem topology changes.
+```
+
+Claude Hooks 官方支持 SessionStart 以及 `additionalContext` 注入。
+
+---
+
+# 13. PreToolUse 是核心 router
+
+收到：
+
+```json
+{
+  "tool_name": "Bash",
+  "cwd": "/Users/Shared/cc-workspaces/xshun",
+  "tool_input": {
+    "command": "cargo test"
+  }
+}
+```
+
+`ccnm` 分类：
+
+```text
+LOCAL_SAFE
+REMOTE
+DENY
+CCNM_INTERNAL
+```
+
+---
+
+# 14. LOCAL_SAFE
+
+极少。
+
+第一版只考虑：
+
+```text
+纯 cd
+```
+
+例如：
+
+```bash
+cd packages/core
+```
+
+因为它需要修改 Claude 工作机侧 cwd。
+
+不能远程执行，否则：
+
+```text
+home cwd changed
+work cwd unchanged
+```
+
+发生 namespace 分叉。
+
+---
+
+# 15. REMOTE
+
+绝大多数 Bash：
+
+```text
+cargo test
+pnpm test
+rg xxx
+git status
+git diff
+node ...
+bun ...
+docker ...
+```
+
+改写为：
+
+```text
+ccnm exec <opaque-session-payload>
+```
+
+不是：
+
+```bash
+ssh home '原始命令'
+```
+
+Claude Code 官方 `PreToolUse.updatedInput` 可以替换完整 tool input，因此这一层不需要改 Claude 本身。
+
+---
+
+# 16. 为什么 payload 不能直接 shell quote
+
+内部 descriptor：
+
+```json
+{
+  "protocol": 1,
+  "session": "...",
+  "epoch": "...",
+  "workspace": "xshun",
+  "cwd": "/Users/Shared/cc-workspaces/xshun",
+  "command": "cargo test",
+  "timeout_ms": 120000
+}
+```
+
+序列化：
+
+```text
+JSON
+ ↓
+base64url
+ ↓
+ccnm exec --payload ...
+```
+
+避免：
+
+```text
+quotes
+heredoc
+$
+|
+&&
+newline
+```
+
+二次 shell escaping。
+
+---
+
+# 17. ccnm exec
+
+工作机：
+
+```bash
+ccnm exec --payload XXX
+```
+
+负责：
+
+```text
+验证 session
+验证 epoch
+读取 pending writes
+建立 consistency barrier
+调用 SSH
+```
+
+然后：
+
+```bash
+/usr/bin/ssh -T ccnm-home \
+    ccnm runner exec --payload XXX
+```
+
+底层继续使用：
+
+```text
+OpenSSH
+```
+
+而不是 Rust SSH library。
+
+---
+
+# 18. SSH ControlMaster
+
+工作机：
+
+```sshconfig
+Host ccnm-home
+    HostName <tailscale-name>
+    User ccrun
+
+    BatchMode yes
+
+    ControlMaster auto
+    ControlPath ~/.ssh/ccnm-%C
+    ControlPersist 10m
+
+    ServerAliveInterval 15
+    ServerAliveCountMax 3
+```
+
+因此：
+
+```text
+Claude 每个 Bash
+```
+
+不会重新做完整 handshake。
+
+---
+
+# 19. Home runner
+
+家庭机受限账户：
+
+```text
+ccrun
+```
+
+它只能：
+
+```text
+read source
+execute project tools
+write runtime directories
+```
+
+不能：
+
+```text
+write source
+write .git
+sudo
+修改 ~/.ssh
+```
+
+于是：
+
+```bash
+ssh ccrun@home \
+  "sed -i ... src/main.rs"
+```
+
+从 OS 层直接失败。
+
+这就是真正的 single-writer enforcement。
+
+---
+
+# 20. Runtime Zone
+
+建立：
+
+```text
+/Users/Shared/cc-runtime/xshun
+```
+
+给 `ccrun` 写权限。
+
+例如：
+
+```text
+cargo target
+pnpm cache
+coverage
+tmp
+logs
+build output
+```
+
+Rust：
+
+```bash
+CARGO_TARGET_DIR=/Users/Shared/cc-runtime/xshun/cargo-target
+```
+
+其它 build system 尽量同样迁出 source tree。
+
+---
+
+# 21. Source mutation command 默认失败
+
+家庭机 runner 没写权限，因此：
+
+```text
+cargo fmt
+prettier --write
+eslint --fix
+
+git checkout
+git switch
+git reset
+git restore
+git pull
+
+codemod
+```
+
+即使路由过去也无法直接修改 source。
+
+`ccnm` 在 PreToolUse 还应提前识别常见命令并返回更友好的：
+
+```text
+DENY
+```
+
+而不是等 Permission denied。
+
+---
+
+# 22. ccnm fs
+
+源码 topology 修改必须发生在工作机 SMB writer plane。
+
+提供：
+
+```bash
+ccnm fs mkdir src/foo
+ccnm fs move src/a.ts src/b.ts
+ccnm fs remove src/old.ts
+```
+
+这个命令在工作机执行。
+
+PreToolUse 检测：
+
+```text
+command starts with:
+ccnm fs
+```
+
+标记：
+
+```text
+CCNM_INTERNAL
+```
+
+不 SSH 回家庭机。
+
+它必须：
+
+```text
+canonicalize
+workspace containment check
+reject .git
+reject symlink escape
+audit
+```
+
+---
+
+# 23. PostToolUse Write/Edit tracking
+
+Claude 原生：
+
+```text
+Edit
+Write
+```
+
+成功之后：
+
+```text
+ccnm hook post-tool
+```
+
+读取：
+
+```text
+session_id
+file_path
+```
+
+写入：
+
+```text
+pending source set
+```
+
+例如：
+
+```json
+{
+  "files": [
+    "/Users/Shared/cc-workspaces/xshun/src/main.rs",
+    "/Users/Shared/cc-workspaces/xshun/src/lib.rs"
+  ]
+}
+```
+
+官方 PostToolUse 会提供 `tool_input.file_path`。
+
+---
+
+# 24. Consistency Barrier
+
+下一次 remote Bash：
+
+```text
+cargo test
+```
+
+不能立刻执行。
+
+工作机先计算：
+
+```text
+SHA256(main.rs)
+SHA256(lib.rs)
+```
+
+把：
+
+```text
+path → expected hash
+```
+
+放进 runner payload。
+
+家庭机：
+
+```text
+ccnm runner exec
+```
+
+先：
+
+```text
+直接从本地 filesystem 重新 hash
+```
+
+只有全部：
+
+```text
+expected == actual
+```
+
+才执行：
+
+```text
+cargo test
+```
+
+否则：
+
+```text
+CCNM_E_COHERENCE
+```
+
+并且**不执行原 command**。
+
+---
+
+# 25. 为什么 barrier 是硬门禁
+
+避免：
+
+```text
+Claude Edit
+     ↓
+SMB 尚未让家庭机看到新版本
+     ↓
+cargo test 读取旧文件
+     ↓
+Claude 根据旧错误继续修改
+```
+
+一旦出现：
+
+```text
+hash mismatch
+```
+
+必须 fail closed。
+
+不能自动：
+
+```text
+sleep 1 && retry forever
+```
+
+V1 最多短暂重试几次，再明确停止。
+
+---
+
+# 26. Workspace identity
+
+源码 root 内：
+
+```text
+.ccnm-workspace-id
+```
+
+例如：
+
+```text
+550e8400-e29b-41d4-a716-446655440000
+```
+
+工作机通过 SMB 读取。
+
+家庭机 runner 本地读取。
+
+两边不一致：
+
+```text
+CCNM_E_WRONG_WORKSPACE
+```
+
+任何 command 都不执行。
+
+防止：
+
+```text
+mount 掉了
+mount 到错误目录
+SSH 去错机器
+本地 mount point 变成普通空目录
+```
+
+---
+
+# 27. Epoch
+
+每次：
+
+```bash
+ccnm run xshun
+```
+
+生成：
+
+```text
+epoch UUID
+```
+
+如果执行：
+
+```bash
+ccnm maintenance xshun
+```
+
+epoch 更新。
+
+旧 Claude session 再调用：
+
+```text
+ccnm exec
+```
+
+直接：
+
+```text
+CCNM_E_STALE_EPOCH
+```
+
+这样 `git switch` 之后旧 session 不可能继续在新 workspace 状态上工作。
+
+---
+
+# 28. Maintenance mode
+
+运行：
+
+```bash
+ccnm maintenance xshun
+```
+
+流程：
+
+```text
+stop/park Claude session
+
+mark maintenance
+
+home:
+    git switch / pull
+    pnpm install
+    cargo fmt
+    codemod
+    ...
+
+work:
+    SMB remount/resync
+
+run consistency test
+
+new epoch
+
+READY
+```
+
+退出：
+
+```bash
+ccnm maintenance --finish xshun
+```
+
+---
+
+# 29. tmux session persistence
+
+纯终端环境非常建议直接支持。
+
+默认：
+
+```bash
+ccnm run xshun
+```
+
+工作机实际上：
+
+```text
+tmux session:
+ccnm-xshun
+       │
+       └── claude
+```
+
+家庭机 SSH attach。
+
+网络断开：
+
+```text
+Claude session 不死
+```
+
+恢复：
+
+```bash
+ccnm attach xshun
+```
+
+不依赖 Desktop。
+
+---
+
+# 30. Claude 启动命令
+
+最终由 `ccnm` 生成，用户不需要自己写：
+
+```bash
+CLAUDE_CONFIG_DIR="$CCNM_CLAUDE_CONFIG" \
+claude \
+  --settings "$CCNM_SESSION/settings.json" \
+  --setting-sources user,project \
+  --permission-mode acceptEdits
+```
+
+并由：
+
+```text
+tmux
+```
+
+承载。
+
+---
+
+# 31. Background Bash V1 明确不支持
+
+Hook 看到：
+
+```json
+"run_in_background": true
+```
+
+直接：
+
+```text
+deny
+```
+
+原因：
+
+```text
+Claude background lifecycle
++
+work wrapper
++
+SSH
++
+home process
+```
+
+V1 没必要同时解决。
+
+等日用 Hybrid 稳定后再实现：
+
+```text
+ccnm process start
+ccnm process logs
+ccnm process input
+ccnm process stop
+```
+
+---
+
+# 32. 网络请求边界
+
+`ccnm runner` 启动 command 前主动删除：
+
+```text
+ANTHROPIC_*
+CLAUDE_CODE_OAUTH_TOKEN
+CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST
+```
+
+并禁止 SSH：
+
+```text
+SendEnv ANTHROPIC_*
+SendEnv CLAUDE_*
+```
+
+家庭机不需要知道任何 Anthropic credential。
+
+---
+
+# 33. Repository 结构
+
+建议第一天就按长期结构建。
+
+```text
+ccnm/
+├── Cargo.toml
+├── Cargo.lock
+├── README.md
+├── LICENSE
+│
+├── crates/
+│   ├── ccnm-cli/
+│   │   └── src/
+│   │       └── main.rs
+│   │
+│   ├── ccnm-core/
+│   │   └── src/
+│   │       ├── config.rs
+│   │       ├── workspace.rs
+│   │       ├── session.rs
+│   │       ├── epoch.rs
+│   │       ├── error.rs
+│   │       └── paths.rs
+│   │
+│   ├── ccnm-hooks/
+│   │   └── src/
+│   │       ├── pre_tool.rs
+│   │       ├── post_tool.rs
+│   │       └── session_start.rs
+│   │
+│   ├── ccnm-transport/
+│   │   └── src/
+│   │       ├── ssh.rs
+│   │       ├── smb.rs
+│   │       └── mount.rs
+│   │
+│   ├── ccnm-runner/
+│   │   └── src/
+│   │       ├── exec.rs
+│   │       ├── verify.rs
+│   │       └── policy.rs
+│   │
+│   └── ccnm-protocol/
+│       └── src/
+│           ├── exec.rs
+│           ├── hook.rs
+│           └── version.rs
+│
+├── tests/
+│   ├── fixtures/
+│   ├── coherence/
+│   ├── hook/
+│   └── e2e/
+│
+└── tools/
+    └── ts/
+```
+
+不是一开始就做很多 package。
+
+可以先只有：
+
+```text
+ccnm-cli
+ccnm-core
+```
+
+等边界稳定后再拆 crate。
+
+---
+
+# 34. Rust dependencies
+
+V1 控制住依赖：
+
+```toml
+clap
+serde
+serde_json
+toml
+thiserror
+uuid
+sha2
+base64
+dirs
+tracing
+tracing-subscriber
+```
+
+可能再：
+
+```text
+nix
+```
+
+处理 Unix signal / process。
+
+V1 不要：
+
+```text
+tokio
+russh
+ratatui
+axum
+```
+
+除非真的需要。
+
+整个程序主要是：
+
+```text
+spawn process
+read JSON
+validate
+hash
+write state
+```
+
+同步 Rust 足够。
+
+---
+
+# 35. TS 的定位
+
+如果你想利用自己熟悉的 TS，可以把这些放 TS：
+
+```text
+integration-test harness
+fixture generator
+benchmark reporter
+hook protocol fuzz generator
+```
+
+例如：
+
+```text
+tools/ts/e2e.ts
+tools/ts/generate-hook-fixtures.ts
+```
+
+但：
+
+```text
+ccnm run
+```
+
+永远不要求：
+
+```text
+node
+bun
+pnpm
+```
+
+存在。
+
+---
+
+# 36. Error code 必须从第一天稳定
+
+定义：
+
+```text
+CCNM_E_CONFIG
+CCNM_E_WORK_UNREACHABLE
+CCNM_E_HOME_UNREACHABLE
+CCNM_E_MOUNT
+CCNM_E_WRONG_WORKSPACE
+CCNM_E_COHERENCE
+CCNM_E_POLICY
+CCNM_E_STALE_EPOCH
+CCNM_E_AUTH
+CCNM_E_VERSION
+```
+
+Claude 收到：
+
+```text
+CCNM_E_COHERENCE:
+Remote workspace does not match the mounted source view.
+Command was NOT executed.
+```
+
+比：
+
+```text
+command failed
+```
+
+有用得多。
+
+---
+
+# 37. Audit
+
+工作机：
+
+```text
+~/.local/state/ccnm/audit.jsonl
+```
+
+记录：
+
+```json
+{
+  "session": "...",
+  "epoch": "...",
+  "workspace": "xshun",
+  "cwd": "...",
+  "original_command": "cargo test",
+  "route": "home",
+  "barrier_files": 2,
+  "exit_code": 0,
+  "duration_ms": 4253
+}
+```
+
+不记录：
+
+```text
+OAuth
+SSH private key
+password
+secret env values
+```
+
+---
+
+# 38. Phase 0 — skeleton
+
+目标：
+
+```bash
+ccnm --version
+ccnm doctor
+```
+
+完成：
+
+```text
+Cargo workspace
+config parser
+error model
+logging
+process abstraction
+```
+
+门禁：
+
+```text
+cargo test
+cargo clippy -- -D warnings
+cargo fmt --check
+```
+
+---
+
+# 39. Phase 1 — Transport PoC
+
+只验证：
+
+```text
+home → SSH → work
+work → SSH → home
+SMB mount
+same absolute path
+workspace identity
+```
+
+命令：
+
+```bash
+ccnm doctor xshun
+```
+
+必须可靠。
+
+这一阶段：
+
+```text
+不启动 Claude
+不写 Hook
+```
+
+---
+
+# 40. Phase 2 — Coherence
+
+实现：
+
+```text
+write probe
+overwrite
+append
+create
+atomic replace
+hash compare
+```
+
+命令：
+
+```bash
+ccnm test coherence xshun
+```
+
+要求：
+
+```text
+0 mismatch
+```
+
+否则：
+
+```text
+禁止进入 Phase 3
+```
+
+---
+
+# 41. Phase 3 — Remote runner
+
+实现：
+
+```bash
+ccnm runner exec
+```
+
+验证：
+
+```text
+rg                       PASS
+git diff                 PASS
+cargo test               PASS
+
+sed -i src/...           DENIED
+git checkout             DENIED
+cargo fmt                DENIED
+```
+
+此时仍然不碰 Claude。
+
+---
+
+# 42. Phase 4 — Hook prototype
+
+生成最小 Claude settings。
+
+只支持：
+
+```text
+SessionStart
+PreToolUse Bash
+PostToolUse Edit|Write
+```
+
+官方 Hooks 通过 stdin/stdout JSON 工作，因此 Rust binary 可以直接作为 command hook，不需要中间 shell。
+
+验证：
+
+```text
+Claude Bash("rg foo")
+            ↓
+ccnm
+            ↓
+home rg foo
+```
+
+---
+
+# 43. Phase 5 — Barrier
+
+实现：
+
+```text
+Edit
+ ↓
+pending set
+
+Bash
+ ↓
+hash barrier
+ ↓
+runner
+```
+
+人工制造 stale state。
+
+预期：
+
+```text
+command MUST NOT execute
+```
+
+这是正式进入日用前最重要的 integration test。
+
+---
+
+# 44. Phase 6 — `ccnm run`
+
+最终打通：
+
+```bash
+ccnm run xshun
+```
+
+内部：
+
+```text
+doctor
+ ↓
+mount
+ ↓
+epoch
+ ↓
+generate Claude config
+ ↓
+tmux
+ ↓
+official claude
+ ↓
+attach terminal
+```
+
+到这里 V1 才算完成。
+
+---
+
+# 45. Phase 7 — Maintenance
+
+加入：
+
+```bash
+ccnm maintenance xshun
+ccnm maintenance --finish xshun
+```
+
+解决：
+
+```text
+git switch
+install
+formatter
+codemod
+```
+
+---
+
+# 46. V1 明确不做
+
+非常重要。
+
+不要 scope creep：
+
+```text
+❌ GUI
+
+❌ Desktop integration
+
+❌ Anthropic API client
+
+❌ OAuth handling
+
+❌ MCP filesystem
+
+❌ Rust SSH implementation
+
+❌ multi-host orchestration
+
+❌ port forwarding manager
+
+❌ SFTP abstraction
+
+❌ PTY remote process manager
+
+❌ Windows
+
+❌ Linux first-class support
+```
+
+先针对：
+
+```text
+macOS home
++
+macOS work
++
+Tailscale
++
+OpenSSH
++
+SMB
++
+official Claude Code
+```
+
+把一个场景做透。
+
+---
+
+# 47. V1 验收标准
+
+必须同时满足：
+
+### Auth
+
+```text
+家庭机无 Claude login
+家庭机无 Claude OAuth
+Anthropic 请求从工作机发出
+```
+
+### Filesystem
+
+```text
+Read native
+Edit native
+Write native
+0 coherence mismatch
+```
+
+### Execution
+
+```text
+cargo test home
+pnpm test home
+git diff home
+rg home
+Docker home
+```
+
+### Protection
+
+```text
+remote source write denied
+stale epoch denied
+wrong workspace denied
+coherence mismatch denied
+```
+
+### UX
+
+最终日常命令不超过：
+
+```bash
+ccnm run xshun
+ccnm attach xshun
+ccnm maintenance xshun
+ccnm doctor xshun
+```
+
+---
+
+# 48. V2 决策点
+
+V1 日用一段时间以后只看四个数据：
+
+```text
+SMB Read/Edit latency
+coherence failures
+maintenance frequency
+remote process/background demand
+```
+
+如果 Hybrid 足够舒服：
+
+```text
+ccnm 就停在 Hybrid
+```
+
+不要为了架构漂亮去写 MCP。
+
+如果开始频繁出现：
+
+```text
+SMB latency
+split-brain
+formatter/codemod
+branch switching
+PTY/background
+```
+
+才进入：
+
+```text
+ccnm workspace MCP
+```
+
+---
+
+# 49. 将来 MCP 也不需要推翻 ccnm
+
+到时：
+
+```text
+ccnm runner
+```
+
+已经拥有：
+
+```text
+workspace identity
+path policy
+execution
+audit
+SSH transport
+epoch
+session
+```
+
+只需要在它上面增加：
+
+```text
+MCP stdio adapter
+```
+
+Claude Code 官方支持本地 stdio MCP，因此可以逐步增加：
+
+```text
+fs.read
+fs.grep
+fs.glob
+fs.patch
+exec
+```
+
+而不是重新写整套项目。
+
+演进：
+
+```text
+ccnm Hybrid
+    ↓
+Hybrid + MCP search
+    ↓
+Hybrid + MCP Read
+    ↓
+Full MCP workspace
+    ↓
+删除 SMB
+```
+
+---
+
+# 50. 项目最终定位
+
+`ccnm` 不应该定义成：
+
+> Claude SSH wrapper
+
+而应该定义成：
+
+> **A terminal-native remote workspace runtime for Claude Code.**
+
+它不碰模型认证。
+
+它只负责：
+
+```text
+workspace
+execution
+coherence
+routing
+policy
+session
+transport
+```
+
+因此即使以后 Anthropic 官方推出真正的：
+
+```bash
+claude --ssh home
+```
+
+`ccnm` 的：
+
+```text
+doctor
+policy
+workspace identity
+execution isolation
+audit
+runtime management
+```
+
+仍然有价值。

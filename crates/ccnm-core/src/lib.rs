@@ -3,6 +3,7 @@
 
 pub mod claude;
 pub mod config;
+pub mod controller;
 pub mod doctor;
 pub mod error;
 pub mod launcher;

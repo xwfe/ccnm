@@ -33,7 +33,7 @@ pub fn config_path() -> Result<PathBuf> {
     ))
 }
 
-/// The three things that live under the state root, and nothing else.
+/// What lives under the state root, and nothing else.
 ///
 /// ```text
 /// ~/.local/state/ccnm/
@@ -41,7 +41,9 @@ pub fn config_path() -> Result<PathBuf> {
 /// │                            settings, the output exec_command kept
 /// ├── workspaces/<name>/       one project, for as long as it exists:
 /// │                            metadata, the remote root, projected rules
-/// └── cache/                   rebuildable, safe to delete
+/// ├── cache/                   rebuildable, safe to delete
+/// └── controller.sock          the work machine's login-session
+///                              controller, while it is running
 /// ```
 ///
 /// Everything ccnm writes goes here. Not the user's project, and not
@@ -75,6 +77,16 @@ pub fn workspace_dir(state: &Path, name: &str) -> PathBuf {
 /// Rebuildable state. Nothing here is ever required.
 pub fn cache_dir(state: &Path) -> PathBuf {
     state.join("cache")
+}
+
+/// The work controller's socket (see [`crate::controller`]).
+///
+/// Directly under the state root rather than in a subdirectory because
+/// `sun_path` is only 104 bytes on macOS, and because it belongs to
+/// neither lifetime above: it exists exactly while the controller is
+/// running, which is neither a session nor a workspace.
+pub fn controller_socket(state: &Path) -> PathBuf {
+    state.join("controller.sock")
 }
 
 /// A single path segment that can only ever be a single path segment.

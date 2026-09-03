@@ -12,7 +12,7 @@ use ccnm_core::protocol::hello::{self, HelloRequest};
 use ccnm_core::protocol::mcp::ServePayload;
 use ccnm_core::protocol::payload;
 use ccnm_core::protocol::probe::ProbeRequest;
-use ccnm_core::{Config, Result, claude, doctor, launcher, mcp, paths, safety, work};
+use ccnm_core::{Config, Result, claude, controller, doctor, launcher, mcp, paths, safety, work};
 
 /// Terminal-native remote workspace runtime for Claude Code.
 #[derive(Parser)]
@@ -88,6 +88,12 @@ enum InternalCommand {
         #[arg(long)]
         payload: String,
     },
+    /// Answer on the work machine's controller socket until killed.
+    ///
+    /// The one internal command with no `--payload`: it is started by
+    /// launchd inside the login session, not by the other machine, so
+    /// there is no request to carry (see ccnm_core::controller).
+    WorkController,
 }
 
 fn main() -> ExitCode {
@@ -158,6 +164,19 @@ fn run(cli: Cli) -> Result<i32> {
             InternalCommand::McpServe { payload } => {
                 let req: ServePayload = payload::decode(payload)?;
                 mcp::server::serve(&req)?;
+                Ok(0)
+            }
+            InternalCommand::WorkController => {
+                let socket = paths::controller_socket(&paths::state_dir()?);
+                let listener = controller::Listener::bind(&socket)?;
+                let tools = controller::Tools {
+                    runner: &SystemRunner,
+                    // Resolved here, in launchd's environment, because
+                    // that is the PATH Claude will actually be started
+                    // with later.
+                    claude: claude::locate_from_env(),
+                };
+                listener.serve_forever(&tools)?;
                 Ok(0)
             }
             InternalCommand::Probe { payload } => {

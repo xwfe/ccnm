@@ -1,0 +1,12 @@
+# "mount_mod" is a typo for "mount_mode". Must be rejected, not ignored.
+version = 1
+
+[hosts.work]
+ssh = "work"
+
+[workspaces.xshun]
+work_host = "work"
+root = "/Users/Shared/cc-workspaces/xshun"
+runtime_root = "/Users/Shared/cc-runtime/xshun"
+share = "xshun"
+mount_mod = "coherence"

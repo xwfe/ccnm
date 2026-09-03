@@ -1,0 +1,14 @@
+# The example from design doc section 5, minus hosts.home_runner which
+# arrives with Phase 1 (work -> home SSH).
+version = 1
+
+[hosts.work]
+ssh = "work"
+
+[workspaces.xshun]
+work_host = "work"
+root = "/Users/Shared/cc-workspaces/xshun"
+runtime_root = "/Users/Shared/cc-runtime/xshun"
+share = "xshun"
+mount_mode = "coherence"
+claude_permission_mode = "acceptEdits"

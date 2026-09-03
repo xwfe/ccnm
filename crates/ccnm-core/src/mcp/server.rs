@@ -1,6 +1,7 @@
 //! `ccnm internal mcp-serve`: the coding runtime Claude Code talks to over
 //! one ssh. Phase 2 fills in the bounded tools of design doc section 15
-//! one at a time; today that is `workspace_info` and `read_file`.
+//! one at a time; today that is `workspace_info`, `read_file`,
+//! `list_files` and `search_text`.
 //!
 //! Two rules are enforced here because everything later depends on them.
 //! The workspace root is canonicalized once at startup and is the only
@@ -32,6 +33,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::{Error, ErrorCode, ErrorReport};
 use crate::mcp::list::{self, ListFilesArgs};
 use crate::mcp::read::{self, ReadFileArgs};
+use crate::mcp::search::{self, SearchTextArgs};
 use crate::process::{Cmd, ProcessRunner, SystemRunner};
 use crate::protocol::mcp::ServePayload;
 
@@ -221,6 +223,33 @@ impl Server {
                     .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
                 let mut result = CallToolResult::structured(value);
                 result.content = vec![ContentBlock::text(listing.text)];
+                Ok(result)
+            }
+            Err(err) => Ok(tool_error(&err)),
+        }
+    }
+
+    #[tool(
+        name = "search_text",
+        description = "Search the remote workspace for a string, or a regex if you ask for one. The search runs where the files are and only the matching lines come back. Files that .gitignore rules out, dotfiles and .git are never searched."
+    )]
+    async fn search_text(
+        &self,
+        Parameters(args): Parameters<SearchTextArgs>,
+    ) -> std::result::Result<CallToolResult, ErrorData> {
+        self.count_call();
+        let root = self.inner.root.clone();
+        let found = tokio::task::spawn_blocking(move || search::search_text(&root, &args))
+            .await
+            .map_err(|e| {
+                ErrorData::internal_error(format!("search_text task failed: {e}"), None)
+            })?;
+        match found {
+            Ok(found) => {
+                let value = serde_json::to_value(&found)
+                    .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+                let mut result = CallToolResult::structured(value);
+                result.content = vec![ContentBlock::text(found.text)];
                 Ok(result)
             }
             Err(err) => Ok(tool_error(&err)),

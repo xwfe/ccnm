@@ -175,7 +175,10 @@ fn read_file_serves_a_whole_session_over_one_process() {
         .map(|t| t["name"].as_str().unwrap())
         .collect();
     names.sort_unstable();
-    assert_eq!(names, ["list_files", "read_file", "workspace_info"]);
+    assert_eq!(
+        names,
+        ["list_files", "read_file", "search_text", "workspace_info"]
+    );
     let list_bytes = serde_json::to_string(&list).unwrap().len();
     assert!(list_bytes < 16 * 1024, "schema budget: {list_bytes} bytes");
     let read_tool = list["tools"]
@@ -265,9 +268,49 @@ fn read_file_serves_a_whole_session_over_one_process() {
     assert!(is_error(&out));
     assert!(text(&out).starts_with("CCNM_E_POLICY: "), "{}", text(&out));
 
+    // search_text runs where the files are: the hit comes back, the file
+    // does not, and the workspace path is nowhere in the answer.
+    let found = s.call("search_text", json!({"query": "println"}));
+    assert!(!is_error(&found));
+    assert_eq!(found["structuredContent"]["matches"], 1);
+    assert_eq!(found["structuredContent"]["hits"][0]["path"], "src/main.rs");
+    assert!(
+        text(&found).contains("2:    println!(\"hi\");"),
+        "{}",
+        text(&found)
+    );
+
+    // A search that finds nothing is an answer, not a failure: ripgrep
+    // exits 1 for "no matches" and treating that as an error would make
+    // every fruitless search look like a broken tool.
+    let none = s.call("search_text", json!({"query": "zzz-not-here-zzz"}));
+    assert!(!is_error(&none), "{}", text(&none));
+    assert_eq!(none["structuredContent"]["matches"], 0);
+
+    // The secret outside the workspace is not searchable either. The query
+    // is a prefix of the sentinel on purpose: the server echoes the query
+    // back, so searching for the whole string would trip the leak check
+    // below on ccnm's own reply rather than on a real leak.
+    let secret = s.call("search_text", json!({"query": "TOTALLY"}));
+    assert!(!is_error(&secret));
+    assert_eq!(
+        secret["structuredContent"]["matches"],
+        0,
+        "{}",
+        text(&secret)
+    );
+
+    let outside = s.call("search_text", json!({"query": "x", "path": "../"}));
+    assert!(is_error(&outside));
+    assert!(
+        text(&outside).starts_with("CCNM_E_POLICY: "),
+        "{}",
+        text(&outside)
+    );
+
     // Read-only, one process, and the whole session's calls counted.
     let info = s.rpc("tools/call", json!({"name": "workspace_info"}));
-    assert_eq!(info["structuredContent"]["calls_served"], 16);
+    assert_eq!(info["structuredContent"]["calls_served"], 20);
     assert_eq!(
         std::fs::read_dir(&root).unwrap().count(),
         4,

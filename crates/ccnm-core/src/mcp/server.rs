@@ -1,7 +1,7 @@
 //! `ccnm internal mcp-serve`: the coding runtime Claude Code talks to over
 //! one ssh. Phase 2 fills in the bounded tools of design doc section 15
 //! one at a time; today that is `workspace_info`, `read_file`,
-//! `list_files`, `search_text` and `apply_patch`.
+//! `list_files`, `search_text`, `apply_patch` and `exec_command`.
 //!
 //! Two rules are enforced here because everything later depends on them.
 //! The workspace root is canonicalized once at startup and is the only
@@ -31,6 +31,7 @@ use serde::{Deserialize, Serialize};
 // `crate::error::Result` is deliberately not imported: the `tool_handler`
 // macro expands to `Result<_, ErrorData>` and would pick up the alias.
 use crate::error::{Error, ErrorCode, ErrorReport};
+use crate::mcp::exec::{self, ExecCommandArgs};
 use crate::mcp::list::{self, ListFilesArgs};
 use crate::mcp::patch::{self, ApplyPatchArgs};
 use crate::mcp::read::{self, ReadFileArgs};
@@ -83,6 +84,11 @@ impl WorkspaceInfo {
 
 struct Inner {
     workspace: String,
+    /// Names the directory `exec_command` retains output in.
+    session: String,
+    /// `~/.local/state/ccnm`. Resolved once; a runtime that cannot find it
+    /// still serves every read-only tool.
+    state: Option<PathBuf>,
     /// Canonical. Never sent to the client.
     root: PathBuf,
     git: bool,
@@ -113,6 +119,8 @@ impl Server {
         Ok(Server {
             inner: Arc::new(Inner {
                 workspace: payload.workspace.clone(),
+                session: payload.session.clone(),
+                state: crate::paths::state_dir().ok(),
                 root,
                 git,
                 git_subdir,
@@ -251,6 +259,41 @@ impl Server {
                     .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
                 let mut result = CallToolResult::structured(value);
                 result.content = vec![ContentBlock::text(found.text)];
+                Ok(result)
+            }
+            Err(err) => Ok(tool_error(&err)),
+        }
+    }
+
+    #[tool(
+        name = "exec_command",
+        description = "Run a command in the remote workspace. cmd is a program and its arguments, not a shell line: there are no pipes, redirection or globs. Long output stays on that machine; what comes back is the head and tail plus an output_ref. This runs with the full access of the account the runtime uses."
+    )]
+    async fn exec_command(
+        &self,
+        Parameters(args): Parameters<ExecCommandArgs>,
+    ) -> std::result::Result<CallToolResult, ErrorData> {
+        self.count_call();
+        let Some(state) = self.inner.state.clone() else {
+            return Ok(tool_error(&Error::new(
+                ErrorCode::NotReady,
+                "ccnm cannot find a state directory on the workspace machine, so it has nowhere to keep a command's output",
+            )));
+        };
+        let root = self.inner.root.clone();
+        let session = self.inner.session.clone();
+        let ran =
+            tokio::task::spawn_blocking(move || exec::exec_command(&root, &session, &state, &args))
+                .await
+                .map_err(|e| {
+                    ErrorData::internal_error(format!("exec_command task failed: {e}"), None)
+                })?;
+        match ran {
+            Ok(ran) => {
+                let value = serde_json::to_value(&ran)
+                    .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+                let mut result = CallToolResult::structured(value);
+                result.content = vec![ContentBlock::text(ran.text)];
                 Ok(result)
             }
             Err(err) => Ok(tool_error(&err)),

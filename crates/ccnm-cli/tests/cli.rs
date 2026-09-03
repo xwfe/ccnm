@@ -289,6 +289,7 @@ fn mcp_probe_local_speaks_to_one_persistent_server() {
         tools,
         vec![
             "apply_patch",
+            "exec_command",
             "list_files",
             "read_file",
             "search_text",

@@ -40,6 +40,11 @@ impl Session {
         let wire = payload::encode(&ServePayload::new("t", root.to_path_buf(), "s1")).unwrap();
         let mut child = Command::new(env!("CARGO_BIN_EXE_ccnm"))
             .args(["internal", "mcp-serve", "--payload", &wire])
+            // What an ssh session could carry in. The runtime must not
+            // pass any of it to a command it runs, and must pass the rest.
+            .env("ANTHROPIC_API_KEY", "sk-ant-must-not-leak")
+            .env("CLAUDE_CODE_OAUTH_TOKEN", "oauth-must-not-leak")
+            .env("CCNM_E2E_KEPT", "yes")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -179,6 +184,7 @@ fn read_file_serves_a_whole_session_over_one_process() {
         names,
         [
             "apply_patch",
+            "exec_command",
             "list_files",
             "read_file",
             "search_text",
@@ -382,9 +388,45 @@ fn read_file_serves_a_whole_session_over_one_process() {
         text(&escape)
     );
 
+    // exec_command runs where the files are, and never hands a child an
+    // ANTHROPIC_* or CLAUDE_* variable. The server process was started
+    // with both set (see Session::start), so this is the real path: a
+    // unit test cannot reach it, because setting an environment variable
+    // is unsafe in this edition and ccnm-core forbids unsafe.
+    let ran = s.call("exec_command", json!({"cmd": ["env"]}));
+    assert!(!is_error(&ran), "{}", text(&ran));
+    assert_eq!(ran["structuredContent"]["exit_code"], 0);
+    let dumped = text(&ran);
+    assert!(!dumped.contains("sk-ant-must-not-leak"), "{dumped}");
+    assert!(!dumped.contains("oauth-must-not-leak"), "{dumped}");
+    assert!(!dumped.contains("ANTHROPIC_"), "{dumped}");
+    assert!(!dumped.contains("CLAUDE_"), "{dumped}");
+    // Not a clean room: everything else is still inherited.
+    assert!(dumped.contains("CCNM_E2E_KEPT=yes"), "{dumped}");
+
+    // A command is a program and its arguments, never a shell line.
+    let noshell = s.call("exec_command", json!({"cmd": ["echo x > written.txt"]}));
+    assert!(is_error(&noshell));
+    assert!(
+        text(&noshell).starts_with("CCNM_E_DEPENDENCY: "),
+        "{}",
+        text(&noshell)
+    );
+    assert!(!root.join("written.txt").exists(), "a redirect happened");
+
+    // A non-zero exit is a result the model reads, not a tool failure.
+    let failed = s.call("exec_command", json!({"cmd": ["false"]}));
+    assert!(!is_error(&failed), "{}", text(&failed));
+    assert_eq!(failed["structuredContent"]["exit_code"], 1);
+
+    // cwd goes through the same policy every other tool uses.
+    let out = s.call("exec_command", json!({"cmd": ["pwd"], "cwd": "../"}));
+    assert!(is_error(&out));
+    assert!(text(&out).starts_with("CCNM_E_POLICY: "), "{}", text(&out));
+
     // Read-only, one process, and the whole session's calls counted.
     let info = s.rpc("tools/call", json!({"name": "workspace_info"}));
-    assert_eq!(info["structuredContent"]["calls_served"], 26);
+    assert_eq!(info["structuredContent"]["calls_served"], 30);
     // apply_patch changed one file in place; nothing was created or left
     // behind, temp files included.
     let mut names: Vec<String> = std::fs::read_dir(&root)

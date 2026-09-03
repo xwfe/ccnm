@@ -72,6 +72,12 @@ impl ErrorCode {
         }
     }
 
+    /// Inverse of [`name`](Self::name), for reading a code off another
+    /// ccnm's stderr or out of a JSON report.
+    pub fn from_name(name: &str) -> Option<ErrorCode> {
+        ErrorCode::ALL.into_iter().find(|c| c.name() == name)
+    }
+
     /// Process exit code. Grouped by tens: 1x setup, 2x transport,
     /// 3x workspace state. 0 is success and 2 is reserved for clap usage
     /// errors, so nothing here uses them.
@@ -187,10 +193,100 @@ impl From<std::io::Error> for Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// An error as carried inside a JSON report from the other machine. Keeps
+/// the code and message but drops the source chain, which would not
+/// serialize and is only meaningful where it happened.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ErrorReport {
+    pub code: String,
+    pub message: String,
+}
+
+impl ErrorReport {
+    pub fn new(code: ErrorCode, message: impl Into<String>) -> Self {
+        ErrorReport {
+            code: code.name().to_string(),
+            message: message.into(),
+        }
+    }
+
+    /// Unknown names map to `Internal`: a newer ccnm may have codes this
+    /// one has never heard of.
+    pub fn code(&self) -> ErrorCode {
+        ErrorCode::from_name(&self.code).unwrap_or(ErrorCode::Internal)
+    }
+}
+
+impl From<Error> for ErrorReport {
+    fn from(err: Error) -> Self {
+        ErrorReport::from(&err)
+    }
+}
+
+impl From<&Error> for ErrorReport {
+    fn from(err: &Error) -> Self {
+        let mut message = err.message.clone();
+        if let Some(source) = &err.source {
+            message.push_str("\ncaused by: ");
+            message.push_str(&source.to_string());
+        }
+        ErrorReport {
+            code: err.code.name().to_string(),
+            message,
+        }
+    }
+}
+
+impl From<ErrorReport> for Error {
+    fn from(report: ErrorReport) -> Self {
+        Error::new(report.code(), report.message)
+    }
+}
+
+impl fmt::Display for ErrorReport {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}: {}", self.code, self.message)
+    }
+}
+
+/// `Result` whose error side survives a trip through JSON.
+pub type Reported<T> = std::result::Result<T, ErrorReport>;
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::HashSet;
+
+    #[test]
+    fn from_name_roundtrips_and_rejects_unknown() {
+        for code in ErrorCode::ALL {
+            assert_eq!(ErrorCode::from_name(code.name()), Some(code));
+        }
+        assert_eq!(ErrorCode::from_name("CCNM_E_FUTURE"), None);
+    }
+
+    #[test]
+    fn error_report_keeps_code_and_source_text() {
+        let io = std::io::Error::other("disk on fire");
+        let err = Error::new(ErrorCode::Mount, "cannot stat").with_source(io);
+        let report = ErrorReport::from(&err);
+        assert_eq!(report.code(), ErrorCode::Mount);
+        assert_eq!(report.message, "cannot stat\ncaused by: disk on fire");
+        let json = serde_json::to_string(&report).unwrap();
+        let back: ErrorReport = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, report);
+        let err2 = Error::from(back);
+        assert_eq!(err2.code(), ErrorCode::Mount);
+    }
+
+    #[test]
+    fn unknown_report_code_becomes_internal() {
+        let report = ErrorReport {
+            code: "CCNM_E_FUTURE".into(),
+            message: "x".into(),
+        };
+        assert_eq!(report.code(), ErrorCode::Internal);
+    }
 
     #[test]
     fn names_are_unique_and_prefixed() {

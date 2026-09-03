@@ -9,11 +9,14 @@ rust-version = "1.85"
 
 [workspace.dependencies]
 ccnm-core = { path = "crates/ccnm-core" }
+base64 = "0.22"
 clap = { version = "4", features = ["derive", "env"] }
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 toml = "0.9"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+uuid = { version = "1", features = ["v4"] }
 
 [workspace.lints.rust]
 # ccnm handles paths, hashes and JSON from another machine. Nothing here needs

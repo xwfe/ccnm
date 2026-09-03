@@ -1,13 +1,19 @@
-# Opt-in custom CLAUDE_CONFIG_DIR (design doc section 10) and every
-# optional workspace field left at its default.
+# Opt-in custom CLAUDE_CONFIG_DIR (design doc section 10), a runner host
+# under a non-default name, and every optional workspace field left at its
+# default.
 version = 1
 
 [hosts.work]
 ssh = "work"
 claude_config_dir = "/Users/me/.ccnm/claude"
 
+[hosts.runner]
+ssh_from_work = "home"
+smb_user = "me"
+
 [workspaces.xshun]
 work_host = "work"
+runner_host = "runner"
 root = "/Users/Shared/cc-workspaces/xshun"
 runtime_root = "/Users/Shared/cc-runtime/xshun"
 share = "xshun"

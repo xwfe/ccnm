@@ -1,9 +1,15 @@
 //! Runs the real `ccnm` binary. Exit codes and stdout are the contract that
-//! `ccnm run` and the user's shell see, so they are asserted here rather
-//! than through the library API.
+//! `ccnm run`, the other machine's ccnm and the user's shell see, so they
+//! are asserted here rather than through the library API.
+//!
+//! Nothing here needs a second machine. The one ssh attempt targets a name
+//! under the reserved `.invalid` TLD, which fails to resolve immediately.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+
+use ccnm_core::payload;
+use ccnm_core::runner::{HealthReport, HealthRequest};
 
 fn ccnm() -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_ccnm"));
@@ -22,20 +28,28 @@ fn stdout(out: &Output) -> String {
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
-/// A config whose workspace root is `root`, written under a per-test temp dir.
-fn temp_config(test: &str, root: &Path) -> PathBuf {
+fn stderr(out: &Output) -> String {
+    String::from_utf8_lossy(&out.stderr).into_owned()
+}
+
+/// A fresh directory with `root/` inside it and a config pointing there.
+/// `work_ssh` is the alias the home side would ssh to.
+fn setup(test: &str, work_ssh: &str) -> (PathBuf, PathBuf) {
     let dir = std::env::temp_dir().join(format!("ccnm-cli-{}-{test}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.join("config.toml");
+    let _ = std::fs::remove_dir_all(&dir);
+    let root = dir.join("root");
+    std::fs::create_dir_all(&root).unwrap();
+    let config = dir.join("config.toml");
     std::fs::write(
-        &path,
+        &config,
         format!(
-            "version = 1\n[hosts.work]\nssh = \"work\"\n[workspaces.xshun]\nwork_host = \"work\"\nroot = \"{}\"\nruntime_root = \"/Users/Shared/cc-runtime/xshun\"\nshare = \"xshun\"\n",
-            root.display()
+            "version = 1\n[hosts.work]\nssh = \"{work_ssh}\"\n[hosts.home_runner]\nssh_from_work = \"ccnm-home\"\nsmb_user = \"fodelf\"\n[workspaces.xshun]\nwork_host = \"work\"\nroot = \"{}\"\nruntime_root = \"{}\"\nshare = \"xshun\"\n",
+            root.display(),
+            dir.join("runtime").display()
         ),
     )
     .unwrap();
-    path
+    (dir, config)
 }
 
 #[test]
@@ -55,6 +69,16 @@ fn no_subcommand_is_a_usage_error() {
 }
 
 #[test]
+fn internal_commands_are_hidden_from_help() {
+    let out = ccnm().arg("--help").output().unwrap();
+    let text = stdout(&out);
+    assert!(text.contains("doctor"), "{text}");
+    assert!(text.contains("mount"), "{text}");
+    assert!(!text.contains("  work "), "{text}");
+    assert!(!text.contains("  runner "), "{text}");
+}
+
+#[test]
 fn doctor_with_missing_config_exits_config_code() {
     let out = ccnm()
         .args(["doctor", "--config", "/nonexistent/ccnm/config.toml"])
@@ -68,7 +92,7 @@ fn doctor_with_missing_config_exits_config_code() {
     );
     assert!(text.contains("/nonexistent/ccnm/config.toml"), "{text}");
     assert!(
-        text.ends_with("NOT READY (1 failed, 0 not implemented)\n"),
+        text.ends_with("NOT READY (1 failed, 0 not checked)\n"),
         "{text}"
     );
 }
@@ -113,42 +137,142 @@ fn doctor_unknown_workspace_exits_config_code() {
 }
 
 #[test]
-fn doctor_workspace_with_existing_root_blocks_on_unimplemented_checks() {
-    let config = temp_config("root-ok", &std::env::temp_dir());
+fn workspace_init_then_doctor_against_unreachable_work() {
+    let (dir, config) = setup("e2e", "ccnm-test-nowhere.invalid");
+    let root = dir.join("root");
+
+    // Identity missing: doctor says how to fix it and exits WRONG_WORKSPACE.
     let out = ccnm()
         .args(["doctor", "xshun", "--config"])
         .arg(&config)
         .output()
         .unwrap();
-    // Exit code is the first SKIP's error code (Workspace identity ->
-    // CCNM_E_WRONG_WORKSPACE = 30). It must not be 0 and not a config error.
-    assert_eq!(out.status.code(), Some(30));
+    assert_eq!(out.status.code(), Some(30), "{}", stdout(&out));
+    assert!(
+        stdout(&out).contains("run: ccnm workspace init xshun"),
+        "{}",
+        stdout(&out)
+    );
+
+    // Create it.
+    let out = ccnm()
+        .args(["workspace", "init", "xshun", "--config"])
+        .arg(&config)
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let printed = stdout(&out);
+    assert!(
+        printed.starts_with(&format!("{}: ", root.join(".ccnm-workspace-id").display())),
+        "{printed}"
+    );
+    let id = printed.split(": ").nth(1).unwrap().trim().to_string();
+    assert_eq!(id.len(), 36);
+
+    // Twice is refused with POLICY.
+    let out = ccnm()
+        .args(["workspace", "init", "xshun", "--config"])
+        .arg(&config)
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(33), "{}", stderr(&out));
+    assert!(
+        stderr(&out).starts_with("CCNM_E_POLICY:\n"),
+        "{}",
+        stderr(&out)
+    );
+
+    // Now doctor gets as far as ssh, which cannot resolve the alias.
+    let out = ccnm()
+        .args(["doctor", "xshun", "--config"])
+        .arg(&config)
+        .output()
+        .unwrap();
     let text = stdout(&out);
-    assert!(text.contains("Home workspace          OK"), "{text}");
+    assert_eq!(out.status.code(), Some(20), "{text}");
     assert!(
-        text.contains("SKIP   not implemented until phase 1"),
+        text.contains(&format!("Workspace identity      OK     {id}")),
         "{text}"
     );
     assert!(
-        text.contains("NOT READY (0 failed, 12 not implemented)"),
+        text.contains("Work SSH                FAIL   CCNM_E_WORK_UNREACHABLE"),
         "{text}"
     );
+    assert!(
+        text.contains("Claude Code             SKIP   not checked: work SSH failed"),
+        "{text}"
+    );
+    assert!(
+        text.contains("NOT READY (1 failed, 10 not checked)"),
+        "{text}"
+    );
+    // Read-only: nothing but the id file appeared in the root, no socket dir.
+    assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
 }
 
 #[test]
-fn doctor_workspace_with_missing_root_exits_config_code() {
-    let missing = std::env::temp_dir().join("ccnm-cli-definitely-missing-root");
-    let config = temp_config("root-missing", &missing);
+fn runner_health_answers_with_the_local_view() {
+    let (dir, config) = setup("health", "work");
+    let root = dir.join("root");
+    let wire = payload::encode(&HealthRequest::new(&root, dir.join("runtime"))).unwrap();
+
     let out = ccnm()
-        .args(["doctor", "xshun", "--config"])
+        .args(["runner", "health", "--payload", &wire])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let rep: HealthReport = payload::decode_json(&out.stdout).unwrap();
+    assert_eq!(rep.ccnm_version, env!("CARGO_PKG_VERSION"));
+    assert!(rep.root.is_ok());
+    assert!(!rep.runtime_root.exists);
+    assert_eq!(rep.identity, Ok(None));
+
+    ccnm()
+        .args(["workspace", "init", "xshun", "--config"])
         .arg(&config)
         .output()
         .unwrap();
-    assert_eq!(out.status.code(), Some(10));
+    let out = ccnm()
+        .args(["runner", "health", "--payload", &wire])
+        .output()
+        .unwrap();
+    let rep: HealthReport = payload::decode_json(&out.stdout).unwrap();
+    assert!(matches!(rep.identity, Ok(Some(ref id)) if id.len() == 36));
+}
+
+#[test]
+fn garbage_payload_is_a_version_error() {
+    let out = ccnm()
+        .args(["runner", "health", "--payload", "definitely-not-a-payload"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(11));
     assert!(
-        stdout(&out).contains("does not exist on this machine"),
+        stderr(&out).starts_with("CCNM_E_VERSION:\n"),
         "{}",
-        stdout(&out)
+        stderr(&out)
+    );
+
+    let out = ccnm()
+        .args(["work", "probe", "--payload", "eyJwcm90b2NvbCI6OTl9"]) // {"protocol":99}
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(11));
+}
+
+#[test]
+fn mount_against_unreachable_work_exits_work_unreachable() {
+    let (_dir, config) = setup("mount", "ccnm-test-nowhere.invalid");
+    let out = ccnm()
+        .args(["mount", "xshun", "--config"])
+        .arg(&config)
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(20), "{}", stderr(&out));
+    assert!(
+        stderr(&out).starts_with("CCNM_E_WORK_UNREACHABLE:\n"),
+        "{}",
+        stderr(&out)
     );
 }
 
@@ -169,7 +293,7 @@ fn verbose_logs_go_to_stderr_not_stdout() {
         .arg(fixture("config-valid.toml"))
         .output()
         .unwrap();
-    let err = String::from_utf8_lossy(&out.stderr);
+    let err = stderr(&out);
     assert!(err.contains("loading config"), "stderr: {err}");
     assert!(!stdout(&out).contains("loading config"));
 }

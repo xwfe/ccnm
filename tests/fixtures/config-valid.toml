@@ -1,9 +1,12 @@
-# The example from design doc section 5, minus hosts.home_runner which
-# arrives with Phase 1 (work -> home SSH).
+# The example from design doc section 5.
 version = 1
 
 [hosts.work]
 ssh = "work"
+
+[hosts.home_runner]
+ssh_from_work = "ccnm-home"
+smb_user = "fodelf"
 
 [workspaces.xshun]
 work_host = "work"

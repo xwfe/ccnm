@@ -221,6 +221,22 @@ READY
 NOT READY
 ```
 
+## doctor 永远 read-only
+
+这是 invariant。doctor 不挂载、不写 identity、不新建 SSH master、不改任何文件。
+
+改变系统状态的动作都是显式子命令：
+
+```bash
+ccnm mount xshun            # 在工作机挂 SMB
+ccnm workspace init xshun   # 在源码 root 写 .ccnm-workspace-id
+ccnm unmount xshun
+```
+
+原因：doctor 会被 `ccnm run` 的 preflight、cron、CI 反复调用。一旦"检查顺手改了状态"，同一条命令跑两次结果就不一样，出了问题也分不清是环境本来就坏还是 doctor 弄坏的。
+
+具体到 SSH：doctor 探活时带 `-o ControlMaster=no`。OpenSSH 文档写明这个值只复用已有 master，socket 不存在就普通连接，不会留下一个后台 master 进程。
+
 ---
 
 ## 正常使用
@@ -319,7 +335,7 @@ runtime_root = "/Users/Shared/cc-runtime/xshun"
 
 share = "xshun"
 
-mount_mode = "coherence"
+mount_mode = "coherence"   # 挂载参数含义见第 39 节
 
 claude_permission_mode = "acceptEdits"
 ```
@@ -855,32 +871,54 @@ OpenSSH
 
 ---
 
-# 18. SSH ControlMaster
+# 18. SSH：ccnm 拥有 multiplexing，不拥有 identity / config
 
-工作机：
+这是 invariant。分工：
+
+```text
+用户 ~/.ssh/config    决定 Host、HostName、User、IdentityFile、ProxyJump、Tailscale 地址
+ccnm                  只在命令行追加 ControlMaster / ControlPath / BatchMode / 安全覆盖项
+```
+
+用户自己维护，ccnm 只读：
 
 ```sshconfig
 Host ccnm-home
     HostName <tailscale-name>
     User ccrun
-
-    BatchMode yes
-
-    ControlMaster auto
-    ControlPath ~/.ssh/ccnm-%C
-    ControlPersist 10m
-
-    ServerAliveInterval 15
-    ServerAliveCountMax 3
+    IdentityFile ~/.ssh/ccnm_ed25519
 ```
 
-因此：
+ccnm 每次调用 ssh 时追加（用 `Command::args()`，不写进任何 config 文件）：
 
 ```text
-Claude 每个 Bash
+-o BatchMode=yes
+-o ControlMaster=auto
+-o ControlPath=~/.local/state/ccnm/ssh/%C
+-o ControlPersist=10m
+-o ServerAliveInterval=15
+-o ServerAliveCountMax=3
 ```
 
-不会重新做完整 handshake。
+外加第 32 节的 SendEnv 覆盖。
+
+OpenSSH 规定命令行选项优先于 `~/.ssh/config`（每个参数取第一个出现的值），所以这些追加项一定生效，用户 config 里写了别的 ControlMaster 也不会打架。
+
+效果：Claude 每个 Bash 都复用同一条连接，不重做 handshake。
+
+## 只用 OpenSSH 自带的能力
+
+```text
+ssh -G ccnm-home            打印最终解析出的配置，不建连接。doctor 用它显示实际会用的 HostName / User / IdentityFile
+ssh -O check ccnm-home      问 master 是否活着
+ssh -O exit ccnm-home       让 master 退出，ccnm stop 用
+```
+
+ccnm 不自己维护长连接协议，也不用 Rust SSH 库。OpenSSH 的 ControlMaster / ControlPersist 本身就是官方实现的连接复用，比 ccnm 自己管稳得多。
+
+## 一个会撞的坑
+
+macOS 上 unix socket 路径最长 104 字节（`sys/un.h` 里 `sun_path[104]`）。ControlPath 超过就报 `ControlPath too long`，看着像 ssh 坏了，实际是路径长。`%C` 展开后是 40 个十六进制字符，所以 `~/.local/state/ccnm/ssh/` 这个前缀在 HOME 正常长度时够用。doctor 应该算一下展开后的长度，超了直接 FAIL 并说明。
 
 ---
 
@@ -1385,12 +1423,14 @@ CLAUDE_CODE_OAUTH_TOKEN
 CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST
 ```
 
-并禁止 SSH：
+SSH 这一侧，ccnm 每次调用都追加：
 
 ```text
-SendEnv ANTHROPIC_*
-SendEnv CLAUDE_*
+-o SendEnv=-ANTHROPIC_*
+-o SendEnv=-CLAUDE_*
 ```
+
+OpenSSH 支持用 `-` 前缀清掉用户 `~/.ssh/config` 里已经写了的 SendEnv 模式，所以即使用户全局配了 `SendEnv *`，这两类变量也不会跟着 ssh 出去。家庭机 sshd 的 AcceptEnv 默认为空，是第三道保险。
 
 家庭机不需要知道任何 Anthropic credential。
 
@@ -1686,6 +1726,32 @@ ccnm doctor xshun
 不启动 Claude
 不写 Hook
 ```
+
+## 只围绕系统接口做，不自己推断状态
+
+SSH 用第 18 节列出的 `ssh -G` / `-O check` / `-O exit`。
+
+SMB 用 macOS 自带的这几个，2026-09-03 在 macOS 15 / Darwin 25.3 的 man page 上核实过：
+
+```text
+mount -t smbfs //ccuser@<home>/xshun /Users/Shared/cc-workspaces/xshun
+    走系统 mount(8)，由它调 mount_smbfs。密码从 Keychain / nsmb.conf 来，ccnm 不经手。
+
+mount_smbfs -o 选项：
+    nodatacache     关闭文件数据缓存
+    nomdatacache    关闭元数据缓存
+    nopassprompt    不弹密码提示；没凭据就直接失败，而不是挂在那里等输入
+    soft            超时后让文件系统调用失败，而不是永久挂起
+    nobrowse        不在 Finder 侧栏出现
+
+smbutil statshares -m /Users/Shared/cc-workspaces/xshun -f Json
+    结构化返回这个挂载点的 share 属性。doctor 判断"挂了没有、挂的是哪个 server 的哪个 share"用它，
+    不去解析 mount 命令的文本输出，也不靠"目录非空"猜。
+```
+
+`mount_mode = "coherence"` 的含义就是：挂载时带 `nodatacache,nomdatacache,nopassprompt,soft,nobrowse`。代价是工作机每次 Read 都走网络，Read/Edit 会慢；收益是 Claude 读到的永远是家庭机当前内容，Phase 2 的 coherence 测试才有意义。第 48 节的 V2 决策点跟踪的 "SMB Read/Edit latency" 就是这个代价。
+
+不这么做的后果：自己拼 nsmb 参数或猜挂载状态，macOS 升级一次就可能错一次，而且错了 doctor 还显示 OK。
 
 ---
 

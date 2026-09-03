@@ -1050,6 +1050,25 @@ macOS Keychain 条目也按该目录 key。2026-09-03 在 2.1.259 实测：空�
 ccnm 绝不执行或自动触发 `claude auth login`，绝不复制 credentials。它只检查
 `claude auth status --json`（登录 exit 0，未登录 exit 1）。
 
+### 一个会撞的坑：SSH 会话读不到 Keychain
+
+2026-09-03 在真实工作机（macOS，Claude Code 2.1.258）实测：GUI 里已登录，`~/.claude/.credentials.json`
+里只有 MCP 插件的 OAuth，Claude 自己的登录在 login Keychain 的 `Claude Code-credentials` 条目里。
+通过 `ssh work claude auth status --json` 得到 `loggedIn: false`，同一会话里
+`security find-generic-password -s "Claude Code-credentials" -w` 退出码 36
+（errSecInteractionNotAllowed：Keychain 锁着，或者会话没有 UI 可以弹授权框）。
+
+所以 doctor 的 "Claude authentication FAIL" 要读成"**从 ssh 会话看**没登录"。这对 Phase 3 是硬问题：
+`ccnm run` 通过 SSH 在工作机起 Claude，Claude 同样读不到 Keychain。候选做法（Phase 3 实测决定）：
+
+```text
+1. 工作机保持 GUI 登录且 Keychain 解锁，看 Claude 进程（不是 security CLI）能否免弹窗读取
+2. 在工作机 GUI 会话里跑一个常驻 tmux server，ccnm run 只 attach，Claude 继承 GUI 会话的 security session
+3. CLAUDE_CONFIG_DIR 指向一个用文件存凭据的目录（要单独 claude auth login 一次）
+```
+
+ccnm 不会去 `security unlock-keychain`：那需要用户密码，违反"不碰认证"。
+
 ### ccnm 不修改项目 `.claude/settings.json`
 
 不能让安装 ccnm 修改 repository 或团队 `.claude/settings.json`。session 级配置动态生成到

@@ -429,14 +429,22 @@ fn version_row(name: &'static str, hello: &HelloReport, side: &str) -> Check {
 }
 
 /// Design doc section 21: report, point at the manual login, never log in.
+///
+/// The probe runs `claude auth status` inside a non-interactive ssh
+/// session. On macOS the login lives in the Keychain, and a locked or
+/// UI-less session cannot read it (errSecInteractionNotAllowed, `security`
+/// exit 36), so "not authenticated" here can also mean "authenticated, but
+/// not from ssh". Verified on the real work machine 2026-09-03.
 fn auth_hint(r: &Resolved<'_>) -> String {
+    const KEYCHAIN: &str = "if an interactive `claude auth status` on work says logged in, the login Keychain is not readable from a non-interactive ssh session; phase 3 must start Claude where the Keychain is (design doc section 21)";
     match &r.work.claude_config_dir {
         Some(dir) => format!(
-            "Claude is not authenticated in configured CLAUDE_CONFIG_DIR\nrun on work: CLAUDE_CONFIG_DIR={} claude auth login",
+            "Claude is not authenticated in configured CLAUDE_CONFIG_DIR, as seen from ssh\nrun on work: CLAUDE_CONFIG_DIR={} claude auth login\n{KEYCHAIN}",
             dir.display()
         ),
-        None => "Claude is not authenticated on the work machine\nrun on work: claude auth login"
-            .to_string(),
+        None => format!(
+            "Claude is not authenticated on the work machine, as seen from ssh\nrun on work: claude auth login\n{KEYCHAIN}"
+        ),
     }
 }
 

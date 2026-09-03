@@ -225,12 +225,21 @@ NOT READY (0 failed, 2 not checked)
 每行四种状态：
 
 ```text
-OK / INFO / WARN   不阻塞
-SKIP               这个版本还没实现，或者前置项失败没法查。同样阻塞 READY
-FAIL               带 CCNM_E_* 错误码和修复提示
+OK      查过，没问题
+WARN    查过，有值得看一眼的地方；不阻塞 READY
+SKIP    没查成：前置项失败，或这个版本还没实现。阻塞 READY
+FAIL    查过，坏了；带 CCNM_E_* 错误码和修复提示。阻塞 READY
 ```
 
-exit code 取第一个 FAIL 行的错误码；没有 FAIL 就取第一个 SKIP 的。所以 doctor 骨架阶段不可能误报 READY，`ccnm run` 的 preflight 也能直接沿用这个码。
+exit code 规则：
+
+```text
+有 FAIL            → 第一个 FAIL 行的错误码
+没 FAIL、有 SKIP   → CCNM_E_NOT_READY (3)
+只有 OK / WARN     → 0
+```
+
+"没查成"和"查出坏了"必须是两个不同的码：`ccnm run` 的 preflight 看到 3 知道是环境没验证完，看到 22 知道是 mount 坏了。骨架阶段的 doctor 因此不可能误报 READY，也不会把"还没实现"冒充成某个具体故障。
 
 从 "Work SSH" 往下的所有信息来自**一次** `ssh work ccnm work probe` 往返：工作机在本地查 mount、透过 mount 读 identity、反向 ssh 回家庭机跑 `ccnm runner health`、跑 `claude --version` 和 `claude auth status`，打包成一个 JSON 回来。工作机不需要 config 文件，它要的参数都在请求里。
 
@@ -1626,6 +1635,7 @@ pnpm
 ```text
 名字                       exit   含义
 CCNM_E_INTERNAL             1     bug 或意外的 OS 错误，不是给用户分类用的
+CCNM_E_NOT_READY            3     doctor 没有 FAIL 但有 SKIP：没坏，也没验证完
 CCNM_E_CONFIG              10     config.toml 缺失、解析失败或校验不过
 CCNM_E_VERSION             11     两台机器 ccnm 版本不一致，或 Claude Code 太旧
 CCNM_E_AUTH                12     工作机 Claude 未登录
@@ -1638,7 +1648,7 @@ CCNM_E_STALE_EPOCH         32     session epoch 过期
 CCNM_E_POLICY              33     runner 不允许这条命令
 ```
 
-exit 0 是成功，2 留给 clap 的用法错误。`ccnm doctor` NOT READY 时 exit code 取第一个失败检查项对应的错误码，所以 `ccnm run` 里的 preflight 失败也能直接带出原因。
+exit 0 是成功，2 留给 clap 的用法错误。`ccnm doctor` NOT READY 时 exit code 取第一个 FAIL 行的错误码；没有 FAIL 只有 SKIP 时是 3（第 4 节），所以 `ccnm run` 里的 preflight 失败也能直接带出原因。
 
 加新码可以，改名或改号不行：另一台机器上可能还跑着旧版 ccnm。
 

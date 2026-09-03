@@ -1,9 +1,18 @@
 //! `ccnm doctor [WORKSPACE]`: is this machine and workspace ready to use?
 //!
-//! Every check is one row: name, status, a line of detail. The report is
-//! READY only when no row is FAIL or SKIP. The exit code is the error code of
-//! the first FAIL row (or, failing that, the first SKIP), so `ccnm run` can
-//! refuse with the same reason a human would read off the screen.
+//! Every check is one row: name, status, a line of detail. Four statuses:
+//!
+//! ```text
+//! OK     verified
+//! WARN   verified, with something worth reading; does not block READY
+//! SKIP   not verified (prerequisite failed, or not implemented yet); blocks
+//! FAIL   verified broken, with a CCNM_E_* code and a fix hint; blocks
+//! ```
+//!
+//! The exit code is the error code of the first FAIL row. With no FAIL but
+//! at least one SKIP it is `CCNM_E_NOT_READY` (3): nothing is known to be
+//! broken, but the workspace is not proven usable either, and `ccnm run`
+//! must be able to tell those two apart. Only OK/WARN rows exit 0.
 //!
 //! Phase 1 checks the whole transport: local root and identity, the SMB
 //! share, Tailscale path, ssh to work, and through one `ccnm work probe`
@@ -52,11 +61,11 @@ pub struct Env<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Status {
     Ok,
-    Info,
     Warn,
-    /// Not performed. Carries the code a failure would have, because an
-    /// unverified precondition is as blocking as a failed one.
-    Skip(ErrorCode),
+    /// Not performed: a prerequisite failed or the check is not implemented
+    /// yet. Blocks READY, but has no error code of its own; the report
+    /// maps "only SKIPs" to [`ErrorCode::NotReady`].
+    Skip,
     Fail(ErrorCode),
 }
 
@@ -64,11 +73,14 @@ impl Status {
     fn label(&self) -> &'static str {
         match self {
             Status::Ok => "OK",
-            Status::Info => "INFO",
             Status::Warn => "WARN",
-            Status::Skip(_) => "SKIP",
+            Status::Skip => "SKIP",
             Status::Fail(_) => "FAIL",
         }
+    }
+
+    fn blocks(&self) -> bool {
+        matches!(self, Status::Skip | Status::Fail(_))
     }
 }
 
@@ -88,14 +100,6 @@ impl Check {
         }
     }
 
-    fn info(name: &'static str, detail: impl Into<String>) -> Self {
-        Check {
-            name,
-            status: Status::Info,
-            detail: detail.into(),
-        }
-    }
-
     fn warn(name: &'static str, detail: impl Into<String>) -> Self {
         Check {
             name,
@@ -104,10 +108,10 @@ impl Check {
         }
     }
 
-    fn skip(name: &'static str, code: ErrorCode, detail: impl Into<String>) -> Self {
+    fn skip(name: &'static str, detail: impl Into<String>) -> Self {
         Check {
             name,
-            status: Status::Skip(code),
+            status: Status::Skip,
             detail: detail.into(),
         }
     }
@@ -141,18 +145,26 @@ impl Report {
         self.blocking_code().is_none()
     }
 
-    /// The code the process should exit with: first FAIL, else first SKIP,
-    /// else none.
+    /// The code the process should exit with.
+    ///
+    /// ```text
+    /// any FAIL            -> the first FAIL's code
+    /// no FAIL, any SKIP   -> CCNM_E_NOT_READY
+    /// only OK / WARN      -> none (exit 0)
+    /// ```
+    ///
+    /// FAIL wins over SKIP regardless of row order: a real failure is more
+    /// useful to act on than "could not check".
     pub fn blocking_code(&self) -> Option<ErrorCode> {
         let first_fail = self.checks.iter().find_map(|c| match c.status {
             Status::Fail(code) => Some(code),
             _ => None,
         });
         first_fail.or_else(|| {
-            self.checks.iter().find_map(|c| match c.status {
-                Status::Skip(code) => Some(code),
-                _ => None,
-            })
+            self.checks
+                .iter()
+                .any(|c| c.status.blocks())
+                .then_some(ErrorCode::NotReady)
         })
     }
 
@@ -186,7 +198,7 @@ impl Report {
         }
 
         let failed = self.count(|s| matches!(s, Status::Fail(_)));
-        let skipped = self.count(|s| matches!(s, Status::Skip(_)));
+        let skipped = self.count(|s| matches!(s, Status::Skip));
         out.push('\n');
         if self.ready() {
             out.push_str("READY\n");
@@ -225,7 +237,7 @@ pub fn run(config_path: &Path, workspace: Option<&str>, env: &Env<'_>) -> Report
             } else {
                 names.join(", ")
             };
-            checks.push(Check::info("Workspaces", detail));
+            checks.push(Check::ok("Workspaces", detail));
         }
         Some(name) => match config.workspace(name) {
             Ok(resolved) => {
@@ -286,7 +298,6 @@ fn workspace_checks(r: &Resolved<'_>, env: &Env<'_>) -> Vec<Check> {
         Err(e) => {
             checks.push(Check::skip(
                 "Tailscale",
-                ErrorCode::WorkUnreachable,
                 "not checked: work SSH is misconfigured",
             ));
             checks.push(Check::fail("Work SSH", &e));
@@ -298,11 +309,7 @@ fn workspace_checks(r: &Resolved<'_>, env: &Env<'_>) -> Vec<Check> {
     let resolved = match ssh.resolve(env.runner) {
         Ok(resolved) => resolved,
         Err(e) => {
-            checks.push(Check::skip(
-                "Tailscale",
-                ErrorCode::WorkUnreachable,
-                "not checked: ssh -G failed",
-            ));
+            checks.push(Check::skip("Tailscale", "not checked: ssh -G failed"));
             checks.push(Check::fail_with(
                 "Work SSH",
                 ErrorCode::WorkUnreachable,
@@ -411,24 +418,26 @@ fn smb_share(r: &Resolved<'_>, env: &Env<'_>) -> Check {
 }
 
 /// Never blocking: ssh decides reachability, this only explains the path.
+/// No CLI or no matching peer is OK (some other route is in use); a CLI
+/// that is present but cannot answer is WARN.
 fn tailscale_row(env: &Env<'_>, hostname: &str) -> Check {
     const NAME: &str = "Tailscale";
     let Some(bin) = &env.tailscale else {
-        return Check::info(NAME, "tailscale CLI not found; path not checked");
+        return Check::ok(NAME, "tailscale CLI not found; path not checked");
     };
     let out = match env.runner.run(&tailscale::status_cmd(bin)) {
         Ok(out) => out,
-        Err(e) => return Check::info(NAME, format!("cannot run tailscale: {}", e.message())),
+        Err(e) => return Check::warn(NAME, format!("cannot run tailscale: {}", e.message())),
     };
     if !out.success() {
-        return Check::info(
+        return Check::warn(
             NAME,
             format!("tailscale status failed: {}", out.stderr_lossy().trim()),
         );
     }
     match tailscale::find_peer(&out.stdout, hostname) {
-        Err(e) => Check::info(NAME, e.message().to_string()),
-        Ok(None) => Check::info(
+        Err(e) => Check::warn(NAME, e.message().to_string()),
+        Ok(None) => Check::ok(
             NAME,
             format!("{hostname} is not a Tailscale peer; assuming LAN or another route"),
         ),
@@ -492,12 +501,10 @@ fn probe_rows(r: &Resolved<'_>, rep: &ProbeReport, home_id: Option<WorkspaceId>)
             checks.push(Check::fail_report("Reverse SSH", e));
             checks.push(Check::skip(
                 "Home runner",
-                ErrorCode::HomeUnreachable,
                 "not checked: reverse SSH failed",
             ));
             checks.push(Check::skip(
                 "Runner identity view",
-                ErrorCode::WrongWorkspace,
                 "not checked: reverse SSH failed",
             ));
         }
@@ -545,11 +552,7 @@ fn identity_row(
     how: &str,
 ) -> Check {
     let Some(home_id) = home_id else {
-        return Check::skip(
-            name,
-            ErrorCode::WrongWorkspace,
-            "not compared: home identity missing",
-        );
+        return Check::skip(name, "not compared: home identity missing");
     };
     match seen {
         Ok(Some(id)) if *id == home_id.to_string() => Check::ok(name, "matches"),
@@ -629,31 +632,26 @@ fn runner_rows(r: &Resolved<'_>, h: &HealthReport, home_id: Option<WorkspaceId>)
 fn skipped_after_work_ssh() -> Vec<Check> {
     const REASON: &str = "not checked: work SSH failed";
     [
-        ("Work ccnm", ErrorCode::Version),
-        ("Work SMB mount", ErrorCode::Mount),
-        ("Work identity view", ErrorCode::WrongWorkspace),
-        ("Reverse SSH", ErrorCode::HomeUnreachable),
-        ("Home runner", ErrorCode::HomeUnreachable),
-        ("Runner identity view", ErrorCode::WrongWorkspace),
-        ("Claude Code", ErrorCode::Version),
-        ("Claude authentication", ErrorCode::Auth),
+        "Work ccnm",
+        "Work SMB mount",
+        "Work identity view",
+        "Reverse SSH",
+        "Home runner",
+        "Runner identity view",
+        "Claude Code",
+        "Claude authentication",
     ]
     .into_iter()
-    .map(|(name, code)| Check::skip(name, code, REASON))
+    .map(|name| Check::skip(name, REASON))
     .collect()
 }
 
 /// Still to come, with the phase that will make each one real.
 fn not_yet_implemented() -> Vec<Check> {
-    [
-        ("Consistency test", ErrorCode::Coherence, 2),
-        ("Execution barrier", ErrorCode::Coherence, 5),
-    ]
-    .into_iter()
-    .map(|(name, code, phase)| {
-        Check::skip(name, code, format!("not implemented until phase {phase}"))
-    })
-    .collect()
+    [("Consistency test", 2), ("Execution barrier", 5)]
+        .into_iter()
+        .map(|(name, phase)| Check::skip(name, format!("not implemented until phase {phase}")))
+        .collect()
 }
 
 #[cfg(test)]
@@ -805,10 +803,69 @@ mod tests {
         assert_eq!(report.exit_code(), 0);
         let text = report.render();
         assert!(
-            text.contains("Workspaces              INFO   xshun"),
+            text.contains("Workspaces              OK     xshun"),
             "{text}"
         );
         assert!(text.ends_with("\nREADY\n"), "{text}");
+    }
+
+    fn report_of(statuses: &[Status]) -> Report {
+        Report {
+            subject: "x".into(),
+            checks: statuses
+                .iter()
+                .map(|s| Check {
+                    name: "row",
+                    status: s.clone(),
+                    detail: String::new(),
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn verdict_fail_beats_skip_whatever_the_order() {
+        let report = report_of(&[Status::Skip, Status::Fail(ErrorCode::Mount), Status::Skip]);
+        assert_eq!(report.blocking_code(), Some(ErrorCode::Mount));
+        assert_eq!(report.exit_code(), 22);
+        assert!(!report.ready());
+        // The first FAIL decides when there are several.
+        let report = report_of(&[
+            Status::Fail(ErrorCode::Auth),
+            Status::Fail(ErrorCode::Mount),
+        ]);
+        assert_eq!(report.exit_code(), 12);
+    }
+
+    #[test]
+    fn verdict_skip_only_is_not_ready_3() {
+        let report = report_of(&[Status::Ok, Status::Warn, Status::Skip]);
+        assert_eq!(report.blocking_code(), Some(ErrorCode::NotReady));
+        assert_eq!(report.exit_code(), 3);
+        assert!(!report.ready());
+        assert!(
+            report
+                .render()
+                .ends_with("NOT READY (0 failed, 1 not checked)\n")
+        );
+    }
+
+    #[test]
+    fn verdict_warn_only_is_ready_0() {
+        let report = report_of(&[Status::Ok, Status::Warn, Status::Warn]);
+        assert_eq!(report.blocking_code(), None);
+        assert_eq!(report.exit_code(), 0);
+        assert!(report.ready());
+        assert!(report.render().ends_with("\nREADY\n"));
+    }
+
+    #[test]
+    fn verdict_ok_only_is_ready_0() {
+        let report = report_of(&[Status::Ok, Status::Ok]);
+        assert_eq!(report.exit_code(), 0);
+        assert!(report.ready());
+        // And an empty report has nothing blocking either.
+        assert!(report_of(&[]).ready());
     }
 
     #[test]
@@ -874,7 +931,8 @@ mod tests {
             text.ends_with("NOT READY (0 failed, 2 not checked)\n"),
             "{text}"
         );
-        assert_eq!(report.blocking_code(), Some(ErrorCode::Coherence));
+        assert_eq!(report.blocking_code(), Some(ErrorCode::NotReady));
+        assert_eq!(report.exit_code(), 3);
 
         // Read-only: no control dir, no new files in root.
         assert!(!control(&dir).exists());
@@ -908,16 +966,13 @@ mod tests {
         let report = run(&config, Some("xshun"), &env(&fake, &dir, false));
         assert_eq!(report.exit_code(), 20, "{}", report.render());
         assert_eq!(row(&report, "SMB share").status, Status::Warn);
-        assert_eq!(row(&report, "Tailscale").status, Status::Info);
+        assert_eq!(row(&report, "Tailscale").status, Status::Ok);
         assert!(
             row(&report, "Work SSH")
                 .detail
                 .contains("Operation timed out")
         );
-        assert_eq!(
-            row(&report, "Claude Code").status,
-            Status::Skip(ErrorCode::Version)
-        );
+        assert_eq!(row(&report, "Claude Code").status, Status::Skip);
         let text = report.render();
         assert!(
             text.ends_with("NOT READY (1 failed, 10 not checked)\n"),
@@ -999,10 +1054,7 @@ mod tests {
             "{}",
             id.detail
         );
-        assert_eq!(
-            row(&report, "Work identity view").status,
-            Status::Skip(ErrorCode::WrongWorkspace)
-        );
+        assert_eq!(row(&report, "Work identity view").status, Status::Skip);
         assert_eq!(report.exit_code(), 30);
     }
 

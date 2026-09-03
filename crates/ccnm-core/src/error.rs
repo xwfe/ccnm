@@ -13,6 +13,11 @@ pub enum ErrorCode {
     /// A bug or an unexpected OS failure. Not a user-facing category; if a
     /// path keeps landing here it needs its own code.
     Internal,
+    /// Doctor found no failure but could not verify everything (a SKIP
+    /// row). Nothing is known to be broken, and nothing is proven to work,
+    /// so `ccnm run` must still refuse. Distinct from every FAIL code so a
+    /// caller can tell "unverified" from "broken".
+    NotReady,
     /// Config file missing, unparsable, or fails validation.
     Config,
     /// ccnm binaries on the two machines disagree, or Claude Code is too old.
@@ -41,8 +46,9 @@ pub enum ErrorCode {
 
 impl ErrorCode {
     /// Every code, in the order they are documented.
-    pub const ALL: [ErrorCode; 11] = [
+    pub const ALL: [ErrorCode; 12] = [
         ErrorCode::Internal,
+        ErrorCode::NotReady,
         ErrorCode::Config,
         ErrorCode::Version,
         ErrorCode::Auth,
@@ -59,6 +65,7 @@ impl ErrorCode {
     pub fn name(self) -> &'static str {
         match self {
             ErrorCode::Internal => "CCNM_E_INTERNAL",
+            ErrorCode::NotReady => "CCNM_E_NOT_READY",
             ErrorCode::Config => "CCNM_E_CONFIG",
             ErrorCode::Version => "CCNM_E_VERSION",
             ErrorCode::Auth => "CCNM_E_AUTH",
@@ -80,10 +87,13 @@ impl ErrorCode {
 
     /// Process exit code. Grouped by tens: 1x setup, 2x transport,
     /// 3x workspace state. 0 is success and 2 is reserved for clap usage
-    /// errors, so nothing here uses them.
+    /// errors, so nothing here uses them. 3 sits next to 1 because
+    /// "not ready" is a verdict about the whole report, not a category of
+    /// failure.
     pub fn exit_code(self) -> i32 {
         match self {
             ErrorCode::Internal => 1,
+            ErrorCode::NotReady => 3,
             ErrorCode::Config => 10,
             ErrorCode::Version => 11,
             ErrorCode::Auth => 12,

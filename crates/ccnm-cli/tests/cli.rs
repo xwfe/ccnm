@@ -108,7 +108,7 @@ fn doctor_config_only_is_ready() {
     let text = stdout(&out);
     assert!(text.starts_with("ccnm doctor: config\n"), "{text}");
     assert!(
-        text.contains("Workspaces              INFO   xshun"),
+        text.contains("Workspaces              OK     xshun"),
         "{text}"
     );
     assert!(text.ends_with("\nREADY\n"), "{text}");

@@ -159,9 +159,23 @@ pub trait ProcessRunner {
 #[derive(Debug, Default, Clone, Copy)]
 pub struct SystemRunner;
 
-/// How often to check whether the child has exited. Bounds the latency
-/// added to every command; 5 ms is invisible next to an SSH round trip.
-const POLL: Duration = Duration::from_millis(5);
+/// How long to wait before first asking whether the child has exited, and
+/// the ceiling the wait backs off to.
+///
+/// A single 5 ms interval was fine while every command was an `ssh`, where
+/// it hid inside a 20 ms round trip. It stopped being fine once tools
+/// started running local commands: `git ls-files` takes about 9 ms here,
+/// so a fixed 5 ms poll rounds it up to 10 and adds nothing but latency to
+/// every `list_files`, and `search_text` and `exec_command` would inherit
+/// the same tax.
+///
+/// Backing off keeps both ends honest: a command that finishes in a
+/// millisecond is noticed in a fraction of one, and a `cargo test` that
+/// runs for minutes is still only checked on 200 times a second. If a
+/// tool ever needs the exact exit instant, the answer is a condvar
+/// signalled by the drain threads, not a smaller number here.
+const POLL_MIN: Duration = Duration::from_micros(200);
+const POLL_MAX: Duration = Duration::from_millis(5);
 
 impl ProcessRunner for SystemRunner {
     fn run(&self, cmd: &Cmd) -> Result<Output> {
@@ -212,6 +226,7 @@ impl ProcessRunner for SystemRunner {
 
         let deadline = started + cmd.timeout;
         let mut timed_out = false;
+        let mut poll = POLL_MIN;
         let status = loop {
             if let Some(status) = child.try_wait()? {
                 break status;
@@ -224,7 +239,8 @@ impl ProcessRunner for SystemRunner {
                 let _ = child.kill();
                 break child.wait()?;
             }
-            thread::sleep(POLL);
+            thread::sleep(poll);
+            poll = (poll * 2).min(POLL_MAX);
         };
 
         if let Some(writer) = stdin_writer {

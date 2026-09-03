@@ -44,19 +44,25 @@ use crate::process::{Cmd, ProcessRunner};
 use crate::protocol::PROTOCOL;
 use crate::protocol::hello::HelloReport;
 use crate::protocol::probe::{ProbeReport, ProbeRequest};
+use crate::safety;
 use crate::ssh::{Master, Ssh};
-use crate::tailscale::{self, Route};
 
 /// What doctor needs from its surroundings. Injected so tests can script
-/// every external command and decide whether `tailscale` exists.
+/// every external command.
 pub struct Env<'a> {
     pub runner: &'a dyn ProcessRunner,
     /// Where ControlPath sockets live on this machine. Only read: doctor
     /// reuses a master if one exists and never creates the directory.
     pub control_dir: PathBuf,
-    pub tailscale: Option<PathBuf>,
     /// This user's home, for expanding the `~/` in a remote ccnm path.
     pub home: PathBuf,
+    /// What the account this machine's runtime runs as can reach.
+    ///
+    /// Passed in rather than computed here so doctor stays a pure
+    /// function of its inputs: the audit runs `id` and `sudo -n`, and a
+    /// test that had to script those into the same queue as every ssh
+    /// would be asserting on command ordering instead of on behaviour.
+    pub audit: safety::Audit,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -273,6 +279,10 @@ fn workspace_checks(r: &Resolved<'_>, env: &Env<'_>) -> Vec<Check> {
     }
 
     let mut checks = vec![home_workspace(&ws.root), home_ccnm(r, env)];
+    // Before anything that needs the network: this is an audit of the
+    // local account, and it is exactly as true when the work machine is
+    // unreachable.
+    checks.extend(runtime_safety_rows(env, r));
 
     let ssh = match Ssh::new(r.work_ssh, &env.control_dir).and_then(|ssh| {
         ssh.check_control_path()?;
@@ -280,10 +290,6 @@ fn workspace_checks(r: &Resolved<'_>, env: &Env<'_>) -> Vec<Check> {
     }) {
         Ok(ssh) => ssh,
         Err(e) => {
-            checks.push(Check::skip(
-                "Tailscale",
-                "not checked: work SSH is misconfigured",
-            ));
             checks.push(Check::fail("Work SSH", &e));
             checks.extend(skipped_after_work_ssh());
             checks.extend(not_yet_implemented());
@@ -293,7 +299,6 @@ fn workspace_checks(r: &Resolved<'_>, env: &Env<'_>) -> Vec<Check> {
     let resolved = match ssh.resolve(env.runner) {
         Ok(resolved) => resolved,
         Err(e) => {
-            checks.push(Check::skip("Tailscale", "not checked: ssh -G failed"));
             checks.push(Check::fail_with(
                 "Work SSH",
                 ErrorCode::WorkUnreachable,
@@ -304,7 +309,6 @@ fn workspace_checks(r: &Resolved<'_>, env: &Env<'_>) -> Vec<Check> {
             return checks;
         }
     };
-    checks.push(tailscale_row(env, &resolved.hostname));
 
     let req = ProbeRequest {
         protocol: PROTOCOL,
@@ -433,6 +437,76 @@ fn mcp_row(rep: &ProbeReport) -> Check {
 
 /// OK when the other side runs this build, else CCNM_E_VERSION. Both
 /// machines must run the same binary (design doc section 7).
+/// What the account this machine's runtime runs as can reach.
+///
+/// Doctor runs on the home machine, which is the runtime host, so this is
+/// an audit of the account that would actually execute `exec_command`.
+/// One row per finding, because "the runtime is not confined" is not
+/// something anyone can act on and "this account is in the admin group,
+/// remove it" is.
+///
+/// A failure is a FAIL row, not a SKIP: nothing is unknown here. The
+/// property was checked and it does not hold.
+fn runtime_safety_rows(env: &Env<'_>, r: &Resolved<'_>) -> Vec<Check> {
+    let audit = &env.audit;
+    // A workspace that has accepted an unconfined runtime gets warnings,
+    // not failures. The runtime will run its commands either way, and a
+    // table that says NOT READY about a session that works is a table
+    // people learn to ignore.
+    let accepted = r.workspace.allow_unconfined_exec;
+    let mut rows: Vec<Check> = audit
+        .findings
+        .iter()
+        .map(|finding| {
+            let detail = match &finding.fix {
+                Some(fix) => format!("{}\nfix: {fix}", finding.detail),
+                None => finding.detail.clone(),
+            };
+            let name = safety_row_name(&finding.check);
+            match finding.severity {
+                safety::Severity::Ok => Check::ok(name, detail),
+                safety::Severity::Warn => Check::warn(name, detail),
+                safety::Severity::Fail if accepted => Check::warn(name, detail),
+                safety::Severity::Fail => Check::fail_with(name, ErrorCode::Policy, detail),
+            }
+        })
+        .collect();
+    // The verdict the runtime's own gate uses, so this table and the
+    // session cannot disagree about whether commands will run.
+    rows.push(if audit.confined() {
+        Check::ok("exec_command", "the runtime account is confined")
+    } else if accepted {
+        Check::warn(
+            "exec_command",
+            "allowed, but the runtime is NOT confined: this workspace sets allow_unconfined_exec",
+        )
+    } else {
+        Check::fail_with(
+            "exec_command",
+            ErrorCode::Policy,
+            "refused until the runtime account is confined; see docs/production-safety.md",
+        )
+    });
+    rows
+}
+
+/// `Check::name` is `&'static str` because every other row's name is a
+/// literal. The audit's names are literals too, so they are mapped back
+/// rather than leaked.
+fn safety_row_name(check: &str) -> &'static str {
+    match check {
+        "Runs as root" => "Runs as root",
+        "Runtime user" => "Runtime user",
+        "No sudo" => "No sudo",
+        "Not an admin" => "Not an admin",
+        "No SSH keys" => "No SSH keys",
+        "No Claude credential" => "No Claude credential",
+        "No Docker socket" => "No Docker socket",
+        "Anthropic egress" => "Anthropic egress",
+        _ => "Runtime safety",
+    }
+}
+
 fn version_row(name: &'static str, hello: &HelloReport, side: &str) -> Check {
     if hello.ccnm_version == crate::VERSION {
         let exe = hello
@@ -571,39 +645,6 @@ fn home_ccnm(r: &Resolved<'_>, env: &Env<'_>) -> Check {
     Check::ok(NAME, format!("{version} at {}", path.display()))
 }
 
-/// Never blocking: ssh decides reachability, this only explains the path.
-/// No CLI or no matching peer is OK (some other route is in use); a CLI
-/// that is present but cannot answer is WARN.
-fn tailscale_row(env: &Env<'_>, hostname: &str) -> Check {
-    const NAME: &str = "Tailscale";
-    let Some(bin) = &env.tailscale else {
-        return Check::ok(NAME, "tailscale CLI not found; path not checked");
-    };
-    let out = match env.runner.run(&tailscale::status_cmd(bin)) {
-        Ok(out) => out,
-        Err(e) => return Check::warn(NAME, format!("cannot run tailscale: {}", e.message())),
-    };
-    if !out.success() {
-        return Check::warn(
-            NAME,
-            format!("tailscale status failed: {}", out.stderr_lossy().trim()),
-        );
-    }
-    match tailscale::find_peer(&out.stdout, hostname) {
-        Err(e) => Check::warn(NAME, e.message().to_string()),
-        Ok(None) => Check::ok(
-            NAME,
-            format!("{hostname} is not a Tailscale peer; assuming LAN or another route"),
-        ),
-        Ok(Some(peer)) if !peer.online => Check::warn(NAME, peer.describe()),
-        Ok(Some(peer)) if matches!(peer.route, Route::Relay(_)) => Check::warn(
-            NAME,
-            format!("{}; every MCP round trip pays for it", peer.describe()),
-        ),
-        Ok(Some(peer)) => Check::ok(NAME, peer.describe()),
-    }
-}
-
 /// Still to come, with the phase that will make each one real (design doc
 /// section 26).
 fn not_yet_implemented() -> Vec<Check> {
@@ -669,16 +710,43 @@ mod tests {
         PathBuf::from("/tmp/ccnm-t").join(dir.file_name().unwrap())
     }
 
-    fn env<'a>(fake: &'a FakeRunner, dir: &Path, tailscale: bool) -> Env<'a> {
+    fn env<'a>(fake: &'a FakeRunner, dir: &Path) -> Env<'a> {
+        env_with(fake, dir, confined_audit())
+    }
+
+    fn env_with<'a>(fake: &'a FakeRunner, dir: &Path, audit: safety::Audit) -> Env<'a> {
         Env {
             runner: fake,
             control_dir: control(dir),
-            tailscale: tailscale.then(|| PathBuf::from("/opt/homebrew/bin/tailscale")),
             home: dir.join("home"),
+            audit,
         }
     }
 
-    const TS: &str = r#"{"BackendState":"Running","Peer":{"k":{"HostName":"workmac","DNSName":"workmac.t.ts.net.","TailscaleIPs":["100.1.1.1"],"Online":true,"CurAddr":"203.0.113.7:41641","Relay":"tok","Active":true}}}"#;
+    /// The audit a machine set up per docs/production-safety.md produces.
+    fn confined_audit() -> safety::Audit {
+        safety::Audit {
+            user: "ccrun".into(),
+            findings: vec![safety::Finding {
+                check: "Runtime user".into(),
+                severity: safety::Severity::Ok,
+                detail: "ccrun".into(),
+                fix: None,
+            }],
+        }
+    }
+
+    fn unconfined_audit() -> safety::Audit {
+        safety::Audit {
+            user: "fodelf".into(),
+            findings: vec![safety::Finding {
+                check: "No sudo".into(),
+                severity: safety::Severity::Fail,
+                detail: "this account has passwordless sudo".into(),
+                fix: Some("remove it from the sudoers file".into()),
+            }],
+        }
+    }
 
     fn hello(user: &str, version: &str, root_ok: Option<bool>) -> HelloReport {
         HelloReport {
@@ -749,7 +817,7 @@ mod tests {
         let report = run(
             Path::new("/nonexistent/config.toml"),
             Some("xshun"),
-            &env(&fake, Path::new("/tmp"), false),
+            &env(&fake, Path::new("/tmp")),
         );
         assert_eq!(report.checks.len(), 1);
         assert_eq!(report.checks[0].status, Status::Fail(ErrorCode::Config));
@@ -769,7 +837,7 @@ mod tests {
         let report = run(
             &fixture("config-valid.toml"),
             None,
-            &env(&fake, Path::new("/tmp"), false),
+            &env(&fake, Path::new("/tmp")),
         );
         assert!(report.ready(), "{}", report.render());
         assert_eq!(report.exit_code(), 0);
@@ -787,7 +855,7 @@ mod tests {
         let report = run(
             &fixture("config-valid.toml"),
             Some("other"),
-            &env(&fake, Path::new("/tmp"), false),
+            &env(&fake, Path::new("/tmp")),
         );
         assert_eq!(report.exit_code(), 10);
         assert!(
@@ -803,7 +871,7 @@ mod tests {
         let report = run(
             &fixture("config-hybrid.toml"),
             Some("legacy"),
-            &env(&fake, Path::new("/tmp"), false),
+            &env(&fake, Path::new("/tmp")),
         );
         assert_eq!(report.exit_code(), 10, "{}", report.render());
         let backend = row(&report, "Backend");
@@ -815,25 +883,59 @@ mod tests {
     }
 
     #[test]
+    fn an_unconfined_runtime_fails_the_exec_row_and_the_whole_report() {
+        let (dir, config) = setup("unconfined", true, true);
+        let fake = FakeRunner::new();
+        fake.push(Output::exited(0, "ccnm 0.1.0\n"));
+        fake.push(Output::exited(0, "hostname workmac\nuser me\n"));
+        fake.push(Output::exited(
+            0,
+            serde_json::to_string(&good_probe()).unwrap(),
+        ));
+        let report = run(
+            &config,
+            Some("xshun"),
+            &env_with(&fake, &dir, unconfined_audit()),
+        );
+        let text = report.render();
+        // The finding itself, with its fix, and the verdict the runtime's
+        // own gate will reach.
+        assert_eq!(
+            row(&report, "No sudo").status,
+            Status::Fail(ErrorCode::Policy)
+        );
+        assert!(row(&report, "No sudo").detail.contains("fix: "), "{text}");
+        assert_eq!(
+            row(&report, "exec_command").status,
+            Status::Fail(ErrorCode::Policy)
+        );
+        assert!(
+            row(&report, "exec_command")
+                .detail
+                .contains("docs/production-safety.md"),
+            "{text}"
+        );
+        assert_eq!(report.exit_code(), ErrorCode::Policy.exit_code(), "{text}");
+    }
+
+    #[test]
     fn everything_good_blocks_only_on_future_phases() {
         let (dir, config) = setup("good", true, true);
         let fake = FakeRunner::new();
         fake.push(Output::exited(0, "ccnm 0.1.0\n"));
         fake.push(Output::exited(0, "hostname workmac\nuser me\n"));
-        fake.push(Output::exited(0, TS));
         fake.push(Output::exited(
             0,
             serde_json::to_string(&good_probe()).unwrap(),
         ));
 
-        let report = run(&config, Some("xshun"), &env(&fake, &dir, true));
+        let report = run(&config, Some("xshun"), &env(&fake, &dir));
         let text = report.render();
         for name in [
             "Config",
             "Workspace config",
             "Home workspace",
             "Home ccnm",
-            "Tailscale",
             "Work SSH",
             "Work ccnm",
             "Claude Code",
@@ -851,10 +953,6 @@ mod tests {
         assert_eq!(
             row(&report, "Home ccnm").detail,
             format!("0.1.0 at {}", dir.join("home/.local/bin/ccnm").display())
-        );
-        assert_eq!(
-            row(&report, "Tailscale").detail,
-            "direct via 203.0.113.7:41641"
         );
         assert_eq!(row(&report, "Work SSH").detail, "me@workmac");
         assert_eq!(
@@ -880,21 +978,28 @@ mod tests {
         assert!(!control(&dir).exists());
         assert_eq!(std::fs::read_dir(dir.join("root")).unwrap().count(), 0);
         // The version probe ran the expanded ~ path, ssh -G, then one
-        // probe with ControlMaster=no carrying the workspace facts.
+        // probe with ControlMaster=no carrying the workspace facts. Three
+        // commands and no more: the runtime audit is passed in, not run
+        // here, so doctor's command list is still only its own.
         let calls = fake.calls();
-        assert_eq!(calls.len(), 4);
+        assert_eq!(
+            calls.len(),
+            3,
+            "{:?}",
+            calls.iter().map(Cmd::display).collect::<Vec<_>>()
+        );
         assert_eq!(
             calls[0].display(),
             format!("{} --version", dir.join("home/.local/bin/ccnm").display())
         );
         assert_eq!(calls[1].display(), "ssh -G work");
-        let probe = calls[3].display();
+        let probe = calls[2].display();
         assert!(probe.contains("ControlMaster=no"), "{probe}");
         assert!(
             probe.contains("-T work ~/.local/bin/ccnm internal probe --payload "),
             "{probe}"
         );
-        let wire = calls[3].args.last().unwrap().to_string_lossy().into_owned();
+        let wire = calls[2].args.last().unwrap().to_string_lossy().into_owned();
         let sent: ProbeRequest = crate::protocol::payload::decode(&wire).unwrap();
         assert_eq!(sent.workspace, "xshun");
         assert_eq!(sent.root, dir.join("root"));
@@ -915,7 +1020,7 @@ mod tests {
         fake.push(Output::exited(0, "ccnm 0.1.0\n"));
         fake.push(Output::exited(0, "hostname workmac\n"));
         fake.push(Output::exited(0, serde_json::to_string(&probe).unwrap()));
-        let report = run(&config, Some("xshun"), &env(&fake, &dir, false));
+        let report = run(&config, Some("xshun"), &env(&fake, &dir));
         let mcp = row(&report, "Remote MCP handshake");
         assert_eq!(mcp.status, Status::Fail(ErrorCode::Internal));
         assert!(
@@ -935,7 +1040,7 @@ mod tests {
         down.stderr = b"ssh: connect to host workmac port 22: Operation timed out\n".to_vec();
         fake.push(down);
 
-        let report = run(&config, Some("xshun"), &env(&fake, &dir, false));
+        let report = run(&config, Some("xshun"), &env(&fake, &dir));
         assert_eq!(report.exit_code(), 20, "{}", report.render());
         assert!(
             row(&report, "Work SSH")
@@ -969,7 +1074,7 @@ mod tests {
         fake.push(Output::exited(0, "hostname workmac\n"));
         fake.push(Output::exited(0, serde_json::to_string(&probe).unwrap()));
 
-        let report = run(&config, Some("xshun"), &env(&fake, &dir, false));
+        let report = run(&config, Some("xshun"), &env(&fake, &dir));
         let work = row(&report, "Work ccnm");
         assert_eq!(work.status, Status::Fail(ErrorCode::Version));
         assert!(
@@ -1008,7 +1113,7 @@ mod tests {
         fake.push(Output::exited(0, "hostname workmac\n"));
         fake.push(Output::exited(0, serde_json::to_string(&probe).unwrap()));
 
-        let report = run(&config, Some("xshun"), &env(&fake, &dir, false));
+        let report = run(&config, Some("xshun"), &env(&fake, &dir));
         let reverse = row(&report, "Reverse SSH");
         assert_eq!(reverse.status, Status::Fail(ErrorCode::HomeUnreachable));
         assert!(
@@ -1030,7 +1135,7 @@ mod tests {
             0,
             serde_json::to_string(&good_probe()).unwrap(),
         ));
-        let report = run(&config, Some("xshun"), &env(&fake, &dir, false));
+        let report = run(&config, Some("xshun"), &env(&fake, &dir));
         let bin = row(&report, "Home ccnm");
         assert_eq!(bin.status, Status::Fail(ErrorCode::Version));
         assert!(bin.detail.contains("~/.local/bin/ccnm"), "{}", bin.detail);
@@ -1048,7 +1153,7 @@ mod tests {
         let fake = FakeRunner::new();
         fake.push(Output::exited(0, "ccnm 0.0.9\n"));
         fake.push(Output::exited(0, "hostname workmac\n"));
-        let report = run(&config, Some("xshun"), &env(&fake, &dir, false));
+        let report = run(&config, Some("xshun"), &env(&fake, &dir));
         let bin = row(&report, "Home ccnm");
         assert_eq!(bin.status, Status::Fail(ErrorCode::Version));
         assert!(bin.detail.contains("is ccnm 0.0.9"), "{}", bin.detail);
@@ -1060,7 +1165,7 @@ mod tests {
         let fake = FakeRunner::new();
         fake.push(Output::exited(0, "ccnm 0.1.0\n"));
         fake.push(Output::exited(0, "hostname workmac\n"));
-        let report = run(&config, Some("xshun"), &env(&fake, &dir, false));
+        let report = run(&config, Some("xshun"), &env(&fake, &dir));
         assert_eq!(report.blocking_code(), Some(ErrorCode::WrongWorkspace));
         assert!(
             row(&report, "Home workspace")
@@ -1077,9 +1182,8 @@ mod tests {
         let mut failed = Output::exited(255, "");
         failed.stderr = b"work: Name or service not known\n".to_vec();
         fake.push(failed);
-        let report = run(&config, Some("xshun"), &env(&fake, &dir, false));
+        let report = run(&config, Some("xshun"), &env(&fake, &dir));
         assert_eq!(report.exit_code(), 20, "{}", report.render());
-        assert_eq!(row(&report, "Tailscale").status, Status::Skip);
         assert!(
             row(&report, "Work SSH")
                 .detail

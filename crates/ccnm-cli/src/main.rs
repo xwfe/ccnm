@@ -12,7 +12,7 @@ use ccnm_core::protocol::hello::{self, HelloRequest};
 use ccnm_core::protocol::mcp::ServePayload;
 use ccnm_core::protocol::payload;
 use ccnm_core::protocol::probe::ProbeRequest;
-use ccnm_core::{Config, Result, claude, doctor, launcher, mcp, paths, tailscale, work};
+use ccnm_core::{Config, Result, claude, doctor, launcher, mcp, paths, safety, work};
 
 /// Terminal-native remote workspace runtime for Claude Code.
 #[derive(Parser)]
@@ -115,8 +115,8 @@ fn run(cli: Cli) -> Result<i32> {
             let env = doctor::Env {
                 runner: &SystemRunner,
                 control_dir: paths::state_dir()?.join("ssh"),
-                tailscale: tailscale::locate_from_env(),
                 home: paths::home_dir()?,
+                audit: runtime_audit(&config_path()?, workspace.as_deref()),
             };
             let report = doctor::run(&config_path()?, workspace.as_deref(), &env);
             print!("{}", report.render());
@@ -202,4 +202,19 @@ fn init_logging(verbose: bool) {
         .with_writer(std::io::stderr)
         .with_target(false)
         .init();
+}
+
+/// Audit the account this machine's runtime runs as.
+///
+/// Done here rather than inside doctor so doctor stays a pure function of
+/// its inputs. The config is loaded best-effort: without it there is no
+/// declared runtime user, which the audit already treats as a failure.
+fn runtime_audit(config_path: &std::path::Path, workspace: Option<&str>) -> safety::Audit {
+    let expected = Config::load(config_path).ok().and_then(|config| {
+        let name = workspace?;
+        let resolved = config.workspace(name).ok()?;
+        resolved.runtime.runtime_user.clone()
+    });
+    let home = paths::home_dir().unwrap_or_else(|_| std::path::PathBuf::from("/nonexistent"));
+    safety::audit(expected.as_deref(), &home, &SystemRunner)
 }

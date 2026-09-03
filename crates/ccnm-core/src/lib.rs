@@ -10,8 +10,8 @@ pub mod mcp;
 pub mod paths;
 pub mod process;
 pub mod protocol;
+pub mod safety;
 pub mod ssh;
-pub mod tailscale;
 pub mod work;
 
 pub use config::Config;

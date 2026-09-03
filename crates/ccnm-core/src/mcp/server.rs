@@ -84,6 +84,58 @@ impl WorkspaceInfo {
     }
 }
 
+/// Whether this session may run commands, and why.
+///
+/// The policy is read from *this* machine's config, not from the payload
+/// the other machine sent. The payload says which workspace and where;
+/// what the runtime account is allowed to do is a property of the machine
+/// being protected, and a caller must not be able to widen it.
+struct ExecGate {
+    audit: crate::safety::Audit,
+    /// The workspace said it accepts an unconfined runtime.
+    accepted: bool,
+}
+
+impl ExecGate {
+    fn decide(workspace: &str) -> ExecGate {
+        // The runtime host's own config, found the same way every other
+        // ccnm command finds it. A missing config is not an error here:
+        // it just means nothing has been declared, and nothing declared
+        // means not confined.
+        let config = crate::paths::effective_config_path()
+            .and_then(|path| crate::Config::load(&path))
+            .ok();
+        let expected = config.as_ref().and_then(|config| {
+            let workspace = config.workspaces.get(workspace)?;
+            let host = config.hosts.get(&workspace.runtime_host)?;
+            host.runtime_user.clone()
+        });
+        let accepted = config
+            .as_ref()
+            .and_then(|config| config.workspaces.get(workspace))
+            .is_some_and(|w| w.allow_unconfined_exec);
+        let home = crate::paths::home_dir().unwrap_or_else(|_| PathBuf::from("/nonexistent"));
+        ExecGate {
+            audit: crate::safety::audit(expected.as_deref(), &home, &SystemRunner),
+            accepted,
+        }
+    }
+
+    fn allowed(&self) -> bool {
+        self.audit.confined() || self.accepted
+    }
+
+    /// The line every result of an unconfined session carries.
+    fn note(&self) -> Option<String> {
+        (!self.audit.confined() && self.accepted).then(|| {
+            format!(
+                "this runtime is NOT confined (running as {}) and this workspace has allow_unconfined_exec set; a command here has the access that account has",
+                self.audit.user
+            )
+        })
+    }
+}
+
 struct Inner {
     workspace: String,
     /// Names the directory `exec_command` retains output in.
@@ -91,6 +143,11 @@ struct Inner {
     /// `~/.local/state/ccnm`. Resolved once; a runtime that cannot find it
     /// still serves every read-only tool.
     state: Option<PathBuf>,
+    /// What the account this runtime runs as can reach, and whether this
+    /// workspace has accepted it. Decided once at startup: the answer
+    /// cannot change while the process lives, and re-running `id` and
+    /// `sudo -n` on every call would be latency for nothing.
+    exec_gate: ExecGate,
     /// Canonical. Never sent to the client.
     root: PathBuf,
     git: bool,
@@ -111,11 +168,15 @@ impl Server {
     pub fn new(payload: &ServePayload) -> CcnmResult<Self> {
         let root = canonical_root(&payload.root)?;
         let (git, git_subdir) = git_facts(&root, &SystemRunner);
+        let exec_gate = ExecGate::decide(&payload.workspace);
         tracing::info!(
             workspace = %payload.workspace,
             root = %root.display(),
             session = %payload.session,
             git,
+            runtime_user = %exec_gate.audit.user,
+            confined = exec_gate.audit.confined(),
+            exec_allowed = exec_gate.allowed(),
             "mcp server starting"
         );
         Ok(Server {
@@ -123,6 +184,7 @@ impl Server {
                 workspace: payload.workspace.clone(),
                 session: payload.session.clone(),
                 state: crate::paths::state_dir().ok(),
+                exec_gate,
                 root,
                 git,
                 git_subdir,
@@ -276,6 +338,15 @@ impl Server {
         Parameters(args): Parameters<ExecCommandArgs>,
     ) -> std::result::Result<CallToolResult, ErrorData> {
         self.count_call();
+        // The hard gate of design doc section 18. Every other tool is
+        // bounded by the path policy; this one is a shell, so it is
+        // bounded by the account it runs as -- and if nobody has arranged
+        // for that account to be a confined one, it does not run.
+        if !self.inner.exec_gate.allowed() {
+            return Ok(tool_error(&Error::policy(
+                self.inner.exec_gate.audit.refusal(),
+            )));
+        }
         let Some(state) = self.inner.state.clone() else {
             return Ok(tool_error(&Error::new(
                 ErrorCode::NotReady,
@@ -291,7 +362,14 @@ impl Server {
                     ErrorData::internal_error(format!("exec_command task failed: {e}"), None)
                 })?;
         match ran {
-            Ok(ran) => {
+            Ok(mut ran) => {
+                // Accepting the risk once should not make it invisible
+                // afterwards: every result of an unconfined session says
+                // so, in the text the model reads and in the metadata.
+                if let Some(note) = self.inner.exec_gate.note() {
+                    ran.text.push_str(&format!("\n[{note}]"));
+                    ran.notes.push(note);
+                }
                 let value = serde_json::to_value(&ran)
                     .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
                 let mut result = CallToolResult::structured(value);

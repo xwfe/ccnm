@@ -294,7 +294,7 @@ where
 /// against exactly this, so an output_ref is a reference within one
 /// session and not a handle on the machine.
 pub fn session_dir(state: &Path, session: &str) -> PathBuf {
-    state.join("runtime").join(sanitize_session(session))
+    crate::paths::session_dir(state, session).join("output")
 }
 
 /// A fresh directory for this run, and a reference the caller can bring
@@ -310,21 +310,6 @@ fn make_retention(state: &Path, session: &str) -> Result<Retention> {
     std::fs::create_dir(&dir)
         .map_err(|e| Error::internal("cannot create a directory for this run").with_source(e))?;
     Ok(Retention { dir, reference: id })
-}
-
-/// The session id comes from the launcher, but it ends up as a directory
-/// name, so it is filtered rather than trusted.
-fn sanitize_session(session: &str) -> String {
-    let cleaned: String = session
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
-        .take(64)
-        .collect();
-    if cleaned.is_empty() {
-        "session".to_string()
-    } else {
-        cleaned
-    }
 }
 
 /// Keep the newest [`MAX_RETAINED_RUNS`] runs. Nothing else ever removes
@@ -704,7 +689,11 @@ mod tests {
         assert!(r.text.contains("read_output with output_ref"), "{}", r.text);
 
         // All of it is on disk, exactly as produced.
-        let path = f.state.join("runtime/s").join(&r.output_ref).join("stdout");
+        let path = f
+            .state
+            .join("sessions/s/output")
+            .join(&r.output_ref)
+            .join("stdout");
         let retained = fs::read_to_string(&path).unwrap();
         assert_eq!(retained.len() as u64, r.stdout_bytes);
         assert!(retained.starts_with("line 0\n"));
@@ -789,7 +778,7 @@ mod tests {
     #[test]
     fn old_runs_are_pruned_so_the_directory_does_not_grow_forever() {
         let f = fixture("prune");
-        let session_dir = f.state.join("runtime/s-test");
+        let session_dir = f.state.join("sessions/s-test/output");
         fs::create_dir_all(&session_dir).unwrap();
         for n in 0..MAX_RETAINED_RUNS + 20 {
             fs::create_dir_all(session_dir.join(format!("r-old{n:04}"))).unwrap();
@@ -801,11 +790,32 @@ mod tests {
 
     #[test]
     fn a_session_id_cannot_escape_the_retention_directory() {
-        assert_eq!(sanitize_session("s-1_ok"), "s-1_ok");
-        assert_eq!(sanitize_session("../../etc"), "etc");
-        assert_eq!(sanitize_session("a/b"), "ab");
-        assert_eq!(sanitize_session(""), "session");
-        assert_eq!(sanitize_session("/"), "session");
-        assert_eq!(sanitize_session(&"x".repeat(200)).len(), 64);
+        // The id names a directory and arrives from the other machine, so
+        // it goes through the same filter every state path uses.
+        let state = Path::new("/state");
+        assert_eq!(
+            session_dir(state, "s-1_ok"),
+            Path::new("/state/sessions/s-1_ok/output")
+        );
+        // The property that matters is not "the name looks tidy" but
+        // "the name is one segment". `../../etc` filters down to
+        // `....etc`, which is an odd directory name and cannot traverse
+        // anywhere; `..` and `../..` are all dots and fall back.
+        for hostile in ["../../etc", "a/b", "", "/", "..", "../..", "x/../../y"] {
+            let dir = session_dir(state, hostile);
+            let inside = dir
+                .strip_prefix("/state/sessions")
+                .unwrap_or_else(|_| panic!("{hostile} escaped to {}", dir.display()));
+            let parts: Vec<_> = inside.components().collect();
+            assert_eq!(parts.len(), 2, "{hostile} -> {}", dir.display());
+            assert!(
+                !parts
+                    .iter()
+                    .any(|c| matches!(c, std::path::Component::ParentDir)),
+                "{hostile} -> {}",
+                dir.display()
+            );
+        }
+        assert!(session_dir(state, &"x".repeat(200)).to_string_lossy().len() < 100);
     }
 }

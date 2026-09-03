@@ -65,6 +65,15 @@ pub struct Host {
     /// ccnm never performs that login (design doc section 21).
     #[serde(default)]
     pub claude_config_dir: Option<PathBuf>,
+    /// The dedicated account the MCP runtime must run as on this host
+    /// (design doc section 18). ccnm never creates it and never switches
+    /// to it; it checks that it is what the runtime is running as, and
+    /// refuses `exec_command` when it is not.
+    ///
+    /// Unset is itself a failure on the runtime host: without it ccnm
+    /// cannot tell the dedicated account from the developer's own.
+    #[serde(default)]
+    pub runtime_user: Option<String>,
     /// Hybrid only: account the work machine mounts the SMB share as.
     #[serde(default)]
     pub smb_user: Option<String>,
@@ -95,6 +104,15 @@ pub struct Workspace {
     pub root: PathBuf,
     #[serde(default)]
     pub claude_permission_mode: PermissionMode,
+    /// Run `exec_command` for this workspace even though the runtime
+    /// account is not confined (design doc section 18).
+    ///
+    /// Spelled out rather than shortened on purpose. The default refusal
+    /// is the hard gate the design document asks for; this is the way to
+    /// say "I know, this is a scratch project, go ahead", and every
+    /// result of such a session says so.
+    #[serde(default)]
+    pub allow_unconfined_exec: bool,
     /// Hybrid only: where the restricted runner may write. Must not overlap
     /// `root`.
     #[serde(default)]

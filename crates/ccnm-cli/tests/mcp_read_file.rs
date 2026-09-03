@@ -37,6 +37,13 @@ struct Session {
 
 impl Session {
     fn start(root: &Path) -> Session {
+        Session::start_with(root, None)
+    }
+
+    /// `config` is the path the runtime should read its own policy from.
+    /// Without one it has nothing declared, which is not confined, and
+    /// exec_command is refused -- which is what the default has to be.
+    fn start_with(root: &Path, config: Option<&Path>) -> Session {
         let wire = payload::encode(&ServePayload::new("t", root.to_path_buf(), "s1")).unwrap();
         let mut child = Command::new(env!("CARGO_BIN_EXE_ccnm"))
             .args(["internal", "mcp-serve", "--payload", &wire])
@@ -45,6 +52,10 @@ impl Session {
             .env("ANTHROPIC_API_KEY", "sk-ant-must-not-leak")
             .env("CLAUDE_CODE_OAUTH_TOKEN", "oauth-must-not-leak")
             .env("CCNM_E2E_KEPT", "yes")
+            .env(
+                "CCNM_CONFIG",
+                config.unwrap_or(Path::new("/nonexistent/ccnm.toml")),
+            )
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -165,10 +176,31 @@ fn workspace(name: &str) -> PathBuf {
     std::fs::canonicalize(&root).unwrap()
 }
 
+/// A config declaring this workspace. `unconfined` is what the round of
+/// production-safety work is about: without it a runtime that is not a
+/// dedicated confined account refuses to run commands at all.
+fn config_for(root: &Path, unconfined: bool) -> PathBuf {
+    let path = root.parent().unwrap().join("ccnm.toml");
+    std::fs::write(
+        &path,
+        format!(
+            "version = 1\n\
+             [hosts.work]\nssh = \"ccnm-test-nowhere.invalid\"\n\
+             [hosts.home]\nssh_from_work = \"ccnm-home\"\n\
+             [workspaces.t]\nwork_host = \"work\"\nroot = \"{}\"\n\
+             allow_unconfined_exec = {unconfined}\n",
+            root.display()
+        ),
+    )
+    .unwrap();
+    path
+}
+
 #[test]
 fn read_file_serves_a_whole_session_over_one_process() {
     let root = workspace("session");
-    let mut s = Session::start(&root);
+    let config = config_for(&root, true);
+    let mut s = Session::start_with(&root, Some(&config));
 
     // tools/list advertises read_file, inside the schema budget, and with
     // a schema that does not invite start_line = 0.
@@ -396,6 +428,9 @@ fn read_file_serves_a_whole_session_over_one_process() {
     // is unsafe in this edition and ccnm-core forbids unsafe.
     let ran = s.call("exec_command", json!({"cmd": ["env"]}));
     assert!(!is_error(&ran), "{}", text(&ran));
+    // Accepting an unconfined runtime does not make it quiet: every
+    // result says so, in the text and in the metadata.
+    assert!(text(&ran).contains("NOT confined"), "{}", text(&ran));
     assert_eq!(ran["structuredContent"]["exit_code"], 0);
     let dumped = text(&ran);
     assert!(!dumped.contains("sk-ant-must-not-leak"), "{dumped}");
@@ -531,5 +566,34 @@ fn a_fifo_cannot_wedge_the_session() {
     // Still alive and still serving.
     let after = s.read_file(json!({"path": "src/main.rs"}));
     assert!(!is_error(&after));
+    s.shutdown();
+}
+
+/// The hard gate of design doc section 18. A runtime that is not a
+/// dedicated confined account refuses to run commands, and says exactly
+/// what is wrong and where to read about it. Every other tool still
+/// works: the gate is on the shell, not on the session.
+#[test]
+fn exec_command_is_refused_until_the_runtime_is_confined() {
+    let root = workspace("gate");
+    let config = config_for(&root, false);
+    let mut s = Session::start_with(&root, Some(&config));
+
+    let refused = s.call("exec_command", json!({"cmd": ["true"]}));
+    assert!(is_error(&refused));
+    let message = text(&refused);
+    assert!(message.starts_with("CCNM_E_POLICY: "), "{message}");
+    assert!(message.contains("not confined"), "{message}");
+    assert!(message.contains("docs/production-safety.md"), "{message}");
+    assert!(message.contains("allow_unconfined_exec"), "{message}");
+    // It names what to change, not just that something is wrong.
+    assert!(message.contains("fix: "), "{message}");
+
+    // The reading tools are unaffected: this gate is about the shell.
+    let read = s.read_file(json!({"path": "src/main.rs"}));
+    assert!(!is_error(&read), "{}", text(&read));
+    let listed = s.call("list_files", json!({}));
+    assert!(!is_error(&listed), "{}", text(&listed));
+
     s.shutdown();
 }

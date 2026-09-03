@@ -45,7 +45,11 @@ fn setup(test: &str, home_bin: &str) -> (PathBuf, PathBuf) {
     std::fs::write(
         &config,
         format!(
-            "version = 1\n[hosts.work]\nssh = \"ccnm-test-nowhere.invalid\"\n[hosts.home]\nssh_from_work = \"ccnm-home\"\nccnm_bin = \"{home_bin}\"\n[workspaces.xshun]\nwork_host = \"work\"\nroot = \"{}\"\n",
+            // allow_unconfined_exec so the runtime-safety rows are
+            // warnings here: these tests are about the transport, and a
+            // machine without a ccrun account would otherwise fail every
+            // one of them for the same unrelated reason.
+            "version = 1\n[hosts.work]\nssh = \"ccnm-test-nowhere.invalid\"\n[hosts.home]\nssh_from_work = \"ccnm-home\"\nccnm_bin = \"{home_bin}\"\n[workspaces.xshun]\nwork_host = \"work\"\nroot = \"{}\"\nallow_unconfined_exec = true\n",
             root.display()
         ),
     )

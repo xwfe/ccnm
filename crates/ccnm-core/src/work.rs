@@ -3,7 +3,7 @@
 //! doctor). `work-run`, which sets up a session and starts Claude, comes
 //! with phase 3.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::claude;
@@ -14,7 +14,7 @@ use crate::protocol::PROTOCOL;
 use crate::protocol::hello::{self, HelloReport, HelloRequest};
 use crate::protocol::mcp::{ProbeReport as McpProbeReport, ServePayload};
 use crate::protocol::payload;
-use crate::protocol::probe::{ClaudeReport, ProbeReport, ProbeRequest};
+use crate::protocol::probe::{ProbeReport, ProbeRequest};
 use crate::ssh::{Master, Ssh};
 
 /// What the work-side code needs from its environment. Injected so tests
@@ -69,7 +69,11 @@ pub fn probe(req: &ProbeRequest, tools: &Tools<'_>) -> ProbeReport {
     ProbeReport {
         protocol: PROTOCOL,
         hello: hello::answer(&HelloRequest::new(None)),
-        claude: probe_claude(tools, req.claude_config_dir.as_deref()),
+        claude: claude::report(
+            tools.claude.as_deref(),
+            req.claude_config_dir.as_deref(),
+            tools.runner,
+        ),
         home_ssh,
         home_hello,
         mcp,
@@ -91,37 +95,10 @@ fn mcp_handshake(req: &ProbeRequest, ssh: &Ssh) -> Result<McpProbeReport> {
     )
 }
 
-fn probe_claude(tools: &Tools<'_>, config_dir: Option<&Path>) -> ClaudeReport {
-    let Some(bin) = &tools.claude else {
-        let missing = Error::new(
-            ErrorCode::Version,
-            "claude not found: looked in PATH, ~/.local/bin, ~/.claude/local, /usr/local/bin, /opt/homebrew/bin",
-        );
-        return ClaudeReport {
-            path: None,
-            version: Err((&missing).into()),
-            auth: Err(missing.into()),
-        };
-    };
-    let version = tools
-        .runner
-        .run(&claude::version_cmd(bin, config_dir))
-        .and_then(|out| claude::parse_version(&out))
-        .map_err(Into::into);
-    let auth = tools
-        .runner
-        .run(&claude::auth_status_cmd(bin, config_dir))
-        .and_then(|out| claude::parse_auth(&out))
-        .map_err(Into::into);
-    ClaudeReport {
-        path: Some(bin.clone()),
-        version,
-        auth,
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use super::*;
     use crate::process::{FakeRunner, Output};
     use crate::protocol::hello::PathStatus;

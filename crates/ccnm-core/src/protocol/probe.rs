@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use super::hello::HelloReport;
 use super::payload::Protocol;
-use crate::claude::AuthStatus;
+use crate::claude::ClaudeReport;
 use crate::error::Reported;
 use crate::ssh::ResolvedSsh;
 
@@ -36,13 +36,6 @@ impl Protocol for ProbeRequest {
     fn protocol(&self) -> u32 {
         self.protocol
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ClaudeReport {
-    pub path: Option<PathBuf>,
-    pub version: Reported<String>,
-    pub auth: Reported<AuthStatus>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

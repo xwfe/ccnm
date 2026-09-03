@@ -764,7 +764,7 @@ mod tests {
 
     fn good_probe() -> ProbeReport {
         use crate::claude::AuthStatus;
-        use crate::protocol::probe::ClaudeReport;
+        use crate::claude::ClaudeReport;
         ProbeReport {
             protocol: PROTOCOL,
             hello: hello("me", crate::VERSION, None),

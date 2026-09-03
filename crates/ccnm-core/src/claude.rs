@@ -8,8 +8,8 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::{Error, ErrorCode, Result};
-use crate::process::{Cmd, Output};
+use crate::error::{Error, ErrorCode, Reported, Result};
+use crate::process::{Cmd, Output, ProcessRunner};
 
 /// Find the `claude` binary. Non-interactive ssh sessions often have a bare
 /// PATH, so the usual install locations are tried after it.
@@ -110,6 +110,52 @@ impl AuthStatus {
             text.push_str(&format!(" ({sub})"));
         }
         text
+    }
+}
+
+/// Everything ccnm knows about Claude Code on one machine. Both halves are
+/// reported rather than returned as a single failure: a Claude that is
+/// installed but logged out is a different problem from no Claude at all,
+/// and doctor renders them as separate rows.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClaudeReport {
+    pub path: Option<PathBuf>,
+    pub version: Reported<String>,
+    pub auth: Reported<AuthStatus>,
+}
+
+/// Ask the local `claude` about itself.
+///
+/// Deliberately shallow: ccnm never looks at a credential itself, not even
+/// to prove that it could. Everything it claims about the login is what
+/// `claude auth status --json` said, in whatever process context this ran.
+/// That context matters — see [`crate::controller`].
+pub fn report(
+    bin: Option<&Path>,
+    config_dir: Option<&Path>,
+    runner: &dyn ProcessRunner,
+) -> ClaudeReport {
+    let Some(bin) = bin else {
+        let missing = Error::new(
+            ErrorCode::Version,
+            "claude not found: looked in PATH, ~/.local/bin, ~/.claude/local, /usr/local/bin, /opt/homebrew/bin",
+        );
+        return ClaudeReport {
+            path: None,
+            version: Err((&missing).into()),
+            auth: Err(missing.into()),
+        };
+    };
+    ClaudeReport {
+        path: Some(bin.to_path_buf()),
+        version: runner
+            .run(&version_cmd(bin, config_dir))
+            .and_then(|out| parse_version(&out))
+            .map_err(Into::into),
+        auth: runner
+            .run(&auth_status_cmd(bin, config_dir))
+            .and_then(|out| parse_auth(&out))
+            .map_err(Into::into),
     }
 }
 

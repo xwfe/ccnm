@@ -8,7 +8,10 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 
 use ccnm_core::process::SystemRunner;
-use ccnm_core::{Result, doctor, paths, tailscale};
+use ccnm_core::protocol::hello::{self, HelloRequest};
+use ccnm_core::protocol::payload;
+use ccnm_core::protocol::probe::ProbeRequest;
+use ccnm_core::{Result, claude, doctor, paths, tailscale, work};
 
 /// Terminal-native remote workspace runtime for Claude Code.
 #[derive(Parser)]
@@ -33,6 +36,28 @@ enum Command {
     Doctor {
         /// Workspace name from config.toml; omit to check only the config
         workspace: Option<String>,
+    },
+    /// Internal: invoked over ssh by the ccnm on the other machine
+    #[command(hide = true)]
+    Internal {
+        #[command(subcommand)]
+        command: InternalCommand,
+    },
+}
+
+/// Every internal command takes exactly one base64url payload (design doc
+/// section 8) and answers with one JSON document on stdout.
+#[derive(Subcommand)]
+enum InternalCommand {
+    /// Report this build, user and platform; answered by either machine
+    Hello {
+        #[arg(long)]
+        payload: String,
+    },
+    /// Work-side doctor probe: Claude, reverse ssh, home hello
+    Probe {
+        #[arg(long)]
+        payload: String,
     },
 }
 
@@ -68,7 +93,29 @@ fn run(cli: Cli) -> Result<i32> {
             print!("{}", report.render());
             Ok(report.exit_code())
         }
+        Command::Internal { command } => match command {
+            InternalCommand::Hello { payload } => {
+                let req: HelloRequest = payload::decode(payload)?;
+                print_json(&hello::answer(&req))
+            }
+            InternalCommand::Probe { payload } => {
+                let req: ProbeRequest = payload::decode(payload)?;
+                let tools = work::Tools {
+                    runner: &SystemRunner,
+                    control_dir: paths::state_dir()?.join("ssh"),
+                    claude: claude::locate_from_env(),
+                };
+                print_json(&work::probe(&req, &tools))
+            }
+        },
     }
+}
+
+/// Replies to the other machine go on stdout as one JSON document.
+/// Nothing else may ever be printed there (design doc section 8).
+fn print_json<T: serde::Serialize>(value: &T) -> Result<i32> {
+    println!("{}", payload::to_json(value)?);
+    Ok(0)
 }
 
 fn exit_code(code: i32) -> ExitCode {

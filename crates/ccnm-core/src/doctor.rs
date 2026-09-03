@@ -14,12 +14,13 @@
 //! broken, but the workspace is not proven usable either, and `ccnm run`
 //! must be able to tell those two apart. Only OK/WARN rows exit 0.
 //!
-//! This build checks what the home machine can see on its own: config,
-//! the project root, the ccnm binary the work machine will invoke back
-//! here, and how the work alias resolves. Everything that needs the work
-//! machine to answer (its ccnm, Claude, the reverse ssh, the MCP
-//! handshake) is a SKIP row until the phase that implements it lands, and
-//! a SKIP still blocks READY.
+//! The home machine checks what it can see on its own (config, the project
+//! root, the ccnm binary the work machine will invoke back here, how the
+//! work alias resolves), then makes one `ccnm internal probe` call to the
+//! work machine and renders a row per fact it brings back: its ccnm,
+//! Claude and its login, and the reverse ssh's hello from this machine.
+//! The MCP handshake and everything after it stay SKIP until their phase
+//! lands, and a SKIP still blocks READY.
 //!
 //! # Invariant: doctor is read-only
 //!
@@ -37,10 +38,13 @@ use std::time::Duration;
 
 use crate::claude;
 use crate::config::{Backend, Config, Resolved};
-use crate::error::{Error, ErrorCode};
+use crate::error::{Error, ErrorCode, ErrorReport};
 use crate::paths;
 use crate::process::{Cmd, ProcessRunner};
-use crate::ssh::Ssh;
+use crate::protocol::PROTOCOL;
+use crate::protocol::hello::HelloReport;
+use crate::protocol::probe::{ProbeReport, ProbeRequest};
+use crate::ssh::{Master, Ssh};
 use crate::tailscale::{self, Route};
 
 /// What doctor needs from its surroundings. Injected so tests can script
@@ -115,6 +119,10 @@ impl Check {
 
     fn fail(name: &'static str, err: &Error) -> Self {
         Check::fail_with(name, err.code(), err.message())
+    }
+
+    fn fail_report(name: &'static str, err: &ErrorReport) -> Self {
+        Check::fail_with(name, err.code(), &err.message)
     }
 
     fn fail_with(name: &'static str, code: ErrorCode, detail: impl AsRef<str>) -> Self {
@@ -268,7 +276,7 @@ fn workspace_checks(r: &Resolved<'_>, env: &Env<'_>) -> Vec<Check> {
 
     let ssh = match Ssh::new(r.work_ssh, &env.control_dir).and_then(|ssh| {
         ssh.check_control_path()?;
-        Ok(ssh)
+        Ok(ssh.with_ccnm_bin(r.work.ccnm_bin()))
     }) {
         Ok(ssh) => ssh,
         Err(e) => {
@@ -277,18 +285,13 @@ fn workspace_checks(r: &Resolved<'_>, env: &Env<'_>) -> Vec<Check> {
                 "not checked: work SSH is misconfigured",
             ));
             checks.push(Check::fail("Work SSH", &e));
+            checks.extend(skipped_after_work_ssh());
             checks.extend(not_yet_implemented());
             return checks;
         }
     };
-    match ssh.resolve(env.runner) {
-        Ok(resolved) => {
-            checks.push(tailscale_row(env, &resolved.hostname));
-            checks.push(Check::ok(
-                "Work SSH",
-                format!("{} (resolved, not connected yet)", resolved.target()),
-            ));
-        }
+    let resolved = match ssh.resolve(env.runner) {
+        Ok(resolved) => resolved,
         Err(e) => {
             checks.push(Check::skip("Tailscale", "not checked: ssh -G failed"));
             checks.push(Check::fail_with(
@@ -296,11 +299,160 @@ fn workspace_checks(r: &Resolved<'_>, env: &Env<'_>) -> Vec<Check> {
                 ErrorCode::WorkUnreachable,
                 e.message(),
             ));
+            checks.extend(skipped_after_work_ssh());
+            checks.extend(not_yet_implemented());
+            return checks;
+        }
+    };
+    checks.push(tailscale_row(env, &resolved.hostname));
+
+    let req = ProbeRequest {
+        protocol: PROTOCOL,
+        workspace: r.name.to_string(),
+        root: ws.root.clone(),
+        home_alias: r.home_alias.to_string(),
+        home_ccnm_bin: r.runtime.ccnm_bin(),
+        claude_config_dir: r.work.claude_config_dir.clone(),
+    };
+    match ssh.call_ccnm::<_, ProbeReport>(
+        env.runner,
+        Master::Reuse,
+        &["internal", "probe"],
+        &req,
+        Duration::from_secs(90),
+        ErrorCode::WorkUnreachable,
+    ) {
+        Ok(rep) => {
+            checks.push(Check::ok("Work SSH", resolved.target()));
+            checks.extend(probe_rows(r, &rep));
+        }
+        Err(e) => {
+            checks.push(Check::fail("Work SSH", &e));
+            checks.extend(skipped_after_work_ssh());
         }
     }
 
     checks.extend(not_yet_implemented());
     checks
+}
+
+fn probe_rows(r: &Resolved<'_>, rep: &ProbeReport) -> Vec<Check> {
+    let mut checks = vec![version_row("Work ccnm", &rep.hello, "work")];
+
+    checks.push(match &rep.claude.version {
+        Ok(v) => {
+            let path = rep
+                .claude
+                .path
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default();
+            Check::ok("Claude Code", format!("{v} ({path})"))
+        }
+        Err(e) => Check::fail_report("Claude Code", e),
+    });
+
+    checks.push(match &rep.claude.auth {
+        Ok(a) if a.logged_in => Check::ok("Claude authentication", a.describe()),
+        Ok(_) => Check::fail_with("Claude authentication", ErrorCode::Auth, auth_hint(r)),
+        Err(e) => Check::fail_report("Claude authentication", e),
+    });
+
+    match &rep.home_hello {
+        Ok(h) => {
+            checks.push(match version_row("Reverse SSH", h, "the runtime host") {
+                ok if ok.status == Status::Ok => Check::ok(
+                    "Reverse SSH",
+                    format!("{} as {}, ccnm {}", r.home_alias, h.user, h.ccnm_version),
+                ),
+                fail => fail,
+            });
+            checks.push(match h.root {
+                Some(status) if status.is_ok() => Check::ok(
+                    "Workspace root",
+                    format!(
+                        "{} is a directory for {}",
+                        r.workspace.root.display(),
+                        h.user
+                    ),
+                ),
+                Some(status) => Check::fail_with(
+                    "Workspace root",
+                    ErrorCode::WrongWorkspace,
+                    format!(
+                        "{} is {} for {} on {}",
+                        r.workspace.root.display(),
+                        status.describe(),
+                        h.user,
+                        r.home_alias
+                    ),
+                ),
+                None => Check::warn(
+                    "Workspace root",
+                    "the runtime host's hello did not report the root",
+                ),
+            });
+        }
+        Err(e) => {
+            checks.push(Check::fail_report("Reverse SSH", e));
+            checks.push(Check::skip(
+                "Workspace root",
+                "not checked: reverse SSH failed",
+            ));
+        }
+    }
+
+    checks
+}
+
+/// OK when the other side runs this build, else CCNM_E_VERSION. Both
+/// machines must run the same binary (design doc section 7).
+fn version_row(name: &'static str, hello: &HelloReport, side: &str) -> Check {
+    if hello.ccnm_version == crate::VERSION {
+        let exe = hello
+            .exe
+            .as_ref()
+            .map(|p| format!(" at {}", p.display()))
+            .unwrap_or_default();
+        Check::ok(name, format!("{}{exe}", hello.ccnm_version))
+    } else {
+        Check::fail_with(
+            name,
+            ErrorCode::Version,
+            format!(
+                "{side} runs ccnm {}, this machine runs {}; install the same build on both",
+                hello.ccnm_version,
+                crate::VERSION
+            ),
+        )
+    }
+}
+
+/// Design doc section 21: report, point at the manual login, never log in.
+fn auth_hint(r: &Resolved<'_>) -> String {
+    match &r.work.claude_config_dir {
+        Some(dir) => format!(
+            "Claude is not authenticated in configured CLAUDE_CONFIG_DIR\nrun on work: CLAUDE_CONFIG_DIR={} claude auth login",
+            dir.display()
+        ),
+        None => "Claude is not authenticated on the work machine\nrun on work: claude auth login"
+            .to_string(),
+    }
+}
+
+/// Rows that depend on the probe, when the probe never happened.
+fn skipped_after_work_ssh() -> Vec<Check> {
+    const REASON: &str = "not checked: work SSH failed";
+    [
+        "Work ccnm",
+        "Claude Code",
+        "Claude authentication",
+        "Reverse SSH",
+        "Workspace root",
+    ]
+    .into_iter()
+    .map(|name| Check::skip(name, REASON))
+    .collect()
 }
 
 /// The project root must exist on this (home) machine.
@@ -421,12 +573,7 @@ fn tailscale_row(env: &Env<'_>, hostname: &str) -> Check {
 /// section 26).
 fn not_yet_implemented() -> Vec<Check> {
     [
-        ("Work ccnm", "1B"),
-        ("Claude Code", "1B"),
-        ("Claude authentication", "1B"),
-        ("Reverse SSH", "1B"),
         ("Remote MCP handshake", "1B"),
-        ("Workspace root", "1B"),
         ("Workspace policy", "2"),
         ("Project instructions", "3"),
         ("Native tools disabled", "3"),
@@ -498,6 +645,47 @@ mod tests {
     }
 
     const TS: &str = r#"{"BackendState":"Running","Peer":{"k":{"HostName":"workmac","DNSName":"workmac.t.ts.net.","TailscaleIPs":["100.1.1.1"],"Online":true,"CurAddr":"203.0.113.7:41641","Relay":"tok","Active":true}}}"#;
+
+    fn hello(user: &str, version: &str, root_ok: Option<bool>) -> HelloReport {
+        HelloReport {
+            protocol: PROTOCOL,
+            ccnm_version: version.into(),
+            user: user.into(),
+            platform: "macos/aarch64".into(),
+            exe: Some(PathBuf::from(format!("/Users/{user}/.local/bin/ccnm"))),
+            root: root_ok.map(|ok| crate::protocol::hello::PathStatus {
+                exists: ok,
+                is_dir: ok,
+            }),
+        }
+    }
+
+    fn good_probe() -> ProbeReport {
+        use crate::claude::AuthStatus;
+        use crate::protocol::probe::ClaudeReport;
+        ProbeReport {
+            protocol: PROTOCOL,
+            hello: hello("me", crate::VERSION, None),
+            claude: ClaudeReport {
+                path: Some(PathBuf::from("/opt/homebrew/bin/claude")),
+                version: Ok("2.1.259".into()),
+                auth: Ok(AuthStatus {
+                    logged_in: true,
+                    auth_method: Some("claude.ai".into()),
+                    email: Some("me@x".into()),
+                    subscription_type: Some("max".into()),
+                }),
+            },
+            home_ssh: Ok(crate::ssh::ResolvedSsh {
+                hostname: "home.t.ts.net".into(),
+                user: "ccrun".into(),
+                port: 22,
+                identity_files: vec![],
+                proxy_jump: None,
+            }),
+            home_hello: Ok(hello("ccrun", crate::VERSION, Some(true))),
+        }
+    }
 
     fn row<'a>(report: &'a Report, name: &str) -> &'a Check {
         report
@@ -579,12 +767,16 @@ mod tests {
     }
 
     #[test]
-    fn everything_local_good_blocks_only_on_future_phases() {
+    fn everything_good_blocks_only_on_future_phases() {
         let (dir, config) = setup("good", true, true);
         let fake = FakeRunner::new();
         fake.push(Output::exited(0, "ccnm 0.1.0\n"));
         fake.push(Output::exited(0, "hostname workmac\nuser me\n"));
         fake.push(Output::exited(0, TS));
+        fake.push(Output::exited(
+            0,
+            serde_json::to_string(&good_probe()).unwrap(),
+        ));
 
         let report = run(&config, Some("xshun"), &env(&fake, &dir, true));
         let text = report.render();
@@ -595,6 +787,11 @@ mod tests {
             "Home ccnm",
             "Tailscale",
             "Work SSH",
+            "Work ccnm",
+            "Claude Code",
+            "Claude authentication",
+            "Reverse SSH",
+            "Workspace root",
         ] {
             assert_eq!(row(&report, name).status, Status::Ok, "{name}:\n{text}");
         }
@@ -606,12 +803,21 @@ mod tests {
             row(&report, "Tailscale").detail,
             "direct via 203.0.113.7:41641"
         );
+        assert_eq!(row(&report, "Work SSH").detail, "me@workmac");
         assert_eq!(
-            row(&report, "Work SSH").detail,
-            "me@workmac (resolved, not connected yet)"
+            row(&report, "Work ccnm").detail,
+            format!("{} at /Users/me/.local/bin/ccnm", crate::VERSION)
+        );
+        assert_eq!(
+            row(&report, "Claude authentication").detail,
+            "me@x via claude.ai (max)"
+        );
+        assert_eq!(
+            row(&report, "Reverse SSH").detail,
+            format!("ccnm-home as ccrun, ccnm {}", crate::VERSION)
         );
         assert!(
-            text.ends_with("NOT READY (0 failed, 12 not checked)\n"),
+            text.ends_with("NOT READY (0 failed, 7 not checked)\n"),
             "{text}"
         );
         assert_eq!(report.blocking_code(), Some(ErrorCode::NotReady));
@@ -620,14 +826,122 @@ mod tests {
         // Read-only: no control dir, nothing new in root.
         assert!(!control(&dir).exists());
         assert_eq!(std::fs::read_dir(dir.join("root")).unwrap().count(), 0);
-        // The version probe ran the expanded ~ path, and ssh only -G.
+        // The version probe ran the expanded ~ path, ssh -G, then one
+        // probe with ControlMaster=no carrying the workspace facts.
         let calls = fake.calls();
+        assert_eq!(calls.len(), 4);
         assert_eq!(
             calls[0].display(),
             format!("{} --version", dir.join("home/.local/bin/ccnm").display())
         );
         assert_eq!(calls[1].display(), "ssh -G work");
-        assert_eq!(calls.len(), 3);
+        let probe = calls[3].display();
+        assert!(probe.contains("ControlMaster=no"), "{probe}");
+        assert!(
+            probe.contains("-T work ~/.local/bin/ccnm internal probe --payload "),
+            "{probe}"
+        );
+        let wire = calls[3].args.last().unwrap().to_string_lossy().into_owned();
+        let sent: ProbeRequest = crate::protocol::payload::decode(&wire).unwrap();
+        assert_eq!(sent.workspace, "xshun");
+        assert_eq!(sent.root, dir.join("root"));
+        assert_eq!(sent.home_alias, "ccnm-home");
+        assert_eq!(sent.home_ccnm_bin, "~/.local/bin/ccnm");
+    }
+
+    #[test]
+    fn unreachable_work_fails_once_and_skips_the_rest() {
+        let (dir, config) = setup("unreachable", true, true);
+        let fake = FakeRunner::new();
+        fake.push(Output::exited(0, "ccnm 0.1.0\n"));
+        fake.push(Output::exited(0, "hostname workmac\n"));
+        let mut down = Output::exited(255, "");
+        down.stderr = b"ssh: connect to host workmac port 22: Operation timed out\n".to_vec();
+        fake.push(down);
+
+        let report = run(&config, Some("xshun"), &env(&fake, &dir, false));
+        assert_eq!(report.exit_code(), 20, "{}", report.render());
+        assert!(
+            row(&report, "Work SSH")
+                .detail
+                .contains("Operation timed out")
+        );
+        assert_eq!(row(&report, "Claude Code").status, Status::Skip);
+        assert_eq!(row(&report, "Workspace root").status, Status::Skip);
+        let text = report.render();
+        assert!(
+            text.ends_with("NOT READY (1 failed, 12 not checked)\n"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn work_version_mismatch_logged_out_and_missing_root_are_named() {
+        let (dir, config) = setup("mismatch", true, true);
+        let mut probe = good_probe();
+        probe.hello = hello("me", "0.0.1", None);
+        probe.claude.auth = Ok(crate::claude::AuthStatus {
+            logged_in: false,
+            auth_method: None,
+            email: None,
+            subscription_type: None,
+        });
+        probe.home_hello = Ok(hello("ccrun", crate::VERSION, Some(false)));
+
+        let fake = FakeRunner::new();
+        fake.push(Output::exited(0, "ccnm 0.1.0\n"));
+        fake.push(Output::exited(0, "hostname workmac\n"));
+        fake.push(Output::exited(0, serde_json::to_string(&probe).unwrap()));
+
+        let report = run(&config, Some("xshun"), &env(&fake, &dir, false));
+        let work = row(&report, "Work ccnm");
+        assert_eq!(work.status, Status::Fail(ErrorCode::Version));
+        assert!(
+            work.detail.contains("work runs ccnm 0.0.1"),
+            "{}",
+            work.detail
+        );
+        let auth = row(&report, "Claude authentication");
+        assert_eq!(auth.status, Status::Fail(ErrorCode::Auth));
+        assert!(
+            auth.detail.contains("run on work: claude auth login"),
+            "{}",
+            auth.detail
+        );
+        let root = row(&report, "Workspace root");
+        assert_eq!(root.status, Status::Fail(ErrorCode::WrongWorkspace));
+        assert!(
+            root.detail.contains("is missing for ccrun on ccnm-home"),
+            "{}",
+            root.detail
+        );
+        // First FAIL in table order decides.
+        assert_eq!(report.exit_code(), 11);
+    }
+
+    #[test]
+    fn reverse_ssh_failure_is_reported_from_the_probe() {
+        let (dir, config) = setup("reverse", true, true);
+        let mut probe = good_probe();
+        probe.home_hello = Err(ErrorReport::new(
+            ErrorCode::HomeUnreachable,
+            "ssh ccnm-home: Permission denied (publickey)",
+        ));
+        let fake = FakeRunner::new();
+        fake.push(Output::exited(0, "ccnm 0.1.0\n"));
+        fake.push(Output::exited(0, "hostname workmac\n"));
+        fake.push(Output::exited(0, serde_json::to_string(&probe).unwrap()));
+
+        let report = run(&config, Some("xshun"), &env(&fake, &dir, false));
+        let reverse = row(&report, "Reverse SSH");
+        assert_eq!(reverse.status, Status::Fail(ErrorCode::HomeUnreachable));
+        assert!(
+            reverse.detail.contains("Permission denied"),
+            "{}",
+            reverse.detail
+        );
+        assert_eq!(row(&report, "Workspace root").status, Status::Skip);
+        assert_eq!(report.exit_code(), 21);
     }
 
     #[test]
@@ -635,6 +949,10 @@ mod tests {
         let (dir, config) = setup("no-bin", true, false);
         let fake = FakeRunner::new();
         fake.push(Output::exited(0, "hostname workmac\n"));
+        fake.push(Output::exited(
+            0,
+            serde_json::to_string(&good_probe()).unwrap(),
+        ));
         let report = run(&config, Some("xshun"), &env(&fake, &dir, false));
         let bin = row(&report, "Home ccnm");
         assert_eq!(bin.status, Status::Fail(ErrorCode::Version));
@@ -642,7 +960,9 @@ mod tests {
         assert!(bin.detail.contains("cp $(which ccnm)"), "{}", bin.detail);
         assert!(bin.detail.contains("hosts.home.ccnm_bin"), "{}", bin.detail);
         assert_eq!(report.exit_code(), 11);
-        assert_eq!(fake.calls().len(), 1, "no --version for a missing file");
+        let calls = fake.calls();
+        assert_eq!(calls.len(), 2, "no --version for a missing file");
+        assert!(calls[0].display().starts_with("ssh -G"));
     }
 
     #[test]
@@ -688,6 +1008,8 @@ mod tests {
                 .detail
                 .contains("Name or service not known")
         );
+        assert_eq!(row(&report, "Reverse SSH").status, Status::Skip);
+        assert_eq!(fake.calls().len(), 2, "no probe after ssh -G failed");
     }
 
     #[test]

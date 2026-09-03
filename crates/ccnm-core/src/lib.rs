@@ -6,10 +6,11 @@ pub mod config;
 pub mod doctor;
 pub mod error;
 pub mod paths;
-pub mod payload;
 pub mod process;
+pub mod protocol;
 pub mod ssh;
 pub mod tailscale;
+pub mod work;
 
 pub use config::Config;
 pub use error::{Error, ErrorCode, Result};

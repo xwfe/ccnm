@@ -16,10 +16,10 @@ use std::time::Duration;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-use crate::config::is_token;
+use crate::config::{DEFAULT_CCNM_BIN, is_token};
 use crate::error::{Error, ErrorCode, Result};
-use crate::payload::{self, Protocol};
 use crate::process::{Cmd, Output, ProcessRunner};
+use crate::protocol::payload::{self, Protocol};
 
 /// How long an idle master stays in the background.
 pub const CONTROL_PERSIST: &str = "10m";
@@ -47,6 +47,8 @@ pub enum Master {
 pub struct Ssh {
     alias: String,
     control_dir: PathBuf,
+    /// Path of ccnm on the far side, as one word of the remote command.
+    ccnm_bin: String,
 }
 
 /// What `ssh -G` says the alias will actually connect to.
@@ -93,11 +95,23 @@ impl Ssh {
         Ok(Ssh {
             alias: alias.to_string(),
             control_dir: control_dir.into(),
+            ccnm_bin: DEFAULT_CCNM_BIN.to_string(),
         })
+    }
+
+    /// Where ccnm lives on the far side (`hosts.<x>.ccnm_bin`, design doc
+    /// section 7). Defaults to [`DEFAULT_CCNM_BIN`].
+    pub fn with_ccnm_bin(mut self, bin: impl Into<String>) -> Self {
+        self.ccnm_bin = bin.into();
+        self
     }
 
     pub fn alias(&self) -> &str {
         &self.alias
+    }
+
+    pub fn ccnm_bin(&self) -> &str {
+        &self.ccnm_bin
     }
 
     /// The ControlPath template handed to ssh, with `%C` unexpanded.
@@ -202,9 +216,10 @@ impl Ssh {
         Ok(runner.run(&self.check_master_cmd())?.success())
     }
 
-    /// Run `ccnm <subcommand> --payload <request>` on the other machine and
-    /// decode its JSON reply. `unreachable` is the code to report when ssh
-    /// itself fails, since which side is unreachable depends on the caller.
+    /// Run `<ccnm_bin> <subcommand> --payload <request>` on the other
+    /// machine and decode its JSON reply. `unreachable` is the code to
+    /// report when ssh itself fails, since which side is unreachable
+    /// depends on the caller.
     pub fn call_ccnm<Req, Rep>(
         &self,
         runner: &dyn ProcessRunner,
@@ -218,8 +233,9 @@ impl Ssh {
         Req: Serialize,
         Rep: DeserializeOwned + Protocol,
     {
+        let ccnm_bin = self.ccnm_bin.as_str();
         let wire = payload::encode(request)?;
-        let mut argv: Vec<&str> = vec!["ccnm"];
+        let mut argv: Vec<&str> = vec![ccnm_bin];
         argv.extend_from_slice(subcommand);
         argv.push("--payload");
         argv.push(&wire);
@@ -234,7 +250,7 @@ impl Ssh {
             RemoteOutcome::CommandNotFound => Err(Error::new(
                 ErrorCode::Version,
                 format!(
-                    "ccnm is not on PATH for non-interactive ssh to {}\nsshd runs the command through the login shell without ~/.zshrc; install ccnm in /usr/local/bin or export PATH from ~/.zshenv",
+                    "{ccnm_bin} not found on {} (the login shell exited 127)\ninstall the same ccnm build there, or set ccnm_bin for that host in config.toml",
                     self.alias
                 ),
             )),
@@ -247,12 +263,15 @@ impl Ssh {
 }
 
 /// Characters that no POSIX shell treats specially, so a remote command
-/// line built from them means the same thing on every login shell.
+/// line built from them means the same thing on every login shell. `~` is
+/// the one deliberate exception: a leading `~/` is expanded to the remote
+/// home by every login shell, which is exactly how the default ccnm path
+/// is found (design doc section 7).
 pub fn is_remote_safe(arg: &str) -> bool {
     !arg.is_empty()
         && arg.chars().all(|c| {
             c.is_ascii_alphanumeric()
-                || matches!(c, '-' | '_' | '.' | '/' | '=' | ':' | '@' | '+' | ',')
+                || matches!(c, '-' | '_' | '.' | '/' | '=' | ':' | '@' | '+' | ',' | '~')
         })
 }
 
@@ -396,14 +415,20 @@ mod tests {
         let cmd = ssh()
             .remote_cmd(
                 Master::Reuse,
-                &["ccnm", "work", "probe", "--payload", "abc_-9"],
+                &[
+                    "~/.local/bin/ccnm",
+                    "internal",
+                    "probe",
+                    "--payload",
+                    "abc_-9",
+                ],
                 Duration::from_secs(5),
             )
             .unwrap();
         let text = cmd.display();
         assert!(text.starts_with("ssh -o BatchMode=yes"), "{text}");
         assert!(
-            text.ends_with("-T work ccnm work probe --payload abc_-9"),
+            text.ends_with("-T work ~/.local/bin/ccnm internal probe --payload abc_-9"),
             "{text}"
         );
         assert_eq!(cmd.timeout, Duration::from_secs(5));
@@ -412,12 +437,14 @@ mod tests {
 
     #[test]
     fn remote_cmd_refuses_anything_needing_quotes() {
-        for bad in ["a b", "$HOME", "x;y", "'q'", "", "a|b", "*"] {
+        for bad in ["a b", "$HOME", "x;y", "'q'", "", "a|b", "*", "`id`", "a\nb"] {
             let err = ssh()
                 .remote_cmd(Master::Reuse, &["ccnm", bad], Duration::from_secs(1))
                 .unwrap_err();
             assert_eq!(err.code(), ErrorCode::Internal, "{bad}");
         }
+        assert!(is_remote_safe("~/.local/bin/ccnm"));
+        assert!(is_remote_safe("/opt/ccnm-0.1/bin/ccnm"));
     }
 
     #[test]
@@ -524,7 +551,7 @@ mod tests {
             .call_ccnm(
                 &fake,
                 Master::Reuse,
-                &["runner", "health"],
+                &["internal", "hello"],
                 &Ping { protocol: 1, n: 1 },
                 Duration::from_secs(1),
                 ErrorCode::HomeUnreachable,
@@ -534,7 +561,7 @@ mod tests {
         let call = &fake.calls()[0];
         let text = call.display();
         assert!(
-            text.contains(" -T work ccnm runner health --payload "),
+            text.contains(" -T work ~/.local/bin/ccnm internal hello --payload "),
             "{text}"
         );
         let wire = call.args.last().unwrap().to_string_lossy().into_owned();
@@ -558,14 +585,16 @@ mod tests {
         fake.push(Output::exited(0, "not json"));
 
         let call = || {
-            ssh().call_ccnm::<Ping, Ping>(
-                &fake,
-                Master::Reuse,
-                &["work", "probe"],
-                &Ping { protocol: 1, n: 0 },
-                Duration::from_secs(1),
-                ErrorCode::WorkUnreachable,
-            )
+            ssh()
+                .with_ccnm_bin("/opt/bin/ccnm")
+                .call_ccnm::<Ping, Ping>(
+                    &fake,
+                    Master::Reuse,
+                    &["internal", "probe"],
+                    &Ping { protocol: 1, n: 0 },
+                    Duration::from_secs(1),
+                    ErrorCode::WorkUnreachable,
+                )
         };
         let e = call().unwrap_err();
         assert_eq!(e.code(), ErrorCode::WorkUnreachable);
@@ -573,13 +602,16 @@ mod tests {
 
         let e = call().unwrap_err();
         assert_eq!(e.code(), ErrorCode::Version);
-        assert!(e.message().contains("~/.zshenv"), "{e}");
+        assert!(
+            e.message().starts_with("/opt/bin/ccnm not found on work"),
+            "{e}"
+        );
 
         let e = call().unwrap_err();
         assert_eq!(e.code(), ErrorCode::Mount);
         assert_eq!(
             e.message(),
-            "ccnm work probe on work failed (exit 22): mount failed\nbecause reasons"
+            "ccnm internal probe on work failed (exit 22): mount failed\nbecause reasons"
         );
 
         let e = call().unwrap_err();

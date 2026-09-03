@@ -9,6 +9,9 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+use ccnm_core::protocol::hello::{HelloReport, HelloRequest};
+use ccnm_core::protocol::payload;
+
 fn ccnm() -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_ccnm"));
     // Never let the developer's own config leak into a test.
@@ -24,6 +27,10 @@ fn fixture(name: &str) -> PathBuf {
 
 fn stdout(out: &Output) -> String {
     String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+fn stderr(out: &Output) -> String {
+    String::from_utf8_lossy(&out.stderr).into_owned()
 }
 
 /// A fresh directory with `root/` inside it and a config pointing there.
@@ -135,16 +142,76 @@ fn doctor_refuses_hybrid_backend() {
 }
 
 #[test]
-fn doctor_local_rows_then_not_ready_on_unimplemented_phases() {
+fn internal_commands_are_hidden_from_help() {
+    let out = ccnm().arg("--help").output().unwrap();
+    let text = stdout(&out);
+    assert!(text.contains("doctor"), "{text}");
+    assert!(!text.contains("internal"), "{text}");
+}
+
+#[test]
+fn internal_hello_answers_with_this_build_and_the_root() {
+    let (dir, _config) = setup("hello", env!("CARGO_BIN_EXE_ccnm"));
+    let wire = payload::encode(&HelloRequest::new(Some(dir.join("root")))).unwrap();
+    let out = ccnm()
+        .args(["internal", "hello", "--payload", &wire])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let rep: HelloReport = payload::decode_json(&out.stdout).unwrap();
+    assert_eq!(rep.ccnm_version, env!("CARGO_PKG_VERSION"));
+    assert_eq!(rep.user, std::env::var("USER").unwrap());
+    assert!(rep.root.unwrap().is_ok());
+    assert_eq!(
+        rep.exe.unwrap().canonicalize().unwrap(),
+        Path::new(env!("CARGO_BIN_EXE_ccnm"))
+            .canonicalize()
+            .unwrap()
+    );
+    // Exactly one JSON line on stdout, nothing else.
+    assert_eq!(stdout(&out).lines().count(), 1);
+
+    let wire = payload::encode(&HelloRequest::new(Some(dir.join("nope")))).unwrap();
+    let out = ccnm()
+        .args(["internal", "hello", "--payload", &wire])
+        .output()
+        .unwrap();
+    let rep: HelloReport = payload::decode_json(&out.stdout).unwrap();
+    assert!(!rep.root.unwrap().exists);
+}
+
+#[test]
+fn garbage_payload_is_a_version_error() {
+    let out = ccnm()
+        .args(["internal", "hello", "--payload", "definitely-not-a-payload"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(11));
+    assert!(
+        stderr(&out).starts_with("CCNM_E_VERSION:\n"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(stdout(&out).is_empty(), "stdout must stay clean on error");
+
+    let out = ccnm()
+        .args(["internal", "probe", "--payload", "eyJwcm90b2NvbCI6OTl9"]) // {"protocol":99}
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(11));
+}
+
+#[test]
+fn doctor_against_unreachable_work_exits_work_unreachable() {
     // The real test binary stands in for ~/.local/bin/ccnm: same version.
-    let (dir, config) = setup("local", env!("CARGO_BIN_EXE_ccnm"));
+    let (dir, config) = setup("unreachable", env!("CARGO_BIN_EXE_ccnm"));
     let out = ccnm()
         .args(["doctor", "xshun", "--config"])
         .arg(&config)
         .output()
         .unwrap();
     let text = stdout(&out);
-    assert_eq!(out.status.code(), Some(3), "{text}");
+    assert_eq!(out.status.code(), Some(20), "{text}");
     assert!(
         text.contains(&format!(
             "Home ccnm               OK     {} at {}",
@@ -154,15 +221,19 @@ fn doctor_local_rows_then_not_ready_on_unimplemented_phases() {
         "{text}"
     );
     assert!(
-        text.contains("Work SSH                OK     "),
-        "ssh -G resolves any name without connecting: {text}"
+        text.contains("Work SSH                FAIL   CCNM_E_WORK_UNREACHABLE"),
+        "{text}"
+    );
+    assert!(
+        text.contains("Claude Code             SKIP   not checked: work SSH failed"),
+        "{text}"
     );
     assert!(
         text.contains("Remote MCP handshake    SKIP   not implemented until phase 1B"),
         "{text}"
     );
     assert!(
-        text.contains("NOT READY (0 failed, 12 not checked)"),
+        text.contains("NOT READY (1 failed, 12 not checked)"),
         "{text}"
     );
     // Read-only: nothing appeared in the root.

@@ -375,7 +375,7 @@ impl Scan {
             // say so. The rest of this line is not reachable through
             // read_file; next_start_line points past it so a caller that
             // loops on next_start_line terminates.
-            let cut = floor_char_boundary(&text, room);
+            let cut = crate::mcp::truncate_bytes(&text, room).len();
             text.truncate(cut);
             self.bytes += text.len();
             self.lines.push((line_no, text));
@@ -501,20 +501,6 @@ fn render(
         out.push(']');
     }
     out
-}
-
-/// `str::floor_char_boundary` is still unstable, and slicing a `String` at
-/// the wrong index panics. Cutting a multi-byte character in half is the
-/// normal case here, not the exotic one: any file with an accented word or
-/// an emoji hits it as soon as `max_bytes` lands mid-character.
-fn floor_char_boundary(s: &str, mut index: usize) -> usize {
-    if index >= s.len() {
-        return s.len();
-    }
-    while index > 0 && !s.is_char_boundary(index) {
-        index -= 1;
-    }
-    index
 }
 
 /// Does the head of the file contain a NUL? Cheaper and more reliable than
@@ -1025,16 +1011,5 @@ mod tests {
         );
         assert_eq!(c.lines, 0);
         assert_eq!(c.total_lines, Some(2));
-    }
-
-    #[test]
-    fn floor_char_boundary_matches_the_std_semantics() {
-        let s = "a中b";
-        assert_eq!(floor_char_boundary(s, 0), 0);
-        assert_eq!(floor_char_boundary(s, 1), 1);
-        assert_eq!(floor_char_boundary(s, 2), 1);
-        assert_eq!(floor_char_boundary(s, 3), 1);
-        assert_eq!(floor_char_boundary(s, 4), 4);
-        assert_eq!(floor_char_boundary(s, 99), s.len());
     }
 }

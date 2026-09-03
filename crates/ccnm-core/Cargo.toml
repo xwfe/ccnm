@@ -1,0 +1,11 @@
+[package]
+name = "ccnm-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Core logic for ccnm: config, errors, process abstraction, doctor"
+
+[dependencies]
+
+[lints]
+workspace = true

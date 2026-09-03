@@ -1,0 +1,21 @@
+[workspace]
+resolver = "3"
+members = ["crates/ccnm-cli", "crates/ccnm-core"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+
+[workspace.dependencies]
+ccnm-core = { path = "crates/ccnm-core" }
+clap = { version = "4", features = ["derive", "env"] }
+serde = { version = "1", features = ["derive"] }
+toml = "0.9"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+[workspace.lints.rust]
+# ccnm handles paths, hashes and JSON from another machine. Nothing here needs
+# unsafe; forbidding it keeps that true when the crate grows.
+unsafe_code = "forbid"

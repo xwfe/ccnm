@@ -1,0 +1,17 @@
+[package]
+name = "ccnm-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "ccnm: terminal-native remote workspace runtime for Claude Code"
+
+[[bin]]
+name = "ccnm"
+path = "src/main.rs"
+
+[dependencies]
+ccnm-core.workspace = true
+clap.workspace = true
+
+[lints]
+workspace = true

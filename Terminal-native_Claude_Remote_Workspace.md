@@ -956,14 +956,54 @@ glob 语法只支持 `*` / `**` / `?` / `{a,b}`（`crates/ccnm-core/src/mcp/glob
 
 ### search_text
 
-最重要的 token 优化工具之一。
+已实现（`crates/ccnm-core/src/mcp/search.rs`）。最重要的 token 优化工具之一。
 
 ```text
-输入   query, path?, glob?, regex?, case_sensitive?, context_lines?, max_results?, max_bytes?
-默认   max_results = 50, context_lines = 2, max_bytes = 32 KiB
-实现   家庭机本地 rg；达到 max_results 立即停
-输出   只有命中行和上下文
+输入   query, path?, glob?, regex?, case_sensitive?, context_lines?, max_results?
+默认   max_results = 50（上限 200）, context_lines = 2（上限 10）,
+       regex = false（即 literal）, case_sensitive = true
+实现   家庭机本地 rg；达到 max_results 或字节预算立即杀掉 rg
+输出   按文件分组，`行号:` 是命中、`行号-` 是上下文，跨段之间一行 `--`
 ```
+
+`max_bytes` **不做成参数**，内部固定 32 KiB。它是 context window 的属性，不是这次提问的属性；
+做成参数，能调高的调用方一定会调高。单行另有 512 字节上限，否则一个 minified bundle
+一条命中就能吃掉整个预算。
+
+**搜索在文件所在地完成**，只有命中回来。不把文件搬到工作机再搜——这正是 runtime 要住在家庭机的理由。
+
+**rg 负责扫描，ccnm 负责全部约束。** 不自己写文本扫描器：匹配语义、编码探测、ignore 文件优先级、
+multiline 这些已经存在，自己写只会更慢而且错得不一样。但**约束一条都不继承**，rg 今天的默认值安全
+不是依赖它的理由：
+
+```text
+--no-config   环境里的 RIPGREP_CONFIG_PATH 不能改变 ccnm 搜什么、怎么搜
+--no-follow   symlink 是搜索跑出 workspace 的途径
+--no-hidden   dotfile 不搜，.git 也在其中
+-g !.git      再说一遍 .git。将来万一有个开关把 hidden 打开，不能连这条一起打开
+cwd = root    rg 拿到的是相对 scope，所以它打印的路径是相对的，家庭机的绝对路径到不了模型
+```
+
+然后**还要再查一遍 rg 的输出**：路径是绝对的、带 `..` 的、在 `.git/` 下的，一律丢弃。
+rg 是快速扫描器，不是安全边界。错误文本里的 workspace 路径也先替换掉再往外送。
+
+**两个上限限制的是"做多少事"，不是"回多少事"**：`stream_lines` 边读 rg 的 JSON 边判断，
+撞上限就杀掉 rg。在 monorepo 里搜 `e` 的代价是 50 条命中，不是全扫一遍再截断。
+命中数满了不立刻停——最后一条命中的尾部 context 还要收完，否则答案停在命中行上，读起来像文件到头了。
+
+四个容易写错、各有测试钉住的地方：
+
+```text
+rg exit 1     = 没匹配，是答案不是失败。>= 2 才是错误
+regex=false   必须真 literal（--fixed-strings）。查 `b.c` 不能匹配到 `bXc`
+query 位置    必须在 `--` 之后。否则查 `--ignore-case` 会被当成 flag
+长行截断      按字符边界切，直接切字节会 panic
+```
+
+`structuredContent` 里放 path / line / column，**不放命中文本**——那是贵的部分，而且它就在
+`content` 里紧挨着自己的 `path:line` 前缀。
+
+家庭机没装 rg 时报 `CCNM_E_NOT_READY` 并说清装法：没坏，也不能用。
 
 ### apply_patch
 
@@ -1302,7 +1342,10 @@ home ccnm internal mcp-serve
 ```text
 名字                       exit   含义
 CCNM_E_INTERNAL             1     bug 或意外的 OS 错误，不是给用户分类用的
-CCNM_E_NOT_READY            3     doctor 没有 FAIL 但有 SKIP：没坏，也没验证完
+CCNM_E_NOT_READY            3     没坏，但也还不能用。两种情况：doctor 没有 FAIL 但有
+                                  SKIP（没验证完）；runtime 缺一个它依赖的外部程序，
+                                  比如家庭机没装 rg。共同点是模型和用户都改不了参数，
+                                  要动的是环境
 CCNM_E_CONFIG              10     config.toml 缺失、解析失败或校验不过
 CCNM_E_VERSION             11     两台机器 ccnm 版本 / protocol 不一致，或 Claude Code 太旧
 CCNM_E_AUTH                12     工作机 Claude 未登录
@@ -1348,6 +1391,7 @@ crates/
             ├── glob.rs  glob 匹配（list_files / 将来的 search_text）
             ├── read.rs  read_file
             ├── list.rs  list_files
+            ├── search.rs search_text（rg）
             └── server.rs
 ```
 
@@ -1438,20 +1482,34 @@ read_file      已完成（2026-09-03）。workspace 里放了一个指向家庭
 list_files     已完成（2026-09-03）。真机对着 ccnm 仓库本身跑：git 模式下
                target/ 一次都没出现过；glob、截断、越界、非目录、不支持的语法
                各自给出正确的码。
-search_text    未开始
+search_text    已完成（2026-09-03）。真机验证：.git/config 搜不到、literal 的 `.`
+               不当通配、查 `--ignore-case` 不被当 flag、坏 regex 报 INVALID_ARGS
+               且不带路径、0 命中不是错误。
 apply_patch    未开始
 exec_command   未开始
 read_output    未开始
 ```
 
-真机数据（工作机 xdwmbp 起一条 ssh 到家庭机，同期 ping 17.5 ms）：
+真机数据（工作机 xdwmbp 起一条 ssh 到家庭机，同一会话内 50 次调用）：
 
 ```text
-initialize        305–385 ms（刚 scp 完 binary 那次是 1.4 s，页缓存冷，不代表稳态）
-read_file         p50 20.9 ms   p95 45.4 ms
-list_files        p50 47.9 ms   p95 69.0 ms   —— 比 read_file 贵的是 git ls-files 子进程
-tools/list        3 个工具 2419 B（预算 16 KiB）
+                            p50      p95      max     response
+workspace_info（纯 RTT 基线） 26.6     175.0    423.8   288 B
+read_file Cargo.toml         31.9      60.4    192.5   1640 B
+search 10 命中               52.4     195.8    205.2   3579 B
+search 50 命中               54.4     211.8    472.8   6755 B
+search 0 命中                65.2     210.3    229.7   265 B
+search 在 'e' 上提前终止      50.2     200.2    208.8   5184 B
+initialize                   305–385 ms
+tools/list                   4 个工具 3735 B（预算 16 KiB）
 ```
+
+**p95 的抖动是链路，不是工具。** 什么都不干的 `workspace_info` 自己就是 p95 175 ms / max 424 ms。
+减掉基线，search 只比 RTT 多花约 25 ms。本地纯耗时对得上：rg 自己 13.7 ms，走完 ccnm 15.6 ms，
+ccnm 只加 2 ms。
+
+两个值得看的对照：`0 命中` 反而比 `10 命中` 慢（65 vs 52 ms），因为没有命中就没得提前停，rg 要
+扫完；在 `e` 上提前终止只要 50 ms 且本地只花 7.9 ms，比全扫还快——这就是"限制的是做多少事"的证据。
 
 `list_files` 本地纯耗时 12.4 ms，其中 `git ls-files` 自己占 9 ms。顺带发现并修掉了
 `process.rs` 里 5 ms 固定轮询的问题：那个常量的理由是"跟 SSH 往返比可以忽略"，在工具开始跑
@@ -1465,7 +1523,13 @@ read_file/path   fifo 类型检查、containment、字符边界切割、二进�
                  BOM 剥离、next_start_line 前进、max_lines 上限、`..` 拒绝
 list_files/glob  遍历跟随 symlink、strip_dir 半段匹配、hidden 过滤、`**` 匹配零段、
                  字符类静默放行、git 忽略规则失效
+search_text      rg 输出的路径不再复查、literal 悄悄变 regex、exit 1 当成失败、
+                 字节预算去掉、query 不放在 `--` 之后、`-g !.git` 去掉、错误文本不脱敏
 ```
+
+一个诚实的说明：`-g !.git` 那条只有 argv 测试红，行为测试没红——因为 `--no-hidden` 单独已经
+挡住了 `.git`。`.git` 有三层防御（`--no-hidden`、`-g !.git`、输出复查），其中第一层和第三层有
+行为测试。第二层"看不出差别"正是它存在的意义。
 
 `apply_patch` 是最后一个文件工具。不为了快速 Demo 先写 `write_file` 再承诺以后换。真正能修改真实
 项目之前，apply_patch 测试至少覆盖：

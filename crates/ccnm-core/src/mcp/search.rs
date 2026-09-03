@@ -413,6 +413,12 @@ impl Collector {
     /// rg is a scanner, not the boundary. Whatever flags it was given, a
     /// path that is absolute, climbs out, or is under `.git/` does not go
     /// back to the model.
+    ///
+    /// `.git` is defended three times over: `--no-hidden` keeps rg out of
+    /// it, `-g !.git` says so again, and this drops it if the first two
+    /// ever stop being true. Only the first and third have behavioural
+    /// tests -- with `--no-hidden` in place the glob makes no observable
+    /// difference, which is the point of having it.
     fn safe_path(&mut self, raw: &str) -> Option<String> {
         let path = raw.strip_prefix("./").unwrap_or(raw);
         let rejected = path.is_empty()

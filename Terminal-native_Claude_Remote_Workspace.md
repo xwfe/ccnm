@@ -259,6 +259,10 @@ ssh = "work"
 # 工作机 ~/.ssh/config 里指向家庭机的 alias
 ssh_from_work = "ccnm-home"
 # ccnm_bin = "/Users/ccrun/.local/bin/ccnm"
+# runtime 必须以哪个账号运行（第 18 节）。ccnm 不会创建它、也不会切过去，
+# 只检查跑起来的确实是它，不是就拒绝 exec_command。
+# 不设这一项本身就是一条失败：没有它，ccnm 分不出"专用账号"和"开发者自己的账号"。
+runtime_user = "ccrun"
 
 [workspaces.xshun]
 backend = "mcp-ssh"          # 默认值，可省略
@@ -270,6 +274,11 @@ runtime_host = "home"        # 默认值 "home"，可省略
 root = "/Users/fodelf/Projects/xshun"
 
 claude_permission_mode = "acceptEdits"
+
+# 默认 false。true = "我知道 runtime 没有 confined，这个 workspace 照跑"。
+# 代价：这个 workspace 的每一条命令结果都会带一句 "NOT confined"。
+# 别对真实项目开这个。
+# allow_unconfined_exec = true
 ```
 
 校验规则（strict：未知字段直接报错，不静默忽略）：
@@ -281,6 +290,27 @@ runtime_host                 必须指向一个有 ssh_from_work 的 host
 root                         绝对路径，不含 . / ..
 ccnm_bin / claude_config_dir 设了就必须是绝对路径
 ```
+
+**runtime 读的是自己那台机器的 config，不是调用方发来的 payload。** payload 说的是"哪个
+workspace、在哪"；runtime 账号被允许做什么，是被保护那台机器的属性，调用方不能把它放宽。
+两边找 config 的方式必须一致（都认 `CCNM_CONFIG`），否则会出现"安全设置改了但对谁都没生效"。
+
+### state root：一切 ccnm 自己写的东西
+
+```text
+~/.local/state/ccnm/
+├── sessions/<session-id>/    一个 Claude 会话：本次 mcp.json、临时 settings、
+│                             session id、exec_command 留存的输出（output/<run>/）
+├── workspaces/<name>/        一个项目，跨任意多个会话存在：项目元信息、远端 root、
+│                             投影过来的 CLAUDE.md / rules
+└── cache/                    可重建，随时能删
+```
+
+按**生命周期**切分：session 目录随会话结束整个删掉，workspace 目录活得比任何一次会话都长。
+
+不写用户的项目目录（会出现在他的 `git status` 里），也不写 `~/.claude`（一个会改开发者自己
+Claude 配置的工具，是他没法推理的工具，第 21 节）。session / workspace 的名字来自另一台机器，
+所以统一过一个只能产出**单个路径段**的过滤器——没有"路径穿越"这件事要在各个调用点分别做对。
 
 MCP 模式**不再要求两台机器 root 相同**。这是这次架构切换最直接的收益之一：工作机上根本没有这个
 目录。
@@ -441,21 +471,16 @@ LAN SSH                ProxyJump
 换的只是用户 `~/.ssh/config` 里 `Host ccnm-home` 那几行怎么写。ccnm 看到的永远是
 `ssh ccnm-home`。
 
-#### 当前的偏差（已知，未修）
+#### 偏差已清（2026-09-03）
 
-```text
-crates/ccnm-core/src/tailscale.rs        201 行，只读 `tailscale status --json`
-crates/ccnm-core/src/doctor.rs:48,307,577  doctor 直接 import 它，有一行 Tailscale 检查
-crates/ccnm-cli/src/main.rs:15,118        CLI 负责找 tailscale binary
-```
+`ccnm-core` 里曾经有一个 `tailscale.rs`（201 行，只读 `tailscale status --json`）和 doctor 里
+一行 Tailscale 检查。代码本身无害——只读、不阻塞、找不到就跳过——但**名字出现在 `ccnm-core` 里
+就是方向错了**，Runtime 层不该认识第四层的任何一个具体方案。
 
-这段代码本身是无害的：只读、从不阻塞、找不到 `tailscale` 就报 OK 跳过，SSH 通不通由 SSH
-自己说了算，它只解释延迟（direct 还是 DERP 中转）。但**名字出现在 `ccnm-core` 里就是方向错了** ——
-Runtime 层不该认识第四层的任何一个具体方案。
+已连同 doctor 行和 CLI 里的定位代码一起删除。那一行的价值是"解释延迟是 direct 还是 DERP 中转"，
+而 `Remote MCP handshake` 行本来就在测真实往返，所以除了耦合什么都没丢。
 
-不为此停工。等下次动 doctor / SSH transport 时一起收拾，目标形态是：核心只有一个
-"transport 诊断"接口，Tailscale 变成一个可选 adapter，编译进不进去都不影响 `ccnm run`。
-在那之前，新代码不许再引用 `tailscale` 模块。
+现在 `grep -ri tailscale crates/` 是空的。这是这条原则的可执行判据。
 
 ---
 
@@ -1222,6 +1247,50 @@ rsync 到任意外部 host
 但文档必须明确：**command parser 不是 sandbox**。真正的生产安全依赖 dedicated OS identity、
 filesystem ACL、network policy。
 
+### ccnm 这一层能做的两件事（已实现）
+
+`crates/ccnm-core/src/safety.rs`。既然真正的边界是 OS 给的，ccnm 就只做剩下这两件：
+
+```text
+verify   看 runtime 实际跑在哪个账号上，逐条报告哪些性质成立
+gate     不成立就拒绝跑命令，除非该 workspace 显式声明接受
+```
+
+检查项，全部只读、本地、不修改任何东西：
+
+```text
+Runs as root            uid != 0
+Runtime user            == config.toml 里 hosts.<runtime>.runtime_user
+                        没声明本身就是一条失败——没有它，ccnm 分不出"专用账号"和
+                        "开发者自己的账号"，这时候回答"看起来没问题"是最糟的答案
+No sudo                 sudo -n true 必须失败
+Not an admin            不在 admin / wheel / sudo 组（staff 不算，Mac 上人人都在）
+No SSH keys             ~/.ssh 里没有可读私钥。按文件开头找 PRIVATE KEY，不按文件名猜
+No Claude credential    这台机器没有 Claude 凭证（第 6 节核心 invariant）
+No Docker socket        写不了 /var/run/docker.sock（能写等于 root）
+Anthropic egress        能不能连上 api.anthropic.com —— 只报 WARN，见第 19 节
+```
+
+每条失败都带上**用户自己该敲的那条命令**。ccnm 一条都不会替你跑：建用户、改权限这种事，
+一个诊断工具不该背着人干。完整步骤在 `docs/production-safety.md`。
+
+两个决定值得写下来：
+
+```text
+策略从被保护的那台机器读       不从调用方发来的 payload 读。runtime 账号被允许做什么，
+                              是被保护那台机器的属性，调用方不能把它放宽
+"查不出来" 算失败不算警告      第一版把 id 问不出来时报成 Warn，于是 confined() 返回 true
+                              ——"不知道"被当成了"安全"。测试抓到了，改成 Fail
+```
+
+拒绝时 `exec_command` 报 `CCNM_E_POLICY` 并列出每一条问题和修法。接受了
+（`allow_unconfined_exec = true`）也不会让它安静：**那个 workspace 的每一条命令结果都会带一句
+"this runtime is NOT confined"**。接受一次风险，不等于以后就看不见它。
+
+doctor 里一条 finding 一行。因为"runtime 不 confined"没法让人动手，而"这个账号在 admin 组里，
+把它移出去"可以。workspace 已经声明接受时，这些行降级成 WARN——runtime 反正会跑，一张对能用的
+session 说 NOT READY 的表格，人会学会忽略它。
+
 ---
 
 ## 19. 家庭机网络边界
@@ -1253,6 +1322,13 @@ SSH 每次调用追加 `-o SendEnv=-ANTHROPIC_*` `-o SendEnv=-CLAUDE_*`。OpenSS
 
 如果这条网络出口约束是绝对合规边界，Production gate 要求 ccrun 账户 / 执行沙箱没有公网 egress，
 或至少由 OS / network policy 阻断 Anthropic。不要把静态 command deny 写成"网络安全边界"。
+
+因为这条是**有条件**的，`ccnm doctor` 对它只报 WARN，判断留给人：能连上就说"能连上，如果这是你的
+合规边界，请在 OS 或网络层挡掉，而不是指望一张命令黑名单"。这个探测只有 doctor 会做（一次 TCP
+connect 就关掉），MCP runtime 从不做——每次开 session 都往外连是错的。
+
+`exec_command` 也**故意不做命令黑名单**。一张禁止程序名的表，`env curl`、绝对路径、一个 wrapper
+脚本就绕过去了；它真正的作用是让人以为被管着。假的安全感比没有更糟。
 
 Phase 1A / 1B fixture benchmark 不需要联网。
 
@@ -1348,16 +1424,32 @@ ccnm 绝不执行或自动触发 `claude auth login`，绝不复制 credentials�
 `security find-generic-password -s "Claude Code-credentials" -w` 退出码 36
 （errSecInteractionNotAllowed：Keychain 锁着，或者会话没有 UI 可以弹授权框）。
 
-所以 doctor 的 "Claude authentication FAIL" 要读成"**从 ssh 会话看**没登录"。这对 Phase 3 是硬问题：
-`ccnm run` 通过 SSH 在工作机起 Claude，Claude 同样读不到 Keychain。候选做法（Phase 3 实测决定）：
+所以 doctor 的 "Claude authentication FAIL" 要读成"**从 ssh 会话看**没登录"。
+
+### 结论：不从普通 SSH shell 启动 Claude（2026-09-03 拍板）
+
+上面那个坑不是一个要绕过去的 bug，是一个**启动方式选错了**的信号。从一条普通 ssh 会话里起
+Claude，它拿到的是一个没有 GUI、没有 security session 的上下文，Keychain 本来就不该给它。
+
+所以：
 
 ```text
-1. 工作机保持 GUI 登录且 Keychain 解锁，看 Claude 进程（不是 security CLI）能否免弹窗读取
-2. 在工作机 GUI 会话里跑一个常驻 tmux server，ccnm run 只 attach，Claude 继承 GUI 会话的 security session
-3. CLAUDE_CONFIG_DIR 指向一个用文件存凭据的目录（要单独 claude auth login 一次）
+Claude 由工作机登录用户上下文里的 LaunchAgent / work-controller 启动
+SSH 只负责三件事：控制、发起启动请求、attach
 ```
 
-ccnm 不会去 `security unlock-keychain`：那需要用户密码，违反"不碰认证"。
+这样 Claude 继承的是登录用户的 security session，Keychain 的问题自然消失——不是被绕过，是根本
+没发生。
+
+明确不做（和第 29 节一致）：
+
+```text
+不复制 OAuth        不把工作机的凭据搬到任何地方
+不做代理            不在中间转发 Anthropic 请求
+不在家庭机登录       家庭机永远不持有 Claude 凭证（第 6 节核心 invariant）
+```
+
+ccnm 也不会去 `security unlock-keychain`：那需要用户密码，违反"不碰认证"。
 
 ### ccnm 不修改项目 `.claude/settings.json`
 
@@ -1455,7 +1547,7 @@ crates/
         ├── paths.rs
         ├── process.rs
         ├── claude.rs
-        ├── tailscale.rs 待搬走：核心不该认识具体网络方案（第 6 节"ccnm 管编排，不管网络"）
+        ├── safety.rs    runtime 账号审计 + exec gate（第 18 节）
         ├── doctor.rs
         ├── protocol/    payload 编码、hello、probe 请求响应
         ├── ssh/         ssh 命令行构造、双向探测（Transport Adapter 层）
@@ -1493,6 +1585,24 @@ TS 只能出现在 `tests/`、`tools/`、fixture 生成器里，`ccnm run` 永�
 ---
 
 ## 26. 新的 Phase 划分
+
+### 当前主线顺序（2026-09-03 拍板，这个是准的）
+
+```text
+完成核心 coding runtime            ✅ 7 个工具全部完成
+→ production safety minimum        ✅ ccnm 那一半完成；OS 那一半由用户按 docs/production-safety.md 做
+→ work-controller / Claude auth context
+→ Claude MCP 接入
+→ 真实 dogfood
+→ process / Git / browser
+→ terminal session UX
+```
+
+**下面的 "Phase N" 是历史标签，不是顺序。** 最明显的一处：Phase 5（production safety）被提到了
+Phase 3 前面，因为 `exec_command` 一落地就等价于远程 shell，真实项目接入之前必须先做完。编号
+保留原样，因为全文有大量交叉引用；顺序看上面那张表。
+
+当前明确**不做**的旁支：SMB、Tailscale 管理、OAuth、Desktop RPC。
 
 ### Phase 0 — skeleton（已完成）
 
@@ -1578,6 +1688,16 @@ read_output    已完成（2026-09-03）。真机验证：128890 B 含中文的�
 **Phase 2 的 7 个工具到此全部完成。**`tools/list` 共 8270 B（预算 16 KiB），最大的是
 apply_patch 2487 B。
 
+Phase 5 的 ccnm 那一半也已完成（2026-09-03，见上面 Phase 5）。真机验证：声明
+`runtime_user = "ccrun"` 而 runtime 实际跑在 `fodelf` 上时，`exec_command` 回
+`CCNM_E_POLICY` 并列出 4 条问题各自的修法，而 `read_file` 照常工作——这个门是架在 shell 上的，
+不是架在整个 session 上；把该 workspace 改成 `allow_unconfined_exec = true` 之后命令能跑，
+但每条结果都带一句 "this runtime is NOT confined"。
+
+审计对这台开发机报出的实情，也是为什么要有专用账号：在 `admin` 组里、`~/.ssh` 有两个可读私钥、
+`~/.claude/.credentials.json` 存在。最后一条直接违反第 6 节的核心 invariant——**家庭机不能持有
+Claude 凭证**——只不过它属于开发者自己的账号，而 runtime 现在恰好也用这个账号在跑。
+
 真机数据（工作机 xdwmbp 起一条 ssh 到家庭机，同一会话内 50 次调用）：
 
 ```text
@@ -1650,11 +1770,20 @@ symlink escape
 
 任何 partial write 都不允许。
 
-### Phase 3 — Claude Integration
+### Phase 3 — work-controller / Claude auth context
 
-工作机正式生成 `mcp.json` / `settings.json`，启动 official Claude Code，关闭 Read / Edit / Write /
-Grep / Glob / Bash。验证 Claude 能完成：理解项目 → search → read → patch → exec test → read output。
-同时解决 root CLAUDE.md project context（第 20 节）。
+先解决"Claude 由谁启动"。工作机登录用户上下文里的一个 LaunchAgent（work-controller）负责起
+Claude；SSH 只做控制、发起、attach（第 21 节）。这一步做对了，Keychain 的问题就不存在了。
+
+### Phase 3.5 — Claude MCP 接入
+
+工作机生成 **session 级** 的 `mcp.json` / `settings.json`，放在
+`~/.local/state/ccnm/sessions/<id>/`（第 5 节）。**不改** `~/.claude/settings.json`、不改项目的
+`.claude/settings.json`、不改开发者任何现有配置。
+
+启动 official Claude Code，关闭 Read / Edit / Write / Grep / Glob / Bash（第 13 节）。验证 Claude
+能完成：理解项目 → search → read → patch → exec test → read output。同时解决 root CLAUDE.md
+project context（第 20 节）。
 
 ### Phase 4 — Benchmark
 
@@ -1662,13 +1791,54 @@ Grep / Glob / Bash。验证 Claude 能完成：理解项目 → search → read 
 
 ### Phase 5 — Production Safety
 
-benchmark 通过才进入。建立 ccrun，验证项目可读写、toolchain 可运行、无 sudo、无 Claude credential、
-无个人 SSH private key、无浏览器 credential。项目需要 Git credential 就单独设计最低权限 credential，
-不共享整个 Keychain / SSH agent。exec policy 见第 18 节。
+建立 ccrun，验证项目可读写、toolchain 可运行、无 sudo、无 Claude credential、无个人 SSH private
+key、无浏览器 credential。项目需要 Git credential 就单独设计最低权限 credential，不共享整个
+Keychain / SSH agent。exec policy 见第 18 节。
+
+**这一阶段被前移了**（2026-09-03）：`exec_command` 一落地就等价于远程 shell，所以真实项目接入
+之前必须先做完，不能等 benchmark。
+
+ccnm 那一半已完成：
+
+```text
+safety.rs        逐条审计 runtime 账号（第 18 节列的 8 项）
+exec gate        不 confined 就拒绝 exec_command，除非 workspace 显式接受
+doctor 行        一条 finding 一行，带上用户自己该敲的那条命令
+```
+
+OS 那一半是**用户手动做**的，ccnm 一条都不替他做：完整步骤在 `docs/production-safety.md`
+（建 ccrun、用 ACL 只开这一个项目、去 sudo、去 admin 组、出网限制、把 ssh alias 的 User 改成
+ccrun）。ccnm 只验证结果，因为建用户改权限不该由一个诊断工具背着人干。
 
 ### Phase 6 — Terminal UX
 
 `ccnm run / attach / doctor / status / stop`，tmux，断线处理（第 23 节）。
+
+### 浏览器同样属于家庭机 Runtime（2026-09-03 拍板）
+
+```text
+dev server / Playwright / Chrome    全部跑家庭机
+工作机的 Claude                      只通过 MCP 操作它们
+```
+
+理由和 coding runtime 一样：项目在家庭机，dev server 要能访问项目、要能被项目的 toolchain 启动，
+浏览器要能打开那个 dev server。搬到工作机就又回到"两台机器看同一份文件"那套一致性问题里。
+
+**Browser provider 与 coding runtime / transport / connectivity 解耦**（第 6 节四层）：它是
+Runtime 层里的另一个 provider，不是 coding 工具的一部分，也不该知道自己走的是哪条链路。
+
+### 项目上下文要单独解决（2026-09-04 待做）
+
+真实 repo 不在工作机，所以**不能假设** Claude 会自动加载家庭机的 `CLAUDE.md` / rules / skills——
+它在工作机上看不到任何一个。先后顺序：
+
+```text
+1. MCP instructions            initialize.result.instructions，16 KiB 上限（第 20 节）
+2. workspace metadata projection   把项目元信息投影到 ~/.local/state/ccnm/workspaces/<name>/
+3. 极小 shadow workspace（必要时）  只同步 Claude 元数据，绝不同步源码
+```
+
+第 3 条是**最后手段**，而且边界很硬：一旦开始同步源码，就等于把 SMB Hybrid 的一致性问题请回来了。
 
 ### Phase 7 — Tool Parity
 

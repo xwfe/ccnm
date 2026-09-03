@@ -26,6 +26,10 @@ pub struct ProbeRequest {
     /// ccnm path to invoke on the home runtime (design doc section 7).
     pub home_ccnm_bin: String,
     pub claude_config_dir: Option<PathBuf>,
+    /// How many `workspace_info` calls the MCP handshake should make over
+    /// the reverse ssh; 0 skips the handshake.
+    #[serde(default)]
+    pub mcp_calls: u32,
 }
 
 impl Protocol for ProbeRequest {
@@ -51,6 +55,10 @@ pub struct ProbeReport {
     pub home_ssh: Reported<ResolvedSsh>,
     /// The home runtime's hello, fetched over the reverse ssh.
     pub home_hello: Reported<HelloReport>,
+    /// One MCP session over the reverse ssh (`None` when not requested or
+    /// when the hello already failed).
+    #[serde(default)]
+    pub mcp: Option<Reported<super::mcp::ProbeReport>>,
 }
 
 impl Protocol for ProbeReport {

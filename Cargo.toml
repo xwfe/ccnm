@@ -17,6 +17,17 @@ toml = "0.9"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 uuid = { version = "1", features = ["v4"] }
+# MCP: the official Rust SDK, trimmed to stdio server + child-process
+# client. It needs tokio; nothing outside crates/ccnm-core/src/mcp is
+# async (design doc section 25).
+rmcp = { version = "3.2", default-features = false, features = [
+    "server",
+    "macros",
+    "transport-io",
+    "client",
+    "transport-child-process",
+] }
+tokio = { version = "1", default-features = false, features = ["rt", "io-std", "process", "time"] }
 
 [workspace.lints.rust]
 # ccnm handles paths, hashes and JSON from another machine. Nothing here needs

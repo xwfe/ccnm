@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use ccnm_core::protocol::hello::{HelloReport, HelloRequest};
+use ccnm_core::protocol::mcp::ProbeReport as McpProbeReport;
 use ccnm_core::protocol::payload;
 
 fn ccnm() -> Command {
@@ -229,7 +230,11 @@ fn doctor_against_unreachable_work_exits_work_unreachable() {
         "{text}"
     );
     assert!(
-        text.contains("Remote MCP handshake    SKIP   not implemented until phase 1B"),
+        text.contains("Remote MCP handshake    SKIP   not checked: work SSH failed"),
+        "{text}"
+    );
+    assert!(
+        text.contains("Workspace policy        SKIP   not implemented until phase 2"),
         "{text}"
     );
     assert!(
@@ -254,6 +259,64 @@ fn doctor_missing_home_ccnm_exits_version_code() {
         text.contains("Home ccnm               FAIL   CCNM_E_VERSION: /nonexistent/ccnm-bin/ccnm"),
         "{text}"
     );
+}
+
+/// The phase 1B proof, minus the network: this binary spawns itself as
+/// `internal mcp-serve`, speaks MCP to it over pipes, and one process
+/// answers every call.
+#[test]
+fn mcp_probe_local_speaks_to_one_persistent_server() {
+    let (dir, config) = setup("mcp-local", env!("CARGO_BIN_EXE_ccnm"));
+    let out = ccnm()
+        .args([
+            "mcp", "probe", "xshun", "--local", "--calls", "25", "--config",
+        ])
+        .arg(&config)
+        .output()
+        .unwrap();
+    let text = stdout(&out);
+    assert_eq!(out.status.code(), Some(0), "{text}\n{}", stderr(&out));
+    let mut lines = text.lines();
+    let summary = lines.next().unwrap();
+    assert!(summary.contains("workspace_info x25"), "{summary}");
+    assert!(summary.contains("throughout"), "{summary}");
+    let rep: McpProbeReport = serde_json::from_str(lines.next().unwrap()).unwrap();
+    assert_eq!(rep.server_name, "ccnm");
+    assert_eq!(rep.server_version, env!("CARGO_PKG_VERSION"));
+    assert_eq!(rep.tools, vec!["workspace_info"]);
+    assert_eq!(rep.calls, 25);
+    assert!(rep.single_process);
+    assert!(rep.server_pid > 0);
+    assert!(rep.instructions_bytes > 0);
+    assert!(
+        rep.tools_list_bytes < 16 * 1024,
+        "schema budget: {} bytes",
+        rep.tools_list_bytes
+    );
+    assert!(rep.call_p50_us <= rep.call_p95_us && rep.call_p95_us <= rep.call_max_us);
+    // Read-only: the server wrote nothing into the root.
+    assert_eq!(std::fs::read_dir(dir.join("root")).unwrap().count(), 0);
+}
+
+#[test]
+fn mcp_serve_refuses_a_missing_root_before_speaking_mcp() {
+    let wire = payload::encode(&ccnm_core::protocol::mcp::ServePayload::new(
+        "x",
+        PathBuf::from("/nonexistent/ccnm-root"),
+        "s",
+    ))
+    .unwrap();
+    let out = ccnm()
+        .args(["internal", "mcp-serve", "--payload", &wire])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(30), "{}", stderr(&out));
+    assert!(
+        stderr(&out).starts_with("CCNM_E_WRONG_WORKSPACE:\n"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(stdout(&out).is_empty(), "nothing but MCP may go to stdout");
 }
 
 #[test]

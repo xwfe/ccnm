@@ -9,9 +9,10 @@ use clap::{Parser, Subcommand};
 
 use ccnm_core::process::SystemRunner;
 use ccnm_core::protocol::hello::{self, HelloRequest};
+use ccnm_core::protocol::mcp::ServePayload;
 use ccnm_core::protocol::payload;
 use ccnm_core::protocol::probe::ProbeRequest;
-use ccnm_core::{Result, claude, doctor, paths, tailscale, work};
+use ccnm_core::{Config, Result, claude, doctor, launcher, mcp, paths, tailscale, work};
 
 /// Terminal-native remote workspace runtime for Claude Code.
 #[derive(Parser)]
@@ -37,11 +38,34 @@ enum Command {
         /// Workspace name from config.toml; omit to check only the config
         workspace: Option<String>,
     },
+    /// MCP transport diagnostics
+    Mcp {
+        #[command(subcommand)]
+        command: McpCommand,
+    },
     /// Internal: invoked over ssh by the ccnm on the other machine
     #[command(hide = true)]
     Internal {
         #[command(subcommand)]
         command: InternalCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum McpCommand {
+    /// Start one MCP session to the workspace's runtime, call
+    /// workspace_info N times, report latency and prove a single server
+    /// process answered; the server is shut down afterwards
+    Probe {
+        /// Workspace name from config.toml
+        workspace: String,
+        /// How many workspace_info calls to time
+        #[arg(long, default_value_t = 100)]
+        calls: u32,
+        /// Spawn the server as a child of this process instead of going
+        /// work -> ssh -> home, to measure the runtime without the network
+        #[arg(long)]
+        local: bool,
     },
 }
 
@@ -54,8 +78,13 @@ enum InternalCommand {
         #[arg(long)]
         payload: String,
     },
-    /// Work-side doctor probe: Claude, reverse ssh, home hello
+    /// Work-side doctor probe: Claude, reverse ssh, home hello, MCP
     Probe {
+        #[arg(long)]
+        payload: String,
+    },
+    /// Serve MCP on stdin/stdout for the workspace in the payload
+    McpServe {
         #[arg(long)]
         payload: String,
     },
@@ -93,10 +122,43 @@ fn run(cli: Cli) -> Result<i32> {
             print!("{}", report.render());
             Ok(report.exit_code())
         }
+        Command::Mcp {
+            command:
+                McpCommand::Probe {
+                    workspace,
+                    calls,
+                    local,
+                },
+        } => {
+            let config = Config::load(&config_path()?)?;
+            let resolved = config.workspace(workspace)?;
+            let env = launcher::Env {
+                runner: &SystemRunner,
+                control_dir: paths::state_dir()?.join("ssh"),
+                current_exe: std::env::current_exe()?,
+            };
+            let rep = if *local {
+                launcher::mcp_probe_local(&resolved, &env, *calls)?
+            } else {
+                launcher::mcp_probe_remote(&resolved, &env, *calls)?
+            };
+            println!("{}", rep.summary());
+            println!("{}", payload::to_json(&rep)?);
+            Ok(if rep.single_process {
+                0
+            } else {
+                ccnm_core::ErrorCode::Internal.exit_code()
+            })
+        }
         Command::Internal { command } => match command {
             InternalCommand::Hello { payload } => {
                 let req: HelloRequest = payload::decode(payload)?;
                 print_json(&hello::answer(&req))
+            }
+            InternalCommand::McpServe { payload } => {
+                let req: ServePayload = payload::decode(payload)?;
+                mcp::server::serve(&req)?;
+                Ok(0)
             }
             InternalCommand::Probe { payload } => {
                 let req: ProbeRequest = payload::decode(payload)?;

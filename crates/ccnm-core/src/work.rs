@@ -7,10 +7,13 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::claude;
-use crate::error::{Error, ErrorCode};
+use crate::error::{Error, ErrorCode, Result};
+use crate::mcp;
 use crate::process::ProcessRunner;
 use crate::protocol::PROTOCOL;
 use crate::protocol::hello::{self, HelloReport, HelloRequest};
+use crate::protocol::mcp::{ProbeReport as McpProbeReport, ServePayload};
+use crate::protocol::payload;
 use crate::protocol::probe::{ClaudeReport, ProbeReport, ProbeRequest};
 use crate::ssh::{Master, Ssh};
 
@@ -25,9 +28,11 @@ pub struct Tools<'a> {
 }
 
 /// Everything doctor wants to know about this machine, in one round trip.
-/// Read-only: no master connection, no file written.
+/// Read-only: no master connection, no file written. The MCP handshake
+/// starts a server on the home runtime and shuts it down again before
+/// returning (design doc section 4).
 pub fn probe(req: &ProbeRequest, tools: &Tools<'_>) -> ProbeReport {
-    let (home_ssh, home_hello) = match Ssh::new(&req.home_alias, &tools.control_dir)
+    let (home_ssh, home_hello, mcp) = match Ssh::new(&req.home_alias, &tools.control_dir)
         .map(|ssh| ssh.with_ccnm_bin(&req.home_ccnm_bin))
     {
         Err(e) => (
@@ -37,6 +42,7 @@ pub fn probe(req: &ProbeRequest, tools: &Tools<'_>) -> ProbeReport {
                 "not attempted: home alias is invalid",
             )
             .into()),
+            None,
         ),
         Ok(ssh) => {
             let home_ssh = ssh.resolve(tools.runner).map_err(Into::into);
@@ -53,7 +59,10 @@ pub fn probe(req: &ProbeRequest, tools: &Tools<'_>) -> ProbeReport {
                     )
                 })
                 .map_err(Into::into);
-            (home_ssh, home_hello)
+            // Only worth the round trips if the plain reverse ssh worked.
+            let mcp = (req.mcp_calls > 0 && home_hello.is_ok())
+                .then(|| mcp_handshake(req, &ssh).map_err(Into::into));
+            (home_ssh, home_hello, mcp)
         }
     };
 
@@ -63,7 +72,23 @@ pub fn probe(req: &ProbeRequest, tools: &Tools<'_>) -> ProbeReport {
         claude: probe_claude(tools, req.claude_config_dir.as_deref()),
         home_ssh,
         home_hello,
+        mcp,
     }
+}
+
+fn mcp_handshake(req: &ProbeRequest, ssh: &Ssh) -> Result<McpProbeReport> {
+    let wire = payload::encode(&ServePayload::new(
+        &req.workspace,
+        req.root.clone(),
+        &format!("probe-{}", uuid::Uuid::new_v4().hyphenated()),
+    ))?;
+    let cmd = ssh.mcp_transport_cmd(&wire)?;
+    mcp::probe::probe(
+        &cmd,
+        req.mcp_calls,
+        Duration::from_secs(30) + Duration::from_millis(500) * req.mcp_calls,
+        ErrorCode::HomeUnreachable,
+    )
 }
 
 fn probe_claude(tools: &Tools<'_>, config_dir: Option<&Path>) -> ClaudeReport {
@@ -138,6 +163,7 @@ mod tests {
             home_alias: "ccnm-home".into(),
             home_ccnm_bin: "~/.local/bin/ccnm".into(),
             claude_config_dir: Some(PathBuf::from("/x/claude")),
+            mcp_calls: 0,
         }
     }
 
@@ -165,6 +191,7 @@ mod tests {
         assert!(home.root.unwrap().is_ok());
         assert_eq!(rep.claude.version, Ok("2.1.259".into()));
         assert!(rep.claude.auth.as_ref().unwrap().logged_in);
+        assert_eq!(rep.mcp, None, "mcp_calls = 0 means no handshake");
 
         let calls = fake.calls();
         assert_eq!(calls.len(), 4);
@@ -218,10 +245,17 @@ mod tests {
             control_dir: control(&dir),
             claude: None,
         };
-        let rep = probe(&request(), &tools);
+        let rep = probe(
+            &ProbeRequest {
+                mcp_calls: 5,
+                ..request()
+            },
+            &tools,
+        );
         let err = rep.home_hello.unwrap_err();
         assert_eq!(err.code(), ErrorCode::HomeUnreachable);
         assert!(err.message.contains("Operation timed out"));
+        assert_eq!(rep.mcp, None, "no MCP attempt after a failed hello");
         assert_eq!(rep.claude.path, None);
         assert_eq!(rep.claude.version.unwrap_err().code(), ErrorCode::Version);
         assert_eq!(fake.calls().len(), 2, "no claude calls without a binary");

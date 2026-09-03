@@ -5,6 +5,8 @@ pub mod claude;
 pub mod config;
 pub mod doctor;
 pub mod error;
+pub mod launcher;
+pub mod mcp;
 pub mod paths;
 pub mod process;
 pub mod protocol;

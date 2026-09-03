@@ -156,6 +156,52 @@ impl Ssh {
         .collect()
     }
 
+    /// The `-o` pairs for the long-lived MCP transport (design doc
+    /// sections 11 and 12). Unlike [`options`](Self::options) it never
+    /// touches a ControlMaster: the session owns its own connection and
+    /// must not die with a master that some other command started.
+    /// `ClearAllForwardings` keeps a user's `LocalForward` lines out of a
+    /// session that only needs stdio.
+    pub fn transport_options(&self) -> Vec<String> {
+        [
+            "BatchMode=yes",
+            "ConnectTimeout=10",
+            "ClearAllForwardings=yes",
+            "ControlMaster=no",
+            "ControlPath=none",
+            "ServerAliveInterval=15",
+            "ServerAliveCountMax=3",
+            "SendEnv=-ANTHROPIC_*",
+            "SendEnv=-CLAUDE_*",
+        ]
+        .into_iter()
+        .flat_map(|opt| ["-o".to_string(), opt.to_string()])
+        .collect()
+    }
+
+    /// The exact command Claude Code's mcp.json will run: one ssh whose
+    /// stdin/stdout are the MCP stream. `payload` is the encoded
+    /// [`crate::protocol::mcp::ServePayload`].
+    pub fn mcp_transport_cmd(&self, payload: &str) -> Result<Cmd> {
+        let argv = [
+            self.ccnm_bin.as_str(),
+            "internal",
+            "mcp-serve",
+            "--payload",
+            payload,
+        ];
+        if let Some(bad) = argv.iter().find(|a| !is_remote_safe(a)) {
+            return Err(Error::internal(format!(
+                "refusing to send `{bad}` over ssh: it would need shell quoting"
+            )));
+        }
+        Ok(Cmd::new("ssh")
+            .args(self.transport_options())
+            .arg("-T")
+            .arg(&self.alias)
+            .args(argv))
+    }
+
     /// `ssh -G alias`: print the resolved configuration without connecting.
     pub fn resolve_cmd(&self) -> Cmd {
         Cmd::new("ssh")
@@ -445,6 +491,21 @@ mod tests {
         }
         assert!(is_remote_safe("~/.local/bin/ccnm"));
         assert!(is_remote_safe("/opt/ccnm-0.1/bin/ccnm"));
+    }
+
+    #[test]
+    fn mcp_transport_cmd_is_one_plain_ssh_without_control_master() {
+        let cmd = ssh()
+            .with_ccnm_bin("/Users/ccrun/.local/bin/ccnm")
+            .mcp_transport_cmd("eyJwIjoxfQ")
+            .unwrap();
+        let text = cmd.display();
+        assert_eq!(
+            text,
+            "ssh -o BatchMode=yes -o ConnectTimeout=10 -o ClearAllForwardings=yes -o ControlMaster=no -o ControlPath=none -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o SendEnv=-ANTHROPIC_* -o SendEnv=-CLAUDE_* -T work /Users/ccrun/.local/bin/ccnm internal mcp-serve --payload eyJwIjoxfQ"
+        );
+        assert!(cmd.stdin.is_none(), "the MCP client owns stdin, not Cmd");
+        assert!(ssh().mcp_transport_cmd("has space").is_err());
     }
 
     #[test]

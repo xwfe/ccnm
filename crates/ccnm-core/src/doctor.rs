@@ -313,6 +313,8 @@ fn workspace_checks(r: &Resolved<'_>, env: &Env<'_>) -> Vec<Check> {
         home_alias: r.home_alias.to_string(),
         home_ccnm_bin: r.runtime.ccnm_bin(),
         claude_config_dir: r.work.claude_config_dir.clone(),
+        // One real MCP session, shut down before the probe returns.
+        mcp_calls: 1,
     };
     match ssh.call_ccnm::<_, ProbeReport>(
         env.runner,
@@ -367,6 +369,7 @@ fn probe_rows(r: &Resolved<'_>, rep: &ProbeReport) -> Vec<Check> {
                 ),
                 fail => fail,
             });
+            checks.push(mcp_row(rep));
             checks.push(match h.root {
                 Some(status) if status.is_ok() => Check::ok(
                     "Workspace root",
@@ -396,6 +399,10 @@ fn probe_rows(r: &Resolved<'_>, rep: &ProbeReport) -> Vec<Check> {
         Err(e) => {
             checks.push(Check::fail_report("Reverse SSH", e));
             checks.push(Check::skip(
+                "Remote MCP handshake",
+                "not checked: reverse SSH failed",
+            ));
+            checks.push(Check::skip(
                 "Workspace root",
                 "not checked: reverse SSH failed",
             ));
@@ -403,6 +410,25 @@ fn probe_rows(r: &Resolved<'_>, rep: &ProbeReport) -> Vec<Check> {
     }
 
     checks
+}
+
+/// One MCP session over the reverse ssh: initialize, tools/list, and a
+/// `workspace_info` that must come back from a single server process.
+fn mcp_row(rep: &ProbeReport) -> Check {
+    const NAME: &str = "Remote MCP handshake";
+    match &rep.mcp {
+        None => Check::skip(NAME, "not requested"),
+        Some(Ok(m)) if !m.single_process => Check::fail_with(
+            NAME,
+            ErrorCode::Internal,
+            format!(
+                "the server's pid or call counter changed during {} call(s); the transport is not one persistent process",
+                m.calls
+            ),
+        ),
+        Some(Ok(m)) => Check::ok(NAME, m.summary()),
+        Some(Err(e)) => Check::fail_report(NAME, e),
+    }
 }
 
 /// OK when the other side runs this build, else CCNM_E_VERSION. Both
@@ -456,6 +482,7 @@ fn skipped_after_work_ssh() -> Vec<Check> {
         "Claude Code",
         "Claude authentication",
         "Reverse SSH",
+        "Remote MCP handshake",
         "Workspace root",
     ]
     .into_iter()
@@ -581,7 +608,6 @@ fn tailscale_row(env: &Env<'_>, hostname: &str) -> Check {
 /// section 26).
 fn not_yet_implemented() -> Vec<Check> {
     [
-        ("Remote MCP handshake", "1B"),
         ("Workspace policy", "2"),
         ("Project instructions", "3"),
         ("Native tools disabled", "3"),
@@ -692,6 +718,20 @@ mod tests {
                 proxy_jump: None,
             }),
             home_hello: Ok(hello("ccrun", crate::VERSION, Some(true))),
+            mcp: Some(Ok(crate::protocol::mcp::ProbeReport {
+                connect_us: 190_000,
+                server_name: "ccnm".into(),
+                server_version: crate::VERSION.into(),
+                instructions_bytes: 180,
+                tools: vec!["workspace_info".into()],
+                tools_list_bytes: 412,
+                calls: 1,
+                call_p50_us: 22_000,
+                call_p95_us: 22_000,
+                call_max_us: 22_000,
+                server_pid: 4242,
+                single_process: true,
+            })),
         }
     }
 
@@ -799,10 +839,15 @@ mod tests {
             "Claude Code",
             "Claude authentication",
             "Reverse SSH",
+            "Remote MCP handshake",
             "Workspace root",
         ] {
             assert_eq!(row(&report, name).status, Status::Ok, "{name}:\n{text}");
         }
+        assert_eq!(
+            row(&report, "Remote MCP handshake").detail,
+            "initialize in 190 ms, tools/list (1 tool, 412 B), workspace_info x1 p50 22 ms p95 22 ms max 22 ms, pid 4242 throughout"
+        );
         assert_eq!(
             row(&report, "Home ccnm").detail,
             format!("0.1.0 at {}", dir.join("home/.local/bin/ccnm").display())
@@ -825,7 +870,7 @@ mod tests {
             format!("ccnm-home as ccrun, ccnm {}", crate::VERSION)
         );
         assert!(
-            text.ends_with("NOT READY (0 failed, 7 not checked)\n"),
+            text.ends_with("NOT READY (0 failed, 6 not checked)\n"),
             "{text}"
         );
         assert_eq!(report.blocking_code(), Some(ErrorCode::NotReady));
@@ -855,6 +900,29 @@ mod tests {
         assert_eq!(sent.root, dir.join("root"));
         assert_eq!(sent.home_alias, "ccnm-home");
         assert_eq!(sent.home_ccnm_bin, "~/.local/bin/ccnm");
+        assert_eq!(sent.mcp_calls, 1);
+    }
+
+    #[test]
+    fn mcp_handshake_from_more_than_one_process_is_a_failure() {
+        let (dir, config) = setup("mcp-pid", true, true);
+        let mut probe = good_probe();
+        if let Some(Ok(m)) = probe.mcp.as_mut() {
+            m.single_process = false;
+            m.calls = 3;
+        }
+        let fake = FakeRunner::new();
+        fake.push(Output::exited(0, "ccnm 0.1.0\n"));
+        fake.push(Output::exited(0, "hostname workmac\n"));
+        fake.push(Output::exited(0, serde_json::to_string(&probe).unwrap()));
+        let report = run(&config, Some("xshun"), &env(&fake, &dir, false));
+        let mcp = row(&report, "Remote MCP handshake");
+        assert_eq!(mcp.status, Status::Fail(ErrorCode::Internal));
+        assert!(
+            mcp.detail.contains("not one persistent process"),
+            "{}",
+            mcp.detail
+        );
     }
 
     #[test]
@@ -948,6 +1016,7 @@ mod tests {
             "{}",
             reverse.detail
         );
+        assert_eq!(row(&report, "Remote MCP handshake").status, Status::Skip);
         assert_eq!(row(&report, "Workspace root").status, Status::Skip);
         assert_eq!(report.exit_code(), 21);
     }

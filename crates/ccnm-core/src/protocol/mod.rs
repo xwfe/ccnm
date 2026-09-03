@@ -5,6 +5,7 @@
 //! (section 9).
 
 pub mod hello;
+pub mod mcp;
 pub mod payload;
 pub mod probe;
 

@@ -9,6 +9,17 @@
 //! Claude is listed as SKIP with the phase that implements it. That keeps the
 //! output in its final shape from day one and makes it impossible for a
 //! half-built doctor to print READY.
+//!
+//! # Invariant: doctor is read-only
+//!
+//! Nothing in this module may mount, write a workspace id, start an SSH
+//! master, or touch a file. `ccnm run`, cron and CI call doctor repeatedly;
+//! a check that fixes things as a side effect makes two runs disagree and
+//! hides whether the environment was broken before doctor ran. State
+//! changes belong to explicit subcommands (`ccnm mount`, `ccnm workspace
+//! init`). When a later phase adds an SSH probe here it must pass
+//! `-o ControlMaster=no`, which reuses an existing master but never creates
+//! one (design doc section 4).
 
 use std::fmt::Write as _;
 use std::path::Path;

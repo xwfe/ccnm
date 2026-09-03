@@ -27,7 +27,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Check that this machine and a workspace are ready to use
+    /// Check that this machine and a workspace are ready to use (read-only,
+    /// never changes anything)
     Doctor {
         /// Workspace name from config.toml; omit to check only the config
         workspace: Option<String>,

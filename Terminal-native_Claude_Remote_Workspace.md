@@ -906,13 +906,53 @@ schema 里 `start_line` 等字段必须写 `minimum: 1`。不写的话 schemars 
 
 ### list_files
 
+已实现（`crates/ccnm-core/src/mcp/list.rs`）。
+
 ```text
 输入   path?, glob?, max_entries?, include_hidden?
-默认   max_entries = 200
-输出   相对路径列表
+默认   max_entries = 200（上限 1000）, include_hidden = false
+输出   workspace-relative 路径，一行一条，目录带结尾 /；末尾一行 footer
 ```
 
 不返回 mtime / inode / permission / owner。目标是帮模型导航，不是实现 `ls -la`。
+路径是 workspace-relative 而不是相对 `path`，因为模型下一步就是把它原样贴进 `read_file`。
+
+**glob 决定形态，不另设 recursive 开关：**
+
+```text
+不给 glob   列 path 的直接子项（目录带 /）
+给 glob     在 path 下递归匹配，任意深度；glob 相对 path 解释
+```
+
+少一个参数，而且这就是人本来的思路：要么打开一个目录，要么去找东西。
+
+**列什么，由 git 说了算。** 这是这个工具有没有用的分水岭——对真实项目做一次朴素递归遍历，
+200 条预算在碰到第一个源文件之前就耗在 `node_modules` 和 `target` 里了。
+
+```text
+git workspace    git ls-files --cached --others --exclude-standard
+                              --directory --no-empty-directory -z -- <scope>
+                 = 项目自己对"什么算数"的定义：已跟踪 + 新增，减去 .gitignore /
+                   全局 ignore / .git/info/exclude 排除掉的；未跟踪目录折叠成一条
+非 git workspace  有界遍历 + 一张短的跳过表（node_modules target dist build venv vendor）
+```
+
+`source` 字段如实说是哪一种。模型看不到 `target/` 时，得能分清"git 忽略了它"和"ccnm 猜的"。
+coding-tools-mcp 是写死 13 项、没有开关（研究记录 c 节）。
+
+**遍历里两个问题必须分开答，合成一个就是 bug：**
+
+```text
+这个条目"是"什么   决定怎么列。指向目录的 symlink 就该列成目录——列成文件会把模型
+                   引到 read_file，而 read_file 会拒绝它
+要不要"进去"       由链接本身决定，symlink 一律不跟进。这既是遍历跑出 workspace 的
+                   途径，也是它撞上死循环的途径
+```
+
+glob 语法只支持 `*` / `**` / `?` / `{a,b}`（`crates/ccnm-core/src/mcp/glob.rs`）。字符类
+`[a-z]` 是**报错**而不是当字面量——当字面量的后果是匹配不到任何东西，模型据此认定文件不存在。
+匹配用 DP 表不用递归：`a/**/**/**/**/b` 是让回溯式 glob 指数爆炸的经典写法，而这个 runtime
+接受模型发来的任意 pattern。
 
 ### search_text
 
@@ -1305,7 +1345,9 @@ crates/
         ├── ssh/         ssh 命令行构造、双向探测（Transport Adapter 层）
         └── mcp/         MCP server / probe client
             ├── path.rs  workspace 路径策略，所有文件工具共用（第 17 节）
+            ├── glob.rs  glob 匹配（list_files / 将来的 search_text）
             ├── read.rs  read_file
+            ├── list.rs  list_files
             └── server.rs
 ```
 
@@ -1391,21 +1433,39 @@ real fixture integration test
 进度：
 
 ```text
-read_file      已完成（2026-09-03）。真机验证：工作机 xdwmbp 起一条 ssh 到家庭机，
-               p50 20.0 ms / p95 25.8 ms / max 31.4 ms（同期 ping 17.5 ms），
-               initialize 472 ms，全程一个 server 进程，stderr 全静默。
-               workspace 里放了一个指向家庭机 ~/.ssh/id_ed25519 的 symlink，被
-               CCNM_E_POLICY 拦下。tools/list 两个工具共 1441 B（预算 16 KiB）。
-list_files     未开始
+read_file      已完成（2026-09-03）。workspace 里放了一个指向家庭机
+               ~/.ssh/id_ed25519 的 symlink，被 CCNM_E_POLICY 拦下。
+list_files     已完成（2026-09-03）。真机对着 ccnm 仓库本身跑：git 模式下
+               target/ 一次都没出现过；glob、截断、越界、非目录、不支持的语法
+               各自给出正确的码。
 search_text    未开始
 apply_patch    未开始
 exec_command   未开始
 read_output    未开始
 ```
 
-测试的判据不是"有测试"，是"改坏了会挂"。read_file 这批做了变异验证：把 fifo 类型检查、
-containment、字符边界切割、二进制探测、CRLF 识别、BOM 剥离、next_start_line 前进、max_lines
-上限、`..` 拒绝这 9 处逐个改坏，每一处都有测试红。
+真机数据（工作机 xdwmbp 起一条 ssh 到家庭机，同期 ping 17.5 ms）：
+
+```text
+initialize        305–385 ms（刚 scp 完 binary 那次是 1.4 s，页缓存冷，不代表稳态）
+read_file         p50 20.9 ms   p95 45.4 ms
+list_files        p50 47.9 ms   p95 69.0 ms   —— 比 read_file 贵的是 git ls-files 子进程
+tools/list        3 个工具 2419 B（预算 16 KiB）
+```
+
+`list_files` 本地纯耗时 12.4 ms，其中 `git ls-files` 自己占 9 ms。顺带发现并修掉了
+`process.rs` 里 5 ms 固定轮询的问题：那个常量的理由是"跟 SSH 往返比可以忽略"，在工具开始跑
+本地命令之后不成立了，改成 200 µs 起的退避轮询后 20.5 ms → 12.4 ms。`search_text`（rg）和
+`exec_command` 本来会继承同一笔开销。
+
+测试的判据不是"有测试"，是"改坏了会挂"。已做的变异验证共 15 处，每一处都有测试红：
+
+```text
+read_file/path   fifo 类型检查、containment、字符边界切割、二进制探测、CRLF 识别、
+                 BOM 剥离、next_start_line 前进、max_lines 上限、`..` 拒绝
+list_files/glob  遍历跟随 symlink、strip_dir 半段匹配、hidden 过滤、`**` 匹配零段、
+                 字符类静默放行、git 忽略规则失效
+```
 
 `apply_patch` 是最后一个文件工具。不为了快速 Demo 先写 `write_file` 再承诺以后换。真正能修改真实
 项目之前，apply_patch 测试至少覆盖：

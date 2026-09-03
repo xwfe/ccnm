@@ -2,6 +2,7 @@
 //! home runner). The CLI crate is a thin argument parser over this.
 
 pub mod config;
+pub mod doctor;
 pub mod error;
 pub mod paths;
 pub mod process;

@@ -772,13 +772,45 @@ Claude Code 已经有自己的 session / context workflow，ccnm 不做第二套
 
 ### read_file
 
+已实现（`crates/ccnm-core/src/mcp/read.rs`）。
+
 ```text
 输入   path, start_line?, end_line?, max_lines?, max_bytes?
-默认   max_lines = 200, max_bytes = 32 KiB
-输出   带稳定行号的文本；超限时 truncated = true, next_start_line
+默认   max_lines = 200（上限 2000）, max_bytes = 32 KiB（上限 64 KiB）
+       超出上限是 clamp 不是报错——"最多给我 N 条"里的 N 大只是偏好，不是错误
+输出   content[0].text  = 右对齐行号 + `→` + 该行，末尾一行 footer 说明下一步
+       structuredContent = 元信息，不含文件正文（第 16 节：正文不能算两遍）
 ```
 
-绝不能默认整文件无限读。
+绝不能默认整文件无限读，也不能先把整个文件读进内存再截断——按行流式读，撞到第一个上限就停，
+所以读一个 2 GB 日志的开头和读 2 KB 文件一样便宜。coding-tools-mcp 是先整读再截（研究记录 m.7）。
+
+structuredContent 字段：
+
+```text
+path start_line end_line lines bytes truncated
+truncated_by      max_lines | max_bytes；调用方自己写的 end_line 或读到文件尾都不算 truncated
+next_start_line   还有后文时给出；读到文件尾才没有
+total_lines       只有读到文件尾才知道。没读完还去数行要再扫一遍全文，正是这个工具要省的开销
+file_bytes line_ending(lf|crlf|mixed|none) final_newline notes[]
+```
+
+真实使用里会撞、而且都有测试锁住的坑：
+
+```text
+workspace 里的 fifo/设备    先 stat 再 open。open 一个没有 writer 的 fifo 会永久阻塞，
+                            单线程 runtime 上会把整个 session 后面每一次调用一起冻住
+minified 的 300 KB 单行     按字符边界切（直接切字节会 panic，而带重音或 emoji 的文件天天遇到）；
+                            next_start_line 指向下一行而不是本行，否则调用方会原地死循环
+二进制文件                  前 8 KiB 探 NUL 直接拒，不拿 context 换乱码
+latin-1 等非 UTF-8 文本     lossy 解码并在 notes 里说明，不拒
+CRLF / BOM / 末尾无换行      显示时规范化并如实上报，apply_patch 之后要靠这些信息
+start_line 超过文件末尾      明确回 "文件只有 N 行"，不给一个空结果让模型瞎猜
+start_line 深到离谱          扫描超过 64 MiB 就拒，让它去用 search_text
+```
+
+schema 里 `start_line` 等字段必须写 `minimum: 1`。不写的话 schemars 会从 `u32` 推出
+`minimum: 0`，等于 ccnm 自己的 tools/list 告诉模型 `start_line: 0` 合法，然后代码再拒绝它。
 
 ### list_files
 
@@ -872,13 +904,29 @@ MCP server 启动时 canonicalize 配置的 root。之后 read / list / search /
 workspace-relative path，拒绝：
 
 ```text
-绝对路径
-../
+绝对路径（含 C:\ 这种 Windows 写法）
+../                     哪怕是 a/../a 这种自己抵消掉的也拒
+~ 开头
 symlink escape（canonicalize 之后不在 root 下）
-NUL
+NUL、反斜杠
+```
+
+实现在 `crates/ccnm-core/src/mcp/path.rs`，只有这一处；每个文件工具都从这里过，不各写一份近似的。
+
+两条容易写错的细节：
+
+```text
+先判越界再判存在   否则 `up/does-not-exist` 的回答会泄漏 workspace 外面有什么文件。
+                   现在两种情况都回 CCNM_E_POLICY
+错误码分两类       CCNM_E_POLICY      = 越界，别重试，换参数也没用
+                   CCNM_E_INVALID_ARGS = 参数本身不对（不存在、是目录、行号是 0），改了再来
+                   混成一个码，模型会因为一个笔误就放弃，或者对着墙一直撞
 ```
 
 `.git`：普通 file tool 禁止修改。Git 操作只能通过 `exec_command` / 未来的 git tool。
+**读**目前是放行的（`read_file .git/config` 能读到）。留一句在这里：`.git/config` 里可能有
+`https://user:token@github.com/...`，模型读到就等于把它带回工作机的 context。Phase 5 的 policy
+要不要把 `.git` 读也关掉，是个待定项，不是遗漏。
 
 ---
 
@@ -1133,6 +1181,9 @@ CCNM_E_WRONG_WORKSPACE     30     workspace root 不存在、不是目录，或 
 CCNM_E_COHERENCE           31     （Hybrid）hash 不一致，命令没有执行
 CCNM_E_STALE_EPOCH         32     （Hybrid）session epoch 过期
 CCNM_E_POLICY              33     runtime 不允许这个操作（路径越界、.git、deny 的命令）
+CCNM_E_INVALID_ARGS        34     工具参数本身不能用：行号是 0、区间反了、path 指向不存在
+                                  的东西/目录/二进制文件。和 33 分开是因为模型的反应不同：
+                                  33 是"别试了"，34 是"改了参数再来"
 ```
 
 exit 0 是成功，2 留给 clap 的用法错误。加新码可以，改名或改号不行：另一台机器上可能还跑着旧版
@@ -1241,6 +1292,25 @@ size-limit test
 error-semantic test
 real fixture integration test
 ```
+
+进度：
+
+```text
+read_file      已完成（2026-09-03）。真机验证：工作机 xdwmbp 起一条 ssh 到家庭机，
+               p50 20.0 ms / p95 25.8 ms / max 31.4 ms（同期 ping 17.5 ms），
+               initialize 472 ms，全程一个 server 进程，stderr 全静默。
+               workspace 里放了一个指向家庭机 ~/.ssh/id_ed25519 的 symlink，被
+               CCNM_E_POLICY 拦下。tools/list 两个工具共 1441 B（预算 16 KiB）。
+list_files     未开始
+search_text    未开始
+apply_patch    未开始
+exec_command   未开始
+read_output    未开始
+```
+
+测试的判据不是"有测试"，是"改坏了会挂"。read_file 这批做了变异验证：把 fifo 类型检查、
+containment、字符边界切割、二进制探测、CRLF 识别、BOM 剥离、next_start_line 前进、max_lines
+上限、`..` 拒绝这 9 处逐个改坏，每一处都有测试红。
 
 `apply_patch` 是最后一个文件工具。不为了快速 Demo 先写 `write_file` 再承诺以后换。真正能修改真实
 项目之前，apply_patch 测试至少覆盖：

@@ -1,7 +1,8 @@
 //! `ccnm internal mcp-serve`: the coding runtime Claude Code talks to over
 //! one ssh. Phase 2 fills in the bounded tools of design doc section 15
-//! one at a time; today that is `workspace_info`, `read_file`,
-//! `list_files`, `search_text`, `apply_patch` and `exec_command`.
+//! one at a time; the set of section 14 is now complete:
+//! `workspace_info`, `read_file`, `list_files`, `search_text`,
+//! `apply_patch`, `exec_command` and `read_output`.
 //!
 //! Two rules are enforced here because everything later depends on them.
 //! The workspace root is canonicalized once at startup and is the only
@@ -33,6 +34,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::{Error, ErrorCode, ErrorReport};
 use crate::mcp::exec::{self, ExecCommandArgs};
 use crate::mcp::list::{self, ListFilesArgs};
+use crate::mcp::output::{self, ReadOutputArgs};
 use crate::mcp::patch::{self, ApplyPatchArgs};
 use crate::mcp::read::{self, ReadFileArgs};
 use crate::mcp::search::{self, SearchTextArgs};
@@ -294,6 +296,41 @@ impl Server {
                     .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
                 let mut result = CallToolResult::structured(value);
                 result.content = vec![ContentBlock::text(ran.text)];
+                Ok(result)
+            }
+            Err(err) => Ok(tool_error(&err)),
+        }
+    }
+
+    #[tool(
+        name = "read_output",
+        description = "Page through what a command wrote, using the output_ref exec_command returned. Offsets are byte offsets and stable: a finished command's output does not change."
+    )]
+    async fn read_output(
+        &self,
+        Parameters(args): Parameters<ReadOutputArgs>,
+    ) -> std::result::Result<CallToolResult, ErrorData> {
+        self.count_call();
+        let Some(state) = self.inner.state.clone() else {
+            return Ok(tool_error(&Error::new(
+                ErrorCode::NotReady,
+                "ccnm cannot find a state directory on the workspace machine, so there is nowhere for a command's output to have been kept",
+            )));
+        };
+        // The session's own directory and no other: an output_ref is a
+        // reference within this session, not a handle on the machine.
+        let dir = exec::session_dir(&state, &self.inner.session);
+        let page = tokio::task::spawn_blocking(move || output::read_output(&dir, &args))
+            .await
+            .map_err(|e| {
+                ErrorData::internal_error(format!("read_output task failed: {e}"), None)
+            })?;
+        match page {
+            Ok(page) => {
+                let value = serde_json::to_value(&page)
+                    .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+                let mut result = CallToolResult::structured(value);
+                result.content = vec![ContentBlock::text(page.text)];
                 Ok(result)
             }
             Err(err) => Ok(tool_error(&err)),

@@ -290,10 +290,17 @@ where
         .collect()
 }
 
+/// Where this session's runs are kept. `read_output` resolves references
+/// against exactly this, so an output_ref is a reference within one
+/// session and not a handle on the machine.
+pub fn session_dir(state: &Path, session: &str) -> PathBuf {
+    state.join("runtime").join(sanitize_session(session))
+}
+
 /// A fresh directory for this run, and a reference the caller can bring
 /// back to `read_output`.
 fn make_retention(state: &Path, session: &str) -> Result<Retention> {
-    let session_dir = state.join("runtime").join(sanitize_session(session));
+    let session_dir = session_dir(state, session);
     std::fs::create_dir_all(&session_dir).map_err(|e| {
         Error::internal("cannot create the output retention directory").with_source(e)
     })?;

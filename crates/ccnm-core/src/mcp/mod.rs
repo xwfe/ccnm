@@ -11,6 +11,7 @@
 pub mod exec;
 pub mod glob;
 pub mod list;
+pub mod output;
 pub mod patch;
 pub mod path;
 pub mod probe;

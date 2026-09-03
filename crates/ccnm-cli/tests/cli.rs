@@ -292,6 +292,7 @@ fn mcp_probe_local_speaks_to_one_persistent_server() {
             "exec_command",
             "list_files",
             "read_file",
+            "read_output",
             "search_text",
             "workspace_info"
         ]

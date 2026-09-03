@@ -187,6 +187,7 @@ fn read_file_serves_a_whole_session_over_one_process() {
             "exec_command",
             "list_files",
             "read_file",
+            "read_output",
             "search_text",
             "workspace_info"
         ]
@@ -424,9 +425,57 @@ fn read_file_serves_a_whole_session_over_one_process() {
     assert!(is_error(&out));
     assert!(text(&out).starts_with("CCNM_E_POLICY: "), "{}", text(&out));
 
+    // exec_command -> read_output: the reference from one tool is
+    // accepted by the next, and paging reaches the middle that the
+    // preview elided.
+    let big = s.call(
+        "exec_command",
+        json!({"cmd": ["sh", "-c", "i=0; while [ $i -lt 600 ]; do echo line $i; i=$((i+1)); done"],
+               "preview_bytes": 400}),
+    );
+    assert!(!is_error(&big), "{}", text(&big));
+    let meta = &big["structuredContent"];
+    assert_eq!(meta["truncated"], true);
+    let output_ref = meta["output_ref"].as_str().unwrap().to_string();
+    let total = meta["stdout_bytes"].as_u64().unwrap();
+
+    let mut offset = 0u64;
+    let mut whole = String::new();
+    loop {
+        let page = s.call(
+            "read_output",
+            json!({"output_ref": output_ref, "offset": offset, "limit": 2048}),
+        );
+        assert!(!is_error(&page), "{}", text(&page));
+        let bytes = page["structuredContent"]["bytes"].as_u64().unwrap() as usize;
+        whole.push_str(&text(&page)[..bytes]);
+        match page["structuredContent"]["next_offset"].as_u64() {
+            Some(next) => offset = next,
+            None => break,
+        }
+    }
+    assert_eq!(whole.len() as u64, total);
+    assert!(whole.starts_with("line 0\n"), "{}", &whole[..20]);
+    assert!(
+        whole.ends_with("line 599\n"),
+        "{}",
+        &whole[whole.len() - 20..]
+    );
+    // The middle, which the preview elided, is reachable.
+    assert!(whole.contains("line 300\n"));
+
+    // A reference is matched by shape, so there is no path to traverse.
+    let bad = s.call("read_output", json!({"output_ref": "../../../etc/passwd"}));
+    assert!(is_error(&bad));
+    assert!(
+        text(&bad).starts_with("CCNM_E_INVALID_ARGS: "),
+        "{}",
+        text(&bad)
+    );
+
     // Read-only, one process, and the whole session's calls counted.
     let info = s.rpc("tools/call", json!({"name": "workspace_info"}));
-    assert_eq!(info["structuredContent"]["calls_served"], 30);
+    assert_eq!(info["structuredContent"]["calls_served"], 35);
     // apply_patch changed one file in place; nothing was created or left
     // behind, temp files included.
     let mut names: Vec<String> = std::fs::read_dir(&root)

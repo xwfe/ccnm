@@ -9,14 +9,12 @@
 //! So in a git workspace the file list comes from git:
 //!
 //! ```text
-//! git ls-files --cached --others --exclude-standard
-//!              --directory --no-empty-directory -z -- <scope>
+//! git ls-files --cached --others --exclude-standard -z -- <scope>
 //! ```
 //!
 //! which is the project's own definition of what matters: tracked files
 //! plus new ones, minus everything `.gitignore`, the global ignore file
-//! and `.git/info/exclude` rule out, with an untracked directory
-//! collapsed to one entry instead of listing what is inside it. That
+//! and `.git/info/exclude` rule out. That
 //! beats a hard-coded skip list, which is what coding-tools-mcp uses
 //! (thirteen names, no way to turn it off — `docs/research/`, section c).
 //! Outside a git repository there is nothing to ask, so a bounded walk
@@ -206,14 +204,19 @@ fn git_candidates(
     runner: &dyn ProcessRunner,
 ) -> Result<Option<Candidates>> {
     let mut cmd = Cmd::new("git")
+        // No --directory. It collapses an entirely untracked directory
+        // into one entry, which sounds like a saving and is a bug: asking
+        // for `src` in a repository with nothing committed yet answers
+        // `src/`, which is not inside `src`, so the listing comes back
+        // empty. A glob over an untracked tree loses the same way. The
+        // depth-1 collapse below already produces the shape --directory
+        // was for, and --exclude-standard is what keeps node_modules out.
         .args([
             "ls-files",
             "-z",
             "--cached",
             "--others",
             "--exclude-standard",
-            "--directory",
-            "--no-empty-directory",
         ])
         .cwd(root)
         .timeout(GIT_TIMEOUT);
@@ -572,6 +575,45 @@ mod tests {
             "{:?}",
             listing.notes
         );
+    }
+
+    #[test]
+    fn a_repository_with_nothing_committed_yet_still_lists() {
+        // Found on a real machine, not here: the fixture commits
+        // everything, so `git ls-files --directory` had nothing to
+        // collapse. In a repository where the files are still untracked it
+        // collapses `src` into a single `src/` entry, which is not *inside*
+        // `src`, and the listing came back empty.
+        let dir = std::env::temp_dir().join(format!("ccnm-list-{}-fresh", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("src/mcp")).unwrap();
+        fs::write(dir.join("src/main.rs"), "fn main() {}\n").unwrap();
+        fs::write(dir.join("src/mcp/read.rs"), "\n").unwrap();
+        fs::write(dir.join("README.md"), "\n").unwrap();
+        let out = SystemRunner
+            .run(&Cmd::new("git").args(["init", "-q"]).cwd(&dir))
+            .unwrap();
+        assert!(out.success(), "{}", out.stderr_lossy());
+        let root = fs::canonicalize(&dir).unwrap();
+
+        let scoped = list(
+            &root,
+            &ListFilesArgs {
+                path: Some("src".into()),
+                ..Default::default()
+            },
+        );
+        assert_eq!(scoped.source, Source::Git);
+        assert_eq!(lines(&scoped), ["src/main.rs", "src/mcp/"]);
+
+        let globbed = list(
+            &root,
+            &ListFilesArgs {
+                glob: Some("**/*.rs".into()),
+                ..Default::default()
+            },
+        );
+        assert_eq!(lines(&globbed), ["src/main.rs", "src/mcp/read.rs"]);
     }
 
     #[test]

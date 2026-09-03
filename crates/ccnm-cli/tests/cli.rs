@@ -285,7 +285,7 @@ fn mcp_probe_local_speaks_to_one_persistent_server() {
     assert_eq!(rep.server_version, env!("CARGO_PKG_VERSION"));
     let mut tools = rep.tools.clone();
     tools.sort();
-    assert_eq!(tools, vec!["read_file", "workspace_info"]);
+    assert_eq!(tools, vec!["list_files", "read_file", "workspace_info"]);
     assert_eq!(rep.calls, 25);
     assert!(rep.single_process);
     assert!(rep.server_pid > 0);

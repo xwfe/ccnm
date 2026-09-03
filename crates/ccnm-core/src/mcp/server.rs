@@ -30,6 +30,7 @@ use serde::{Deserialize, Serialize};
 // `crate::error::Result` is deliberately not imported: the `tool_handler`
 // macro expands to `Result<_, ErrorData>` and would pick up the alias.
 use crate::error::{Error, ErrorCode, ErrorReport};
+use crate::mcp::list::{self, ListFilesArgs};
 use crate::mcp::read::{self, ReadFileArgs};
 use crate::process::{Cmd, ProcessRunner, SystemRunner};
 use crate::protocol::mcp::ServePayload;
@@ -192,6 +193,34 @@ impl Server {
                     .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
                 let mut result = CallToolResult::structured(value);
                 result.content = vec![ContentBlock::text(chunk.text)];
+                Ok(result)
+            }
+            Err(err) => Ok(tool_error(&err)),
+        }
+    }
+
+    #[tool(
+        name = "list_files",
+        description = "List a directory of the remote workspace, or search it with a glob. Without a glob you get the immediate children of one directory; with one you get every match under it, at any depth. In a git workspace, files that .gitignore rules out are never listed."
+    )]
+    async fn list_files(
+        &self,
+        Parameters(args): Parameters<ListFilesArgs>,
+    ) -> std::result::Result<CallToolResult, ErrorData> {
+        self.count_call();
+        let root = self.inner.root.clone();
+        let listing =
+            tokio::task::spawn_blocking(move || list::list_files(&root, &args, &SystemRunner))
+                .await
+                .map_err(|e| {
+                    ErrorData::internal_error(format!("list_files task failed: {e}"), None)
+                })?;
+        match listing {
+            Ok(listing) => {
+                let value = serde_json::to_value(&listing)
+                    .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+                let mut result = CallToolResult::structured(value);
+                result.content = vec![ContentBlock::text(listing.text)];
                 Ok(result)
             }
             Err(err) => Ok(tool_error(&err)),

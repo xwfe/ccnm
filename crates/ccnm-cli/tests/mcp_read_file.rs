@@ -115,10 +115,11 @@ impl Session {
     }
 
     fn read_file(&mut self, args: Value) -> Value {
-        self.rpc(
-            "tools/call",
-            json!({"name": "read_file", "arguments": args}),
-        )
+        self.call("read_file", args)
+    }
+
+    fn call(&mut self, tool: &str, args: Value) -> Value {
+        self.rpc("tools/call", json!({"name": tool, "arguments": args}))
     }
 
     fn shutdown(mut self) {
@@ -174,7 +175,7 @@ fn read_file_serves_a_whole_session_over_one_process() {
         .map(|t| t["name"].as_str().unwrap())
         .collect();
     names.sort_unstable();
-    assert_eq!(names, ["read_file", "workspace_info"]);
+    assert_eq!(names, ["list_files", "read_file", "workspace_info"]);
     let list_bytes = serde_json::to_string(&list).unwrap().len();
     assert!(list_bytes < 16 * 1024, "schema budget: {list_bytes} bytes");
     let read_tool = list["tools"]
@@ -235,9 +236,38 @@ fn read_file_serves_a_whole_session_over_one_process() {
         );
     }
 
+    // list_files navigates, and every path it hands back is one read_file
+    // accepts -- that hand-off is the whole point of both tools.
+    let root_listing = s.call("list_files", json!({}));
+    assert!(!is_error(&root_listing));
+    let shown = text(&root_listing);
+    let listed: Vec<&str> = shown.lines().filter(|l| !l.starts_with('[')).collect();
+    assert!(listed.contains(&"src/"), "{shown}");
+    assert!(listed.contains(&"long.txt"), "{shown}");
+
+    let globbed = s.call("list_files", json!({"glob": "**/*.rs"}));
+    assert_eq!(text(&globbed).lines().next().unwrap(), "src/main.rs");
+    let back = s.read_file(json!({"path": "src/main.rs"}));
+    assert!(!is_error(&back), "a listed path must be readable");
+
+    // A bad glob is refused with a code, not silently matched to nothing:
+    // an empty answer would tell the model the files do not exist.
+    let bad = s.call("list_files", json!({"glob": "src/[ab].rs"}));
+    assert!(is_error(&bad));
+    assert!(
+        text(&bad).starts_with("CCNM_E_INVALID_ARGS: "),
+        "{}",
+        text(&bad)
+    );
+
+    // Listing cannot be used to walk out either.
+    let out = s.call("list_files", json!({"path": ".."}));
+    assert!(is_error(&out));
+    assert!(text(&out).starts_with("CCNM_E_POLICY: "), "{}", text(&out));
+
     // Read-only, one process, and the whole session's calls counted.
     let info = s.rpc("tools/call", json!({"name": "workspace_info"}));
-    assert_eq!(info["structuredContent"]["calls_served"], 11);
+    assert_eq!(info["structuredContent"]["calls_served"], 16);
     assert_eq!(
         std::fs::read_dir(&root).unwrap().count(),
         4,

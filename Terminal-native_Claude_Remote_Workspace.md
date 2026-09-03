@@ -1557,20 +1557,26 @@ pnpm
 
 # 36. Error code 必须从第一天稳定
 
-定义：
+定义，名字和进程 exit code 一起固定：
 
 ```text
-CCNM_E_CONFIG
-CCNM_E_WORK_UNREACHABLE
-CCNM_E_HOME_UNREACHABLE
-CCNM_E_MOUNT
-CCNM_E_WRONG_WORKSPACE
-CCNM_E_COHERENCE
-CCNM_E_POLICY
-CCNM_E_STALE_EPOCH
-CCNM_E_AUTH
-CCNM_E_VERSION
+名字                       exit   含义
+CCNM_E_INTERNAL             1     bug 或意外的 OS 错误，不是给用户分类用的
+CCNM_E_CONFIG              10     config.toml 缺失、解析失败或校验不过
+CCNM_E_VERSION             11     两台机器 ccnm 版本不一致，或 Claude Code 太旧
+CCNM_E_AUTH                12     工作机 Claude 未登录
+CCNM_E_WORK_UNREACHABLE    20     家庭机 SSH 不到工作机
+CCNM_E_HOME_UNREACHABLE    21     工作机 SSH 不到家庭机 runner
+CCNM_E_MOUNT               22     SMB share / mount 缺失或不可用
+CCNM_E_WRONG_WORKSPACE     30     两边 .ccnm-workspace-id 不一致
+CCNM_E_COHERENCE           31     hash 不一致，命令没有执行
+CCNM_E_STALE_EPOCH         32     session epoch 过期
+CCNM_E_POLICY              33     runner 不允许这条命令
 ```
+
+exit 0 是成功，2 留给 clap 的用法错误。`ccnm doctor` NOT READY 时 exit code 取第一个失败检查项对应的错误码，所以 `ccnm run` 里的 preflight 失败也能直接带出原因。
+
+加新码可以，改名或改号不行：另一台机器上可能还跑着旧版 ccnm。
 
 Claude 收到：
 

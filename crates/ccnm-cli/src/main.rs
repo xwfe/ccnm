@@ -1,6 +1,6 @@
 //! The single `ccnm` binary. Which role it plays (home launcher, work
-//! controller, home runner) is decided by the subcommand; all logic lives in
-//! ccnm-core.
+//! controller, home MCP runtime) is decided by the subcommand; all logic
+//! lives in ccnm-core.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -8,7 +8,7 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 
 use ccnm_core::process::SystemRunner;
-use ccnm_core::{Config, Result, claude, doctor, home, paths, payload, runner, tailscale, work};
+use ccnm_core::{Result, doctor, paths, tailscale};
 
 /// Terminal-native remote workspace runtime for Claude Code.
 #[derive(Parser)]
@@ -34,57 +34,6 @@ enum Command {
         /// Workspace name from config.toml; omit to check only the config
         workspace: Option<String>,
     },
-    /// Manage a workspace's identity file on this machine
-    Workspace {
-        #[command(subcommand)]
-        command: WorkspaceCommand,
-    },
-    /// Mount the workspace's SMB share on the work machine
-    Mount { workspace: String },
-    /// Unmount the workspace's SMB share on the work machine
-    Unmount { workspace: String },
-    /// Internal: invoked on the work machine by ccnm over ssh
-    #[command(hide = true)]
-    Work {
-        #[command(subcommand)]
-        command: WorkCommand,
-    },
-    /// Internal: invoked on the home machine as the restricted runner account
-    #[command(hide = true)]
-    Runner {
-        #[command(subcommand)]
-        command: RunnerCommand,
-    },
-}
-
-#[derive(Subcommand)]
-enum WorkspaceCommand {
-    /// Create .ccnm-workspace-id in the workspace root
-    Init { workspace: String },
-}
-
-#[derive(Subcommand)]
-enum WorkCommand {
-    Probe {
-        #[arg(long)]
-        payload: String,
-    },
-    Mount {
-        #[arg(long)]
-        payload: String,
-    },
-    Unmount {
-        #[arg(long)]
-        payload: String,
-    },
-}
-
-#[derive(Subcommand)]
-enum RunnerCommand {
-    Health {
-        #[arg(long)]
-        payload: String,
-    },
 }
 
 fn main() -> ExitCode {
@@ -106,110 +55,20 @@ fn run(cli: Cli) -> Result<i32> {
             None => paths::config_path(),
         }
     };
-    let control_dir = || -> Result<PathBuf> { Ok(paths::state_dir()?.join("ssh")) };
 
     match &cli.command {
         Command::Doctor { workspace } => {
             let env = doctor::Env {
                 runner: &SystemRunner,
-                control_dir: control_dir()?,
+                control_dir: paths::state_dir()?.join("ssh"),
                 tailscale: tailscale::locate_from_env(),
+                home: paths::home_dir()?,
             };
             let report = doctor::run(&config_path()?, workspace.as_deref(), &env);
             print!("{}", report.render());
             Ok(report.exit_code())
         }
-        Command::Workspace {
-            command: WorkspaceCommand::Init { workspace },
-        } => {
-            let config = Config::load(&config_path()?)?;
-            let resolved = config.workspace(workspace)?;
-            let id = home::workspace_init(&resolved)?;
-            println!(
-                "{}: {id}",
-                ccnm_core::identity::path(&resolved.workspace.root).display()
-            );
-            Ok(0)
-        }
-        Command::Mount { workspace } => {
-            let config = Config::load(&config_path()?)?;
-            let resolved = config.workspace(workspace)?;
-            let env = home::Env {
-                runner: &SystemRunner,
-                control_dir: control_dir()?,
-            };
-            let rep = home::mount(&resolved, &env)?;
-            let how = if rep.already_mounted {
-                "already mounted"
-            } else {
-                "mounted"
-            };
-            println!(
-                "{how} {} at {} on {}\n{}",
-                rep.url,
-                resolved.workspace.root.display(),
-                resolved.work_ssh,
-                rep.status.detail
-            );
-            Ok(0)
-        }
-        Command::Unmount { workspace } => {
-            let config = Config::load(&config_path()?)?;
-            let resolved = config.workspace(workspace)?;
-            let env = home::Env {
-                runner: &SystemRunner,
-                control_dir: control_dir()?,
-            };
-            let rep = home::unmount(&resolved, &env)?;
-            if rep.was_mounted {
-                println!(
-                    "unmounted {} on {}",
-                    resolved.workspace.root.display(),
-                    resolved.work_ssh
-                );
-            } else {
-                println!(
-                    "{} was not mounted on {}",
-                    resolved.workspace.root.display(),
-                    resolved.work_ssh
-                );
-            }
-            Ok(0)
-        }
-        Command::Work { command } => {
-            let tools = work::Tools {
-                runner: &SystemRunner,
-                control_dir: control_dir()?,
-                claude: claude::locate_from_env(),
-            };
-            match command {
-                WorkCommand::Probe { payload } => {
-                    let req: work::ProbeRequest = payload::decode(payload)?;
-                    print_json(&work::probe(&req, &tools))
-                }
-                WorkCommand::Mount { payload } => {
-                    let req: work::MountRequest = payload::decode(payload)?;
-                    print_json(&work::mount(&req, &tools)?)
-                }
-                WorkCommand::Unmount { payload } => {
-                    let req: work::UnmountRequest = payload::decode(payload)?;
-                    print_json(&work::unmount(&req, &tools)?)
-                }
-            }
-        }
-        Command::Runner {
-            command: RunnerCommand::Health { payload },
-        } => {
-            let req: runner::HealthRequest = payload::decode(payload)?;
-            print_json(&runner::health(&req))
-        }
     }
-}
-
-/// Replies to the other machine go on stdout as one JSON document.
-fn print_json<T: serde::Serialize>(value: &T) -> Result<i32> {
-    println!("{}", payload::to_json(value)?);
-    Ok(0)
 }
 
 fn exit_code(code: i32) -> ExitCode {
@@ -219,7 +78,7 @@ fn exit_code(code: i32) -> ExitCode {
 }
 
 /// Logs go to stderr so stdout stays parseable (doctor tables, JSON
-/// replies, hook JSON later). Default level is warn; `-v` or
+/// replies, MCP JSON-RPC later). Default level is warn; `-v` or
 /// `CCNM_LOG=debug` opens it up.
 fn init_logging(verbose: bool) {
     use tracing_subscriber::EnvFilter;

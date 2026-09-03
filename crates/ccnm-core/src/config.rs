@@ -1,12 +1,18 @@
 //! `~/.config/ccnm/config.toml`, the home machine's source of truth.
 //!
-//! Secrets never live here (design doc section 5); SSH keys, SMB passwords
-//! and Claude OAuth stay with OpenSSH, the system SMB credential store and
-//! Claude Code itself.
+//! Secrets never live here (design doc section 5); SSH keys and Claude
+//! OAuth stay with OpenSSH and Claude Code itself.
 //!
-//! Unknown keys are an error, not ignored. A typo like `mount_mod` that
+//! Unknown keys are an error, not ignored. A typo like `runtime_hots` that
 //! silently falls back to a default is exactly the drift doctor exists to
 //! catch, so the parser refuses it up front.
+//!
+//! Two backends share the schema. `mcp-ssh` (the default and the only one
+//! this build implements) needs nothing beyond hosts and `root`. The
+//! `hybrid-smb` fallback (appendix A) additionally needs `share`,
+//! `runtime_root`, `mount_mode` and the runtime host's `smb_user`; those
+//! fields are rejected on an `mcp-ssh` workspace so a half-migrated config
+//! cannot look valid.
 
 use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
@@ -18,8 +24,14 @@ use crate::error::{Error, Result};
 /// The only `version = N` this binary understands.
 pub const SUPPORTED_VERSION: u32 = 1;
 
-/// `workspaces.<name>.runner_host` when the file does not say.
-pub const DEFAULT_RUNNER_HOST: &str = "home_runner";
+/// `workspaces.<name>.runtime_host` when the file does not say.
+pub const DEFAULT_RUNTIME_HOST: &str = "home";
+
+/// Where a remote ccnm is invoked when `hosts.<x>.ccnm_bin` is unset. The
+/// `~` is expanded by the remote login shell, which is the one thing
+/// every POSIX shell and fish agree on; a bare `ccnm` would depend on the
+/// PATH of a non-interactive shell (design doc section 7).
+pub const DEFAULT_CCNM_BIN: &str = "~/.local/bin/ccnm";
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -32,8 +44,8 @@ pub struct Config {
 }
 
 /// One machine. Which fields are required depends on the role a workspace
-/// gives it: a `work_host` needs `ssh`, a `runner_host` needs
-/// `ssh_from_work` and `smb_user`.
+/// gives it: a `work_host` needs `ssh`, a `runtime_host` needs
+/// `ssh_from_work`.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Host {
@@ -41,56 +53,91 @@ pub struct Host {
     #[serde(default)]
     pub ssh: Option<String>,
     /// Alias in the *work* machine's `~/.ssh/config` that reaches this host.
-    /// Its resolved HostName doubles as the SMB server address, so the two
-    /// transports always point at the same machine.
     #[serde(default)]
     pub ssh_from_work: Option<String>,
-    /// Account the work machine mounts the SMB share as. The password lives
-    /// in the work machine's Keychain, never here.
+    /// Absolute path of the ccnm binary on this host, for the machine that
+    /// sshes in. Unset means [`DEFAULT_CCNM_BIN`].
     #[serde(default)]
-    pub smb_user: Option<String>,
+    pub ccnm_bin: Option<PathBuf>,
     /// `CLAUDE_CONFIG_DIR` for Claude Code on this host. Unset means Claude's
     /// own default (`~/.claude`) and whatever login is already there. A custom
     /// dir has its own credentials and needs its own `claude auth login`;
-    /// ccnm never performs that login (design doc section 10).
+    /// ccnm never performs that login (design doc section 21).
     #[serde(default)]
     pub claude_config_dir: Option<PathBuf>,
+    /// Hybrid only: account the work machine mounts the SMB share as.
+    #[serde(default)]
+    pub smb_user: Option<String>,
+}
+
+impl Host {
+    /// The path to run on this host from the other machine.
+    pub fn ccnm_bin(&self) -> String {
+        match &self.ccnm_bin {
+            Some(path) => path.to_string_lossy().into_owned(),
+            None => DEFAULT_CCNM_BIN.to_string(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Workspace {
+    #[serde(default)]
+    pub backend: Backend,
     /// Key into `hosts`: where Claude Code runs.
     pub work_host: String,
-    /// Key into `hosts`: where source lives and commands execute. Defaults
-    /// to `home_runner`, the name the design doc uses.
-    #[serde(default = "default_runner_host")]
-    pub runner_host: String,
-    /// Project root. Must be the same absolute path on both machines
-    /// (design doc section 6); V1 does no path translation.
+    /// Key into `hosts`: where the project lives and every tool runs.
+    #[serde(default = "default_runtime_host")]
+    pub runtime_host: String,
+    /// Project root on the runtime host. With `mcp-ssh` it neither needs
+    /// nor should exist on the work machine.
     pub root: PathBuf,
-    /// Where the restricted runner may write: build output, caches, logs.
-    /// Must not overlap `root`, otherwise the runner gains write access to
-    /// source and single-writer enforcement is gone.
-    pub runtime_root: PathBuf,
-    /// SMB share name the work machine mounts.
-    pub share: String,
-    #[serde(default)]
-    pub mount_mode: MountMode,
     #[serde(default)]
     pub claude_permission_mode: PermissionMode,
+    /// Hybrid only: where the restricted runner may write. Must not overlap
+    /// `root`.
+    #[serde(default)]
+    pub runtime_root: Option<PathBuf>,
+    /// Hybrid only: SMB share name the work machine mounts.
+    #[serde(default)]
+    pub share: Option<String>,
+    /// Hybrid only.
+    #[serde(default)]
+    pub mount_mode: Option<MountMode>,
 }
 
-fn default_runner_host() -> String {
-    DEFAULT_RUNNER_HOST.to_string()
+fn default_runtime_host() -> String {
+    DEFAULT_RUNTIME_HOST.to_string()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Backend {
+    /// One persistent SSH stdio transport carrying MCP to a ccnm runtime
+    /// on the home machine. The primary architecture.
+    #[default]
+    McpSsh,
+    /// SMB mount plus SSH runner (appendix A). Parsed so a config can name
+    /// it; not implemented by this build.
+    HybridSmb,
+}
+
+impl Backend {
+    /// The value as written in config.toml.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Backend::McpSsh => "mcp-ssh",
+            Backend::HybridSmb => "hybrid-smb",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MountMode {
     /// Mount with `nodatacache,nomdatacache,nopassprompt,soft,nobrowse`
-    /// (design doc section 39) and gate every remote command with the hash
-    /// barrier (section 24). The only mode V1 ships.
+    /// (appendix A.12). The only mode the Hybrid design ever had.
     #[default]
     Coherence,
 }
@@ -131,13 +178,11 @@ pub struct Resolved<'a> {
     pub name: &'a str,
     pub workspace: &'a Workspace,
     pub work: &'a Host,
-    pub runner: &'a Host,
+    pub runtime: &'a Host,
     /// `hosts.<work_host>.ssh`: home -> work.
     pub work_ssh: &'a str,
-    /// `hosts.<runner_host>.ssh_from_work`: work -> home runner.
+    /// `hosts.<runtime_host>.ssh_from_work`: work -> home runtime.
     pub home_alias: &'a str,
-    /// `hosts.<runner_host>.smb_user`.
-    pub smb_user: &'a str,
 }
 
 impl Config {
@@ -191,24 +236,20 @@ impl Config {
             .hosts
             .get(&workspace.work_host)
             .ok_or_else(|| bug("its work host"))?;
-        let runner = self
+        let runtime = self
             .hosts
-            .get(&workspace.runner_host)
-            .ok_or_else(|| bug("its runner host"))?;
+            .get(&workspace.runtime_host)
+            .ok_or_else(|| bug("its runtime host"))?;
         Ok(Resolved {
             name,
             workspace,
             work,
-            runner,
+            runtime,
             work_ssh: work.ssh.as_deref().ok_or_else(|| bug("work ssh"))?,
-            home_alias: runner
+            home_alias: runtime
                 .ssh_from_work
                 .as_deref()
-                .ok_or_else(|| bug("runner ssh_from_work"))?,
-            smb_user: runner
-                .smb_user
-                .as_deref()
-                .ok_or_else(|| bug("runner smb_user"))?,
+                .ok_or_else(|| bug("runtime ssh_from_work"))?,
         })
     }
 
@@ -237,6 +278,15 @@ impl Config {
             if let Some(dir) = &host.claude_config_dir {
                 check_absolute(&format!("{at}.claude_config_dir"), dir, &mut problems);
             }
+            if let Some(bin) = &host.ccnm_bin {
+                let at = format!("{at}.ccnm_bin");
+                if check_absolute(&at, bin, &mut problems) && !is_remote_path(bin) {
+                    problems.push(format!(
+                        "{at} must contain only [A-Za-z0-9._/-] so the remote shell never has to quote it, got \"{}\"",
+                        bin.display()
+                    ));
+                }
+            }
         }
 
         for (name, ws) in &self.workspaces {
@@ -253,41 +303,70 @@ impl Config {
                 )),
                 Some(_) => {}
             }
-            match self.hosts.get(&ws.runner_host) {
+            let runtime = self.hosts.get(&ws.runtime_host);
+            match runtime {
                 None => problems.push(format!(
-                    "{at}.runner_host = \"{}\" does not match any [hosts.*] entry",
-                    ws.runner_host
+                    "{at}.runtime_host = \"{}\" does not match any [hosts.*] entry",
+                    ws.runtime_host
                 )),
-                Some(host) => {
-                    if host.ssh_from_work.is_none() {
-                        problems.push(format!(
-                            "{at}.runner_host = \"{}\" names a host without `ssh_from_work` (the alias the work machine uses to reach it)",
-                            ws.runner_host
-                        ));
+                Some(host) if host.ssh_from_work.is_none() => problems.push(format!(
+                    "{at}.runtime_host = \"{}\" names a host without `ssh_from_work` (the alias the work machine uses to reach it)",
+                    ws.runtime_host
+                )),
+                Some(_) => {}
+            }
+            let root_ok = check_absolute(&format!("{at}.root"), &ws.root, &mut problems);
+
+            match ws.backend {
+                Backend::McpSsh => {
+                    for (field, present) in [
+                        ("share", ws.share.is_some()),
+                        ("mount_mode", ws.mount_mode.is_some()),
+                        ("runtime_root", ws.runtime_root.is_some()),
+                    ] {
+                        if present {
+                            problems.push(format!(
+                                "{at}.{field} is only valid with backend = \"hybrid-smb\"; the mcp-ssh runtime has no mount"
+                            ));
+                        }
                     }
-                    if host.smb_user.is_none() {
+                }
+                Backend::HybridSmb => {
+                    match &ws.share {
+                        None => problems.push(format!(
+                            "{at}.share is required with backend = \"hybrid-smb\""
+                        )),
+                        Some(share) if share.trim().is_empty() => {
+                            problems.push(format!("{at}.share must be the SMB share name"));
+                        }
+                        Some(share) => check_token(&format!("{at}.share"), share, &mut problems),
+                    }
+                    match &ws.runtime_root {
+                        None => problems.push(format!(
+                            "{at}.runtime_root is required with backend = \"hybrid-smb\""
+                        )),
+                        Some(runtime_root) => {
+                            let ok = check_absolute(
+                                &format!("{at}.runtime_root"),
+                                runtime_root,
+                                &mut problems,
+                            );
+                            if root_ok && ok && overlaps(&ws.root, runtime_root) {
+                                problems.push(format!(
+                                    "{at}.runtime_root must not overlap root: the runner would get write access to source"
+                                ));
+                            }
+                        }
+                    }
+                    if let Some(host) = runtime
+                        && host.smb_user.is_none()
+                    {
                         problems.push(format!(
-                            "{at}.runner_host = \"{}\" names a host without `smb_user` (the account the work machine mounts the share as)",
-                            ws.runner_host
+                            "{at}.runtime_host = \"{}\" names a host without `smb_user`, which backend = \"hybrid-smb\" needs to mount the share",
+                            ws.runtime_host
                         ));
                     }
                 }
-            }
-            if ws.share.trim().is_empty() {
-                problems.push(format!("{at}.share must be the SMB share name"));
-            } else {
-                check_token(&format!("{at}.share"), &ws.share, &mut problems);
-            }
-            let root_ok = check_absolute(&format!("{at}.root"), &ws.root, &mut problems);
-            let runtime_ok = check_absolute(
-                &format!("{at}.runtime_root"),
-                &ws.runtime_root,
-                &mut problems,
-            );
-            if root_ok && runtime_ok && overlaps(&ws.root, &ws.runtime_root) {
-                problems.push(format!(
-                    "{at}.runtime_root must not overlap root: the runner would get write access to source"
-                ));
             }
         }
 
@@ -299,8 +378,8 @@ impl Config {
     }
 }
 
-/// Names end up in tmux session names, share names and state paths, so keep
-/// them to characters that are safe everywhere.
+/// Names end up in tmux session names, session ids and state paths, so
+/// keep them to characters that are safe everywhere.
 fn check_name(at: &str, name: &str, problems: &mut Vec<String>) {
     let ok = !name.is_empty()
         && name
@@ -314,9 +393,8 @@ fn check_name(at: &str, name: &str, problems: &mut Vec<String>) {
     }
 }
 
-/// SSH aliases, SMB users and share names travel through ssh command lines
-/// and `//user@host/share` URLs. Restricting them to this set means they
-/// never need quoting anywhere.
+/// SSH aliases and share names travel through ssh command lines.
+/// Restricting them to this set means they never need quoting anywhere.
 pub(crate) fn is_token(value: &str) -> bool {
     !value.is_empty()
         && !value.starts_with('-')
@@ -331,6 +409,14 @@ fn check_token(at: &str, value: &str, problems: &mut Vec<String>) {
             "{at} must match [A-Za-z0-9._-]+ and not start with '-', got \"{value}\""
         ));
     }
+}
+
+/// A path that will appear verbatim as one word of a remote ssh command.
+fn is_remote_path(path: &Path) -> bool {
+    path.to_str().is_some_and(|s| {
+        s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '/'))
+    })
 }
 
 /// Absolute and free of `.` / `..` so that lexical comparisons between
@@ -378,28 +464,30 @@ mod tests {
     /// Minimal valid config with the given workspace body appended.
     fn with_workspace(body: &str) -> String {
         format!(
-            "version = 1\n[hosts.work]\nssh = \"work\"\n[hosts.home_runner]\nssh_from_work = \"ccnm-home\"\nsmb_user = \"me\"\n[workspaces.x]\n{body}\n"
+            "version = 1\n[hosts.work]\nssh = \"work\"\n[hosts.home]\nssh_from_work = \"ccnm-home\"\n[workspaces.x]\n{body}\n"
         )
     }
 
-    const VALID_WS: &str =
-        "work_host = \"work\"\nroot = \"/a\"\nruntime_root = \"/b\"\nshare = \"x\"";
+    const VALID_WS: &str = "work_host = \"work\"\nroot = \"/a\"";
 
     #[test]
-    fn valid_fixture_parses() {
+    fn valid_fixture_parses_with_defaults() {
         let config = Config::load(&fixture("config-valid.toml")).unwrap();
         assert_eq!(config.version, 1);
         let r = config.workspace("xshun").unwrap();
         assert_eq!(r.work_ssh, "work");
         assert_eq!(r.home_alias, "ccnm-home");
-        assert_eq!(r.smb_user, "fodelf");
         assert_eq!(r.work.claude_config_dir, None);
-        assert_eq!(r.workspace.runner_host, "home_runner");
+        assert_eq!(r.work.ccnm_bin(), "~/.local/bin/ccnm");
+        assert_eq!(r.runtime.ccnm_bin(), "~/.local/bin/ccnm");
+        assert_eq!(r.workspace.backend, Backend::McpSsh);
+        assert_eq!(r.workspace.runtime_host, "home");
         assert_eq!(
             r.workspace.root,
-            PathBuf::from("/Users/Shared/cc-workspaces/xshun")
+            PathBuf::from("/Users/fodelf/Projects/xshun")
         );
-        assert_eq!(r.workspace.mount_mode, MountMode::Coherence);
+        assert_eq!(r.workspace.share, None);
+        assert_eq!(r.workspace.runtime_root, None);
         assert_eq!(
             r.workspace.claude_permission_mode,
             PermissionMode::AcceptEdits
@@ -407,27 +495,67 @@ mod tests {
     }
 
     #[test]
-    fn optional_fields_default_and_claude_config_dir_is_read() {
+    fn optional_host_fields_are_read() {
         let config = Config::load(&fixture("config-custom-claude-dir.toml")).unwrap();
         let r = config.workspace("xshun").unwrap();
         assert_eq!(
             r.work.claude_config_dir,
             Some(PathBuf::from("/Users/me/.ccnm/claude"))
         );
-        assert_eq!(r.workspace.runner_host, "runner");
+        assert_eq!(r.work.ccnm_bin(), "/Users/me/bin/ccnm");
+        assert_eq!(r.runtime.ccnm_bin(), "/Users/ccrun/.local/bin/ccnm");
+        assert_eq!(r.workspace.runtime_host, "runtime");
         assert_eq!(r.home_alias, "home");
-        assert_eq!(r.workspace.mount_mode, MountMode::Coherence);
+    }
+
+    #[test]
+    fn hybrid_fixture_parses_but_needs_its_fields() {
+        let config = Config::load(&fixture("config-hybrid.toml")).unwrap();
+        let ws = &config.workspaces["legacy"];
+        assert_eq!(ws.backend, Backend::HybridSmb);
+        assert_eq!(ws.share.as_deref(), Some("legacy"));
+        assert_eq!(ws.mount_mode, Some(MountMode::Coherence));
         assert_eq!(
-            r.workspace.claude_permission_mode,
-            PermissionMode::AcceptEdits
+            ws.runtime_root,
+            Some(PathBuf::from("/Users/Shared/cc-runtime/legacy"))
         );
+
+        let err = parse_err(
+            "version = 1\n[hosts.work]\nssh = \"work\"\n[hosts.home]\nssh_from_work = \"h\"\n[workspaces.x]\nbackend = \"hybrid-smb\"\nwork_host = \"work\"\nroot = \"/a\"\n",
+        );
+        let msg = err.message();
+        assert!(msg.contains("share is required"), "{msg}");
+        assert!(msg.contains("runtime_root is required"), "{msg}");
+        assert!(msg.contains("without `smb_user`"), "{msg}");
+    }
+
+    #[test]
+    fn hybrid_fields_are_rejected_on_mcp_ssh() {
+        let err = parse_err(&with_workspace(
+            "work_host = \"work\"\nroot = \"/a\"\nshare = \"x\"\nmount_mode = \"coherence\"\nruntime_root = \"/b\"",
+        ));
+        let msg = err.message();
+        for field in ["share", "mount_mode", "runtime_root"] {
+            assert!(
+                msg.contains(&format!(
+                    "{field} is only valid with backend = \"hybrid-smb\""
+                )),
+                "{field}: {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_backend_is_rejected() {
+        let err = parse_err(&with_workspace(&format!("{VALID_WS}\nbackend = \"nfs\"")));
+        assert!(err.message().contains("nfs"), "{err}");
     }
 
     #[test]
     fn unknown_field_is_rejected_with_its_name() {
         let err = Config::load(&fixture("config-unknown-field.toml")).unwrap_err();
         assert_eq!(err.code(), ErrorCode::Config);
-        assert!(err.message().contains("mount_mod"), "{err}");
+        assert!(err.message().contains("runtime_hots"), "{err}");
     }
 
     #[test]
@@ -449,65 +577,74 @@ mod tests {
     #[test]
     fn unknown_hosts_are_rejected() {
         let err = parse_err(&with_workspace(
-            "work_host = \"nope\"\nrunner_host = \"nada\"\nroot = \"/a\"\nruntime_root = \"/b\"\nshare = \"x\"",
+            "work_host = \"nope\"\nruntime_host = \"nada\"\nroot = \"/a\"",
         ));
         let msg = err.message();
         assert!(msg.contains("work_host = \"nope\""), "{msg}");
-        assert!(msg.contains("runner_host = \"nada\""), "{msg}");
+        assert!(msg.contains("runtime_host = \"nada\""), "{msg}");
     }
 
     #[test]
     fn role_specific_fields_are_required() {
         let err = parse_err(
-            "version = 1\n[hosts.work]\nssh_from_work = \"x\"\n[hosts.home_runner]\nssh = \"y\"\n[workspaces.x]\nwork_host = \"work\"\nroot = \"/a\"\nruntime_root = \"/b\"\nshare = \"x\"\n",
+            "version = 1\n[hosts.work]\nssh_from_work = \"x\"\n[hosts.home]\nssh = \"y\"\n[workspaces.x]\nwork_host = \"work\"\nroot = \"/a\"\n",
         );
         let msg = err.message();
         assert!(msg.contains("host without `ssh`"), "{msg}");
         assert!(msg.contains("host without `ssh_from_work`"), "{msg}");
-        assert!(msg.contains("host without `smb_user`"), "{msg}");
     }
 
     #[test]
     fn relative_and_dotty_paths_are_rejected() {
         let err = parse_err(
-            "version = 1\n[hosts.work]\nssh = \"work\"\nclaude_config_dir = \"relative/dir\"\n[hosts.home_runner]\nssh_from_work = \"h\"\nsmb_user = \"u\"\n[workspaces.x]\nwork_host = \"work\"\nroot = \"src\"\nruntime_root = \"/tmp/../x\"\nshare = \"x\"\n",
+            "version = 1\n[hosts.work]\nssh = \"work\"\nclaude_config_dir = \"relative/dir\"\nccnm_bin = \"bin/ccnm\"\n[hosts.home]\nssh_from_work = \"h\"\n[workspaces.x]\nwork_host = \"work\"\nroot = \"/tmp/../x\"\n",
         );
         let msg = err.message();
         assert!(
             msg.contains("claude_config_dir must be an absolute path"),
             "{msg}"
         );
-        assert!(msg.contains("root must be an absolute path"), "{msg}");
-        assert!(msg.contains("runtime_root must not contain"), "{msg}");
+        assert!(msg.contains("ccnm_bin must be an absolute path"), "{msg}");
+        assert!(msg.contains("root must not contain"), "{msg}");
     }
 
     #[test]
-    fn runtime_root_inside_root_is_rejected() {
-        let err = parse_err(&with_workspace(
-            "work_host = \"work\"\nroot = \"/Users/Shared/cc-workspaces/x\"\nruntime_root = \"/Users/Shared/cc-workspaces/x/target\"\nshare = \"x\"",
-        ));
+    fn ccnm_bin_must_be_a_remote_safe_path() {
+        let err = parse_err(
+            "version = 1\n[hosts.work]\nssh = \"work\"\nccnm_bin = \"/Users/me/my tools/ccnm\"\n[hosts.home]\nssh_from_work = \"h\"\n",
+        );
+        assert!(err.message().contains("never has to quote"), "{err}");
+        let ok = Config::parse(
+            "version = 1\n[hosts.work]\nssh = \"work\"\nccnm_bin = \"/opt/ccnm-0.1/bin/ccnm\"\n",
+        )
+        .unwrap();
+        assert_eq!(ok.hosts["work"].ccnm_bin(), "/opt/ccnm-0.1/bin/ccnm");
+    }
+
+    #[test]
+    fn hybrid_runtime_root_inside_root_is_rejected() {
+        let err = parse_err(
+            "version = 1\n[hosts.work]\nssh = \"work\"\n[hosts.home]\nssh_from_work = \"h\"\nsmb_user = \"u\"\n[workspaces.x]\nbackend = \"hybrid-smb\"\nwork_host = \"work\"\nroot = \"/Users/Shared/cc-workspaces/x\"\nruntime_root = \"/Users/Shared/cc-workspaces/x/target\"\nshare = \"x\"\n",
+        );
         assert!(err.message().contains("must not overlap root"), "{err}");
     }
 
     #[test]
     fn bad_names_and_tokens_are_rejected() {
         let err = parse_err(
-            "version = 1\n[hosts.\"my host\"]\nssh = \"-oProxyCommand=x\"\n[hosts.home_runner]\nssh_from_work = \"h\"\nsmb_user = \"u\"\n[workspaces.\"-x\"]\nwork_host = \"my host\"\nroot = \"/a\"\nruntime_root = \"/b\"\nshare = \"has space\"\n",
+            "version = 1\n[hosts.\"my host\"]\nssh = \"-oProxyCommand=x\"\n[hosts.home]\nssh_from_work = \"h\"\n[workspaces.\"-x\"]\nwork_host = \"my host\"\nroot = \"/a\"\n",
         );
         let msg = err.message();
         assert!(msg.contains("hosts.my host: name must be"), "{msg}");
         assert!(msg.contains("hosts.my host.ssh must match"), "{msg}");
         assert!(msg.contains("workspaces.-x: name must be"), "{msg}");
-        assert!(msg.contains("workspaces.-x.share must match"), "{msg}");
     }
 
     #[test]
     fn all_problems_are_reported_together() {
-        let err = parse_err(
-            "version = 3\n[workspaces.x]\nwork_host = \"nope\"\nroot = \"rel\"\nruntime_root = \"/b\"\nshare = \"\"\n",
-        );
+        let err = parse_err("version = 3\n[workspaces.x]\nwork_host = \"nope\"\nroot = \"rel\"\n");
         let lines = err.message().lines().count();
-        assert!(lines >= 5, "expected several problems, got:\n{err}");
+        assert!(lines >= 4, "expected several problems, got:\n{err}");
     }
 
     #[test]

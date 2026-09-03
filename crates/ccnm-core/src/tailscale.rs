@@ -40,8 +40,8 @@ pub fn status_cmd(bin: &Path) -> Cmd {
 pub enum Route {
     /// `CurAddr` is set: packets go straight to this endpoint.
     Direct(String),
-    /// Traffic is relayed through this DERP region. SMB over a relay is
-    /// painfully slow, so doctor warns.
+    /// Traffic is relayed through this DERP region. Every MCP round trip
+    /// pays the relay's latency, so doctor warns.
     Relay(String),
     /// No traffic has flowed yet, so Tailscale has not chosen a path.
     Unknown,

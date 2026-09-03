@@ -49,10 +49,21 @@ fn env_path(name: &str) -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-fn home_dir() -> Result<PathBuf> {
+pub fn home_dir() -> Result<PathBuf> {
     env_path("HOME").ok_or_else(|| {
         Error::config("HOME is not set, so ~/.config/ccnm/config.toml cannot be located")
     })
+}
+
+/// What the remote login shell would make of a `~/...` path, so doctor
+/// can look at the same file the other machine will invoke. Only a
+/// leading `~/` (or bare `~`) is expanded; `~user/...` is left alone.
+pub fn expand_home(path: &str, home: &Path) -> PathBuf {
+    match path.strip_prefix("~/") {
+        Some(rest) => home.join(rest),
+        None if path == "~" => home.to_path_buf(),
+        None => PathBuf::from(path),
+    }
 }
 
 #[cfg(test)]
@@ -83,6 +94,18 @@ mod tests {
             state_dir_in(home, Some(Path::new("/var/state"))),
             PathBuf::from("/var/state/ccnm")
         );
+    }
+
+    #[test]
+    fn expand_home_only_touches_a_leading_tilde() {
+        let home = Path::new("/Users/me");
+        assert_eq!(
+            expand_home("~/.local/bin/ccnm", home),
+            PathBuf::from("/Users/me/.local/bin/ccnm")
+        );
+        assert_eq!(expand_home("~", home), PathBuf::from("/Users/me"));
+        assert_eq!(expand_home("/opt/ccnm", home), PathBuf::from("/opt/ccnm"));
+        assert_eq!(expand_home("~bob/ccnm", home), PathBuf::from("~bob/ccnm"));
     }
 
     #[test]

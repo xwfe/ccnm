@@ -14,39 +14,34 @@
 //! broken, but the workspace is not proven usable either, and `ccnm run`
 //! must be able to tell those two apart. Only OK/WARN rows exit 0.
 //!
-//! Phase 1 checks the whole transport: local root and identity, the SMB
-//! share, Tailscale path, ssh to work, and through one `ccnm work probe`
-//! call everything the work machine sees (mount, identity through the
-//! mount, reverse ssh to the runner, Claude Code and its login). The
-//! coherence and barrier rows stay SKIP until their phases land, and a SKIP
-//! still blocks READY, so a half-built doctor cannot report a workspace
-//! usable.
+//! This build checks what the home machine can see on its own: config,
+//! the project root, the ccnm binary the work machine will invoke back
+//! here, and how the work alias resolves. Everything that needs the work
+//! machine to answer (its ccnm, Claude, the reverse ssh, the MCP
+//! handshake) is a SKIP row until the phase that implements it lands, and
+//! a SKIP still blocks READY.
 //!
 //! # Invariant: doctor is read-only
 //!
-//! Nothing in this module may mount, write a workspace id, start an SSH
-//! master, or touch a file. `ccnm run`, cron and CI call doctor repeatedly;
-//! a check that fixes things as a side effect makes two runs disagree and
-//! hides whether the environment was broken before doctor ran. State
-//! changes belong to explicit subcommands (`ccnm mount`, `ccnm workspace
-//! init`). Every ssh here uses [`Master::Reuse`] (`ControlMaster=no`),
-//! which reuses an existing master but never creates one (design doc
-//! section 4).
+//! Nothing in this module may install a binary, write a file, start an SSH
+//! master, or leave a process behind. `ccnm run`, cron and CI call doctor
+//! repeatedly; a check that fixes things as a side effect makes two runs
+//! disagree and hides whether the environment was broken before doctor
+//! ran. Every ssh here uses [`crate::ssh::Master::Reuse`]
+//! (`ControlMaster=no`), which reuses an existing master but never creates
+//! one (design doc section 4).
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use crate::config::{Config, Resolved};
-use crate::error::{Error, ErrorCode, ErrorReport, Reported};
-use crate::identity::{self, WorkspaceId};
-use crate::payload::PROTOCOL;
-use crate::process::ProcessRunner;
-use crate::runner::HealthReport;
-use crate::smb;
-use crate::ssh::{Master, Ssh};
+use crate::claude;
+use crate::config::{Backend, Config, Resolved};
+use crate::error::{Error, ErrorCode};
+use crate::paths;
+use crate::process::{Cmd, ProcessRunner};
+use crate::ssh::Ssh;
 use crate::tailscale::{self, Route};
-use crate::work::{ProbeReport, ProbeRequest};
 
 /// What doctor needs from its surroundings. Injected so tests can script
 /// every external command and decide whether `tailscale` exists.
@@ -56,6 +51,8 @@ pub struct Env<'a> {
     /// reuses a master if one exists and never creates the directory.
     pub control_dir: PathBuf,
     pub tailscale: Option<PathBuf>,
+    /// This user's home, for expanding the `~/` in a remote ccnm path.
+    pub home: PathBuf,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -118,10 +115,6 @@ impl Check {
 
     fn fail(name: &'static str, err: &Error) -> Self {
         Check::fail_with(name, err.code(), err.message())
-    }
-
-    fn fail_report(name: &'static str, err: &ErrorReport) -> Self {
-        Check::fail_with(name, err.code(), &err.message)
     }
 
     fn fail_with(name: &'static str, code: ErrorCode, detail: impl AsRef<str>) -> Self {
@@ -244,10 +237,11 @@ pub fn run(config_path: &Path, workspace: Option<&str>, env: &Env<'_>) -> Report
                 checks.push(Check::ok(
                     "Workspace config",
                     format!(
-                        "work_host={} (ssh {}), runner_host={} (ssh_from_work {})",
+                        "backend={} work_host={} (ssh {}), runtime_host={} (ssh_from_work {})",
+                        resolved.workspace.backend.as_str(),
                         resolved.workspace.work_host,
                         resolved.work_ssh,
-                        resolved.workspace.runner_host,
+                        resolved.workspace.runtime_host,
                         resolved.home_alias
                     ),
                 ));
@@ -262,33 +256,15 @@ pub fn run(config_path: &Path, workspace: Option<&str>, env: &Env<'_>) -> Report
 
 fn workspace_checks(r: &Resolved<'_>, env: &Env<'_>) -> Vec<Check> {
     let ws = r.workspace;
-    let mut checks = vec![home_workspace(&ws.root)];
+    if ws.backend == Backend::HybridSmb {
+        return vec![Check::fail_with(
+            "Backend",
+            ErrorCode::Config,
+            "backend = \"hybrid-smb\" is parsed but not implemented by this build\nsee design doc appendix A; use backend = \"mcp-ssh\"",
+        )];
+    }
 
-    let home_id = match identity::read(&ws.root) {
-        Ok(Some(id)) => {
-            checks.push(Check::ok("Workspace identity", id.to_string()));
-            Some(id)
-        }
-        Ok(None) => {
-            checks.push(Check::fail_with(
-                "Workspace identity",
-                ErrorCode::WrongWorkspace,
-                format!(
-                    "no {} in {}\nrun: ccnm workspace init {}",
-                    identity::FILE_NAME,
-                    ws.root.display(),
-                    r.name
-                ),
-            ));
-            None
-        }
-        Err(e) => {
-            checks.push(Check::fail("Workspace identity", &e));
-            None
-        }
-    };
-
-    checks.push(smb_share(r, env));
+    let mut checks = vec![home_workspace(&ws.root), home_ccnm(r, env)];
 
     let ssh = match Ssh::new(r.work_ssh, &env.control_dir).and_then(|ssh| {
         ssh.check_control_path()?;
@@ -301,13 +277,18 @@ fn workspace_checks(r: &Resolved<'_>, env: &Env<'_>) -> Vec<Check> {
                 "not checked: work SSH is misconfigured",
             ));
             checks.push(Check::fail("Work SSH", &e));
-            checks.extend(skipped_after_work_ssh());
             checks.extend(not_yet_implemented());
             return checks;
         }
     };
-    let resolved = match ssh.resolve(env.runner) {
-        Ok(resolved) => resolved,
+    match ssh.resolve(env.runner) {
+        Ok(resolved) => {
+            checks.push(tailscale_row(env, &resolved.hostname));
+            checks.push(Check::ok(
+                "Work SSH",
+                format!("{} (resolved, not connected yet)", resolved.target()),
+            ));
+        }
         Err(e) => {
             checks.push(Check::skip("Tailscale", "not checked: ssh -G failed"));
             checks.push(Check::fail_with(
@@ -315,36 +296,6 @@ fn workspace_checks(r: &Resolved<'_>, env: &Env<'_>) -> Vec<Check> {
                 ErrorCode::WorkUnreachable,
                 e.message(),
             ));
-            checks.extend(skipped_after_work_ssh());
-            checks.extend(not_yet_implemented());
-            return checks;
-        }
-    };
-
-    checks.push(tailscale_row(env, &resolved.hostname));
-
-    let req = ProbeRequest {
-        protocol: PROTOCOL,
-        root: ws.root.clone(),
-        runtime_root: ws.runtime_root.clone(),
-        home_alias: r.home_alias.to_string(),
-        claude_config_dir: r.work.claude_config_dir.clone(),
-    };
-    match ssh.call_ccnm::<_, ProbeReport>(
-        env.runner,
-        Master::Reuse,
-        &["work", "probe"],
-        &req,
-        Duration::from_secs(90),
-        ErrorCode::WorkUnreachable,
-    ) {
-        Ok(rep) => {
-            checks.push(Check::ok("Work SSH", resolved.target()));
-            checks.extend(probe_rows(r, &rep, home_id));
-        }
-        Err(e) => {
-            checks.push(Check::fail("Work SSH", &e));
-            checks.extend(skipped_after_work_ssh());
         }
     }
 
@@ -356,13 +307,15 @@ fn workspace_checks(r: &Resolved<'_>, env: &Env<'_>) -> Vec<Check> {
 fn home_workspace(root: &Path) -> Check {
     match std::fs::metadata(root) {
         Ok(meta) if meta.is_dir() => Check::ok("Home workspace", root.display().to_string()),
-        Ok(_) => Check::fail(
+        Ok(_) => Check::fail_with(
             "Home workspace",
-            &Error::config(format!("{} is not a directory", root.display())),
+            ErrorCode::WrongWorkspace,
+            format!("{} is not a directory", root.display()),
         ),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Check::fail(
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Check::fail_with(
             "Home workspace",
-            &Error::config(format!("{} does not exist on this machine", root.display())),
+            ErrorCode::WrongWorkspace,
+            format!("{} does not exist on this machine", root.display()),
         ),
         Err(e) => Check::fail(
             "Home workspace",
@@ -371,50 +324,64 @@ fn home_workspace(root: &Path) -> Check {
     }
 }
 
-/// Is this machine exporting the share, and does it export the root?
-/// `sharing -l` may not list shares configured other ways, so "not listed"
-/// is only a warning; the work-side mount row is authoritative.
-fn smb_share(r: &Resolved<'_>, env: &Env<'_>) -> Check {
-    let share = &r.workspace.share;
-    let out = match env.runner.run(&smb::sharing_list_cmd()) {
-        Ok(out) => out,
-        Err(e) => {
-            return Check::warn(
-                "SMB share",
-                format!("cannot run sharing -l: {}", e.message()),
-            );
-        }
-    };
-    if !out.success() {
-        return Check::warn(
-            "SMB share",
-            format!("sharing -l failed: {}", out.stderr_lossy().trim()),
+/// The work machine will run `<runtime ccnm_bin> internal ...` over ssh on
+/// this machine. Look at that exact path now, as this user, so a missing
+/// or stale install is reported here instead of as a cryptic exit 127
+/// from the other side.
+fn home_ccnm(r: &Resolved<'_>, env: &Env<'_>) -> Check {
+    const NAME: &str = "Home ccnm";
+    let configured = r.runtime.ccnm_bin();
+    let path = paths::expand_home(&configured, &env.home);
+    if !claude::is_executable(&path) {
+        return Check::fail_with(
+            NAME,
+            ErrorCode::Version,
+            format!(
+                "{configured} is not an executable on this machine, but the work machine will invoke it over ssh {}\ninstall this build there: cp $(which ccnm) {}   (or set hosts.{}.ccnm_bin)",
+                r.home_alias,
+                path.display(),
+                r.workspace.runtime_host
+            ),
         );
     }
-    let points = smb::parse_sharing_list(&out.stdout_lossy());
-    match smb::find_share(&points, share) {
-        None => Check::warn(
-            "SMB share",
+    let cmd = Cmd::new(&path)
+        .arg("--version")
+        .timeout(Duration::from_secs(10));
+    let out = match env.runner.run(&cmd) {
+        Ok(out) => out,
+        Err(e) => return Check::fail(NAME, &e.with_code(ErrorCode::Version)),
+    };
+    let stdout = out.stdout_lossy();
+    let version = stdout
+        .split_whitespace()
+        .nth(1)
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if !out.success() || version.is_empty() {
+        return Check::fail_with(
+            NAME,
+            ErrorCode::Version,
             format!(
-                "no share point named \"{share}\" in `sharing -l`; the work-side mount check decides"
+                "{} --version failed (exit {:?}): {}",
+                path.display(),
+                out.exit_code,
+                out.stderr_lossy().trim()
             ),
-        ),
-        Some(p) if p.path != r.workspace.root => Check::fail_with(
-            "SMB share",
-            ErrorCode::Mount,
-            format!(
-                "share \"{share}\" exports {} but the workspace root is {}",
-                p.path.display(),
-                r.workspace.root.display()
-            ),
-        ),
-        Some(p) if !p.smb_shared => Check::fail_with(
-            "SMB share",
-            ErrorCode::Mount,
-            format!("share \"{share}\" exists but SMB is switched off for it"),
-        ),
-        Some(p) => Check::ok("SMB share", format!("{share} -> {}", p.path.display())),
+        );
     }
+    if version != crate::VERSION {
+        return Check::fail_with(
+            NAME,
+            ErrorCode::Version,
+            format!(
+                "{} is ccnm {version}, this one is {}; install the same build",
+                path.display(),
+                crate::VERSION
+            ),
+        );
+    }
+    Check::ok(NAME, format!("{version} at {}", path.display()))
 }
 
 /// Never blocking: ssh decides reachability, this only explains the path.
@@ -442,226 +409,40 @@ fn tailscale_row(env: &Env<'_>, hostname: &str) -> Check {
             format!("{hostname} is not a Tailscale peer; assuming LAN or another route"),
         ),
         Ok(Some(peer)) if !peer.online => Check::warn(NAME, peer.describe()),
-        Ok(Some(peer)) if matches!(peer.route, Route::Relay(_)) => {
-            Check::warn(NAME, format!("{}; SMB will be slow", peer.describe()))
-        }
+        Ok(Some(peer)) if matches!(peer.route, Route::Relay(_)) => Check::warn(
+            NAME,
+            format!("{}; every MCP round trip pays for it", peer.describe()),
+        ),
         Ok(Some(peer)) => Check::ok(NAME, peer.describe()),
     }
 }
 
-fn probe_rows(r: &Resolved<'_>, rep: &ProbeReport, home_id: Option<WorkspaceId>) -> Vec<Check> {
-    let mut checks = Vec::new();
-
-    if rep.ccnm_version == crate::VERSION {
-        checks.push(Check::ok("Work ccnm", rep.ccnm_version.clone()));
-    } else {
-        checks.push(Check::fail_with(
-            "Work ccnm",
-            ErrorCode::Version,
-            format!(
-                "work runs ccnm {}, home runs {}; install the same build on both",
-                rep.ccnm_version,
-                crate::VERSION
-            ),
-        ));
-    }
-
-    checks.push(match &rep.mount {
-        Ok(m) if m.mounted => Check::ok("Work SMB mount", m.detail.clone()),
-        Ok(_) => Check::fail_with(
-            "Work SMB mount",
-            ErrorCode::Mount,
-            format!(
-                "{} is not an SMB mount on work (path is {})\nrun: ccnm mount {}",
-                r.workspace.root.display(),
-                rep.root.describe(),
-                r.name
-            ),
-        ),
-        Err(e) => Check::fail_report("Work SMB mount", e),
-    });
-
-    checks.push(identity_row(
-        "Work identity view",
-        "work",
-        &rep.identity,
-        home_id,
-        "through the mount",
-    ));
-
-    match &rep.health {
-        Ok(h) => {
-            checks.push(Check::ok(
-                "Reverse SSH",
-                format!("{} as {}", r.home_alias, h.user),
-            ));
-            checks.extend(runner_rows(r, h, home_id));
-        }
-        Err(e) => {
-            checks.push(Check::fail_report("Reverse SSH", e));
-            checks.push(Check::skip(
-                "Home runner",
-                "not checked: reverse SSH failed",
-            ));
-            checks.push(Check::skip(
-                "Runner identity view",
-                "not checked: reverse SSH failed",
-            ));
-        }
-    }
-
-    checks.push(match &rep.claude.version {
-        Ok(v) => {
-            let path = rep
-                .claude
-                .path
-                .as_ref()
-                .map(|p| p.display().to_string())
-                .unwrap_or_default();
-            Check::ok("Claude Code", format!("{v} ({path})"))
-        }
-        Err(e) => Check::fail_report("Claude Code", e),
-    });
-
-    checks.push(match &rep.claude.auth {
-        Ok(a) if a.logged_in => Check::ok("Claude authentication", a.describe()),
-        Ok(_) => Check::fail_with("Claude authentication", ErrorCode::Auth, auth_hint(r)),
-        Err(e) => Check::fail_report("Claude authentication", e),
-    });
-
-    checks
-}
-
-/// Design doc section 10: report, point at the manual login, never log in.
-fn auth_hint(r: &Resolved<'_>) -> String {
-    match &r.work.claude_config_dir {
-        Some(dir) => format!(
-            "Claude is not authenticated in configured CLAUDE_CONFIG_DIR\nrun on work: CLAUDE_CONFIG_DIR={} claude auth login",
-            dir.display()
-        ),
-        None => "Claude is not authenticated on the work machine\nrun on work: claude auth login"
-            .to_string(),
-    }
-}
-
-fn identity_row(
-    name: &'static str,
-    side: &str,
-    seen: &Reported<Option<String>>,
-    home_id: Option<WorkspaceId>,
-    how: &str,
-) -> Check {
-    let Some(home_id) = home_id else {
-        return Check::skip(name, "not compared: home identity missing");
-    };
-    match seen {
-        Ok(Some(id)) if *id == home_id.to_string() => Check::ok(name, "matches"),
-        Ok(Some(id)) => Check::fail_with(
-            name,
-            ErrorCode::WrongWorkspace,
-            format!("{side} sees {id}, home has {home_id}: {how} is a different project"),
-        ),
-        Ok(None) => Check::fail_with(
-            name,
-            ErrorCode::WrongWorkspace,
-            format!("{side} cannot see {} {how}", identity::FILE_NAME),
-        ),
-        Err(e) => Check::fail_report(name, e),
-    }
-}
-
-fn runner_rows(r: &Resolved<'_>, h: &HealthReport, home_id: Option<WorkspaceId>) -> Vec<Check> {
-    let mut problems: Vec<(ErrorCode, String)> = Vec::new();
-    if h.ccnm_version != crate::VERSION {
-        problems.push((
-            ErrorCode::Version,
-            format!(
-                "runner runs ccnm {}, home runs {}",
-                h.ccnm_version,
-                crate::VERSION
-            ),
-        ));
-    }
-    if !h.root.is_ok() {
-        problems.push((
-            ErrorCode::WrongWorkspace,
-            format!(
-                "runner sees {} as {}",
-                r.workspace.root.display(),
-                h.root.describe()
-            ),
-        ));
-    }
-    if !h.runtime_root.is_ok() {
-        problems.push((
-            ErrorCode::Config,
-            format!(
-                "runtime_root {} is {} for the runner; create it and give {} write access",
-                r.workspace.runtime_root.display(),
-                h.runtime_root.describe(),
-                h.user
-            ),
-        ));
-    }
-    let row = match problems.first() {
-        None => Check::ok(
-            "Home runner",
-            format!(
-                "{} runs ccnm {}, root and runtime_root visible",
-                h.user, h.ccnm_version
-            ),
-        ),
-        Some((code, _)) => {
-            let text: Vec<&str> = problems.iter().map(|(_, m)| m.as_str()).collect();
-            Check::fail_with("Home runner", *code, text.join("\n"))
-        }
-    };
-    vec![
-        row,
-        identity_row(
-            "Runner identity view",
-            "runner",
-            &h.identity,
-            home_id,
-            "on the runner's own filesystem",
-        ),
-    ]
-}
-
-/// Rows that depend on the probe, when the probe never happened.
-fn skipped_after_work_ssh() -> Vec<Check> {
-    const REASON: &str = "not checked: work SSH failed";
+/// Still to come, with the phase that will make each one real (design doc
+/// section 26).
+fn not_yet_implemented() -> Vec<Check> {
     [
-        "Work ccnm",
-        "Work SMB mount",
-        "Work identity view",
-        "Reverse SSH",
-        "Home runner",
-        "Runner identity view",
-        "Claude Code",
-        "Claude authentication",
+        ("Work ccnm", "1B"),
+        ("Claude Code", "1B"),
+        ("Claude authentication", "1B"),
+        ("Reverse SSH", "1B"),
+        ("Remote MCP handshake", "1B"),
+        ("Workspace root", "1B"),
+        ("Workspace policy", "2"),
+        ("Project instructions", "3"),
+        ("Native tools disabled", "3"),
+        ("Runtime identity", "5"),
+        ("Network isolation", "5"),
+        ("Terminal session", "6"),
     ]
     .into_iter()
-    .map(|name| Check::skip(name, REASON))
+    .map(|(name, phase)| Check::skip(name, format!("not implemented until phase {phase}")))
     .collect()
-}
-
-/// Still to come, with the phase that will make each one real.
-fn not_yet_implemented() -> Vec<Check> {
-    [("Consistency test", 2), ("Execution barrier", 5)]
-        .into_iter()
-        .map(|(name, phase)| Check::skip(name, format!("not implemented until phase {phase}")))
-        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::claude::AuthStatus;
     use crate::process::{FakeRunner, Output};
-    use crate::runner::PathStatus;
-    use crate::smb::MountStatus;
-    use crate::work::ClaudeReport;
 
     fn fixture(name: &str) -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -669,9 +450,10 @@ mod tests {
             .join(name)
     }
 
-    /// A per-test directory with a config whose root is `<dir>/root`
-    /// (created only if `with_root`).
-    fn setup(test: &str, with_root: bool) -> (PathBuf, PathBuf) {
+    /// A per-test directory with `root/` (created only if `with_root`), a
+    /// fake `home/.local/bin/ccnm` (created only if `with_bin`) and a
+    /// config pointing at them.
+    fn setup(test: &str, with_root: bool, with_bin: bool) -> (PathBuf, PathBuf) {
         let dir = std::env::temp_dir().join(format!("ccnm-doctor-{}-{test}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(control(&dir));
@@ -680,13 +462,20 @@ mod tests {
         if with_root {
             std::fs::create_dir_all(&root).unwrap();
         }
+        if with_bin {
+            let bin_dir = dir.join("home/.local/bin");
+            std::fs::create_dir_all(&bin_dir).unwrap();
+            let bin = bin_dir.join("ccnm");
+            std::fs::write(&bin, "#!/bin/sh\necho ccnm 0.1.0\n").unwrap();
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
         let config = dir.join("config.toml");
         std::fs::write(
             &config,
             format!(
-                "version = 1\n[hosts.work]\nssh = \"work\"\n[hosts.home_runner]\nssh_from_work = \"ccnm-home\"\nsmb_user = \"fodelf\"\n[workspaces.xshun]\nwork_host = \"work\"\nroot = \"{}\"\nruntime_root = \"{}\"\nshare = \"xshun\"\n",
-                root.display(),
-                dir.join("runtime").display()
+                "version = 1\n[hosts.work]\nssh = \"work\"\n[hosts.home]\nssh_from_work = \"ccnm-home\"\n[workspaces.xshun]\nwork_host = \"work\"\nroot = \"{}\"\n",
+                root.display()
             ),
         )
         .unwrap();
@@ -704,64 +493,11 @@ mod tests {
             runner: fake,
             control_dir: control(dir),
             tailscale: tailscale.then(|| PathBuf::from("/opt/homebrew/bin/tailscale")),
+            home: dir.join("home"),
         }
-    }
-
-    fn sharing(root: &Path) -> String {
-        format!(
-            "name:\t\tcc-xshun\npath:\t\t{}\n\tsmb:\t{{\n    \t\tname:\txshun\n    \t\tshared:\t1\n\t}}\n",
-            root.display()
-        )
     }
 
     const TS: &str = r#"{"BackendState":"Running","Peer":{"k":{"HostName":"workmac","DNSName":"workmac.t.ts.net.","TailscaleIPs":["100.1.1.1"],"Online":true,"CurAddr":"203.0.113.7:41641","Relay":"tok","Active":true}}}"#;
-
-    fn good_probe(id: &str) -> ProbeReport {
-        ProbeReport {
-            protocol: PROTOCOL,
-            ccnm_version: crate::VERSION.to_string(),
-            root: PathStatus {
-                exists: true,
-                is_dir: true,
-            },
-            identity: Ok(Some(id.to_string())),
-            mount: Ok(MountStatus {
-                mounted: true,
-                detail: "mounted, SERVER_NAME=home".into(),
-            }),
-            home_ssh: Ok(crate::ssh::ResolvedSsh {
-                hostname: "home.t.ts.net".into(),
-                user: "ccrun".into(),
-                port: 22,
-                identity_files: vec![],
-                proxy_jump: None,
-            }),
-            health: Ok(HealthReport {
-                protocol: PROTOCOL,
-                ccnm_version: crate::VERSION.to_string(),
-                user: "ccrun".into(),
-                root: PathStatus {
-                    exists: true,
-                    is_dir: true,
-                },
-                runtime_root: PathStatus {
-                    exists: true,
-                    is_dir: true,
-                },
-                identity: Ok(Some(id.to_string())),
-            }),
-            claude: ClaudeReport {
-                path: Some(PathBuf::from("/usr/local/bin/claude")),
-                version: Ok("2.1.259".into()),
-                auth: Ok(AuthStatus {
-                    logged_in: true,
-                    auth_method: Some("claude.ai".into()),
-                    email: Some("me@x".into()),
-                    subscription_type: Some("max".into()),
-                }),
-            },
-        }
-    }
 
     fn row<'a>(report: &'a Report, name: &str) -> &'a Check {
         report
@@ -807,6 +543,168 @@ mod tests {
             "{text}"
         );
         assert!(text.ends_with("\nREADY\n"), "{text}");
+    }
+
+    #[test]
+    fn unknown_workspace_fails_config() {
+        let fake = FakeRunner::new();
+        let report = run(
+            &fixture("config-valid.toml"),
+            Some("other"),
+            &env(&fake, Path::new("/tmp"), false),
+        );
+        assert_eq!(report.exit_code(), 10);
+        assert!(
+            row(&report, "Workspace config")
+                .detail
+                .contains("defined: xshun")
+        );
+    }
+
+    #[test]
+    fn hybrid_backend_is_refused_by_this_build() {
+        let fake = FakeRunner::new();
+        let report = run(
+            &fixture("config-hybrid.toml"),
+            Some("legacy"),
+            &env(&fake, Path::new("/tmp"), false),
+        );
+        assert_eq!(report.exit_code(), 10, "{}", report.render());
+        let backend = row(&report, "Backend");
+        assert!(backend.detail.contains("appendix A"), "{}", backend.detail);
+        assert!(
+            fake.calls().is_empty(),
+            "nothing remote for a hybrid config"
+        );
+    }
+
+    #[test]
+    fn everything_local_good_blocks_only_on_future_phases() {
+        let (dir, config) = setup("good", true, true);
+        let fake = FakeRunner::new();
+        fake.push(Output::exited(0, "ccnm 0.1.0\n"));
+        fake.push(Output::exited(0, "hostname workmac\nuser me\n"));
+        fake.push(Output::exited(0, TS));
+
+        let report = run(&config, Some("xshun"), &env(&fake, &dir, true));
+        let text = report.render();
+        for name in [
+            "Config",
+            "Workspace config",
+            "Home workspace",
+            "Home ccnm",
+            "Tailscale",
+            "Work SSH",
+        ] {
+            assert_eq!(row(&report, name).status, Status::Ok, "{name}:\n{text}");
+        }
+        assert_eq!(
+            row(&report, "Home ccnm").detail,
+            format!("0.1.0 at {}", dir.join("home/.local/bin/ccnm").display())
+        );
+        assert_eq!(
+            row(&report, "Tailscale").detail,
+            "direct via 203.0.113.7:41641"
+        );
+        assert_eq!(
+            row(&report, "Work SSH").detail,
+            "me@workmac (resolved, not connected yet)"
+        );
+        assert!(
+            text.ends_with("NOT READY (0 failed, 12 not checked)\n"),
+            "{text}"
+        );
+        assert_eq!(report.blocking_code(), Some(ErrorCode::NotReady));
+        assert_eq!(report.exit_code(), 3);
+
+        // Read-only: no control dir, nothing new in root.
+        assert!(!control(&dir).exists());
+        assert_eq!(std::fs::read_dir(dir.join("root")).unwrap().count(), 0);
+        // The version probe ran the expanded ~ path, and ssh only -G.
+        let calls = fake.calls();
+        assert_eq!(
+            calls[0].display(),
+            format!("{} --version", dir.join("home/.local/bin/ccnm").display())
+        );
+        assert_eq!(calls[1].display(), "ssh -G work");
+        assert_eq!(calls.len(), 3);
+    }
+
+    #[test]
+    fn missing_home_ccnm_names_the_path_and_the_fix() {
+        let (dir, config) = setup("no-bin", true, false);
+        let fake = FakeRunner::new();
+        fake.push(Output::exited(0, "hostname workmac\n"));
+        let report = run(&config, Some("xshun"), &env(&fake, &dir, false));
+        let bin = row(&report, "Home ccnm");
+        assert_eq!(bin.status, Status::Fail(ErrorCode::Version));
+        assert!(bin.detail.contains("~/.local/bin/ccnm"), "{}", bin.detail);
+        assert!(bin.detail.contains("cp $(which ccnm)"), "{}", bin.detail);
+        assert!(bin.detail.contains("hosts.home.ccnm_bin"), "{}", bin.detail);
+        assert_eq!(report.exit_code(), 11);
+        assert_eq!(fake.calls().len(), 1, "no --version for a missing file");
+    }
+
+    #[test]
+    fn stale_home_ccnm_is_a_version_failure() {
+        let (dir, config) = setup("stale-bin", true, true);
+        let fake = FakeRunner::new();
+        fake.push(Output::exited(0, "ccnm 0.0.9\n"));
+        fake.push(Output::exited(0, "hostname workmac\n"));
+        let report = run(&config, Some("xshun"), &env(&fake, &dir, false));
+        let bin = row(&report, "Home ccnm");
+        assert_eq!(bin.status, Status::Fail(ErrorCode::Version));
+        assert!(bin.detail.contains("is ccnm 0.0.9"), "{}", bin.detail);
+    }
+
+    #[test]
+    fn missing_root_is_wrong_workspace() {
+        let (dir, config) = setup("no-root", false, true);
+        let fake = FakeRunner::new();
+        fake.push(Output::exited(0, "ccnm 0.1.0\n"));
+        fake.push(Output::exited(0, "hostname workmac\n"));
+        let report = run(&config, Some("xshun"), &env(&fake, &dir, false));
+        assert_eq!(report.blocking_code(), Some(ErrorCode::WrongWorkspace));
+        assert!(
+            row(&report, "Home workspace")
+                .detail
+                .contains("does not exist on this machine")
+        );
+    }
+
+    #[test]
+    fn unresolvable_work_alias_is_work_unreachable() {
+        let (dir, config) = setup("bad-alias", true, true);
+        let fake = FakeRunner::new();
+        fake.push(Output::exited(0, "ccnm 0.1.0\n"));
+        let mut failed = Output::exited(255, "");
+        failed.stderr = b"work: Name or service not known\n".to_vec();
+        fake.push(failed);
+        let report = run(&config, Some("xshun"), &env(&fake, &dir, false));
+        assert_eq!(report.exit_code(), 20, "{}", report.render());
+        assert_eq!(row(&report, "Tailscale").status, Status::Skip);
+        assert!(
+            row(&report, "Work SSH")
+                .detail
+                .contains("Name or service not known")
+        );
+    }
+
+    #[test]
+    fn multi_line_detail_is_indented_under_the_detail_column() {
+        let report = Report {
+            subject: "x".into(),
+            checks: vec![Check::fail("Config", &Error::config("line one\nline two"))],
+        };
+        let text = report.render();
+        assert!(
+            text.contains("Config                  FAIL   CCNM_E_CONFIG: line one\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains("\n                               line two\n"),
+            "{text}"
+        );
     }
 
     fn report_of(statuses: &[Status]) -> Report {
@@ -866,251 +764,5 @@ mod tests {
         assert!(report.ready());
         // And an empty report has nothing blocking either.
         assert!(report_of(&[]).ready());
-    }
-
-    #[test]
-    fn unknown_workspace_fails_config() {
-        let fake = FakeRunner::new();
-        let report = run(
-            &fixture("config-valid.toml"),
-            Some("other"),
-            &env(&fake, Path::new("/tmp"), false),
-        );
-        assert_eq!(report.exit_code(), 10);
-        assert!(
-            row(&report, "Workspace config")
-                .detail
-                .contains("defined: xshun")
-        );
-    }
-
-    #[test]
-    fn everything_good_blocks_only_on_future_phases() {
-        let (dir, config) = setup("good", true);
-        let root = dir.join("root");
-        let id = identity::init(&root).unwrap();
-
-        let fake = FakeRunner::new();
-        fake.push(Output::exited(0, sharing(&root)));
-        fake.push(Output::exited(0, "hostname workmac\nuser me\n"));
-        fake.push(Output::exited(0, TS));
-        fake.push(Output::exited(
-            0,
-            serde_json::to_string(&good_probe(&id.to_string())).unwrap(),
-        ));
-
-        let report = run(&config, Some("xshun"), &env(&fake, &dir, true));
-        let text = report.render();
-        for name in [
-            "Home workspace",
-            "Workspace identity",
-            "SMB share",
-            "Tailscale",
-            "Work SSH",
-            "Work ccnm",
-            "Work SMB mount",
-            "Work identity view",
-            "Reverse SSH",
-            "Home runner",
-            "Runner identity view",
-            "Claude Code",
-            "Claude authentication",
-        ] {
-            assert_eq!(row(&report, name).status, Status::Ok, "{name}:\n{text}");
-        }
-        assert_eq!(
-            row(&report, "Tailscale").detail,
-            "direct via 203.0.113.7:41641"
-        );
-        assert_eq!(row(&report, "Work SSH").detail, "me@workmac");
-        assert_eq!(
-            row(&report, "Claude authentication").detail,
-            "me@x via claude.ai (max)"
-        );
-        assert!(
-            text.ends_with("NOT READY (0 failed, 2 not checked)\n"),
-            "{text}"
-        );
-        assert_eq!(report.blocking_code(), Some(ErrorCode::NotReady));
-        assert_eq!(report.exit_code(), 3);
-
-        // Read-only: no control dir, no new files in root.
-        assert!(!control(&dir).exists());
-        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
-        // Every ssh went out with ControlMaster=no.
-        for call in fake.calls() {
-            let text = call.display();
-            if text.starts_with("ssh -o") {
-                assert!(text.contains("ControlMaster=no"), "{text}");
-            }
-        }
-        // The probe carried the workspace paths.
-        let probe = &fake.calls()[3];
-        let wire = probe.args.last().unwrap().to_string_lossy().into_owned();
-        let sent: ProbeRequest = crate::payload::decode(&wire).unwrap();
-        assert_eq!(sent.root, root);
-        assert_eq!(sent.home_alias, "ccnm-home");
-    }
-
-    #[test]
-    fn unreachable_work_fails_once_and_skips_the_rest() {
-        let (dir, config) = setup("unreachable", true);
-        identity::init(&dir.join("root")).unwrap();
-        let fake = FakeRunner::new();
-        fake.push(Output::exited(0, ""));
-        fake.push(Output::exited(0, "hostname workmac\n"));
-        let mut down = Output::exited(255, "");
-        down.stderr = b"ssh: connect to host workmac port 22: Operation timed out\n".to_vec();
-        fake.push(down);
-
-        let report = run(&config, Some("xshun"), &env(&fake, &dir, false));
-        assert_eq!(report.exit_code(), 20, "{}", report.render());
-        assert_eq!(row(&report, "SMB share").status, Status::Warn);
-        assert_eq!(row(&report, "Tailscale").status, Status::Ok);
-        assert!(
-            row(&report, "Work SSH")
-                .detail
-                .contains("Operation timed out")
-        );
-        assert_eq!(row(&report, "Claude Code").status, Status::Skip);
-        let text = report.render();
-        assert!(
-            text.ends_with("NOT READY (1 failed, 10 not checked)\n"),
-            "{text}"
-        );
-    }
-
-    #[test]
-    fn identity_mismatch_and_missing_mount_are_named() {
-        let (dir, config) = setup("mismatch", true);
-        let root = dir.join("root");
-        identity::init(&root).unwrap();
-        let mut probe = good_probe("00000000-0000-0000-0000-000000000000");
-        probe.mount = Ok(MountStatus {
-            mounted: false,
-            detail: "not an SMB mount".into(),
-        });
-        probe.health.as_mut().unwrap().identity = Ok(None);
-        probe.claude.auth = Ok(AuthStatus {
-            logged_in: false,
-            auth_method: None,
-            email: None,
-            subscription_type: None,
-        });
-
-        let fake = FakeRunner::new();
-        fake.push(Output::exited(0, sharing(&root)));
-        fake.push(Output::exited(0, "hostname workmac\n"));
-        fake.push(Output::exited(0, serde_json::to_string(&probe).unwrap()));
-
-        let report = run(&config, Some("xshun"), &env(&fake, &dir, false));
-        let mount = row(&report, "Work SMB mount");
-        assert_eq!(mount.status, Status::Fail(ErrorCode::Mount));
-        assert!(
-            mount.detail.contains("run: ccnm mount xshun"),
-            "{}",
-            mount.detail
-        );
-        let work_id = row(&report, "Work identity view");
-        assert_eq!(work_id.status, Status::Fail(ErrorCode::WrongWorkspace));
-        assert!(
-            work_id.detail.contains("work sees 00000000"),
-            "{}",
-            work_id.detail
-        );
-        let runner_id = row(&report, "Runner identity view");
-        assert!(
-            runner_id.detail.contains("runner cannot see"),
-            "{}",
-            runner_id.detail
-        );
-        let auth = row(&report, "Claude authentication");
-        assert_eq!(auth.status, Status::Fail(ErrorCode::Auth));
-        assert!(
-            auth.detail.contains("run on work: claude auth login"),
-            "{}",
-            auth.detail
-        );
-        // First FAIL in table order decides: the mount row comes before identity.
-        assert_eq!(report.exit_code(), 22);
-    }
-
-    #[test]
-    fn missing_identity_asks_for_workspace_init_and_skips_comparisons() {
-        let (dir, config) = setup("no-id", true);
-        let root = dir.join("root");
-        let fake = FakeRunner::new();
-        fake.push(Output::exited(0, sharing(&root)));
-        fake.push(Output::exited(0, "hostname workmac\n"));
-        fake.push(Output::exited(
-            0,
-            serde_json::to_string(&good_probe("whatever")).unwrap(),
-        ));
-        let report = run(&config, Some("xshun"), &env(&fake, &dir, false));
-        let id = row(&report, "Workspace identity");
-        assert_eq!(id.status, Status::Fail(ErrorCode::WrongWorkspace));
-        assert!(
-            id.detail.contains("run: ccnm workspace init xshun"),
-            "{}",
-            id.detail
-        );
-        assert_eq!(row(&report, "Work identity view").status, Status::Skip);
-        assert_eq!(report.exit_code(), 30);
-    }
-
-    #[test]
-    fn share_exporting_another_path_is_a_mount_failure() {
-        let (dir, config) = setup("share-path", true);
-        let root = dir.join("root");
-        identity::init(&root).unwrap();
-        let fake = FakeRunner::new();
-        fake.push(Output::exited(0, sharing(Path::new("/somewhere/else"))));
-        fake.push(Output::exited(0, "hostname workmac\n"));
-        fake.push(Output::exited(
-            0,
-            serde_json::to_string(&good_probe(
-                &identity::read(&root).unwrap().unwrap().to_string(),
-            ))
-            .unwrap(),
-        ));
-        let report = run(&config, Some("xshun"), &env(&fake, &dir, false));
-        let share = row(&report, "SMB share");
-        assert_eq!(share.status, Status::Fail(ErrorCode::Mount));
-        assert!(share.detail.contains("/somewhere/else"), "{}", share.detail);
-    }
-
-    #[test]
-    fn missing_root_fails_before_anything_remote() {
-        let (dir, config) = setup("no-root", false);
-        let fake = FakeRunner::new();
-        fake.push(Output::exited(0, ""));
-        fake.push(Output::exited(0, "hostname workmac\n"));
-        let mut down = Output::exited(255, "");
-        down.stderr = b"nope\n".to_vec();
-        fake.push(down);
-        let report = run(&config, Some("xshun"), &env(&fake, &dir, false));
-        assert_eq!(report.blocking_code(), Some(ErrorCode::Config));
-        assert!(
-            row(&report, "Home workspace")
-                .detail
-                .contains("does not exist on this machine")
-        );
-    }
-
-    #[test]
-    fn multi_line_detail_is_indented_under_the_detail_column() {
-        let report = Report {
-            subject: "x".into(),
-            checks: vec![Check::fail("Config", &Error::config("line one\nline two"))],
-        };
-        let text = report.render();
-        assert!(
-            text.contains("Config                  FAIL   CCNM_E_CONFIG: line one\n"),
-            "{text}"
-        );
-        assert!(
-            text.contains("\n                               line two\n"),
-            "{text}"
-        );
     }
 }

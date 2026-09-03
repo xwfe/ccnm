@@ -146,8 +146,7 @@ pub struct SearchResult {
 pub fn search_text(root: &Path, args: &SearchTextArgs) -> Result<SearchResult> {
     let plan = Plan::new(root, args)?;
     let rg = locate_rg().ok_or_else(|| {
-        Error::new(
-            ErrorCode::NotReady,
+        Error::dependency(
             "ripgrep is not installed on the workspace machine, and ccnm searches with it rather than scanning files itself; install it (`brew install ripgrep`) and try again",
         )
     })?;
@@ -837,15 +836,18 @@ mod tests {
     fn the_last_match_still_gets_its_trailing_context() {
         let root = workspace("trailing");
         let body: String = (1..=100)
-            .map(|n| format!("needle {n}\nafter {n}\nfiller {n}\n"))
+            .map(|n| format!("ctxmark {n}\nafter {n}\nfiller {n}\n"))
             .collect();
         fs::write(root.join("src/ctx.rs"), body).unwrap();
+        // A term only this file has. The fixture also contains "needle" and
+        // rg walks files in an order it does not promise, so a shared term
+        // plus a small max_results makes the test depend on that order.
         let r = search(
             &root,
             &SearchTextArgs {
                 max_results: Some(2),
                 context_lines: Some(1),
-                ..args("needle")
+                ..args("ctxmark")
             },
         );
         assert_eq!(r.matches, 2);
@@ -860,7 +862,7 @@ mod tests {
         // Lines far longer than the per-line cap, and enough of them to pass
         // the response budget before max_results would.
         let body: String = (1..=300)
-            .map(|n| format!("needle {}\n", "x".repeat(4_000) + &n.to_string()))
+            .map(|n| format!("widemark {}\n", "x".repeat(4_000) + &n.to_string()))
             .collect();
         fs::write(root.join("src/wide.rs"), body).unwrap();
         let r = search(
@@ -868,7 +870,7 @@ mod tests {
             &SearchTextArgs {
                 max_results: Some(200),
                 context_lines: Some(0),
-                ..args("needle")
+                ..args("widemark")
             },
         );
         assert!(r.bytes <= MAX_RESPONSE_BYTES, "{} bytes", r.bytes);

@@ -14,9 +14,10 @@ pub enum ErrorCode {
     /// path keeps landing here it needs its own code.
     Internal,
     /// Doctor found no failure but could not verify everything (a SKIP
-    /// row). Nothing is known to be broken, and nothing is proven to work,
-    /// so `ccnm run` must still refuse. Distinct from every FAIL code so a
-    /// caller can tell "unverified" from "broken".
+    /// row), or a feature is not implemented yet. Nothing is known to be
+    /// broken, and nothing is proven to work, so `ccnm run` must still
+    /// refuse. Distinct from every FAIL code so a caller can tell
+    /// "unverified" from "broken".
     NotReady,
     /// Config file missing, unparsable, or fails validation.
     Config,
@@ -50,11 +51,18 @@ pub enum ErrorCode {
     /// and call again". A model that cannot tell them apart either gives
     /// up on a typo or keeps hammering a wall.
     InvalidArgs,
+    /// The workspace machine is missing a program the runtime needs, such
+    /// as `rg` for `search_text`. Kept apart from
+    /// [`NotReady`](Self::NotReady), which is about ccnm not having
+    /// verified or not having implemented something: this one is about the
+    /// machine, it names a specific thing to install, and no amount of
+    /// finishing ccnm will fix it.
+    Dependency,
 }
 
 impl ErrorCode {
     /// Every code, in the order they are documented.
-    pub const ALL: [ErrorCode; 13] = [
+    pub const ALL: [ErrorCode; 14] = [
         ErrorCode::Internal,
         ErrorCode::NotReady,
         ErrorCode::Config,
@@ -68,6 +76,7 @@ impl ErrorCode {
         ErrorCode::Policy,
         ErrorCode::StaleEpoch,
         ErrorCode::InvalidArgs,
+        ErrorCode::Dependency,
     ];
 
     /// The `CCNM_E_*` name Claude sees.
@@ -86,6 +95,7 @@ impl ErrorCode {
             ErrorCode::Policy => "CCNM_E_POLICY",
             ErrorCode::StaleEpoch => "CCNM_E_STALE_EPOCH",
             ErrorCode::InvalidArgs => "CCNM_E_INVALID_ARGS",
+            ErrorCode::Dependency => "CCNM_E_DEPENDENCY",
         }
     }
 
@@ -115,6 +125,7 @@ impl ErrorCode {
             ErrorCode::StaleEpoch => 32,
             ErrorCode::Policy => 33,
             ErrorCode::InvalidArgs => 34,
+            ErrorCode::Dependency => 35,
         }
     }
 }
@@ -169,6 +180,11 @@ impl Error {
     /// The caller's arguments cannot be used as given.
     pub fn invalid_args(message: impl Into<String>) -> Self {
         Error::new(ErrorCode::InvalidArgs, message)
+    }
+
+    /// A program the runtime needs is not installed here.
+    pub fn dependency(message: impl Into<String>) -> Self {
+        Error::new(ErrorCode::Dependency, message)
     }
 
     /// Attach the underlying error. Shown after the message as `caused by:`.

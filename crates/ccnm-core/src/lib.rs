@@ -15,6 +15,7 @@ pub mod protocol;
 pub mod safety;
 pub mod session;
 pub mod ssh;
+pub mod tmux;
 pub mod work;
 
 pub use config::Config;

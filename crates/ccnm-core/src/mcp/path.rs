@@ -319,6 +319,36 @@ mod tests {
         assert_eq!(p.abs(), root.join("src/main.rs"));
     }
 
+    /// CVE-2025-53110 in the official filesystem MCP server was exactly
+    /// this: containment written as a *string* prefix test, so a workspace
+    /// at `/tmp/ws` also let through `/tmp/ws_secrets` -- a different
+    /// directory that merely starts with the same characters.
+    ///
+    /// `contained` compares two `Path`s, and `Path::starts_with` matches
+    /// whole components, so the sibling is refused. That is a property of
+    /// the type rather than of anything written here, which is why it is
+    /// worth a test: someone "simplifying" this to string handling would
+    /// reintroduce the CVE and every other test would still pass.
+    #[test]
+    fn a_sibling_directory_sharing_the_roots_name_is_not_inside_it() {
+        let root = fixture("prefix");
+        let sibling = root.with_file_name("ws_secrets");
+        fs::create_dir_all(&sibling).unwrap();
+        fs::write(sibling.join("creds.txt"), "secret\n").unwrap();
+        // The string starts with the root's string; the path does not start
+        // with the root's components.
+        assert!(
+            sibling
+                .to_str()
+                .unwrap()
+                .starts_with(root.to_str().unwrap()),
+            "the fixture is not testing what it means to"
+        );
+        let err = contained(&root, &sibling.join("creds.txt"), "creds.txt")
+            .expect_err("a sibling directory must not count as inside the workspace");
+        assert_eq!(err.code(), ErrorCode::Policy);
+    }
+
     #[test]
     fn redundant_syntax_is_normalized_not_refused() {
         let root = fixture("norm");

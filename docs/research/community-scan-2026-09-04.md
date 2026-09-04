@@ -250,7 +250,7 @@ else { updateServer({ ...client, type: 'failed' }) }
 | 1 | `exec_command` 挂 `requiresUserInteraction` | ✅ 每次调用都问，**任何权限模式下都关不掉** |
 | 2 | `apply_edits` 做成 order-invariant | ✅ 两遍：先按原文定位，不行才退回顺序应用 |
 | 3 | 匹配失败时诊断（不修） | ✅ 空白/缩进差异报到行，打出文件真正的字节 |
-| 4 | `start()` 加版本 + root 握手 | ✅ 两条路径（交互和 `--print`）都做，约 30 ms |
+| 4 | `start()` 加版本 + root 握手 | ✅ 两条路径都做；真机实测 **430–490 ms**（一次完整 SSH 握手，不是复用连接上的往返） |
 | 6 | commit 中途被 kill 的 journal | ✅ 撞见就拒绝并列出文件；**不自动回滚** |
 
 第 2 条有个**要记住的更正**：一开始以为它能修"两个无关的 edit 顺序反了"，**那是错的**——

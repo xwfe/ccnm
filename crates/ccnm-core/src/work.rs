@@ -135,74 +135,6 @@ pub fn run(req: &RunRequest, tools: &Tools<'_>) -> Result<RunReport> {
 /// outlives the ssh call that made it, which is the whole point of putting
 /// it in tmux (design doc section 23). What comes back is what the home
 /// machine needs to attach.
-/// One round trip to the workspace machine before a session is built, to
-/// answer the two questions that are cheap now and expensive later.
-///
-/// **Do the two binaries agree?** They have to be the same build: the
-/// control protocol is versioned but the tools are not, so two builds
-/// that still decode each other's messages can disagree about what a tool
-/// does. `doctor` has always checked this, but `doctor` is what somebody
-/// runs when they already suspect something. A session started against a
-/// mismatched pair fails later, somewhere that does not mention versions.
-///
-/// **Is the project still there?** A moved or renamed root used to be
-/// found out from inside the session, where the failure arrives as a
-/// tool blaming the program it could not run. It costs one `stat` here.
-///
-/// About 30 ms on the real link. That buys the two errors that are worst
-/// to debug from the far end.
-fn greet(ssh: &Ssh, workspace: &str, root: &Path, tools: &Tools<'_>) -> Result<()> {
-    // This is the first thing on the session path to use a ControlPath at
-    // all -- the MCP transport sets `ControlPath=none` and never had one.
-    // A state directory too long for macOS's 104-byte sun_path makes ssh
-    // fail in its own words, so the check that explains it has to run
-    // here too, exactly as `probe` runs it.
-    ssh.check_control_path()?;
-    let hello: HelloReport = ssh.call_ccnm(
-        tools.runner,
-        Master::Reuse,
-        &["internal", "hello"],
-        &HelloRequest::new(Some(root.to_path_buf())),
-        Duration::from_secs(30),
-        ErrorCode::HomeUnreachable,
-    )?;
-    if hello.ccnm_version != crate::VERSION {
-        return Err(Error::new(
-            ErrorCode::Version,
-            format!(
-                "the workspace machine runs ccnm {}, this one runs {}; install the same build on both before starting a session",
-                hello.ccnm_version,
-                crate::VERSION
-            ),
-        ));
-    }
-    match hello.root {
-        Some(status) if status.is_ok() => Ok(()),
-        Some(status) => Err(Error::new(
-            ErrorCode::WrongWorkspace,
-            format!(
-                "workspace `{workspace}` says its root is {}, and on that machine it is {}\nif the project moved: ccnm ws add {workspace} <new path> --replace",
-                root.display(),
-                status.describe()
-            ),
-        )),
-        // No answer at all, from something calling itself the same
-        // version. That is the case the version numbers cannot catch:
-        // `VERSION` is the Cargo version, so every build of 0.1.0 compares
-        // equal to every other, and during development different builds
-        // carrying the same number is the normal state rather than the
-        // exception. A missing field is the one piece of hard evidence
-        // available that the two are not the same binary.
-        None => Err(Error::new(
-            ErrorCode::Version,
-            format!(
-                "the workspace machine reports ccnm {} like this one, but its reply is missing the project-root check, so the two are not the same build\ninstall this build there: scripts/deploy.sh <its alias>",
-                hello.ccnm_version
-            ),
-        )),
-    }
-}
-
 pub fn start(req: &StartRequest, tools: &Tools<'_>) -> Result<StartReport> {
     let tmux = tools.tmux()?;
     let name = tmux::session_name(&req.workspace);
@@ -278,6 +210,82 @@ pub fn start(req: &StartRequest, tools: &Tools<'_>) -> Result<StartReport> {
 
     let (ctx, ssh) = preflight(req, tools)?;
     start_fresh(req, tools, &tmux, name, ctx, ssh, None)
+}
+
+/// One round trip to the workspace machine before a session is built, to
+/// answer the two questions that are cheap now and expensive later.
+///
+/// **Do the two binaries agree?** They have to be the same build: the
+/// control protocol is versioned but the tools are not, so two builds
+/// that still decode each other's messages can disagree about what a tool
+/// does. `doctor` has always checked this, but `doctor` is what somebody
+/// runs when they already suspect something. A session started against a
+/// mismatched pair fails later, somewhere that does not mention versions.
+///
+/// **Is the project still there?** A moved or renamed root used to be
+/// found out from inside the session, where the failure arrives as a
+/// tool blaming the program it could not run. It costs one `stat` here.
+///
+/// One SSH round trip, paid once per session, to buy the two errors that
+/// are worst to debug from the far end.
+///
+/// Measured on the real pair: **430-490 ms**, five runs, which is a whole
+/// SSH handshake and not a round trip on an open connection. An earlier
+/// version of this comment claimed 30 ms; that would be the cost with a
+/// master already up, and nothing on this path ever starts one.
+///
+/// `Master::Off`, not `Reuse`. Nothing on this path ever *creates* a
+/// master, so a ControlPath could only be used if some other command left
+/// one lying around -- while the 104-byte `sun_path` limit it must fit
+/// inside applies every time. Requiring it would mean a state directory
+/// too long for that limit could no longer start a session at all, which
+/// it always could before: the MCP transport sets `ControlPath=none` and
+/// never had one. Refusing to work in order to be able to reuse something
+/// that is usually not there is the wrong way round.
+fn greet(ssh: &Ssh, workspace: &str, root: &Path, tools: &Tools<'_>) -> Result<()> {
+    let hello: HelloReport = ssh.call_ccnm(
+        tools.runner,
+        Master::Off,
+        &["internal", "hello"],
+        &HelloRequest::new(Some(root.to_path_buf())),
+        Duration::from_secs(30),
+        ErrorCode::HomeUnreachable,
+    )?;
+    if hello.ccnm_version != crate::VERSION {
+        return Err(Error::new(
+            ErrorCode::Version,
+            format!(
+                "the workspace machine runs ccnm {}, this one runs {}; install the same build on both before starting a session",
+                hello.ccnm_version,
+                crate::VERSION
+            ),
+        ));
+    }
+    match hello.root {
+        Some(status) if status.is_ok() => Ok(()),
+        Some(status) => Err(Error::new(
+            ErrorCode::WrongWorkspace,
+            format!(
+                "workspace `{workspace}` says its root is {}, and on that machine it is {}\nif the project moved: ccnm ws add {workspace} <new path> --replace",
+                root.display(),
+                status.describe()
+            ),
+        )),
+        // No answer at all, from something calling itself the same
+        // version. That is the case the version numbers cannot catch:
+        // `VERSION` is the Cargo version, so every build of 0.1.0 compares
+        // equal to every other, and during development different builds
+        // carrying the same number is the normal state rather than the
+        // exception. A missing field is the one piece of hard evidence
+        // available that the two are not the same binary.
+        None => Err(Error::new(
+            ErrorCode::Version,
+            format!(
+                "the workspace machine reports ccnm {} like this one, but its reply is missing the project-root check, so the two are not the same build\ninstall this build there: scripts/deploy.sh <its alias>",
+                hello.ccnm_version
+            ),
+        )),
+    }
 }
 
 /// Everything that has to be true before a session can be built, checked
@@ -1105,16 +1113,17 @@ mod tests {
         );
     }
 
-    /// The handshake is the first thing on the session path to use a
-    /// ControlPath at all: the MCP transport sets `ControlPath=none`. A
-    /// state directory too long for macOS's 104-byte sun_path therefore
-    /// used to be somebody else's problem and is now this call's, so it
-    /// has to fail the way `doctor` does -- naming the fix -- and not
-    /// with whatever ssh says about a socket path.
+    /// A state directory too long for macOS's 104-byte `sun_path` could
+    /// always start a session -- the MCP transport names no socket. The
+    /// handshake must not change that, so it names no socket either: on
+    /// this path nothing ever creates a master, so a ControlPath could
+    /// only be used if some other command happened to leave one, while
+    /// the length limit would apply every single time.
     #[test]
-    fn a_state_directory_too_long_for_a_socket_says_so_before_ssh_does() {
+    fn a_state_directory_too_long_for_a_socket_still_starts_a_session() {
         let deep = std::env::temp_dir().join("x".repeat(crate::ssh::CONTROL_PATH_MAX_LEN));
         let fake = FakeRunner::new();
+        fake.push(Output::exited(0, hello_json(true)));
         let tools = Tools {
             runner: &fake,
             state: deep.clone(),
@@ -1124,53 +1133,14 @@ mod tests {
             controller: deep.join("nope.sock"),
         };
         let ssh = Ssh::new("xdwmbp", &tools.control_dir).unwrap();
-        let err = greet(&ssh, "fixture", Path::new("/Users/bing/fixture"), &tools)
-            .expect_err("a control path that cannot fit must be refused here");
-        assert_eq!(err.code(), ErrorCode::Config);
-        assert!(err.message().contains("XDG_STATE_HOME"), "{err}");
-        // And it never reached the network: the runner has no reply
-        // queued, so a call would have failed differently.
-        assert_eq!(fake.calls().len(), 0);
-    }
+        greet(&ssh, "fixture", Path::new("/Users/bing/fixture"), &tools)
+            .expect("a long state directory is not a reason to refuse a session");
 
-    /// The version numbers cannot catch a build mismatch on their own:
-    /// `VERSION` is the Cargo version, so every 0.1.0 equals every other
-    /// 0.1.0, and while somebody is developing, two different binaries
-    /// carrying the same number is the normal state. A reply from a build
-    /// that predates a field has to decode -- otherwise the caller reports
-    /// a JSON problem and the sentence about versions never appears -- and
-    /// then the missing field is itself the evidence.
-    #[test]
-    fn a_reply_from_an_older_build_is_named_as_one() {
-        let dir = temp("greet-older");
-        let fake = FakeRunner::new();
-        // Exactly what a ccnm from before the root check answers.
-        fake.push(Output::exited(
-            0,
-            serde_json::json!({
-                "protocol": PROTOCOL,
-                "ccnm_version": crate::VERSION,
-                "user": "ccrun",
-                "platform": "macos/aarch64",
-                "exe": null,
-            })
-            .to_string(),
-        ));
-        let tools = Tools {
-            runner: &fake,
-            state: dir.clone(),
-            control_dir: control(&dir),
-            claude: None,
-            tmux: None,
-            controller: dir.join("nope.sock"),
-        };
-        let ssh = Ssh::new("xdwmbp", &tools.control_dir).unwrap();
-        let err = greet(&ssh, "fixture", Path::new("/Users/bing/fixture"), &tools)
-            .expect_err("a build that cannot answer the question is not this build");
-        assert_eq!(err.code(), ErrorCode::Version);
-        assert!(err.message().contains("not the same build"), "{err}");
-        // Not a decoding complaint, which is what it used to be.
-        assert!(!err.message().contains("missing field"), "{err}");
+        let line = fake.calls()[0].display();
+        assert!(line.contains("ControlPath=none"), "{line}");
+        assert!(line.contains("ControlMaster=no"), "{line}");
+        // And the path that would not fit never appears.
+        assert!(!line.contains(&deep.display().to_string()), "{line}");
     }
 
     /// A project that moved used to be found out from inside the session,

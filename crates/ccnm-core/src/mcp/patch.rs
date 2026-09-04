@@ -227,13 +227,30 @@ pub fn apply_patch(
     }
     sweep_stale_temps(&plan, journal_dir);
     let staged = stage(plan)?;
-    let journal = journal_dir
-        .map(|dir| Journal::open(dir, root, &staged))
-        .transpose()?;
-    // The journal lives until this call returns: dropping it is what
-    // removes it, and until then an interrupted process leaves it behind
-    // for the next patch to find.
+    let journal = match journal_dir.map(|dir| Journal::open(dir, root, &staged)) {
+        Some(Err(e)) => {
+            // `Drop for Staged` takes the temp files but deliberately not
+            // the directories -- a committed patch has to keep those. This
+            // patch is not going to commit, so they go the same way a
+            // failed stage sends them, rather than leaving an empty
+            // `newdir/` in somebody's source tree.
+            discard(&staged);
+            return Err(e);
+        }
+        other => other.map(|ok| ok.expect("Err handled above")),
+    };
     let versions = commit(staged.as_slice(), journal.as_ref())?;
+    // Every rename landed, so the record of them is finished with. Dropped
+    // *before* the backups it names are removed, not after: in between,
+    // the journal would be describing an interruption that did not happen
+    // and pointing at originals that no longer exist. Microseconds, but
+    // the wrong order is the wrong order.
+    drop(journal);
+    for one in &staged {
+        if let Some(backup) = &one.backup {
+            let _ = std::fs::remove_file(backup);
+        }
+    }
     // Borrowed, not moved: `Staged` owns the cleanup of its temp files, so
     // it must live until the end of the call rather than be taken apart.
     Ok(report(staged.iter().map(|s| &s.planned), false, versions))
@@ -1111,12 +1128,22 @@ impl Journal {
             if path.extension().is_none_or(|ext| ext != "json") {
                 continue;
             }
-            let fresh = meta
-                .modified()
-                .ok()
-                .and_then(|at| at.elapsed().ok())
-                .is_some_and(|age| age < JOURNAL_STALE);
-            if fresh {
+            // `elapsed()` fails when the mtime is in the future, which a
+            // clock step or a copied file is enough to produce. Treating
+            // "cannot tell how old this is" as "old" would announce an
+            // interruption that never happened and block patching until
+            // somebody deleted the file. Unknown counts as fresh: the
+            // worst case is noticing a real interruption later, against
+            // refusing to work over a clock.
+            let age = meta.modified().ok().and_then(|at| at.elapsed().ok());
+            let Some(age) = age else {
+                tracing::warn!(
+                    journal = %path.display(),
+                    "patch journal has a timestamp in the future; not treating it as interrupted"
+                );
+                continue;
+            };
+            if age < JOURNAL_STALE {
                 continue;
             }
             // A `.json` is here because a rename put it here, which means
@@ -1283,12 +1310,8 @@ fn commit(staged: &[Staged], journal: Option<&Journal>) -> Result<Vec<Option<Str
             }
         }
     }
-    // Committed. The backups have no further use.
-    for one in staged {
-        if let Some(backup) = &one.backup {
-            let _ = std::fs::remove_file(backup);
-        }
-    }
+    // The backups stay until the caller has finished with the journal that
+    // names them.
     Ok(versions)
 }
 
@@ -2797,6 +2820,133 @@ mod tests {
         );
         // And it is still there for the workspace it does belong to.
         assert!(elsewhere.exists());
+    }
+
+    /// The journal names the backups, so the backups outlive it. `commit`
+    /// no longer removes them: the caller does, after the journal is
+    /// gone. Killed in between the other way round, the next patch would
+    /// report an interruption that did not happen and point at originals
+    /// that no longer exist.
+    ///
+    /// The window is microseconds and no in-process test can stage a
+    /// crash inside it, so what is pinned is the split of responsibility
+    /// that makes the order possible at all.
+    #[test]
+    fn committing_does_not_remove_the_backups_the_journal_names() {
+        let root = workspace("backup-order");
+        let plan = plan(
+            &root,
+            &ApplyPatchArgs {
+                files: vec![update(
+                    "src/main.rs",
+                    &version(&root, "src/main.rs"),
+                    "let x = 1;",
+                    "let x = 6;",
+                )],
+                dry_run: None,
+            },
+        )
+        .unwrap();
+        let staged = stage(plan).unwrap();
+        let backup = staged[0].backup.clone().expect("an update keeps a backup");
+        commit(staged.as_slice(), None).unwrap();
+        assert_eq!(
+            text(&root, "src/main.rs"),
+            "fn main() {\n    let x = 6;\n}\n"
+        );
+        assert!(
+            backup.exists(),
+            "commit must leave the backup for the caller to remove after the journal"
+        );
+        // And the whole call does clean up, so nothing is left behind.
+        drop(staged);
+        let leftovers: Vec<String> = fs::read_dir(root.join("src"))
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with(TEMP_PREFIX))
+            .collect();
+        assert!(leftovers.is_empty(), "{leftovers:?}");
+    }
+
+    /// A clock step is enough to give a file an mtime in the future, and
+    /// then `elapsed()` fails rather than returning a small number.
+    /// Reading that as "old" would announce an interruption that never
+    /// happened and block patching until somebody deleted the file.
+    #[test]
+    fn a_journal_dated_in_the_future_is_not_an_interruption() {
+        let root = workspace("journal-future-clock");
+        let journals = root.join("../journal-future-clock-state");
+        let _ = fs::remove_dir_all(&journals);
+        fs::create_dir_all(&journals).unwrap();
+        let path = journals.join("99-tomorrow.json");
+        fs::write(
+            &path,
+            serde_json::to_vec(&serde_json::json!({
+                "pid": 99, "root": root.clone(), "files": [],
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let handle = fs::File::options().write(true).open(&path).unwrap();
+        handle
+            .set_modified(std::time::SystemTime::now() + Duration::from_secs(86_400))
+            .unwrap();
+        drop(handle);
+
+        apply_patch(
+            &root,
+            Some(&journals),
+            &ApplyPatchArgs {
+                files: vec![update(
+                    "src/main.rs",
+                    &version(&root, "src/main.rs"),
+                    "let x = 1;",
+                    "let x = 8;",
+                )],
+                dry_run: None,
+            },
+        )
+        .expect("a clock is not evidence of an interruption");
+        assert_eq!(
+            text(&root, "src/main.rs"),
+            "fn main() {\n    let x = 8;\n}\n"
+        );
+    }
+
+    /// A patch that fails between staging and the commit loop must leave
+    /// the source tree as it found it. `Drop for Staged` takes the temp
+    /// files but deliberately not the directories -- a committed patch
+    /// needs those -- so this path has to say so itself, the way a failed
+    /// stage already did.
+    #[test]
+    fn a_journal_that_cannot_be_opened_takes_its_new_directories_with_it() {
+        let root = workspace("journal-nodir");
+        // The journal directory cannot be created: there is a file there.
+        let journals = root.join("../journal-nodir-state");
+        let _ = fs::remove_dir_all(&journals);
+        fs::write(&journals, b"not a directory\n").unwrap();
+
+        let err = apply_patch(
+            &root,
+            Some(&journals),
+            &ApplyPatchArgs {
+                files: vec![FilePatch {
+                    op: Some(Op::Add),
+                    path: "newdir/x.rs".into(),
+                    content: Some("fn x() {}\n".into()),
+                    ..Default::default()
+                }],
+                dry_run: None,
+            },
+        )
+        .expect_err("the journal cannot be written");
+        assert!(err.message().contains("cannot create"), "{err}");
+        assert!(
+            !root.join("newdir").exists(),
+            "an empty directory was left in the workspace"
+        );
+        assert!(!root.join("newdir/x.rs").exists());
     }
 
     /// The two names are the guarantee, so they are pinned. A journal

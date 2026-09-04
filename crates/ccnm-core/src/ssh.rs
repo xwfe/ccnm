@@ -41,6 +41,16 @@ pub enum Master {
     /// `ControlMaster=auto`: start a master (kept for [`CONTROL_PERSIST`])
     /// if none is running. For commands that will be followed by many more.
     Auto,
+    /// `ControlMaster=no` **and** `ControlPath=none`: no socket is named at
+    /// all.
+    ///
+    /// For a call that stands alone. [`Reuse`](Master::Reuse) never starts
+    /// a master, so for a one-shot the ControlPath can only be used if
+    /// something else happens to have left one -- while the 104-byte
+    /// `sun_path` limit it has to fit inside applies always. That trade is
+    /// worth taking for doctor, which makes several calls in a row; it is
+    /// not worth refusing to start a session over.
+    Off,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -135,16 +145,23 @@ impl Ssh {
     }
 
     /// The `-o` pairs ccnm adds to every connection.
-    pub fn options(&self, master: Master) -> Vec<String> {
-        let master = match master {
-            Master::Reuse => "no",
+    pub fn options(&self, control: Master) -> Vec<String> {
+        let master = match control {
+            Master::Reuse | Master::Off => "no",
             Master::Auto => "auto",
+        };
+        let control_path = match control {
+            // No socket at all, so no 104-byte `sun_path` limit to fit
+            // inside. For a one-shot call that would never have created a
+            // master anyway, the only thing a ControlPath can do is fail.
+            Master::Off => "none".to_string(),
+            _ => self.control_path().display().to_string(),
         };
         [
             "BatchMode=yes".to_string(),
             format!("ConnectTimeout={CONNECT_TIMEOUT}"),
             format!("ControlMaster={master}"),
-            format!("ControlPath={}", self.control_path().display()),
+            format!("ControlPath={control_path}"),
             format!("ControlPersist={CONTROL_PERSIST}"),
             "ServerAliveInterval=15".to_string(),
             "ServerAliveCountMax=3".to_string(),

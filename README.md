@@ -82,14 +82,60 @@ ccnm 的做法是**只让工具调用过网，源码一步不动**：
 
 ### 0. 需要什么
 
+两台 macOS，能互相 ssh（Tailscale / 局域网 / 跳板机都行）。**两个方向都要通**——不只是
+你从家里连工作机，工作机也要能连回来，因为项目在家庭机上。
+
+#### 家庭机（项目在这台）
+
+| 装什么 | 必需？ | 不装会怎样 |
+|---|---|---|
+| **ccnm** 二进制，`~/.local/bin/ccnm` | 必需 | doctor 那行直接 FAIL 并告诉你怎么装 |
+| **ripgrep**（`brew install ripgrep`） | **必需** | `search_text` 每次都报 `CCNM_E_DEPENDENCY: ripgrep is not installed on the workspace machine`。**doctor 查不出来**，只有模型第一次搜代码时才炸 |
+| **git** | 强烈建议 | 不是 git 仓库也能用，但 `list_files` 就不再守 `.gitignore`（`target/`、`node_modules/` 全列出来），`workspace_info` 也没有分支信息 |
+| **sshd 开着**（系统设置 → 通用 → 共享 → 远程登录） | 必需 | 工作机连不回来 |
+| **项目自己的工具链**（cargo / node / python / …） | 看你要它干什么 | 模型能读能改，但 `exec_command` 跑不了测试 |
+
+**不需要**：Claude Code、任何 Anthropic 凭证、Rust 工具链。家庭机**不该**有 Claude 凭证
+——这是[安全边界](#安全边界)那一节的核心不变式。它也不用能编译 ccnm，二进制是从另一台传过去的。
+
+#### 工作机（Claude 在这台）
+
+| 装什么 | 必需？ | 不装会怎样 |
+|---|---|---|
+| **Claude Code**，已登录 | 必需 | `claude auth status --json` 要说 `loggedIn`；doctor 会转述它的原话 |
+| **ccnm** 二进制，`~/.local/bin/ccnm` | 必需 | 同上 |
+| **work controller**（`ccnm work-controller install`） | 必需 | 见[第 5 步](#5-在工作机上装-controller)。**某些机器**上不装就读不到 Keychain |
+| **tmux**（`brew install tmux`） | 只有交互式要 | `ccnm <workspace>` 报 `CCNM_E_DEPENDENCY: tmux is not installed`；`--print` 模式不用 tmux |
+| **能出网到 api.anthropic.com** | 必需 | 这台是唯一的 Anthropic 出口 |
+
+**不需要**：项目源码、项目的工具链。工作机上根本没有那个目录。
+
+#### 两台都要
+
+**同一个 ccnm build。** 不是"版本号差不多"，是**同一个**——控制协议有版本号，工具没有，两个
+能互相解码消息的 build 完全可能对同一个工具有不同理解。从 v0.1.0 起，`ccnm <workspace>`
+**起会话之前**就会握手，对不上直接拒：
+
 ```text
-两台 macOS，能互相 ssh（Tailscale / 局域网 / 跳板机都行）
-工作机：Claude Code 已登录（claude auth status 说 loggedIn）、tmux
-家庭机：项目、ripgrep（search_text 要用）、git（可选，有的话工具会守 .gitignore）
-两台：同一个 ccnm build
+CCNM_E_VERSION:
+the workspace machine runs ccnm 0.1.1, this one runs 0.1.0;
+install the same build on both before starting a session
 ```
 
-工作机装 tmux：`brew install tmux`（只有交互式会话需要，`--print` 模式不用）。
+`scripts/deploy.sh <另一台别名>` 就是干这个的。
+
+#### 先自查一遍
+
+装之前想确认两边环境，在**家庭机**上敲：
+
+```bash
+which rg git ssh                    # rg 必需、git 强烈建议
+sudo systemsetup -getremotelogin    # 应该说 On
+ssh <工作机别名> 'which claude tmux' # 工作机那两个
+```
+
+装完之后用 `ccnm doctor <workspace>` 复查——但注意**它不查 ripgrep**（见
+[还没做的](#还没做的)），rg 得你自己确认。
 
 ### 1. 编译
 
@@ -720,16 +766,56 @@ git push origin v0.1.1
 
 ## 还没做的
 
+### 功能
+
 ```text
-断线自动重连           现在要手动 /mcp Reconnect
+断线自动重连           现在要手动 /mcp Reconnect。这不是 ccnm 的 bug：Claude Code
+                      官方文档明写 stdio transport 不自动重连，一行修复的提案被
+                      closed as not planned，整个生态同病（docs/research/ 有出处）
 工作机重启后恢复会话    tmux 没了就是没了；Claude 自己的 --resume 还没接进来
-Git 专用工具           git_status / git_diff 现在靠 exec_command
+Git 专用工具           git_status / git_diff 现在靠 exec_command，输出啰嗦费 token
+后台长任务             exec_command 最长 10 分钟，没有"起个 dev server 然后轮询"
+目录操作               apply_patch 只处理普通文件。删目录、改目录名、建空目录只能
+                      走 exec_command，而那条路没有事务、没有版本检查、没有回滚
+二进制文件             content 是字符串，写不了；read_file 也拒绝二进制
 浏览器                 属于家庭机 runtime，还没做
 Linux                  controller 是 launchd LaunchAgent，只有 macOS
 ```
 
-一个 `exec_command` 起的长命令（比如 dev server），会话没了之后不会被回收——它在自己的
-进程组里，会一直跑。`ccnm stop` 收的是工作机那一半。
+### doctor 查不到的
+
+```text
+ripgrep                家庭机没装 rg，doctor 全绿，等模型第一次 search_text 才炸
+项目工具链              cargo / node / python 装没装、版本对不对，一律不查
+原生工具是否真被禁       只有活会话能看出 Claude 最后拿到哪些工具，doctor 报 SKIP
+```
+
+### 已知的洞
+
+**`exec_command` 起的长命令不会被回收。** 比如一个 dev server：它在自己的进程组里，会话
+结束了它还在跑。`ccnm stop` 收的是工作机那一半。
+
+**`exec_command` 可以拿到 shell。** 工具描述说"argv 不是 shell 行"，那是**给模型的引导，
+不是强制**——`["sh","-c","..."]` 照样能传。这是[明确的设计决定](#安全边界)：禁程序名是能绕
+的，假的安全感比没有更糟。真正的边界是那个专用账号。同理，"`apply_patch` 是唯一的写入路径"
+这句话，在 `exec_command` 可用时也不是强制的。
+
+**中断的 patch 要等最多 60 秒才认得出来。** journal 靠时间判断而不是"那个进程还活着吗"
+（这个 crate `forbid(unsafe)`，查进程存活得 spawn 一个进程，而一次 commit 比 60 秒短四个
+数量级）。代价是中断后 60 秒内起的下一个 patch 不会拦你——而那段时间里 transport 本来就是
+死的，够不到工具。
+
+**canonicalize 到真正 open 之间有 TOCTOU 窗口。** 有项目目录写权限的人能在那一瞬间把某段
+路径换成 symlink。要利用它得先能写那个目录——人已经在里面了。**判断是不值得为它改代码**，
+记在这里是因为它真实存在。
+
+### 没跑过的
+
+**GitHub 上的两个 workflow 一次都没真跑过**（东西刚推上去）。每一步都在本机单独验过——
+fmt、clippy、test、`scripts/dist.sh`、tag/版本校验的两个分支、release notes 渲染。
+
+**没在真实项目上日用过。** 目前所有验证都在一个 Python fixture 上：搜索、读、改、跑测试、
+读输出、CLAUDE.md 投影、断开重连、被中断的 patch，都是真机跑通的，但那是一个小项目。
 
 ---
 

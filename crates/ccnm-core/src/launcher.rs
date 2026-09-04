@@ -16,7 +16,7 @@ use crate::protocol::run::{
     AttachRequest, PurgeReport, PurgeRequest, ResultReport, ResultRequest, RunReport, RunRequest,
     StartReport, StartRequest, StatusReport, StatusRequest, StopReport, StopRequest,
 };
-use crate::ssh::{Master, Ssh};
+use crate::ssh::{Master, RemoteOutcome, Ssh};
 
 /// `ccnm run <workspace> --print <prompt>`: one Claude session on the
 /// work machine, its result brought back here.
@@ -131,29 +131,64 @@ pub fn start_interactive(
 /// The cost is one extra hop, work -> home -> work. That buys a single
 /// definition of every workspace and not one line of duplicated
 /// launching.
-pub fn start_from_work(home_alias: &str, workspace: &str, env: &Env<'_>) -> Result<()> {
-    let ssh = Ssh::new(home_alias, env.control_dir.clone())?;
+pub fn start_from_work(
+    home_alias: &str,
+    home_ccnm_bin: &str,
+    workspace: &str,
+    env: &Env<'_>,
+) -> Result<()> {
+    let ssh = Ssh::new(home_alias, env.control_dir.clone())?.with_ccnm_bin(home_ccnm_bin);
     let out = env.runner.run(&ssh.remote_cmd(
         Master::Reuse,
         &[ssh.ccnm_bin(), "run", workspace, "--detached"],
         Duration::from_secs(180),
     )?)?;
-    // The far side already says everything worth saying about the session
-    // it started, and it says it on stderr.
-    let said = out.stderr_lossy();
-    if !said.trim().is_empty() {
-        eprint!("{said}");
-    }
-    if !out.success() {
-        return Err(Error::new(
+    // Same three diagnoses every other remote call gets, from the same
+    // function. This used to read the exit code by hand, so the two
+    // failures that have a fix in one sentence -- ccnm is somewhere else
+    // over there, ccnm is not executable over there -- arrived as "could
+    // not start the session" with nothing under it.
+    match crate::ssh::classify(out) {
+        RemoteOutcome::Unreachable(why) => Err(Error::new(
             ErrorCode::HomeUnreachable,
+            format!("ssh {home_alias}: {why}"),
+        )),
+        RemoteOutcome::CommandNotFound => Err(Error::new(
+            ErrorCode::Version,
             format!(
-                "the machine holding the projects could not start `{workspace}`\n{}",
-                out.stdout_lossy().trim()
+                "{home_ccnm_bin} not found on {home_alias} (the login shell exited 127)\ninstall the same ccnm build there, or set ccnm_bin under [hosts.home] in this machine's config.toml"
             ),
-        ));
+        )),
+        RemoteOutcome::NotExecutable => Err(Error::new(
+            ErrorCode::Version,
+            format!(
+                "{home_ccnm_bin} on {home_alias} is there but not executable (exit 126)\nssh {home_alias} 'chmod +x {home_ccnm_bin}'"
+            ),
+        )),
+        RemoteOutcome::Completed(out) => {
+            // The far side already says everything worth saying about the
+            // session it started, and it says it on stderr -- including
+            // why it refused, when it refused. Relayed as it is, then a
+            // single line saying whose failure it was.
+            let said = out.stderr_lossy();
+            if !said.trim().is_empty() {
+                eprint!("{said}");
+            }
+            if !out.success() {
+                return Err(Error::new(
+                    ErrorCode::HomeUnreachable,
+                    format!(
+                        "{home_alias} could not start `{workspace}`{}",
+                        match out.exit_code {
+                            Some(code) => format!(" (ccnm there exited {code})"),
+                            None => " (ccnm there was killed)".to_string(),
+                        }
+                    ),
+                ));
+            }
+            Ok(())
+        }
     }
-    Ok(())
 }
 
 pub fn attach_cmd(resolved: &Resolved<'_>, env: &Env<'_>) -> Result<Cmd> {
@@ -327,4 +362,129 @@ pub fn mcp_probe_remote(resolved: &Resolved<'_>, env: &Env<'_>, calls: u32) -> R
 /// Generous per-call budget so a slow relay does not read as a hang.
 pub fn probe_timeout(calls: u32) -> Duration {
     Duration::from_secs(30) + Duration::from_millis(500) * calls
+}
+
+#[cfg(test)]
+mod tests {
+    //! Starting a session from the work machine: what it sends home, and
+    //! what it makes of the three ways that can fail.
+
+    use super::*;
+    use crate::config::Config;
+    use crate::error::ErrorCode;
+    use crate::process::{FakeRunner, Output};
+
+    /// ControlPath expands to at most 103 bytes and macOS `temp_dir()` is
+    /// most of that on its own, so sockets go straight under /tmp.
+    fn control(test: &str) -> PathBuf {
+        PathBuf::from("/tmp/ccnm-lt").join(format!("{}-{test}", std::process::id()))
+    }
+
+    /// Direction two: the same session, asked for from the work machine.
+    ///
+    /// The work machine has no workspace list, so it cannot build the
+    /// start request itself -- it runs the *user-facing* command on the
+    /// home machine and lets home do what it does when somebody types it
+    /// there. That is the whole design: one definition of every
+    /// workspace, and no second copy of the launching code.
+    #[test]
+    fn from_the_work_machine_the_entire_start_is_delegated_home() {
+        let config = Config::parse(
+            "[hosts.home]\nssh_from_work = \"to-home\"\nccnm_bin = \"/opt/home/ccnm\"\n",
+        )
+        .unwrap();
+        let (alias, host) = config
+            .home_from_work()
+            .expect("a config with only a way home is the work machine's");
+
+        let fake = FakeRunner::new();
+        let mut started = Output::exited(0, "");
+        started.stderr = b"ccnm-xshun (started, tmux server pid 22413)\n".to_vec();
+        fake.push(started);
+        let env = Env {
+            runner: &fake,
+            control_dir: control("delegate"),
+            current_exe: PathBuf::from("/opt/work/ccnm"),
+        };
+        start_from_work(alias, &host.ccnm_bin(), "xshun", &env).unwrap();
+
+        let calls = fake.calls();
+        assert_eq!(calls.len(), 1, "one hop, and nothing decided on this side");
+        let line = calls[0].display();
+        assert!(
+            line.contains("-T to-home /opt/home/ccnm run xshun --detached"),
+            "{line}"
+        );
+        // --detached is not decoration. Without it the far side would sit
+        // there waiting to attach a terminal that is on this machine.
+        assert!(line.ends_with("--detached"), "{line}");
+    }
+
+    /// The home machine keeping ccnm somewhere other than the default is
+    /// a supported config, and it is set on the work machine's own file.
+    /// Ignoring it produced "command not found" for a path the person had
+    /// spelled out correctly -- so this pins that the configured path is
+    /// the one that gets run, and that being wrong says which path it
+    /// tried and where to fix it.
+    #[test]
+    fn where_ccnm_lives_on_the_home_machine_is_read_and_named() {
+        let fake = FakeRunner::new();
+        fake.push(Output::exited(127, ""));
+        let env = Env {
+            runner: &fake,
+            control_dir: control("notfound"),
+            current_exe: PathBuf::from("/opt/work/ccnm"),
+        };
+        let err = start_from_work("to-home", "/opt/homebrew/bin/ccnm", "xshun", &env).unwrap_err();
+
+        assert!(
+            fake.calls()[0]
+                .display()
+                .contains("/opt/homebrew/bin/ccnm run xshun"),
+            "the configured path is the one that runs: {}",
+            fake.calls()[0].display()
+        );
+        assert_eq!(err.code(), ErrorCode::Version);
+        assert!(err.message().contains("/opt/homebrew/bin/ccnm"), "{err}");
+        assert!(err.message().contains("ccnm_bin"), "{err}");
+    }
+
+    /// A home that never answered and a home that answered "no" are two
+    /// different problems with two different fixes, and the work machine
+    /// only ever sees an exit code. Reporting a refusal as unreachable
+    /// sends somebody to debug their network over a typo'd workspace
+    /// name.
+    #[test]
+    fn a_home_that_refused_is_not_reported_as_a_home_that_was_not_there() {
+        fn env_for(fake: &FakeRunner) -> Env<'_> {
+            Env {
+                runner: fake,
+                control_dir: control("refused"),
+                current_exe: PathBuf::from("/opt/work/ccnm"),
+            }
+        }
+
+        let down = FakeRunner::new();
+        let mut timeout = Output::exited(255, "");
+        timeout.stderr = b"ssh: connect to host to-home port 22: Operation timed out\n".to_vec();
+        down.push(timeout);
+        let err =
+            start_from_work("to-home", "/opt/home/ccnm", "xshun", &env_for(&down)).unwrap_err();
+        assert_eq!(err.code(), ErrorCode::HomeUnreachable);
+        assert!(err.message().contains("Operation timed out"), "{err}");
+
+        // Home was reached, looked, and said no. Its own words are
+        // relayed; the error says whose failure it was and with what.
+        let refused = FakeRunner::new();
+        let mut no = Output::exited(ErrorCode::Config.exit_code(), "");
+        no.stderr =
+            b"CCNM_E_CONFIG:\nworkspace 'xshun' is not defined; defined: fixture\n".to_vec();
+        refused.push(no);
+        let err =
+            start_from_work("to-home", "/opt/home/ccnm", "xshun", &env_for(&refused)).unwrap_err();
+        assert_eq!(err.code(), ErrorCode::HomeUnreachable);
+        assert!(err.message().contains("exited 10"), "{err}");
+        assert!(err.message().contains("xshun"), "{err}");
+    }
+
 }

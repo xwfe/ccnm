@@ -343,14 +343,14 @@ fn run(cli: Cli) -> Result<i32> {
             // Sitting at the work machine: this config knows how to reach
             // home and nothing about workspaces, so home is asked to start
             // the session and this terminal attaches to it locally.
-            if let Some(home) = work_side(&config, workspace) {
+            if let Some((home, host)) = work_side(&config, workspace) {
                 if print.is_some() {
                     return Err(Error::invalid_args(
                         "--print has to be run where the projects are; ssh there and run it",
                     ));
                 }
                 let env = home_env()?;
-                launcher::start_from_work(home, workspace, &env)?;
+                launcher::start_from_work(home, &host.ccnm_bin(), workspace, &env)?;
                 if *detached {
                     // The far side already said how to attach, and its
                     // wording is the one that matters -- it knows whether
@@ -832,7 +832,8 @@ fn report_changes(changes: &configedit::Changes, path: &std::path::Path) {
     }
 }
 
-/// The home alias to delegate to, when this machine is the work machine.
+/// The home alias to delegate to and that host's settings, when this
+/// machine is the work machine.
 ///
 /// The test is not "which machine am I" -- ccnm never tries to guess that
 /// -- but "does this config define the workspace being asked for". A home
@@ -841,7 +842,10 @@ fn report_changes(changes: &configedit::Changes, path: &std::path::Path) {
 /// work-side case. A home config with a typo'd workspace name still falls
 /// through to the normal error, because it has no `ssh_from_work` to
 /// single out.
-fn work_side<'a>(config: &'a Config, workspace: &str) -> Option<&'a str> {
+fn work_side<'a>(
+    config: &'a Config,
+    workspace: &str,
+) -> Option<(&'a str, &'a ccnm_core::config::Host)> {
     if config.workspace(workspace).is_ok() {
         return None;
     }

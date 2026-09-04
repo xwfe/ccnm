@@ -213,7 +213,14 @@ pub struct Resolved<'a> {
 
 impl Config {
     /// The alias this machine uses to reach the machine holding the
-    /// projects, when this is a work-side config.
+    /// projects, and that host's other settings, when this is a work-side
+    /// config.
+    ///
+    /// The [`Host`] comes back with the alias because `ccnm_bin` is on it:
+    /// a caller that took only the alias would run the *default* path on
+    /// the far side and ignore what the config said, which fails as
+    /// "command not found" on the one machine whose ccnm is somewhere
+    /// else.
     ///
     /// A work machine's config is the same file with the workspaces left
     /// out: it says how to reach home and nothing else, because the
@@ -233,14 +240,14 @@ impl Config {
     /// it over ssh. That is not hypothetical; it is what the first
     /// version did, and a test that asks for a workspace which does not
     /// exist is what caught it.
-    pub fn home_from_work(&self) -> Option<&str> {
+    pub fn home_from_work(&self) -> Option<(&str, &Host)> {
         if self.hosts.values().any(|h| h.ssh.is_some()) {
             return None;
         }
         let mut named = self
             .hosts
             .values()
-            .filter_map(|h| h.ssh_from_work.as_deref());
+            .filter_map(|h| Some((h.ssh_from_work.as_deref()?, h)));
         match (named.next(), named.next()) {
             (Some(only), None) => Some(only),
             _ => None,
@@ -519,22 +526,48 @@ mod tests {
     /// home over ssh to be asked about.
     #[test]
     fn only_a_config_with_no_way_to_reach_work_is_the_work_machines() {
+        let alias = |c: &Config| c.home_from_work().map(|(alias, _)| alias.to_string());
+
         let work_side = Config::parse("[hosts.home]\nssh_from_work = \"xdwmbp\"\n").unwrap();
-        assert_eq!(work_side.home_from_work(), Some("xdwmbp"));
+        assert_eq!(alias(&work_side).as_deref(), Some("xdwmbp"));
 
         let home_side = Config::parse(
             "[hosts.work]\nssh = \"fodelf\"\n[hosts.home]\nssh_from_work = \"xdwmbp\"\n",
         )
         .unwrap();
-        assert_eq!(home_side.home_from_work(), None);
+        assert_eq!(alias(&home_side), None);
 
         // Nothing to pick.
         let empty = Config::parse("").unwrap();
-        assert_eq!(empty.home_from_work(), None);
+        assert_eq!(alias(&empty), None);
         let two =
             Config::parse("[hosts.a]\nssh_from_work = \"x\"\n[hosts.b]\nssh_from_work = \"y\"\n")
                 .unwrap();
-        assert_eq!(two.home_from_work(), None);
+        assert_eq!(alias(&two), None);
+    }
+
+    /// The host comes back with the alias, because `ccnm_bin` is on it.
+    /// A work machine whose home keeps ccnm somewhere other than the
+    /// default is a supported, documented config; a caller handed only the
+    /// alias would silently run the default path instead and fail with
+    /// "command not found" on the one machine that was configured
+    /// correctly.
+    #[test]
+    fn the_work_side_lookup_carries_where_ccnm_lives_over_there() {
+        let config = Config::parse(
+            "[hosts.home]\nssh_from_work = \"xdwmbp\"\nccnm_bin = \"/opt/homebrew/bin/ccnm\"\n",
+        )
+        .unwrap();
+        let (alias, host) = config.home_from_work().unwrap();
+        assert_eq!(alias, "xdwmbp");
+        assert_eq!(host.ccnm_bin(), "/opt/homebrew/bin/ccnm");
+
+        // Unset still means the default, as everywhere else.
+        let plain = Config::parse("[hosts.home]\nssh_from_work = \"xdwmbp\"\n").unwrap();
+        assert_eq!(
+            plain.home_from_work().unwrap().1.ccnm_bin(),
+            DEFAULT_CCNM_BIN
+        );
     }
     use crate::error::ErrorCode;
 

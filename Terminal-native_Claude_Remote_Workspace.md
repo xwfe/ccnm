@@ -821,20 +821,26 @@ native Read / Edit / Write / Grep / Glob / Bash
 --permission-mode <mode>        acceptEdits | auto | bypassPermissions | manual | dontAsk | plan
 ```
 
-Phase 3 的启动命令形态：
+实际启动命令（2026-09-04 在 2.1.260 上实测定下，`claude::launch_cmd`）：
 
 ```bash
 claude \
-  --mcp-config "$CCNM_SESSION/mcp.json" \
-  --strict-mcp-config \
-  --disallowed-tools Read Edit Write Grep Glob Bash \
-  --settings "$CCNM_SESSION/settings.json" \
-  --setting-sources user,project,local \
-  --permission-mode acceptEdits
+  --tools "" \
+  --mcp-config "$CCNM_SESSION/mcp.json" --strict-mcp-config \
+  --settings "$CCNM_SESSION/settings.json" --setting-sources user,project,local \
+  --permission-mode acceptEdits \
+  --session-id <uuid> \
+  --print --output-format json --permission-prompts none --no-session-persistence   # print 模式
+# prompt 从 stdin 进
 ```
 
-`--tools ""` 比 `--disallowed-tools` 更彻底，但它同时会禁掉 WebFetch、Agent 之类。Phase 3 两个都
-实测，按结果定，不猜。
+选 `--tools ""` 而不是 `--disallowed-tools`：实测之后模型的工具列表**正好**是 7 个 `mcp__ccnm__*`，
+没有 Read/Bash，也没有 Agent、WebFetch——后两个消失是好事，不是代价：Agent 起的子代理会带自己的
+文件工具，WebFetch 在工作机上没有用处。`settings.json` 里的 deny 列表是第二把锁，`--tools ""` 是第一把。
+
+`--strict-mcp-config` 实测挡住了用户 settings 里启用的 8 个插件的 MCP server（exa、context7、
+playwright、chrome-devtools……一个都没出现）。`--permission-prompts none` 让任何本该弹框的调用
+直接被拒并出现在结果的 `permission_denials` 里，而不是挂住。
 
 不要只靠 prompt。argv 用 `Command::args()` 逐个传，不拼 shell 字符串。
 
@@ -908,14 +914,14 @@ Claude Code 已经有自己的 session / context workflow，ccnm 不做第二套
 输入   path, start_line?, end_line?, max_lines?, max_bytes?
 默认   max_lines = 200（上限 2000）, max_bytes = 32 KiB（上限 64 KiB）
        超出上限是 clamp 不是报错——"最多给我 N 条"里的 N 大只是偏好，不是错误
-输出   content[0].text  = 右对齐行号 + `→` + 该行，末尾一行 footer 说明下一步
-       structuredContent = 元信息，不含文件正文（第 16 节：正文不能算两遍）
+输出   content[0].text  = 右对齐行号 + `→` + 该行，末尾一行 footer：下一步怎么读，以及 `; version X`
+       不发 structuredContent（第 16 节，2026-09-04 改）
 ```
 
 绝不能默认整文件无限读，也不能先把整个文件读进内存再截断——按行流式读，撞到第一个上限就停，
 所以读一个 2 GB 日志的开头和读 2 KB 文件一样便宜。coding-tools-mcp 是先整读再截（研究记录 m.7）。
 
-structuredContent 字段：
+结果结构体（`FileChunk`，只在 ccnm 内部和测试里用，不上线）的字段：
 
 ```text
 path start_line end_line lines bytes truncated
@@ -1038,8 +1044,7 @@ query 位置    必须在 `--` 之后。否则查 `--ignore-case` 会被当成 f
 长行截断      按字符边界切，直接切字节会 panic
 ```
 
-`structuredContent` 里放 path / line / column，**不放命中文本**——那是贵的部分，而且它就在
-`content` 里紧挨着自己的 `path:line` 前缀。
+命中文本只在 text 里出现一次，紧挨着自己的 `path:line` 前缀；不发 structuredContent（第 16 节）。
 
 家庭机没装 rg 时报 `CCNM_E_NOT_READY` 并说清装法：没坏，也不能用。
 
@@ -1164,17 +1169,39 @@ grep -r x .                  search_text
 
 ---
 
-## 16. `structuredContent` 同样 bounded
+## 16. 工具结果只发 `content[0].text`，不发 `structuredContent`（2026-09-04 改）
 
-不要假设 "structuredContent 不算 token"。ccnm 不依赖 client 是否把它完整送给模型。
+**原来的规则**是"正文放 content、元信息放 structuredContent、两边都 bounded、同一段字节不算两遍"。
+第一次真实 session 把它推翻了：
 
 ```text
-content            concise
-structuredContent  同样 bounded
-large payload      本地保留 + output_ref
+Claude Code 2.1.260 在 content 和 structuredContent 都在时，只把 structuredContent 给模型看
 ```
 
-"content 只放摘要，structuredContent 塞 2 MB stdout" 只是把问题藏起来。
+一轮复现：让 Claude 调 `read_file README.md` 并原样复述收到的结果，它给出的是
+
+```text
+{"bytes":416,"end_line":9,"file_bytes":425,"final_newline":true,"line_ending":"lf","lines":9,
+ "path":"README.md","start_line":1,"total_lines":9,"truncated":false,"version":"425-18d1..."}
+```
+
+一个字的正文都没有。后果是第一次真实任务（改 fixture 里一行）花了 **74 turns / 220 s / $1.58**——
+Claude 自己说的："工具只回元数据，我是靠 search_text 用正则逐行探测把源码还原出来的"。
+
+现在的规则：
+
+```text
+每个工具只发一个 text block，structuredContent 一律不发（server.rs 的 text_only()）
+模型要抄回来的字段全部在 text 里：read_file 页脚带 `; version X`，exec_command 带 `[output_ref r-..]`，
+    read_output 带 `continue with offset=N`，workspace_info 末尾 `[server pid N, call N]`
+probe client 读的也是 text 里那一行——它看到的就是模型看到的
+large payload 仍然本地保留 + output_ref，bounded 的原则不变
+```
+
+同一任务改完后：**7 turns / 26 s / $0.11**。
+
+一个更硬的教训：Phase 2 的"真机验证"全部是 ccnm 自己的 probe client 跑的，它两个通道都看得见，
+所以七个工具从头到尾没有一个经过 Claude Code 验证过。**没经过 Claude Code 的验证不算验证。**
 
 ---
 
@@ -1661,7 +1688,7 @@ TS 只能出现在 `tests/`、`tools/`、fixture 生成器里，`ccnm run` 永�
 完成核心 coding runtime            ✅ 7 个工具全部完成
 → production safety minimum        ✅ ccnm 那一半完成；OS 那一半由用户按 docs/production-safety.md 做
 → work-controller / Claude auth context  ✅ 2026-09-04，真机四种状态验过
-→ Claude MCP 接入
+→ Claude MCP 接入                        ✅ 2026-09-04，`ccnm run --print` 真机改 bug 跑通（7 turns）
 → 真实 dogfood
 → process / Git / browser
 → terminal session UX
@@ -1900,15 +1927,40 @@ controller 在 Aqua        Work controller OK（ccnm 0.1.0 as bing, pid …, Aqu
 三种状态下                Claude Code 都是 OK：版本不需要凭证
 ```
 
-### Phase 3.5 — Claude MCP 接入
+### Phase 3.5 — Claude MCP 接入（2026-09-04 完成，print 模式）
 
 工作机生成 **session 级** 的 `mcp.json` / `settings.json`，放在
 `~/.local/state/ccnm/sessions/<id>/`（第 5 节）。**不改** `~/.claude/settings.json`、不改项目的
 `.claude/settings.json`、不改开发者任何现有配置。
 
 启动 official Claude Code，关闭 Read / Edit / Write / Grep / Glob / Bash（第 13 节）。验证 Claude
-能完成：理解项目 → search → read → patch → exec test → read output。同时解决 root CLAUDE.md
-project context（第 20 节）。
+能完成：理解项目 → search → read → patch → exec test → read output。
+
+落地形态：
+
+```text
+家庭机   ccnm run <ws> --print "<prompt>"    本地 preflight（root 在本机），ssh 到工作机
+工作机   internal work-run                    写 sessions/<uuid>/{session.json,mcp.json,settings.json}，
+                                              请 controller 起它，轮询 exit 文件，读 stdout
+工作机   controller: Start                    detached 起 `ccnm internal supervise`（自己一个进程组，
+                                              controller 升级重启不杀 session）
+工作机   internal supervise                   做 Claude 的父进程；stdout/stderr/exit 落盘
+家庭机                                        打印 summary、Claude 的回答、stderr 尾巴
+```
+
+Claude 的 cwd 是工作机上 `~/.local/state/ccnm/workspaces/<name>/`——稳定，不是每次一个 session
+目录，这样 Claude 自己在 `~/.claude/projects/` 下的 transcript 收在一处。prompt 走 stdin 不走 argv。
+
+**真机结果**（家庭机 fixture：Python 小项目，`split("=")` 少了 maxsplit）：Claude 从工作机起来，
+通过一条 SSH stdio MCP 找到 bug、改 `src/config_parser.py:15`、跑测试 6/6 通过、按工作机
+`~/.claude/CLAUDE.md` 的规矩做了 commit。
+
+**这一步抓到的最大问题**是第 16 节那条：`structuredContent` 把正文挡住了。修前 74 turns / $1.58，
+修后 7 turns / $0.11。
+
+还没做：交互式（TTY attach / tmux）是 Phase 6；root CLAUDE.md project context（第 20 节）下一步。
+MCP `instructions` 里已加一句"你自己环境里看到的 cwd / git 状态是工作机的，项目以 workspace_info
+为准"——因为第二次真跑时 Claude 看到自己 cwd 不是 git 仓库、而 workspace_info 说是，就拒绝 commit。
 
 ### Phase 4 — Benchmark
 

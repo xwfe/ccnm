@@ -246,6 +246,25 @@ impl Ssh {
             .timeout(timeout))
     }
 
+    /// `ssh <options> -t alias argv...`: the far side gets a terminal.
+    ///
+    /// The only ccnm command that asks for one. It carries no timeout —
+    /// what is on the other end is a person's session, and a watchdog that
+    /// killed it after N seconds would be a bug, not a safety net. The
+    /// caller runs this with [`crate::process::run_attached`].
+    pub fn interactive_cmd(&self, argv: &[&str]) -> Result<Cmd> {
+        if let Some(bad) = argv.iter().find(|a| !is_remote_safe(a)) {
+            return Err(Error::internal(format!(
+                "refusing to send `{bad}` over ssh: it would need shell quoting"
+            )));
+        }
+        Ok(Cmd::new("ssh")
+            .args(self.options(Master::Reuse))
+            .arg("-t")
+            .arg(&self.alias)
+            .args(argv))
+    }
+
     pub fn resolve(&self, runner: &dyn ProcessRunner) -> Result<ResolvedSsh> {
         let out = runner.run(&self.resolve_cmd())?;
         if !out.success() {

@@ -12,7 +12,10 @@ use crate::protocol::PROTOCOL;
 use crate::protocol::mcp::{ProbeReport, ServePayload};
 use crate::protocol::payload;
 use crate::protocol::probe::{ProbeReport as WorkProbeReport, ProbeRequest};
-use crate::protocol::run::{RunReport, RunRequest};
+use crate::protocol::run::{
+    AttachRequest, RunReport, RunRequest, StartReport, StartRequest, StatusReport, StatusRequest,
+    StopReport, StopRequest,
+};
 use crate::ssh::{Master, Ssh};
 
 /// `ccnm run <workspace> --print <prompt>`: one Claude session on the
@@ -70,6 +73,103 @@ pub struct Env<'a> {
     pub control_dir: PathBuf,
     /// This binary, for the local (no ssh) probe.
     pub current_exe: PathBuf,
+}
+
+/// `ccnm run <workspace>`: bring up the interactive session on the work
+/// machine, without attaching to it yet.
+///
+/// Same local preflight as [`run_print`], and for the same reason: the
+/// project has to be here, because here is where the runtime serves it
+/// from.
+pub fn start_interactive(
+    resolved: &Resolved<'_>,
+    env: &Env<'_>,
+    prompt: Option<&str>,
+) -> Result<StartReport> {
+    let ssh = work_ssh(resolved, env)?;
+    let req = StartRequest {
+        protocol: PROTOCOL,
+        workspace: resolved.name.to_string(),
+        root: resolved.workspace.root.clone(),
+        home_alias: resolved.home_alias.to_string(),
+        home_ccnm_bin: resolved.runtime.ccnm_bin(),
+        claude_config_dir: resolved.work.claude_config_dir.clone(),
+        permission_mode: resolved.workspace.claude_permission_mode,
+        prompt: prompt.map(str::to_string),
+    };
+    ssh.call_ccnm(
+        env.runner,
+        Master::Reuse,
+        &["internal", "work-start"],
+        &req,
+        Duration::from_secs(120),
+        ErrorCode::WorkUnreachable,
+    )
+}
+
+/// The command that hands this terminal to the work machine's tmux.
+///
+/// `-t` because the far side needs a terminal to give Claude, and no
+/// timeout because this lasts as long as the person wants it to. Run it
+/// with [`crate::process::run_attached`]: it needs this process's real
+/// stdin and stdout, not pipes.
+pub fn attach_cmd(resolved: &Resolved<'_>, env: &Env<'_>) -> Result<Cmd> {
+    let ssh = work_ssh(resolved, env)?;
+    let wire = payload::encode(&AttachRequest {
+        protocol: PROTOCOL,
+        workspace: resolved.name.to_string(),
+    })?;
+    ssh.interactive_cmd(&["internal", "attach", "--payload", &wire])
+}
+
+pub fn stop(resolved: &Resolved<'_>, env: &Env<'_>) -> Result<StopReport> {
+    let ssh = work_ssh(resolved, env)?;
+    let req = StopRequest {
+        protocol: PROTOCOL,
+        workspace: resolved.name.to_string(),
+    };
+    ssh.call_ccnm(
+        env.runner,
+        Master::Reuse,
+        &["internal", "work-stop"],
+        &req,
+        Duration::from_secs(60),
+        ErrorCode::WorkUnreachable,
+    )
+}
+
+pub fn status(resolved: &Resolved<'_>, env: &Env<'_>, all: bool) -> Result<StatusReport> {
+    let ssh = work_ssh(resolved, env)?;
+    let req = StatusRequest {
+        protocol: PROTOCOL,
+        workspace: (!all).then(|| resolved.name.to_string()),
+    };
+    ssh.call_ccnm(
+        env.runner,
+        Master::Reuse,
+        &["internal", "work-status"],
+        &req,
+        Duration::from_secs(60),
+        ErrorCode::WorkUnreachable,
+    )
+}
+
+/// The ssh to the work machine, with the project checked here first.
+fn work_ssh(resolved: &Resolved<'_>, env: &Env<'_>) -> Result<Ssh> {
+    let root = &resolved.workspace.root;
+    if !root.is_dir() {
+        return Err(Error::new(
+            ErrorCode::WrongWorkspace,
+            format!(
+                "workspace root {} is not a directory on this machine, and this machine is the runtime host",
+                root.display()
+            ),
+        ));
+    }
+    let ssh =
+        Ssh::new(resolved.work_ssh, &env.control_dir)?.with_ccnm_bin(resolved.work.ccnm_bin());
+    ssh.check_control_path()?;
+    Ok(ssh)
 }
 
 /// A fresh session id for a probe; the retained-output directory of a

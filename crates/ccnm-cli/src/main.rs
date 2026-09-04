@@ -12,10 +12,12 @@ use ccnm_core::protocol::hello::{self, HelloRequest};
 use ccnm_core::protocol::mcp::ServePayload;
 use ccnm_core::protocol::payload;
 use ccnm_core::protocol::probe::ProbeRequest;
-use ccnm_core::protocol::run::{RunReport, RunRequest};
+use ccnm_core::protocol::run::{
+    AttachRequest, RunReport, RunRequest, StartRequest, StatusRequest, StopRequest,
+};
 use ccnm_core::{
     Config, Result, claude, controller, doctor, launchagent, launcher, mcp, paths, safety, session,
-    work,
+    tmux, work,
 };
 
 /// Terminal-native remote workspace runtime for Claude Code.
@@ -42,17 +44,42 @@ enum Command {
         /// Workspace name from config.toml; omit to check only the config
         workspace: Option<String>,
     },
-    /// Start a Claude session for a workspace on the work machine
+    /// Start a Claude session for a workspace on the work machine, and
+    /// attach this terminal to it
     Run {
         /// Workspace name from config.toml
         workspace: String,
-        /// Run one prompt non-interactively and print the result. The
-        /// interactive form (a terminal attached to Claude) is phase 6.
-        #[arg(long, value_name = "PROMPT")]
+        /// What Claude opens with; without it the prompt starts empty
+        prompt: Option<String>,
+        /// Run one prompt non-interactively and print the result instead of
+        /// attaching a terminal
+        #[arg(long, value_name = "PROMPT", conflicts_with = "prompt")]
         print: Option<String>,
-        /// Kill Claude after this many seconds
+        /// Kill Claude after this many seconds (--print only)
         #[arg(long, default_value_t = 600, value_name = "SECONDS")]
         timeout: u64,
+        /// Start the session but do not attach to it
+        #[arg(long, conflicts_with = "print")]
+        detached: bool,
+    },
+    /// Attach this terminal to a workspace's running session
+    Attach {
+        /// Workspace name from config.toml
+        workspace: String,
+    },
+    /// What is running on the work machine
+    Status {
+        /// Workspace name from config.toml
+        workspace: String,
+        /// Every ccnm session on that machine, not just this workspace's
+        #[arg(long)]
+        all: bool,
+    },
+    /// End a workspace's session: Claude, its terminal and its MCP
+    /// transport all go away
+    Stop {
+        /// Workspace name from config.toml
+        workspace: String,
     },
     /// MCP transport diagnostics
     Mcp {
@@ -131,6 +158,28 @@ enum InternalCommand {
         #[arg(long)]
         payload: String,
     },
+    /// Work-side start of an interactive session; returns as soon as tmux
+    /// has it
+    WorkStart {
+        #[arg(long)]
+        payload: String,
+    },
+    /// Hand this terminal (an `ssh -t`) to the workspace's tmux session.
+    /// The one internal command that answers with a terminal, not JSON
+    Attach {
+        #[arg(long)]
+        payload: String,
+    },
+    /// Work-side stop of an interactive session
+    WorkStop {
+        #[arg(long)]
+        payload: String,
+    },
+    /// Work-side list of live sessions
+    WorkStatus {
+        #[arg(long)]
+        payload: String,
+    },
     /// Be Claude's parent for one session; started by the controller
     Supervise {
         #[arg(long)]
@@ -178,29 +227,53 @@ fn run(cli: Cli) -> Result<i32> {
         }
         Command::Run {
             workspace,
+            prompt,
             print,
             timeout,
+            detached,
         } => {
-            let Some(prompt) = print else {
-                return Err(ccnm_core::Error::new(
-                    ccnm_core::ErrorCode::NotReady,
-                    "interactive sessions come with phase 6; for now: ccnm run <workspace> --print \"<prompt>\"",
-                ));
-            };
             let config = Config::load(&config_path()?)?;
             let resolved = config.workspace(workspace)?;
-            let env = launcher::Env {
-                runner: &SystemRunner,
-                control_dir: paths::state_dir()?.join("ssh"),
-                current_exe: std::env::current_exe()?,
-            };
-            let rep = launcher::run_print(
-                &resolved,
-                &env,
-                prompt,
-                std::time::Duration::from_secs(*timeout),
-            )?;
-            print_run_report(&rep)
+            let env = home_env()?;
+            if let Some(prompt) = print {
+                let rep = launcher::run_print(
+                    &resolved,
+                    &env,
+                    prompt,
+                    std::time::Duration::from_secs(*timeout),
+                )?;
+                return print_run_report(&rep);
+            }
+            let rep = launcher::start_interactive(&resolved, &env, prompt.as_deref())?;
+            eprintln!("{}", rep.summary());
+            if *detached {
+                eprintln!("\nattach when you want it: ccnm attach {workspace}");
+                return Ok(0);
+            }
+            attach(&resolved, &env, workspace)
+        }
+        Command::Attach { workspace } => {
+            let config = Config::load(&config_path()?)?;
+            let resolved = config.workspace(workspace)?;
+            attach(&resolved, &home_env()?, workspace)
+        }
+        Command::Status { workspace, all } => {
+            let config = Config::load(&config_path()?)?;
+            let resolved = config.workspace(workspace)?;
+            let rep = launcher::status(&resolved, &home_env()?, *all)?;
+            print!("{}", rep.render());
+            Ok(0)
+        }
+        Command::Stop { workspace } => {
+            let config = Config::load(&config_path()?)?;
+            let resolved = config.workspace(workspace)?;
+            let rep = launcher::stop(&resolved, &home_env()?)?;
+            if rep.killed {
+                println!("stopped {}", rep.tmux_session);
+            } else {
+                println!("nothing to stop: {} was not running", rep.tmux_session);
+            }
+            Ok(0)
         }
         Command::Mcp {
             command:
@@ -212,11 +285,7 @@ fn run(cli: Cli) -> Result<i32> {
         } => {
             let config = Config::load(&config_path()?)?;
             let resolved = config.workspace(workspace)?;
-            let env = launcher::Env {
-                runner: &SystemRunner,
-                control_dir: paths::state_dir()?.join("ssh"),
-                current_exe: std::env::current_exe()?,
-            };
+            let env = home_env()?;
             let rep = if *local {
                 launcher::mcp_probe_local(&resolved, &env, *calls)?
             } else {
@@ -250,6 +319,10 @@ fn run(cli: Cli) -> Result<i32> {
                     // that is the PATH Claude will actually be started
                     // with.
                     claude: claude::locate_from_env(),
+                    // Same reason as claude: launchd's PATH is not a login
+                    // shell's, and the tmux server has to be started from
+                    // here to be in the login session.
+                    tmux: tmux::locate_from_env(),
                     exe: std::env::current_exe()?,
                 };
                 listener.serve_forever(&tools)?;
@@ -268,6 +341,22 @@ fn run(cli: Cli) -> Result<i32> {
                 let req: RunRequest = payload::decode(payload)?;
                 print_json(&work::run(&req, &work_tools()?)?)
             }
+            InternalCommand::WorkStart { payload } => {
+                let req: StartRequest = payload::decode(payload)?;
+                print_json(&work::start(&req, &work_tools()?)?)
+            }
+            InternalCommand::Attach { payload } => {
+                let req: AttachRequest = payload::decode(payload)?;
+                work::attach(&req, &work_tools()?)
+            }
+            InternalCommand::WorkStop { payload } => {
+                let req: StopRequest = payload::decode(payload)?;
+                print_json(&work::stop(&req, &work_tools()?)?)
+            }
+            InternalCommand::WorkStatus { payload } => {
+                let req: StatusRequest = payload::decode(payload)?;
+                print_json(&work::status(&req, &work_tools()?))
+            }
         },
     }
 }
@@ -278,9 +367,44 @@ fn work_tools() -> Result<work::Tools<'static>> {
         runner: &SystemRunner,
         control_dir: state.join("ssh"),
         claude: claude::locate_from_env(),
+        tmux: tmux::locate_from_env(),
         controller: paths::controller_socket(&state),
         state,
     })
+}
+
+fn home_env() -> Result<launcher::Env<'static>> {
+    Ok(launcher::Env {
+        runner: &SystemRunner,
+        control_dir: paths::state_dir()?.join("ssh"),
+        current_exe: std::env::current_exe()?,
+    })
+}
+
+/// Give this terminal to the work machine's tmux and stay out of the way
+/// until it comes back.
+///
+/// Not `exec`: when the person detaches or Claude ends, there is one more
+/// useful thing to say — whether the session is still running — and a
+/// process that replaced itself with ssh cannot say it.
+fn attach(
+    resolved: &ccnm_core::config::Resolved<'_>,
+    env: &launcher::Env<'_>,
+    workspace: &str,
+) -> Result<i32> {
+    let cmd = launcher::attach_cmd(resolved, env)?;
+    let captured = ccnm_core::process::run_attached(&cmd)?;
+    let code = captured.exit_code.unwrap_or(1);
+    match launcher::status(resolved, env, false) {
+        Ok(rep) if !rep.sessions.is_empty() => {
+            eprintln!("\nstill running on the work machine; back in with: ccnm attach {workspace}");
+        }
+        Ok(_) => eprintln!("\nthe session has ended"),
+        // The session's own exit code is worth more than a failure to look
+        // it up afterwards.
+        Err(e) => eprintln!("\ncannot tell whether the session is still running: {e}"),
+    }
+    Ok(code)
 }
 
 /// The summary, then Claude's answer, then whatever went wrong. Exit 0

@@ -379,15 +379,44 @@ fn verbose_logs_go_to_stderr_not_stdout() {
     assert!(!stdout(&out).contains("loading config"));
 }
 
+/// Interactive and print mode share the local preflight, and it is the
+/// first thing either does: the project has to be on this machine, because
+/// this machine is the one that will serve it.
 #[test]
-fn run_without_print_is_not_ready_yet() {
+fn run_checks_the_project_is_here_before_touching_the_network() {
+    for args in [
+        vec!["run", "xshun", "--config"],
+        vec!["run", "xshun", "--print", "hi", "--config"],
+        vec!["attach", "xshun", "--config"],
+        vec!["stop", "xshun", "--config"],
+    ] {
+        let out = ccnm()
+            .args(&args)
+            .arg(fixture("config-valid.toml"))
+            .output()
+            .unwrap();
+        let err = stderr(&out);
+        assert_eq!(out.status.code(), Some(30), "{args:?}: {err}");
+        assert!(err.contains("is not a directory on this machine"), "{err}");
+    }
+}
+
+/// `--print` is one prompt with no terminal and a positional prompt is the
+/// terminal's opening line; asking for both is a mistake worth catching
+/// before anything is started.
+#[test]
+fn run_refuses_a_prompt_in_two_places_at_once() {
     let out = ccnm()
-        .args(["run", "xshun", "--config"])
+        .args(["run", "xshun", "hello", "--print", "hello", "--config"])
         .arg(fixture("config-valid.toml"))
         .output()
         .unwrap();
-    assert_eq!(out.status.code(), Some(3), "{}", stderr(&out));
-    assert!(stderr(&out).contains("--print"), "{}", stderr(&out));
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("cannot be used with"),
+        "{}",
+        stderr(&out)
+    );
 }
 
 /// The real `ccnm internal supervise`, with a script standing in for

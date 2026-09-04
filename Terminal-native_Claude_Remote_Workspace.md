@@ -144,33 +144,41 @@ MCP server 用现成的 Rust MCP SDK，不手写半套协议（第 25 节）。S
 ccnm doctor xshun
 ```
 
-Primary MCP 模式全部落地后，一切正常时的输出：
+2026-09-04 在家庭机 xdwmbp 上真跑出来的样子（截掉了几行 safety WARN 之外原样）：
 
 ```text
-ccnm doctor: xshun
+ccnm doctor: fixture
 
-Config                  OK     /Users/fodelf/.config/ccnm/config.toml
-Workspace config        OK     backend=mcp-ssh work_host=work (ssh xdwmbp), runtime_host=home (ssh_from_work fodelf)
-Home workspace          OK     /Users/fodelf/Projects/xshun
-Home ccnm               OK     0.1.0 at /Users/fodelf/.local/bin/ccnm
-Tailscale               OK     direct via 203.0.113.7:41641
-Work SSH                OK     bing@xdwmbp
-Work ccnm               OK     0.1.0
-Work controller         OK     ccnm 0.1.0 as bing, pid 80333, Aqua
-Claude Code             OK     2.1.259 (/opt/homebrew/bin/claude)
+Config                  OK     /Users/bing/.config/ccnm/config.toml
+Workspace config        OK     backend=mcp-ssh work_host=work (ssh fodelf), runtime_host=home (ssh_from_work xdwmbp)
+Home workspace          OK     /Users/bing/ccnm-fixture
+Project instructions    OK     CLAUDE.md, 552 bytes, all of it reaches the model
+Home ccnm               OK     0.1.0 at /Users/bing/.local/bin/ccnm
+Runtime user            WARN   no runtime_user is configured, so ccnm cannot tell whether bing is ...
+No sudo                 OK     cannot become root without a password
+Not an admin            WARN   this account is in admin, which is a route to root
+No SSH keys             WARN   this account can read fodelf, hpsrv, ... in ~/.ssh
+No Claude credential    WARN   this machine holds a Claude credential (...)
+No Docker socket        OK     the Docker socket is not writable by this account
+exec_command            WARN   allowed, but the runtime is NOT confined: this workspace sets allow_unconfined_exec
+Work SSH                OK     fodelf@fodelf.taila864e6.ts.net
+Work ccnm               OK     0.1.0 at /Users/fodelf/.local/bin/ccnm
+Work controller         OK     ccnm 0.1.0 as fodelf, pid 52873, Aqua
+Claude Code             OK     2.1.260 (/Users/fodelf/.local/bin/claude)
 Claude authentication   OK     me@example.com via claude.ai (max)
-Reverse SSH             OK     fodelf as fodelf, ccnm 0.1.0
-Remote MCP handshake    OK     initialize, tools/list (1 tool, 412 B), workspace_info x1 in 190 ms
-Workspace root          OK     git repo
-Workspace policy        OK     7 tools, schema 9.8 KiB
-Project instructions    WARN   CLAUDE.md is 19 KiB, over the 16 KiB instructions budget; not injected
-Native tools disabled   OK     Read Edit Write Grep Glob Bash
+Reverse SSH             OK     xdwmbp as bing, ccnm 0.1.0
+Remote MCP handshake    OK     initialize in 541 ms, tools/list (7 tools, 8236 B), instructions 1184 B (CLAUDE.md, 552 bytes), workspace_info x1 p50 22 ms p95 22 ms max 22 ms, pid 66302 throughout
+Workspace root          OK     /Users/bing/ccnm-fixture is a directory for bing
+Workspace policy        SKIP   not implemented until phase 2
+Native tools disabled   SKIP   not checked: only a live session shows which tools Claude ended up with
 Runtime identity        SKIP   not implemented until phase 5
 Network isolation       SKIP   not implemented until phase 5
 Terminal session        SKIP   not implemented until phase 6
 
-NOT READY (0 failed, 3 not checked)
+NOT READY (0 failed, 5 not checked)
 ```
+
+那五个 WARN 是这台开发机自己的状态（第 18 节的 runtime 审计），不是设计的目标状态。
 
 每行四种状态：
 
@@ -1374,7 +1382,7 @@ Phase 1A / 1B fixture benchmark 不需要联网。
 
 ---
 
-## 20. Full MCP 特有问题：项目 CLAUDE.md
+## 20. Full MCP 特有问题：项目 CLAUDE.md（2026-09-04 已实现）
 
 切 MCP 后：
 
@@ -1383,28 +1391,92 @@ Claude process cwd = 工作机
 真实 repo         = 家庭机
 ```
 
-所以不能再假设工作机 Claude 会自动加载家庭机的：
+Claude Code 只会从**自己的工作目录**加载 `CLAUDE.md`。而它的工作目录在工作机上，里面只有会话
+记录，项目和项目的 `CLAUDE.md` 都在家庭机。所以没有任何人加载它——模型在一个它从没读过规则的
+项目上干活。
+
+这个故障不报错：会话照跑，只是安安静静地不遵守你写了半年的约定。
+
+### 做法
+
+MCP server 跑在家庭机上，也就是文件所在的那台机器。它在启动时读 `<root>/CLAUDE.md`，拼进
+`initialize.result.instructions`——这个字段 Claude Code 是读的（下面有实测）。
 
 ```text
-CLAUDE.md
-.claude/rules/
-.claude/skills/
+CCNM remote workspace "xshun". The project lives on another machine ...
+
+--- CLAUDE.md from the workspace root. These are the project's own
+    instructions, written for this project; they are not about the machine
+    you run on. Follow them. ---
+<CLAUDE.md 原文>
+--- end of CLAUDE.md ---
+[project instructions: CLAUDE.md, 552 bytes]
 ```
 
-这是 Phase 3 gate。
+**只有根目录那一个 `CLAUDE.md`。** 不同步 `.claude/rules/`、不同步 skills、更不同步源码。这是
+project metadata projection，不是 project mirror——一开始复制源码，SMB 那套一致性问题就全回来了。
 
-第一顺位验证 `MCP initialize response.instructions` 能否让 Claude Code 稳定得到：
+### 上限和截断
+
+整段 instructions 上限 16 KiB（`MAX_INSTRUCTIONS_BYTES`）。超了的文件**按行截断**：宁可少一条
+规则，也不给模型半条。截了就在 marker 行里说清楚：
 
 ```text
-CCNM remote workspace instructions
-+
-家庭机 root CLAUDE.md
+[project instructions: CLAUDE.md, 16843 bytes, first 15654 shown; read_file CLAUDE.md for the rest]
 ```
 
-先只验证 root `CLAUDE.md`，不一次复制整个 Claude config model。
+预算不是拍脑袋定的常数：`budget()` 拿一个空正文渲染一遍外框，剩下多少就是多少，所以改外框的
+措辞不可能悄悄把总长顶过上限。
 
-instructions 必须 bounded：最大 8–16 KiB。过大明确 WARN（doctor "Project instructions" 行），
-不静默塞进 context。
+marker 行放在**正文里**，和 `workspace_info` 的 `[server pid N, call N]` 一个道理（第 16 节）：
+正文是模型唯一看得见的通道，probe 要检查的东西必须放在模型也读得到的地方。
+
+### 谁来发现出了问题
+
+doctor 加一行 `Project instructions`，在家庭机上直接读那个文件——同一台机器、同一份字节：
+
+```text
+Project instructions    OK     CLAUDE.md, 552 bytes, all of it reaches the model
+Project instructions    OK     no CLAUDE.md at /Users/bing/ccnm-fixture; the session gets ccnm's own instructions only
+Project instructions    WARN   CLAUDE.md is 16843 bytes and only its first 15654 reach the model: the MCP handshake is capped at 16384 bytes
+```
+
+超长是 WARN 不是 FAIL：会话能跑，只是模型知道的比你以为的少——需要知道这件事的是人。文件在那儿
+但读不了（目录占位、没权限）也是 WARN，会话照常起，日志里有一条。
+
+`Remote MCP handshake` 那行再把它证明一遍，这次是**穿过 ssh** 的：probe 从收到的 instructions
+里把 marker 解出来带回家。doctor 自己读文件只能证明文件存在，这行才证明字节真的到了对面的
+client。
+
+```text
+Remote MCP handshake    OK     initialize in 529 ms, tools/list (7 tools, 8236 B),
+                               instructions 16341 B (CLAUDE.md, 16843 bytes, first 15654 shown; ...),
+                               workspace_info x1 p50 23 ms ...
+```
+
+### 实测（2026-09-04，xdwmbp ↔ fodelf 真机）
+
+fixture 的 `CLAUDE.md` 里写了四条规则，其中一条是"回答最后一行必须是 `FIXTURE-RULES-LOADED`"
+——这个 token 只存在于那个文件里，模型猜不出来。一次 `ccnm run fixture --print` 之后：
+
+```text
+最后一行             FIXTURE-RULES-LOADED     ✅ instructions 到了模型手里
+跑测试的命令         python3 -m unittest discover tests，没用 pytest   ✅ 规则 2
+改完提交             ff9f2b7 fix: 值里带 '=' 的配置行不再报错          ✅ 规则 3（中文、fix: 开头）
+新增依赖             无                                               ✅ 规则 4
+```
+
+对照组：**上一次**（没有这份 CLAUDE.md）同一个 fixture、同一条 prompt，模型改完**没有提交**。
+
+16843 字节的版本实测投影 15654 字节，整段 instructions 16341 字节，卡在 16384 以内。
+
+### 还没做的
+
+一次会话只在 `initialize` 时读一次。跑到一半改 `CLAUDE.md` 不会生效——instructions 已经发出去了，
+再读只会得到一个和模型手里那份对不上的数字。
+
+`.claude/rules/`、`.claude/skills/`、子目录里的 `CLAUDE.md`：都还没有。等真实日用证明确实需要
+再说，顺序是先看 instructions 还能不能塞下。
 
 ### 如果 instructions 不够
 
@@ -1648,6 +1720,7 @@ crates/
         ├── protocol/    payload 编码、hello、probe 请求响应
         ├── ssh/         ssh 命令行构造、双向探测（Transport Adapter 层）
         └── mcp/         MCP server / probe client
+            ├── context.rs 项目 CLAUDE.md 投影进 instructions（第 20 节）
             ├── path.rs  workspace 路径策略，所有文件工具共用（第 17 节）
             ├── glob.rs  glob 匹配（list_files / 将来的 search_text）
             ├── read.rs  read_file
@@ -1689,6 +1762,7 @@ TS 只能出现在 `tests/`、`tools/`、fixture 生成器里，`ccnm run` 永�
 → production safety minimum        ✅ ccnm 那一半完成；OS 那一半由用户按 docs/production-safety.md 做
 → work-controller / Claude auth context  ✅ 2026-09-04，真机四种状态验过
 → Claude MCP 接入                        ✅ 2026-09-04，`ccnm run --print` 真机改 bug 跑通（7 turns）
+→ 项目 CLAUDE.md 投影                    ✅ 2026-09-04，真机验过模型确实读到并遵守（第 20 节）
 → 真实 dogfood
 → process / Git / browser
 → terminal session UX
@@ -1958,9 +2032,18 @@ Claude 的 cwd 是工作机上 `~/.local/state/ccnm/workspaces/<name>/`——稳
 **这一步抓到的最大问题**是第 16 节那条：`structuredContent` 把正文挡住了。修前 74 turns / $1.58，
 修后 7 turns / $0.11。
 
-还没做：交互式（TTY attach / tmux）是 Phase 6；root CLAUDE.md project context（第 20 节）下一步。
-MCP `instructions` 里已加一句"你自己环境里看到的 cwd / git 状态是工作机的，项目以 workspace_info
-为准"——因为第二次真跑时 Claude 看到自己 cwd 不是 git 仓库、而 workspace_info 说是，就拒绝 commit。
+还没做：交互式（TTY attach / tmux）是 Phase 6。MCP `instructions` 里已加一句"你自己环境里看到的
+cwd / git 状态是工作机的，项目以 workspace_info 为准"——因为第二次真跑时 Claude 看到自己 cwd 不是
+git 仓库、而 workspace_info 说是，就拒绝 commit。
+
+### Phase 3.6 — 项目 CLAUDE.md 投影（2026-09-04 完成）
+
+家庭机的根 `CLAUDE.md` 进 `initialize.result.instructions`，16 KiB 封顶，超了按行截断并在 marker
+行里交代；doctor 加 `Project instructions` 行，`Remote MCP handshake` 行顺带证明它穿过了 ssh。
+完整设计和实测数字在第 20 节。
+
+**真机结果**：fixture 的 `CLAUDE.md` 里放一个模型猜不出来的 token，一次 `ccnm run --print` 之后
+四条规则全遵守，包括上一次没做的"改完必须提交"。
 
 ### Phase 4 — Benchmark
 
@@ -2004,16 +2087,19 @@ dev server / Playwright / Chrome    全部跑家庭机
 **Browser provider 与 coding runtime / transport / connectivity 解耦**（第 6 节四层）：它是
 Runtime 层里的另一个 provider，不是 coding 工具的一部分，也不该知道自己走的是哪条链路。
 
-### 项目上下文要单独解决（2026-09-04 待做）
+### 项目上下文（第 1 步 2026-09-04 已完成）
 
 真实 repo 不在工作机，所以**不能假设** Claude 会自动加载家庭机的 `CLAUDE.md` / rules / skills——
 它在工作机上看不到任何一个。先后顺序：
 
 ```text
-1. MCP instructions            initialize.result.instructions，16 KiB 上限（第 20 节）
+1. MCP instructions            ✅ 已实现并真机验证：根 CLAUDE.md 进 initialize.result.instructions，
+                                  16 KiB 上限，超了按行截断（第 20 节）
 2. workspace metadata projection   把项目元信息投影到 ~/.local/state/ccnm/workspaces/<name>/
 3. 极小 shadow workspace（必要时）  只同步 Claude 元数据，绝不同步源码
 ```
+
+第 1 步够不够用，等真实日用说话：`.claude/rules/`、skills、子目录 CLAUDE.md 都还没进去。
 
 第 3 条是**最后手段**，而且边界很硬：一旦开始同步源码，就等于把 SMB Hybrid 的一致性问题请回来了。
 

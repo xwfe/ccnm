@@ -585,6 +585,72 @@ fn on_the_work_machine_an_unknown_workspace_is_asked_about_not_refused() {
     );
 }
 
+/// The work machine starts a session by running this exact line on the
+/// home machine. It is a string literal in `launcher::start_from_work`,
+/// so nothing in the compiler ties the two together: rename the flag and
+/// the work-side entry keeps building and breaks at the far end, where
+/// the complaint is about an argument and the person is looking at a
+/// workspace.
+#[test]
+fn the_line_the_work_machine_sends_home_is_one_home_accepts() {
+    let out = ccnm()
+        .args(["run", "xshun", "--detached", "--config"])
+        .arg(fixture("config-valid.toml"))
+        .output()
+        .unwrap();
+    let err = stderr(&out);
+    assert!(
+        !err.contains("unexpected argument") && !err.contains("Usage"),
+        "home must accept the line work sends it: {err}"
+    );
+    // Past clap and into the local preflight, which is as far as it can
+    // get without the project being here.
+    assert_eq!(out.status.code(), Some(30), "{err}");
+}
+
+/// On the work machine the session is *on this machine*, so attach,
+/// status and stop are local: the workspace name is all they need. If any
+/// of them reached for the home alias, being let back into a running
+/// session -- or ending one -- would depend on the link being up, which
+/// is exactly when somebody needs to end one.
+#[test]
+fn on_the_work_machine_attach_status_and_stop_stay_local() {
+    let state = std::env::temp_dir().join(format!("ccnm-cli-{}-worklocal", std::process::id()));
+    let _ = std::fs::remove_dir_all(&state);
+    std::fs::create_dir_all(&state).unwrap();
+    // A name nothing can have a live session for, so `stop` cannot end
+    // something belonging to whoever is running the tests.
+    let workspace = "ccnm-test-no-such-workspace";
+    for verb in ["attach", "status", "stop"] {
+        let out = ccnm()
+            .env("XDG_STATE_HOME", &state)
+            .args([verb, workspace, "--config"])
+            .arg(fixture("config-work-side.toml"))
+            .output()
+            .unwrap();
+        let said = format!("{}{}", stdout(&out), stderr(&out));
+        assert!(
+            !said.contains("no-such-host-for-tests"),
+            "`{verb}` went looking for the home machine: {said}"
+        );
+        // Positive half, because "no alias in the output" is also true of
+        // a config error. Each verb has to have reached its *local*
+        // answer: tmux replied, or said it is not installed.
+        assert!(
+            (said.contains(workspace) || said.contains("tmux")) && !said.contains("not defined"),
+            "`{verb}` did not answer from this machine: {said}"
+        );
+        // 0 nothing to report, 3 nothing running, 35 no tmux here. 10
+        // would mean it fell through to the workspace lookup, which on
+        // this machine can only fail.
+        assert!(
+            matches!(out.status.code(), Some(0 | 3 | 35)),
+            "`{verb}` exited {:?}, which is not a local answer: {said}",
+            out.status.code()
+        );
+    }
+}
+
 #[test]
 fn a_bare_workspace_name_means_run() {
     let out = ccnm()

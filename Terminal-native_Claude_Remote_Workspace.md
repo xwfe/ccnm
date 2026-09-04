@@ -156,6 +156,7 @@ Home ccnm               OK     0.1.0 at /Users/fodelf/.local/bin/ccnm
 Tailscale               OK     direct via 203.0.113.7:41641
 Work SSH                OK     bing@xdwmbp
 Work ccnm               OK     0.1.0
+Work controller         OK     ccnm 0.1.0 as bing, pid 80333, Aqua
 Claude Code             OK     2.1.259 (/opt/homebrew/bin/claude)
 Claude authentication   OK     me@example.com via claude.ai (max)
 Reverse SSH             OK     fodelf as fodelf, ccnm 0.1.0
@@ -192,10 +193,10 @@ exit code 规则：
 看到 21 知道是反向 SSH 坏了。骨架阶段的 doctor 因此不可能误报 READY，也不会把"还没实现"冒充成
 某个具体故障。
 
-从 "Work SSH" 往下的信息来自**一次** `ssh work ccnm internal probe` 往返：工作机跑
-`claude --version` 和 `claude auth status`，反向 ssh 回家庭机跑 `ccnm internal hello`，再起一次
-短暂的 MCP handshake（第 27 节），打包成一个 JSON 回来。工作机不需要 config 文件，它要的参数都在
-请求里。
+从 "Work SSH" 往下的信息来自**一次** `ssh work ccnm internal probe` 往返：工作机连自己的
+work-controller 问 Claude 的版本和登录（**不在 ssh 会话里问**，第 21 节），反向 ssh 回家庭机跑
+`ccnm internal hello`，再起一次短暂的 MCP handshake（第 27 节），打包成一个 JSON 回来。工作机不
+需要 config 文件，它要的参数都在请求里。
 
 不再检查（Hybrid 专有）：SMB mount、SMB coherence、mount identity、write barrier。
 
@@ -220,6 +221,18 @@ exit code 规则：
 
 具体到 SSH：doctor 探活时带 `-o ControlMaster=no`。OpenSSH 文档写明这个值只复用已有 master，
 socket 不存在就普通连接，不会留下一个后台 master 进程。
+
+### 工作机上的 controller（Phase 3 已实现）
+
+```bash
+ccnm work-controller install [--dry-run]   # 装 LaunchAgent 并起来，然后确认它在 Aqua 里
+ccnm work-controller status                # 有没有在跑，在哪个 security session
+ccnm work-controller uninstall             # 停掉并删掉 LaunchAgent
+```
+
+在工作机上敲，或者从家庭机 `ssh work ccnm work-controller install` 一把装完（第 21 节）。
+`--dry-run` 只打印 plist 和两条 launchctl 命令，什么都不改——一个要装进你登录会话的东西，
+应该先能读一遍。
 
 ### 正常使用（Phase 6 才实现）
 
@@ -1441,6 +1454,60 @@ SSH 只负责三件事：控制、发起启动请求、attach
 这样 Claude 继承的是登录用户的 security session，Keychain 的问题自然消失——不是被绕过，是根本
 没发生。
 
+### 实测把上面那条结论坐实了一半，并纠正了另一半（2026-09-04）
+
+装了 work-controller 之后，在同一台工作机、同一个账号上跑同样的命令，两个上下文：
+
+```text
+                            launchctl managername   security(1)   claude 说
+ssh 会话                     Background              退出 36        Not logged in · Please run /login
+LaunchAgent（gui/501）       Aqua                    退出 0         OAuth session expired and could not be refreshed
+```
+
+**坐实的一半**：Aqua 上下文确实解决了 Keychain。claude 从"根本看不见凭证"变成"看见了，但过期了"。
+
+**纠正的一半**：原文说 "Claude authentication FAIL 要读成从 ssh 会话看没登录"，把它当成一句
+含糊的免责声明。实际情况更硬：**这是两种不同的病，修法完全不同**，而 ccnm 必须能分清。
+
+```text
+ssh 会话说 Not logged in     → 假的。这台机器登录着，只是这个会话看不见
+Aqua 说 OAuth session expired → 真的。要人去工作机屏幕前跑一次 claude /login
+```
+
+所以 doctor 不再"从 ssh 会话问了然后加个免责声明"，而是**根本不问**：没有 controller 时
+`Claude authentication` 是 SKIP，不是 FAIL。一个假的 FAIL 会把人送去在一台已经登录的机器上
+反复登录。
+
+顺带记一条自己踩的：第一版实现里，controller 跑在 Background（手动起的）时，auth 那行仍然说
+"asked from the login session, so this is Claude's real answer"。**同一个谎话换了个更可信的地方
+讲**。现在 auth 的判断取决于答案来自哪个 session：
+
+```text
+Aqua + loggedIn=false        → FAIL，这是真答案
+非 Aqua + loggedIn=false     → SKIP，指向 Work controller 那一行
+任何 session + loggedIn=true → OK
+```
+
+最后一条的不对称是故意的：一个读不到凭证的上下文不可能"发现"一个登录，所以误差只朝一个方向走。
+
+### Keychain 里那条为什么是空的（2026-09-04 实测）
+
+`security find-generic-password -s "Claude Code-credentials"` 在 Aqua 下能读到，内容是：
+
+```text
+claudeAiOauth.accessToken        空字符串
+claudeAiOauth.expiresAt          0
+claudeAiOauth.subscriptionType   null
+mcpOAuth.<plugin>                有内容（插件的 OAuth，与 Claude 登录无关）
+```
+
+而 `~/.claude.json` 里 `oauthAccount` 是完整的（claude_max 订阅）。所以那台机器**登录过**，是
+OAuth 会话过期且 refresh 失败。`claude auth status --json` 对"过期"和"从没登录"都返回
+`loggedIn: false`，两者在这个接口上分不开——doctor 的提示因此写成"两种情况都是同一条命令修"。
+
+ccnm 读这条 Keychain 条目只发生在人工诊断时（一个一次性 shell 脚本），**ccnm 自己的代码永远不读
+凭证**，包括不为了证明"我能读"而读。
+
 明确不做（和第 29 节一致）：
 
 ```text
@@ -1547,6 +1614,8 @@ crates/
         ├── paths.rs
         ├── process.rs
         ├── claude.rs
+        ├── controller.rs   工作机登录会话里的 controller 与它的 socket（第 21 节）
+        ├── launchagent.rs  把 controller 装成 LaunchAgent（同上）
         ├── safety.rs    runtime 账号审计 + exec gate（第 18 节）
         ├── doctor.rs
         ├── protocol/    payload 编码、hello、probe 请求响应
@@ -1591,7 +1660,7 @@ TS 只能出现在 `tests/`、`tools/`、fixture 生成器里，`ccnm run` 永�
 ```text
 完成核心 coding runtime            ✅ 7 个工具全部完成
 → production safety minimum        ✅ ccnm 那一半完成；OS 那一半由用户按 docs/production-safety.md 做
-→ work-controller / Claude auth context
+→ work-controller / Claude auth context  ✅ 2026-09-04，真机四种状态验过
 → Claude MCP 接入
 → 真实 dogfood
 → process / Git / browser
@@ -1770,10 +1839,66 @@ symlink escape
 
 任何 partial write 都不允许。
 
-### Phase 3 — work-controller / Claude auth context
+### Phase 3 — work-controller / Claude auth context（2026-09-04 完成）
 
 先解决"Claude 由谁启动"。工作机登录用户上下文里的一个 LaunchAgent（work-controller）负责起
 Claude；SSH 只做控制、发起、attach（第 21 节）。这一步做对了，Keychain 的问题就不存在了。
+
+落地形态：
+
+```text
+工作机 GUI 登录
+  launchd gui/<uid>
+    └── ccnm internal work-controller          LaunchAgent，所以是 Aqua
+          └── 监听 ~/.local/state/ccnm/controller.sock
+
+家庭机 ── ssh ──> 工作机 ssh 会话（Background）
+                    └── ccnm internal probe
+                          └── connect(controller.sock)，一行 JSON 一来一回
+```
+
+协议就是第 8 节那套去掉 base64——socket 上没有 shell 参与，JSON 直接走，两边都校验
+`protocol`。目前两个请求：`hello`（谁在监听、在哪个 security session）和 `claude-auth`（在那边
+跑 claude 的两条命令）。`work-run` 归 Phase 3.5。
+
+用户命令（在工作机上敲，或者从家庭机 `ssh work ccnm work-controller install` 一把装完）：
+
+```text
+ccnm work-controller install [--dry-run]
+ccnm work-controller status
+ccnm work-controller uninstall
+```
+
+**从 ssh 会话装是可行的**，这条实测过：ssh 会话能 `launchctl bootstrap gui/<uid>`，起出来的 job
+报 `managername = Aqua`。装的人不需要自己在登录会话里。
+
+几条值得记的决定：
+
+```text
+socket 的锁就是文件权限     0600，父目录 0700，和 SSH_AUTH_SOCK 一个模型。能连上的人就是这个
+                            账号本人，他本来就能直接跑 claude。没有 token，也就没有 token 可偷
+残留 socket 是常态          bootout 和登出都是 SIGTERM，进程不跑析构。bind 先 connect 一下来
+                            区分"尸体"和"活的"，只拒绝活的
+launchctl 返回 0 不等于装好  launchd 接受 job 就立刻返回。install 会轮询 socket，起不来就失败并
+                            指向日志
+不是 Aqua 就不是登录会话     包括 managername 根本读不出来的情况。未知绝不能当成好的
+```
+
+为什么 ccnm 装这个 LaunchAgent、却不肯建 `ccrun`：这是 ccnm 自己的组件，在用户自己的
+`~/Library/LaunchAgents` 里，`uninstall` 一条命令拆干净。建 Unix 账号 + 配 ACL 是对机器安全模型
+的永久改动，那些命令留给用户自己敲（`docs/production-safety.md`）。
+
+真机四种状态都验过（工作机 xdwmbp）：
+
+```text
+没有 controller           Work controller SKIP（区分"没装"和"死了"，各给各的命令）
+                          Claude authentication SKIP
+controller 在 Background  Work controller FAIL（它答得上话，但没用）
+                          Claude authentication SKIP
+controller 在 Aqua        Work controller OK（ccnm 0.1.0 as bing, pid …, Aqua）
+                          Claude authentication FAIL —— 这是 Claude 的真答案
+三种状态下                Claude Code 都是 OK：版本不需要凭证
+```
 
 ### Phase 3.5 — Claude MCP 接入
 

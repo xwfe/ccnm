@@ -52,6 +52,7 @@ enum Command {
         home: String,
     },
     /// Add, list and remove workspaces without editing the config by hand
+    #[command(alias = "ws")]
     Workspace {
         #[command(subcommand)]
         command: WorkspaceCommand,
@@ -131,10 +132,14 @@ enum Command {
 enum WorkspaceCommand {
     /// Point a name at a project directory on this machine
     Add {
-        /// What to call it; this is the name every other command takes
-        name: String,
+        /// What to call it; this is the name every other command takes.
+        /// Defaults to the directory's own name
+        name: Option<String>,
         /// The project directory. Defaults to the current one
         path: Option<PathBuf>,
+        /// Point an existing name at this directory instead of refusing
+        #[arg(long)]
+        replace: bool,
         /// Let exec_command run without a confined runtime account (see
         /// docs/production-safety.md)
         #[arg(long)]
@@ -528,6 +533,7 @@ fn workspace_command(path: &std::path::Path, command: &WorkspaceCommand) -> Resu
         WorkspaceCommand::Add {
             name,
             path: root,
+            replace,
             allow_unconfined_exec,
             permission_mode,
         } => {
@@ -546,6 +552,11 @@ fn workspace_command(path: &std::path::Path, command: &WorkspaceCommand) -> Resu
                 )
                 .with_source(e)
             })?;
+            let name = match name {
+                Some(name) => name.clone(),
+                None => name_from(&root)?,
+            };
+            check_collisions(path, &name, &root, *replace)?;
             let mode = permission_mode
                 .as_deref()
                 .map(parse_permission_mode)
@@ -553,7 +564,7 @@ fn workspace_command(path: &std::path::Path, command: &WorkspaceCommand) -> Resu
             let mut edit = configedit::Edit::open(path)?;
             let mut changes = configedit::Changes::default();
             edit.set_workspace(
-                name,
+                &name,
                 &root,
                 "work",
                 mode,
@@ -582,13 +593,14 @@ fn workspace_command(path: &std::path::Path, command: &WorkspaceCommand) -> Resu
                 println!("add one: cd to a project and run `ccnm workspace add <name>`");
                 return Ok(0);
             }
+            let width = config.workspaces.keys().map(String::len).max().unwrap_or(0);
             for (name, workspace) in &config.workspaces {
                 let here = if workspace.root.is_dir() {
                     ""
                 } else {
                     "   (not on this machine)"
                 };
-                println!("{name}  {}{here}", workspace.root.display());
+                println!("{name:width$}  {}{here}", workspace.root.display());
             }
             Ok(0)
         }
@@ -634,6 +646,92 @@ fn remove_workspace(path: &std::path::Path, name: &str, purge: bool) -> Result<i
     edit.save(&changes)?;
     report_changes(&changes, path);
     Ok(0)
+}
+
+/// A workspace name from the directory's own name.
+///
+/// Refused rather than mangled when the directory has no usable ASCII in
+/// it: a project called `我的项目` would come out as an empty name or some
+/// stub of one, and a name people type all day should be one they chose.
+fn name_from(root: &std::path::Path) -> Result<String> {
+    let raw = root
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let name = paths::safe_name(&raw, "");
+    if name.is_empty() {
+        return Err(ccnm_core::Error::invalid_args(format!(
+            "cannot make a workspace name out of {raw:?}; give one: ccnm ws add <name>"
+        )));
+    }
+    Ok(name)
+}
+
+/// Two ways a new workspace can collide with one already in the config,
+/// and neither is ccnm's decision to make quietly.
+///
+/// **The same name, somewhere else.** Repointing it is a real change:
+/// `ccnm <name>` would open a different project, and a session running
+/// against the old root gets ended and replaced the next time it is
+/// started. Silently changing what a name means, while a session under
+/// that name is running, is exactly the confusion this whole afternoon
+/// was.
+///
+/// **The same directory, another name.** Two names for one project means
+/// two tmux sessions and two Claudes editing the same files, each unaware
+/// of the other. Nobody wants that; they want the name they already have.
+fn check_collisions(
+    config_path: &std::path::Path,
+    name: &str,
+    root: &std::path::Path,
+    replace: bool,
+) -> Result<()> {
+    // A config that will not load has bigger problems, and `save` reports
+    // them; there is nothing to compare against here.
+    let Ok(config) = Config::load(config_path) else {
+        return Ok(());
+    };
+
+    if let Some((other, _)) = config
+        .workspaces
+        .iter()
+        .find(|(other, ws)| ws.root == root && other.as_str() != name)
+    {
+        return Err(ccnm_core::Error::invalid_args(format!(
+            "{} is already the workspace `{other}`\nuse it:            ccnm {other}\nor rename it:      ccnm ws remove {other} && ccnm ws add {name}\ntwo names for one project means two Claudes editing the same files",
+            root.display()
+        )));
+    }
+
+    let Some(existing) = config.workspaces.get(name) else {
+        return Ok(());
+    };
+    if existing.root == root || replace {
+        return Ok(());
+    }
+    Err(ccnm_core::Error::invalid_args(format!(
+        "workspace `{name}` already points at {}\nthis would point it at {} instead, and end any session running against the old one\npick one:\n  ccnm ws add {} {}   (a different name for this project)\n  ccnm ws add {name} --replace   (repoint the existing one)",
+        existing.root.display(),
+        root.display(),
+        suggested_name(name, root),
+        root.display(),
+    )))
+}
+
+/// A name that will not collide, built from the directory above: two
+/// projects called `web` become `web` and `other-web` rather than a
+/// question about numbering.
+fn suggested_name(name: &str, root: &std::path::Path) -> String {
+    let parent = root
+        .parent()
+        .and_then(|p| p.file_name())
+        .map(|n| paths::safe_name(&n.to_string_lossy(), ""))
+        .unwrap_or_default();
+    if parent.is_empty() {
+        format!("{name}-2")
+    } else {
+        format!("{parent}-{name}")
+    }
 }
 
 fn parse_permission_mode(raw: &str) -> Result<ccnm_core::config::PermissionMode> {

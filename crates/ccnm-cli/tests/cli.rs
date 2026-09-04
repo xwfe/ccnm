@@ -459,6 +459,79 @@ fn init_and_workspace_add_write_a_config_that_loads() {
     assert!(text.contains("Home workspace          OK"), "{text}");
 }
 
+/// Two projects with the same directory name is the ordinary case, not a
+/// corner one -- `code/web` and `other/web`. Silently repointing the name
+/// would change what `ccnm web` opens, and end a session running against
+/// the old one the next time it started; that is the user's call.
+#[test]
+fn a_name_that_is_taken_is_refused_with_something_to_type() {
+    let dir = std::env::temp_dir().join(format!("ccnm-cli-collide-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let first = dir.join("code/web");
+    let second = dir.join("other/web");
+    std::fs::create_dir_all(&first).unwrap();
+    std::fs::create_dir_all(&second).unwrap();
+    let config = dir.join("config.toml");
+    let ccnm_ws = |cwd: &Path, args: &[&str]| {
+        ccnm()
+            .current_dir(cwd)
+            .args(["ws"])
+            .args(args)
+            .args(["--config"])
+            .arg(&config)
+            .output()
+            .unwrap()
+    };
+
+    let out = ccnm()
+        .args(["init", "--work", "w", "--home", "h", "--config"])
+        .arg(&config)
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+
+    // No name given: it comes from the directory.
+    let out = ccnm_ws(&first, &["add"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert!(
+        stdout(&out).contains("added workspaces.web"),
+        "{}",
+        stdout(&out)
+    );
+
+    // The other `web` cannot quietly take the name.
+    let out = ccnm_ws(&second, &["add"]);
+    assert_ne!(out.status.code(), Some(0));
+    let err = stderr(&out);
+    assert!(err.contains("already points at"), "{err}");
+    assert!(
+        err.contains("other-web"),
+        "the suggestion names the parent: {err}"
+    );
+    assert!(err.contains("--replace"), "{err}");
+
+    // The suggestion works as printed.
+    let out = ccnm_ws(&second, &["add", "other-web"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+
+    // And a second name for a directory that already has one is refused
+    // too: two names is two sessions on one project.
+    let out = ccnm_ws(&first, &["add", "frontend"]);
+    assert_ne!(out.status.code(), Some(0));
+    assert!(
+        stderr(&out).contains("is already the workspace `web`"),
+        "{}",
+        stderr(&out)
+    );
+
+    // Explicitly asking to repoint is allowed.
+    let third = dir.join("third/web");
+    std::fs::create_dir_all(&third).unwrap();
+    let out = ccnm_ws(&third, &["add", "web", "--replace"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert!(stdout(&out).contains("root:"), "{}", stdout(&out));
+}
+
 /// A workspace has nowhere to go before there is a config, and the error
 /// says the command that makes one rather than the schema rule it broke.
 #[test]

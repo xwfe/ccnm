@@ -161,16 +161,32 @@ ccnm init --work fodelf --home xdwmbp
 
 ```bash
 cd ~/code/xshun
-ccnm workspace add xshun          # 不给路径就是当前目录
+ccnm ws add            # 名字默认取目录名，路径默认取当前目录
+ccnm ws add xshun      # 也可以自己起名字
 ```
 
-其他几条：
+`ws` 是 `workspace` 的简称，两个都行。其他几条：
 
 ```bash
-ccnm workspace list                    # 都有哪些，目录还在不在
-ccnm workspace remove xshun            # 忘掉它（会先停掉它的会话）
-ccnm workspace remove xshun --purge    # 再顺手删掉 ccnm 给它留的记录
+ccnm ws list                    # 都有哪些，目录还在不在
+ccnm ws remove xshun            # 忘掉它（会先停掉它的会话）
+ccnm ws remove xshun --purge    # 再顺手删掉 ccnm 给它留的记录
 ```
+
+**重名了它会问你，不会自己决定。** 两个项目目录都叫 `web` 是常事：
+
+```text
+$ cd ~/other/web && ccnm ws add
+CCNM_E_INVALID_ARGS:
+workspace `web` already points at /Users/me/code/web
+this would point it at /Users/me/other/web instead, and end any session running against the old one
+pick one:
+  ccnm ws add other-web /Users/me/other/web   (a different name for this project)
+  ccnm ws add web --replace   (repoint the existing one)
+```
+
+建议的名字是拿上一层目录拼的，照抄就能用。反过来——**同一个目录起第二个名字**——也会被拦：
+两个名字就是两个会话、两个 Claude 在改同一份文件。
 
 **都可以重复跑。** 第二次 `init` 会说"already says that"，不会重写文件；`workspace add`
 只报真正变了的字段。手写过的注释、顺序、空行都保留——ccnm 是在原文件上改，不是拿结构体重新

@@ -5,8 +5,11 @@
 //! `apply_patch`, `exec_command` and `read_output`.
 //!
 //! Two rules are enforced here because everything later depends on them.
-//! The workspace root is canonicalized once at startup and is the only
-//! path the server ever reveals (section 17). And nothing is written to
+//! The workspace root is canonicalized once at startup, and every path
+//! the server shows the model is relative to it (section 17) — with one
+//! deliberate exception, documented at `patch::interrupted_report`: the
+//! journal file a person has to delete to recover from an interrupted
+//! patch. And nothing is written to
 //! stdout except MCP: logs go to stderr through `tracing`, so a stray
 //! `println!` cannot corrupt the JSON-RPC stream (section 8).
 //!

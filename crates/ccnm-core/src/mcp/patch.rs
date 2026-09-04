@@ -926,7 +926,9 @@ struct JournalLine {
     abs: PathBuf,
     #[serde(skip_serializing_if = "Option::is_none")]
     to_rel: Option<String>,
-    /// Where the original is, for anyone who wants to put it back by hand.
+    /// Where the original is, for anyone who wants to put it back by
+    /// hand. Stored absolute because a person reads this file directly;
+    /// shown relative, because the model reads the message.
     #[serde(skip_serializing_if = "Option::is_none")]
     backup: Option<PathBuf>,
 }
@@ -1076,6 +1078,17 @@ impl Drop for Journal {
 /// answering is "which of these actually changed", and only a person
 /// looking at the workspace can answer it. `git status` is named because
 /// in a git workspace it answers it in one command.
+/// The one place ccnm shows the model a path outside the workspace.
+///
+/// Everything else the server says is workspace-relative on purpose
+/// (`server.rs`, design doc section 17): absolute paths tell the model
+/// about a machine it has no business knowing the shape of, and they
+/// travel back to Anthropic in the transcript. This message is the
+/// deliberate exception, and only for the journal file: it is a recovery
+/// instruction, "delete this and patching works again" is worthless
+/// without saying which file, and the person who has to act on it is
+/// reading it through the model. The backups are shown relative, because
+/// those are inside the workspace and relative is all anyone needs.
 fn interrupted_report(record: &JournalFile, journal: &Path) -> String {
     let mut out = String::from(
         "a previous apply_patch was interrupted while it was renaming files, so these may not agree with each other:\n",
@@ -1086,7 +1099,10 @@ fn interrupted_report(record: &JournalFile, journal: &Path) -> String {
             out.push_str(&format!(" -> {to}"));
         }
         if let Some(backup) = &line.backup {
-            out.push_str(&format!("   original kept at {}", backup.display()));
+            let shown = backup
+                .strip_prefix(&record.root)
+                .unwrap_or(backup.as_path());
+            out.push_str(&format!("   original kept at {}", shown.display()));
         }
         out.push('\n');
     }
@@ -2579,7 +2595,14 @@ mod tests {
         // only question worth answering and only a person can answer it.
         assert!(message.contains("src/main.rs"), "{message}");
         assert!(message.contains("src/lib.rs"), "{message}");
-        assert!(message.contains(".ccnm-abc-main.rs"), "{message}");
+        // Relative, like every other path the model is shown: the
+        // workspace machine's directory layout is not its business and
+        // travels back to Anthropic in the transcript.
+        assert!(message.contains("src/.ccnm-abc-main.rs"), "{message}");
+        assert!(
+            !message.contains(&root.join("src/.ccnm-abc-main.rs").display().to_string()),
+            "the backup path leaked absolute: {message}"
+        );
         assert!(message.contains("git status"), "{message}");
         assert!(message.contains("4321"), "{message}");
         assert!(

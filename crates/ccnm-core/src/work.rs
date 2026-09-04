@@ -22,9 +22,14 @@ use crate::protocol::hello::{self, HelloReport, HelloRequest};
 use crate::protocol::mcp::{ProbeReport as McpProbeReport, ServePayload};
 use crate::protocol::payload;
 use crate::protocol::probe::{ProbeReport, ProbeRequest};
-use crate::protocol::run::{RunReport, RunRequest};
+use crate::protocol::run::{
+    AttachRequest, RunReport, RunRequest, StartReport, StartRequest, StatusReport, StatusRequest,
+    StopReport, StopRequest,
+};
+use crate::protocol::{self};
 use crate::session::{self, Mode, Spec};
 use crate::ssh::{Master, Ssh};
+use crate::tmux;
 
 /// What the work-side code needs from its environment. Injected so tests
 /// can script every external command and decide whether `claude` exists.
@@ -40,6 +45,20 @@ pub struct Tools<'a> {
     pub claude: Option<PathBuf>,
     /// The controller's socket on this machine.
     pub controller: PathBuf,
+    /// tmux, for interactive sessions. Found in *this* (ssh) environment,
+    /// which is enough to talk to a server the controller started: the
+    /// socket belongs to the user, not to a session.
+    pub tmux: Option<PathBuf>,
+}
+
+impl Tools<'_> {
+    /// tmux or the one error that says how to get it.
+    fn tmux(&self) -> Result<tmux::Tmux> {
+        self.tmux
+            .clone()
+            .map(tmux::Tmux::new)
+            .ok_or_else(tmux::missing)
+    }
 }
 
 /// Grace beyond the session's own timeout before giving up on the `exit`
@@ -107,6 +126,215 @@ pub fn run(req: &RunRequest, tools: &Tools<'_>) -> Result<RunReport> {
         stdout_tail,
         stderr_tail,
     })
+}
+
+/// Start an interactive session, or report the one that is already there.
+///
+/// Unlike [`run`] this returns as soon as the session exists: the session
+/// outlives the ssh call that made it, which is the whole point of putting
+/// it in tmux (design doc section 23). What comes back is what the home
+/// machine needs to attach.
+pub fn start(req: &StartRequest, tools: &Tools<'_>) -> Result<StartReport> {
+    let tmux = tools.tmux()?;
+    let name = tmux::session_name(&req.workspace);
+    tmux::check_name(&name)?;
+
+    // Already up: attach to that, do not start a second Claude on the same
+    // project. This path needs no controller, which is deliberate -- being
+    // put back into a running session must not depend on the controller
+    // being healthy right now.
+    if tools.runner.run(&tmux.has_session_cmd(&name))?.success() {
+        let session = live_session_id(&tmux, tools, &name);
+        let dir = session
+            .as_ref()
+            .map(|id| paths::session_dir(&tools.state, id));
+        let manager = dir
+            .as_ref()
+            .and_then(|path| session::read_context(&session::Dir::at(path)));
+        return Ok(StartReport {
+            protocol: PROTOCOL,
+            session,
+            session_dir: dir,
+            tmux_session: name,
+            server_pid: server_pid(&tmux, tools)?,
+            already_running: true,
+            controller: None,
+            manager,
+        });
+    }
+
+    let ctx = controller::context(&tools.controller)?;
+    if !ctx.login_session() {
+        return Err(Error::new(
+            ErrorCode::NotReady,
+            format!(
+                "the work controller answers from {}, not from a login session, so a Claude it started could not read its credentials\nrun on work: ccnm work-controller install",
+                ctx.describe()
+            ),
+        ));
+    }
+    let ssh = Ssh::new(&req.home_alias, &tools.control_dir)?.with_ccnm_bin(&req.home_ccnm_bin);
+    let cwd = paths::workspace_dir(&tools.state, &req.workspace);
+    std::fs::create_dir_all(&cwd)?;
+    let spec = Spec {
+        protocol: PROTOCOL,
+        id: session::new_id(),
+        workspace: req.workspace.clone(),
+        root: req.root.clone(),
+        home_alias: req.home_alias.clone(),
+        home_ccnm_bin: req.home_ccnm_bin.clone(),
+        claude_config_dir: req.claude_config_dir.clone(),
+        permission_mode: req.permission_mode,
+        mode: Mode::Interactive {
+            prompt: req.prompt.clone(),
+        },
+        // Not used interactively: nothing kills this session on a clock.
+        timeout_secs: 0,
+        cwd,
+    };
+    let dir = session::create(&tools.state, &spec, &ssh)?;
+    let server_pid = controller::start(&tools.controller, dir.path())?;
+    Ok(StartReport {
+        protocol: PROTOCOL,
+        session: Some(spec.id),
+        session_dir: Some(dir.path().to_path_buf()),
+        tmux_session: name,
+        server_pid,
+        already_running: false,
+        controller: Some(ctx),
+        // The supervisor writes this from inside tmux a moment from now;
+        // `ccnm status` is where it shows up.
+        manager: wait_for_context(&dir),
+    })
+}
+
+/// Give the supervisor a moment to record which security session it is in.
+///
+/// Bounded and best effort: this is evidence for a status line, and a
+/// session that is up must not be reported as failed because a `launchctl`
+/// call was slow.
+fn wait_for_context(dir: &session::Dir) -> Option<String> {
+    const WAIT: Duration = Duration::from_secs(3);
+    let deadline = std::time::Instant::now() + WAIT;
+    loop {
+        if let Some(manager) = session::read_context(dir) {
+            return Some(manager);
+        }
+        if std::time::Instant::now() >= deadline {
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// Hand this process's terminal to the workspace's session.
+///
+/// Runs under `ssh -t`, so "this process's terminal" is the one on the
+/// home machine. Returns tmux's own exit code: 0 both when the person
+/// detaches and when Claude ends.
+pub fn attach(req: &AttachRequest, tools: &Tools<'_>) -> Result<i32> {
+    let tmux = tools.tmux()?;
+    let name = tmux::session_name(&req.workspace);
+    if !tools.runner.run(&tmux.has_session_cmd(&name))?.success() {
+        return Err(tmux::no_session(&name));
+    }
+    let captured = crate::process::run_attached(&tmux.attach_cmd(&name))?;
+    Ok(captured.exit_code.unwrap_or(1))
+}
+
+/// End the workspace's session: tmux kills the supervisor, which kills
+/// Claude, which drops the ssh transport its MCP server was on.
+pub fn stop(req: &StopRequest, tools: &Tools<'_>) -> Result<StopReport> {
+    let tmux = tools.tmux()?;
+    let name = tmux::session_name(&req.workspace);
+    let out = tools.runner.run(&tmux.kill_cmd(&name))?;
+    let stderr = out.stderr_lossy();
+    if !out.success() && !tmux::no_server(&stderr) && !stderr.contains("can't find session") {
+        return Err(Error::internal(format!(
+            "tmux kill-session failed (exit {:?}): {}",
+            out.exit_code,
+            stderr.trim()
+        )));
+    }
+    Ok(StopReport {
+        protocol: PROTOCOL,
+        tmux_session: name,
+        killed: out.success(),
+    })
+}
+
+/// Every live ccnm session on this machine, with what is known about each.
+pub fn status(req: &StatusRequest, tools: &Tools<'_>) -> StatusReport {
+    let (tmux_version, sessions) = match tools.tmux() {
+        Err(e) => (Err(e.into()), Vec::new()),
+        Ok(tmux) => {
+            let version = tools
+                .runner
+                .run(&tmux.version_cmd())
+                .and_then(|out| {
+                    if out.success() {
+                        Ok(out.stdout_lossy().trim().replace("tmux ", ""))
+                    } else {
+                        Err(Error::dependency(format!(
+                            "tmux -V failed: {}",
+                            out.stderr_lossy().trim()
+                        )))
+                    }
+                })
+                .map_err(Into::into);
+            (
+                version,
+                live_sessions(&tmux, tools, req.workspace.as_deref()),
+            )
+        }
+    };
+    StatusReport {
+        protocol: PROTOCOL,
+        tmux: tmux_version,
+        sessions,
+    }
+}
+
+fn live_sessions(
+    tmux: &tmux::Tmux,
+    tools: &Tools<'_>,
+    only: Option<&str>,
+) -> Vec<protocol::run::LiveSession> {
+    let wanted = only.map(tmux::session_name);
+    let Ok(out) = tools.runner.run(&tmux.list_cmd()) else {
+        return Vec::new();
+    };
+    tmux::parse_list(&out.stdout_lossy())
+        .into_iter()
+        .filter(|live| wanted.as_ref().is_none_or(|name| &live.name == name))
+        .map(|live| {
+            let session = live_session_id(tmux, tools, &live.name);
+            let manager = session.as_ref().and_then(|id| {
+                session::read_context(&session::Dir::at(paths::session_dir(&tools.state, id)))
+            });
+            protocol::run::LiveSession {
+                workspace: live.workspace().map(str::to_string),
+                tmux_session: live.name,
+                session,
+                created: live.created,
+                attached: live.attached,
+                manager,
+            }
+        })
+        .collect()
+}
+
+/// The ccnm session id a live tmux session was tagged with.
+fn live_session_id(tmux: &tmux::Tmux, tools: &Tools<'_>, name: &str) -> Option<String> {
+    let out = tools.runner.run(&tmux.session_id_cmd(name)).ok()?;
+    out.success()
+        .then(|| tmux::parse_session_id(&out.stdout_lossy()))
+        .flatten()
+}
+
+fn server_pid(tmux: &tmux::Tmux, tools: &Tools<'_>) -> Result<u32> {
+    let out = tools.runner.run(&tmux.server_pid_cmd())?;
+    Ok(out.stdout_lossy().trim().parse().unwrap_or(0))
 }
 
 /// The last 2 KiB, on a character boundary. Enough to see why, never the
@@ -318,6 +546,7 @@ mod tests {
             state: dir.clone(),
             control_dir: control(&dir),
             claude: Some(PathBuf::from("/usr/local/bin/claude")),
+            tmux: None,
             controller: absent_socket("probe"),
         };
         let rep = probe(&request(), &tools);
@@ -401,6 +630,7 @@ mod tests {
             state: dir.clone(),
             control_dir: control(&dir),
             claude: None,
+            tmux: None,
             controller: absent_socket("probe-fail"),
         };
         let rep = probe(
@@ -430,6 +660,7 @@ mod tests {
             state: dir.clone(),
             control_dir: control(&dir),
             claude: None,
+            tmux: None,
             controller: absent_socket("probe-127"),
         };
         let rep = probe(&request(), &tools);
@@ -452,6 +683,177 @@ mod tests {
         }
     }
 
+    fn start_request() -> StartRequest {
+        StartRequest {
+            protocol: PROTOCOL,
+            workspace: "xshun".into(),
+            root: PathBuf::from("/Users/bing/xshun"),
+            home_alias: "ccnm-home".into(),
+            home_ccnm_bin: "~/.local/bin/ccnm".into(),
+            claude_config_dir: None,
+            permission_mode: crate::config::PermissionMode::default(),
+            prompt: None,
+        }
+    }
+
+    fn tmux_tools<'a>(fake: &'a FakeRunner, dir: &Path, test: &str) -> Tools<'a> {
+        Tools {
+            runner: fake,
+            state: dir.to_path_buf(),
+            control_dir: control(dir),
+            claude: None,
+            tmux: Some(PathBuf::from("/opt/homebrew/bin/tmux")),
+            controller: absent_socket(test),
+        }
+    }
+
+    /// `ccnm run` on a workspace that already has a session means "put me
+    /// back into it". That must not need the controller: being let back in
+    /// cannot depend on the component that starts things being healthy.
+    #[test]
+    fn start_on_a_live_session_reports_it_without_asking_the_controller() {
+        let dir = temp("start-live");
+        let id = "0b4c7a1e-2d3f-4a5b-8c6d-7e8f9a0b1c2d";
+        let session_dir = session::Dir::at(paths::session_dir(&dir, id));
+        std::fs::create_dir_all(session_dir.path()).unwrap();
+        std::fs::write(session_dir.context(), "Aqua\n").unwrap();
+
+        let fake = FakeRunner::new();
+        fake.push(Output::exited(0, "")); // has-session: live
+        fake.push(Output::exited(0, format!("CCNM_SESSION={id}\n"))); // show-environment
+        fake.push(Output::exited(0, "4242\n")); // display-message
+
+        let rep = start(&start_request(), &tmux_tools(&fake, &dir, "start-live")).unwrap();
+        assert!(rep.already_running);
+        assert_eq!(rep.tmux_session, "ccnm-xshun");
+        assert_eq!(rep.session.as_deref(), Some(id));
+        assert_eq!(rep.server_pid, 4242);
+        assert_eq!(rep.manager.as_deref(), Some("Aqua"));
+        assert!(rep.controller.is_none(), "no controller was needed");
+        assert!(
+            rep.summary().contains("already running"),
+            "{}",
+            rep.summary()
+        );
+    }
+
+    /// With nothing running, starting one needs the controller, and the
+    /// same login-session rule print mode has: a Claude started anywhere
+    /// else cannot read its own credentials.
+    #[test]
+    fn start_without_a_controller_creates_nothing() {
+        let dir = temp("start-none");
+        let fake = FakeRunner::new();
+        fake.push(Output::exited(1, "")); // has-session: nothing there
+        let err = start(&start_request(), &tmux_tools(&fake, &dir, "start-none")).unwrap_err();
+        assert_eq!(err.code(), ErrorCode::NotReady);
+        assert!(!dir.join("sessions").exists(), "no session may be created");
+    }
+
+    #[test]
+    fn without_tmux_every_interactive_command_says_how_to_get_it() {
+        let dir = temp("no-tmux");
+        let fake = FakeRunner::new();
+        let mut tools = tmux_tools(&fake, &dir, "no-tmux");
+        tools.tmux = None;
+        let err = start(&start_request(), &tools).unwrap_err();
+        assert_eq!(err.code(), ErrorCode::Dependency);
+        assert!(err.message().contains("brew install tmux"), "{err}");
+
+        let stop_err = stop(
+            &StopRequest {
+                protocol: PROTOCOL,
+                workspace: "xshun".into(),
+            },
+            &tools,
+        )
+        .unwrap_err();
+        assert_eq!(stop_err.code(), ErrorCode::Dependency);
+
+        // Status reports it as a row rather than failing: it is a status
+        // command, and "tmux is not installed" is the status.
+        let rep = status(
+            &StatusRequest {
+                protocol: PROTOCOL,
+                workspace: None,
+            },
+            &tools,
+        );
+        assert!(rep.sessions.is_empty());
+        assert!(
+            rep.render().contains("brew install tmux"),
+            "{}",
+            rep.render()
+        );
+        assert!(fake.calls().is_empty());
+    }
+
+    #[test]
+    fn stopping_what_is_not_running_is_not_an_error() {
+        let dir = temp("stop-none");
+        let fake = FakeRunner::new();
+        // Exactly what tmux 3.7c says, on stderr, with exit 1.
+        fake.push(Output {
+            stderr: b"can't find session: ccnm-xshun\n".to_vec(),
+            ..Output::exited(1, "")
+        });
+        let rep = stop(
+            &StopRequest {
+                protocol: PROTOCOL,
+                workspace: "xshun".into(),
+            },
+            &tmux_tools(&fake, &dir, "stop-none"),
+        )
+        .unwrap();
+        assert!(!rep.killed);
+        assert_eq!(rep.tmux_session, "ccnm-xshun");
+    }
+
+    /// Status is about live sessions, and what it says about each one is
+    /// measured, not assumed: the security session comes from the file the
+    /// supervisor wrote from inside it.
+    #[test]
+    fn status_lists_live_sessions_with_what_was_measured_about_them() {
+        let dir = temp("status");
+        let id = "0b4c7a1e-2d3f-4a5b-8c6d-7e8f9a0b1c2d";
+        let session_dir = session::Dir::at(paths::session_dir(&dir, id));
+        std::fs::create_dir_all(session_dir.path()).unwrap();
+        std::fs::write(session_dir.context(), "Aqua\n").unwrap();
+
+        let fake = FakeRunner::new();
+        fake.push(Output::exited(0, "tmux 3.7c\n")); // -V
+        fake.push(Output::exited(
+            0,
+            "ccnm-xshun\t1788496263\t1\t1\nccnm-other\t1788496264\t0\t1\n",
+        ));
+        fake.push(Output::exited(0, format!("CCNM_SESSION={id}\n")));
+        fake.push(Output::exited(0, "-CCNM_SESSION\n")); // the other one is untagged
+
+        let rep = status(
+            &StatusRequest {
+                protocol: PROTOCOL,
+                workspace: None,
+            },
+            &tmux_tools(&fake, &dir, "status"),
+        );
+        assert_eq!(rep.tmux, Ok("3.7c".into()));
+        assert_eq!(rep.sessions.len(), 2);
+        assert_eq!(rep.sessions[0].workspace.as_deref(), Some("xshun"));
+        assert_eq!(rep.sessions[0].session.as_deref(), Some(id));
+        assert_eq!(rep.sessions[0].manager.as_deref(), Some("Aqua"));
+        assert_eq!(rep.sessions[1].session, None);
+        assert_eq!(rep.sessions[1].manager, None);
+        let text = rep.render();
+        assert!(
+            text.contains("ccnm-xshun  xshun  1 attached  Aqua"),
+            "{text}"
+        );
+        assert!(
+            text.contains("ccnm-other  other  detached  session unknown"),
+            "{text}"
+        );
+    }
+
     #[test]
     fn run_refuses_without_a_controller_and_creates_nothing() {
         let dir = temp("run-none");
@@ -460,6 +862,7 @@ mod tests {
             state: dir.clone(),
             control_dir: control(&dir),
             claude: None,
+            tmux: None,
             controller: absent_socket("run-none"),
         };
         let err = run(&run_request("x"), &tools).unwrap_err();
@@ -479,6 +882,7 @@ mod tests {
             let tools = crate::controller::Tools {
                 runner: &inner,
                 claude: Some(PathBuf::from("/opt/homebrew/bin/claude")),
+                tmux: None,
                 exe: PathBuf::from("/x/ccnm"),
             };
             listener.serve_one(&tools).unwrap();
@@ -488,6 +892,7 @@ mod tests {
             state: dir.clone(),
             control_dir: control(&dir),
             claude: None,
+            tmux: None,
             controller: socket,
         };
         let err = run(&run_request("x"), &tools).unwrap_err();
@@ -532,6 +937,7 @@ mod tests {
                 let tools = crate::controller::Tools {
                     runner: &inner,
                     claude: Some(PathBuf::from("/opt/homebrew/bin/claude")),
+                    tmux: None,
                     exe: supervisor,
                 };
                 listener.serve_one(&tools).unwrap(); // hello
@@ -544,6 +950,7 @@ mod tests {
             state: dir.clone(),
             control_dir: control(&dir),
             claude: None,
+            tmux: None,
             controller: socket,
         };
         let rep = run(&run_request("fix the failing test"), &tools).unwrap();
@@ -620,6 +1027,7 @@ mod tests {
             let tools = crate::controller::Tools {
                 runner: &inner,
                 claude: Some(PathBuf::from("/opt/homebrew/bin/claude")),
+                tmux: None,
                 exe: PathBuf::from("/x/ccnm"),
             };
             listener.serve_one(&tools).unwrap(); // hello
@@ -635,6 +1043,7 @@ mod tests {
             state: dir.clone(),
             control_dir: control(&dir),
             claude: Some(PathBuf::from("/usr/local/bin/claude")),
+            tmux: None,
             controller: socket.clone(),
         };
         let rep = probe(&request(), &tools);

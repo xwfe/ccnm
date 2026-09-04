@@ -755,7 +755,13 @@ mod tests {
         let calls = fake.calls();
         assert_eq!(calls.len(), 5);
         assert!(calls[0].display().contains("has-session -t ccnm-xshun"));
-        // The way out is read from this machine's tmux, not assumed.
+        // The way out is read from this machine's tmux, not assumed: a
+        // user who rebound the prefix must not be told the wrong key.
+        assert!(
+            calls[3].display().contains("show-options -gv prefix"),
+            "{}",
+            calls[3].display()
+        );
         assert!(
             calls[4].display().contains("ccnm · detach: C-a d"),
             "{}",

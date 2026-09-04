@@ -460,11 +460,15 @@ impl Server {
     ) -> std::result::Result<CallToolResult, ErrorData> {
         self.count_call();
         let root = self.inner.root.clone();
-        let applied = tokio::task::spawn_blocking(move || patch::apply_patch(&root, &args))
-            .await
-            .map_err(|e| {
-                ErrorData::internal_error(format!("apply_patch task failed: {e}"), None)
-            })?;
+        // Where a commit in progress is recorded. Without a state
+        // directory there is nowhere to put it and patching still works,
+        // minus the one guarantee that needs somewhere to write.
+        let journal_dir = self.inner.state.as_deref().map(crate::paths::patches_dir);
+        let applied = tokio::task::spawn_blocking(move || {
+            patch::apply_patch(&root, journal_dir.as_deref(), &args)
+        })
+        .await
+        .map_err(|e| ErrorData::internal_error(format!("apply_patch task failed: {e}"), None))?;
         match applied {
             Ok(applied) => Ok(text_only(applied.text)),
             Err(err) => Ok(tool_error(&err)),

@@ -79,6 +79,17 @@ pub fn cache_dir(state: &Path) -> PathBuf {
     state.join("cache")
 }
 
+/// Where `apply_patch` records a commit it is part way through.
+///
+/// Neither lifetime above. A journal exists for the few microseconds a
+/// patch spends renaming files, and the one case it is written for is the
+/// one where the process does not come back to delete it — so the next
+/// patch has to find it even though it belongs to a session that is gone.
+/// That rules out `sessions/`, and it is not workspace metadata either.
+pub fn patches_dir(state: &Path) -> PathBuf {
+    state.join("patches")
+}
+
 /// The work controller's socket (see [`crate::controller`]).
 ///
 /// Directly under the state root rather than in a subdirectory because

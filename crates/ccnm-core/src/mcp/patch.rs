@@ -46,6 +46,30 @@
 //! call reports failure. What it must never do is report success: "some of
 //! your files were changed" has to be visible, so a rollback that itself
 //! fails is reported louder still, naming every file involved.
+//!
+//! # The one thing rollback cannot cover
+//!
+//! Rollback runs in this process. If the process is not there any more —
+//! `kill -9`, the ssh transport dropping, the machine losing power — and
+//! it happened inside the commit loop, then some files are renamed and
+//! some are not, and nothing has said so. Each file is still intact,
+//! because each is one atomic rename; what is broken is the agreement
+//! between them, which is how a rename lands in one file and not in its
+//! caller.
+//!
+//! So the commit loop is bracketed by a journal ([`Journal`]) in ccnm's
+//! own state directory, listing what is about to be renamed and where the
+//! backups are. Written and fsynced before the first rename, removed
+//! after the last. A journal still on disk that no live process owns means
+//! exactly one thing: a patch was interrupted mid-commit. The next patch
+//! finds it and refuses, naming which files were changed and which were
+//! not.
+//!
+//! Refuses rather than rolls back, deliberately. By the time anyone looks,
+//! the person may have fixed it by hand or committed it to git, and
+//! silently reverting their work to satisfy a transaction from an hour ago
+//! is a worse outcome than the interruption was. The requirement is that
+//! the inconsistency cannot be silent, not that a machine resolves it.
 
 use std::collections::BTreeSet;
 use std::io::Write;
@@ -172,15 +196,36 @@ pub struct PatchResult {
 }
 
 /// Apply `args` to the workspace at `root`, all of it or none of it.
-pub fn apply_patch(root: &Path, args: &ApplyPatchArgs) -> Result<PatchResult> {
+///
+/// `journal_dir` is [`crate::paths::patches_dir`]. `None` disables the
+/// mid-commit journal, which is what a caller with no state directory
+/// gets; everything else works the same.
+pub fn apply_patch(
+    root: &Path,
+    journal_dir: Option<&Path>,
+    args: &ApplyPatchArgs,
+) -> Result<PatchResult> {
     let dry_run = args.dry_run.unwrap_or(false);
+    // Before anything, including a dry run: an abandoned journal means the
+    // files in it may disagree with each other, and planning the next
+    // patch on top of that is how a small inconsistency becomes a large
+    // one.
+    if let Some(dir) = journal_dir {
+        Journal::check_abandoned(dir)?;
+    }
     let plan = plan(root, args)?;
     if dry_run {
         return Ok(report(&plan, true, Vec::new()));
     }
     sweep_stale_temps(&plan);
     let staged = stage(plan)?;
-    let versions = commit(staged.as_slice())?;
+    let journal = journal_dir
+        .map(|dir| Journal::open(dir, &staged))
+        .transpose()?;
+    // The journal lives until this call returns: dropping it is what
+    // removes it, and until then an interrupted process leaves it behind
+    // for the next patch to find.
+    let versions = commit(staged.as_slice(), journal.as_ref())?;
     // Borrowed, not moved: `Staged` owns the cleanup of its temp files, so
     // it must live until the end of the call rather than be taken apart.
     Ok(report(staged.iter().map(|s| &s.planned), false, versions))
@@ -818,6 +863,177 @@ fn stage_one(planned: Planned) -> Result<Staged> {
     })
 }
 
+/// How long a journal can exist before it is certainly not a commit in
+/// progress. A commit is a handful of renames; a minute is four orders of
+/// magnitude more than it takes.
+const JOURNAL_STALE: Duration = Duration::from_secs(60);
+
+/// One file's line in the journal, in the form a person needs when they
+/// are looking at a workspace somebody's patch was interrupted in.
+#[derive(Serialize, Deserialize)]
+struct JournalLine {
+    op: Op,
+    rel: String,
+    abs: PathBuf,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    to_rel: Option<String>,
+    /// Where the original is, for anyone who wants to put it back by hand.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    backup: Option<PathBuf>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct JournalFile {
+    /// The process that was doing the renaming, so the reader knows which
+    /// process to go looking for.
+    pid: u32,
+    root: PathBuf,
+    files: Vec<JournalLine>,
+}
+
+/// The record of a commit in progress: what is about to be renamed, and
+/// where the originals are.
+///
+/// Written and fsynced before the first rename, removed when the call
+/// leaves — by `Drop`, so an ordinary failure and a panic both clean up.
+/// The one thing that does not run `Drop` is the one thing this is for: a
+/// process killed outright, part way through the renames.
+struct Journal {
+    path: PathBuf,
+    /// Set when the workspace is known to be inconsistent, so the record
+    /// outlives this process on purpose.
+    keep: std::cell::Cell<bool>,
+}
+
+impl Journal {
+    fn open(dir: &Path, staged: &[Staged]) -> Result<Journal> {
+        std::fs::create_dir_all(dir).map_err(|e| {
+            Error::internal(format!("cannot create {}", dir.display())).with_source(e)
+        })?;
+        let root = staged
+            .first()
+            .and_then(|one| one.planned.abs.parent())
+            .unwrap_or(dir)
+            .to_path_buf();
+        let record = JournalFile {
+            pid: std::process::id(),
+            root,
+            files: staged
+                .iter()
+                .map(|one| JournalLine {
+                    op: one.planned.op,
+                    rel: one.planned.rel.clone(),
+                    abs: one.planned.abs.clone(),
+                    to_rel: one.planned.to_rel.clone(),
+                    backup: one.backup.clone(),
+                })
+                .collect(),
+        };
+        let body = serde_json::to_vec_pretty(&record)
+            .map_err(|e| Error::internal("cannot describe the patch").with_source(e))?;
+        let path = dir.join(format!(
+            "{}-{}.json",
+            std::process::id(),
+            &uuid::Uuid::new_v4().simple().to_string()[..12]
+        ));
+        // Same discipline as the content temps: durable before it is
+        // relied on, or a power cut leaves a journal that describes
+        // nothing.
+        let mut file = std::fs::File::create(&path).map_err(|e| {
+            Error::internal(format!("cannot write {}", path.display())).with_source(e)
+        })?;
+        file.write_all(&body)
+            .map_err(|e| Error::internal("cannot write the patch journal").with_source(e))?;
+        file.sync_all()
+            .map_err(|e| Error::internal("cannot flush the patch journal").with_source(e))?;
+        Ok(Journal {
+            path,
+            keep: std::cell::Cell::new(false),
+        })
+    }
+
+    /// Leave this journal on disk. Called when a rollback failed, which
+    /// means the files really do disagree with each other and the next
+    /// patch must not proceed as if they did not.
+    fn abandon(&self) {
+        self.keep.set(true);
+    }
+
+    /// Refuse if an earlier patch was interrupted between renames.
+    ///
+    /// A journal older than [`JOURNAL_STALE`] belongs to no commit that is
+    /// still happening. Age rather than asking whether the pid is alive:
+    /// this crate forbids `unsafe`, so liveness would mean spawning a
+    /// process on a path that is taken on every patch, and a commit is so
+    /// much shorter than a minute that the answer is the same either way.
+    /// The cost is that an interruption is invisible for up to a minute —
+    /// during which the transport it died with is down anyway.
+    fn check_abandoned(dir: &Path) -> Result<()> {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return Ok(());
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().is_none_or(|ext| ext != "json") {
+                continue;
+            }
+            let Ok(meta) = entry.metadata() else { continue };
+            let fresh = meta
+                .modified()
+                .ok()
+                .and_then(|at| at.elapsed().ok())
+                .is_some_and(|age| age < JOURNAL_STALE);
+            if fresh {
+                continue;
+            }
+            let Ok(body) = std::fs::read(&path) else {
+                continue;
+            };
+            let Ok(record) = serde_json::from_slice::<JournalFile>(&body) else {
+                continue;
+            };
+            return Err(Error::internal(interrupted_report(&record, &path)));
+        }
+        Ok(())
+    }
+}
+
+impl Drop for Journal {
+    fn drop(&mut self) {
+        if !self.keep.get() {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
+
+/// What to say when a previous patch was interrupted mid-commit.
+///
+/// Names every file it was renaming, because the only question worth
+/// answering is "which of these actually changed", and only a person
+/// looking at the workspace can answer it. `git status` is named because
+/// in a git workspace it answers it in one command.
+fn interrupted_report(record: &JournalFile, journal: &Path) -> String {
+    let mut out = String::from(
+        "a previous apply_patch was interrupted while it was renaming files, so these may not agree with each other:\n",
+    );
+    for line in &record.files {
+        out.push_str(&format!("  {} {}", line.op.name(), line.rel));
+        if let Some(to) = &line.to_rel {
+            out.push_str(&format!(" -> {to}"));
+        }
+        if let Some(backup) = &line.backup {
+            out.push_str(&format!("   original kept at {}", backup.display()));
+        }
+        out.push('\n');
+    }
+    out.push_str(&format!(
+        "check them before changing anything else -- git status and git diff will show which ones landed.\nnothing has been rolled back: by now the change may be wanted, or already committed.\nwhen you have looked, delete {} and patching works again.\n(process {} was doing the renaming and is gone.)",
+        journal.display(),
+        record.pid
+    ));
+    out
+}
+
 /// A temp file in the same directory as its target, so the commit rename
 /// stays within one filesystem and is therefore atomic.
 fn temp_beside(target: &Path) -> Result<PathBuf> {
@@ -872,7 +1088,11 @@ fn discard(staged: &[Staged]) {
 }
 
 /// Phase three: renames and unlinks. Returns each file's new version.
-fn commit(staged: &[Staged]) -> Result<Vec<Option<String>>> {
+///
+/// `journal` is the record of this commit, kept on disk when a rollback
+/// fails: at that point the files really do disagree with each other, and
+/// the next patch must find that out rather than plan on top of it.
+fn commit(staged: &[Staged], journal: Option<&Journal>) -> Result<Vec<Option<String>>> {
     let mut versions = Vec::with_capacity(staged.len());
     for (index, one) in staged.iter().enumerate() {
         match commit_one(one) {
@@ -887,11 +1107,16 @@ fn commit(staged: &[Staged]) -> Result<Vec<Option<String>>> {
                         one.planned.rel,
                         e.message()
                     )),
-                    Err(failed) => Error::internal(format!(
-                        "{}: {}. Rolling back failed too: {failed}. The workspace is PARTIALLY CHANGED; check it before doing anything else.",
-                        one.planned.rel,
-                        e.message()
-                    )),
+                    Err(failed) => {
+                        if let Some(journal) = journal {
+                            journal.abandon();
+                        }
+                        Error::internal(format!(
+                            "{}: {}. Rolling back failed too: {failed}. The workspace is PARTIALLY CHANGED; check it before doing anything else.",
+                            one.planned.rel,
+                            e.message()
+                        ))
+                    }
                 });
             }
         }
@@ -1085,6 +1310,7 @@ mod tests {
     fn apply(root: &Path, files: Vec<FilePatch>) -> PatchResult {
         apply_patch(
             root,
+            None,
             &ApplyPatchArgs {
                 files,
                 dry_run: None,
@@ -1096,6 +1322,7 @@ mod tests {
     fn fails(root: &Path, files: Vec<FilePatch>) -> Error {
         match apply_patch(
             root,
+            None,
             &ApplyPatchArgs {
                 files,
                 dry_run: None,
@@ -1611,6 +1838,7 @@ mod tests {
         let before = text(&root, "src/main.rs");
         let result = apply_patch(
             &root,
+            None,
             &ApplyPatchArgs {
                 files: vec![
                     update(
@@ -1644,6 +1872,7 @@ mod tests {
         // A dry run of a bad patch fails for the same reason a real one would.
         let err = apply_patch(
             &root,
+            None,
             &ApplyPatchArgs {
                 files: vec![update("src/main.rs", "0-0", "let x = 1;", "y")],
                 dry_run: Some(true),
@@ -2054,6 +2283,243 @@ mod tests {
             leftovers.is_empty(),
             "staging temps survived: {leftovers:?}"
         );
+    }
+
+    /// The journal has to exist *while* the renames happen -- that is the
+    /// only moment it is for. Every other test can only see the world
+    /// after the call, when it is correctly gone, so this one holds it
+    /// open and looks.
+    #[test]
+    fn the_journal_describes_the_commit_while_it_is_happening() {
+        let root = workspace("journal-content");
+        let journals = root.join("../journal-content-state");
+        let _ = fs::remove_dir_all(&journals);
+        let plan = plan(
+            &root,
+            &ApplyPatchArgs {
+                files: vec![update(
+                    "src/main.rs",
+                    &version(&root, "src/main.rs"),
+                    "let x = 1;",
+                    "let x = 4;",
+                )],
+                dry_run: None,
+            },
+        )
+        .unwrap();
+        let staged = stage(plan).unwrap();
+        let journal = Journal::open(&journals, &staged).unwrap();
+
+        let written: Vec<PathBuf> = fs::read_dir(&journals)
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .collect();
+        assert_eq!(written.len(), 1, "{written:?}");
+        let record: JournalFile = serde_json::from_slice(&fs::read(&written[0]).unwrap()).unwrap();
+        assert_eq!(record.pid, std::process::id());
+        assert_eq!(record.files.len(), 1);
+        assert_eq!(record.files[0].rel, "src/main.rs");
+        assert_eq!(record.files[0].abs, root.join("src/main.rs"));
+        // The backup is the whole reason a person can recover by hand.
+        let backup = record.files[0].backup.clone().expect("a backup path");
+        assert!(backup.exists(), "{}", backup.display());
+
+        // Dropping it is what removes it, which is why a killed process
+        // leaves it behind.
+        drop(journal);
+        let after: Vec<PathBuf> = fs::read_dir(&journals)
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .collect();
+        assert!(after.is_empty(), "{after:?}");
+    }
+
+    /// When a rollback fails the workspace really is inconsistent, so the
+    /// record has to outlive this process on purpose.
+    #[test]
+    fn an_abandoned_journal_survives_being_dropped() {
+        let root = workspace("journal-keep");
+        let journals = root.join("../journal-keep-state");
+        let _ = fs::remove_dir_all(&journals);
+        let plan = plan(
+            &root,
+            &ApplyPatchArgs {
+                files: vec![update(
+                    "src/main.rs",
+                    &version(&root, "src/main.rs"),
+                    "let x = 1;",
+                    "let x = 4;",
+                )],
+                dry_run: None,
+            },
+        )
+        .unwrap();
+        let staged = stage(plan).unwrap();
+        let journal = Journal::open(&journals, &staged).unwrap();
+        let path = journal.path.clone();
+        journal.abandon();
+        drop(journal);
+        assert!(
+            path.exists(),
+            "an abandoned journal must stay: {}",
+            path.display()
+        );
+    }
+
+    /// A successful patch leaves no journal behind. If it did, the very
+    /// next patch would refuse for no reason.
+    #[test]
+    fn a_patch_that_worked_leaves_no_journal() {
+        let root = workspace("journal-clean");
+        let journals = root.join("../journal-clean-state");
+        let _ = fs::remove_dir_all(&journals);
+        apply_patch(
+            &root,
+            Some(&journals),
+            &ApplyPatchArgs {
+                files: vec![update(
+                    "src/main.rs",
+                    &version(&root, "src/main.rs"),
+                    "let x = 1;",
+                    "let x = 7;",
+                )],
+                dry_run: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            text(&root, "src/main.rs"),
+            "fn main() {\n    let x = 7;\n}\n"
+        );
+        let left: Vec<PathBuf> = fs::read_dir(&journals)
+            .map(|d| d.flatten().map(|e| e.path()).collect())
+            .unwrap_or_default();
+        assert!(left.is_empty(), "{left:?}");
+    }
+
+    /// The hole `Drop` cannot cover: a process killed between renames.
+    /// There is no way to kill this test's own process half way through a
+    /// commit, so the journal a killed process would have left is written
+    /// by hand -- which is the whole point of it being a plain file with
+    /// nothing but facts in it.
+    #[test]
+    fn an_abandoned_journal_stops_the_next_patch_and_names_the_files() {
+        let root = workspace("journal-abandoned");
+        let journals = root.join("../journal-abandoned-state");
+        let _ = fs::remove_dir_all(&journals);
+        fs::create_dir_all(&journals).unwrap();
+        let record = serde_json::json!({
+            "pid": 4321,
+            "root": root.join("src"),
+            "files": [
+                {
+                    "op": "update",
+                    "rel": "src/main.rs",
+                    "abs": root.join("src/main.rs"),
+                    "backup": root.join("src/.ccnm-abc-main.rs"),
+                },
+                {
+                    "op": "update",
+                    "rel": "src/lib.rs",
+                    "abs": root.join("src/lib.rs"),
+                },
+            ],
+        });
+        let journal = journals.join("4321-deadbeefcafe.json");
+        fs::write(&journal, serde_json::to_vec(&record).unwrap()).unwrap();
+        // Older than a commit could possibly take.
+        let long_ago = std::time::SystemTime::now() - Duration::from_secs(3600);
+        let file = fs::File::options().write(true).open(&journal).unwrap();
+        file.set_modified(long_ago).unwrap();
+        drop(file);
+
+        let err = apply_patch(
+            &root,
+            Some(&journals),
+            &ApplyPatchArgs {
+                files: vec![update(
+                    "src/main.rs",
+                    &version(&root, "src/main.rs"),
+                    "let x = 1;",
+                    "let x = 9;",
+                )],
+                dry_run: None,
+            },
+        )
+        .expect_err("a patch must not plan on top of an interrupted one");
+        let message = err.message();
+        assert!(message.contains("interrupted"), "{message}");
+        // Every file it was renaming, because which ones landed is the
+        // only question worth answering and only a person can answer it.
+        assert!(message.contains("src/main.rs"), "{message}");
+        assert!(message.contains("src/lib.rs"), "{message}");
+        assert!(message.contains(".ccnm-abc-main.rs"), "{message}");
+        assert!(message.contains("git status"), "{message}");
+        assert!(message.contains("4321"), "{message}");
+        assert!(
+            message.contains(&journal.display().to_string()),
+            "the way out has to be in the message: {message}"
+        );
+        // And it really did not write.
+        assert_eq!(
+            text(&root, "src/main.rs"),
+            "fn main() {\n    let x = 1;\n}\n"
+        );
+
+        // Cleared by hand, patching works again.
+        fs::remove_file(&journal).unwrap();
+        apply_patch(
+            &root,
+            Some(&journals),
+            &ApplyPatchArgs {
+                files: vec![update(
+                    "src/main.rs",
+                    &version(&root, "src/main.rs"),
+                    "let x = 1;",
+                    "let x = 9;",
+                )],
+                dry_run: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            text(&root, "src/main.rs"),
+            "fn main() {\n    let x = 9;\n}\n"
+        );
+    }
+
+    /// A journal young enough to be a commit that is still running is not
+    /// an interruption. Two patches at once must not accuse each other.
+    #[test]
+    fn a_journal_from_a_commit_still_running_is_left_alone() {
+        let root = workspace("journal-fresh");
+        let journals = root.join("../journal-fresh-state");
+        let _ = fs::remove_dir_all(&journals);
+        fs::create_dir_all(&journals).unwrap();
+        fs::write(
+            journals.join("999-freshjournal.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "pid": 999, "root": root.clone(), "files": [],
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        apply_patch(
+            &root,
+            Some(&journals),
+            &ApplyPatchArgs {
+                files: vec![update(
+                    "src/main.rs",
+                    &version(&root, "src/main.rs"),
+                    "let x = 1;",
+                    "let x = 5;",
+                )],
+                dry_run: None,
+            },
+        )
+        .expect("a fresh journal is a patch in progress, not an interruption");
     }
 
     #[test]

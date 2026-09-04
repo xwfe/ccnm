@@ -72,6 +72,9 @@ W=crates/ccnm-core/src/work.rs
 S=crates/ccnm-core/src/ssh.rs
 K=crates/ccnm-core/src/controller.rs
 T=crates/ccnm-core/src/tmux.rs
+N=crates/ccnm-core/src/launcher.rs
+E=crates/ccnm-core/src/session.rs
+C=crates/ccnm-cli/src/main.rs
 
 # --- the write path ---------------------------------------------------
 
@@ -147,6 +150,47 @@ mutate "attach without the remote binary" "$S" \
 mutate "the transport gives up as fast as a control command" "$S" \
   '            "ServerAliveCountMax=20",' \
   '            "ServerAliveCountMax=3",'
+
+# --- the two directions a session is started from ---------------------
+#
+# These are the ones per-hop unit tests structurally cannot catch: both
+# ends behaving sensibly with the wrong value. Each has to be caught by
+# a test that carries one end's real output into the other end's input.
+
+mutate "work is told the alias home came in on" "$N" \
+  '        home_alias: resolved.home_alias.to_string(),
+        home_ccnm_bin: resolved.runtime.ccnm_bin(),
+        claude_config_dir: resolved.work.claude_config_dir.clone(),
+        permission_mode: resolved.workspace.claude_permission_mode,
+        prompt: prompt.map(str::to_string),' \
+  '        home_alias: resolved.work_ssh.to_string(),
+        home_ccnm_bin: resolved.work.ccnm_bin(),
+        claude_config_dir: resolved.work.claude_config_dir.clone(),
+        permission_mode: resolved.workspace.claude_permission_mode,
+        prompt: prompt.map(str::to_string),'
+
+mutate "the session is not told a person is watching" "$E" \
+  '.with_interactive(matches!(spec.mode, Mode::Interactive { .. })),' \
+  '.with_interactive(false),'
+
+mutate "the work machine waits for a terminal that is elsewhere" "$N" \
+  '&[ssh.ccnm_bin(), "run", workspace, "--detached"],' \
+  '&[ssh.ccnm_bin(), "run", workspace],'
+
+mutate "where home keeps ccnm is ignored" "$N" \
+  'let ssh = Ssh::new(home_alias, env.control_dir.clone())?.with_ccnm_bin(home_ccnm_bin);' \
+  'let ssh = Ssh::new(home_alias, env.control_dir.clone())?;'
+
+mutate "the work machine never recognises itself" "$C" \
+  '    if config.workspace(workspace).is_ok() {
+        return None;
+    }
+    config.home_from_work()' \
+  '    if config.workspace(workspace).is_ok() {
+        return None;
+    }
+    let _ = config.home_from_work();
+    None'
 
 echo
 echo "$red red, $green green, $broken not applied"

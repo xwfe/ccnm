@@ -85,6 +85,7 @@ pub fn run(req: &RunRequest, tools: &Tools<'_>) -> Result<RunReport> {
         ));
     }
     let ssh = Ssh::new(&req.home_alias, &tools.control_dir)?.with_ccnm_bin(&req.home_ccnm_bin);
+    greet(&ssh, &req.workspace, &req.root, tools)?;
     let cwd = paths::workspace_dir(&tools.state, &req.workspace);
     std::fs::create_dir_all(&cwd)?;
     let spec = Spec {
@@ -134,6 +135,59 @@ pub fn run(req: &RunRequest, tools: &Tools<'_>) -> Result<RunReport> {
 /// outlives the ssh call that made it, which is the whole point of putting
 /// it in tmux (design doc section 23). What comes back is what the home
 /// machine needs to attach.
+/// One round trip to the workspace machine before a session is built, to
+/// answer the two questions that are cheap now and expensive later.
+///
+/// **Do the two binaries agree?** They have to be the same build: the
+/// control protocol is versioned but the tools are not, so two builds
+/// that still decode each other's messages can disagree about what a tool
+/// does. `doctor` has always checked this, but `doctor` is what somebody
+/// runs when they already suspect something. A session started against a
+/// mismatched pair fails later, somewhere that does not mention versions.
+///
+/// **Is the project still there?** A moved or renamed root used to be
+/// found out from inside the session, where the failure arrives as a
+/// tool blaming the program it could not run. It costs one `stat` here.
+///
+/// About 30 ms on the real link. That buys the two errors that are worst
+/// to debug from the far end.
+fn greet(ssh: &Ssh, workspace: &str, root: &Path, tools: &Tools<'_>) -> Result<()> {
+    let hello: HelloReport = ssh.call_ccnm(
+        tools.runner,
+        Master::Reuse,
+        &["internal", "hello"],
+        &HelloRequest::new(Some(root.to_path_buf())),
+        Duration::from_secs(30),
+        ErrorCode::HomeUnreachable,
+    )?;
+    if hello.ccnm_version != crate::VERSION {
+        return Err(Error::new(
+            ErrorCode::Version,
+            format!(
+                "the workspace machine runs ccnm {}, this one runs {}; install the same build on both before starting a session",
+                hello.ccnm_version,
+                crate::VERSION
+            ),
+        ));
+    }
+    match hello.root {
+        Some(status) if status.is_ok() => Ok(()),
+        Some(status) => Err(Error::new(
+            ErrorCode::WrongWorkspace,
+            format!(
+                "workspace `{workspace}` says its root is {}, and on that machine it is {}\nif the project moved: ccnm ws add {workspace} <new path> --replace",
+                root.display(),
+                status.describe()
+            ),
+        )),
+        // An older ccnm would not answer this, but the version check above
+        // has already refused an older ccnm.
+        None => Err(Error::internal(
+            "the workspace machine did not say whether the project root exists",
+        )),
+    }
+}
+
 pub fn start(req: &StartRequest, tools: &Tools<'_>) -> Result<StartReport> {
     let tmux = tools.tmux()?;
     let name = tmux::session_name(&req.workspace);
@@ -222,6 +276,7 @@ fn start_fresh(
         ));
     }
     let ssh = Ssh::new(&req.home_alias, &tools.control_dir)?.with_ccnm_bin(&req.home_ccnm_bin);
+    greet(&ssh, &req.workspace, &req.root, tools)?;
     let cwd = paths::workspace_dir(&tools.state, &req.workspace);
     std::fs::create_dir_all(&cwd)?;
     let spec = Spec {
@@ -907,6 +962,72 @@ mod tests {
         }
     }
 
+    /// Two builds that still decode each other's control messages can
+    /// still disagree about what a tool does, so a session is not built
+    /// until both sides say the same version. `doctor` has always
+    /// checked this; `doctor` is not what somebody runs before they
+    /// suspect anything.
+    #[test]
+    fn a_session_is_not_started_against_a_different_build() {
+        let dir = temp("greet-version");
+        let fake = FakeRunner::new();
+        let mut other = HelloReport {
+            protocol: PROTOCOL,
+            ccnm_version: crate::VERSION.to_string(),
+            user: "ccrun".into(),
+            platform: "macos/aarch64".into(),
+            exe: None,
+            root: Some(PathStatus {
+                exists: true,
+                is_dir: true,
+            }),
+        };
+        other.ccnm_version = format!("{}-and-a-half", crate::VERSION);
+        fake.push(Output::exited(0, serde_json::to_string(&other).unwrap()));
+        let tools = Tools {
+            runner: &fake,
+            state: dir.clone(),
+            control_dir: control(&dir),
+            claude: None,
+            tmux: None,
+            controller: dir.join("nope.sock"),
+        };
+        let ssh = Ssh::new("xdwmbp", &tools.control_dir).unwrap();
+        let err = greet(&ssh, "fixture", Path::new("/Users/bing/fixture"), &tools)
+            .expect_err("a mismatched pair must not get a session");
+        assert_eq!(err.code(), ErrorCode::Version);
+        // Both versions, because "install the same build" is useless
+        // without knowing which two builds are in play.
+        assert!(err.message().contains(&other.ccnm_version), "{err}");
+        assert!(err.message().contains(crate::VERSION), "{err}");
+    }
+
+    /// A project that moved used to be found out from inside the session,
+    /// where it arrives as a tool blaming the program it could not run.
+    /// One stat before anything starts, and the message says how to
+    /// repoint the workspace.
+    #[test]
+    fn a_root_that_is_gone_is_refused_before_a_session_exists() {
+        let dir = temp("greet-root");
+        let fake = FakeRunner::new();
+        fake.push(Output::exited(0, hello_json(false)));
+        let tools = Tools {
+            runner: &fake,
+            state: dir.clone(),
+            control_dir: control(&dir),
+            claude: None,
+            tmux: None,
+            controller: dir.join("nope.sock"),
+        };
+        let ssh = Ssh::new("xdwmbp", &tools.control_dir).unwrap();
+        let err = greet(&ssh, "fixture", Path::new("/Users/bing/moved"), &tools)
+            .expect_err("a missing root must not get a session");
+        assert_eq!(err.code(), ErrorCode::WrongWorkspace);
+        assert!(err.message().contains("/Users/bing/moved"), "{err}");
+        assert!(err.message().contains("missing"), "{err}");
+        assert!(err.message().contains("ccnm ws add fixture"), "{err}");
+    }
+
     fn start_request() -> StartRequest {
         StartRequest {
             protocol: PROTOCOL,
@@ -1475,8 +1596,12 @@ mod tests {
             }
         });
 
+        // The version-and-root handshake `run` makes before it builds a
+        // session.
+        let caller = FakeRunner::new();
+        caller.push(Output::exited(0, hello_json(true)));
         let tools = Tools {
-            runner: &FakeRunner::new(),
+            runner: &caller,
             state: dir.clone(),
             control_dir: control(&dir),
             claude: None,

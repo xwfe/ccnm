@@ -551,6 +551,40 @@ fn adding_a_workspace_before_init_says_to_init() {
 
 /// `ccnm <workspace>` is `ccnm run <workspace>`: the thing people do all
 /// day should not need the word.
+/// Sitting at the work machine, the same command works: the config there
+/// knows only how to reach the projects, so a workspace it does not
+/// define is a question for the other side rather than an error. It must
+/// reach ssh -- proving it delegated -- and not stop at "not defined".
+#[test]
+fn on_the_work_machine_an_unknown_workspace_is_asked_about_not_refused() {
+    let out = ccnm()
+        .args(["xshun", "--config"])
+        .arg(fixture("config-work-side.toml"))
+        .output()
+        .unwrap();
+    let err = stderr(&out);
+    assert!(
+        !err.contains("not defined"),
+        "the work machine has no workspace list; it must ask home: {err}"
+    );
+    assert!(
+        err.contains("could not start") || err.contains("no-such-host-for-tests"),
+        "it should have tried to reach home: {err}"
+    );
+    // --print has to run where the project is; say so rather than
+    // starting something that cannot work.
+    let out = ccnm()
+        .args(["xshun", "--print", "hi", "--config"])
+        .arg(fixture("config-work-side.toml"))
+        .output()
+        .unwrap();
+    assert!(
+        stderr(&out).contains("where the projects are"),
+        "{}",
+        stderr(&out)
+    );
+}
+
 #[test]
 fn a_bare_workspace_name_means_run() {
     let out = ccnm()

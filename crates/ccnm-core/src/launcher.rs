@@ -113,6 +113,49 @@ pub fn start_interactive(
 /// timeout because this lasts as long as the person wants it to. Run it
 /// with [`crate::process::run_attached`]: it needs this process's real
 /// stdin and stdout, not pipes.
+/// Start a session from the *work* machine, by asking the home machine to
+/// do it.
+///
+/// The work machine has no workspace list and must not grow one: the home
+/// machine is where a project's root is defined, and a second copy of that
+/// is a second answer to "where is this project", which is how a session
+/// ends up bound to a directory that has moved.
+///
+/// So this delegates the whole thing -- config lookup, the version and
+/// root handshake, the controller -- to exactly the code path that runs
+/// when somebody types the command at home. The session is created on
+/// this machine either way, because that is where Claude runs; all that
+/// changes is who asked for it. Attaching afterwards needs no config at
+/// all, only the workspace name, so it happens locally.
+///
+/// The cost is one extra hop, work -> home -> work. That buys a single
+/// definition of every workspace and not one line of duplicated
+/// launching.
+pub fn start_from_work(home_alias: &str, workspace: &str, env: &Env<'_>) -> Result<()> {
+    let ssh = Ssh::new(home_alias, env.control_dir.clone())?;
+    let out = env.runner.run(&ssh.remote_cmd(
+        Master::Reuse,
+        &[ssh.ccnm_bin(), "run", workspace, "--detached"],
+        Duration::from_secs(180),
+    )?)?;
+    // The far side already says everything worth saying about the session
+    // it started, and it says it on stderr.
+    let said = out.stderr_lossy();
+    if !said.trim().is_empty() {
+        eprint!("{said}");
+    }
+    if !out.success() {
+        return Err(Error::new(
+            ErrorCode::HomeUnreachable,
+            format!(
+                "the machine holding the projects could not start `{workspace}`\n{}",
+                out.stdout_lossy().trim()
+            ),
+        ));
+    }
+    Ok(())
+}
+
 pub fn attach_cmd(resolved: &Resolved<'_>, env: &Env<'_>) -> Result<Cmd> {
     let ssh = work_ssh(resolved, env)?;
     let wire = payload::encode(&AttachRequest {

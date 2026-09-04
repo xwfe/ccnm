@@ -212,6 +212,41 @@ pub struct Resolved<'a> {
 }
 
 impl Config {
+    /// The alias this machine uses to reach the machine holding the
+    /// projects, when this is a work-side config.
+    ///
+    /// A work machine's config is the same file with the workspaces left
+    /// out: it says how to reach home and nothing else, because the
+    /// workspace list has exactly one home and duplicating it here is how
+    /// the two copies start disagreeing about where a project is. That
+    /// disagreement is not theoretical -- a session bound to a root the
+    /// config no longer names is the failure this project has already
+    /// spent an afternoon on.
+    ///
+    /// `None` unless this really is a work-side config.
+    ///
+    /// The test is the absence of any `ssh`, not the presence of
+    /// `ssh_from_work`: a *home* config has both -- `ssh` to reach the
+    /// work machine, `ssh_from_work` to say how the work machine reaches
+    /// back -- so keying on `ssh_from_work` alone would make every
+    /// mistyped workspace name at home look like a work machine and send
+    /// it over ssh. That is not hypothetical; it is what the first
+    /// version did, and a test that asks for a workspace which does not
+    /// exist is what caught it.
+    pub fn home_from_work(&self) -> Option<&str> {
+        if self.hosts.values().any(|h| h.ssh.is_some()) {
+            return None;
+        }
+        let mut named = self
+            .hosts
+            .values()
+            .filter_map(|h| h.ssh_from_work.as_deref());
+        match (named.next(), named.next()) {
+            (Some(only), None) => Some(only),
+            _ => None,
+        }
+    }
+
     /// Read, parse and validate the file at `path`.
     pub fn load(path: &Path) -> Result<Config> {
         tracing::debug!(path = %path.display(), "loading config");
@@ -476,6 +511,31 @@ fn overlaps(a: &Path, b: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A config with only a way home is the work machine's, and a name it
+    /// does not know is a question for the other side. A *home* config has
+    /// `ssh_from_work` too -- that is how the work machine reaches back --
+    /// so keying on that alone would send every mistyped workspace name at
+    /// home over ssh to be asked about.
+    #[test]
+    fn only_a_config_with_no_way_to_reach_work_is_the_work_machines() {
+        let work_side = Config::parse("[hosts.home]\nssh_from_work = \"xdwmbp\"\n").unwrap();
+        assert_eq!(work_side.home_from_work(), Some("xdwmbp"));
+
+        let home_side = Config::parse(
+            "[hosts.work]\nssh = \"fodelf\"\n[hosts.home]\nssh_from_work = \"xdwmbp\"\n",
+        )
+        .unwrap();
+        assert_eq!(home_side.home_from_work(), None);
+
+        // Nothing to pick.
+        let empty = Config::parse("").unwrap();
+        assert_eq!(empty.home_from_work(), None);
+        let two =
+            Config::parse("[hosts.a]\nssh_from_work = \"x\"\n[hosts.b]\nssh_from_work = \"y\"\n")
+                .unwrap();
+        assert_eq!(two.home_from_work(), None);
+    }
     use crate::error::ErrorCode;
 
     fn fixture(name: &str) -> PathBuf {

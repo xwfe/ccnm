@@ -17,8 +17,8 @@ use ccnm_core::protocol::run::{
     StopRequest,
 };
 use ccnm_core::{
-    Config, Result, claude, configedit, controller, doctor, launchagent, launcher, mcp, paths,
-    safety, session, tmux, work,
+    Config, Error, Result, claude, configedit, controller, doctor, launchagent, launcher, mcp,
+    paths, safety, session, tmux, work,
 };
 
 /// Terminal-native remote workspace runtime for Claude Code.
@@ -40,14 +40,17 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Write the config: which ssh alias reaches the work machine, and
-    /// which one reaches back here. Safe to run again
+    /// which one reaches back here. Safe to run again.
+    ///
+    /// On the work machine give only --home: it needs to know how to
+    /// reach the projects, and nothing about them
     Init {
         /// This machine's ssh alias for the work machine (the one running
-        /// Claude Code)
+        /// Claude Code). Omit on the work machine itself
         #[arg(long, value_name = "ALIAS")]
-        work: String,
-        /// The work machine's ssh alias for this machine (the one holding
-        /// the projects)
+        work: Option<String>,
+        /// The alias for the machine holding the projects, as the work
+        /// machine reaches it
         #[arg(long, value_name = "ALIAS")]
         home: String,
     },
@@ -316,7 +319,7 @@ fn run(cli: Cli) -> Result<i32> {
     };
 
     match &cli.command {
-        Command::Init { work, home } => init(&config_path()?, work, home),
+        Command::Init { work, home } => init(&config_path()?, work.as_deref(), home),
         Command::Workspace { command } => workspace_command(&config_path()?, command),
         Command::Doctor { workspace } => {
             let env = doctor::Env {
@@ -337,6 +340,23 @@ fn run(cli: Cli) -> Result<i32> {
             detached,
         } => {
             let config = Config::load(&config_path()?)?;
+            // Sitting at the work machine: this config knows how to reach
+            // home and nothing about workspaces, so home is asked to start
+            // the session and this terminal attaches to it locally.
+            if let Some(home) = work_side(&config, workspace) {
+                if print.is_some() {
+                    return Err(Error::invalid_args(
+                        "--print has to be run where the projects are; ssh there and run it",
+                    ));
+                }
+                let env = home_env()?;
+                launcher::start_from_work(home, workspace, &env)?;
+                if *detached {
+                    eprintln!("\nattach when you want it: ccnm attach {workspace}");
+                    return Ok(0);
+                }
+                return work::attach(&attach_request(workspace), &work_tools()?);
+            }
             let resolved = config.workspace(workspace)?;
             let env = home_env()?;
             if let Some(prompt) = print {
@@ -358,6 +378,11 @@ fn run(cli: Cli) -> Result<i32> {
         }
         Command::Attach { workspace } => {
             let config = Config::load(&config_path()?)?;
+            // On the work machine the session is right here; attaching
+            // needs the workspace name and nothing else.
+            if work_side(&config, workspace).is_some() {
+                return work::attach(&attach_request(workspace), &work_tools()?);
+            }
             let resolved = config.workspace(workspace)?;
             attach(&resolved, &home_env()?, workspace)
         }
@@ -499,11 +524,17 @@ fn run(cli: Cli) -> Result<i32> {
 /// Everything else has a default. Running it again is not an error and
 /// not a rewrite: it reports what it changed, or that there was nothing
 /// to change.
-fn init(path: &std::path::Path, work: &str, home: &str) -> Result<i32> {
+fn init(path: &std::path::Path, work: Option<&str>, home: &str) -> Result<i32> {
     let mut edit = configedit::Edit::open(path)?;
     let existed = edit.existed();
     let mut changes = configedit::Changes::default();
-    edit.set_host("work", "ssh", work, &mut changes);
+    // Without --work this is the work machine's own config: how to reach
+    // the projects, and deliberately nothing else. The workspace list
+    // lives on one machine, because two lists are two answers to "where
+    // is this project".
+    if let Some(work) = work {
+        edit.set_host("work", "ssh", work, &mut changes);
+    }
     edit.set_host("home", "ssh_from_work", home, &mut changes);
     edit.save(&changes)?;
 
@@ -515,16 +546,28 @@ fn init(path: &std::path::Path, work: &str, home: &str) -> Result<i32> {
         println!();
     }
     let config = Config::load(path)?;
-    if config.workspaces.is_empty() {
+    if work.is_none() {
+        println!("this machine will ask {home} for a workspace it does not know");
+        println!("next, from here:");
+        println!("  ccnm <workspace>       start it there, attach here");
+    } else if config.workspaces.is_empty() {
         println!("next: cd to a project on this machine and run");
         println!("  ccnm workspace add <name>");
     }
     // ssh has to work before anything else can; say so plainly rather than
     // testing it here, where a slow or absent network would turn `init`
     // into something that hangs.
-    println!("\nboth of these must work without a password:");
-    println!("  ssh {work} true");
-    println!("  ssh {work} 'ssh {home} true'");
+    match work {
+        Some(work) => {
+            println!("\nboth of these must work without a password:");
+            println!("  ssh {work} true");
+            println!("  ssh {work} 'ssh {home} true'");
+        }
+        None => {
+            println!("\nthis must work without a password:");
+            println!("  ssh {home} true");
+        }
+    }
     Ok(0)
 }
 
@@ -758,6 +801,29 @@ fn report_changes(changes: &configedit::Changes, path: &std::path::Path) {
     }
     for line in changes.lines() {
         println!("{line}");
+    }
+}
+
+/// The home alias to delegate to, when this machine is the work machine.
+///
+/// The test is not "which machine am I" -- ccnm never tries to guess that
+/// -- but "does this config define the workspace being asked for". A home
+/// config does. A work config has no workspaces at all, only how to reach
+/// home, so a name it does not know plus a home to ask is exactly the
+/// work-side case. A home config with a typo'd workspace name still falls
+/// through to the normal error, because it has no `ssh_from_work` to
+/// single out.
+fn work_side<'a>(config: &'a Config, workspace: &str) -> Option<&'a str> {
+    if config.workspace(workspace).is_ok() {
+        return None;
+    }
+    config.home_from_work()
+}
+
+fn attach_request(workspace: &str) -> AttachRequest {
+    AttachRequest {
+        protocol: ccnm_core::protocol::payload::PROTOCOL,
+        workspace: workspace.to_string(),
     }
 }
 

@@ -1,0 +1,6 @@
+# What `ccnm init --home <alias>` writes on the work machine: how to reach
+# the projects, and deliberately nothing about them. The workspace list
+# lives on one machine, because two lists are two answers to "where is
+# this project".
+[hosts.home]
+ssh_from_work = "no-such-host-for-tests"

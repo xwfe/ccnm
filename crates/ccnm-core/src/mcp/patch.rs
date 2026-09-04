@@ -93,6 +93,14 @@ pub const MAX_FILES: usize = 50;
 /// request as much as on the disk.
 pub const MAX_CONTENT_BYTES: usize = 1024 * 1024;
 
+/// How many places to look for `old` spelled differently, and how many
+/// lines of the answer to print. Both exist because `near_miss` runs on
+/// a *failed* edit, where nothing about the input has been vouched for:
+/// the file may be 16 MiB and `old` may be a megabyte of it. Measured
+/// without the first cap, one failed edit took **57.7 seconds**.
+const MAX_NEAR_MISS_CANDIDATES: usize = 64;
+const MAX_NEAR_MISS_SHOWN: usize = 20;
+
 /// Files this size and above are refused for editing. `apply_patch` holds
 /// the whole file in memory to replace inside it; a source file is never
 /// close to this and a data file has no business being patched.
@@ -211,7 +219,7 @@ pub fn apply_patch(
     // patch on top of that is how a small inconsistency becomes a large
     // one.
     if let Some(dir) = journal_dir {
-        Journal::check_abandoned(dir)?;
+        Journal::check_abandoned(dir, root)?;
     }
     let plan = plan(root, args)?;
     if dry_run {
@@ -220,7 +228,7 @@ pub fn apply_patch(
     sweep_stale_temps(&plan);
     let staged = stage(plan)?;
     let journal = journal_dir
-        .map(|dir| Journal::open(dir, &staged))
+        .map(|dir| Journal::open(dir, root, &staged))
         .transpose()?;
     // The journal lives until this call returns: dropping it is what
     // removes it, and until then an interrupted process leaves it behind
@@ -648,58 +656,94 @@ fn apply_in_order(text: &str, edits: &[Edit], rel: &str) -> Result<(String, u32)
 /// Returns "" when there is nothing useful to say, so it can be appended
 /// unconditionally.
 fn near_miss(text: &str, old: &str) -> String {
-    let wanted: Vec<String> = old.lines().map(squeeze).collect();
+    let squeezed: Vec<String> = old.lines().map(squeeze).collect();
     // A trailing newline in `old` produces no final line; either way the
     // comparison is over the lines that carry content.
-    let wanted: Vec<&String> = wanted.iter().filter(|line| !line.is_empty()).collect();
+    let wanted: Vec<&String> = squeezed.iter().filter(|line| !line.is_empty()).collect();
     if wanted.is_empty() {
         return String::new();
     }
     let lines: Vec<&str> = text.lines().collect();
-    let keys: Vec<String> = lines.iter().map(|line| squeeze(line)).collect();
 
-    // The whole block is there, spelled with different whitespace.
-    let mut window: Vec<usize> = Vec::new();
-    for (at, _) in keys.iter().enumerate() {
-        window.clear();
-        let mut cursor = at;
-        for want in &wanted {
-            // Blank lines in the file are skipped so a block that gained
-            // or lost one still matches.
-            while cursor < keys.len() && keys[cursor].is_empty() {
-                cursor += 1;
-            }
-            if cursor >= keys.len() || &keys[cursor] != *want {
-                break;
-            }
-            window.push(cursor);
-            cursor += 1;
-        }
-        if window.len() == wanted.len() {
-            let first = window[0];
-            let last = window[window.len() - 1];
-            let shown: Vec<String> = lines[first..=last]
-                .iter()
-                .map(|line| format!("    {line}"))
-                .collect();
+    // Every line that could start the block. Bounded on both sides: this
+    // runs on a *failed* edit, where the file can be 16 MiB and `old` can
+    // be a megabyte, and the unbounded version of this loop is
+    // lines x wanted -- around 10^10 comparisons on those numbers, which
+    // is a tool call that never comes back. A whitespace difference that
+    // occurs more than MAX_CANDIDATES times is diagnosed from the first
+    // one just as well.
+    let starts: Vec<usize> = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, line)| squeeze(line) == *wanted[0])
+        .map(|(at, _)| at)
+        .take(MAX_NEAR_MISS_CANDIDATES)
+        .collect();
+
+    for start in &starts {
+        if let Some(last) = block_ends_at(&lines, *start, &wanted) {
             return format!(
                 "\nthe same text is at line {}, written with different whitespace; copy these bytes exactly as read_file returned them:\n{}",
-                first + 1,
-                shown.join("\n")
+                start + 1,
+                shown(&lines, *start, last)
             );
         }
     }
 
-    // Not the whole block, but the first line of it is somewhere.
-    let first = wanted[0];
-    if let Some(at) = keys.iter().position(|key| key == first) {
-        return format!(
+    // Not the whole block, but its first line is somewhere.
+    match starts.first() {
+        Some(at) => format!(
             "\nits first line is at line {}, so the rest is what differs:\n    {}",
             at + 1,
-            lines[at]
-        );
+            lines[*at]
+        ),
+        None => String::new(),
     }
-    String::new()
+}
+
+/// The line `wanted` ends on if it starts at `start`, ignoring how each
+/// line is spaced and skipping blank lines in the file, or `None` if it
+/// does not match all the way through.
+fn block_ends_at(lines: &[&str], start: usize, wanted: &[&String]) -> Option<usize> {
+    let mut cursor = start;
+    let mut last = start;
+    for want in wanted {
+        while cursor < lines.len() && squeeze(lines[cursor]).is_empty() {
+            cursor += 1;
+        }
+        if cursor >= lines.len() || squeeze(lines[cursor]) != **want {
+            return None;
+        }
+        last = cursor;
+        cursor += 1;
+    }
+    Some(last)
+}
+
+/// The file's own bytes for lines `first..=last`, cut in the middle if
+/// there are a lot of them. This text goes into the model's context, so
+/// it is as bounded as every other tool result: the point is to show the
+/// spacing, and the first and last few lines show it.
+fn shown(lines: &[&str], first: usize, last: usize) -> String {
+    let count = last - first + 1;
+    if count <= MAX_NEAR_MISS_SHOWN {
+        return lines[first..=last]
+            .iter()
+            .map(|line| format!("    {line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+    }
+    let half = MAX_NEAR_MISS_SHOWN / 2;
+    let head = lines[first..first + half].iter();
+    let tail = lines[last + 1 - half..=last].iter();
+    head.map(|line| format!("    {line}"))
+        .chain(std::iter::once(format!(
+            "    ... {} more lines ...",
+            count - 2 * half
+        )))
+        .chain(tail.map(|line| format!("    {line}")))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// A line reduced to what it says, with every run of whitespace collapsed
@@ -892,6 +936,10 @@ struct JournalFile {
     /// The process that was doing the renaming, so the reader knows which
     /// process to go looking for.
     pid: u32,
+    /// The workspace this patch was in. Only a patch in the *same*
+    /// workspace is blocked by it: one project's interrupted commit says
+    /// nothing about another project's files, and two workspaces share
+    /// one state directory.
     root: PathBuf,
     files: Vec<JournalLine>,
 }
@@ -911,15 +959,11 @@ struct Journal {
 }
 
 impl Journal {
-    fn open(dir: &Path, staged: &[Staged]) -> Result<Journal> {
+    fn open(dir: &Path, root: &Path, staged: &[Staged]) -> Result<Journal> {
         std::fs::create_dir_all(dir).map_err(|e| {
             Error::internal(format!("cannot create {}", dir.display())).with_source(e)
         })?;
-        let root = staged
-            .first()
-            .and_then(|one| one.planned.abs.parent())
-            .unwrap_or(dir)
-            .to_path_buf();
+        let root = root.to_path_buf();
         let record = JournalFile {
             pid: std::process::id(),
             root,
@@ -973,7 +1017,7 @@ impl Journal {
     /// much shorter than a minute that the answer is the same either way.
     /// The cost is that an interruption is invisible for up to a minute —
     /// during which the transport it died with is down anyway.
-    fn check_abandoned(dir: &Path) -> Result<()> {
+    fn check_abandoned(dir: &Path, root: &Path) -> Result<()> {
         let Ok(entries) = std::fs::read_dir(dir) else {
             return Ok(());
         };
@@ -991,12 +1035,27 @@ impl Journal {
             if fresh {
                 continue;
             }
-            let Ok(body) = std::fs::read(&path) else {
-                continue;
+            // A journal that cannot be read is still evidence that a
+            // patch was interrupted; the whole point of this file is that
+            // an inconsistency is never silent, so an unreadable one says
+            // so rather than being skipped.
+            let record = match std::fs::read(&path)
+                .ok()
+                .and_then(|body| serde_json::from_slice::<JournalFile>(&body).ok())
+            {
+                Some(record) => record,
+                None => {
+                    return Err(Error::internal(format!(
+                        "{} records an apply_patch that was interrupted, and cannot be read to say which files it was changing.\ncheck the workspace with git status before changing anything else, then delete it.",
+                        path.display()
+                    )));
+                }
             };
-            let Ok(record) = serde_json::from_slice::<JournalFile>(&body) else {
+            // Another project's interrupted commit says nothing about
+            // this project's files.
+            if record.root != root {
                 continue;
-            };
+            }
             return Err(Error::internal(interrupted_report(&record, &path)));
         }
         Ok(())
@@ -2057,6 +2116,70 @@ mod tests {
         assert!(message.contains("fn main() {"), "{message}");
     }
 
+    /// `near_miss` runs on a *failed* edit, where nothing about the
+    /// input has been vouched for: the file can be 16 MiB and `old` can
+    /// be a megabyte of it. Unbounded, the search is
+    /// candidates x wanted-lines, and there are two separate caps on it.
+    /// Both need their own case, because either one alone makes the
+    /// other's pathological input fast.
+    ///
+    /// This one is the `old`-length cap: an `old` far longer than
+    /// MAX_NEAR_MISS_LINES skips the block search entirely.
+    #[test]
+    fn a_hopeless_edit_with_an_enormous_old_answers_quickly() {
+        let text = "    x = 1\n".repeat(60_000);
+        let mut old = "\tx = 1\n".repeat(3_000);
+        old.push_str("\tnot in the file at all\n");
+        let started = std::time::Instant::now();
+        let answer = near_miss(&text, &old);
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "near_miss took {:?}; it is bounded or it is a hang",
+            started.elapsed()
+        );
+        // It still says something useful: the first line is everywhere.
+        assert!(answer.contains("its first line is at line 1"), "{answer}");
+    }
+
+    /// And this is the many-candidates shape: an `old` in a file where
+    /// every single line could start it. Without the cap this walks 200k
+    /// candidates about 199 lines each, measured at 57.7 seconds.
+    #[test]
+    fn a_hopeless_edit_with_a_match_on_every_line_answers_quickly() {
+        let text = "    x = 1\n".repeat(200_000);
+        let mut old = "\tx = 1\n".repeat(199);
+        old.push_str("\tnot in the file at all\n");
+        let started = std::time::Instant::now();
+        let answer = near_miss(&text, &old);
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "near_miss took {:?}; it is bounded or it is a hang",
+            started.elapsed()
+        );
+        assert!(answer.contains("its first line is at line 1"), "{answer}");
+    }
+
+    /// The answer goes into the model's context, so it is bounded like
+    /// every other tool result rather than printing a whole function.
+    #[test]
+    fn a_long_whitespace_match_is_shown_head_and_tail() {
+        let text: String = (0..200)
+            .map(|n| format!("    line {n}\n"))
+            .collect::<Vec<_>>()
+            .join("");
+        let old: String = (0..200)
+            .map(|n| format!("\tline {n}\n"))
+            .collect::<Vec<_>>()
+            .join("");
+        let answer = near_miss(&text, &old);
+        assert!(answer.contains("different whitespace"), "{answer}");
+        assert!(answer.contains("... 180 more lines ..."), "{answer}");
+        assert!(answer.contains("    line 0"), "{answer}");
+        assert!(answer.contains("    line 199"), "{answer}");
+        let printed = answer.lines().count();
+        assert!(printed < 30, "{printed} lines is not a bounded answer");
+    }
+
     /// A miss with nothing like it in the file adds nothing -- an
     /// unhelpful guess is worse than a short answer.
     #[test]
@@ -2309,7 +2432,7 @@ mod tests {
         )
         .unwrap();
         let staged = stage(plan).unwrap();
-        let journal = Journal::open(&journals, &staged).unwrap();
+        let journal = Journal::open(&journals, &root, &staged).unwrap();
 
         let written: Vec<PathBuf> = fs::read_dir(&journals)
             .unwrap()
@@ -2358,7 +2481,7 @@ mod tests {
         )
         .unwrap();
         let staged = stage(plan).unwrap();
-        let journal = Journal::open(&journals, &staged).unwrap();
+        let journal = Journal::open(&journals, &root, &staged).unwrap();
         let path = journal.path.clone();
         journal.abandon();
         drop(journal);
@@ -2413,7 +2536,7 @@ mod tests {
         fs::create_dir_all(&journals).unwrap();
         let record = serde_json::json!({
             "pid": 4321,
-            "root": root.join("src"),
+            "root": root.clone(),
             "files": [
                 {
                     "op": "update",
@@ -2488,6 +2611,100 @@ mod tests {
         assert_eq!(
             text(&root, "src/main.rs"),
             "fn main() {\n    let x = 9;\n}\n"
+        );
+    }
+
+    /// Two workspaces share one state directory, so a journal has to say
+    /// which project it belongs to. One project's interrupted commit
+    /// tells you nothing about another project's files, and blocking
+    /// every workspace because one was interrupted would be a bug that
+    /// only shows up on the day somebody has two projects.
+    #[test]
+    fn an_interruption_in_one_workspace_does_not_block_another() {
+        let root = workspace("journal-mine");
+        let journals = root.join("../journal-shared-state");
+        let _ = fs::remove_dir_all(&journals);
+        fs::create_dir_all(&journals).unwrap();
+        let elsewhere = journals.join("777-otherproject.json");
+        fs::write(
+            &elsewhere,
+            serde_json::to_vec(&serde_json::json!({
+                "pid": 777,
+                "root": "/Users/somebody/a-different-project",
+                "files": [{
+                    "op": "update",
+                    "rel": "src/other.rs",
+                    "abs": "/Users/somebody/a-different-project/src/other.rs",
+                }],
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let file = fs::File::options().write(true).open(&elsewhere).unwrap();
+        file.set_modified(std::time::SystemTime::now() - Duration::from_secs(3600))
+            .unwrap();
+        drop(file);
+
+        apply_patch(
+            &root,
+            Some(&journals),
+            &ApplyPatchArgs {
+                files: vec![update(
+                    "src/main.rs",
+                    &version(&root, "src/main.rs"),
+                    "let x = 1;",
+                    "let x = 3;",
+                )],
+                dry_run: None,
+            },
+        )
+        .expect("another project's interruption must not block this one");
+        assert_eq!(
+            text(&root, "src/main.rs"),
+            "fn main() {\n    let x = 3;\n}\n"
+        );
+        // And it is still there for the workspace it does belong to.
+        assert!(elsewhere.exists());
+    }
+
+    /// A journal that cannot be parsed is still evidence that a patch was
+    /// interrupted. Skipping it would be the one thing this whole
+    /// mechanism exists to prevent: an inconsistency nobody mentions.
+    #[test]
+    fn a_journal_that_cannot_be_read_is_still_reported() {
+        let root = workspace("journal-corrupt");
+        let journals = root.join("../journal-corrupt-state");
+        let _ = fs::remove_dir_all(&journals);
+        fs::create_dir_all(&journals).unwrap();
+        let broken = journals.join("55-truncated.json");
+        fs::write(&broken, b"{\"pid\": 55, \"files\": [{\"op\"").unwrap();
+        let file = fs::File::options().write(true).open(&broken).unwrap();
+        file.set_modified(std::time::SystemTime::now() - Duration::from_secs(3600))
+            .unwrap();
+        drop(file);
+
+        let err = apply_patch(
+            &root,
+            Some(&journals),
+            &ApplyPatchArgs {
+                files: vec![update(
+                    "src/main.rs",
+                    &version(&root, "src/main.rs"),
+                    "let x = 1;",
+                    "let x = 3;",
+                )],
+                dry_run: None,
+            },
+        )
+        .expect_err("an unreadable journal must not be skipped");
+        assert!(err.message().contains("cannot be read"), "{err}");
+        assert!(
+            err.message().contains(&broken.display().to_string()),
+            "{err}"
+        );
+        assert_eq!(
+            text(&root, "src/main.rs"),
+            "fn main() {\n    let x = 1;\n}\n"
         );
     }
 

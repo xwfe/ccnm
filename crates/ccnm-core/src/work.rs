@@ -152,6 +152,12 @@ pub fn run(req: &RunRequest, tools: &Tools<'_>) -> Result<RunReport> {
 /// About 30 ms on the real link. That buys the two errors that are worst
 /// to debug from the far end.
 fn greet(ssh: &Ssh, workspace: &str, root: &Path, tools: &Tools<'_>) -> Result<()> {
+    // This is the first thing on the session path to use a ControlPath at
+    // all -- the MCP transport sets `ControlPath=none` and never had one.
+    // A state directory too long for macOS's 104-byte sun_path makes ssh
+    // fail in its own words, so the check that explains it has to run
+    // here too, exactly as `probe` runs it.
+    ssh.check_control_path()?;
     let hello: HelloReport = ssh.call_ccnm(
         tools.runner,
         Master::Reuse,
@@ -1000,6 +1006,34 @@ mod tests {
         // without knowing which two builds are in play.
         assert!(err.message().contains(&other.ccnm_version), "{err}");
         assert!(err.message().contains(crate::VERSION), "{err}");
+    }
+
+    /// The handshake is the first thing on the session path to use a
+    /// ControlPath at all: the MCP transport sets `ControlPath=none`. A
+    /// state directory too long for macOS's 104-byte sun_path therefore
+    /// used to be somebody else's problem and is now this call's, so it
+    /// has to fail the way `doctor` does -- naming the fix -- and not
+    /// with whatever ssh says about a socket path.
+    #[test]
+    fn a_state_directory_too_long_for_a_socket_says_so_before_ssh_does() {
+        let deep = std::env::temp_dir().join("x".repeat(crate::ssh::CONTROL_PATH_MAX_LEN));
+        let fake = FakeRunner::new();
+        let tools = Tools {
+            runner: &fake,
+            state: deep.clone(),
+            control_dir: deep.join("control"),
+            claude: None,
+            tmux: None,
+            controller: deep.join("nope.sock"),
+        };
+        let ssh = Ssh::new("xdwmbp", &tools.control_dir).unwrap();
+        let err = greet(&ssh, "fixture", Path::new("/Users/bing/fixture"), &tools)
+            .expect_err("a control path that cannot fit must be refused here");
+        assert_eq!(err.code(), ErrorCode::Config);
+        assert!(err.message().contains("XDG_STATE_HOME"), "{err}");
+        // And it never reached the network: the runner has no reply
+        // queued, so a call would have failed differently.
+        assert_eq!(fake.calls().len(), 0);
     }
 
     /// A project that moved used to be found out from inside the session,

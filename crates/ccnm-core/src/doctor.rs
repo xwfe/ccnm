@@ -446,21 +446,17 @@ fn terminal_row(r: &Resolved<'_>, rep: &ProbeReport) -> Check {
             NAME,
             format!("tmux {version}, no live session for {}", r.name),
         ),
-        Some(live) => Check::ok(
+        // A live session whose transport died is a WARN, not an OK: it
+        // looks like it is working from every side except the one that
+        // matters, and the fix is a thing a person has to type.
+        Some(live) if live.tools == Some(false) => Check::warn(
             NAME,
             format!(
-                "tmux {version}, {} {} ({})",
-                live.tmux_session,
-                match live.attached {
-                    0 => "detached".to_string(),
-                    n => format!("{n} attached"),
-                },
-                live.context.as_ref().map_or(
-                    "context unknown".to_string(),
-                    crate::session::Context::describe
-                )
+                "tmux {version}, {}\nthe session has lost its tools; in Claude: /mcp -> ccnm -> Reconnect",
+                live.describe()
             ),
         ),
+        Some(live) => Check::ok(NAME, format!("tmux {version}, {}", live.describe())),
     }
 }
 
@@ -977,6 +973,7 @@ mod tests {
                         manager: Some("Background".into()),
                         keychain: Some(true),
                     }),
+                    tools: Some(true),
                 }],
             }),
         }
@@ -1193,7 +1190,7 @@ mod tests {
         );
         assert_eq!(
             row(&report, "Terminal session").detail,
-            "tmux 3.7c, ccnm-xshun detached (Background, keychain reachable)"
+            "tmux 3.7c, ccnm-xshun  xshun  detached  tools connected  (Background, keychain reachable)"
         );
         assert!(
             text.ends_with("NOT READY (0 failed, 4 not checked)\n"),

@@ -309,9 +309,11 @@ fn live_sessions(
         .filter(|live| wanted.as_ref().is_none_or(|name| &live.name == name))
         .map(|live| {
             let session = live_session_id(tmux, tools, &live.name);
-            let context = session.as_ref().and_then(|id| {
-                session::read_context(&session::Dir::at(paths::session_dir(&tools.state, id)))
-            });
+            let dir = session
+                .as_ref()
+                .map(|id| session::Dir::at(paths::session_dir(&tools.state, id)));
+            let context = dir.as_ref().and_then(session::read_context);
+            let tools_up = dir.as_ref().and_then(|dir| transport_alive(dir, tools));
             protocol::run::LiveSession {
                 workspace: live.workspace().map(str::to_string),
                 tmux_session: live.name,
@@ -319,9 +321,47 @@ fn live_sessions(
                 created: live.created,
                 attached: live.attached,
                 context,
+                tools: tools_up,
             }
         })
         .collect()
+}
+
+/// Is this session's MCP transport still running?
+///
+/// The transport is one ssh, started by Claude from the session's
+/// `mcp.json`, and it is every tool the model has. When it dies Claude
+/// does not restart it: the terminal keeps working, the model keeps
+/// answering, and it quietly has nothing to reach the project with — the
+/// worst kind of failure, because it looks like a working session. So
+/// `ccnm status` looks for the process by the exact payload that session's
+/// `mcp.json` names, which is unique to it.
+///
+/// `None` means the question could not be answered (no mcp.json, `ps`
+/// unavailable), never "no".
+fn transport_alive(dir: &session::Dir, tools: &Tools<'_>) -> Option<bool> {
+    let payload = transport_payload(dir)?;
+    let out = tools
+        .runner
+        .run(&crate::process::Cmd::new("/bin/ps").args(["-Awwo", "command="]))
+        .ok()?;
+    Some(out.stdout_lossy().contains(&payload))
+}
+
+/// The `--payload` argument out of a session's `mcp.json`.
+fn transport_payload(dir: &session::Dir) -> Option<String> {
+    let text = std::fs::read_to_string(dir.mcp_config()).ok()?;
+    let config: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let args = config
+        .pointer(&format!("/mcpServers/{}/args", mcp::server::SERVER_NAME))?
+        .as_array()?;
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        if arg.as_str() == Some("--payload") {
+            return it.next()?.as_str().map(str::to_string);
+        }
+    }
+    None
 }
 
 /// The ccnm session id a live tmux session was tagged with.
@@ -874,6 +914,11 @@ mod tests {
             r#"{"manager":"Background","keychain":true}"#,
         )
         .unwrap();
+        std::fs::write(
+            session_dir.mcp_config(),
+            r#"{"mcpServers":{"ccnm":{"command":"/usr/bin/ssh","args":["-T","home","ccnm","internal","mcp-serve","--payload","eyJwIjoxfQ"]}}}"#,
+        )
+        .unwrap();
 
         let fake = FakeRunner::new();
         fake.push(Output::exited(0, "tmux 3.7c\n")); // -V
@@ -882,6 +927,11 @@ mod tests {
             "ccnm-xshun\t1788496263\t1\t1\nccnm-other\t1788496264\t0\t1\n",
         ));
         fake.push(Output::exited(0, format!("CCNM_SESSION={id}\n")));
+        // ps: the transport for that payload is running.
+        fake.push(Output::exited(
+            0,
+            "/usr/bin/ssh -T home ccnm internal mcp-serve --payload eyJwIjoxfQ\nlogin -pf me\n",
+        ));
         fake.push(Output::exited(0, "-CCNM_SESSION\n")); // the other one is untagged
 
         let rep = status(
@@ -899,17 +949,56 @@ mod tests {
             rep.sessions[0].context.as_ref().unwrap().describe(),
             "Background, keychain reachable"
         );
+        assert_eq!(rep.sessions[0].tools, Some(true));
         assert_eq!(rep.sessions[1].session, None);
         assert_eq!(rep.sessions[1].context, None);
+        assert_eq!(rep.sessions[1].tools, None, "unknown, never a guessed no");
         let text = rep.render();
         assert!(
-            text.contains("ccnm-xshun  xshun  1 attached  Background, keychain reachable"),
+            text.contains(
+                "ccnm-xshun  xshun  1 attached  tools connected  (Background, keychain reachable)"
+            ),
             "{text}"
         );
         assert!(
-            text.contains("ccnm-other  other  detached  context unknown"),
+            text.contains("ccnm-other  other  detached  tools unknown  (context unknown)"),
             "{text}"
         );
+    }
+
+    /// A session whose transport died is the worst failure this system
+    /// has: the terminal works, the model answers, and every tool it has
+    /// is gone. The status line has to say so and say what to do.
+    #[test]
+    fn a_session_that_lost_its_tools_says_how_to_get_them_back() {
+        let dir = temp("tools-down");
+        let id = "0b4c7a1e-2d3f-4a5b-8c6d-7e8f9a0b1c2d";
+        let session_dir = session::Dir::at(paths::session_dir(&dir, id));
+        std::fs::create_dir_all(session_dir.path()).unwrap();
+        std::fs::write(
+            session_dir.mcp_config(),
+            r#"{"mcpServers":{"ccnm":{"command":"/usr/bin/ssh","args":["--payload","eyJwIjoxfQ"]}}}"#,
+        )
+        .unwrap();
+
+        let fake = FakeRunner::new();
+        fake.push(Output::exited(0, "tmux 3.7c\n"));
+        fake.push(Output::exited(0, "ccnm-xshun\t1788496263\t0\t1\n"));
+        fake.push(Output::exited(0, format!("CCNM_SESSION={id}\n")));
+        // ps: everything else on the machine, but not that transport.
+        fake.push(Output::exited(0, "/usr/bin/ssh -T home something else\n"));
+
+        let rep = status(
+            &StatusRequest {
+                protocol: PROTOCOL,
+                workspace: None,
+            },
+            &tmux_tools(&fake, &dir, "tools-down"),
+        );
+        assert_eq!(rep.sessions[0].tools, Some(false));
+        let text = rep.render();
+        assert!(text.contains("TOOLS DOWN"), "{text}");
+        assert!(text.contains("/mcp -> ccnm -> Reconnect"), "{text}");
     }
 
     #[test]

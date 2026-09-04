@@ -169,8 +169,15 @@ impl Ssh {
             "ClearAllForwardings=yes",
             "ControlMaster=no",
             "ControlPath=none",
+            // Five minutes of silence before this connection is declared
+            // dead, against 45 seconds for a control command. The
+            // asymmetry is deliberate: a doctor probe should fail fast,
+            // but this connection *is* the session's tools, and losing it
+            // costs the person a `/mcp` reconnect. A laptop that slept for
+            // two minutes, a Wi-Fi handover, a router reboot -- the TCP
+            // survives all of those and so should the session.
             "ServerAliveInterval=15",
-            "ServerAliveCountMax=3",
+            "ServerAliveCountMax=20",
             "SendEnv=-ANTHROPIC_*",
             "SendEnv=-CLAUDE_*",
         ]
@@ -545,10 +552,15 @@ mod tests {
         let text = cmd.display();
         assert_eq!(
             text,
-            "ssh -o BatchMode=yes -o ConnectTimeout=10 -o ClearAllForwardings=yes -o ControlMaster=no -o ControlPath=none -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o SendEnv=-ANTHROPIC_* -o SendEnv=-CLAUDE_* -T work /Users/ccrun/.local/bin/ccnm internal mcp-serve --payload eyJwIjoxfQ"
+            "ssh -o BatchMode=yes -o ConnectTimeout=10 -o ClearAllForwardings=yes -o ControlMaster=no -o ControlPath=none -o ServerAliveInterval=15 -o ServerAliveCountMax=20 -o SendEnv=-ANTHROPIC_* -o SendEnv=-CLAUDE_* -T work /Users/ccrun/.local/bin/ccnm internal mcp-serve --payload eyJwIjoxfQ"
         );
         assert!(cmd.stdin.is_none(), "the MCP client owns stdin, not Cmd");
         assert!(ssh().mcp_transport_cmd("has space").is_err());
+        // The session's tools hang off this connection, so it waits five
+        // minutes before giving up where a control command waits 45
+        // seconds. Losing it costs the person a /mcp reconnect.
+        let control = ssh().options(Master::Reuse).join(" ");
+        assert!(control.contains("ServerAliveCountMax=3"), "{control}");
     }
 
     #[test]

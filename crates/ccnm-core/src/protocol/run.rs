@@ -250,6 +250,38 @@ pub struct LiveSession {
     pub attached: u32,
     #[serde(default)]
     pub context: Option<crate::session::Context>,
+    /// Whether the session's MCP transport — the one ssh that carries
+    /// every tool call to the project — is still running.
+    ///
+    /// `None` when it could not be determined. `Some(false)` is the one
+    /// state worth interrupting someone for: the terminal still works, the
+    /// model still answers, and every tool it has is gone.
+    #[serde(default)]
+    pub tools: Option<bool>,
+}
+
+impl LiveSession {
+    /// What to say about this session in one line.
+    pub fn describe(&self) -> String {
+        let attached = match self.attached {
+            0 => "detached".to_string(),
+            n => format!("{n} attached"),
+        };
+        let tools = match self.tools {
+            Some(true) => "tools connected",
+            Some(false) => "TOOLS DOWN (in Claude: /mcp -> ccnm -> Reconnect)",
+            None => "tools unknown",
+        };
+        format!(
+            "{}  {}  {attached}  {tools}  ({})",
+            self.tmux_session,
+            self.workspace.as_deref().unwrap_or("-"),
+            self.context.as_ref().map_or(
+                "context unknown".to_string(),
+                crate::session::Context::describe
+            ),
+        )
+    }
 }
 
 impl StatusReport {
@@ -263,19 +295,8 @@ impl StatusReport {
             return out;
         }
         for s in &self.sessions {
-            out.push_str(&format!(
-                "{}  {}  {}  {}\n",
-                s.tmux_session,
-                s.workspace.as_deref().unwrap_or("-"),
-                match s.attached {
-                    0 => "detached".to_string(),
-                    n => format!("{n} attached"),
-                },
-                s.context.as_ref().map_or(
-                    "context unknown".to_string(),
-                    crate::session::Context::describe
-                ),
-            ));
+            out.push_str(&s.describe());
+            out.push('\n');
         }
         out
     }

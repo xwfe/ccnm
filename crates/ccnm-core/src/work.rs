@@ -148,6 +148,31 @@ pub fn start(req: &StartRequest, tools: &Tools<'_>) -> Result<StartReport> {
         let dir = session
             .as_ref()
             .map(|id| paths::session_dir(&tools.state, id));
+        // A session's root is fixed when it starts: it is in the payload
+        // the MCP transport was spawned with, and nothing can repoint it.
+        // So a live session whose root is not the one being asked for is a
+        // session that will do its work somewhere else -- and if the old
+        // path has since been moved away, one where every tool fails for
+        // reasons that sound like something else. Refuse and say both
+        // paths; the person reading this is the one who moved it.
+        if let Some(live) = dir
+            .as_ref()
+            .map(session::Dir::at)
+            .and_then(|d| session::load(&d).ok())
+            && live.root != req.root
+        {
+            return Err(Error::new(
+                ErrorCode::WrongWorkspace,
+                format!(
+                    "the running session for {} is working in {}, but this workspace now says {}\na session cannot be repointed; end it and start another:\n  ccnm stop {}\n  ccnm run {}",
+                    req.workspace,
+                    live.root.display(),
+                    req.root.display(),
+                    req.workspace,
+                    req.workspace
+                ),
+            ));
+        }
         let context = dir
             .as_ref()
             .and_then(|path| session::read_context(&session::Dir::at(path)));
@@ -894,6 +919,45 @@ mod tests {
         let err = start(&start_request(), &tmux_tools(&fake, &dir, "start-none")).unwrap_err();
         assert_eq!(err.code(), ErrorCode::NotReady);
         assert!(!dir.join("sessions").exists(), "no session may be created");
+    }
+
+    /// A session's root is fixed when it starts. Being handed back into
+    /// one that works somewhere else is how a moved project turns into an
+    /// hour of tools failing for reasons that sound like something else.
+    #[test]
+    fn start_refuses_a_live_session_bound_to_a_different_root() {
+        let dir = temp("moved-root");
+        let id = "0b4c7a1e-2d3f-4a5b-8c6d-7e8f9a0b1c2d";
+        let sdir = session::Dir::at(paths::session_dir(&dir, id));
+        std::fs::create_dir_all(sdir.path()).unwrap();
+        let spec = Spec {
+            protocol: PROTOCOL,
+            id: id.into(),
+            workspace: "xshun".into(),
+            // Where it was when it started.
+            root: PathBuf::from("/Users/bing/xshun"),
+            home_alias: "home".into(),
+            home_ccnm_bin: "ccnm".into(),
+            claude_config_dir: None,
+            permission_mode: crate::config::PermissionMode::default(),
+            mode: Mode::Interactive { prompt: None },
+            timeout_secs: 0,
+            cwd: dir.clone(),
+        };
+        std::fs::write(sdir.meta(), serde_json::to_string(&spec).unwrap()).unwrap();
+
+        let fake = FakeRunner::new();
+        fake.push(Output::exited(0, "")); // has-session: live
+        fake.push(Output::exited(0, format!("CCNM_SESSION={id}\n")));
+
+        // The request says somewhere else -- the project was moved.
+        let mut req = start_request();
+        req.root = PathBuf::from("/Users/bing/moved/xshun");
+        let err = start(&req, &tmux_tools(&fake, &dir, "moved-root")).unwrap_err();
+        assert_eq!(err.code(), ErrorCode::WrongWorkspace);
+        assert!(err.message().contains("/Users/bing/xshun"), "{err}");
+        assert!(err.message().contains("/Users/bing/moved/xshun"), "{err}");
+        assert!(err.message().contains("ccnm stop xshun"), "{err}");
     }
 
     /// The same rule print mode has, and for the same reason: a Claude

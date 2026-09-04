@@ -32,6 +32,7 @@ use serde::{Deserialize, Serialize};
 // `crate::error::Result` is deliberately not imported: the `tool_handler`
 // macro expands to `Result<_, ErrorData>` and would pick up the alias.
 use crate::error::{Error, ErrorCode, ErrorReport};
+use crate::mcp::context;
 use crate::mcp::exec::{self, ExecCommandArgs};
 use crate::mcp::list::{self, ListFilesArgs};
 use crate::mcp::output::{self, ReadOutputArgs};
@@ -46,10 +47,9 @@ type CcnmResult<T> = crate::error::Result<T>;
 /// `serverInfo.name` in the initialize response.
 pub const SERVER_NAME: &str = "ccnm";
 
-/// Upper bound on `initialize.result.instructions` (design doc section
-/// 20). Phase 3 adds the project's CLAUDE.md under this cap; today the
-/// text is a few lines.
-pub const MAX_INSTRUCTIONS_BYTES: usize = 16 * 1024;
+/// Upper bound on `initialize.result.instructions`, the project's
+/// CLAUDE.md included (design doc section 20).
+pub use crate::mcp::context::MAX_INSTRUCTIONS_BYTES;
 
 /// The `structuredContent` of `workspace_info`. Small on purpose: the
 /// model needs to know where it is, not the server's environment.
@@ -175,6 +175,12 @@ struct Inner {
     exec_gate: ExecGate,
     /// Canonical. Never sent to the client.
     root: PathBuf,
+    /// The project's own CLAUDE.md, as much of it as the handshake can
+    /// carry. Read once at startup, like everything else here: the
+    /// instructions are sent in the initialize response and cannot change
+    /// afterwards, so re-reading the file mid-session would only produce a
+    /// number that disagrees with what the model was given.
+    project: Option<context::Project>,
     git: bool,
     git_subdir: Option<String>,
     calls: AtomicU64,
@@ -194,6 +200,17 @@ impl Server {
         let root = canonical_root(&payload.root)?;
         let (git, git_subdir) = git_facts(&root, &SystemRunner);
         let exec_gate = ExecGate::decide(&payload.workspace);
+        // A CLAUDE.md that cannot be read does not stop the session: the
+        // model can still work, just without the project's rules. It is
+        // logged here and reported by doctor's "Project instructions" row,
+        // which is where someone can act on it.
+        let project = match context::find(&root, context::budget(&payload.workspace)) {
+            Ok(project) => project,
+            Err(e) => {
+                tracing::warn!(error = %e, "project instructions not readable");
+                None
+            }
+        };
         tracing::info!(
             workspace = %payload.workspace,
             root = %root.display(),
@@ -202,6 +219,7 @@ impl Server {
             runtime_user = %exec_gate.audit.user,
             confined = exec_gate.audit.confined(),
             exec_allowed = exec_gate.allowed(),
+            project_instructions = project.as_ref().map_or(0, context::Project::included),
             "mcp server starting"
         );
         Ok(Server {
@@ -211,6 +229,7 @@ impl Server {
                 state: crate::paths::state_dir().ok(),
                 exec_gate,
                 root,
+                project,
                 git,
                 git_subdir,
                 calls: AtomicU64::new(0),
@@ -224,20 +243,11 @@ impl Server {
         &self.inner.root
     }
 
-    /// What goes into `initialize.result.instructions`. Bounded by
-    /// [`MAX_INSTRUCTIONS_BYTES`]; phase 3 appends the project CLAUDE.md.
+    /// What goes into `initialize.result.instructions`: ccnm's own
+    /// paragraph, then the project's CLAUDE.md, within
+    /// [`MAX_INSTRUCTIONS_BYTES`] (design doc section 20).
     pub fn instructions(&self) -> String {
-        // The second sentence exists because of a real session: Claude's
-        // own environment block said its cwd was not a git repository
-        // (true -- that is the work machine's state directory), while
-        // workspace_info said the project was one, and it refused to
-        // commit on the contradiction. Claude Code cannot be stopped from
-        // describing the directory it runs in, so the instructions say
-        // which one to believe.
-        let text = format!(
-            "CCNM remote workspace \"{}\". The project lives on another machine and is reachable only through the ccnm tools; there is no local copy. Whatever your own environment says about the current directory, its git status or its files describes the machine you run on, not the project: for the project, workspace_info is the truth. Every path you pass or receive is relative to the workspace root.",
-            self.inner.workspace
-        );
+        let text = context::instructions(&self.inner.workspace, self.inner.project.as_ref());
         debug_assert!(text.len() <= MAX_INSTRUCTIONS_BYTES);
         text
     }
@@ -601,6 +611,38 @@ mod tests {
         let json = serde_json::to_string(&first).unwrap();
         assert!(!json.contains(&dir.display().to_string()), "{json}");
         assert!(!server.instructions().contains(&dir.display().to_string()));
+    }
+
+    /// The project's own rules have to come out of the handshake the
+    /// server really builds, not only out of the context module's tests.
+    #[test]
+    fn the_projects_claude_md_reaches_the_instructions() {
+        let dir = temp("project");
+        std::fs::write(dir.join("CLAUDE.md"), "# 规则\n\n- 提交要小\n").unwrap();
+        let server = Server::new(&ServePayload::new("xshun", dir.clone(), "s")).unwrap();
+        let text = server.instructions();
+        assert!(text.contains("- 提交要小"), "{text}");
+        assert_eq!(
+            crate::mcp::context::parse_marker(&text).as_deref(),
+            Some("CLAUDE.md, 25 bytes")
+        );
+        assert!(text.len() <= MAX_INSTRUCTIONS_BYTES);
+        // Still no absolute path, project file or not.
+        assert!(!text.contains(&dir.display().to_string()), "{text}");
+    }
+
+    /// A CLAUDE.md that cannot be read must not take the session down with
+    /// it: without the project's rules the model is worse off, without a
+    /// server it cannot work at all.
+    #[test]
+    fn an_unreadable_claude_md_still_serves() {
+        let dir = temp("badproject");
+        std::fs::create_dir(dir.join("CLAUDE.md")).unwrap();
+        let server = Server::new(&ServePayload::new("xshun", dir, "s")).unwrap();
+        assert_eq!(
+            crate::mcp::context::parse_marker(&server.instructions()).as_deref(),
+            Some("no CLAUDE.md at the workspace root")
+        );
     }
 
     #[test]

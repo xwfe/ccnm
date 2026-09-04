@@ -8,6 +8,7 @@
 //! protocol's base64 payload is consumed once, before the first byte of
 //! MCP (section 9).
 
+pub mod context;
 pub mod exec;
 pub mod glob;
 pub mod list;

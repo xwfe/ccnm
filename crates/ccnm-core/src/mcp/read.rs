@@ -8,9 +8,11 @@
 //! of section m); on a home machine shared with the user's real work that
 //! is a memory spike nobody asked for.
 //!
-//! Everything it returns is bounded, in both directions of section 16:
-//! the numbered text goes in `content[0].text` and the small metadata in
-//! `structuredContent`, never the same bytes twice.
+//! Everything it returns is bounded (section 16), and all of it is in
+//! `content[0].text`: the numbered lines, then one footer with the
+//! version and where to continue. Nothing goes in `structuredContent`,
+//! because Claude Code shows the model that *instead of* the text when
+//! both are present (measured 2026-09-04; see `text_only` in the server).
 //!
 //! What tends to go wrong in practice, and what happens instead:
 //!
@@ -112,10 +114,10 @@ pub enum LineEnding {
     None,
 }
 
-/// The result of one `read_file`. Small by construction: the file content
-/// lives in [`text`](Self::text) and is excluded from the serialized form,
-/// so a client that forwards both `content` and `structuredContent` to the
-/// model does not pay for the file twice.
+/// The result of one `read_file`. What the model sees is
+/// [`text`](Self::text) alone; the other fields are what the text was
+/// rendered from, kept for tests and for callers inside ccnm, and are not
+/// sent on the wire.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FileChunk {
     /// Numbered lines plus one footer line. Goes to `content[0].text`.
@@ -424,10 +426,13 @@ impl Scan {
         let text = render(
             &self.lines,
             &path,
-            self.truncated_by,
-            self.next_start_line,
-            self.total_lines,
+            Stop {
+                truncated_by: self.truncated_by,
+                next_start_line: self.next_start_line,
+                total_lines: self.total_lines,
+            },
             self.limits,
+            &version,
             &notes,
         );
         FileChunk {
@@ -452,29 +457,45 @@ impl Scan {
 
 /// Numbered lines and a footer that says what to do next.
 ///
-/// The footer is part of the text and not just of `structuredContent` on
-/// purpose: a client is free to drop `structuredContent`, and a model that
-/// cannot see it stops after the first 200 lines believing it read the
-/// whole file.
-fn render(
-    lines: &[(u32, String)],
-    path: &str,
+/// Where a read stopped, for the footer.
+struct Stop {
     truncated_by: Option<Truncation>,
     next_start_line: Option<u32>,
     total_lines: Option<u32>,
+}
+
+/// The text is the whole answer: the numbered lines, then one bracketed
+/// footer that says whether there is more and carries the `version` an
+/// `apply_patch` has to hand back. Nothing the model needs is anywhere
+/// else — Claude Code shows the model exactly one channel (see
+/// `text_only` in the server), and a model that cannot see the footer
+/// stops after 200 lines believing it read the whole file, or cannot
+/// patch what it read.
+fn render(
+    lines: &[(u32, String)],
+    path: &str,
+    stop: Stop,
     limits: Limits,
+    version: &str,
     notes: &[String],
 ) -> String {
+    let Stop {
+        truncated_by,
+        next_start_line,
+        total_lines,
+    } = stop;
     let mut out = String::new();
     if lines.is_empty() {
         match total_lines {
-            Some(0) => out.push_str(&format!("[{path} is empty]")),
+            Some(0) => out.push_str(&format!("[{path} is empty; version {version}]")),
             Some(total) => out.push_str(&format!(
-                "[no lines returned: {path} has {total} line{}, and start_line was {}]",
+                "[no lines returned: {path} has {total} line{}, and start_line was {}; version {version}]",
                 if total == 1 { "" } else { "s" },
                 limits.start
             )),
-            None => out.push_str(&format!("[no lines returned from {path}]")),
+            None => out.push_str(&format!(
+                "[no lines returned from {path}; version {version}]"
+            )),
         }
         return out;
     }
@@ -486,21 +507,21 @@ fn render(
 
     let footer = match (truncated_by, next_start_line, total_lines) {
         (Some(Truncation::MaxLines), Some(next), _) => format!(
-            "[stopped at max_lines={}; continue with start_line={next}]",
+            "stopped at max_lines={}; continue with start_line={next}",
             limits.max_lines
         ),
         (Some(Truncation::MaxBytes), Some(next), _) => format!(
-            "[stopped at max_bytes={}; continue with start_line={next}]",
+            "stopped at max_bytes={}; continue with start_line={next}",
             limits.max_bytes
         ),
-        (None, Some(next), _) => format!("[file continues at line {next}]"),
+        (None, Some(next), _) => format!("file continues at line {next}"),
         (_, None, Some(total)) => format!(
-            "[end of file, {total} line{}]",
+            "end of file, {total} line{}",
             if total == 1 { "" } else { "s" }
         ),
-        (_, None, None) => "[end of range]".to_string(),
+        (_, None, None) => "end of range".to_string(),
     };
-    out.push_str(&footer);
+    out.push_str(&format!("[{footer}; version {version}]"));
     for note in notes {
         out.push_str("\n[");
         out.push_str(note);
@@ -538,6 +559,18 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
 
+    /// The footer's `; version <size-mtime>` is different on every run, so
+    /// tests that compare whole texts compare them without it -- after
+    /// checking it was there, because a footer without the version is the
+    /// bug that made apply_patch impossible.
+    fn strip_version(text: &str) -> String {
+        let start = text
+            .rfind("; version ")
+            .unwrap_or_else(|| panic!("no version in the footer of {text:?}"));
+        assert!(text.ends_with(']'), "{text:?}");
+        format!("{}]", &text[..start])
+    }
+
     fn workspace(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("ccnm-read-{}-{name}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
@@ -573,8 +606,15 @@ mod tests {
         write(&root, "a.txt", "one\ntwo\nthree\n");
         let c = read(&root, &args("a.txt"));
         assert_eq!(
-            c.text,
+            strip_version(&c.text),
             "1\u{2192}one\n2\u{2192}two\n3\u{2192}three\n[end of file, 3 lines]"
+        );
+        // The version the model must hand back to apply_patch is in the
+        // text, verbatim.
+        assert!(
+            c.text.ends_with(&format!("; version {}]", c.version)),
+            "{}",
+            c.text
         );
         assert_eq!((c.start_line, c.end_line, c.lines), (1, 3, 3));
         assert_eq!(c.total_lines, Some(3));
@@ -601,8 +641,11 @@ mod tests {
         assert!(c.text.contains("\n12\u{2192}l12\n"), "{}", c.text);
     }
 
+    /// The struct is no longer sent as `structuredContent` (the text is
+    /// the whole answer), but its serialized form is still what tests and
+    /// ccnm's own callers see, and it must not quietly grow the body.
     #[test]
-    fn structured_content_never_carries_the_file_body() {
+    fn the_chunk_serializes_without_the_file_body() {
         let root = workspace("nodup");
         write(&root, "a.txt", "hello world\n");
         let c = read(&root, &args("a.txt"));
@@ -628,7 +671,11 @@ mod tests {
         assert!(!c.truncated, "an honoured range is not a truncation");
         assert_eq!(c.next_start_line, Some(6));
         assert_eq!(c.total_lines, None);
-        assert!(c.text.contains("[file continues at line 6]"), "{}", c.text);
+        assert!(
+            c.text.contains("[file continues at line 6; version "),
+            "{}",
+            c.text
+        );
     }
 
     #[test]
@@ -662,7 +709,7 @@ mod tests {
         assert_eq!(c.lines, 0);
         assert_eq!(c.total_lines, Some(2));
         assert_eq!(
-            c.text,
+            strip_version(&c.text),
             "[no lines returned: a.txt has 2 lines, and start_line was 99]"
         );
     }
@@ -677,7 +724,8 @@ mod tests {
         assert_eq!(c.file_bytes, 0);
         assert_eq!(c.line_ending, LineEnding::None);
         assert_eq!(c.final_newline, None);
-        assert_eq!(c.text, "[a.txt is empty]");
+        // An empty file still has a version: it can be patched into.
+        assert_eq!(strip_version(&c.text), "[a.txt is empty]");
     }
 
     #[test]
@@ -742,7 +790,7 @@ mod tests {
         assert_eq!(c.total_lines, None, "the file was not read to the end");
         assert_eq!(c.final_newline, None);
         assert!(
-            c.text
+            strip_version(&c.text)
                 .ends_with("[stopped at max_lines=200; continue with start_line=201]"),
             "{}",
             &c.text[c.text.len() - 80..]
@@ -859,7 +907,10 @@ mod tests {
         write(&root, "a.txt", "one\r\ntwo\r\n");
         let c = read(&root, &args("a.txt"));
         assert_eq!(c.line_ending, LineEnding::Crlf);
-        assert_eq!(c.text, "1\u{2192}one\n2\u{2192}two\n[end of file, 2 lines]");
+        assert_eq!(
+            strip_version(&c.text),
+            "1\u{2192}one\n2\u{2192}two\n[end of file, 2 lines]"
+        );
         assert!(
             !c.text.contains('\r'),
             "a stray CR would be invisible noise"

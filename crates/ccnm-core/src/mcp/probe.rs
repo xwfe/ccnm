@@ -131,17 +131,25 @@ async fn run(transport: &Cmd, calls: u32, unreachable: ErrorCode) -> Result<Prob
                 Error::internal(format!("workspace_info call {} failed", i + 1)).with_source(e)
             })?;
         samples.push(elapsed_us(t));
-        let structured = result
-            .structured_content
-            .ok_or_else(|| Error::internal("workspace_info returned no structuredContent"))?;
-        let info: WorkspaceInfo = serde_json::from_value(structured)
-            .map_err(|e| Error::internal("workspace_info structuredContent").with_source(e))?;
+        // The pid and counter are in the text, the one channel the model
+        // is shown too, so the probe reads what the model would read.
+        let text: String = result
+            .content
+            .iter()
+            .filter_map(|block| block.as_text())
+            .map(|t| t.text.as_str())
+            .collect();
+        let (pid, calls_served) = WorkspaceInfo::parse_server_line(&text).ok_or_else(|| {
+            Error::internal(format!(
+                "workspace_info did not end with its [server pid ..] line; got: {text:?}"
+            ))
+        })?;
         if i == 0 {
-            server_pid = info.server_pid;
-        } else if info.server_pid != server_pid {
+            server_pid = pid;
+        } else if pid != server_pid {
             single_process = false;
         }
-        if info.calls_served != u64::from(i) + 1 {
+        if calls_served != u64::from(i) + 1 {
             single_process = false;
         }
     }

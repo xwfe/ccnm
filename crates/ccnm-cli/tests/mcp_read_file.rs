@@ -146,9 +146,43 @@ impl Session {
     }
 }
 
-/// The text a model actually reads out of a tool result.
+/// The text a model actually reads out of a tool result -- and, since
+/// Claude Code shows the model nothing else, the only thing a result may
+/// carry. Asserted here on every success so a `structuredContent` cannot
+/// creep back in and silently hide the body again.
 fn text(result: &Value) -> String {
+    if !is_error(result) {
+        assert!(
+            result.get("structuredContent").is_none(),
+            "a result must carry its answer in the text alone: {result}"
+        );
+    }
     result["content"][0]["text"].as_str().unwrap().to_string()
+}
+
+/// The token after the last `marker` in the text, up to a space, `]` or
+/// newline: how a model copies `version`, `output_ref` or `offset=` out
+/// of a footer.
+fn after(text: &str, marker: &str) -> String {
+    let start = text
+        .rfind(marker)
+        .unwrap_or_else(|| panic!("no {marker:?} in {text:?}"))
+        + marker.len();
+    text[start..]
+        .split([' ', ']', '\n', ';'])
+        .next()
+        .unwrap()
+        .to_string()
+}
+
+/// `N` out of the exec status line `..., N B stdout, ...`.
+fn stdout_bytes(text: &str) -> u64 {
+    let line = text
+        .lines()
+        .find(|l| l.contains(" B stdout"))
+        .unwrap_or_else(|| panic!("no status line in {text:?}"));
+    let seg = line.split(", ").find(|s| s.ends_with(" B stdout")).unwrap();
+    seg.trim_end_matches(" B stdout").parse().unwrap()
 }
 
 fn is_error(result: &Value) -> bool {
@@ -237,27 +271,29 @@ fn read_file_serves_a_whole_session_over_one_process() {
     assert_eq!(schema["properties"]["start_line"]["minimum"], json!(1));
     assert_eq!(schema["properties"]["max_lines"]["maximum"], json!(2000));
 
-    // A normal read: numbered lines, a footer, bounded metadata.
+    // A normal read: numbered lines, then one footer with the version the
+    // model needs for apply_patch. Nothing else is sent.
     let ok = s.read_file(json!({"path": "src/main.rs"}));
     assert!(!is_error(&ok));
-    assert_eq!(
-        text(&ok),
-        "1\u{2192}fn main() {\n2\u{2192}    println!(\"hi\");\n3\u{2192}}\n[end of file, 3 lines]"
-    );
-    let meta = &ok["structuredContent"];
-    assert_eq!(meta["path"], "src/main.rs");
-    assert_eq!(meta["total_lines"], 3);
-    assert_eq!(meta["truncated"], false);
     assert!(
-        meta.get("text").is_none(),
-        "the body must not be sent twice: {meta}"
+        text(&ok).starts_with(
+            "1\u{2192}fn main() {\n2\u{2192}    println!(\"hi\");\n3\u{2192}}\n[end of file, 3 lines; version "
+        ),
+        "{}",
+        text(&ok)
     );
+    assert!(text(&ok).ends_with(']'));
+    assert!(!after(&text(&ok), "version ").is_empty());
 
     // Truncation hands back a line to resume from, and resuming works.
     let cut = s.read_file(json!({"path": "long.txt"}));
-    assert_eq!(cut["structuredContent"]["lines"], 200);
-    assert_eq!(cut["structuredContent"]["next_start_line"], 201);
-    assert!(text(&cut).ends_with("continue with start_line=201]"));
+    assert!(text(&cut).contains("\n200\u{2192}"), "200 lines");
+    assert!(!text(&cut).contains("\n201\u{2192}"), "not 201");
+    assert!(
+        text(&cut).contains("continue with start_line=201; version "),
+        "{}",
+        text(&cut)
+    );
     let rest = s.read_file(json!({"path": "long.txt", "start_line": 201}));
     assert!(text(&rest).starts_with("201\u{2192}line 201\n"));
 
@@ -317,10 +353,18 @@ fn read_file_serves_a_whole_session_over_one_process() {
     // does not, and the workspace path is nowhere in the answer.
     let found = s.call("search_text", json!({"query": "println"}));
     assert!(!is_error(&found));
-    assert_eq!(found["structuredContent"]["matches"], 1);
-    assert_eq!(found["structuredContent"]["hits"][0]["path"], "src/main.rs");
+    assert!(
+        text(&found).starts_with("src/main.rs\n"),
+        "{}",
+        text(&found)
+    );
     assert!(
         text(&found).contains("2:    println!(\"hi\");"),
+        "{}",
+        text(&found)
+    );
+    assert!(
+        text(&found).contains("[1 match in 1 file]"),
         "{}",
         text(&found)
     );
@@ -330,7 +374,11 @@ fn read_file_serves_a_whole_session_over_one_process() {
     // every fruitless search look like a broken tool.
     let none = s.call("search_text", json!({"query": "zzz-not-here-zzz"}));
     assert!(!is_error(&none), "{}", text(&none));
-    assert_eq!(none["structuredContent"]["matches"], 0);
+    assert!(
+        text(&none).starts_with("[no matches for "),
+        "{}",
+        text(&none)
+    );
 
     // The secret outside the workspace is not searchable either. The query
     // is a prefix of the sentinel on purpose: the server echoes the query
@@ -338,9 +386,8 @@ fn read_file_serves_a_whole_session_over_one_process() {
     // below on ccnm's own reply rather than on a real leak.
     let secret = s.call("search_text", json!({"query": "TOTALLY"}));
     assert!(!is_error(&secret));
-    assert_eq!(
-        secret["structuredContent"]["matches"],
-        0,
+    assert!(
+        text(&secret).starts_with("[no matches for "),
         "{}",
         text(&secret)
     );
@@ -357,10 +404,7 @@ fn read_file_serves_a_whole_session_over_one_process() {
     // comes back from one tool and is accepted by the next, and the new
     // content is visible immediately.
     let before = s.read_file(json!({"path": "src/main.rs"}));
-    let version = before["structuredContent"]["version"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let version = after(&text(&before), "version ");
     let patched = s.call(
         "apply_patch",
         json!({"files": [{
@@ -371,19 +415,21 @@ fn read_file_serves_a_whole_session_over_one_process() {
         }]}),
     );
     assert!(!is_error(&patched), "{}", text(&patched));
-    assert_eq!(patched["structuredContent"]["files_changed"], 1);
-    let new_version = patched["structuredContent"]["files"][0]["version"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    assert_ne!(new_version, version);
-    let after = s.read_file(json!({"path": "src/main.rs"}));
-    assert!(
-        text(&after).contains("println!(\"patched\")"),
-        "{}",
-        text(&after)
+    assert_eq!(
+        text(&patched).matches(" version ").count(),
+        1,
+        "one file, one new version: {}",
+        text(&patched)
     );
-    assert_eq!(after["structuredContent"]["version"], new_version);
+    let new_version = after(&text(&patched), "version ");
+    assert_ne!(new_version, version);
+    let reread = s.read_file(json!({"path": "src/main.rs"}));
+    assert!(
+        text(&reread).contains("println!(\"patched\")"),
+        "{}",
+        text(&reread)
+    );
+    assert_eq!(after(&text(&reread), "version "), new_version);
 
     // The same patch again is now stale, and nothing is written.
     let stale = s.call(
@@ -431,7 +477,7 @@ fn read_file_serves_a_whole_session_over_one_process() {
     // Accepting an unconfined runtime does not make it quiet: every
     // result says so, in the text and in the metadata.
     assert!(text(&ran).contains("NOT confined"), "{}", text(&ran));
-    assert_eq!(ran["structuredContent"]["exit_code"], 0);
+    assert!(text(&ran).contains("\nok in "), "{}", text(&ran));
     let dumped = text(&ran);
     assert!(!dumped.contains("sk-ant-must-not-leak"), "{dumped}");
     assert!(!dumped.contains("oauth-must-not-leak"), "{dumped}");
@@ -453,7 +499,7 @@ fn read_file_serves_a_whole_session_over_one_process() {
     // A non-zero exit is a result the model reads, not a tool failure.
     let failed = s.call("exec_command", json!({"cmd": ["false"]}));
     assert!(!is_error(&failed), "{}", text(&failed));
-    assert_eq!(failed["structuredContent"]["exit_code"], 1);
+    assert!(text(&failed).contains("\nexit 1 in "), "{}", text(&failed));
 
     // cwd goes through the same policy every other tool uses.
     let out = s.call("exec_command", json!({"cmd": ["pwd"], "cwd": "../"}));
@@ -469,11 +515,16 @@ fn read_file_serves_a_whole_session_over_one_process() {
                "preview_bytes": 400}),
     );
     assert!(!is_error(&big), "{}", text(&big));
-    let meta = &big["structuredContent"];
-    assert_eq!(meta["truncated"], true);
-    let output_ref = meta["output_ref"].as_str().unwrap().to_string();
-    let total = meta["stdout_bytes"].as_u64().unwrap();
+    assert!(
+        text(&big).contains("[output shortened; read_output with output_ref "),
+        "{}",
+        text(&big)
+    );
+    let output_ref = after(&text(&big), "output_ref ");
+    let total = stdout_bytes(&text(&big));
 
+    // Paging by what the footer says, exactly as a model would: the
+    // footer names the next offset, or the end.
     let mut offset = 0u64;
     let mut whole = String::new();
     loop {
@@ -482,9 +533,17 @@ fn read_file_serves_a_whole_session_over_one_process() {
             json!({"output_ref": output_ref, "offset": offset, "limit": 2048}),
         );
         assert!(!is_error(&page), "{}", text(&page));
-        let bytes = page["structuredContent"]["bytes"].as_u64().unwrap() as usize;
-        whole.push_str(&text(&page)[..bytes]);
-        match page["structuredContent"]["next_offset"].as_u64() {
+        let page_text = text(&page);
+        let (bytes, next) = if page_text.contains("continue with offset=") {
+            let next: u64 = after(&page_text, "offset=").parse().unwrap();
+            ((next - offset) as usize, Some(next))
+        } else {
+            let end: u64 = after(&page_text, "[end of stdout at ").parse().unwrap();
+            ((end - offset) as usize, None)
+        };
+        // The page's own bytes come first; the footer is appended after.
+        whole.push_str(&page_text[..bytes]);
+        match next {
             Some(next) => offset = next,
             None => break,
         }
@@ -510,7 +569,7 @@ fn read_file_serves_a_whole_session_over_one_process() {
 
     // Read-only, one process, and the whole session's calls counted.
     let info = s.rpc("tools/call", json!({"name": "workspace_info"}));
-    assert_eq!(info["structuredContent"]["calls_served"], 35);
+    assert_eq!(after(&text(&info), "call "), "35", "{}", text(&info));
     // apply_patch changed one file in place; nothing was created or left
     // behind, temp files included.
     let mut names: Vec<String> = std::fs::read_dir(&root)

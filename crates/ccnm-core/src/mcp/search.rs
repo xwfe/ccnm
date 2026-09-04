@@ -49,8 +49,8 @@ use crate::process::{Cmd, Flow, stream_lines};
 
 /// Matches returned when the caller does not say (design doc section 15).
 pub const DEFAULT_MAX_RESULTS: u32 = 50;
-/// Ceiling on `max_results`. Also bounds `hits`, the one part of
-/// `structuredContent` that grows with the answer.
+/// Ceiling on `max_results`. Also bounds `hits`, the one part of the
+/// result that grows with the answer.
 pub const MAX_MAX_RESULTS: u32 = 200;
 /// Context lines each side when the caller does not say.
 pub const DEFAULT_CONTEXT_LINES: u32 = 2;

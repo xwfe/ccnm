@@ -70,7 +70,32 @@ pub struct WorkspaceInfo {
 }
 
 impl WorkspaceInfo {
-    /// The `content[0].text` a model reads.
+    /// The whole text: the summary, then one bracketed line naming the
+    /// server process and its call counter.
+    ///
+    /// Those two numbers are how the probe proves one server answered a
+    /// whole session (design doc section 27). They ride in the text
+    /// because the text is the only channel Claude Code shows the model,
+    /// and a second channel nobody reads is not worth keeping in step.
+    pub fn render(&self) -> String {
+        format!(
+            "{}\n[server pid {}, call {}]",
+            self.summary(),
+            self.server_pid,
+            self.calls_served
+        )
+    }
+
+    /// The pid and call counter back out of [`render`](Self::render)'s
+    /// last line, for the probe.
+    pub fn parse_server_line(text: &str) -> Option<(u32, u64)> {
+        let line = text.lines().rev().find(|l| l.starts_with("[server pid "))?;
+        let rest = line.strip_prefix("[server pid ")?.strip_suffix(']')?;
+        let (pid, call) = rest.split_once(", call ")?;
+        Some((pid.parse().ok()?, call.parse().ok()?))
+    }
+
+    /// One line about the workspace, without the server's bookkeeping.
     pub fn summary(&self) -> String {
         let git = match (&self.git, &self.git_subdir) {
             (false, _) => "not a git repository".to_string(),
@@ -238,12 +263,7 @@ impl Server {
         description = "Name, git status and platform of the remote workspace. Call once to orient; all other tool paths are relative to this workspace."
     )]
     async fn workspace_info(&self) -> std::result::Result<CallToolResult, ErrorData> {
-        let info = self.info();
-        let value = serde_json::to_value(&info)
-            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-        let mut result = CallToolResult::structured(value);
-        result.content = vec![ContentBlock::text(info.summary())];
-        Ok(result)
+        Ok(text_only(self.info().render()))
     }
 
     #[tool(
@@ -263,13 +283,7 @@ impl Server {
             .await
             .map_err(|e| ErrorData::internal_error(format!("read_file task failed: {e}"), None))?;
         match chunk {
-            Ok(chunk) => {
-                let value = serde_json::to_value(&chunk)
-                    .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-                let mut result = CallToolResult::structured(value);
-                result.content = vec![ContentBlock::text(chunk.text)];
-                Ok(result)
-            }
+            Ok(chunk) => Ok(text_only(chunk.text)),
             Err(err) => Ok(tool_error(&err)),
         }
     }
@@ -291,13 +305,7 @@ impl Server {
                     ErrorData::internal_error(format!("list_files task failed: {e}"), None)
                 })?;
         match listing {
-            Ok(listing) => {
-                let value = serde_json::to_value(&listing)
-                    .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-                let mut result = CallToolResult::structured(value);
-                result.content = vec![ContentBlock::text(listing.text)];
-                Ok(result)
-            }
+            Ok(listing) => Ok(text_only(listing.text)),
             Err(err) => Ok(tool_error(&err)),
         }
     }
@@ -318,13 +326,7 @@ impl Server {
                 ErrorData::internal_error(format!("search_text task failed: {e}"), None)
             })?;
         match found {
-            Ok(found) => {
-                let value = serde_json::to_value(&found)
-                    .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-                let mut result = CallToolResult::structured(value);
-                result.content = vec![ContentBlock::text(found.text)];
-                Ok(result)
-            }
+            Ok(found) => Ok(text_only(found.text)),
             Err(err) => Ok(tool_error(&err)),
         }
     }
@@ -370,11 +372,7 @@ impl Server {
                     ran.text.push_str(&format!("\n[{note}]"));
                     ran.notes.push(note);
                 }
-                let value = serde_json::to_value(&ran)
-                    .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-                let mut result = CallToolResult::structured(value);
-                result.content = vec![ContentBlock::text(ran.text)];
-                Ok(result)
+                Ok(text_only(ran.text))
             }
             Err(err) => Ok(tool_error(&err)),
         }
@@ -404,13 +402,7 @@ impl Server {
                 ErrorData::internal_error(format!("read_output task failed: {e}"), None)
             })?;
         match page {
-            Ok(page) => {
-                let value = serde_json::to_value(&page)
-                    .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-                let mut result = CallToolResult::structured(value);
-                result.content = vec![ContentBlock::text(page.text)];
-                Ok(result)
-            }
+            Ok(page) => Ok(text_only(page.text)),
             Err(err) => Ok(tool_error(&err)),
         }
     }
@@ -431,16 +423,27 @@ impl Server {
                 ErrorData::internal_error(format!("apply_patch task failed: {e}"), None)
             })?;
         match applied {
-            Ok(applied) => {
-                let value = serde_json::to_value(&applied)
-                    .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-                let mut result = CallToolResult::structured(value);
-                result.content = vec![ContentBlock::text(applied.text)];
-                Ok(result)
-            }
+            Ok(applied) => Ok(text_only(applied.text)),
             Err(err) => Ok(tool_error(&err)),
         }
     }
+}
+
+/// A successful tool call: one text block, and no `structuredContent`.
+///
+/// Measured on Claude Code 2.1.260 (2026-09-04): when a result carries
+/// both `content` and `structuredContent`, the model is shown the
+/// structured JSON and *not* the text. The first real session against
+/// this server took 74 turns to change one line, because every
+/// `read_file` came back as `{"bytes":416,"lines":9,"version":...}` and
+/// the model rebuilt the file line by line with `search_text` probes.
+///
+/// So everything the model must see — the body, and the fields it has to
+/// hand back such as `version` and `output_ref` — is in the text, and there
+/// is no second channel to fall out of step with it. The result structs
+/// the tools build still exist; they are what the text is rendered from.
+fn text_only(text: String) -> CallToolResult {
+    CallToolResult::success(vec![ContentBlock::text(text)])
 }
 
 /// A failed tool call, shaped so the model can act on it: `isError` set,

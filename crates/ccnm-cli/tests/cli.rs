@@ -245,8 +245,13 @@ fn doctor_against_unreachable_work_exits_work_unreachable() {
         text.contains("Workspace policy        SKIP   not implemented until phase 2"),
         "{text}"
     );
+    // The project has no CLAUDE.md, which is fine and says so.
     assert!(
-        text.contains("NOT READY (1 failed, 13 not checked)"),
+        text.contains("Project instructions    OK     no CLAUDE.md at"),
+        "{text}"
+    );
+    assert!(
+        text.contains("NOT READY (1 failed, 12 not checked)"),
         "{text}"
     );
     // Read-only: nothing appeared in the root.

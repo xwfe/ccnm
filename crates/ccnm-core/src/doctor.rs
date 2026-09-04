@@ -749,15 +749,22 @@ fn home_ccnm(r: &Resolved<'_>, env: &Env<'_>) -> Check {
 /// section 26).
 fn not_yet_implemented() -> Vec<Check> {
     [
-        ("Workspace policy", "2"),
-        ("Project instructions", "3.5"),
-        ("Native tools disabled", "3.5"),
-        ("Runtime identity", "5"),
-        ("Network isolation", "5"),
-        ("Terminal session", "6"),
+        ("Workspace policy", "not implemented until phase 2"),
+        // Every session is launched with `--tools ""` and an allow-list
+        // (see `crate::session`), and that was verified by hand against
+        // Claude Code 2.1.260. What doctor cannot do is prove it about the
+        // Claude on the work machine without starting a session, so the
+        // row stays SKIP rather than claiming a check it did not make.
+        (
+            "Native tools disabled",
+            "not checked: only a live session shows which tools Claude ended up with",
+        ),
+        ("Runtime identity", "not implemented until phase 5"),
+        ("Network isolation", "not implemented until phase 5"),
+        ("Terminal session", "not implemented until phase 6"),
     ]
     .into_iter()
-    .map(|(name, phase)| Check::skip(name, format!("not implemented until phase {phase}")))
+    .map(|(name, reason)| Check::skip(name, reason))
     .collect()
 }
 
@@ -1125,7 +1132,7 @@ mod tests {
             format!("ccnm-home as ccrun, ccnm {}", crate::VERSION)
         );
         assert!(
-            text.ends_with("NOT READY (0 failed, 6 not checked)\n"),
+            text.ends_with("NOT READY (0 failed, 5 not checked)\n"),
             "{text}"
         );
         assert_eq!(report.blocking_code(), Some(ErrorCode::NotReady));
@@ -1208,7 +1215,7 @@ mod tests {
         assert_eq!(row(&report, "Workspace root").status, Status::Skip);
         let text = report.render();
         assert!(
-            text.ends_with("NOT READY (1 failed, 13 not checked)\n"),
+            text.ends_with("NOT READY (1 failed, 12 not checked)\n"),
             "{text}"
         );
     }

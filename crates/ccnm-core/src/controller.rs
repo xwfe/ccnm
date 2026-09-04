@@ -70,6 +70,7 @@ use crate::process::{Cmd, Output, ProcessRunner};
 use crate::protocol::hello::{self, HelloReport, HelloRequest};
 use crate::protocol::payload::{self, PROTOCOL, Protocol};
 use crate::session::{self, SuperviseRequest};
+use crate::tmux;
 
 /// launchd label for the agent. Also the basename of its plist and what
 /// every `launchctl` line in an error message names.
@@ -152,7 +153,7 @@ pub fn managername_cmd() -> Cmd {
 /// A non-zero exit or empty output has to stay an error. Treating it as an
 /// unknown session name would be harmless; treating it as "not Aqua" and
 /// therefore as a diagnosis about the machine would not.
-fn parse_managername(out: &Output) -> Result<String> {
+pub fn parse_managername(out: &Output) -> Result<String> {
     let name = out.stdout_lossy().trim().to_string();
     if !out.success() || name.is_empty() {
         return Err(Error::internal(format!(
@@ -259,6 +260,9 @@ pub struct Tools<'a> {
     /// controller's `PATH` comes from launchd, so the lookup happens here
     /// rather than on the ssh side.
     pub claude: Option<PathBuf>,
+    /// tmux, found the same way and for the same reason. Only interactive
+    /// sessions need it; `None` is not an error until one is asked for.
+    pub tmux: Option<PathBuf>,
     /// This binary, to run as the supervisor of each session.
     pub exe: PathBuf,
 }
@@ -283,10 +287,17 @@ pub fn answer(req: &Request, tools: &Tools<'_>) -> Response {
     }
 }
 
-/// Spawn the supervisor for a session and return without waiting.
+/// Start a session and return without waiting for it.
 ///
 /// The directory must already hold a readable `session.json`: that is
 /// what makes it a session rather than any path a client cares to name.
+///
+/// Print mode spawns the supervisor here. Interactive mode spawns tmux,
+/// which spawns the supervisor — and *that* is the whole reason the
+/// controller starts it: a tmux server hands its own security session to
+/// everything it runs, so a server forked here is one Claude can read its
+/// credentials in, and a server someone forked from an ssh session is not
+/// (see [`crate::tmux`]).
 fn start_session(session_dir: &Path, tools: &Tools<'_>) -> Result<u32> {
     let Some(claude_bin) = &tools.claude else {
         return Err(Error::new(
@@ -297,10 +308,51 @@ fn start_session(session_dir: &Path, tools: &Tools<'_>) -> Result<u32> {
     let dir = session::Dir::at(session_dir);
     let spec = session::load(&dir)?;
     let req = SuperviseRequest::new(session_dir.to_path_buf(), claude_bin.clone());
-    let cmd = supervisor_cmd(&tools.exe, &req)?;
-    let pid = spawn_detached(&cmd, &dir.supervisor_log())?;
-    tracing::info!(session = %spec.id, pid, "started supervisor");
+    let supervisor = supervisor_cmd(&tools.exe, &req)?;
+    if !spec.mode.is_interactive() {
+        let pid = spawn_detached(&supervisor, &dir.supervisor_log())?;
+        tracing::info!(session = %spec.id, pid, "started supervisor");
+        return Ok(pid);
+    }
+
+    let tmux = tmux::Tmux::new(tools.tmux.clone().ok_or_else(tmux::missing)?);
+    let name = tmux::session_name(&spec.workspace);
+    tmux::check_name(&name)?;
+    // One session per workspace. Starting a second Claude on the same
+    // project behind the same name is not something to resolve silently:
+    // the caller attaches to what is there or stops it first.
+    if tools.runner.run(&tmux.has_session_cmd(&name))?.success() {
+        return Err(Error::new(
+            ErrorCode::NotReady,
+            format!(
+                "a session named {name} is already running on this machine\nattach to it: ccnm attach {}\nor end it: ccnm stop {}",
+                spec.workspace, spec.workspace
+            ),
+        ));
+    }
+    let out = tools
+        .runner
+        .run(&tmux.new_session_cmd(&name, &spec.cwd, &spec.id, &supervisor))?;
+    if !out.success() {
+        return Err(Error::internal(format!(
+            "tmux new-session failed (exit {:?}): {}",
+            out.exit_code,
+            out.stderr_lossy().trim()
+        )));
+    }
+    let pid = server_pid(&tmux, tools)?;
+    tracing::info!(session = %spec.id, %name, server_pid = pid, "started tmux session");
     Ok(pid)
+}
+
+/// The tmux server's pid: proof that the session is backed by a process,
+/// and the one number that identifies the server across every session.
+fn server_pid(tmux: &tmux::Tmux, tools: &Tools<'_>) -> Result<u32> {
+    let out = tools.runner.run(&tmux.server_pid_cmd())?;
+    out.stdout_lossy()
+        .trim()
+        .parse()
+        .map_err(|_| Error::internal("tmux did not report a server pid"))
 }
 
 /// `ccnm internal supervise --payload <SuperviseRequest>`.
@@ -605,6 +657,7 @@ mod tests {
         Tools {
             runner: fake,
             claude: claude.then(|| PathBuf::from("/opt/homebrew/bin/claude")),
+            tmux: Some(PathBuf::from("/opt/homebrew/bin/tmux")),
             exe: PathBuf::from("/Users/me/.local/bin/ccnm"),
         }
     }
@@ -627,6 +680,99 @@ mod tests {
         };
         assert!(report.message.contains("session.json"), "{report}");
         assert!(fake.calls().is_empty(), "nothing ran");
+    }
+
+    /// A session directory with a real `session.json` in the given mode.
+    fn session_dir(test: &str, mode: session::Mode) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("ccnm-ctl-sess-{}-{test}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let spec = session::Spec {
+            protocol: PROTOCOL,
+            id: "0b4c7a1e-2d3f-4a5b-8c6d-7e8f9a0b1c2d".into(),
+            workspace: "xshun".into(),
+            root: PathBuf::from("/Users/bing/xshun"),
+            home_alias: "xdwmbp".into(),
+            home_ccnm_bin: "~/.local/bin/ccnm".into(),
+            claude_config_dir: None,
+            permission_mode: crate::config::PermissionMode::default(),
+            mode,
+            timeout_secs: 0,
+            cwd: dir.join("cwd"),
+        };
+        std::fs::write(
+            session::Dir::at(&dir).meta(),
+            serde_json::to_string(&spec).unwrap(),
+        )
+        .unwrap();
+        dir
+    }
+
+    /// An interactive session must be started *by tmux*, from here: a tmux
+    /// server hands its own security session to everything it runs, so the
+    /// one forked by this process (the login session's) is the only one
+    /// Claude can read its credentials in.
+    #[test]
+    fn an_interactive_session_is_started_through_tmux_with_the_supervisor_inside() {
+        let dir = session_dir("interactive", session::Mode::Interactive { prompt: None });
+        let fake = FakeRunner::new();
+        fake.push(Output::exited(1, "")); // has-session: not running
+        fake.push(Output::exited(0, "")); // new-session
+        fake.push(Output::exited(0, "4242\n")); // display-message: server pid
+
+        let req = Request::new(RequestBody::Start {
+            session_dir: dir.clone(),
+        });
+        let ReplyBody::Started { pid } = answer(&req, &tools(&fake, true)).body else {
+            panic!("expected a started reply")
+        };
+        assert_eq!(pid, 4242, "the tmux server's pid is what comes back");
+
+        let calls = fake.calls();
+        assert_eq!(calls.len(), 3);
+        assert!(calls[0].display().contains("has-session -t ccnm-xshun"));
+        let new = calls[1].display();
+        assert!(
+            new.contains("-L ccnm new-session -d -s ccnm-xshun"),
+            "{new}"
+        );
+        assert!(new.contains("-e CCNM_SESSION=0b4c7a1e"), "{new}");
+        assert!(
+            new.contains("/Users/me/.local/bin/ccnm internal supervise --payload "),
+            "{new}"
+        );
+    }
+
+    /// Two Claudes on one project behind one name is not something to
+    /// resolve by guessing.
+    #[test]
+    fn a_second_interactive_session_for_the_same_workspace_is_refused() {
+        let dir = session_dir("second", session::Mode::Interactive { prompt: None });
+        let fake = FakeRunner::new();
+        fake.push(Output::exited(0, "")); // has-session: already there
+        let req = Request::new(RequestBody::Start { session_dir: dir });
+        let ReplyBody::Error(report) = answer(&req, &tools(&fake, true)).body else {
+            panic!("expected an error reply")
+        };
+        assert_eq!(report.code(), ErrorCode::NotReady);
+        assert!(report.message.contains("already running"), "{report}");
+        assert!(report.message.contains("ccnm attach xshun"), "{report}");
+        assert_eq!(fake.calls().len(), 1, "nothing was started");
+    }
+
+    #[test]
+    fn without_tmux_an_interactive_session_says_how_to_get_it() {
+        let dir = session_dir("notmux", session::Mode::Interactive { prompt: None });
+        let fake = FakeRunner::new();
+        let mut tools = tools(&fake, true);
+        tools.tmux = None;
+        let req = Request::new(RequestBody::Start { session_dir: dir });
+        let ReplyBody::Error(report) = answer(&req, &tools).body else {
+            panic!("expected an error reply")
+        };
+        assert_eq!(report.code(), ErrorCode::Dependency);
+        assert!(report.message.contains("brew install tmux"), "{report}");
+        assert!(fake.calls().is_empty());
     }
 
     #[test]

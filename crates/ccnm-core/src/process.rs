@@ -429,6 +429,53 @@ where
     })
 }
 
+/// Run `cmd` on this process's own stdin, stdout and stderr, and wait for
+/// it. No pipes, no threads, no timeout.
+///
+/// This is how a terminal program is run: Claude Code inside its tmux pane
+/// needs the pane's terminal, not a pipe — a pipe is what makes it decide
+/// it has no terminal and fall back to print mode. And it needs no
+/// watchdog, because the clock that ends an interactive session is the
+/// person using it (design doc section 23). `cmd.timeout` and `cmd.stdin`
+/// are ignored here; a caller that needs either wants
+/// [`run_captured`] instead.
+pub fn run_attached(cmd: &Cmd) -> Result<Captured> {
+    let started = Instant::now();
+    let mut command = Command::new(&cmd.program);
+    command
+        .args(&cmd.args)
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit());
+    if let Some(dir) = &cmd.cwd {
+        command.current_dir(dir);
+    }
+    for key in &cmd.env_remove {
+        command.env_remove(key);
+    }
+    for (key, value) in &cmd.env {
+        command.env(key, value);
+    }
+    tracing::debug!(cmd = %cmd.display(), "attach");
+    // Deliberately *not* its own process group: it shares this terminal, so
+    // it must stay in the foreground group that receives ctrl-c and the
+    // window-size signals.
+    let status = command
+        .spawn()
+        .map_err(|e| {
+            Error::internal(format!("cannot spawn {}", cmd.program.to_string_lossy()))
+                .with_source(e)
+        })?
+        .wait()?;
+    Ok(Captured {
+        exit_code: status.code(),
+        timed_out: false,
+        duration: started.elapsed(),
+        stdout_bytes: 0,
+        stderr_bytes: 0,
+    })
+}
+
 fn cmd_timeout(deadline: Instant, started: Instant) -> Duration {
     deadline.saturating_duration_since(started)
 }

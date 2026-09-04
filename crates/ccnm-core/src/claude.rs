@@ -220,6 +220,10 @@ pub fn launch_cmd(bin: &Path, spec: &Spec, dir: &Dir) -> Cmd {
         .cwd(spec.cwd.clone())
         .timeout(Duration::from_secs(spec.timeout_secs))
         .args(["--tools", ""])
+        // Interactive sessions differ from print only in the last block
+        // below: same tool policy, same MCP config, same settings file.
+        // That is the point -- what the model can do must not depend on
+        // whether a person is watching.
         .arg("--mcp-config")
         .arg(dir.mcp_config())
         .arg("--strict-mcp-config")
@@ -239,6 +243,16 @@ pub fn launch_cmd(bin: &Path, spec: &Spec, dir: &Dir) -> Cmd {
                 "--no-session-persistence",
             ])
             .stdin(prompt.as_bytes().to_vec()),
+        // Nothing to add: plain `claude` is the terminal UI. No
+        // `--permission-prompts none`, because now there *is* somebody to
+        // answer one, and no `--no-session-persistence`, because a
+        // terminal session that a dropped connection interrupted is worth
+        // being able to resume. An opening prompt, if there is one, goes
+        // on argv — stdin belongs to the terminal.
+        Mode::Interactive { prompt: None } => cmd,
+        Mode::Interactive {
+            prompt: Some(prompt),
+        } => cmd.arg(prompt),
     }
 }
 

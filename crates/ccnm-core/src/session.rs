@@ -114,6 +114,20 @@ impl Protocol for Spec {
 pub enum Mode {
     /// `claude -p`: one prompt in, one JSON result out, no terminal.
     Print { prompt: String },
+    /// The real Claude Code terminal, inside tmux on the work machine, with
+    /// the person's own terminal attached over ssh (design doc section 23).
+    /// The optional prompt is what it starts with; without one it opens
+    /// empty.
+    Interactive {
+        #[serde(default)]
+        prompt: Option<String>,
+    },
+}
+
+impl Mode {
+    pub fn is_interactive(&self) -> bool {
+        matches!(self, Mode::Interactive { .. })
+    }
 }
 
 /// A fresh session id. Hyphenated UUID v4: valid for `claude --session-id`,
@@ -162,6 +176,21 @@ impl Dir {
     pub fn exit(&self) -> PathBuf {
         self.0.join("exit")
     }
+
+    /// The security session Claude actually ran in, one word, written by
+    /// the supervisor from inside it (see [`crate::tmux`]).
+    pub fn context(&self) -> PathBuf {
+        self.0.join("context")
+    }
+}
+
+/// What `launchctl managername` said where Claude runs. `None` when the
+/// file is not there yet or could not be read: it is evidence, and a
+/// missing measurement must not look like a measured `Background`.
+pub fn read_context(dir: &Dir) -> Option<String> {
+    let text = fs::read_to_string(dir.context()).ok()?;
+    let line = text.trim();
+    (!line.is_empty()).then(|| line.to_string())
 }
 
 /// Create the session directory with its three inputs. Refuses to reuse
@@ -289,6 +318,23 @@ pub fn read_outcome(dir: &Dir) -> Result<Option<Outcome>> {
     }
 }
 
+/// Record which security session this process is in, best effort.
+///
+/// Never fails the run: the answer is diagnostic. A session that works is
+/// worth more than one refused because `launchctl` was slow.
+fn write_context(dir: &Dir) {
+    use crate::process::ProcessRunner as _;
+    let manager = crate::process::SystemRunner
+        .run(&crate::controller::managername_cmd())
+        .and_then(|out| crate::controller::parse_managername(&out));
+    match manager {
+        Ok(name) => {
+            let _ = fs::write(dir.context(), format!("{name}\n"));
+        }
+        Err(e) => tracing::warn!(error = %e, "cannot tell which security session this is"),
+    }
+}
+
 /// Written through a temporary file and a rename, so a reader polling for
 /// it never sees half a document.
 fn write_outcome(dir: &Dir, outcome: &Outcome) -> Result<()> {
@@ -334,10 +380,22 @@ pub fn supervise(req: &SuperviseRequest) -> Result<Outcome> {
     let dir = Dir::at(&req.session_dir);
     let spec = load(&dir)?;
     let cmd = claude::launch_cmd(&req.claude_bin, &spec, &dir);
-    let out = fs::File::create(dir.stdout())?;
-    let err = fs::File::create(dir.stderr())?;
+    // Measured here rather than assumed, because here is the one place
+    // that is inside whatever context Claude will run in: under tmux, that
+    // is the tmux server's, which is not necessarily the controller's.
+    write_context(&dir);
     tracing::info!(session = %spec.id, cmd = %cmd.display(), "starting claude");
-    let outcome = match process::run_captured(&cmd, out, err) {
+    let ran = if spec.mode.is_interactive() {
+        // stdin/stdout/stderr are the tmux pane. Nothing is captured and
+        // nothing is killed on a clock: the person at the terminal decides
+        // when this session is over.
+        process::run_attached(&cmd)
+    } else {
+        let out = fs::File::create(dir.stdout())?;
+        let err = fs::File::create(dir.stderr())?;
+        process::run_captured(&cmd, out, err)
+    };
+    let outcome = match ran {
         Ok(captured) => Outcome {
             exit_code: captured.exit_code,
             timed_out: captured.timed_out,

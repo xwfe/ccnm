@@ -352,7 +352,9 @@ fn run(cli: Cli) -> Result<i32> {
                 let env = home_env()?;
                 launcher::start_from_work(home, workspace, &env)?;
                 if *detached {
-                    eprintln!("\nattach when you want it: ccnm attach {workspace}");
+                    // The far side already said how to attach, and its
+                    // wording is the one that matters -- it knows whether
+                    // the session was started or was already there.
                     return Ok(0);
                 }
                 return work::attach(&attach_request(workspace), &work_tools()?);
@@ -388,6 +390,16 @@ fn run(cli: Cli) -> Result<i32> {
         }
         Command::Status { workspace, all } => {
             let config = Config::load(&config_path()?)?;
+            // Same as attach: the sessions are on this machine, so
+            // reporting on them needs the name and nothing else.
+            if work_side(&config, workspace).is_some() {
+                let req = StatusRequest {
+                    protocol: ccnm_core::protocol::payload::PROTOCOL,
+                    workspace: (!*all).then(|| workspace.to_string()),
+                };
+                print!("{}", work::status(&req, &work_tools()?).render());
+                return Ok(0);
+            }
             let resolved = config.workspace(workspace)?;
             let rep = launcher::status(&resolved, &home_env()?, *all)?;
             print!("{}", rep.render());
@@ -416,6 +428,22 @@ fn run(cli: Cli) -> Result<i32> {
         }
         Command::Stop { workspace } => {
             let config = Config::load(&config_path()?)?;
+            if work_side(&config, workspace).is_some() {
+                let req = StopRequest {
+                    protocol: ccnm_core::protocol::payload::PROTOCOL,
+                    workspace: workspace.to_string(),
+                };
+                let rep = work::stop(&req, &work_tools()?)?;
+                println!(
+                    "{}",
+                    if rep.killed {
+                        format!("stopped {}", rep.tmux_session)
+                    } else {
+                        format!("no session for {workspace}")
+                    }
+                );
+                return Ok(0);
+            }
             let resolved = config.workspace(workspace)?;
             let rep = launcher::stop(&resolved, &home_env()?)?;
             if rep.killed {

@@ -225,7 +225,7 @@ pub fn apply_patch(
     if dry_run {
         return Ok(report(&plan, true, Vec::new()));
     }
-    sweep_stale_temps(&plan);
+    sweep_stale_temps(&plan, journal_dir);
     let staged = stage(plan)?;
     let journal = journal_dir
         .map(|dir| Journal::open(dir, root, &staged))
@@ -838,7 +838,15 @@ const STALE_TEMP: Duration = Duration::from_secs(60 * 60);
 /// cost is one `read_dir` per directory already being written, not a walk
 /// of the workspace. Only files older than [`STALE_TEMP`] go, so a patch
 /// running concurrently in another session is never robbed of its staging.
-fn sweep_stale_temps(plan: &[Planned]) {
+///
+/// The exception is a temp some journal still points at. Those are the
+/// backups an interrupted patch left behind, and the refusal it produces
+/// tells a person where to find each original: deleting them would make
+/// that message a lie. It can happen without any journal being for this
+/// workspace -- one root nested inside another shares directories -- so
+/// the check is against every journal there is, not just this one's.
+fn sweep_stale_temps(plan: &[Planned], journal_dir: Option<&Path>) {
+    let spoken_for = journal_dir.map(backups_in_journals).unwrap_or_default();
     let mut swept: BTreeSet<PathBuf> = BTreeSet::new();
     let dirs = plan
         .iter()
@@ -861,12 +869,27 @@ fn sweep_stale_temps(plan: &[Planned]) {
                 .and_then(|m| m.modified())
                 .map(|t| t.elapsed().is_ok_and(|age| age > STALE_TEMP))
                 .unwrap_or(false);
-            if stale {
+            if stale && !spoken_for.contains(&entry.path()) {
                 tracing::warn!(path = %entry.path().display(), "removing a leftover patch temp file");
                 let _ = std::fs::remove_file(entry.path());
             }
         }
     }
+}
+
+/// Every backup path any journal on this machine is still promising.
+fn backups_in_journals(dir: &Path) -> BTreeSet<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return BTreeSet::new();
+    };
+    entries
+        .flatten()
+        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "json"))
+        .filter_map(|entry| std::fs::read(entry.path()).ok())
+        .filter_map(|body| serde_json::from_slice::<JournalFile>(&body).ok())
+        .flat_map(|record| record.files)
+        .filter_map(|line| line.backup)
+        .collect()
 }
 
 /// Phase two. Everything that can fail for a boring reason — no space, no
@@ -2792,6 +2815,77 @@ mod tests {
         assert_eq!(
             text(&root, "src/main.rs"),
             "fn main() {\n    let x = 3;\n}\n"
+        );
+    }
+
+    /// The interrupted-patch refusal tells a person where each original
+    /// is. The stale-temp sweep deletes `.ccnm-*` files over an hour old
+    /// in the directories a patch touches -- which is exactly what those
+    /// backups are. Nesting one workspace inside another is all it takes
+    /// for the sweep to run over another workspace's backups and make
+    /// that message a lie.
+    #[test]
+    fn the_sweep_leaves_backups_a_journal_still_points_at() {
+        let outer = workspace("journal-nested");
+        let inner = outer.join("sub");
+        fs::create_dir_all(&inner).unwrap();
+        fs::write(inner.join("app.rs"), "fn app() {}\n").unwrap();
+        let journals = outer.join("../journal-nested-state");
+        let _ = fs::remove_dir_all(&journals);
+        fs::create_dir_all(&journals).unwrap();
+
+        // An hour-old backup from an interrupted patch in the OUTER
+        // workspace, sitting in a directory the INNER one writes to.
+        let backup = inner.join(".ccnm-oldbackup-app.rs");
+        fs::write(&backup, "fn app() { original }\n").unwrap();
+        let ancient = std::time::SystemTime::now() - Duration::from_secs(7200);
+        let handle = fs::File::options().write(true).open(&backup).unwrap();
+        handle.set_modified(ancient).unwrap();
+        drop(handle);
+
+        let journal = journals.join("31337-outer.json");
+        fs::write(
+            &journal,
+            serde_json::to_vec(&serde_json::json!({
+                "pid": 31337,
+                "root": outer.clone(),
+                "files": [{
+                    "op": "update",
+                    "rel": "sub/app.rs",
+                    "abs": inner.join("app.rs"),
+                    "backup": backup.clone(),
+                }],
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let handle = fs::File::options().write(true).open(&journal).unwrap();
+        handle.set_modified(ancient).unwrap();
+        drop(handle);
+
+        // A patch in the inner workspace, which sweeps that directory.
+        apply_patch(
+            &inner,
+            Some(&journals),
+            &ApplyPatchArgs {
+                files: vec![update(
+                    "app.rs",
+                    &version(&inner, "app.rs"),
+                    "fn app() {}",
+                    "fn app() { changed }",
+                )],
+                dry_run: None,
+            },
+        )
+        .expect("the outer workspace's journal must not block the inner one");
+
+        assert!(
+            backup.exists(),
+            "the sweep deleted a backup the outer workspace's journal still names"
+        );
+        assert_eq!(
+            fs::read_to_string(&backup).unwrap(),
+            "fn app() { original }\n"
         );
     }
 

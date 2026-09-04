@@ -92,6 +92,8 @@ ccnm 的做法是**只让工具调用过网，源码一步不动**：
 
 ### 1. 编译
 
+在**哪台机器有 Rust toolchain 就在哪台编译**（常常是工作机；家庭机不装 cargo 也完全能用）：
+
 ```bash
 cargo build --release        # 产物在 target/release/ccnm
 ```
@@ -99,15 +101,34 @@ cargo build --release        # 产物在 target/release/ccnm
 ### 2. 两台机器都放同一个二进制
 
 ```bash
-# 家庭机（就在本机）
-cp target/release/ccnm ~/.local/bin/ccnm.new && mv ~/.local/bin/ccnm.new ~/.local/bin/ccnm
+# 本机
+install -m 755 target/release/ccnm ~/.local/bin/ccnm.new
+mv ~/.local/bin/ccnm.new ~/.local/bin/ccnm
 
-# 工作机
-scp target/release/ccnm work:.local/bin/ccnm.new
-ssh work 'mv ~/.local/bin/ccnm.new ~/.local/bin/ccnm'
+# 另一台（把 other 换成你的别名）
+scp -p target/release/ccnm other:.local/bin/ccnm.new
+ssh other 'chmod +x ~/.local/bin/ccnm.new && mv ~/.local/bin/ccnm.new ~/.local/bin/ccnm'
 ```
 
-**为什么要先 `.new` 再 `mv`**：见[升级](#升级)。第一次装可以直接 cp，但养成习惯更省事。
+**装完立刻验一句，两台都要：**
+
+```bash
+~/.local/bin/ccnm --version
+ssh other '~/.local/bin/ccnm --version'
+```
+
+三个坑都在这两条命令里，一次踩全：
+
+- **`scp` 会丢执行位。** OpenSSH 10.3 的 scp 不带 `-p` 时不保留 mode（10.2 的保留），
+  传过去就是 `644`，跑起来是 `zsh: permission denied: ccnm`——看着像装错了，其实只差一个
+  `chmod +x`。所以上面既给了 `-p` 也补了 `chmod`，两道保险。
+- **ssh 里必须写全路径 `~/.local/bin/ccnm`。** `ssh host 'ccnm ...'` 起的是非交互 shell，
+  它只读 `~/.zshenv`，你在 `.zshrc` / `.zprofile` 里加的 `~/.local/bin` 它看不见，
+  于是 `zsh:1: command not found: ccnm`。ccnm 自己调对面时**从来都用全路径**（设计文档
+  第 7 节），就是这个原因；你在命令行上也得这么写。
+- **先 `.new` 再 `mv`，别直接 cp 覆盖。** 理由见[升级](#升级)。
+
+之后如果懒得记，`scripts/deploy.sh <另一台别名>` 把这一段全做了。
 
 ### 3. 两个方向的 ssh 别名
 
@@ -151,8 +172,8 @@ root = "/Users/me/code/xshun"  # 项目在家庭机上的绝对路径
 ### 5. 在工作机上装 controller
 
 ```bash
-ssh work 'ccnm work-controller install --dry-run'   # 先看要装什么
-ssh work 'ccnm work-controller install'
+ssh work '~/.local/bin/ccnm work-controller install --dry-run'   # 先看要装什么
+ssh work '~/.local/bin/ccnm work-controller install'
 ```
 
 它装一个 LaunchAgent，在工作机的**登录会话**里常驻。为什么非要有它：ssh 会话读不到
@@ -335,6 +356,31 @@ Claude 不会自己重连。
 
 **修**：见[升级](#升级)。已经中招的话重新按那个办法装一遍就行。
 
+### `zsh:1: command not found: ccnm`（在 ssh 命令里）
+
+`ssh host 'ccnm ...'` 起的是非交互 shell，读不到你 `.zshrc` 里加的 `~/.local/bin`。
+**ssh 里写全路径**：`ssh host '~/.local/bin/ccnm ...'`。
+
+ccnm 自己调对面时一直是全路径（`hosts.<x>.ccnm_bin`，默认 `~/.local/bin/ccnm`），所以
+`ccnm doctor` 能通而你手敲的那条不通，是正常的，不是配置坏了。
+
+### `zsh: permission denied: ccnm`
+
+二进制在那儿但没有执行位。几乎总是 `scp` 传的时候丢的（OpenSSH 10.3 的 scp 不带 `-p`
+不保留 mode）：
+
+```bash
+ssh other 'ls -l ~/.local/bin/ccnm'      # 看是不是 -rw-r--r--
+ssh other 'chmod +x ~/.local/bin/ccnm'
+```
+
+ccnm 自己撞上这个会直接说出来（远程 shell 退出码 126）：
+
+```text
+CCNM_E_VERSION: ~/.local/bin/ccnm on work is there but not executable (exit 126)
+                ssh work 'chmod +x ~/.local/bin/ccnm'
+```
+
 ### `Work controller ... Background`
 
 controller 不在登录会话里。两种可能：
@@ -381,15 +427,18 @@ ccnm result xshun --session <id>  # 指定某一次
 两台机器必须是同一个 build（doctor 会检查）。
 
 ```bash
+scripts/deploy.sh work xshun     # 编译、装两边、重启 controller、跑一次 doctor
+```
+
+手动的等价物：
+
+```bash
 cargo build --release
-
-# 家庭机
-cp target/release/ccnm ~/.local/bin/ccnm.new && mv ~/.local/bin/ccnm.new ~/.local/bin/ccnm
-
-# 工作机
-scp target/release/ccnm work:.local/bin/ccnm.new
-ssh work 'mv ~/.local/bin/ccnm.new ~/.local/bin/ccnm'
-ssh work 'ccnm work-controller install'     # 让 controller 用新二进制重启
+install -m 755 target/release/ccnm ~/.local/bin/ccnm.new
+mv ~/.local/bin/ccnm.new ~/.local/bin/ccnm
+scp -p target/release/ccnm work:.local/bin/ccnm.new
+ssh work 'chmod +x ~/.local/bin/ccnm.new && mv ~/.local/bin/ccnm.new ~/.local/bin/ccnm'
+ssh work '~/.local/bin/ccnm work-controller install'   # 让 controller 用新二进制重启
 ```
 
 **必须先传成 `.new` 再 `mv`，不能直接 `cp` 覆盖。** 换 inode，不改原文件。原因见上面的

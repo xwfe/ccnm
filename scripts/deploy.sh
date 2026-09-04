@@ -42,12 +42,16 @@ cargo build --release
 
 echo "==> installing here: $BIN"
 mkdir -p "$(dirname "$BIN")"
-cp target/release/ccnm "$BIN.new"
+install -m 755 target/release/ccnm "$BIN.new"
 mv "$BIN.new" "$BIN"
 
 echo "==> installing on $OTHER: ~/$REMOTE_BIN"
-scp -q target/release/ccnm "$OTHER:$REMOTE_BIN.new"
-ssh "$OTHER" "mkdir -p \$(dirname ~/$REMOTE_BIN) && mv ~/$REMOTE_BIN.new ~/$REMOTE_BIN"
+# -p and an explicit chmod, because scp is not reliably one or the other:
+# OpenSSH 10.3's scp drops the mode without -p, 10.2's keeps it. Landing a
+# 0644 binary gives "zsh: permission denied" on the far side, which reads
+# like a broken install rather than a missing bit.
+scp -qp target/release/ccnm "$OTHER:$REMOTE_BIN.new"
+ssh "$OTHER" "mkdir -p \$(dirname ~/$REMOTE_BIN) && chmod +x ~/$REMOTE_BIN.new && mv ~/$REMOTE_BIN.new ~/$REMOTE_BIN"
 
 # The controller lives on the work machine. Whichever of the two this is,
 # restart the one that exists rather than making the caller say which.

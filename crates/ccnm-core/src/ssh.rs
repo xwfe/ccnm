@@ -80,6 +80,8 @@ pub enum RemoteOutcome {
     Unreachable(String),
     /// The remote shell could not find the command (exit 127).
     CommandNotFound,
+    /// The remote shell found it and could not run it (exit 126).
+    NotExecutable,
     /// The remote command ran; inspect the output.
     Completed(Output),
 }
@@ -332,6 +334,13 @@ impl Ssh {
                     self.alias
                 ),
             )),
+            RemoteOutcome::NotExecutable => Err(Error::new(
+                ErrorCode::Version,
+                format!(
+                    "{ccnm_bin} on {} is there but not executable (exit 126)\nssh {} 'chmod +x {ccnm_bin}'\nthis is what copying it over with `scp` and no -p leaves behind",
+                    self.alias, self.alias
+                ),
+            )),
             RemoteOutcome::Completed(out) if !out.success() => {
                 Err(remote_failure(&self.alias, subcommand, &out))
             }
@@ -403,6 +412,14 @@ pub fn classify(out: Output) -> RemoteOutcome {
             RemoteOutcome::Unreachable(why.to_string())
         }
         Some(127) => RemoteOutcome::CommandNotFound,
+        // A shell says 126 when it found the file and could not execute
+        // it. For ccnm that is almost always one thing: the binary was
+        // copied over with a tool that did not carry the mode across, and
+        // `scp` without `-p` is that tool -- OpenSSH 10.3's scp drops it,
+        // 10.2's does not, so the same command works from one machine and
+        // not from another. Left as a generic failure it reads as "ccnm
+        // is broken"; what it is is one chmod.
+        Some(126) => RemoteOutcome::NotExecutable,
         _ => RemoteOutcome::Completed(out),
     }
 }
@@ -637,6 +654,12 @@ mod tests {
             classify(Output::exited(127, "")),
             RemoteOutcome::CommandNotFound
         ));
+        // 126 is not 127, and the difference is the whole diagnosis: the
+        // file is there, the mode is wrong.
+        assert!(matches!(
+            classify(Output::exited(126, "")),
+            RemoteOutcome::NotExecutable
+        ));
         assert!(matches!(
             classify(Output::exited(3, "x")),
             RemoteOutcome::Completed(_)
@@ -692,6 +715,7 @@ mod tests {
         unreachable.stderr = b"Connection timed out\n".to_vec();
         fake.push(unreachable);
         fake.push(Output::exited(127, ""));
+        fake.push(Output::exited(126, ""));
         let mut remote_err = Output::exited(22, "");
         remote_err.stderr = b"CCNM_E_MOUNT:\nmount failed\nbecause reasons\n".to_vec();
         fake.push(remote_err);
@@ -720,6 +744,16 @@ mod tests {
         assert_eq!(e.code(), ErrorCode::Version);
         assert!(
             e.message().starts_with("/opt/bin/ccnm not found on work"),
+            "{e}"
+        );
+
+        // Found but not executable: a different diagnosis and a different
+        // fix, so it must not read like the one above.
+        let e = call().unwrap_err();
+        assert_eq!(e.code(), ErrorCode::Version);
+        assert!(e.message().contains("not executable"), "{e}");
+        assert!(
+            e.message().contains("ssh work 'chmod +x /opt/bin/ccnm'"),
             "{e}"
         );
 

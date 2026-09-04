@@ -535,34 +535,46 @@ fn missing_dirs(target: &Path) -> Vec<PathBuf> {
 
 /// Apply a file's edits.
 ///
-/// Two passes, and which one runs is not the caller's business.
+/// Sequentially first -- each edit to the result of the last -- and that
+/// answer is used whenever there is one. Only when the sequence has no
+/// answer at all is the file re-read as a whole and the edits applied by
+/// position instead.
 ///
-/// The first resolves every edit against the file as it was read. If all
-/// of them land there, exactly once each and without overlapping, they
-/// are applied by position.
+/// The order matters, and getting it the other way round was a real bug.
+/// The two readings are not the same: "each edit describes the file you
+/// read" and "each edit describes what the one before it left" genuinely
+/// differ once an edit's replacement contains another edit's `old`. A
+/// generated case caught it --
 ///
-/// What that buys is not "any order works" — two edits on unrelated
-/// text already worked in either order. It is that **edits stop
-/// interfering with each other**. Applied in sequence, an edit whose
-/// replacement text contains a later edit's `old` leaves two copies of
-/// it, and the later edit is refused as ambiguous although the patch was
-/// perfectly well defined against the file as read. Swapping two names
-/// is the smallest case of it and was simply impossible before.
+/// ```text
+/// text   "ab"
+/// edits  a -> ab , then b -> X (replace_all)
+/// by position   "abX"     (both edits resolved against "ab")
+/// in order      "aXX"     (the first edit made a second b)
+/// ```
 ///
-/// Cline reports roughly 10% more successful diff edits after making
-/// their apply order-invariant, nearly 25% on one model, noting that
-/// models "frequently return diffs out of order" even when told not to.
+/// -- and which one a caller got depended on whether every edit happened
+/// to match the original uniquely. A patch tool that returns two different
+/// files for one request, silently, according to a condition nobody stated,
+/// is the exact failure this module exists to prevent.
 ///
-/// Anything else falls through to the second pass, which applies the
-/// edits in order, each to the result of the last. That is what makes a
-/// chain work — an edit whose `old` only exists because an earlier edit
-/// created it — and it is where every refusal comes from, so the errors
-/// a caller sees are unchanged.
+/// So the sequence decides whenever it can, which is what ccnm has always
+/// done and what the errors are worded for. Positional application is a
+/// rescue, not an alternative: it runs only where the sequence *fails*, so
+/// there is nothing for it to disagree with. What it rescues is the case
+/// Cline measured -- edits that interfere with each other. An edit whose
+/// replacement contains a later edit's `old` leaves two copies of it and
+/// the later edit is refused as ambiguous, although the patch was
+/// perfectly well defined against the file as read. Swapping two names is
+/// the smallest example and was simply impossible before.
 fn apply_edits(text: &str, edits: &[Edit], rel: &str) -> Result<(String, u32)> {
-    if let Some(done) = apply_by_position(text, edits) {
-        return Ok(done);
+    match apply_in_order(text, edits, rel) {
+        Ok(done) => Ok(done),
+        Err(refused) => match apply_by_position(text, edits) {
+            Some(done) => Ok(done),
+            None => Err(refused),
+        },
     }
-    apply_in_order(text, edits, rel)
 }
 
 /// Resolve every edit against the original text and apply them by
@@ -972,10 +984,41 @@ fn stage_one(planned: Planned) -> Result<Staged> {
     })
 }
 
-/// How long a journal can exist before it is certainly not a commit in
-/// progress. A commit is a handful of renames; a minute is four orders of
-/// magnitude more than it takes.
-const JOURNAL_STALE: Duration = Duration::from_secs(60);
+/// Is the process that wrote this journal still committing?
+///
+/// Asked of the lock, not of the clock. `Journal::open` takes an advisory
+/// lock and holds it for the whole commit; the kernel releases it when
+/// that process ends, however it ends. So taking the lock means the
+/// writer is gone, and being refused means a commit is genuinely in
+/// progress.
+///
+/// This used to be a timeout -- a journal older than a minute was assumed
+/// abandoned -- and the timeout was wrong in both directions. It left a
+/// blind window in which an interrupted patch was invisible, and the
+/// project's own documented recovery (`/mcp` Reconnect) takes seconds, so
+/// the recovery walked straight through it. And it read a clock, which
+/// meant an NTP step could announce an interruption that never happened.
+///
+/// A lock the filesystem will not give an answer about is treated as
+/// held: refusing to accuse is the safe direction, and the same
+/// uncertainty makes `sweep_stale_temps` leave files alone.
+fn still_running(path: &Path) -> bool {
+    let Ok(file) = std::fs::File::open(path) else {
+        return true;
+    };
+    match file.try_lock() {
+        Ok(()) => false,
+        Err(std::fs::TryLockError::WouldBlock) => true,
+        Err(e) => {
+            tracing::warn!(
+                journal = %path.display(),
+                error = ?e,
+                "cannot tell whether a patch journal is in use; leaving it alone"
+            );
+            true
+        }
+    }
+}
 
 /// One file's line in the journal, in the form a person needs when they
 /// are looking at a workspace somebody's patch was interrupted in.
@@ -1028,6 +1071,17 @@ fn journal_names(dir: &Path, pid: u32, unique: &str) -> (PathBuf, PathBuf) {
 /// process killed outright, part way through the renames.
 struct Journal {
     path: PathBuf,
+    /// Held open and locked for as long as the commit is running. This is
+    /// what tells the next patch whether this one is still going: an
+    /// advisory lock is released by the kernel when the process holding it
+    /// dies, however it dies, so "can I take this lock" answers "is the
+    /// writer gone" exactly -- with no clock in it, and nothing to
+    /// estimate.
+    ///
+    /// Never read, because its whole job is to exist: dropping it is what
+    /// releases the lock, so the field *is* the lifetime.
+    #[allow(dead_code)]
+    locked: std::fs::File,
     /// Set when the workspace is known to be inconsistent, so the record
     /// outlives this process on purpose.
     keep: std::cell::Cell<bool>,
@@ -1078,11 +1132,16 @@ impl Journal {
             .map_err(|e| Error::internal("cannot write the patch journal").with_source(e))?;
         file.sync_all()
             .map_err(|e| Error::internal("cannot flush the patch journal").with_source(e))?;
-        drop(file);
+        // Locked before it is visible, and held: the rename carries the
+        // lock with the inode, so from the moment a `.json` exists it is
+        // already spoken for.
+        file.try_lock()
+            .map_err(|e| Error::internal(format!("cannot lock the patch journal: {e:?}")))?;
         std::fs::rename(&partial, &path)
             .map_err(|e| Error::internal("cannot place the patch journal").with_source(e))?;
         Ok(Journal {
             path,
+            locked: file,
             keep: std::cell::Cell::new(false),
         })
     }
@@ -1096,30 +1155,21 @@ impl Journal {
 
     /// Refuse if an earlier patch was interrupted between renames.
     ///
-    /// A journal older than [`JOURNAL_STALE`] belongs to no commit that is
-    /// still happening. Age rather than asking whether the pid is alive:
-    /// this crate forbids `unsafe`, so liveness would mean spawning a
-    /// process on a path that is taken on every patch, and a commit is so
-    /// much shorter than a minute that the answer is the same either way.
-    /// The cost is that an interruption is invisible for up to a minute —
-    /// during which the transport it died with is down anyway.
+    /// "Interrupted" means the process that was renaming is gone, which
+    /// [`still_running`] answers from the journal's own lock. No clock, no
+    /// window: a commit that is happening is visible the instant it
+    /// starts, and one that stopped is visible the instant it stops.
     fn check_abandoned(dir: &Path, root: &Path) -> Result<()> {
         let Ok(entries) = std::fs::read_dir(dir) else {
             return Ok(());
         };
         for entry in entries.flatten() {
             let path = entry.path();
-            let Ok(meta) = entry.metadata() else { continue };
             // A journal whose rename never happened. The commit it would
             // have described never started, so there is nothing to report
             // and nothing to keep.
             if path.extension().is_some_and(|ext| ext == "tmp") {
-                if meta
-                    .modified()
-                    .ok()
-                    .and_then(|at| at.elapsed().ok())
-                    .is_some_and(|age| age >= JOURNAL_STALE)
-                {
+                if !still_running(&path) {
                     tracing::warn!(journal = %path.display(), "removing a patch journal that was never finished");
                     let _ = std::fs::remove_file(&path);
                 }
@@ -1128,22 +1178,7 @@ impl Journal {
             if path.extension().is_none_or(|ext| ext != "json") {
                 continue;
             }
-            // `elapsed()` fails when the mtime is in the future, which a
-            // clock step or a copied file is enough to produce. Treating
-            // "cannot tell how old this is" as "old" would announce an
-            // interruption that never happened and block patching until
-            // somebody deleted the file. Unknown counts as fresh: the
-            // worst case is noticing a real interruption later, against
-            // refusing to work over a clock.
-            let age = meta.modified().ok().and_then(|at| at.elapsed().ok());
-            let Some(age) = age else {
-                tracing::warn!(
-                    journal = %path.display(),
-                    "patch journal has a timestamp in the future; not treating it as interrupted"
-                );
-                continue;
-            };
-            if age < JOURNAL_STALE {
+            if still_running(&path) {
                 continue;
             }
             // A `.json` is here because a rename put it here, which means
@@ -2109,6 +2144,94 @@ mod tests {
         );
     }
 
+    /// One request must mean one file. The two ways of reading a set of
+    /// edits genuinely differ, so exactly one of them decides whenever it
+    /// can: the sequence. This generates thousands of texts with mixed
+    /// line endings, multi-byte characters and edits drawn from the same
+    /// alphabet -- so they overlap, repeat and interfere constantly --
+    /// and asserts that whenever the sequence has an answer, that is the
+    /// answer, and that positional application only ever fills a gap.
+    ///
+    /// It earned its place immediately: the first run found the
+    /// divergence quoted on `apply_edits`, which four hand-written cases
+    /// in an independent review had not.
+    ///
+    /// Deterministic rather than a proptest dependency -- the seed is
+    /// fixed, so a failure reproduces, and it costs no build time.
+    #[test]
+    fn the_sequence_decides_whenever_it_has_an_answer() {
+        // xorshift, so the sequence is the same on every machine.
+        let mut seed = 0x2026_0904_u64;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let pieces = [
+            "a",
+            "b",
+            "ab",
+            "x=1",
+            "\u{4f60}\u{597d}",
+            "\u{1f600}",
+            "  ",
+            "\t",
+        ];
+        let endings = ["\n", "\r\n"];
+        let mut sequential_answered = 0u32;
+        let mut rescued = 0u32;
+
+        for _ in 0..4_000 {
+            let lines = 1 + (next() % 6) as usize;
+            let mut text = String::new();
+            for _ in 0..lines {
+                text.push_str(pieces[(next() % pieces.len() as u64) as usize]);
+                text.push_str(endings[(next() % endings.len() as u64) as usize]);
+            }
+            let count = 1 + (next() % 2) as usize;
+            let edits: Vec<Edit> = (0..count)
+                .map(|_| Edit {
+                    old: pieces[(next() % pieces.len() as u64) as usize].to_string(),
+                    new: pieces[(next() % pieces.len() as u64) as usize].to_string(),
+                    replace_all: Some(next() % 2 == 0),
+                })
+                .collect();
+
+            let combined = apply_edits(&text, &edits, "f");
+            match apply_in_order(&text, &edits, "f") {
+                Ok((slow, slow_n)) => {
+                    sequential_answered += 1;
+                    let (got, got_n) = combined.expect("the sequence answered, so this must");
+                    assert_eq!(
+                        got, slow,
+                        "positional application overrode a sequence that had an answer\n  text  {text:?}\n  edits {edits:?}"
+                    );
+                    assert_eq!(got_n, slow_n, "edit counts disagreed on {text:?}");
+                }
+                Err(refused) => {
+                    // No answer to disagree with. Either the rescue takes
+                    // it, or the sequence's own refusal stands.
+                    match (combined, apply_by_position(&text, &edits)) {
+                        (Ok((got, _)), Some((fast, _))) => {
+                            rescued += 1;
+                            assert_eq!(got, fast, "{text:?}");
+                        }
+                        (Err(e), None) => assert_eq!(e.message(), refused.message()),
+                        (got, fast) => panic!(
+                            "rescue disagreed with itself on {text:?}: ok={} fast={}",
+                            got.is_ok(),
+                            fast.is_some()
+                        ),
+                    }
+                }
+            }
+        }
+        // Both halves have to be exercised or this proves nothing.
+        assert!(sequential_answered > 500, "{sequential_answered}");
+        assert!(rescued > 0, "the rescue path was never reached");
+    }
+
     /// Swapping two things is the smallest case sequential application
     /// cannot do. Applied in order, the first edit makes a second copy of
     /// what the second edit is looking for, and the second edit is then
@@ -2869,14 +2992,15 @@ mod tests {
         assert!(leftovers.is_empty(), "{leftovers:?}");
     }
 
-    /// A clock step is enough to give a file an mtime in the future, and
-    /// then `elapsed()` fails rather than returning a small number.
-    /// Reading that as "old" would announce an interruption that never
-    /// happened and block patching until somebody deleted the file.
+    /// The decision does not read a clock at all, so a timestamp cannot
+    /// change it. It used to: an mtime in the future made `elapsed()` fail,
+    /// that failure was read as "old enough to be abandoned", and an NTP
+    /// step could therefore announce an interruption that never happened
+    /// and block patching until somebody deleted the file.
     #[test]
-    fn a_journal_dated_in_the_future_is_not_an_interruption() {
-        let root = workspace("journal-future-clock");
-        let journals = root.join("../journal-future-clock-state");
+    fn whether_a_journal_is_abandoned_does_not_depend_on_the_clock() {
+        let root = workspace("journal-clock");
+        let journals = root.join("../journal-clock-state");
         let _ = fs::remove_dir_all(&journals);
         fs::create_dir_all(&journals).unwrap();
         let path = journals.join("99-tomorrow.json");
@@ -2888,12 +3012,35 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
-        let handle = fs::File::options().write(true).open(&path).unwrap();
-        handle
-            .set_modified(std::time::SystemTime::now() + Duration::from_secs(86_400))
-            .unwrap();
-        drop(handle);
 
+        for stamp in [
+            std::time::SystemTime::now() + Duration::from_secs(86_400),
+            std::time::SystemTime::now() - Duration::from_secs(86_400),
+        ] {
+            let handle = fs::File::options().write(true).open(&path).unwrap();
+            handle.set_modified(stamp).unwrap();
+            drop(handle);
+            // Nobody holds it, so it is abandoned whatever the date says.
+            let err = apply_patch(
+                &root,
+                Some(&journals),
+                &ApplyPatchArgs {
+                    files: vec![update(
+                        "src/main.rs",
+                        &version(&root, "src/main.rs"),
+                        "let x = 1;",
+                        "let x = 8;",
+                    )],
+                    dry_run: None,
+                },
+            )
+            .expect_err("an unheld journal is abandoned regardless of its mtime");
+            assert!(err.message().contains("interrupted"), "{err}");
+        }
+
+        // And held, it is in progress -- again regardless of the date.
+        let holder = fs::File::open(&path).unwrap();
+        holder.try_lock().unwrap();
         apply_patch(
             &root,
             Some(&journals),
@@ -2907,11 +3054,7 @@ mod tests {
                 dry_run: None,
             },
         )
-        .expect("a clock is not evidence of an interruption");
-        assert_eq!(
-            text(&root, "src/main.rs"),
-            "fn main() {\n    let x = 8;\n}\n"
-        );
+        .expect("held is held, whatever the mtime says");
     }
 
     /// A patch that fails between staging and the commit loop must leave
@@ -3098,22 +3241,29 @@ mod tests {
         assert!(err.message().contains("interrupted"), "{err}");
     }
 
-    /// A journal young enough to be a commit that is still running is not
-    /// an interruption. Two patches at once must not accuse each other.
+    /// A commit that is genuinely in progress must not be accused. It is
+    /// recognised by its lock, which the kernel holds for as long as the
+    /// process does -- so two patches at once never mistake each other,
+    /// and there is no window in which an interruption is invisible.
     #[test]
-    fn a_journal_from_a_commit_still_running_is_left_alone() {
-        let root = workspace("journal-fresh");
-        let journals = root.join("../journal-fresh-state");
+    fn a_journal_held_by_a_running_commit_is_left_alone() {
+        let root = workspace("journal-locked");
+        let journals = root.join("../journal-locked-state");
         let _ = fs::remove_dir_all(&journals);
         fs::create_dir_all(&journals).unwrap();
+        let path = journals.join("999-inflight.json");
         fs::write(
-            journals.join("999-freshjournal.json"),
+            &path,
             serde_json::to_vec(&serde_json::json!({
                 "pid": 999, "root": root.clone(), "files": [],
             }))
             .unwrap(),
         )
         .unwrap();
+        // Stand in for the other process: hold the lock for this call.
+        let holder = fs::File::open(&path).unwrap();
+        holder.try_lock().unwrap();
+
         apply_patch(
             &root,
             Some(&journals),
@@ -3127,7 +3277,29 @@ mod tests {
                 dry_run: None,
             },
         )
-        .expect("a fresh journal is a patch in progress, not an interruption");
+        .expect("a commit in progress is not an interruption");
+        assert_eq!(
+            text(&root, "src/main.rs"),
+            "fn main() {\n    let x = 5;\n}\n"
+        );
+
+        // Released, and the same journal now reads as abandoned.
+        drop(holder);
+        let err = apply_patch(
+            &root,
+            Some(&journals),
+            &ApplyPatchArgs {
+                files: vec![update(
+                    "src/main.rs",
+                    &version(&root, "src/main.rs"),
+                    "let x = 5;",
+                    "let x = 6;",
+                )],
+                dry_run: None,
+            },
+        )
+        .expect_err("the writer is gone now");
+        assert!(err.message().contains("interrupted"), "{err}");
     }
 
     #[test]

@@ -5,7 +5,12 @@ members = ["crates/ccnm-cli", "crates/ccnm-core"]
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+# 1.89 for `File::try_lock`, which is how `apply_patch` tells an
+# interrupted commit from one that is still running. The alternative was a
+# timeout, and a timeout was wrong in both directions: it left a window in
+# which an interruption was invisible, and it read a clock, so an NTP step
+# could announce one that never happened.
+rust-version = "1.89"
 license = "MIT"
 repository = "https://github.com/xwfe/ccnm"
 

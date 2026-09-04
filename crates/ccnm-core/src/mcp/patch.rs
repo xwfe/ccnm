@@ -513,15 +513,20 @@ fn missing_dirs(target: &Path) -> Vec<PathBuf> {
 /// Two passes, and which one runs is not the caller's business.
 ///
 /// The first resolves every edit against the file as it was read. If all
-/// of them land there, exactly once each and without overlapping, the
-/// order they arrived in cannot matter and they are applied by position.
-/// This is worth having because models get the order wrong: Cline
-/// measured a diff-application success rate roughly 10% higher after
-/// making their apply order-invariant — nearly 25% on one model —
-/// noting that models "frequently return diffs out of order" even when
-/// told not to. It also fixes a subtler case, where one edit's
-/// replacement text happens to contain another edit's `old` and the
-/// second edit then looks ambiguous.
+/// of them land there, exactly once each and without overlapping, they
+/// are applied by position.
+///
+/// What that buys is not "any order works" — two edits on unrelated
+/// text already worked in either order. It is that **edits stop
+/// interfering with each other**. Applied in sequence, an edit whose
+/// replacement text contains a later edit's `old` leaves two copies of
+/// it, and the later edit is refused as ambiguous although the patch was
+/// perfectly well defined against the file as read. Swapping two names
+/// is the smallest case of it and was simply impossible before.
+///
+/// Cline reports roughly 10% more successful diff edits after making
+/// their apply order-invariant, nearly 25% on one model, noting that
+/// models "frequently return diffs out of order" even when told not to.
 ///
 /// Anything else falls through to the second pass, which applies the
 /// edits in order, each to the result of the last. That is what makes a
@@ -1897,30 +1902,29 @@ mod tests {
         assert!(err.message().contains("appears twice"), "{err}");
     }
 
-    /// Models return diffs in the wrong order even when told not to;
-    /// Cline measured about 10% more successful edits after making their
-    /// apply order-invariant. Edits that each match the file as read,
-    /// once and without overlapping, do not care what order they arrived
-    /// in.
+    /// Swapping two things is the smallest case sequential application
+    /// cannot do. Applied in order, the first edit makes a second copy of
+    /// what the second edit is looking for, and the second edit is then
+    /// refused as ambiguous -- for a patch that was perfectly well
+    /// defined against the file as read.
     #[test]
-    fn independent_edits_do_not_care_what_order_they_arrive_in() {
-        let root = workspace("unordered");
+    fn two_names_can_be_swapped_in_one_patch() {
+        let root = workspace("swap");
         let result = apply(
             &root,
             vec![FilePatch {
                 op: Some(Op::Update),
                 path: "src/lib.rs".into(),
                 version: Some(version(&root, "src/lib.rs")),
-                // The file reads a, then b. This asks for b first.
                 edits: Some(vec![
                     Edit {
-                        old: "pub fn b()".into(),
-                        new: "pub fn second()".into(),
+                        old: "pub fn a() {}".into(),
+                        new: "pub fn b() {}".into(),
                         replace_all: None,
                     },
                     Edit {
-                        old: "pub fn a()".into(),
-                        new: "pub fn first()".into(),
+                        old: "pub fn b() {}".into(),
+                        new: "pub fn a() {}".into(),
                         replace_all: None,
                     },
                 ]),
@@ -1928,10 +1932,7 @@ mod tests {
             }],
         );
         assert_eq!(result.files[0].edits, 2);
-        assert_eq!(
-            text(&root, "src/lib.rs"),
-            "pub fn first() {}\npub fn second() {}\n"
-        );
+        assert_eq!(text(&root, "src/lib.rs"), "pub fn b() {}\npub fn a() {}\n");
     }
 
     /// One edit's replacement containing another edit's `old` used to make

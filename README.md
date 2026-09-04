@@ -164,18 +164,11 @@ ssh other 'chmod +x ~/.local/bin/ccnm.new && mv ~/.local/bin/ccnm.new ~/.local/b
 ssh other '~/.local/bin/ccnm --version'
 ```
 
-三个坑都在这两条命令里，一次踩全：
+**三个坑都在这两条命令里**，所以要验：`scp` 不带 `-p` 会丢执行位；ssh 里必须写全路径
+（非交互 shell 不读 `.zshrc`）；升级时先 `.new` 再 `mv`，别 `cp` 覆盖。三条的症状和原因都在
+[troubleshooting](docs/troubleshooting.md) 里。
 
-- **`scp` 会丢执行位。** OpenSSH 10.3 的 scp 不带 `-p` 时不保留 mode（10.2 的保留），
-  传过去就是 `644`，跑起来是 `zsh: permission denied: ccnm`——看着像装错了，其实只差一个
-  `chmod +x`。所以上面既给了 `-p` 也补了 `chmod`，两道保险。
-- **ssh 里必须写全路径 `~/.local/bin/ccnm`。** `ssh host 'ccnm ...'` 起的是非交互 shell，
-  它只读 `~/.zshenv`，你在 `.zshrc` / `.zprofile` 里加的 `~/.local/bin` 它看不见，
-  于是 `zsh:1: command not found: ccnm`。ccnm 自己调对面时**从来都用全路径**（设计文档
-  第 7 节），就是这个原因；你在命令行上也得这么写。
-- **先 `.new` 再 `mv`，别直接 cp 覆盖。** 理由见[升级](#升级)。
-
-之后如果懒得记，`scripts/deploy.sh <另一台别名>` 把这一段全做了。
+`scripts/deploy.sh <另一台别名>` 把这一段全做了。
 
 ### 3. 两个方向的 ssh 别名
 
@@ -220,26 +213,14 @@ ccnm ws remove xshun            # 忘掉它（会先停掉它的会话）
 ccnm ws remove xshun --purge    # 再顺手删掉 ccnm 给它留的记录
 ```
 
-**重名了它会问你，不会自己决定。** 两个项目目录都叫 `web` 是常事：
+**重名了它会问你，不会自己决定。** 两个项目目录都叫 `web` 是常事：撞上了会拒绝并给出两条
+可以直接抄的命令（换个名字，或者 `--replace` 明确改指向）。反过来——**同一个目录起第二个
+名字**——也会被拦，因为两个名字就是两个会话、两个 Claude 在改同一份文件。
 
-```text
-$ cd ~/other/web && ccnm ws add
-CCNM_E_INVALID_ARGS:
-workspace `web` already points at /Users/me/code/web
-this would point it at /Users/me/other/web instead, and end any session running against the old one
-pick one:
-  ccnm ws add other-web /Users/me/other/web   (a different name for this project)
-  ccnm ws add web --replace   (repoint the existing one)
-```
+**都可以重复跑。** 第二次 `init` 会说 "already says that"，不重写文件。手写过的注释和顺序
+都保留——ccnm 在原文件上改，不是拿结构体重新生成一份。
 
-建议的名字是拿上一层目录拼的，照抄就能用。反过来——**同一个目录起第二个名字**——也会被拦：
-两个名字就是两个会话、两个 Claude 在改同一份文件。
-
-**都可以重复跑。** 第二次 `init` 会说"already says that"，不会重写文件；`workspace add`
-只报真正变了的字段。手写过的注释、顺序、空行都保留——ccnm 是在原文件上改，不是拿结构体重新
-生成一份。
-
-生成出来长这样，没有 `version` 行：
+生成出来长这样（没有 `version` 行）：
 
 ```toml
 [hosts.work]
@@ -253,9 +234,7 @@ work_host = "work"
 root = "/Users/me/code/xshun"
 ```
 
-要手写也行，字段表在设计文档第 5 节（`claude_permission_mode`、`ccnm_bin`、
-`claude_config_dir`、`runtime_user`、`allow_unconfined_exec`）。老配置里的 `version = 1`
-仍然接受，只是不再需要。
+要手写也行，字段表在设计文档第 5 节。
 
 ### 5. 在工作机上装 controller
 
@@ -421,165 +400,22 @@ read_output      按字节偏移翻 exec_command 的输出
 
 ## 出错了怎么办
 
-### `TOOLS DOWN` —— 会话看着在跑，模型却什么都够不着
+按**你看到的现象**查，每一条都是真撞过的。详情在
+**[docs/troubleshooting.md](docs/troubleshooting.md)**：
 
-```text
-ccnm-xshun  xshun  detached  TOOLS DOWN (in Claude: /mcp -> ccnm -> Reconnect)  (...)
-```
-
-**症状**：Claude 还能聊天，但一让它读文件就开始瞎猜，或者去调它自己机器上的 Bash
-（会被拒，那是第二道锁）。原因是那条 MCP ssh 断了——网断太久、工作机睡了、有人 kill 了它。
-Claude 不会自己重连。
-
-**修**：在 Claude 里敲
-
-```text
-/mcp  →  选 ccnm  →  Reconnect
-```
-
-会话、上下文、正在做的事全都留着，只是把通道接回来。
-
-`ccnm status <ws>` 和 `ccnm doctor <ws>` 都会明说这个状态——**看着正常的会话是不会显示
-这行的**，所以看到了就是真断了。
-
-### `Killed: 9` / exit 137 —— 升级完二进制就全炸
-
-**症状**：`ccnm --version` 直接被杀，doctor 走 ssh 拿到空回复报 `CCNM_E_VERSION`，
-但 `launchctl` 显示 controller 好好的。
-
-**原因**：Apple Silicon 上直接 `cp` 覆盖一个正在跑（或跑过）的二进制，代码签名的页面校验
-会失效，之后每次 exec 都 SIGKILL。而**老进程还在用老代码跑**，所以现象特别迷惑。
-
-**修**：见[升级](#升级)。已经中招的话重新按那个办法装一遍就行。
-
-### `zsh:1: command not found: ccnm`（在 ssh 命令里）
-
-`ssh host 'ccnm ...'` 起的是非交互 shell，读不到你 `.zshrc` 里加的 `~/.local/bin`。
-**ssh 里写全路径**：`ssh host '~/.local/bin/ccnm ...'`。
-
-ccnm 自己调对面时一直是全路径（`hosts.<x>.ccnm_bin`，默认 `~/.local/bin/ccnm`），所以
-`ccnm doctor` 能通而你手敲的那条不通，是正常的，不是配置坏了。
-
-### `zsh: permission denied: ccnm`
-
-二进制在那儿但没有执行位。几乎总是 `scp` 传的时候丢的（OpenSSH 10.3 的 scp 不带 `-p`
-不保留 mode）：
-
-```bash
-ssh other 'ls -l ~/.local/bin/ccnm'      # 看是不是 -rw-r--r--
-ssh other 'chmod +x ~/.local/bin/ccnm'
-```
-
-ccnm 自己撞上这个会直接说出来：
-
-```text
-Work SSH   FAIL   CCNM_E_VERSION: ~/.local/bin/ccnm on work is there but not executable (exit 126)
-                  ssh work 'chmod +x ~/.local/bin/ccnm'
-                  this is what copying it over with `scp` and no -p leaves behind
-```
-
-### `message is not valid for protocol 1; ccnm versions probably differ`
-
-如果你看到的是这句、而两台机器的 `ccnm --version` 明明一样——那不是版本问题。
-
-**背景**：有的 SSH 传输不传递远程命令的退出码。实测 Tailscale SSH（tailscaled 1.102.2，
-`RunSSH = true`）：`ssh work 'exit 3'` 返回 **0**，`ssh work false` 也返回 **0**，
-换成 OpenSSH 服务的机器返回 3 和 1。ccnm 靠退出码分辨"命令没找到 / 不可执行 / 远程拒绝"，
-在这种链路上全部退化成"成功但没输出"，于是报成版本不一致。
-
-**现在不会了**：stdout 为空时 ccnm 改看 stderr，shell 的抱怨和远程 ccnm 自己的
-`CCNM_E_*` 都能认出来。要是你还看到这句，那才是真的版本对不上——
-`ssh work '~/.local/bin/ccnm --version'` 跟本机比一下。
-
-顺带：这个特性也意味着**你自己在命令行上 `ssh work '任何会失败的命令'` 都会得到 `$? = 0`**，
-调试的时候别信那个退出码。
-
-### 会话里工具全废，报 "xxx is not installed"、`workspace_info` 却一切正常
-
-**项目被挪走了，而会话还绑在老路径上。** 一个会话的 root 在启动的那一刻就定死在它的 MCP
-payload 里，之后改 config 也好、`mv` 目录也好，都动不了它。
-
-现在不会这么难认了：`workspace_info` 会多一行 WARNING 说根目录不在了，`exec_command`
-也不再把这个错怪到程序头上（以前它会说 "`/bin/echo` 没装"，因为 spawn 失败的 errno 一模一样）。
-
-**修**：把 config 里的路径改对，然后
-
-```bash
-ccnm workspace add xshun ~/新路径     # 或者手动改 root
-ccnm xshun                            # 它会自己发现老会话指向别处，结束它、开一个新的
-```
-
-`ccnm run` 遇到"活着但 root 对不上"的会话会**直接换掉它**，并在输出里说明换掉了哪一个。
-
-### `Work controller ... Background`
-
-controller 不在登录会话里。两种可能：
-
-```text
-它是手工起的，不是 launchd 起的       → ssh work 'ccnm work-controller install'
-工作机屏幕前根本没人登录过            → 去那台机器上登录一次（之后锁屏无所谓）
-```
-
-### `Claude authentication` 是 SKIP 不是 FAIL
-
-没有 controller 的时候 ccnm **不会**去问 Claude 登录状态——从 ssh 会话问必然得到
-"没登录"，那是假的。所以它报 SKIP 并指向 `Work controller` 那一行。先把 controller 弄好。
-
-### `CCNM_E_DEPENDENCY: tmux is not installed`
-
-工作机没装 tmux。`brew install tmux`。或者用 `--print` 模式，那个不需要 tmux。
-
-### `Project instructions ... WARN`
-
-项目的 `CLAUDE.md` 比 16 KiB 大，模型只读到前面一截。把模型用不上的东西挪出根文件——
-它随时可以 `read_file CLAUDE.md` 读全文，但**开场读到的**只有截断后的那部分。
-
-### `--print` 跑到一半 ssh 断了
-
-会话没断（它是 supervisor 的孩子，不是那条 ssh 的），结果照样写进了会话目录。捞：
-
-```bash
-ccnm result xshun                 # 最近一次 --print 的结果
-ccnm result xshun --session <id>  # 指定某一次
-```
-
-### 会话里的 `apply_patch` 报 "workspace is PARTIALLY CHANGED"
-
-这句只在**极端情况**下出现：staging 全部成功了，commit 阶段文件系统开始失败，回滚也失败。
-它会点名每个牵涉到的文件。这时候先 `git status` 看一眼再动别的。
-
-正常的失败（版本过期、`old` 匹配不上、路径出界）都是原子的，**一个字节都不会写**。
-
-### 会话里的 `apply_patch` 报 "a previous apply_patch was interrupted"
-
-```text
-a previous apply_patch was interrupted while it was renaming files,
-so these may not agree with each other:
-  update src/config.rs   original kept at src/.ccnm-a1b2c3-config.rs
-  update src/main.rs
-check them before changing anything else -- git status and git diff will show which ones landed.
-```
-
-**上一次 patch 在改名的中途整个进程没了**（`kill -9`、ssh 断开、断电）。这是三阶段事务里
-`Drop` 唯一盖不住的洞：回滚代码跑在那个进程里，进程没了就没人回滚。
-
-**每个文件本身都是完整的**（一次原子 rename，不存在半截文件），坏的是文件**之间**对不上——
-比如改了函数名，没改调用它的地方。
-
-怎么处理：
-
-```bash
-git -C <项目> status        # 哪些落了、哪些没落，一眼就看出来
-git -C <项目> diff
-```
-
-看完，按报错最后一行说的把那个 journal 文件删掉，patch 就恢复正常。
-
-**ccnm 不会自动回滚**，这是故意的：等你看到这条消息时，那半个改动可能已经是你想要的，
-甚至已经 commit 了。为了一个一小时前的事务把你的活默默还原，比中断本身更糟。
-要求是"不能悄悄地乱"，不是"让机器替你决定"。
-
----
+| 你看到的 | 其实是 |
+|---|---|
+| `TOOLS DOWN`，会话在跑但模型够不着任何工具 | MCP 通道断了。`/mcp` → ccnm → Reconnect，上下文不丢 |
+| `Killed: 9` / exit 137，升级完全炸 | 用 `cp` 覆盖了跑过的二进制。改用 rename |
+| `command not found: ccnm`（在 ssh 命令里） | 非交互 shell 不读 `.zshrc`，写全路径 |
+| `permission denied: ccnm` | `scp` 丢了执行位。`scp -p` + `chmod +x` |
+| `ccnm versions probably differ` | 两台的 build 不一样，或者 Tailscale SSH 吞了退出码 |
+| 工具全废却说 "xxx is not installed" | 项目目录被移走了，会话还绑在旧路径上 |
+| `CCNM_E_DEPENDENCY: tmux is not installed` | 工作机没装 tmux（`--print` 模式不需要） |
+| `apply_patch` 说 "PARTIALLY CHANGED" | 极端情况：提交到一半失败且回滚也失败。先 `git status` |
+| `apply_patch` 说 "a previous ... was interrupted" | 上次 patch 改名到一半进程没了。`git status` 看完再删那个 journal |
+| doctor 里 `Claude authentication` 是 SKIP | 正常：没有 Aqua controller 时它不判断 |
+| doctor 里 `Work controller ... Background` | 正常：managername 不是 Keychain 的终审 |
 
 ## 升级
 
@@ -611,135 +447,12 @@ ssh work '~/.local/bin/ccnm work-controller install'   # 让 controller 用新�
 
 ## 开发、测试、发版
 
-### 本地跑测试
+改 ccnm 本身（跑测试、变异测试、打包、GitHub 发版）：
+**[docs/development.md](docs/development.md)**。
 
-```bash
-cargo test --workspace        # 343 个测试，10 秒，不需要第二台机器，不碰网络
-cargo fmt --all --check
-cargo clippy --workspace --all-targets -- -D warnings
-```
+只是用它的话，这一节跟你无关。
 
-这三条就是 CI 的全部内容。测试里所有外部命令（ssh、tmux、launchctl、claude）都是注进去的
-假 runner，**除了**几个故意用真东西的：`git`（list_files 的 git 模式）、`rg`（search_text）、
-`/bin/sh`（进程超时和进程组那几个）。所以本机要有 `git` 和 `ripgrep`。
-
-### 不用第二台机器，能测到哪一步
-
-MCP runtime 那一半可以完全在本机验，它跟网络无关：
-
-```bash
-ccnm mcp probe <workspace> --local --calls 100
-```
-
-它把 `ccnm internal mcp-serve` 当子进程起来，走真的 MCP 协议（initialize、tools/list、
-100 次 workspace_info），最后证明**是同一个进程答完了全部**——单进程、单会话，
-不是每次调用起一个。输出是真实延迟：
-
-```text
-initialize in 113 ms, tools/list (7 tools, 8236 B), instructions 453 B (...),
-workspace_info x100 p50 0 ms p95 0 ms max 0 ms, pid 44296 throughout
-```
-
-（毫秒那一栏在本机全是 0 —— 后面跟着的 JSON 里有微秒：`call_p50_us: 65`、
-`call_p95_us: 89`、`call_max_us: 189`。走 ssh 的时候这些数变成 20–30 毫秒，
-差的那部分就是链路。）
-
-跟走 ssh 的那次（`ccnm mcp probe <ws>`，不带 `--local`）一比，差值就是链路成本。
-
-**测不到的**：controller / 登录会话、tmux 会话、`ccnm run` 的全链路——那些需要两台机器
-（或者一台机器 ssh 自己，见下）。
-
-### 单机环回（一台 Mac 也能跑全链路）
-
-把两个角色都指向 `localhost`：打开「系统设置 → 通用 → 共享 → 远程登录」，把自己的公钥加进
-`~/.ssh/authorized_keys`，然后 config 里两个 host 都写 `localhost`。
-
-**这条路我没在这台机器上验过**——它要往你的 `~/.ssh/authorized_keys` 里加东西，那是你的机器，
-我不动。机制上没有理由不通（ccnm 对两端唯一的要求就是 ssh 别名能通），但我没跑过就不说它跑通了。
-
-### 两台机器的开发循环
-
-```bash
-scripts/deploy.sh <另一台的 ssh 别名> [workspace]
-```
-
-在有 Rust toolchain 的那台上跑（通常是工作机，家庭机常常没装 cargo）。它编译、按
-[升级](#升级)那个安全办法装到两边、重启 controller（哪台有它就重启哪台）、然后跑一次
-`ccnm doctor`。正在跑的会话不受影响。
-
-### 变异测试
-
-```bash
-scripts/mutate.sh        # 需要干净的工作区，跑一遍约 3 分钟
-```
-
-测试全绿只说明代码通过了测试，**不说明测试能抓住代码变错**。这个脚本一次拆掉一处 guard
-（一个拒绝什么的 `if`、一个必须带的 flag、一次必须做的清理），要求每一处都让某个测试变红：
-
-```text
-RED    two files may not share a new directory
-       caught by: mcp::patch::tests::two_new_files_can_share_one_new_directory
-...
-15 red, 0 green, 0 not applied
-```
-
-出现 `GREEN` 就是测试有洞：要么补测试，要么确认这处变异**根本不改变可观察行为**
-（等价变异），说清楚然后把这条删掉。不能当成通过混过去。
-
-### 打包
-
-```bash
-scripts/dist.sh
-```
-
-产出 `dist/ccnm-<version>-macos-universal.tar.gz`（+ `.sha256`）。是 arm64 + x86_64 的通用
-二进制：16.9 MB 二进制，打包后 6.1 MB。做成通用的原因是两台机器可能一台 M 系列一台 Intel，
-让人自己挑架构下载迟早出事。
-
-版本号取自二进制自己（`ccnm --version`），不是从 Cargo.toml 抄的——文件名不可能跟里面的东西不一致。
-
-**tar 保留执行位**，解出来就是 `rwxr-xr-x`，不像 `scp`（那个坑见上面 `permission denied`
-那一节）。所以走 release 下载装的人不需要再 `chmod +x`。
-
-### GitHub 上的自动构建和发版
-
-`.github/workflows/` 里两个：
-
-```text
-ci.yml       每次 push / PR：fmt + clippy + 全部测试 + 跑一下二进制
-release.yml  推 tag（v*）：过一遍同样的门禁 → dist.sh → 校验 tag 和版本号一致 → 建 release
-```
-
-第一次 push（远端 `github.com/xwfe/ccnm`，`origin` 已经配好）：
-
-```bash
-git push -u origin main
-git push origin v0.1.0        # 这一下会触发第一个 release
-```
-
-之后发一个版本：
-
-```bash
-# 先把 Cargo.toml 里的 version 改好并提交
-git tag -a v0.1.1 -m "..."
-git push origin v0.1.1
-```
-
-`release.yml` 会在**版本号和 tag 对不上时直接失败**（`v0.1.1` 打在还写着 `0.1.0` 的树上，
-产出的文件名就会撒谎，而这种事几个月都没人发现）。
-
-几件要知道的：
-
-- **只用 GitHub 官方 action**（`actions/checkout`、`actions/cache`）。第三方 action 是拿着
-  token 在你仓库里跑的代码，对一个整篇都在小心"什么东西在哪台机器上跑"的项目来说，
-  手写几行缓存比引入一个信任关系便宜。
-- **runner 上要 `brew install ripgrep tmux`**，否则 search 那组测试会因为缺依赖而不是因为
-  ccnm 有问题而失败。
-- **两个 workflow 还没在 GitHub 上真跑过**（东西还没 push 上去）。但里面每一步——fmt、
-  clippy、test、`scripts/dist.sh`、tag/版本校验的两个分支、release notes 的渲染——都在本机
-  单独跑通了。第一次 push 之后还是要去 Actions 看一眼。
-- 从浏览器下载的二进制会被 macOS 隔离，`xattr -d com.apple.quarantine ccnm` 解开；
-  `curl` 下的不会。release notes 里写了这条。
+---
 
 ## 安全边界
 
@@ -831,10 +544,15 @@ fmt、clippy、test、`scripts/dist.sh`、tag/版本校验的两个分支、rele
 
 ## 更深的东西在哪
 
-- **设计文档**：[Terminal-native_Claude_Remote_Workspace.md](Terminal-native_Claude_Remote_Workspace.md)
-  ——为什么这么设计、每个决定的实测数据、所有 invariant。想改这个项目的话从它开始读。
-- **生产安全**：[docs/production-safety.md](docs/production-safety.md)
-- **调研记录**：[docs/research/](docs/research/)
+| 想知道 | 看哪儿 |
+|---|---|
+| 出了具体的错，怎么办 | [docs/troubleshooting.md](docs/troubleshooting.md) |
+| 怎么改 ccnm 本身、怎么发版 | [docs/development.md](docs/development.md) |
+| 怎么把家庭机弄成一个专用的受限账号 | [docs/production-safety.md](docs/production-safety.md) |
+| **为什么**这么设计、每个决定背后的实测数据 | [设计文档](Terminal-native_Claude_Remote_Workspace.md) |
+| 别人怎么做的、哪些数字支持这些选择 | [docs/research/](docs/research/) |
+
+想改这个项目，从设计文档开始读——README 只讲"我该敲什么"，它讲"为什么是这样"。
 
 错误码是稳定的（`CCNM_E_*`，设计文档第 24 节），脚本可以依赖。
 

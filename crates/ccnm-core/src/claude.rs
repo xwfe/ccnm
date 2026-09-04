@@ -130,10 +130,12 @@ pub struct ClaudeReport {
 /// else this is [`Ask::VersionOnly`] — not because running the command
 /// would fail, but because its answer would be wrong, and a command whose
 /// result has to be discarded should not be run at all.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum Ask {
     /// Version and login. Only from a login session (see
     /// [`crate::controller`]).
+    #[default]
     Everything,
     /// Version only; the login is reported as `CCNM_E_NOT_READY`.
     VersionOnly,

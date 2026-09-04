@@ -189,13 +189,20 @@ impl Protocol for Request {
 pub enum RequestBody {
     /// Who is listening, and in which security session.
     Hello,
-    /// `claude --version` and `claude auth status --json`, run here.
+    /// `claude --version` and, unless the caller says otherwise,
+    /// `claude auth status --json`, run here.
     ClaudeAuth {
         /// `CLAUDE_CONFIG_DIR` for the call, from the home machine's
         /// config. `None` means Claude's own default (design doc
         /// section 21).
         #[serde(default)]
         config_dir: Option<PathBuf>,
+        /// How much to ask. A caller that has already seen this
+        /// controller is *not* in a login session sends
+        /// [`claude::Ask::VersionOnly`], because the login answer from
+        /// here would be as worthless as the ssh session's.
+        #[serde(default)]
+        ask: claude::Ask,
     },
 }
 
@@ -249,14 +256,14 @@ pub struct Tools<'a> {
 pub fn answer(req: &Request, tools: &Tools<'_>) -> Response {
     match &req.body {
         RequestBody::Hello => Response::new(ReplyBody::Hello(Context::of(tools.runner))),
-        // Everything, because this is the one place where the answer about
-        // the login is worth having.
-        RequestBody::ClaudeAuth { config_dir } => Response::new(ReplyBody::Claude(claude::report(
-            tools.claude.as_deref(),
-            config_dir.as_deref(),
-            tools.runner,
-            claude::Ask::Everything,
-        ))),
+        RequestBody::ClaudeAuth { config_dir, ask } => {
+            Response::new(ReplyBody::Claude(claude::report(
+                tools.claude.as_deref(),
+                config_dir.as_deref(),
+                tools.runner,
+                *ask,
+            )))
+        }
     }
 }
 
@@ -440,11 +447,16 @@ pub fn context(path: &Path) -> Result<Context> {
     }
 }
 
-/// [`RequestBody::ClaudeAuth`], typed. Two `claude` invocations happen on
-/// the other side, each with its own 20 second timeout.
-pub fn claude_auth(path: &Path, config_dir: Option<&Path>) -> Result<ClaudeReport> {
+/// [`RequestBody::ClaudeAuth`], typed. Up to two `claude` invocations
+/// happen on the other side, each with its own 20 second timeout.
+pub fn claude_auth(
+    path: &Path,
+    config_dir: Option<&Path>,
+    ask: claude::Ask,
+) -> Result<ClaudeReport> {
     let body = RequestBody::ClaudeAuth {
         config_dir: config_dir.map(Path::to_path_buf),
+        ask,
     };
     match call(path, body, Duration::from_secs(60))? {
         ReplyBody::Claude(rep) => Ok(rep),
@@ -553,6 +565,7 @@ mod tests {
         fake.push(Output::exited(0, r#"{"loggedIn":true,"email":"me@x"}"#));
         let req = Request::new(RequestBody::ClaudeAuth {
             config_dir: Some(PathBuf::from("/x/claude")),
+            ask: claude::Ask::Everything,
         });
         let rep = answer(&req, &tools(&fake, true));
         let ReplyBody::Claude(claude) = rep.body else {
@@ -571,6 +584,49 @@ mod tests {
                 call.display()
             );
         }
+    }
+
+    /// A caller that already knows this controller is in the wrong session
+    /// asks for the version only, and `claude auth status` is not run.
+    #[test]
+    fn version_only_does_not_run_the_auth_command() {
+        let fake = FakeRunner::new();
+        fake.push(Output::exited(0, "2.1.259 (Claude Code)\n"));
+        let req = Request::new(RequestBody::ClaudeAuth {
+            config_dir: None,
+            ask: claude::Ask::VersionOnly,
+        });
+        let rep = answer(&req, &tools(&fake, true));
+        let ReplyBody::Claude(claude) = rep.body else {
+            panic!("wrong reply")
+        };
+        assert_eq!(claude.version, Ok("2.1.259".into()));
+        assert_eq!(claude.auth.unwrap_err().code(), ErrorCode::NotReady);
+        let calls = fake.calls();
+        assert_eq!(calls.len(), 1, "{:?}", calls[0].display());
+        assert!(
+            !calls[0].display().contains("auth"),
+            "{}",
+            calls[0].display()
+        );
+    }
+
+    /// An older caller's request has no `ask` field; the default must be
+    /// the full question, or a controller in the right session would
+    /// quietly stop reporting the login.
+    #[test]
+    fn a_request_without_ask_still_asks_everything() {
+        let req: Request = serde_json::from_str(
+            r#"{"protocol":1,"body":{"request":"claude-auth","config_dir":null}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            req.body,
+            RequestBody::ClaudeAuth {
+                config_dir: None,
+                ask: claude::Ask::Everything
+            }
+        );
     }
 
     /// The round trip that matters: a client on one side, the loop on the

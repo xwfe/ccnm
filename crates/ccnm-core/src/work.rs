@@ -105,13 +105,20 @@ fn ask_about_claude(
 ) -> (Reported<controller::Context>, ClaudeReport) {
     match controller::context(&tools.controller) {
         Ok(ctx) => {
-            let claude =
-                controller::claude_auth(&tools.controller, config_dir).unwrap_or_else(|e| {
-                    ClaudeReport {
-                        path: None,
-                        version: Err((&e).into()),
-                        auth: Err(e.into()),
-                    }
+            // A controller that is not in a login session is asked only
+            // for the version. Its answer about the login would be no
+            // better than this session's, and the rule holds everywhere:
+            // do not run a command whose result has to be thrown away.
+            let ask = if ctx.login_session() {
+                claude::Ask::Everything
+            } else {
+                claude::Ask::VersionOnly
+            };
+            let claude = controller::claude_auth(&tools.controller, config_dir, ask)
+                .unwrap_or_else(|e| ClaudeReport {
+                    path: None,
+                    version: Err((&e).into()),
+                    auth: Err(e.into()),
                 });
             (Ok(ctx), claude)
         }

@@ -360,17 +360,7 @@ fn probe_rows(r: &Resolved<'_>, rep: &ProbeReport) -> Vec<Check> {
         Err(e) => Check::fail_report("Claude Code", e),
     });
 
-    checks.push(match &rep.claude.auth {
-        Ok(a) if a.logged_in => Check::ok("Claude authentication", a.describe()),
-        Ok(_) => Check::fail_with("Claude authentication", ErrorCode::Auth, auth_hint(r)),
-        // "Nobody asked the right process" is not a diagnosis about
-        // Claude. SKIP still blocks READY, so nothing runs on the strength
-        // of an unchecked login.
-        Err(e) if e.code() == ErrorCode::NotReady => {
-            Check::skip("Claude authentication", &e.message)
-        }
-        Err(e) => Check::fail_report("Claude authentication", e),
-    });
+    checks.push(auth_row(r, rep));
 
     match &rep.home_hello {
         Ok(h) => {
@@ -559,12 +549,39 @@ fn controller_row(rep: &ProbeReport) -> Check {
     }
 }
 
+/// Claude's login, and — just as important — whether the answer is worth
+/// anything.
+///
+/// "Not logged in" only means that when it came from a login session.
+/// From anywhere else it is the same false negative the controller exists
+/// to remove, so it reads as SKIP pointing at the controller's own row.
+///
+/// A *positive* answer is trusted from anywhere: a session that could not
+/// reach the credentials could not have found a login to report. The
+/// error runs one way only.
+fn auth_row(r: &Resolved<'_>, rep: &ProbeReport) -> Check {
+    const NAME: &str = "Claude authentication";
+    let from_login_session = matches!(&rep.controller, Some(Ok(ctx)) if ctx.login_session());
+    match &rep.claude.auth {
+        Ok(a) if a.logged_in => Check::ok(NAME, a.describe()),
+        Ok(_) if !from_login_session => Check::skip(
+            NAME,
+            "a controller answered, but not from a login session, so \"not logged in\" here means nothing\nfix the Work controller row first",
+        ),
+        Ok(_) => Check::fail_with(NAME, ErrorCode::Auth, auth_hint(r)),
+        // "Nobody asked the right process" is not a diagnosis about
+        // Claude. SKIP still blocks READY, so nothing runs on the strength
+        // of an unchecked login.
+        Err(e) if e.code() == ErrorCode::NotReady => Check::skip(NAME, &e.message),
+        Err(e) => Check::fail_report(NAME, e),
+    }
+}
+
 /// Design doc section 21: report, point at the manual login, never log in.
 ///
-/// This row is only reached when a controller answered, so the reading is
-/// unambiguous: Claude was asked from the work machine's login session and
-/// said no. There is no "…or maybe the Keychain was unreadable" left in
-/// it, which was the whole point of the controller.
+/// Only reached when a login session gave the answer, so the reading is
+/// unambiguous. There is no "…or maybe the Keychain was unreadable" left
+/// in it, which was the whole point of the controller.
 fn auth_hint(r: &Resolved<'_>) -> String {
     const WHERE: &str = "asked from the work machine's login session, so this is Claude's real answer, not an artefact of ssh";
     match &r.work.claude_config_dir {
@@ -1209,6 +1226,61 @@ mod tests {
             "{}",
             controller.detail
         );
+    }
+
+    /// Caught on the real work machine: with a controller in the wrong
+    /// session, the auth row still claimed to have asked the login session
+    /// and failed on the answer. That is the same false negative the
+    /// controller exists to remove, told with more confidence.
+    #[test]
+    fn a_logged_out_answer_from_the_wrong_session_is_not_a_verdict() {
+        let (dir, config) = setup("bg-auth", true, true);
+        let mut probe = good_probe();
+        probe.controller = Some(Ok(controller("Background")));
+        probe.claude.auth = Ok(crate::claude::AuthStatus {
+            logged_in: false,
+            auth_method: None,
+            email: None,
+            subscription_type: None,
+        });
+
+        let fake = FakeRunner::new();
+        fake.push(Output::exited(0, "ccnm 0.1.0\n"));
+        fake.push(Output::exited(0, "hostname workmac\n"));
+        fake.push(Output::exited(0, serde_json::to_string(&probe).unwrap()));
+
+        let report = run(&config, Some("xshun"), &env(&fake, &dir));
+        let auth = row(&report, "Claude authentication");
+        assert_eq!(auth.status, Status::Skip, "{}", auth.detail);
+        assert!(auth.detail.contains("means nothing"), "{}", auth.detail);
+        assert!(
+            !auth.detail.contains("claude auth login"),
+            "must not send the user to log in on this evidence: {}",
+            auth.detail
+        );
+        // The controller's own row is where the fix is.
+        assert_eq!(
+            row(&report, "Work controller").status,
+            Status::Fail(ErrorCode::NotReady)
+        );
+    }
+
+    /// The asymmetry: a session that could not reach the credentials could
+    /// not have found a login to report, so a positive answer is trusted
+    /// wherever it came from.
+    #[test]
+    fn a_logged_in_answer_is_trusted_from_any_session() {
+        let (dir, config) = setup("bg-auth-ok", true, true);
+        let mut probe = good_probe();
+        probe.controller = Some(Ok(controller("Background")));
+
+        let fake = FakeRunner::new();
+        fake.push(Output::exited(0, "ccnm 0.1.0\n"));
+        fake.push(Output::exited(0, "hostname workmac\n"));
+        fake.push(Output::exited(0, serde_json::to_string(&probe).unwrap()));
+
+        let report = run(&config, Some("xshun"), &env(&fake, &dir));
+        assert_eq!(row(&report, "Claude authentication").status, Status::Ok);
     }
 
     #[test]

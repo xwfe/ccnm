@@ -227,8 +227,15 @@ impl Server {
     /// What goes into `initialize.result.instructions`. Bounded by
     /// [`MAX_INSTRUCTIONS_BYTES`]; phase 3 appends the project CLAUDE.md.
     pub fn instructions(&self) -> String {
+        // The second sentence exists because of a real session: Claude's
+        // own environment block said its cwd was not a git repository
+        // (true -- that is the work machine's state directory), while
+        // workspace_info said the project was one, and it refused to
+        // commit on the contradiction. Claude Code cannot be stopped from
+        // describing the directory it runs in, so the instructions say
+        // which one to believe.
         let text = format!(
-            "CCNM remote workspace \"{}\". The project lives on another machine and is reachable only through the ccnm tools; there is no local copy. Every path you pass or receive is relative to the workspace root.",
+            "CCNM remote workspace \"{}\". The project lives on another machine and is reachable only through the ccnm tools; there is no local copy. Whatever your own environment says about the current directory, its git status or its files describes the machine you run on, not the project: for the project, workspace_info is the truth. Every path you pass or receive is relative to the workspace root.",
             self.inner.workspace
         );
         debug_assert!(text.len() <= MAX_INSTRUCTIONS_BYTES);

@@ -89,8 +89,10 @@ sudo chmod 600 /Users/ccrun/.ssh/authorized_keys
 
 ```bash
 sudo -u ccrun mkdir -p /Users/ccrun/.local/bin
-sudo cp target/release/ccnm /Users/ccrun/.local/bin/ccnm
-sudo chown ccrun:staff /Users/ccrun/.local/bin/ccnm
+# 先传成 .new 再 mv，不要直接 cp 覆盖，理由见 README「升级」一节
+sudo cp target/release/ccnm /Users/ccrun/.local/bin/ccnm.new
+sudo chown ccrun:staff /Users/ccrun/.local/bin/ccnm.new
+sudo -u ccrun mv /Users/ccrun/.local/bin/ccnm.new /Users/ccrun/.local/bin/ccnm
 # search_text 需要 rg。Homebrew 装的对所有用户可见，不用重装
 ```
 

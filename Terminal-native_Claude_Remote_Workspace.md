@@ -250,7 +250,8 @@ ccnm run xshun "帮我修 X"           # 同上，开场白直接给它
 ccnm run xshun --detached          # 只起，不 attach
 ccnm run xshun --print "..."       # 非交互，一问一答，不需要 tmux
 ccnm attach xshun                  # 回到已经在跑的那个，不新建第二个 MCP server
-ccnm status xshun                  # 工作机上还活着什么
+ccnm status xshun                  # 工作机上还活着什么（包括工具通道还通不通）
+ccnm result xshun                  # 上一次 --print 的结果，ssh 断了也能捞回来
 ccnm stop xshun                    # 结束：Claude、终端、MCP 通道一起收
 ```
 
@@ -1740,7 +1741,38 @@ kickstart 重启 controller 之后，tmux server pid 不变，Claude 还在。
 tmux session 的环境里塞了 `CCNM_SESSION=<uuid>`，所以从一个活着的 tmux 能反查回它的 session
 目录，不用扫描。
 
-网络断开时的漂亮 UX（重连提示、断线重试）还没做。
+### MCP 通道断了会怎样（2026-09-04 实测）
+
+杀掉一条活会话的 transport（`kill -9` 那个 ssh），然后让 Claude 读文件：
+
+```text
+Claude 不会自己重连                      工具全没了，但会话看着完全正常
+它转头去够工作机的原生工具               `Bash: ls -la ...` → 被 settings.json 的 deny 挡住
+                                        （第 13 节那"第二道锁"第一次真的派上用场）
+```
+
+**这是这套系统最坏的一种故障**：终端还在、模型还答话、每个工具都够不着项目。
+
+恢复是 Claude 自己的功能，实测有效：
+
+```text
+/mcp  →  ccnm  →  Reconnect      家庭机上重新起了一个 mcp-serve，工具全回来，
+                                  会话上下文一点没丢
+```
+
+所以 ccnm 这边做两件事：
+
+1. **说出来。** `ccnm status` 和 doctor 的 `Terminal session` 行会报 `TOOLS DOWN
+   (in Claude: /mcp -> ccnm -> Reconnect)`——按 session 的 `mcp.json` 里那个唯一的
+   payload 去 `ps` 里找进程，找不到就是断了。找不到答案时报 unknown，不猜"断了"。
+2. **让它更难断。** transport 的 `ServerAliveCountMax` 从 3 提到 20（15 s × 20 = 5 分钟），
+   控制命令仍然是 45 秒。不对称是故意的：doctor 探测该快点失败，而这条连接**就是**会话的
+   工具，笔记本睡两分钟不该让人去按一次 Reconnect。
+
+自动重连（ccnm 自己代理并重放 initialize）没做，也不打算轻易做——那是写一个 MCP proxy。
+
+`exec_command` 起的长命令在会话没了之后**不会被回收**：它在自己的进程组里，会一直跑到自己
+结束。`ccnm stop` 收的是工作机那一半。
 
 ---
 
@@ -2151,6 +2183,28 @@ doctor 行        一条 finding 一行，带上用户自己该敲的那条命�
 OS 那一半是**用户手动做**的，ccnm 一条都不替他做：完整步骤在 `docs/production-safety.md`
 （建 ccrun、用 ACL 只开这一个项目、去 sudo、去 admin 组、出网限制、把 ssh alias 的 User 改成
 ccrun）。ccnm 只验证结果，因为建用户改权限不该由一个诊断工具背着人干。
+
+### 对抗式审查一轮（2026-09-04）
+
+把写路径和中断路径当攻击面看了一遍，三处真问题：
+
+```text
+1. apply_patch 往同一个新目录加两个文件 → 整个 patch 被拒
+   两个文件都在 staging 之前就规划好了，都带着 tests/ 要建，第二个 create_dir 撞
+   AlreadyExists。事务是完整的（一个字节没写），但一个再普通不过的 patch 失败了。
+
+2. 被 kill 的 patch 会在项目里留下 .ccnm-… 临时文件
+   代码走到的每条路都清理了，但那不等于所有路。stage 和 commit 之间被 kill（transport
+   断、ccnm stop、机器掉电），临时文件就留在源码树里，git status 显示为未跟踪，
+   下一次 git add -A 就提交进去了。
+   → Staged 自己拥有临时文件的清理（Drop，panic 也走），下一个 patch 顺手扫掉超过
+     一小时的（这是析构函数够不着的那种情况），list_files 永远不列它们。
+
+3. MCP transport 死了之后会话变僵尸
+   见第 23 节。
+```
+
+`launchctl managername` 那条（第 21 节）也是这一轮翻出来的。
 
 ### Phase 6 — Terminal UX（2026-09-04 完成）
 

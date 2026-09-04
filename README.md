@@ -146,28 +146,53 @@ ssh work true               # 在家庭机上
 ssh work 'ssh home true'    # 反向也要通，MCP 通道走的就是它
 ```
 
-### 4. 配置文件（只在家庭机上）
+### 4. 配置（一条命令，不用手写 TOML）
 
-`~/.config/ccnm/config.toml`：
+在**家庭机**上：
+
+```bash
+ccnm init --work fodelf --home xdwmbp
+```
+
+两个参数分别是：`--work` 是**本机** `~/.ssh/config` 里指向工作机的别名，`--home` 是
+**工作机** `~/.ssh/config` 里指回本机的别名。写进 `~/.config/ccnm/config.toml`。
+
+再把项目加进去——`cd` 到项目目录，然后：
+
+```bash
+cd ~/code/xshun
+ccnm workspace add xshun          # 不给路径就是当前目录
+```
+
+其他几条：
+
+```bash
+ccnm workspace list                    # 都有哪些，目录还在不在
+ccnm workspace remove xshun            # 忘掉它（会先停掉它的会话）
+ccnm workspace remove xshun --purge    # 再顺手删掉 ccnm 给它留的记录
+```
+
+**都可以重复跑。** 第二次 `init` 会说"already says that"，不会重写文件；`workspace add`
+只报真正变了的字段。手写过的注释、顺序、空行都保留——ccnm 是在原文件上改，不是拿结构体重新
+生成一份。
+
+生成出来长这样，没有 `version` 行：
 
 ```toml
-version = 1
-
 [hosts.work]
-ssh = "work"                  # 家庭机 ~/.ssh/config 里指向工作机的别名
+ssh = "fodelf"
 
 [hosts.home]
-ssh_from_work = "home"        # 工作机 ~/.ssh/config 里指回家庭机的别名
+ssh_from_work = "xdwmbp"
 
 [workspaces.xshun]
 work_host = "work"
-root = "/Users/me/code/xshun"  # 项目在家庭机上的绝对路径
+root = "/Users/me/code/xshun"
 ```
 
-一个 workspace 就是"一个项目 + 它在哪台机器上"。要几个写几个。
-
-完整字段（`claude_permission_mode`、`ccnm_bin`、`claude_config_dir`、`runtime_user`、
-`allow_unconfined_exec`）见设计文档第 5 节。
+要手写也行，字段表在设计文档第 5 节（`claude_permission_mode`、`ccnm_bin`、
+`claude_config_dir`、`runtime_user`、`allow_unconfined_exec`）。老配置里的 `version = 1`
+仍然接受，只是不再需要。
 
 ### 5. 在工作机上装 controller
 
@@ -252,7 +277,8 @@ NOT READY (0 failed, 4 not checked)
 ## 日常怎么用
 
 ```bash
-ccnm run xshun                    # 起会话 + 把当前终端接上去
+ccnm xshun                        # 起会话 + 把当前终端接上去（run 可以省掉）
+ccnm run xshun                    # 同上，完整写法
 ccnm run xshun "把登录那块重构一下"   # 同上，开场白直接给
 ccnm run xshun --detached         # 只起，不接
 ccnm attach xshun                 # 回到已经在跑的那个
@@ -397,6 +423,23 @@ Work SSH   FAIL   CCNM_E_VERSION: ~/.local/bin/ccnm on work is there but not exe
 
 顺带：这个特性也意味着**你自己在命令行上 `ssh work '任何会失败的命令'` 都会得到 `$? = 0`**，
 调试的时候别信那个退出码。
+
+### 会话里工具全废，报 "xxx is not installed"、`workspace_info` 却一切正常
+
+**项目被挪走了，而会话还绑在老路径上。** 一个会话的 root 在启动的那一刻就定死在它的 MCP
+payload 里，之后改 config 也好、`mv` 目录也好，都动不了它。
+
+现在不会这么难认了：`workspace_info` 会多一行 WARNING 说根目录不在了，`exec_command`
+也不再把这个错怪到程序头上（以前它会说 "`/bin/echo` 没装"，因为 spawn 失败的 errno 一模一样）。
+
+**修**：把 config 里的路径改对，然后
+
+```bash
+ccnm workspace add xshun ~/新路径     # 或者手动改 root
+ccnm xshun                            # 它会自己发现老会话指向别处，结束它、开一个新的
+```
+
+`ccnm run` 遇到"活着但 root 对不上"的会话会**直接换掉它**，并在输出里说明换掉了哪一个。
 
 ### `Work controller ... Background`
 

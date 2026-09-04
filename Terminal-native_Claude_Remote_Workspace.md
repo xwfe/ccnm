@@ -2279,21 +2279,46 @@ dev server / Playwright / Chrome    全部跑家庭机
 **Browser provider 与 coding runtime / transport / connectivity 解耦**（第 6 节四层）：它是
 Runtime 层里的另一个 provider，不是 coding 工具的一部分，也不该知道自己走的是哪条链路。
 
-### 项目上下文（第 1 步 2026-09-04 已完成）
+### 项目上下文（2026-09-04 完成到第 2 步）
 
 真实 repo 不在工作机，所以**不能假设** Claude 会自动加载家庭机的 `CLAUDE.md` / rules / skills——
 它在工作机上看不到任何一个。先后顺序：
 
 ```text
-1. MCP instructions            ✅ 已实现并真机验证：根 CLAUDE.md 进 initialize.result.instructions，
+1. MCP instructions            ✅ 根 CLAUDE.md 进 initialize.result.instructions，
                                   16 KiB 上限，超了按行截断（第 20 节）
-2. workspace metadata projection   把项目元信息投影到 ~/.local/state/ccnm/workspaces/<name>/
+2. 其余上下文「点名不搬运」      ✅ 子目录 CLAUDE.md、.claude/rules/*.md、每个 skill 的
+                                  SKILL.md，握手里列路径和大小，模型自己 read_file
 3. 极小 shadow workspace（必要时）  只同步 Claude 元数据，绝不同步源码
 ```
 
-第 1 步够不够用，等真实日用说话：`.claude/rules/`、skills、子目录 CLAUDE.md 都还没进去。
+**第 2 步为什么是「点名」而不是「投影」。** 原计划是把元信息投影到
+`~/.local/state/ccnm/workspaces/<name>/`。真做的时候有个更省的办法：那些文件本来就在
+workspace 里，`read_file` 够得着，所以握手只需要说它们在哪。代价从「每个会话都付 16 KiB
+预算，而且规则多到装不下时会被悄悄截掉一部分」变成「任意多的文件都只花几百字节」。一个只改
+后端的会话不必替前端的规则买单。真机实测：加一个 rules 文件，握手 1184 B → 1370 B，模型
+读了它并遵守。
+
+**永远不进来的：任何可执行的东西。** hooks、MCP server 定义、plugins 都不继承——它们会跑在
+**工作机**上，也就是持有 Anthropic 凭证的那台。继承等于让任意一个仓库在凭证所在的机器上拿到
+命令执行，正是第 6 节那条不变式的反面。用户自己的 Claude 配置照常从工作机的 `~/.claude/`
+加载，那是它该待的地方。
 
 第 3 条是**最后手段**，而且边界很硬：一旦开始同步源码，就等于把 SMB Hybrid 的一致性问题请回来了。
+
+### 从工作机侧驱动（2026-09-04 完成）
+
+会话本来就起在工作机上，缺的只是「人坐在工作机前面时怎么发起」。做法是**不在工作机上复制
+workspace 列表**：它的 config 只写 `hosts.home.ssh_from_work`，遇到不认识的 workspace 名就
+`ssh <home> ccnm <ws> --detached`，让家庭机走它原本那条完整路径（config 解析、版本+root 握手、
+controller），然后本地 `tmux attach`——接管只需要名字，不需要任何配置。
+
+代价是多一跳（work → home → work），换来的是**每个 workspace 只有一处定义**。两份列表迟早
+对不上，而对不上的后果这个项目已经付过一次：会话绑在一个已经被移走的目录上。
+
+判断「这是不是工作机的 config」用的是**没有任何 `ssh`**，不是「有 `ssh_from_work`」——家庭机
+的 config 两个都有。第一版就是这么写错的，结果家庭机上每一个打错的 workspace 名都会被当成
+「去问工作机」。
 
 ### Phase 7 — Tool Parity
 

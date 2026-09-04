@@ -6,7 +6,7 @@
 另一台机器上（那里有 OAuth，能出网到 api.anthropic.com）。ccnm 把这两件事接起来：
 
 ```bash
-ccnm run xshun        # 在家庭机敲一句，工作机的 Claude 出现在你的终端里
+ccnm xshun            # 两台机器上都能敲，Claude 出现在你的终端里
 ```
 
 模型看到的项目是家庭机上那个真实的目录——不是拷贝、不是挂载、不是快照。它读文件、搜代码、
@@ -74,7 +74,22 @@ ccnm 的做法是**只让工具调用过网，源码一步不动**：
 
 分辨方法：**跑 Claude 的是 work，放项目的是 home。** 别按机器名猜。
 
-你人坐在哪台前面都行——`ccnm run` 是在**家庭机**上敲的（也可以先 ssh 到家庭机再敲）。
+### 你坐在哪台前面都行
+
+命令是同一条，两边都能敲：
+
+```bash
+ccnm xshun          # 起会话并接管这个终端
+ccnm attach xshun   # 接管一个已经在跑的
+ccnm status xshun   # 它在干什么
+ccnm stop xshun     # 结束它
+```
+
+区别只在配置：**家庭机有 workspace 列表，工作机没有**。工作机的配置只说"projects 在哪台
+机器上"，遇到一个它不认识的名字就去问那台。这是故意的——workspace 的 root 定义在一个地方，
+两份副本迟早对不上，而对不上的后果是会话绑在一个已经不存在的目录上。
+
+**`--print` 只能在家庭机上敲**（工作机上会直接拒绝并告诉你去哪敲）。
 
 ---
 
@@ -196,6 +211,16 @@ ccnm init --work fodelf --home xdwmbp
 
 两个参数分别是：`--work` 是**本机** `~/.ssh/config` 里指向工作机的别名，`--home` 是
 **工作机** `~/.ssh/config` 里指回本机的别名。写进 `~/.config/ccnm/config.toml`。
+
+想在**工作机**上也能敲命令的话，在那台上再来一条——**只给 `--home`**：
+
+```bash
+ccnm init --home xdwmbp     # 在工作机上
+```
+
+它只写"projects 在 xdwmbp 上"，**不写 workspace 列表**。之后工作机上 `ccnm xshun` /
+`attach` / `status` / `stop` 都能用：遇到不认识的名字就去问 xdwmbp，会话本来就起在工作机上，
+所以接管是本地的。
 
 再把项目加进去——`cd` 到项目目录，然后：
 
@@ -354,13 +379,31 @@ Claude 会问一句 "Is this a project you trust?"。它问的是工作机上
 `~/.local/state/ccnm/workspaces/<name>/`——ccnm 自己建的、只放会话记录的空目录。答 yes。
 每个 workspace 只问一次，`--print` 模式不问。
 
-### 项目的 CLAUDE.md
+### 项目的规则：一份带进去，其余点名
 
-家庭机项目根目录下的 `CLAUDE.md` 会被投影到 MCP 握手里，模型开工前就读到。
+项目根目录的 `CLAUDE.md` **整份**投影进 MCP 握手，模型开工前就读到（上限 16 KiB，超了按行
+截断并告诉它怎么读全文）。
 
-**只有根目录那一个文件**，不含 `.claude/rules/`、不含 skills。整段上限 16 KiB，超了按行截断，
-并在末尾告诉模型截了多少、可以 `read_file CLAUDE.md` 读全文。`ccnm doctor` 的
-`Project instructions` 行会说清楚有多少字节真的到了模型手里。
+其余的**只点名不搬运**——子目录的 `CLAUDE.md`、`.claude/rules/*.md`、每个 skill 的
+`SKILL.md`，握手里列出路径和大小，模型需要哪份自己 `read_file`：
+
+```text
+This project has further instructions in these files. They are not
+included here; read the ones that apply to what you are doing:
+  .claude/rules/commits.md (89 bytes)
+  crates/core/CLAUDE.md (412 bytes)
+```
+
+为什么不全搬进去：**16 KiB 是所有会话共付的**，而规则多到装不下时就会被悄悄截掉一部分。
+点名对任意多的文件都只花几百字节，而且一个只改后端的会话不用替前端的规则买单。真机实测：
+加一个 rules 文件，握手从 1184 B 长到 1370 B，模型确实读了它并照着做。
+
+**可执行的东西一样都不带**——hooks、MCP server 定义、plugins 全部不进来。它们会跑在
+**工作机**上，也就是**放着 Anthropic 凭证的那台**。真要继承，任何一个仓库只要放个
+`.claude/settings.json` 就能在凭证所在的机器上执行命令——那正是这套架构存在的理由的反面。
+
+你自己的 Claude 配置照常生效，从工作机的 `~/.claude/` 加载——Claude 在那台跑，那才是它该
+待的地方。
 
 ---
 
@@ -490,6 +533,7 @@ Git 专用工具           git_status / git_diff 现在靠 exec_command，输出
 后台长任务             exec_command 最长 10 分钟，没有"起个 dev server 然后轮询"
 目录操作               apply_patch 只处理普通文件。删目录、改目录名、建空目录只能
                       走 exec_command，而那条路没有事务、没有版本检查、没有回滚
+项目 skills 的脚本部分   SKILL.md 会被点名，模型能读；skill 附带的脚本不会被执行
 二进制文件             content 是字符串，写不了；read_file 也拒绝二进制
 浏览器                 属于家庭机 runtime，还没做
 Linux                  controller 是 launchd LaunchAgent，只有 macOS

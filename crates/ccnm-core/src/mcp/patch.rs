@@ -127,7 +127,9 @@ pub struct FilePatch {
     /// Whole content, for `add`.
     #[serde(default)]
     pub content: Option<String>,
-    /// Replacements, for `update`. Applied in order.
+    /// Replacements, for `update`. Order does not matter when each one
+    /// matches the file you read; it does when one edit's `new` text is
+    /// what a later edit's `old` looks for.
     #[serde(default)]
     pub edits: Option<Vec<Edit>>,
 }
@@ -461,8 +463,78 @@ fn missing_dirs(target: &Path) -> Vec<PathBuf> {
     missing
 }
 
-/// Apply the edits in order, each to the result of the last.
+/// Apply a file's edits.
+///
+/// Two passes, and which one runs is not the caller's business.
+///
+/// The first resolves every edit against the file as it was read. If all
+/// of them land there, exactly once each and without overlapping, the
+/// order they arrived in cannot matter and they are applied by position.
+/// This is worth having because models get the order wrong: Cline
+/// measured a diff-application success rate roughly 10% higher after
+/// making their apply order-invariant — nearly 25% on one model —
+/// noting that models "frequently return diffs out of order" even when
+/// told not to. It also fixes a subtler case, where one edit's
+/// replacement text happens to contain another edit's `old` and the
+/// second edit then looks ambiguous.
+///
+/// Anything else falls through to the second pass, which applies the
+/// edits in order, each to the result of the last. That is what makes a
+/// chain work — an edit whose `old` only exists because an earlier edit
+/// created it — and it is where every refusal comes from, so the errors
+/// a caller sees are unchanged.
 fn apply_edits(text: &str, edits: &[Edit], rel: &str) -> Result<(String, u32)> {
+    if let Some(done) = apply_by_position(text, edits) {
+        return Ok(done);
+    }
+    apply_in_order(text, edits, rel)
+}
+
+/// Resolve every edit against the original text and apply them by
+/// position, or decline. Declining is not an error: the caller falls back
+/// to ordered application, which is where refusals are worded.
+///
+/// `None` means "these edits are not independent of each other" — one of
+/// them does not match the original at all, one is ambiguous, or two want
+/// overlapping text.
+fn apply_by_position(text: &str, edits: &[Edit]) -> Option<(String, u32)> {
+    let crlf = text.contains("\r\n");
+    // (start, end, replacement) for every occurrence every edit claims.
+    let mut spans: Vec<(usize, usize, String)> = Vec::new();
+    for edit in edits {
+        if edit.old.is_empty() {
+            return None;
+        }
+        let (old, new) = match_form(text, &edit.old, &edit.new, crlf);
+        let found: Vec<usize> = text.match_indices(old.as_str()).map(|(at, _)| at).collect();
+        match (found.len(), edit.replace_all.unwrap_or(false)) {
+            (0, _) => return None,
+            (1, _) => {}
+            (_, true) => {}
+            // Ambiguous. Ordered application says so, with its own wording.
+            (_, false) => return None,
+        }
+        for at in found {
+            spans.push((at, at + old.len(), new.clone()));
+        }
+    }
+    spans.sort_by_key(|(start, _, _)| *start);
+    // Two edits reaching for the same bytes cannot both be honoured, and
+    // guessing which one wins is exactly the silent mis-edit this whole
+    // module exists to avoid.
+    if spans.windows(2).any(|w| w[0].1 > w[1].0) {
+        return None;
+    }
+    // Back to front, so the offsets still ahead are unaffected.
+    let mut out = text.to_string();
+    for (start, end, new) in spans.iter().rev() {
+        out.replace_range(start..end, new);
+    }
+    Some((out, edits.len() as u32))
+}
+
+/// Apply the edits in order, each to the result of the last.
+fn apply_in_order(text: &str, edits: &[Edit], rel: &str) -> Result<(String, u32)> {
     // A file written on Windows has CRLF endings, but read_file shows the
     // model LF, so its `old` will not match the bytes. Translate the
     // caller's strings into the file's own convention before matching, and
@@ -482,13 +554,14 @@ fn apply_edits(text: &str, edits: &[Edit], rel: &str) -> Result<(String, u32)> {
         let replace_all = edit.replace_all.unwrap_or(false);
         if count == 0 {
             return Err(Error::invalid_args(format!(
-                "{rel} edit {}: old does not appear in the file{}",
+                "{rel} edit {}: old does not appear in the file{}{}",
                 index + 1,
                 if index > 0 {
                     "; note that edits apply in order, so an earlier edit may have changed it"
                 } else {
                     ""
-                }
+                },
+                near_miss(&current, &old)
             )));
         }
         if count > 1 && !replace_all {
@@ -505,6 +578,86 @@ fn apply_edits(text: &str, edits: &[Edit], rel: &str) -> Result<(String, u32)> {
         applied += 1;
     }
     Ok((current, applied))
+}
+
+/// What to add to "old does not appear in the file" so the caller can do
+/// something about it.
+///
+/// "No match" on its own sends a model round the loop it was already in:
+/// read the file again, send almost the same string, fail again. The
+/// documented ways these edits go wrong are boring and specific -- line
+/// endings, a tab against four spaces, indentation that drifted a level --
+/// so the useful answer names which one it is and shows the file's own
+/// bytes to copy.
+///
+/// Deliberately diagnosis and not repair. A tool that quietly edits the
+/// nearest similar thing is the failure mode with the worst tail: in a
+/// large repository a near match is often a *different* function, the
+/// edit lands there, and nobody finds out for weeks.
+///
+/// Returns "" when there is nothing useful to say, so it can be appended
+/// unconditionally.
+fn near_miss(text: &str, old: &str) -> String {
+    let wanted: Vec<String> = old.lines().map(squeeze).collect();
+    // A trailing newline in `old` produces no final line; either way the
+    // comparison is over the lines that carry content.
+    let wanted: Vec<&String> = wanted.iter().filter(|line| !line.is_empty()).collect();
+    if wanted.is_empty() {
+        return String::new();
+    }
+    let lines: Vec<&str> = text.lines().collect();
+    let keys: Vec<String> = lines.iter().map(|line| squeeze(line)).collect();
+
+    // The whole block is there, spelled with different whitespace.
+    let mut window: Vec<usize> = Vec::new();
+    for (at, _) in keys.iter().enumerate() {
+        window.clear();
+        let mut cursor = at;
+        for want in &wanted {
+            // Blank lines in the file are skipped so a block that gained
+            // or lost one still matches.
+            while cursor < keys.len() && keys[cursor].is_empty() {
+                cursor += 1;
+            }
+            if cursor >= keys.len() || &keys[cursor] != *want {
+                break;
+            }
+            window.push(cursor);
+            cursor += 1;
+        }
+        if window.len() == wanted.len() {
+            let first = window[0];
+            let last = window[window.len() - 1];
+            let shown: Vec<String> = lines[first..=last]
+                .iter()
+                .map(|line| format!("    {line}"))
+                .collect();
+            return format!(
+                "\nthe same text is at line {}, written with different whitespace; copy these bytes exactly as read_file returned them:\n{}",
+                first + 1,
+                shown.join("\n")
+            );
+        }
+    }
+
+    // Not the whole block, but the first line of it is somewhere.
+    let first = wanted[0];
+    if let Some(at) = keys.iter().position(|key| key == first) {
+        return format!(
+            "\nits first line is at line {}, so the rest is what differs:\n    {}",
+            at + 1,
+            lines[at]
+        );
+    }
+    String::new()
+}
+
+/// A line reduced to what it says, with every run of whitespace collapsed
+/// to one space. Two lines with the same squeeze differ only in spacing,
+/// which covers tabs against spaces, a changed indent level, trailing
+/// blanks and a stray carriage return in one go.
+fn squeeze(line: &str) -> String {
+    line.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// Pick the form of `old`/`new` that matches how the file is written.
@@ -1513,6 +1666,185 @@ mod tests {
         );
         assert_eq!(err.code(), ErrorCode::InvalidArgs);
         assert!(err.message().contains("appears twice"), "{err}");
+    }
+
+    /// Models return diffs in the wrong order even when told not to;
+    /// Cline measured about 10% more successful edits after making their
+    /// apply order-invariant. Edits that each match the file as read,
+    /// once and without overlapping, do not care what order they arrived
+    /// in.
+    #[test]
+    fn independent_edits_do_not_care_what_order_they_arrive_in() {
+        let root = workspace("unordered");
+        let result = apply(
+            &root,
+            vec![FilePatch {
+                op: Some(Op::Update),
+                path: "src/lib.rs".into(),
+                version: Some(version(&root, "src/lib.rs")),
+                // The file reads a, then b. This asks for b first.
+                edits: Some(vec![
+                    Edit {
+                        old: "pub fn b()".into(),
+                        new: "pub fn second()".into(),
+                        replace_all: None,
+                    },
+                    Edit {
+                        old: "pub fn a()".into(),
+                        new: "pub fn first()".into(),
+                        replace_all: None,
+                    },
+                ]),
+                ..Default::default()
+            }],
+        );
+        assert_eq!(result.files[0].edits, 2);
+        assert_eq!(
+            text(&root, "src/lib.rs"),
+            "pub fn first() {}\npub fn second() {}\n"
+        );
+    }
+
+    /// One edit's replacement containing another edit's `old` used to make
+    /// the second one look ambiguous, because by the time it was tried
+    /// there really were two copies. Resolving against the file as read
+    /// sees one of each.
+    #[test]
+    fn an_edit_that_writes_another_edits_target_is_not_ambiguous() {
+        let root = workspace("collide");
+        let result = apply(
+            &root,
+            vec![FilePatch {
+                op: Some(Op::Update),
+                path: "src/lib.rs".into(),
+                version: Some(version(&root, "src/lib.rs")),
+                edits: Some(vec![
+                    Edit {
+                        old: "pub fn a()".into(),
+                        new: "pub fn b()".into(),
+                        replace_all: None,
+                    },
+                    Edit {
+                        old: "pub fn b()".into(),
+                        new: "pub fn c()".into(),
+                        replace_all: None,
+                    },
+                ]),
+                ..Default::default()
+            }],
+        );
+        assert_eq!(result.files[0].edits, 2);
+        assert_eq!(text(&root, "src/lib.rs"), "pub fn b() {}\npub fn c() {}\n");
+    }
+
+    /// Order-invariance must not become "we guessed". Two edits reaching
+    /// for the same bytes fall through to ordered application, which
+    /// refuses the second one for the reason it has always refused it.
+    #[test]
+    fn edits_that_overlap_are_still_refused() {
+        let root = workspace("overlap");
+        let err = fails(
+            &root,
+            vec![FilePatch {
+                op: Some(Op::Update),
+                path: "src/main.rs".into(),
+                version: Some(version(&root, "src/main.rs")),
+                edits: Some(vec![
+                    Edit {
+                        old: "let x = 1;".into(),
+                        new: "let x = 2;".into(),
+                        replace_all: None,
+                    },
+                    Edit {
+                        old: "x = 1".into(),
+                        new: "x = 3".into(),
+                        replace_all: None,
+                    },
+                ]),
+                ..Default::default()
+            }],
+        );
+        assert_eq!(err.code(), ErrorCode::InvalidArgs);
+        assert!(err.message().contains("does not appear"), "{err}");
+        // And the file is untouched, because nothing is written until every
+        // file in the patch has been worked out.
+        assert_eq!(
+            text(&root, "src/main.rs"),
+            "fn main() {\n    let x = 1;\n}\n"
+        );
+    }
+
+    /// "No match" on its own sends the model round the same loop. The
+    /// documented ways these edits miss are whitespace ones, so when that
+    /// is what happened the refusal says where the text is and shows the
+    /// file's own bytes.
+    #[test]
+    fn a_whitespace_only_miss_says_where_the_text_really_is() {
+        let root = workspace("nearmiss");
+        let err = fails(
+            &root,
+            vec![update(
+                "src/main.rs",
+                &version(&root, "src/main.rs"),
+                // The file indents with four spaces; this uses a tab.
+                "\tlet x = 1;",
+                "\tlet x = 2;",
+            )],
+        );
+        let message = err.message();
+        assert!(message.contains("does not appear"), "{message}");
+        assert!(
+            message.contains("different whitespace"),
+            "the refusal should name the cause: {message}"
+        );
+        assert!(
+            message.contains("line 2"),
+            "the refusal should locate it: {message}"
+        );
+        assert!(
+            message.contains("    let x = 1;"),
+            "the refusal should show the file's own bytes: {message}"
+        );
+    }
+
+    /// When only the first line matches, say that much rather than
+    /// nothing: it tells the model the block moved or its body changed,
+    /// which is a different fix from re-reading the file.
+    #[test]
+    fn a_partial_miss_reports_the_line_that_did_match() {
+        let root = workspace("partial");
+        let err = fails(
+            &root,
+            vec![update(
+                "src/main.rs",
+                &version(&root, "src/main.rs"),
+                "fn main() {\n    let y = 9;\n}",
+                "fn main() {}",
+            )],
+        );
+        let message = err.message();
+        assert!(message.contains("its first line is at line 1"), "{message}");
+        assert!(message.contains("fn main() {"), "{message}");
+    }
+
+    /// A miss with nothing like it in the file adds nothing -- an
+    /// unhelpful guess is worse than a short answer.
+    #[test]
+    fn a_miss_with_no_near_match_says_only_that() {
+        let root = workspace("nomatch");
+        let err = fails(
+            &root,
+            vec![update(
+                "src/main.rs",
+                &version(&root, "src/main.rs"),
+                "something entirely absent",
+                "x",
+            )],
+        );
+        assert_eq!(
+            err.message(),
+            "src/main.rs edit 1: old does not appear in the file"
+        );
     }
 
     #[test]

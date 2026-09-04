@@ -668,6 +668,35 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The property that keeps a running session alive across a
+    /// controller restart: the child is not in this process's group, so
+    /// launchd killing the agent's group on bootout does not reach it.
+    #[test]
+    fn a_detached_child_is_in_its_own_process_group() {
+        let dir = std::env::temp_dir().join(format!("ccnm-pgid-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cmd = Cmd::new("/bin/sleep").arg("1");
+        let pid = spawn_detached(&cmd, &dir.join("log")).unwrap();
+
+        let pgid_of = |pid: u32| -> String {
+            let out = std::process::Command::new("/bin/ps")
+                .args(["-o", "pgid=", "-p", &pid.to_string()])
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        let child = pgid_of(pid);
+        let ours = pgid_of(std::process::id());
+        assert!(!child.is_empty(), "ps could not see the child");
+        assert_ne!(child, ours, "the child shares this process's group");
+        assert_eq!(
+            child,
+            pid.to_string(),
+            "the child should lead its own group"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn hello_reports_the_security_session_it_is_in() {
         let fake = FakeRunner::new();

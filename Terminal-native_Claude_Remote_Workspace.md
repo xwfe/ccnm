@@ -286,9 +286,10 @@ Primary 模式没有 `ccnm mount` / `ccnm unmount` / `ccnm workspace init` / `cc
 ~/.config/ccnm/config.toml
 ```
 
-```toml
-version = 1
+**这个文件由命令生成，不用手写**（`ccnm init` / `ccnm ws add`，怎么敲看 README）。下面这份是
+字段的**含义**——手写仍然合法，改工具没写的字段（`runtime_user`、`ccnm_bin`）也还是打开编辑器：
 
+```toml
 [hosts.work]
 # 家庭机 ~/.ssh/config 里指向工作机的 alias
 ssh = "work"
@@ -326,12 +327,37 @@ claude_permission_mode = "acceptEdits"
 校验规则（strict：未知字段直接报错，不静默忽略）：
 
 ```text
-version                      必须是 1
+version                      不再需要写。写了就必须是 1；version = 2 拒绝解析
 work_host                    必须指向一个有 ssh 的 host
 runtime_host                 必须指向一个有 ssh_from_work 的 host
 root                         绝对路径，不含 . / ..
 ccnm_bin / claude_config_dir 设了就必须是绝对路径
 ```
+
+`version` 从"必填"退成"写了也认"：schema 版本号的用处是**将来**某天格式不兼容时给出一句人话，
+而不是今天让每个人手写一行 `1`。老配置照常解析，新生成的不再带这一行。
+
+### 工具改这个文件的三条规矩（2026-09-04）
+
+1. **`toml_edit` 增量改，不是结构体重新序列化。** 用户在 config 里写的注释是"当初为什么这么
+   设的"——吃掉它，就没人敢再让工具碰这个文件，配置也就永远只能手写。
+2. **写之前先整份 parse 一遍，不合法就一个字节都不写**，然后走临时文件 + rename。半个配置文件
+   比没有配置文件难修得多。
+3. **重复执行不重写。** 第二次 `ccnm init` 说 "already says that" 就退出，不动 mtime。
+
+### 重名：两个方向都拦住，不替用户决定
+
+`ccnm ws add` 不给名字就取目录名，撞名于是从罕见变成常事，这个检查是配套的、不是可选的：
+
+```text
+同名不同路径   旧行为是悄悄把已有 workspace 的 root 改掉——而那个 workspace 可能正跑着一个
+               会话。现在报 CCNM_E_INVALID_ARGS，给两条可以直接抄的命令：换个名字
+               （建议名拿上一层目录拼，other/web → other-web），或者 --replace 明确改指向。
+同路径不同名   两个名字 = 两个 tmux 会话 = 两个 Claude 改同一份文件，互相不知道对方存在。
+               没有人是故意要这个的，他们要的是自己已经有的那个名字，错误里就写出那个名字。
+```
+
+目录名里没有可用 ASCII（`我的项目`）时**不硬编一个**，让用户起。天天要敲的名字应该是人选的。
 
 **runtime 读的是自己那台机器的 config，不是调用方发来的 payload。** payload 说的是"哪个
 workspace、在哪"；runtime 账号被允许做什么，是被保护那台机器的属性，调用方不能把它放宽。

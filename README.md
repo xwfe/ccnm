@@ -608,10 +608,13 @@ scripts/dist.sh
 ```
 
 产出 `dist/ccnm-<version>-macos-universal.tar.gz`（+ `.sha256`）。是 arm64 + x86_64 的通用
-二进制：16 MB 二进制，打包后 5.9 MB。做成通用的原因是两台机器可能一台 M 系列一台 Intel，
+二进制：16.9 MB 二进制，打包后 6.1 MB。做成通用的原因是两台机器可能一台 M 系列一台 Intel，
 让人自己挑架构下载迟早出事。
 
 版本号取自二进制自己（`ccnm --version`），不是从 Cargo.toml 抄的——文件名不可能跟里面的东西不一致。
+
+**tar 保留执行位**，解出来就是 `rwxr-xr-x`，不像 `scp`（那个坑见上面 `permission denied`
+那一节）。所以走 release 下载装的人不需要再 `chmod +x`。
 
 ### GitHub 上的自动构建和发版
 
@@ -640,7 +643,8 @@ git push origin v0.1.1
   手写几行缓存比引入一个信任关系便宜。
 - **runner 上要 `brew install ripgrep tmux`**，否则 search 那组测试会因为缺依赖而不是因为
   ccnm 有问题而失败。
-- **这个仓库现在还没有 git remote。** 要用这套东西得先建仓库并 push。
+- **这个仓库现在还没有 git remote。** 要用这套东西得先建仓库并 push。`v0.1.0` 这个 tag 已经
+  在本地打好了（annotated），建了远端 `git push origin v0.1.0` 就会触发第一次 release。
 - **两个 workflow 我没在 GitHub 上真跑过**（没 remote）。但里面每一步——fmt、clippy、
   test、`scripts/dist.sh`、tag/版本校验的两个分支、release notes 的渲染——都在本机
   单独跑通了。第一次 push 之后还是要去 Actions 看一眼。

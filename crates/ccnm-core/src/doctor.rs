@@ -39,6 +39,7 @@ use std::time::Duration;
 use crate::claude;
 use crate::config::{Backend, Config, Resolved};
 use crate::error::{Error, ErrorCode, ErrorReport};
+use crate::mcp::context;
 use crate::paths;
 use crate::process::{Cmd, ProcessRunner};
 use crate::protocol::PROTOCOL;
@@ -278,7 +279,11 @@ fn workspace_checks(r: &Resolved<'_>, env: &Env<'_>) -> Vec<Check> {
         )];
     }
 
-    let mut checks = vec![home_workspace(&ws.root), home_ccnm(r, env)];
+    let mut checks = vec![
+        home_workspace(&ws.root),
+        project_instructions(r),
+        home_ccnm(r, env),
+    ];
     // Before anything that needs the network: this is an audit of the
     // local account, and it is exactly as true when the work machine is
     // unreachable.
@@ -612,6 +617,53 @@ fn skipped_after_work_ssh() -> Vec<Check> {
     .collect()
 }
 
+/// What the project's own `CLAUDE.md` contributes to a session (design doc
+/// section 20).
+///
+/// Checked here, on the runtime host, because this is the machine that has
+/// the file and the machine the MCP server reads it from: the row is about
+/// the same bytes the model will be given. Reading it is read-only, so it
+/// belongs in doctor.
+///
+/// No CLAUDE.md is OK — most projects have none, and the model still gets
+/// ccnm's own instructions. A file too big for the handshake is a WARN,
+/// not a FAIL: the session works, the model just does not see all of it,
+/// and that is exactly the kind of thing nobody discovers on their own.
+fn project_instructions(r: &Resolved<'_>) -> Check {
+    const NAME: &str = "Project instructions";
+    let root = &r.workspace.root;
+    let file = context::PROJECT_FILE;
+    match context::find(root, context::budget(r.name)) {
+        Ok(None) => Check::ok(
+            NAME,
+            format!(
+                "no {file} at {}; the session gets ccnm's own instructions only",
+                root.display()
+            ),
+        ),
+        Ok(Some(p)) if !p.truncated() => Check::ok(
+            NAME,
+            format!("{file}, {} bytes, all of it reaches the model", p.bytes),
+        ),
+        Ok(Some(p)) => Check::warn(
+            NAME,
+            format!(
+                "{file} is {} bytes and only its first {} reach the model: the MCP handshake is capped at {} bytes\nmove what the model does not need out of the root file; it can still read the whole thing with read_file {file}",
+                p.bytes,
+                p.included(),
+                context::MAX_INSTRUCTIONS_BYTES
+            ),
+        ),
+        Err(e) => Check::warn(
+            NAME,
+            format!(
+                "{}\nthe session will run without the project's own instructions",
+                e.message()
+            ),
+        ),
+    }
+}
+
 /// The project root must exist on this (home) machine.
 fn home_workspace(root: &Path) -> Check {
     match std::fs::metadata(root) {
@@ -850,6 +902,7 @@ mod tests {
                 server_name: "ccnm".into(),
                 server_version: crate::VERSION.into(),
                 instructions_bytes: 180,
+                project_instructions: Some("no CLAUDE.md at the workspace root".into()),
                 tools: vec!["workspace_info".into()],
                 tools_list_bytes: 412,
                 calls: 1,
@@ -977,6 +1030,45 @@ mod tests {
         assert_eq!(report.exit_code(), ErrorCode::Policy.exit_code(), "{text}");
     }
 
+    /// The project's CLAUDE.md is what tells the model the project's
+    /// rules, and a file too long for the handshake is invisible from the
+    /// outside: the session runs, it just quietly knows less. So the row
+    /// reports how many of its bytes reach the model, and being too long
+    /// warns rather than fails.
+    #[test]
+    fn the_project_claude_md_row_measures_what_reaches_the_model() {
+        let (dir, path) = setup("claudemd", true, true);
+        let config = Config::load(&path).unwrap();
+        let r = config.workspace("xshun").unwrap();
+        let file = dir.join("root/CLAUDE.md");
+
+        let none = project_instructions(&r);
+        assert_eq!(none.status, Status::Ok);
+        assert!(none.detail.starts_with("no CLAUDE.md at"), "{none:?}");
+
+        std::fs::write(&file, "- 提交要小\n").unwrap();
+        let small = project_instructions(&r);
+        assert_eq!(small.status, Status::Ok);
+        assert_eq!(
+            small.detail,
+            "CLAUDE.md, 15 bytes, all of it reaches the model"
+        );
+
+        std::fs::write(&file, "- 一条规则\n".repeat(4000)).unwrap();
+        let big = project_instructions(&r);
+        assert_eq!(big.status, Status::Warn);
+        assert!(big.detail.contains("only its first"), "{big:?}");
+        assert!(big.detail.contains("read_file CLAUDE.md"), "{big:?}");
+
+        // There, but unreadable: still not a failure, and it says what
+        // the session will be missing.
+        std::fs::remove_file(&file).unwrap();
+        std::fs::create_dir(&file).unwrap();
+        let bad = project_instructions(&r);
+        assert_eq!(bad.status, Status::Warn);
+        assert!(bad.detail.contains("CLAUDE.md"), "{bad:?}");
+    }
+
     #[test]
     fn everything_good_blocks_only_on_future_phases() {
         let (dir, config) = setup("good", true, true);
@@ -994,6 +1086,7 @@ mod tests {
             "Config",
             "Workspace config",
             "Home workspace",
+            "Project instructions",
             "Home ccnm",
             "Work SSH",
             "Work ccnm",
@@ -1012,7 +1105,7 @@ mod tests {
         );
         assert_eq!(
             row(&report, "Remote MCP handshake").detail,
-            "initialize in 190 ms, tools/list (1 tool, 412 B), workspace_info x1 p50 22 ms p95 22 ms max 22 ms, pid 4242 throughout"
+            "initialize in 190 ms, tools/list (1 tool, 412 B), instructions 180 B (no CLAUDE.md at the workspace root), workspace_info x1 p50 22 ms p95 22 ms max 22 ms, pid 4242 throughout"
         );
         assert_eq!(
             row(&report, "Home ccnm").detail,

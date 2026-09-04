@@ -89,6 +89,26 @@ ccnm stop xshun     # 结束它
 机器上"，遇到一个它不认识的名字就去问那台。这是故意的——workspace 的 root 定义在一个地方，
 两份副本迟早对不上，而对不上的后果是会话绑在一个已经不存在的目录上。
 
+底下真正跑的是这两条链，**`ccnm xshun` 敲在哪台就是哪条**：
+
+```text
+坐在家庭机   家庭机 ──ssh──> 工作机 ──ssh──> 家庭机
+             要一个会话      起 Claude       给它项目
+                             （tmux 里）     （MCP transport）
+
+坐在工作机   工作机 ──ssh──> 家庭机 ──ssh──> 工作机 ──ssh──> 家庭机
+             要一个会话      ↑ 上面那条，从头走一遍
+             然后本地 tmux attach——接管只要名字，不要配置
+```
+
+**第二条多一跳，是故意的。** 工作机大可以自己拼出那个启动请求，代价是它得知道每个 workspace
+的 root——那就成了第二份 workspace 列表。所以它不拼，它去家庭机上跑那条**你自己会敲的命令**，
+让家庭机走它原本那条完整路径（config 解析、版本+root 握手、controller）。多的那一跳买到的是
+每个 workspace 只有一处定义，以及一行都没重复的启动代码。
+
+会话本来就起在工作机上，所以**接管、看状态、停都是本地的**——不走网络。这点重要：最想停掉
+一个会话的时候，往往正是链路出问题的时候。
+
 **`--print` 只能在家庭机上敲**（工作机上会直接拒绝并告诉你去哪敲）。
 
 ---
@@ -221,6 +241,15 @@ ccnm init --home xdwmbp     # 在工作机上
 它只写"projects 在 xdwmbp 上"，**不写 workspace 列表**。之后工作机上 `ccnm xshun` /
 `attach` / `status` / `stop` 都能用：遇到不认识的名字就去问 xdwmbp，会话本来就起在工作机上，
 所以接管是本地的。
+
+**家庭机上的 ccnm 不在 `~/.local/bin/ccnm` 的话**（比如你装到了 `/opt/homebrew/bin`），
+在工作机这份配置里补一行，否则 `ccnm xshun` 会报 `not found ... (the login shell exited 127)`：
+
+```toml
+[hosts.home]
+ssh_from_work = "xdwmbp"
+ccnm_bin = "/opt/homebrew/bin/ccnm"
+```
 
 再把项目加进去——`cd` 到项目目录，然后：
 
@@ -451,6 +480,7 @@ read_output      按字节偏移翻 exec_command 的输出
 | `TOOLS DOWN`，会话在跑但模型够不着任何工具 | MCP 通道断了。`/mcp` → ccnm → Reconnect，上下文不丢 |
 | `Killed: 9` / exit 137，升级完全炸 | 用 `cp` 覆盖了跑过的二进制。改用 rename |
 | `command not found: ccnm`（在 ssh 命令里） | 非交互 shell 不读 `.zshrc`，写全路径 |
+| 在**工作机**上 `ccnm <ws>` 报 `not found ... exited 127` | 家庭机的 ccnm 不在默认路径。工作机这份 config 里补 `[hosts.home] ccnm_bin` |
 | `permission denied: ccnm` | `scp` 丢了执行位。`scp -p` + `chmod +x` |
 | `ccnm versions probably differ` | 两台的 build 不一样，或者 Tailscale SSH 吞了退出码 |
 | 工具全废却说 "xxx is not installed" | 项目目录被移走了，会话还绑在旧路径上 |
@@ -566,11 +596,6 @@ ripgrep                家庭机没装 rg，doctor 全绿，等模型第一次 s
 不是强制**——`["sh","-c","..."]` 照样能传。这是[明确的设计决定](#安全边界)：禁程序名是能绕
 的，假的安全感比没有更糟。真正的边界是那个专用账号。同理，"`apply_patch` 是唯一的写入路径"
 这句话，在 `exec_command` 可用时也不是强制的。
-
-**中断的 patch 要等最多 60 秒才认得出来。** journal 靠时间判断而不是"那个进程还活着吗"
-（这个 crate `forbid(unsafe)`，查进程存活得 spawn 一个进程，而一次 commit 比 60 秒短四个
-数量级）。代价是中断后 60 秒内起的下一个 patch 不会拦你——而那段时间里 transport 本来就是
-死的，够不到工具。
 
 **canonicalize 到真正 open 之间有 TOCTOU 窗口。** 有项目目录写权限的人能在那一瞬间把某段
 路径换成 symlink。要利用它得先能写那个目录——人已经在里面了。**判断是不值得为它改代码**，

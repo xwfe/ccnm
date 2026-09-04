@@ -42,6 +42,19 @@ Claude 不会自己重连。
 ccnm 自己调对面时一直是全路径（`hosts.<x>.ccnm_bin`，默认 `~/.local/bin/ccnm`），所以
 `ccnm doctor` 能通而你手敲的那条不通，是正常的，不是配置坏了。
 
+### 在工作机上 `ccnm <ws>` 报 `/xxx/ccnm not found on <home> (the login shell exited 127)`
+
+家庭机的 ccnm 不在 `~/.local/bin/ccnm`，而工作机这份 config 没说它在哪。补一行：
+
+```toml
+[hosts.home]
+ssh_from_work = "xdwmbp"
+ccnm_bin = "/opt/homebrew/bin/ccnm"     # 家庭机上的实际路径
+```
+
+`ccnm init --home <alias>` 只写别名，因为绝大多数情况默认路径就是对的。**报错里的那个路径
+就是它试过的那个**——如果它跟你在家庭机上 `which ccnm` 的结果不一样，那这行就是要补的。
+
 ### `zsh: permission denied: ccnm`
 
 二进制在那儿但没有执行位。几乎总是 `scp` 传的时候丢的（OpenSSH 10.3 的 scp 不带 `-p`

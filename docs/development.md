@@ -12,7 +12,7 @@
 ### 本地跑测试
 
 ```bash
-cargo test --workspace        # 343 个测试，10 秒，不需要第二台机器，不碰网络
+cargo test --workspace        # 405 个测试，14 秒，不需要第二台机器，不碰网络
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 ```
@@ -44,8 +44,25 @@ workspace_info x100 p50 0 ms p95 0 ms max 0 ms, pid 44296 throughout
 
 跟走 ssh 的那次（`ccnm mcp probe <ws>`，不带 `--local`）一比，差值就是链路成本。
 
-**测不到的**：controller / 登录会话、tmux 会话、`ccnm run` 的全链路——那些需要两台机器
-（或者一台机器 ssh 自己，见下）。
+链路上**传的是什么**也能在本机验，虽然进程都是假的。`launcher.rs` 里那组测试把一端真实的
+输出喂进另一端真实的输入：
+
+```bash
+cargo test -p ccnm-core --lib launcher
+```
+
+其中一个走完 `家庭机 → 工作机 → 家庭机` 一整圈——家庭机发出的启动请求，被工作机那半段真的
+解开、真的握手、真的写出会话的 `mcp.json`，然后测试**读那个文件**（就是 Claude Code 会去跑的
+那个 ssh，模型碰项目唯一的路），把 payload 从 argv 里解出来，比对第三跳打开的项目是不是第一跳
+说的那个。两个别名、两个二进制路径故意写成四个不同的字符串，蒙对不了。
+
+**为什么非得连起来测**：两端各自的单元测试都自己手搓消息，所以"两端各自都合理、但拿到的是
+对方那个值"这类 bug 在里面永远不会出现。**加这组之前**试过：把 `start_interactive` 里的
+`home_alias` 和 `work_ssh` 对调，当时那 369 个测试一个没红，而会话连到了错的机器上。现在它
+红在那一条上。
+
+**还是测不到的**：controller / 登录会话是不是真的能读到 Keychain、tmux 里 Claude 到底起没起来、
+真实的延迟——那些需要两台机器（或者一台机器 ssh 自己，见下）。
 
 ### 单机环回（一台 Mac 也能跑全链路）
 

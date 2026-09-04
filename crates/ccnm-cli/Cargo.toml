@@ -3,6 +3,8 @@ name = "ccnm-cli"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
 description = "ccnm: terminal-native remote workspace runtime for Claude Code"
 
 [[bin]]

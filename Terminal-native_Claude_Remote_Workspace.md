@@ -2428,6 +2428,11 @@ runtime dependency。如果没有方便的 headless stdio，不要为了运行�
 commit、license、copied/derived modules、modifications，遵守其 license，保留需要的 LICENSE /
 NOTICE / attribution。不先 copy 后补 provenance，不悄悄 copy。
 
+**实际执行结果（2026-09-04）**：一行都没有复制，`docs/third-party/` 这个目录到今天都不存在。
+所有实现都是照 contract 自己写的，调研记录在 `docs/research/coding-tools-mcp.md`。所以 ccnm
+自己那份 MIT（`LICENSE`）覆盖的是全部代码，没有需要保留的第三方 attribution——第三方只有
+Cargo 依赖，它们是依赖不是 vendor。**哪天真的复制了，先补 `docs/third-party/`，再改 LICENSE。**
+
 ---
 
 ## 29. V1 明确不做

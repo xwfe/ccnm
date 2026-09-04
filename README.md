@@ -27,6 +27,7 @@ ccnm run xshun        # 在家庭机敲一句，工作机的 Claude 出现在你
 - [开发、测试、发版](#开发测试发版)
 - [安全边界](#安全边界)
 - [还没做的](#还没做的)
+- [License](#license)
 
 ---
 
@@ -625,7 +626,14 @@ ci.yml       每次 push / PR：fmt + clippy + 全部测试 + 跑一下二进制
 release.yml  推 tag（v*）：过一遍同样的门禁 → dist.sh → 校验 tag 和版本号一致 → 建 release
 ```
 
-发一个版本：
+第一次 push（远端 `github.com/xwfe/ccnm`，`origin` 已经配好）：
+
+```bash
+git push -u origin main
+git push origin v0.1.0        # 这一下会触发第一个 release
+```
+
+之后发一个版本：
 
 ```bash
 # 先把 Cargo.toml 里的 version 改好并提交
@@ -643,13 +651,9 @@ git push origin v0.1.1
   手写几行缓存比引入一个信任关系便宜。
 - **runner 上要 `brew install ripgrep tmux`**，否则 search 那组测试会因为缺依赖而不是因为
   ccnm 有问题而失败。
-- **这个仓库现在还没有 git remote。** 要用这套东西得先建仓库并 push。`v0.1.0` 这个 tag 已经
-  在本地打好了（annotated），建了远端 `git push origin v0.1.0` 就会触发第一次 release。
-- **两个 workflow 我没在 GitHub 上真跑过**（没 remote）。但里面每一步——fmt、clippy、
-  test、`scripts/dist.sh`、tag/版本校验的两个分支、release notes 的渲染——都在本机
+- **两个 workflow 还没在 GitHub 上真跑过**（东西还没 push 上去）。但里面每一步——fmt、
+  clippy、test、`scripts/dist.sh`、tag/版本校验的两个分支、release notes 的渲染——都在本机
   单独跑通了。第一次 push 之后还是要去 Actions 看一眼。
-- **发版前你可能想给 `Cargo.toml` 加 `license` 和 `repository` 字段**，现在没有。我没替你
-  选 license——那是你的决定。
 - 从浏览器下载的二进制会被 macOS 隔离，`xattr -d com.apple.quarantine ccnm` 解开；
   `curl` 下的不会。release notes 里写了这条。
 
@@ -699,3 +703,9 @@ Linux                  controller 是 launchd LaunchAgent，只有 macOS
 - **调研记录**：[docs/research/](docs/research/)
 
 错误码是稳定的（`CCNM_E_*`，设计文档第 24 节），脚本可以依赖。
+
+---
+
+## License
+
+MIT，见 [LICENSE](LICENSE)。

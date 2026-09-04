@@ -375,7 +375,8 @@ impl Server {
 
     #[tool(
         name = "exec_command",
-        description = "Run a command in the remote workspace. cmd is a program and its arguments, not a shell line: there are no pipes, redirection or globs. Long output stays on that machine; what comes back is the head and tail plus an output_ref. This runs with the full access of the account the runtime uses."
+        description = "Run a command in the remote workspace. cmd is a program and its arguments, not a shell line: there are no pipes, redirection or globs. Long output stays on that machine; what comes back is the head and tail plus an output_ref. This runs with the full access of the account the runtime uses.",
+        meta = requires_user_interaction()
     )]
     async fn exec_command(
         &self,
@@ -469,6 +470,34 @@ impl Server {
             Err(err) => Ok(tool_error(&err)),
         }
     }
+}
+
+/// The `_meta` that makes a tool ask the person every single time.
+///
+/// Claude Code honours `anthropic/requiresUserInteraction` in *every*
+/// permission mode, `bypassPermissions` included. That is the whole
+/// reason it is worth setting: measured by Anthropic, people approve
+/// about 93% of the prompts they see, and plenty of them run with
+/// prompting turned off entirely, so a gate the user can switch off is
+/// not a gate. This one they cannot.
+///
+/// Only `exec_command` carries it. The other six are bounded by the path
+/// policy and cannot reach past the workspace root; this one is a shell
+/// on somebody else's machine, running as whatever account the runtime
+/// uses. Putting it on the read tools as well would be the mistake the
+/// same research describes: prompts nobody reads any more.
+///
+/// If a future client ignores the key, nothing breaks and nothing is
+/// claimed — this is a second lock, not the first one. The first is
+/// still `exec_gate`, on the answering side, which no client can talk
+/// its way past.
+fn requires_user_interaction() -> rmcp::model::MetaObject {
+    let mut meta = serde_json::Map::new();
+    meta.insert(
+        "anthropic/requiresUserInteraction".to_string(),
+        serde_json::Value::Bool(true),
+    );
+    rmcp::model::MetaObject(meta)
 }
 
 /// A successful tool call: one text block, and no `structuredContent`.
@@ -611,6 +640,31 @@ mod tests {
             .collect();
         allowed.sort();
         assert_eq!(served, allowed);
+    }
+
+    /// `exec_command` is the one tool that is not bounded by the path
+    /// policy, so it is the one tool that asks the person every time --
+    /// in every permission mode, `bypassPermissions` included. The
+    /// assertion is on the serialized JSON because the key travels in
+    /// `_meta`, and a rename of that field by the crate would be
+    /// invisible to a check on the Rust value.
+    #[test]
+    fn only_exec_command_makes_the_client_ask_every_time() {
+        let dir = temp("meta");
+        let server = Server::new(&ServePayload::new("xshun", dir, "s")).unwrap();
+        for tool in server.tool_router.list_all() {
+            let json = serde_json::to_value(&tool).unwrap();
+            let asks = json
+                .get("_meta")
+                .and_then(|m| m.get("anthropic/requiresUserInteraction"))
+                == Some(&serde_json::Value::Bool(true));
+            assert_eq!(
+                asks,
+                tool.name == "exec_command",
+                "{} has the wrong interaction requirement: {json}",
+                tool.name
+            );
+        }
     }
 
     #[test]

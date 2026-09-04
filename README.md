@@ -360,9 +360,16 @@ read_output      按字节偏移翻 exec_command 的输出
 - **改文件必须带 `version`。** 那是 `read_file` 给的；文件在这中间被动过，patch 直接拒，
   不会盖掉别人的改动。
 - **一次 patch 要么全成要么全不动。** 中间失败会回滚，回滚失败会大声说"工作区被改了一半"。
+  连进程被 `kill -9` 打断都盖住了：提交前会写一份 journal，下一次 patch 撞见它就**拒绝**，
+  并列出当时正在改的每个文件——见[下面那一节](#会话里的-apply_patch-报-a-previous-apply_patch-was-interrupted)。
+- **`old` 找不到时会告诉你差在哪。** 同一段文字只是空白/缩进不同，报错会说在第几行、
+  并把文件里真正的字节打出来给你抄。**只诊断，不替你改**——在大仓库里"改成最像的那个"
+  往往改到另一个函数上去，几周后才发现。
 - **`.git` 目录读不到也写不了。** symlink 一律拒绝，路径出不了 workspace root。
 - **`exec_command` 是真正的边界难点。** 它等价于一个远程 shell，ccnm 挡不住，
-  挡它的是操作系统——见[安全边界](#安全边界)。
+  挡它的是操作系统——见[安全边界](#安全边界)。它**每次调用都会问你**（MCP 的
+  `requiresUserInteraction`），而且这个询问**在任何权限模式下都关不掉**，
+  `--dangerously-skip-permissions` 也绕不过。其他 6 个不会问。
 
 ---
 
@@ -497,11 +504,42 @@ ccnm result xshun --session <id>  # 指定某一次
 
 正常的失败（版本过期、`old` 匹配不上、路径出界）都是原子的，**一个字节都不会写**。
 
+### 会话里的 `apply_patch` 报 "a previous apply_patch was interrupted"
+
+```text
+a previous apply_patch was interrupted while it was renaming files,
+so these may not agree with each other:
+  update src/config.rs   original kept at src/.ccnm-a1b2c3-config.rs
+  update src/main.rs
+check them before changing anything else -- git status and git diff will show which ones landed.
+```
+
+**上一次 patch 在改名的中途整个进程没了**（`kill -9`、ssh 断开、断电）。这是三阶段事务里
+`Drop` 唯一盖不住的洞：回滚代码跑在那个进程里，进程没了就没人回滚。
+
+**每个文件本身都是完整的**（一次原子 rename，不存在半截文件），坏的是文件**之间**对不上——
+比如改了函数名，没改调用它的地方。
+
+怎么处理：
+
+```bash
+git -C <项目> status        # 哪些落了、哪些没落，一眼就看出来
+git -C <项目> diff
+```
+
+看完，按报错最后一行说的把那个 journal 文件删掉，patch 就恢复正常。
+
+**ccnm 不会自动回滚**，这是故意的：等你看到这条消息时，那半个改动可能已经是你想要的，
+甚至已经 commit 了。为了一个一小时前的事务把你的活默默还原，比中断本身更糟。
+要求是"不能悄悄地乱"，不是"让机器替你决定"。
+
 ---
 
 ## 升级
 
-两台机器必须是同一个 build（doctor 会检查）。
+两台机器必须是同一个 build。**现在 `ccnm <workspace>` 启动会话前会先握一次手**：版本对不上
+直接拒（报 `CCNM_E_VERSION`，两个版本号都打出来），项目根目录不在了也直接拒并告诉你怎么
+重新指向——都发生在会话建起来之前，不用等进去之后每个工具都出莫名其妙的错。`doctor` 也仍然查。
 
 ```bash
 scripts/deploy.sh work xshun     # 编译、装两边、重启 controller、跑一次 doctor

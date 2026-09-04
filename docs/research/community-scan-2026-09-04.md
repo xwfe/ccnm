@@ -93,7 +93,7 @@ agents》](https://www.anthropic.com/engineering/writing-tools-for-agents)：**"
 | Cline | SEARCH/REPLACE | **order-invariant**，按模型切格式 |
 | Desktop Commander | `edit_block` | 精确失败后 fuzzy fallback，近似命中写日志 |
 | pi | 单个 `edit` | 完全不归一化 |
-| **ccnm** | **精确替换 + 唯一 + CRLF 归一化 + 强制 version** | **顺序应用** |
+| **ccnm** | **精确替换 + 唯一 + CRLF 归一化 + 强制 version** | **order-invariant，退回顺序；失败时诊断不修**（本轮改的） |
 
 **已发表的失败率**（[aider unified-diffs](https://aider.chat/docs/unified-diffs.html)，
 89 个重构任务）：
@@ -243,14 +243,30 @@ else { updateServer({ ...client, type: 'failed' }) }
 
 按"收益 ÷ 成本"排：
 
+### 已做（2026-09-04 当天）
+
+| | 事 | 结果 |
+|---|---|---|
+| 1 | `exec_command` 挂 `requiresUserInteraction` | ✅ 每次调用都问，**任何权限模式下都关不掉** |
+| 2 | `apply_edits` 做成 order-invariant | ✅ 两遍：先按原文定位，不行才退回顺序应用 |
+| 3 | 匹配失败时诊断（不修） | ✅ 空白/缩进差异报到行，打出文件真正的字节 |
+| 4 | `start()` 加版本 + root 握手 | ✅ 两条路径（交互和 `--print`）都做，约 30 ms |
+| 6 | commit 中途被 kill 的 journal | ✅ 撞见就拒绝并列出文件；**不自动回滚** |
+
+第 2 条有个**要记住的更正**：一开始以为它能修"两个无关的 edit 顺序反了"，**那是错的**——
+无关的 edit 本来任何顺序都能过。它真正修的是**edit 之间互相干扰**：前一个 edit 的替换文本
+里含有后一个 edit 的 `old`，于是后者被当成有歧义拒掉。最小的例子是交换两个名字，以前根本
+做不到。**这个错是变异测试抓出来的**——当时那个测试关掉功能也照样绿。
+
+第 6 条的判定用**时间**不用"pid 还活着吗"：这个 crate `forbid(unsafe)`，查进程存活要么用
+libc 要么 spawn 一个进程，而一次 commit 比 60 秒短四个数量级，两种判法答案一样。代价是
+中断后最多 60 秒内看不出来——而那段时间里 transport 本来就是死的。
+
+### 还没做
+
 | | 事 | 依据 | 成本 |
 |---|---|---|---|
-| 1 | `exec_command` 挂 `requiresUserInteraction` | 官方文档；YOLO 也绕不过；这是全系统唯一等价远程 shell 的东西 | 小 |
-| 2 | `apply_edits` 做成 order-invariant | Cline 实测 +10~25% | 小 |
-| 3 | 精确匹配失败时报"最接近的候选 + 字符级 diff" | Desktop Commander；不牺牲安全 | 小 |
-| 4 | `start()` 加版本握手（现在只有 `doctor` 查） | Zed；版本不一致时的报错很难看 | 小 |
 | 5 | 输出上限跟客户端 25k token 对齐 | 官方阈值，ccnm 的上限是自己定的，未对齐 | 小 |
-| 6 | commit 中途被 kill 的 journal | 唯一能造成文件间不一致的洞 | 中 |
 | 7 | 编辑后回读改动区域返回给模型 | claude-code#32658 的三种静默失败 | 中 |
 | 8 | 远端 MCP server 做成可重新接管的 daemon | Zed；根治僵尸会话 | 大 |
 

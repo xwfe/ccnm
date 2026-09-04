@@ -12,8 +12,10 @@ use ccnm_core::protocol::hello::{self, HelloRequest};
 use ccnm_core::protocol::mcp::ServePayload;
 use ccnm_core::protocol::payload;
 use ccnm_core::protocol::probe::ProbeRequest;
+use ccnm_core::protocol::run::{RunReport, RunRequest};
 use ccnm_core::{
-    Config, Result, claude, controller, doctor, launchagent, launcher, mcp, paths, safety, work,
+    Config, Result, claude, controller, doctor, launchagent, launcher, mcp, paths, safety, session,
+    work,
 };
 
 /// Terminal-native remote workspace runtime for Claude Code.
@@ -39,6 +41,18 @@ enum Command {
     Doctor {
         /// Workspace name from config.toml; omit to check only the config
         workspace: Option<String>,
+    },
+    /// Start a Claude session for a workspace on the work machine
+    Run {
+        /// Workspace name from config.toml
+        workspace: String,
+        /// Run one prompt non-interactively and print the result. The
+        /// interactive form (a terminal attached to Claude) is phase 6.
+        #[arg(long, value_name = "PROMPT")]
+        print: Option<String>,
+        /// Kill Claude after this many seconds
+        #[arg(long, default_value_t = 600, value_name = "SECONDS")]
+        timeout: u64,
     },
     /// MCP transport diagnostics
     Mcp {
@@ -111,6 +125,17 @@ enum InternalCommand {
         #[arg(long)]
         payload: String,
     },
+    /// Work-side run: create the session, have the controller start it,
+    /// wait, report
+    WorkRun {
+        #[arg(long)]
+        payload: String,
+    },
+    /// Be Claude's parent for one session; started by the controller
+    Supervise {
+        #[arg(long)]
+        payload: String,
+    },
     /// Answer on the work machine's controller socket until killed.
     ///
     /// The one internal command with no `--payload`: it is started by
@@ -150,6 +175,32 @@ fn run(cli: Cli) -> Result<i32> {
             let report = doctor::run(&config_path()?, workspace.as_deref(), &env);
             print!("{}", report.render());
             Ok(report.exit_code())
+        }
+        Command::Run {
+            workspace,
+            print,
+            timeout,
+        } => {
+            let Some(prompt) = print else {
+                return Err(ccnm_core::Error::new(
+                    ccnm_core::ErrorCode::NotReady,
+                    "interactive sessions come with phase 6; for now: ccnm run <workspace> --print \"<prompt>\"",
+                ));
+            };
+            let config = Config::load(&config_path()?)?;
+            let resolved = config.workspace(workspace)?;
+            let env = launcher::Env {
+                runner: &SystemRunner,
+                control_dir: paths::state_dir()?.join("ssh"),
+                current_exe: std::env::current_exe()?,
+            };
+            let rep = launcher::run_print(
+                &resolved,
+                &env,
+                prompt,
+                std::time::Duration::from_secs(*timeout),
+            )?;
+            print_run_report(&rep)
         }
         Command::Mcp {
             command:
@@ -197,25 +248,67 @@ fn run(cli: Cli) -> Result<i32> {
                     runner: &SystemRunner,
                     // Resolved here, in launchd's environment, because
                     // that is the PATH Claude will actually be started
-                    // with later.
+                    // with.
                     claude: claude::locate_from_env(),
+                    exe: std::env::current_exe()?,
                 };
                 listener.serve_forever(&tools)?;
                 Ok(0)
             }
+            InternalCommand::Supervise { payload } => {
+                let req: session::SuperviseRequest = payload::decode(payload)?;
+                let outcome = session::supervise(&req)?;
+                Ok(if outcome.ok() { 0 } else { 1 })
+            }
             InternalCommand::Probe { payload } => {
                 let req: ProbeRequest = payload::decode(payload)?;
-                let state = paths::state_dir()?;
-                let tools = work::Tools {
-                    runner: &SystemRunner,
-                    control_dir: state.join("ssh"),
-                    claude: claude::locate_from_env(),
-                    controller: paths::controller_socket(&state),
-                };
-                print_json(&work::probe(&req, &tools))
+                print_json(&work::probe(&req, &work_tools()?))
+            }
+            InternalCommand::WorkRun { payload } => {
+                let req: RunRequest = payload::decode(payload)?;
+                print_json(&work::run(&req, &work_tools()?)?)
             }
         },
     }
+}
+
+fn work_tools() -> Result<work::Tools<'static>> {
+    let state = paths::state_dir()?;
+    Ok(work::Tools {
+        runner: &SystemRunner,
+        control_dir: state.join("ssh"),
+        claude: claude::locate_from_env(),
+        controller: paths::controller_socket(&state),
+        state,
+    })
+}
+
+/// The summary, then Claude's answer, then whatever went wrong. Exit 0
+/// only when Claude ran to completion and did not report an error itself.
+fn print_run_report(rep: &RunReport) -> Result<i32> {
+    println!("{}", rep.summary());
+    match &rep.result {
+        Some(r) => {
+            println!("\n--- result ---");
+            println!("{}", r.result.as_deref().unwrap_or("").trim_end());
+            if !r.permission_denials.is_empty() {
+                eprintln!("\npermission denials:");
+                for d in &r.permission_denials {
+                    eprintln!("  {d}");
+                }
+            }
+        }
+        None if !rep.stdout_tail.is_empty() => {
+            println!("\n--- stdout (tail) ---\n{}", rep.stdout_tail.trim_end());
+        }
+        None => {}
+    }
+    if !rep.stderr_tail.trim().is_empty() {
+        eprintln!("\n--- stderr (tail) ---\n{}", rep.stderr_tail.trim_end());
+    }
+    eprintln!("\nsession directory on work: {}", rep.session_dir.display());
+    let ok = rep.outcome.ok() && rep.result.as_ref().is_some_and(|r| !r.is_error);
+    Ok(if ok { 0 } else { 1 })
 }
 
 /// `ccnm work-controller ...`, run on the work machine.

@@ -361,3 +361,78 @@ fn verbose_logs_go_to_stderr_not_stdout() {
     assert!(err.contains("loading config"), "stderr: {err}");
     assert!(!stdout(&out).contains("loading config"));
 }
+
+#[test]
+fn run_without_print_is_not_ready_yet() {
+    let out = ccnm()
+        .args(["run", "xshun", "--config"])
+        .arg(fixture("config-valid.toml"))
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(3), "{}", stderr(&out));
+    assert!(stderr(&out).contains("--print"), "{}", stderr(&out));
+}
+
+/// The real `ccnm internal supervise`, with a script standing in for
+/// `claude`: the session's inputs go in, and the outputs come out in the
+/// session directory, `exit` last.
+#[test]
+fn supervise_runs_the_session_and_writes_its_exit_record() {
+    use ccnm_core::session::{self, Dir, Mode, Spec, SuperviseRequest};
+
+    let (dir, _config) = setup("supervise", env!("CARGO_BIN_EXE_ccnm"));
+    let fake = dir.join("claude");
+    std::fs::write(
+        &fake,
+        "#!/bin/sh\ncat > \"$PWD/prompt-seen\"\nprintf '{\"is_error\":false,\"result\":\"ok\",\"num_turns\":1,\"session_id\":\"'\"$6\"'\"}'\n",
+    )
+    .unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let spec = Spec {
+        protocol: ccnm_core::protocol::PROTOCOL,
+        id: session::new_id(),
+        workspace: "xshun".into(),
+        root: dir.join("root"),
+        home_alias: "ccnm-home".into(),
+        home_ccnm_bin: "~/.local/bin/ccnm".into(),
+        claude_config_dir: None,
+        permission_mode: Default::default(),
+        mode: Mode::Print {
+            prompt: "say ok".into(),
+        },
+        timeout_secs: 10,
+        cwd: dir.clone(),
+    };
+    let ssh = ccnm_core::ssh::Ssh::new("ccnm-home", "/tmp/ccnm-t/cli-sup").unwrap();
+    let session_dir = session::create(&dir, &spec, &ssh).unwrap();
+
+    let wire = payload::encode(&SuperviseRequest::new(
+        session_dir.path().to_path_buf(),
+        fake,
+    ))
+    .unwrap();
+    let out = ccnm()
+        .args(["internal", "supervise", "--payload", &wire])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+
+    let d = Dir::at(session_dir.path());
+    let outcome = session::read_outcome(&d).unwrap().expect("exit record");
+    assert!(outcome.ok(), "{outcome:?}");
+    let result = ccnm_core::claude::parse_print(&std::fs::read(d.stdout()).unwrap()).unwrap();
+    assert_eq!(result.result.as_deref(), Some("ok"));
+    // The prompt arrived on stdin; the session id was on the argv.
+    assert_eq!(
+        std::fs::read_to_string(dir.join("prompt-seen")).unwrap(),
+        "say ok"
+    );
+    assert!(
+        outcome.duration_ms < 5000,
+        "claude must not have waited for a stdin timeout: {} ms",
+        outcome.duration_ms
+    );
+}

@@ -69,6 +69,7 @@ use crate::error::{Error, ErrorCode, ErrorReport, Reported, Result};
 use crate::process::{Cmd, Output, ProcessRunner};
 use crate::protocol::hello::{self, HelloReport, HelloRequest};
 use crate::protocol::payload::{self, PROTOCOL, Protocol};
+use crate::session::{self, SuperviseRequest};
 
 /// launchd label for the agent. Also the basename of its plist and what
 /// every `launchctl` line in an error message names.
@@ -204,6 +205,10 @@ pub enum RequestBody {
         #[serde(default)]
         ask: claude::Ask,
     },
+    /// Start the session whose directory this is. The one request that
+    /// exists because of the login session: the process started here is
+    /// Claude's ancestor, so Claude inherits it.
+    Start { session_dir: PathBuf },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -236,6 +241,11 @@ impl Protocol for Response {
 pub enum ReplyBody {
     Hello(Context),
     Claude(ClaudeReport),
+    /// The supervisor's pid. Claude is its child; the session directory's
+    /// `exit` file says when it is done.
+    Started {
+        pid: u32,
+    },
     /// The request was understood but could not be answered. Sent instead
     /// of hanging up, so the caller gets a code and a sentence rather than
     /// an unexplained EOF.
@@ -249,6 +259,8 @@ pub struct Tools<'a> {
     /// controller's `PATH` comes from launchd, so the lookup happens here
     /// rather than on the ssh side.
     pub claude: Option<PathBuf>,
+    /// This binary, to run as the supervisor of each session.
+    pub exe: PathBuf,
 }
 
 /// Answer one request. Pure apart from the commands it runs, so the
@@ -264,7 +276,68 @@ pub fn answer(req: &Request, tools: &Tools<'_>) -> Response {
                 *ask,
             )))
         }
+        RequestBody::Start { session_dir } => match start_session(session_dir, tools) {
+            Ok(pid) => Response::new(ReplyBody::Started { pid }),
+            Err(e) => Response::error(&e),
+        },
     }
+}
+
+/// Spawn the supervisor for a session and return without waiting.
+///
+/// The directory must already hold a readable `session.json`: that is
+/// what makes it a session rather than any path a client cares to name.
+fn start_session(session_dir: &Path, tools: &Tools<'_>) -> Result<u32> {
+    let Some(claude_bin) = &tools.claude else {
+        return Err(Error::new(
+            ErrorCode::Version,
+            "claude not found in the controller's environment; it looked in launchd's PATH, ~/.local/bin, ~/.claude/local, /usr/local/bin, /opt/homebrew/bin",
+        ));
+    };
+    let dir = session::Dir::at(session_dir);
+    let spec = session::load(&dir)?;
+    let req = SuperviseRequest::new(session_dir.to_path_buf(), claude_bin.clone());
+    let cmd = supervisor_cmd(&tools.exe, &req)?;
+    let pid = spawn_detached(&cmd, &dir.supervisor_log())?;
+    tracing::info!(session = %spec.id, pid, "started supervisor");
+    Ok(pid)
+}
+
+/// `ccnm internal supervise --payload <SuperviseRequest>`.
+pub fn supervisor_cmd(exe: &Path, req: &SuperviseRequest) -> Result<Cmd> {
+    let wire = payload::encode(req)?;
+    Ok(Cmd::new(exe).args(["internal", "supervise", "--payload", &wire]))
+}
+
+/// Start `cmd` in its own process group with its output in `log`, and
+/// let it go.
+///
+/// Its own process group, because launchd kills the agent's whole group
+/// when the agent is booted out — which `ccnm work-controller install`
+/// does on every upgrade — and a session must not die of its controller
+/// being replaced (design doc section 23). A thread waits on the child so
+/// finished supervisors do not pile up as zombies; the wait is all it does.
+fn spawn_detached(cmd: &Cmd, log: &Path) -> Result<u32> {
+    use std::os::unix::process::CommandExt as _;
+    use std::process::{Command, Stdio};
+
+    let out = std::fs::File::create(log)?;
+    let err = out.try_clone()?;
+    let mut command = Command::new(&cmd.program);
+    command
+        .args(&cmd.args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(out))
+        .stderr(Stdio::from(err))
+        .process_group(0);
+    let mut child = command.spawn().map_err(|e| {
+        Error::internal(format!("cannot spawn {}", cmd.program.to_string_lossy())).with_source(e)
+    })?;
+    let pid = child.id();
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(pid)
 }
 
 /// The controller's listening socket. Removes the socket file when
@@ -464,6 +537,17 @@ pub fn claude_auth(
     }
 }
 
+/// [`RequestBody::Start`], typed: the supervisor's pid.
+pub fn start(path: &Path, session_dir: &Path) -> Result<u32> {
+    let body = RequestBody::Start {
+        session_dir: session_dir.to_path_buf(),
+    };
+    match call(path, body, Duration::from_secs(20))? {
+        ReplyBody::Started { pid } => Ok(pid),
+        other => Err(unexpected(&other)),
+    }
+}
+
 fn unexpected(body: &ReplyBody) -> Error {
     Error::new(
         ErrorCode::Version,
@@ -521,7 +605,67 @@ mod tests {
         Tools {
             runner: fake,
             claude: claude.then(|| PathBuf::from("/opt/homebrew/bin/claude")),
+            exe: PathBuf::from("/Users/me/.local/bin/ccnm"),
         }
+    }
+
+    #[test]
+    fn start_refuses_without_claude_or_without_a_session() {
+        let fake = FakeRunner::new();
+        let req = Request::new(RequestBody::Start {
+            session_dir: PathBuf::from("/nonexistent"),
+        });
+        let ReplyBody::Error(report) = answer(&req, &tools(&fake, false)).body else {
+            panic!("expected an error reply")
+        };
+        assert_eq!(report.code(), ErrorCode::Version);
+        assert!(report.message.contains("claude not found"), "{report}");
+
+        // With a claude but no session.json there, nothing is started.
+        let ReplyBody::Error(report) = answer(&req, &tools(&fake, true)).body else {
+            panic!("expected an error reply")
+        };
+        assert!(report.message.contains("session.json"), "{report}");
+        assert!(fake.calls().is_empty(), "nothing ran");
+    }
+
+    #[test]
+    fn the_supervisor_is_this_binary_with_one_payload() {
+        let req = SuperviseRequest::new(
+            PathBuf::from("/Users/me/.local/state/ccnm/sessions/s1"),
+            PathBuf::from("/opt/homebrew/bin/claude"),
+        );
+        let cmd = supervisor_cmd(Path::new("/Users/me/.local/bin/ccnm"), &req).unwrap();
+        let text = cmd.display();
+        assert!(
+            text.starts_with("/Users/me/.local/bin/ccnm internal supervise --payload "),
+            "{text}"
+        );
+        assert_eq!(cmd.args.len(), 4);
+        let back: SuperviseRequest = payload::decode(cmd.args[3].to_str().unwrap()).unwrap();
+        assert_eq!(back, req);
+    }
+
+    /// The real spawn, with `true` standing in for the supervisor: the
+    /// child ends up in its own process group, its pid comes back, and the
+    /// controller does not wait for it.
+    #[test]
+    fn spawn_detached_returns_at_once_and_reaps_later() {
+        let dir = std::env::temp_dir().join(format!("ccnm-spawn-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("log");
+        let cmd = Cmd::new("/bin/sh").args(["-c", "echo started; sleep 0.2"]);
+        let started = std::time::Instant::now();
+        let pid = spawn_detached(&cmd, &log).unwrap();
+        assert!(pid > 0);
+        assert!(
+            started.elapsed() < Duration::from_millis(150),
+            "spawn must not wait for the child"
+        );
+        // The reaper thread waits; give it the 200 ms, then the log is complete.
+        std::thread::sleep(Duration::from_millis(400));
+        assert_eq!(std::fs::read_to_string(&log).unwrap(), "started\n");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

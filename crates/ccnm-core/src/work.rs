@@ -232,6 +232,14 @@ pub fn start(req: &StartRequest, tools: &Tools<'_>) -> Result<StartReport> {
                 new = %req.root.display(),
                 "replacing a session bound to a different root"
             );
+            // Before the kill, not after. The handshake talks to the other
+            // machine, so it can fail for reasons that have nothing to do
+            // with this workspace -- a link that blinked, a version that
+            // does not match. Doing it afterwards means a blip ends a
+            // running Claude, fails to start its replacement, and hands
+            // back an error about version numbers to somebody who has
+            // just lost their conversation.
+            let (ctx, ssh) = preflight(req, tools)?;
             let out = tools.runner.run(&tmux.kill_cmd(&name))?;
             if !out.success() {
                 return Err(Error::internal(format!(
@@ -241,7 +249,7 @@ pub fn start(req: &StartRequest, tools: &Tools<'_>) -> Result<StartReport> {
                     out.stderr_lossy().trim()
                 )));
             }
-            return start_fresh(req, tools, &tmux, name, Some(old));
+            return start_fresh(req, tools, &tmux, name, ctx, ssh, Some(old));
         }
         let context = dir
             .as_ref()
@@ -259,18 +267,21 @@ pub fn start(req: &StartRequest, tools: &Tools<'_>) -> Result<StartReport> {
         });
     }
 
-    start_fresh(req, tools, &tmux, name, None)
+    let (ctx, ssh) = preflight(req, tools)?;
+    start_fresh(req, tools, &tmux, name, ctx, ssh, None)
 }
 
-/// Create the session and have the controller start it. `replaced` is the
-/// root of the session this one is taking over from, when there was one.
-fn start_fresh(
-    req: &StartRequest,
-    tools: &Tools<'_>,
-    _tmux: &tmux::Tmux,
-    name: String,
-    replaced: Option<PathBuf>,
-) -> Result<StartReport> {
+/// Everything that has to be true before a session can be built, checked
+/// before anything is created *or destroyed*.
+///
+/// Order matters twice over. The controller is local and costs nothing,
+/// so it goes first: no point spending a network round trip to find out
+/// the LaunchAgent is not installed. And both of them come before the
+/// `tmux kill` that replaces a stale session, because a handshake failing
+/// afterwards would mean somebody's Claude was ended and not replaced,
+/// for a reason -- a link that blinked, a version that does not match --
+/// that has nothing to do with the session they just lost.
+fn preflight(req: &StartRequest, tools: &Tools<'_>) -> Result<(controller::Context, Ssh)> {
     let ctx = controller::context(&tools.controller)?;
     if !ctx.login_session() {
         return Err(Error::new(
@@ -283,6 +294,20 @@ fn start_fresh(
     }
     let ssh = Ssh::new(&req.home_alias, &tools.control_dir)?.with_ccnm_bin(&req.home_ccnm_bin);
     greet(&ssh, &req.workspace, &req.root, tools)?;
+    Ok((ctx, ssh))
+}
+
+/// Create the session and have the controller start it. `replaced` is the
+/// root of the session this one is taking over from, when there was one.
+fn start_fresh(
+    req: &StartRequest,
+    tools: &Tools<'_>,
+    _tmux: &tmux::Tmux,
+    name: String,
+    ctx: controller::Context,
+    ssh: Ssh,
+    replaced: Option<PathBuf>,
+) -> Result<StartReport> {
     let cwd = paths::workspace_dir(&tools.state, &req.workspace);
     std::fs::create_dir_all(&cwd)?;
     let spec = Spec {
@@ -1008,6 +1033,69 @@ mod tests {
         assert!(err.message().contains(crate::VERSION), "{err}");
     }
 
+    /// A running session must not be destroyed by a check that can fail
+    /// for reasons of its own. The handshake talks to the other machine;
+    /// if it ran after the kill, a link that blinked would end somebody's
+    /// Claude, fail to start its replacement, and hand back an error
+    /// about version numbers to a person who has just lost their
+    /// conversation.
+    #[test]
+    fn a_stale_session_is_not_killed_until_the_handshake_has_passed() {
+        let dir = temp("stale-greet");
+        let socket = PathBuf::from(format!("/tmp/ccnm-sg-{}.sock", std::process::id()));
+        let _ = std::fs::remove_file(&socket);
+        let id = "5f1e2d3c-4b5a-6978-8a9b-0c1d2e3f4a5b";
+        let sdir = session::Dir::at(paths::session_dir(&dir, id));
+        std::fs::create_dir_all(sdir.path()).unwrap();
+        let spec = Spec {
+            protocol: PROTOCOL,
+            id: id.into(),
+            workspace: "xshun".into(),
+            root: PathBuf::from("/Users/bing/somewhere-else"),
+            home_alias: "home".into(),
+            home_ccnm_bin: "ccnm".into(),
+            claude_config_dir: None,
+            permission_mode: crate::config::PermissionMode::default(),
+            mode: Mode::Interactive { prompt: None },
+            timeout_secs: 0,
+            cwd: dir.clone(),
+        };
+        std::fs::write(sdir.meta(), serde_json::to_string(&spec).unwrap()).unwrap();
+
+        // A controller that answers, so the preflight gets past it and
+        // the failure under test really is the handshake.
+        let listener = crate::controller::Listener::bind(&socket).unwrap();
+        let served = std::thread::spawn(move || {
+            let inner = FakeRunner::new();
+            inner.push(Output::exited(0, "Aqua\n"));
+            let tools = crate::controller::Tools {
+                runner: &inner,
+                claude: None,
+                tmux: None,
+                exe: PathBuf::from("/nonexistent"),
+            };
+            listener.serve_one(&tools).unwrap();
+        });
+
+        let fake = FakeRunner::new();
+        fake.push(Output::exited(0, "")); // has-session: live
+        fake.push(Output::exited(0, format!("CCNM_SESSION={id}\n")));
+        fake.push(Output::exited(255, "")); // the handshake: link is down
+
+        let mut tools = tmux_tools(&fake, &dir, "stale-greet");
+        tools.controller = socket.clone();
+        let err = start(&start_request(), &tools).expect_err("the handshake failed");
+        served.join().unwrap();
+        let _ = std::fs::remove_file(&socket);
+
+        assert_eq!(err.code(), ErrorCode::HomeUnreachable, "{err}");
+        let ran: Vec<String> = fake.calls().iter().map(|cmd| cmd.display()).collect();
+        assert!(
+            !ran.iter().any(|line| line.contains("kill-session")),
+            "a failed handshake must not have ended the session: {ran:?}"
+        );
+    }
+
     /// The handshake is the first thing on the session path to use a
     /// ControlPath at all: the MCP transport sets `ControlPath=none`. A
     /// state directory too long for macOS's 104-byte sun_path therefore
@@ -1169,18 +1257,22 @@ mod tests {
         let fake = FakeRunner::new();
         fake.push(Output::exited(0, "")); // has-session: live
         fake.push(Output::exited(0, format!("CCNM_SESSION={id}\n")));
-        fake.push(Output::exited(0, "")); // kill-session: the stale one
 
         // The request says somewhere else -- the project was moved.
         let mut req = start_request();
         req.root = PathBuf::from("/Users/bing/moved/xshun");
-        // Without a controller the *new* session cannot be started, which
-        // is as far as this needs to go: what matters is that the stale
-        // one was ended rather than handed back.
+        // No controller, so the preflight fails. The stale session is
+        // still running afterwards: nothing is torn down until a
+        // replacement is known to be possible. This used to kill first
+        // and discover the problem second, which cost the person their
+        // conversation and gave them an unrelated error for it.
         let err = start(&req, &tmux_tools(&fake, &dir, "moved-root")).unwrap_err();
         assert_eq!(err.code(), ErrorCode::NotReady, "{err}");
-        let killed = fake.calls()[2].display();
-        assert!(killed.contains("kill-session -t ccnm-xshun"), "{killed}");
+        let ran: Vec<String> = fake.calls().iter().map(|cmd| cmd.display()).collect();
+        assert!(
+            !ran.iter().any(|line| line.contains("kill-session")),
+            "nothing may be killed before the preflight passes: {ran:?}"
+        );
     }
 
     /// The same rule print mode has, and for the same reason: a Claude

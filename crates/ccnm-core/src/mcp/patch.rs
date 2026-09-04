@@ -557,9 +557,15 @@ fn apply_edits(text: &str, edits: &[Edit], rel: &str) -> Result<(String, u32)> {
 /// overlapping text.
 fn apply_by_position(text: &str, edits: &[Edit]) -> Option<(String, u32)> {
     let crlf = text.contains("\r\n");
-    // (start, end, replacement) for every occurrence every edit claims.
-    let mut spans: Vec<(usize, usize, String)> = Vec::new();
-    for edit in edits {
+    // The replacement text per edit, translated once. Spans point at it by
+    // index rather than carrying a copy: `replace_all` on a tab-indented
+    // file produces one span per tab, and cloning a four-byte string
+    // 400,000 times is 400,000 allocations for nothing.
+    let mut replacements: Vec<String> = Vec::with_capacity(edits.len());
+    // (start, end, which replacement) for every occurrence every edit
+    // claims.
+    let mut spans: Vec<(usize, usize, usize)> = Vec::new();
+    for (index, edit) in edits.iter().enumerate() {
         if edit.old.is_empty() {
             return None;
         }
@@ -572,8 +578,9 @@ fn apply_by_position(text: &str, edits: &[Edit]) -> Option<(String, u32)> {
             // Ambiguous. Ordered application says so, with its own wording.
             (_, false) => return None,
         }
+        replacements.push(new);
         for at in found {
-            spans.push((at, at + old.len(), new.clone()));
+            spans.push((at, at + old.len(), index));
         }
     }
     spans.sort_by_key(|(start, _, _)| *start);
@@ -583,11 +590,24 @@ fn apply_by_position(text: &str, edits: &[Edit]) -> Option<(String, u32)> {
     if spans.windows(2).any(|w| w[0].1 > w[1].0) {
         return None;
     }
-    // Back to front, so the offsets still ahead are unaffected.
-    let mut out = text.to_string();
-    for (start, end, new) in spans.iter().rev() {
-        out.replace_range(start..end, new);
+    // One forward pass, copying the gaps between spans.
+    //
+    // The obvious version of this -- walk the spans backwards calling
+    // `String::replace_range` -- is quadratic, and not subtly: every call
+    // whose replacement is a different length memmoves the entire tail of
+    // the file. One ordinary `replace_all` of tabs to spaces on an 8 MiB
+    // source file measured **28.5 seconds** that way, against 4 ms for the
+    // sequential path it was supposed to improve on, and the ratio grows
+    // with size. This is the success path, and it had no upper bound at
+    // all.
+    let mut out = String::with_capacity(text.len());
+    let mut cursor = 0;
+    for (start, end, index) in &spans {
+        out.push_str(&text[cursor..*start]);
+        out.push_str(&replacements[*index]);
+        cursor = *end;
     }
+    out.push_str(&text[cursor..]);
     Some((out, edits.len() as u32))
 }
 
@@ -1037,21 +1057,31 @@ impl Journal {
             if fresh {
                 continue;
             }
-            // A journal that cannot be read is still evidence that a
-            // patch was interrupted; the whole point of this file is that
-            // an inconsistency is never silent, so an unreadable one says
-            // so rather than being skipped.
-            let record = match std::fs::read(&path)
+            // A journal that cannot be read describes a commit that never
+            // began.
+            //
+            // `Journal::open` creates the file, writes it, fsyncs it, and
+            // only then returns -- and `commit` does not start until it
+            // has. So a truncated or empty journal means the process died
+            // before the first rename, which is the one case where
+            // nothing is inconsistent and there is nothing to report.
+            //
+            // An earlier version refused instead, on "an unreadable
+            // journal is still evidence". It was the wrong way round, and
+            // expensively so: the refusal was worded before the workspace
+            // was compared, so one zero-byte file -- left by exactly the
+            // power cut this feature exists for -- permanently blocked
+            // `apply_patch` in *every* workspace until somebody deleted
+            // it by hand.
+            let Some(record) = std::fs::read(&path)
                 .ok()
                 .and_then(|body| serde_json::from_slice::<JournalFile>(&body).ok())
-            {
-                Some(record) => record,
-                None => {
-                    return Err(Error::internal(format!(
-                        "{} records an apply_patch that was interrupted, and cannot be read to say which files it was changing.\ncheck the workspace with git status before changing anything else, then delete it.",
-                        path.display()
-                    )));
-                }
+            else {
+                tracing::warn!(
+                    journal = %path.display(),
+                    "unreadable patch journal; its commit never started, ignoring it"
+                );
+                continue;
             };
             // Another project's interrupted commit says nothing about
             // this project's files.
@@ -1977,6 +2007,33 @@ mod tests {
         assert!(err.message().contains("appears twice"), "{err}");
     }
 
+    /// Converting tabs to spaces on a big file is an ordinary thing to
+    /// ask for, and it is the shape that made the first version of
+    /// `apply_by_position` quadratic: one span per tab, each
+    /// `replace_range` memmoving the rest of the file. Measured at
+    /// **28.5 seconds** on 8 MiB, against 4 ms for the sequential path it
+    /// was meant to improve on. This is the success path, so nothing else
+    /// would ever have flagged it.
+    #[test]
+    fn replace_all_across_a_big_file_is_linear() {
+        // 2 MiB of tab-indented source, 100k tabs.
+        let text = "\tx = 1\n".repeat(300_000);
+        let edits = [Edit {
+            old: "\t".into(),
+            new: "    ".into(),
+            replace_all: Some(true),
+        }];
+        let started = std::time::Instant::now();
+        let (out, applied) = apply_edits(&text, &edits, "big.py").unwrap();
+        let took = started.elapsed();
+        assert_eq!(applied, 1);
+        assert_eq!(out, "    x = 1\n".repeat(300_000));
+        assert!(
+            took < Duration::from_secs(2),
+            "{took:?} for one replace_all; this path is linear or it is a hang"
+        );
+    }
+
     /// Swapping two things is the smallest case sequential application
     /// cannot do. Applied in order, the first edit makes a second copy of
     /// what the second edit is looking for, and the second edit is then
@@ -2690,23 +2747,35 @@ mod tests {
         assert!(elsewhere.exists());
     }
 
-    /// A journal that cannot be parsed is still evidence that a patch was
-    /// interrupted. Skipping it would be the one thing this whole
-    /// mechanism exists to prevent: an inconsistency nobody mentions.
+    /// A journal that cannot be parsed describes a commit that never
+    /// began: `Journal::open` fsyncs before it returns, and `commit` does
+    /// not start until it has. So it must not block anything -- and it
+    /// especially must not block every *other* workspace, which is what
+    /// the first version did, because it refused before comparing roots.
+    /// A zero-byte journal is what a power cut during `Journal::open`
+    /// leaves, so this is the feature's own failure mode locking the
+    /// feature out.
     #[test]
-    fn a_journal_that_cannot_be_read_is_still_reported() {
+    fn an_unreadable_journal_blocks_nothing() {
         let root = workspace("journal-corrupt");
         let journals = root.join("../journal-corrupt-state");
         let _ = fs::remove_dir_all(&journals);
         fs::create_dir_all(&journals).unwrap();
-        let broken = journals.join("55-truncated.json");
-        fs::write(&broken, b"{\"pid\": 55, \"files\": [{\"op\"").unwrap();
-        let file = fs::File::options().write(true).open(&broken).unwrap();
-        file.set_modified(std::time::SystemTime::now() - Duration::from_secs(3600))
-            .unwrap();
-        drop(file);
+        for (name, body) in [
+            ("55-zerobyte.json", b"".as_slice()),
+            (
+                "56-truncated.json",
+                b"{\"pid\": 55, \"files\": [{\"op\"".as_slice(),
+            ),
+        ] {
+            let path = journals.join(name);
+            fs::write(&path, body).unwrap();
+            let file = fs::File::options().write(true).open(&path).unwrap();
+            file.set_modified(std::time::SystemTime::now() - Duration::from_secs(3600))
+                .unwrap();
+        }
 
-        let err = apply_patch(
+        apply_patch(
             &root,
             Some(&journals),
             &ApplyPatchArgs {
@@ -2719,15 +2788,10 @@ mod tests {
                 dry_run: None,
             },
         )
-        .expect_err("an unreadable journal must not be skipped");
-        assert!(err.message().contains("cannot be read"), "{err}");
-        assert!(
-            err.message().contains(&broken.display().to_string()),
-            "{err}"
-        );
+        .expect("a journal whose commit never started must not block a patch");
         assert_eq!(
             text(&root, "src/main.rs"),
-            "fn main() {\n    let x = 1;\n}\n"
+            "fn main() {\n    let x = 3;\n}\n"
         );
     }
 

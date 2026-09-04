@@ -13,8 +13,8 @@ use crate::protocol::mcp::{ProbeReport, ServePayload};
 use crate::protocol::payload;
 use crate::protocol::probe::{ProbeReport as WorkProbeReport, ProbeRequest};
 use crate::protocol::run::{
-    AttachRequest, ResultReport, ResultRequest, RunReport, RunRequest, StartReport, StartRequest,
-    StatusReport, StatusRequest, StopReport, StopRequest,
+    AttachRequest, PurgeReport, PurgeRequest, ResultReport, ResultRequest, RunReport, RunRequest,
+    StartReport, StartRequest, StatusReport, StatusRequest, StopReport, StopRequest,
 };
 use crate::ssh::{Master, Ssh};
 
@@ -159,6 +159,38 @@ pub fn result(
         Duration::from_secs(60),
         ErrorCode::WorkUnreachable,
     )
+}
+
+/// Delete what ccnm kept for a workspace, on both machines.
+///
+/// The work machine knows which sessions belonged to it; this machine
+/// holds the other half of those same sessions (what `exec_command`
+/// printed). Neither half is the project.
+pub fn purge(resolved: &Resolved<'_>, env: &Env<'_>) -> Result<PurgeReport> {
+    let ssh = work_ssh(resolved, env)?;
+    let req = PurgeRequest {
+        protocol: PROTOCOL,
+        workspace: resolved.name.to_string(),
+    };
+    let mut report: PurgeReport = ssh.call_ccnm(
+        env.runner,
+        Master::Reuse,
+        &["internal", "work-purge"],
+        &req,
+        Duration::from_secs(60),
+        ErrorCode::WorkUnreachable,
+    )?;
+
+    // This machine's half: the retained output of those same sessions.
+    if let Ok(state) = crate::paths::state_dir() {
+        for id in &report.sessions {
+            let dir = crate::paths::session_dir(&state, id);
+            if dir.is_dir() && std::fs::remove_dir_all(&dir).is_ok() {
+                report.removed.push(dir.display().to_string());
+            }
+        }
+    }
+    Ok(report)
 }
 
 pub fn status(resolved: &Resolved<'_>, env: &Env<'_>, all: bool) -> Result<StatusReport> {

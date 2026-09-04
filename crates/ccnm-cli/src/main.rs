@@ -13,11 +13,12 @@ use ccnm_core::protocol::mcp::ServePayload;
 use ccnm_core::protocol::payload;
 use ccnm_core::protocol::probe::ProbeRequest;
 use ccnm_core::protocol::run::{
-    AttachRequest, ResultRequest, RunReport, RunRequest, StartRequest, StatusRequest, StopRequest,
+    AttachRequest, PurgeRequest, ResultRequest, RunReport, RunRequest, StartRequest, StatusRequest,
+    StopRequest,
 };
 use ccnm_core::{
-    Config, Result, claude, controller, doctor, launchagent, launcher, mcp, paths, safety, session,
-    tmux, work,
+    Config, Result, claude, configedit, controller, doctor, launchagent, launcher, mcp, paths,
+    safety, session, tmux, work,
 };
 
 /// Terminal-native remote workspace runtime for Claude Code.
@@ -38,6 +39,23 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Write the config: which ssh alias reaches the work machine, and
+    /// which one reaches back here. Safe to run again
+    Init {
+        /// This machine's ssh alias for the work machine (the one running
+        /// Claude Code)
+        #[arg(long, value_name = "ALIAS")]
+        work: String,
+        /// The work machine's ssh alias for this machine (the one holding
+        /// the projects)
+        #[arg(long, value_name = "ALIAS")]
+        home: String,
+    },
+    /// Add, list and remove workspaces without editing the config by hand
+    Workspace {
+        #[command(subcommand)]
+        command: WorkspaceCommand,
+    },
     /// Check that this machine and a workspace are ready to use (read-only,
     /// never changes anything)
     Doctor {
@@ -106,6 +124,34 @@ enum Command {
     Internal {
         #[command(subcommand)]
         command: InternalCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum WorkspaceCommand {
+    /// Point a name at a project directory on this machine
+    Add {
+        /// What to call it; this is the name every other command takes
+        name: String,
+        /// The project directory. Defaults to the current one
+        path: Option<PathBuf>,
+        /// Let exec_command run without a confined runtime account (see
+        /// docs/production-safety.md)
+        #[arg(long)]
+        allow_unconfined_exec: bool,
+        /// What Claude may do without asking
+        #[arg(long, value_name = "MODE")]
+        permission_mode: Option<String>,
+    },
+    /// Every workspace in the config, and whether its directory is here
+    List,
+    /// Forget a workspace. Ends its session first if one is running
+    Remove {
+        name: String,
+        /// Also delete what ccnm kept for it on the work machine
+        /// (session records and its Claude working directory)
+        #[arg(long)]
+        purge: bool,
     },
 }
 
@@ -194,6 +240,11 @@ enum InternalCommand {
         #[arg(long)]
         payload: String,
     },
+    /// Work-side deletion of a workspace's session records
+    WorkPurge {
+        #[arg(long)]
+        payload: String,
+    },
     /// Be Claude's parent for one session; started by the controller
     Supervise {
         #[arg(long)]
@@ -208,7 +259,7 @@ enum InternalCommand {
 }
 
 fn main() -> ExitCode {
-    let cli = Cli::parse();
+    let cli = Cli::parse_from(with_default_subcommand(std::env::args_os().collect()));
     init_logging(cli.verbose);
     match run(cli) {
         Ok(code) => exit_code(code),
@@ -217,6 +268,38 @@ fn main() -> ExitCode {
             exit_code(err.exit_code())
         }
     }
+}
+
+/// `ccnm xshun` means `ccnm run xshun`.
+///
+/// Attaching to a workspace is the thing people do all day; the other
+/// subcommands are for setting it up and looking at it. Making the common
+/// one the default costs one word each time and reads like `ssh <host>`.
+///
+/// The rule is deliberately narrow: only when the first argument is a
+/// plain word that is not a subcommand. Anything starting with `-` is left
+/// alone, because a global flag can take a value (`--config FILE`) and
+/// guessing which word is the workspace after that is how a CLI starts
+/// doing something other than what was typed.
+fn with_default_subcommand(args: Vec<std::ffi::OsString>) -> Vec<std::ffi::OsString> {
+    use clap::CommandFactory as _;
+    let Some(first) = args.get(1).and_then(|a| a.to_str()) else {
+        return args;
+    };
+    if first.starts_with('-') {
+        return args;
+    }
+    let command = Cli::command();
+    let known = command
+        .get_subcommands()
+        .any(|sub| sub.get_name() == first || sub.get_all_aliases().any(|alias| alias == first))
+        || first == "help";
+    if known {
+        return args;
+    }
+    let mut args = args;
+    args.insert(1, std::ffi::OsString::from("run"));
+    args
 }
 
 fn run(cli: Cli) -> Result<i32> {
@@ -228,6 +311,8 @@ fn run(cli: Cli) -> Result<i32> {
     };
 
     match &cli.command {
+        Command::Init { work, home } => init(&config_path()?, work, home),
+        Command::Workspace { command } => workspace_command(&config_path()?, command),
         Command::Doctor { workspace } => {
             let env = doctor::Env {
                 runner: &SystemRunner,
@@ -396,7 +481,185 @@ fn run(cli: Cli) -> Result<i32> {
                 let req: ResultRequest = payload::decode(payload)?;
                 print_json(&work::result(&req, &work_tools()?)?)
             }
+            InternalCommand::WorkPurge { payload } => {
+                let req: PurgeRequest = payload::decode(payload)?;
+                print_json(&work::purge(&req, &work_tools()?))
+            }
         },
+    }
+}
+
+/// `ccnm init`: the two ssh aliases, written to the config.
+///
+/// Everything else has a default. Running it again is not an error and
+/// not a rewrite: it reports what it changed, or that there was nothing
+/// to change.
+fn init(path: &std::path::Path, work: &str, home: &str) -> Result<i32> {
+    let mut edit = configedit::Edit::open(path)?;
+    let existed = edit.existed();
+    let mut changes = configedit::Changes::default();
+    edit.set_host("work", "ssh", work, &mut changes);
+    edit.set_host("home", "ssh_from_work", home, &mut changes);
+    edit.save(&changes)?;
+
+    if !existed {
+        println!("wrote {}", path.display());
+    }
+    report_changes(&changes, path);
+    if !existed || changes.lines().iter().any(|l| l.contains("workspaces")) {
+        println!();
+    }
+    let config = Config::load(path)?;
+    if config.workspaces.is_empty() {
+        println!("next: cd to a project on this machine and run");
+        println!("  ccnm workspace add <name>");
+    }
+    // ssh has to work before anything else can; say so plainly rather than
+    // testing it here, where a slow or absent network would turn `init`
+    // into something that hangs.
+    println!("\nboth of these must work without a password:");
+    println!("  ssh {work} true");
+    println!("  ssh {work} 'ssh {home} true'");
+    Ok(0)
+}
+
+fn workspace_command(path: &std::path::Path, command: &WorkspaceCommand) -> Result<i32> {
+    match command {
+        WorkspaceCommand::Add {
+            name,
+            path: root,
+            allow_unconfined_exec,
+            permission_mode,
+        } => {
+            let root = match root {
+                Some(path) => path.clone(),
+                None => std::env::current_dir()?,
+            };
+            // Canonical, because a workspace root is compared against what
+            // a running session was started with, and `.`, `~/x/../x` and
+            // a symlinked path are all the same directory with three
+            // different spellings.
+            let root = root.canonicalize().map_err(|e| {
+                ccnm_core::Error::new(
+                    ccnm_core::ErrorCode::WrongWorkspace,
+                    format!("{} is not a directory on this machine", root.display()),
+                )
+                .with_source(e)
+            })?;
+            let mode = permission_mode
+                .as_deref()
+                .map(parse_permission_mode)
+                .transpose()?;
+            let mut edit = configedit::Edit::open(path)?;
+            let mut changes = configedit::Changes::default();
+            edit.set_workspace(
+                name,
+                &root,
+                "work",
+                mode,
+                allow_unconfined_exec.then_some(true),
+                &mut changes,
+            );
+            edit.save(&changes).map_err(|e| {
+                if edit.existed() {
+                    e
+                } else {
+                    ccnm_core::Error::config(format!(
+                        "there is no config yet, so a workspace has nowhere to go\nrun this first: ccnm init --work <alias> --home <alias>\n({})",
+                        e.message()
+                    ))
+                }
+            })?;
+            report_changes(&changes, path);
+            println!("\ncheck it: ccnm doctor {name}");
+            println!("use it:   ccnm {name}");
+            Ok(0)
+        }
+        WorkspaceCommand::List => {
+            let config = Config::load(path)?;
+            if config.workspaces.is_empty() {
+                println!("no workspaces in {}", path.display());
+                println!("add one: cd to a project and run `ccnm workspace add <name>`");
+                return Ok(0);
+            }
+            for (name, workspace) in &config.workspaces {
+                let here = if workspace.root.is_dir() {
+                    ""
+                } else {
+                    "   (not on this machine)"
+                };
+                println!("{name}  {}{here}", workspace.root.display());
+            }
+            Ok(0)
+        }
+        WorkspaceCommand::Remove { name, purge } => remove_workspace(path, name, *purge),
+    }
+}
+
+/// Forget a workspace, after ending anything of it that is still running.
+///
+/// Ending the session first is not optional: a session outlives the
+/// config, so a workspace removed while one is up would leave a Claude
+/// running against a project nothing points at any more, and no command
+/// left that names it.
+fn remove_workspace(path: &std::path::Path, name: &str, purge: bool) -> Result<i32> {
+    // Best effort, and in this order: the session belongs to the config
+    // entry that is about to go.
+    if let Ok(config) = Config::load(path)
+        && let Ok(resolved) = config.workspace(name)
+    {
+        match launcher::stop(&resolved, &home_env()?) {
+            Ok(rep) if rep.killed => println!("stopped {}", rep.tmux_session),
+            Ok(_) => {}
+            Err(e) => eprintln!("could not reach the work machine to stop it: {e}"),
+        }
+        if purge {
+            match launcher::purge(&resolved, &home_env()?) {
+                Ok(rep) => {
+                    for line in rep.removed {
+                        println!("removed {line}");
+                    }
+                }
+                Err(e) => eprintln!("could not clean up on the work machine: {e}"),
+            }
+        }
+    }
+
+    let mut edit = configedit::Edit::open(path)?;
+    let mut changes = configedit::Changes::default();
+    if !edit.remove_workspace(name, &mut changes) {
+        println!("{name} is not in {}", path.display());
+        return Ok(0);
+    }
+    edit.save(&changes)?;
+    report_changes(&changes, path);
+    Ok(0)
+}
+
+fn parse_permission_mode(raw: &str) -> Result<ccnm_core::config::PermissionMode> {
+    use ccnm_core::config::PermissionMode as M;
+    // Spelled the way Claude Code spells them, and the way they appear in
+    // the config file, so there is one spelling to remember.
+    match raw {
+        "acceptEdits" => Ok(M::AcceptEdits),
+        "auto" => Ok(M::Auto),
+        "bypassPermissions" => Ok(M::BypassPermissions),
+        "manual" => Ok(M::Manual),
+        "dontAsk" => Ok(M::DontAsk),
+        "plan" => Ok(M::Plan),
+        _ => Err(ccnm_core::Error::invalid_args(format!(
+            "unknown permission mode {raw}; one of acceptEdits, auto, bypassPermissions, manual, dontAsk, plan"
+        ))),
+    }
+}
+
+fn report_changes(changes: &configedit::Changes, path: &std::path::Path) {
+    if changes.is_empty() {
+        println!("{} already says that", path.display());
+        return;
+    }
+    for line in changes.lines() {
+        println!("{line}");
     }
 }
 

@@ -123,6 +123,11 @@ pub struct StartReport {
     /// running. Not an error: `ccnm run` on a live workspace means "put me
     /// back in it", not "start a second Claude on the same project".
     pub already_running: bool,
+    /// The root of the session this one replaced, when starting meant
+    /// ending one that was working somewhere the workspace no longer
+    /// points at.
+    #[serde(default)]
+    pub replaced: Option<PathBuf>,
     /// The controller, when this call went through it. `None` when the
     /// session was already up, since nothing needed starting.
     #[serde(default)]
@@ -151,6 +156,12 @@ impl StartReport {
             "session   {} ({what}, tmux server pid {})",
             self.tmux_session, self.server_pid
         )];
+        if let Some(old) = &self.replaced {
+            lines.push(format!(
+                "replaced  a session working in {} -- this workspace does not point there any more",
+                old.display()
+            ));
+        }
         if let Some(id) = &self.session {
             lines.push(format!("id        {id}"));
         }
@@ -264,6 +275,41 @@ impl ResultReport {
             lines.push(format!("run       {}", r.summary()));
         }
         lines.join("\n")
+    }
+}
+
+/// `ccnm internal work-purge`: delete what ccnm kept for a workspace.
+///
+/// Only ccnm's own bookkeeping -- the session records and the directory
+/// Claude ran in. **Never the project**: that is the one thing on either
+/// machine ccnm did not create, and a cleanup command that could delete
+/// someone's source tree is not a cleanup command.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PurgeRequest {
+    pub protocol: u32,
+    pub workspace: String,
+}
+
+impl Protocol for PurgeRequest {
+    fn protocol(&self) -> u32 {
+        self.protocol
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PurgeReport {
+    pub protocol: u32,
+    /// What was deleted, as paths, for the caller to print.
+    pub removed: Vec<String>,
+    /// The session ids that were removed, so the other machine can clear
+    /// its half of the same sessions.
+    #[serde(default)]
+    pub sessions: Vec<String>,
+}
+
+impl Protocol for PurgeReport {
+    fn protocol(&self) -> u32 {
+        self.protocol
     }
 }
 

@@ -379,6 +379,127 @@ fn verbose_logs_go_to_stderr_not_stdout() {
     assert!(!stdout(&out).contains("loading config"));
 }
 
+/// The setup path someone new actually walks: two commands, no TOML by
+/// hand, and running either of them twice is not a mistake.
+#[test]
+fn init_and_workspace_add_write_a_config_that_loads() {
+    let dir = std::env::temp_dir().join(format!("ccnm-cli-init-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let project = dir.join("myproj");
+    std::fs::create_dir_all(&project).unwrap();
+    let config = dir.join("config.toml");
+
+    let init = || {
+        ccnm()
+            .args([
+                "init",
+                "--work",
+                "work-alias",
+                "--home",
+                "home-alias",
+                "--config",
+            ])
+            .arg(&config)
+            .output()
+            .unwrap()
+    };
+    let out = init();
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert!(
+        stdout(&out).contains("hosts.work.ssh = work-alias"),
+        "{}",
+        stdout(&out)
+    );
+
+    let written = std::fs::read_to_string(&config).unwrap();
+    assert!(
+        !written.contains("version"),
+        "nothing writes a schema version any more: {written}"
+    );
+
+    // Again: nothing to change, and it says so instead of rewriting.
+    let out = init();
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert!(
+        stdout(&out).contains("already says that"),
+        "{}",
+        stdout(&out)
+    );
+    assert_eq!(std::fs::read_to_string(&config).unwrap(), written);
+
+    // The workspace defaults to the directory you are standing in.
+    let out = ccnm()
+        .current_dir(&project)
+        .args(["workspace", "add", "myproj", "--config"])
+        .arg(&config)
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert!(
+        stdout(&out).contains("added workspaces.myproj"),
+        "{}",
+        stdout(&out)
+    );
+
+    let out = ccnm()
+        .args(["workspace", "list", "--config"])
+        .arg(&config)
+        .output()
+        .unwrap();
+    assert!(stdout(&out).contains("myproj"), "{}", stdout(&out));
+
+    // And the config the whole rest of the program reads is valid.
+    let out = ccnm()
+        .args(["doctor", "myproj", "--config"])
+        .arg(&config)
+        .output()
+        .unwrap();
+    let text = stdout(&out);
+    assert!(text.contains("Workspace config        OK"), "{text}");
+    assert!(text.contains("Home workspace          OK"), "{text}");
+}
+
+/// A workspace has nowhere to go before there is a config, and the error
+/// says the command that makes one rather than the schema rule it broke.
+#[test]
+fn adding_a_workspace_before_init_says_to_init() {
+    let dir = std::env::temp_dir().join(format!("ccnm-cli-noinit-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let out = ccnm()
+        .current_dir(&dir)
+        .args(["workspace", "add", "x", "--config"])
+        .arg(dir.join("config.toml"))
+        .output()
+        .unwrap();
+    assert_ne!(out.status.code(), Some(0));
+    assert!(stderr(&out).contains("ccnm init"), "{}", stderr(&out));
+}
+
+/// `ccnm <workspace>` is `ccnm run <workspace>`: the thing people do all
+/// day should not need the word.
+#[test]
+fn a_bare_workspace_name_means_run() {
+    let out = ccnm()
+        .args(["not-a-workspace", "--config"])
+        .arg(fixture("config-valid.toml"))
+        .output()
+        .unwrap();
+    let err = stderr(&out);
+    assert!(
+        !err.contains("unrecognized subcommand"),
+        "it must reach `run`, not clap: {err}"
+    );
+    assert!(err.contains("not defined"), "{err}");
+    // A real subcommand still wins over a workspace of the same name.
+    let out = ccnm().arg("status").output().unwrap();
+    assert!(
+        stderr(&out).contains("required") || stderr(&out).contains("Usage"),
+        "{}",
+        stderr(&out)
+    );
+}
+
 /// Interactive and print mode share the local preflight, and it is the
 /// first thing either does: the project has to be on this machine, because
 /// this machine is the one that will serve it.

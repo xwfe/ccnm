@@ -23,8 +23,8 @@ use crate::protocol::mcp::{ProbeReport as McpProbeReport, ServePayload};
 use crate::protocol::payload;
 use crate::protocol::probe::{ProbeReport, ProbeRequest};
 use crate::protocol::run::{
-    AttachRequest, ResultReport, ResultRequest, RunReport, RunRequest, StartReport, StartRequest,
-    StatusReport, StatusRequest, StopReport, StopRequest,
+    AttachRequest, PurgeReport, PurgeRequest, ResultReport, ResultRequest, RunReport, RunRequest,
+    StartReport, StartRequest, StatusReport, StatusRequest, StopReport, StopRequest,
 };
 use crate::protocol::{self};
 use crate::session::{self, Mode, Spec};
@@ -150,28 +150,38 @@ pub fn start(req: &StartRequest, tools: &Tools<'_>) -> Result<StartReport> {
             .map(|id| paths::session_dir(&tools.state, id));
         // A session's root is fixed when it starts: it is in the payload
         // the MCP transport was spawned with, and nothing can repoint it.
-        // So a live session whose root is not the one being asked for is a
-        // session that will do its work somewhere else -- and if the old
-        // path has since been moved away, one where every tool fails for
-        // reasons that sound like something else. Refuse and say both
-        // paths; the person reading this is the one who moved it.
-        if let Some(live) = dir
+        // So a live session whose root is not the one being asked for is
+        // working somewhere the config no longer names -- and if that path
+        // has since been moved away, one where every tool fails for
+        // reasons that sound like something else.
+        //
+        // The old session is not what was asked for, so it is ended and a
+        // new one started. Not refused: "your session is wrong, fix it
+        // yourself" is a worse answer than doing the obvious thing and
+        // saying so. What it must not do is silently hand back the stale
+        // one, which is how an afternoon disappears.
+        let stale_root = dir
             .as_ref()
             .map(session::Dir::at)
             .and_then(|d| session::load(&d).ok())
-            && live.root != req.root
-        {
-            return Err(Error::new(
-                ErrorCode::WrongWorkspace,
-                format!(
-                    "the running session for {} is working in {}, but this workspace now says {}\na session cannot be repointed; end it and start another:\n  ccnm stop {}\n  ccnm run {}",
+            .map(|spec| spec.root)
+            .filter(|root| root != &req.root);
+        if let Some(old) = stale_root {
+            tracing::info!(
+                old = %old.display(),
+                new = %req.root.display(),
+                "replacing a session bound to a different root"
+            );
+            let out = tools.runner.run(&tmux.kill_cmd(&name))?;
+            if !out.success() {
+                return Err(Error::internal(format!(
+                    "the running session for {} works in {}, which is not this workspace's root any more, and it could not be ended: {}",
                     req.workspace,
-                    live.root.display(),
-                    req.root.display(),
-                    req.workspace,
-                    req.workspace
-                ),
-            ));
+                    old.display(),
+                    out.stderr_lossy().trim()
+                )));
+            }
+            return start_fresh(req, tools, &tmux, name, Some(old));
         }
         let context = dir
             .as_ref()
@@ -183,11 +193,24 @@ pub fn start(req: &StartRequest, tools: &Tools<'_>) -> Result<StartReport> {
             tmux_session: name,
             server_pid: server_pid(&tmux, tools)?,
             already_running: true,
+            replaced: None,
             controller: None,
             context,
         });
     }
 
+    start_fresh(req, tools, &tmux, name, None)
+}
+
+/// Create the session and have the controller start it. `replaced` is the
+/// root of the session this one is taking over from, when there was one.
+fn start_fresh(
+    req: &StartRequest,
+    tools: &Tools<'_>,
+    _tmux: &tmux::Tmux,
+    name: String,
+    replaced: Option<PathBuf>,
+) -> Result<StartReport> {
     let ctx = controller::context(&tools.controller)?;
     if !ctx.login_session() {
         return Err(Error::new(
@@ -226,6 +249,7 @@ pub fn start(req: &StartRequest, tools: &Tools<'_>) -> Result<StartReport> {
         tmux_session: name,
         server_pid,
         already_running: false,
+        replaced,
         controller: Some(ctx),
         // The supervisor writes this from inside tmux a moment from now;
         // `ccnm status` is where it shows up.
@@ -350,6 +374,45 @@ fn live_sessions(
             }
         })
         .collect()
+}
+
+/// Delete ccnm's own bookkeeping for a workspace: the session records and
+/// the directory Claude ran in.
+///
+/// **Never the project.** The root is the one thing here ccnm did not
+/// create, and it is not even looked at. Everything removed is under this
+/// machine's `~/.local/state/ccnm`.
+pub fn purge(req: &PurgeRequest, tools: &Tools<'_>) -> PurgeReport {
+    let mut removed = Vec::new();
+    let mut sessions = Vec::new();
+
+    let dir = paths::sessions_dir(&tools.state);
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            let session_dir = session::Dir::at(entry.path());
+            let Ok(spec) = session::load(&session_dir) else {
+                continue;
+            };
+            if spec.workspace != req.workspace {
+                continue;
+            }
+            if std::fs::remove_dir_all(session_dir.path()).is_ok() {
+                removed.push(session_dir.path().display().to_string());
+                sessions.push(spec.id);
+            }
+        }
+    }
+
+    let workspace_dir = paths::workspace_dir(&tools.state, &req.workspace);
+    if workspace_dir.is_dir() && std::fs::remove_dir_all(&workspace_dir).is_ok() {
+        removed.push(workspace_dir.display().to_string());
+    }
+
+    PurgeReport {
+        protocol: PROTOCOL,
+        removed,
+        sessions,
+    }
 }
 
 /// What a session produced, for a caller that was not there when it
@@ -923,9 +986,11 @@ mod tests {
 
     /// A session's root is fixed when it starts. Being handed back into
     /// one that works somewhere else is how a moved project turns into an
-    /// hour of tools failing for reasons that sound like something else.
+    /// hour of tools failing for reasons that sound like something else --
+    /// so the stale one is ended and a new one started, and the report
+    /// says which root was left behind.
     #[test]
-    fn start_refuses_a_live_session_bound_to_a_different_root() {
+    fn start_replaces_a_live_session_bound_to_a_different_root() {
         let dir = temp("moved-root");
         let id = "0b4c7a1e-2d3f-4a5b-8c6d-7e8f9a0b1c2d";
         let sdir = session::Dir::at(paths::session_dir(&dir, id));
@@ -949,15 +1014,18 @@ mod tests {
         let fake = FakeRunner::new();
         fake.push(Output::exited(0, "")); // has-session: live
         fake.push(Output::exited(0, format!("CCNM_SESSION={id}\n")));
+        fake.push(Output::exited(0, "")); // kill-session: the stale one
 
         // The request says somewhere else -- the project was moved.
         let mut req = start_request();
         req.root = PathBuf::from("/Users/bing/moved/xshun");
+        // Without a controller the *new* session cannot be started, which
+        // is as far as this needs to go: what matters is that the stale
+        // one was ended rather than handed back.
         let err = start(&req, &tmux_tools(&fake, &dir, "moved-root")).unwrap_err();
-        assert_eq!(err.code(), ErrorCode::WrongWorkspace);
-        assert!(err.message().contains("/Users/bing/xshun"), "{err}");
-        assert!(err.message().contains("/Users/bing/moved/xshun"), "{err}");
-        assert!(err.message().contains("ccnm stop xshun"), "{err}");
+        assert_eq!(err.code(), ErrorCode::NotReady, "{err}");
+        let killed = fake.calls()[2].display();
+        assert!(killed.contains("kill-session -t ccnm-xshun"), "{killed}");
     }
 
     /// The same rule print mode has, and for the same reason: a Claude

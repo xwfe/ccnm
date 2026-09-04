@@ -22,6 +22,12 @@ use serde::{Deserialize, Serialize};
 use crate::error::{Error, Result};
 
 /// The only `version = N` this binary understands.
+///
+/// It is no longer written, and no longer required: a config is what its
+/// hosts and workspaces say, and a schema version nobody has ever needed
+/// to bump is a line every reader has to wonder about. Old configs still
+/// have it, so it is still accepted -- and still checked, because a file
+/// that says `version = 2` was written for a ccnm this is not.
 pub const SUPPORTED_VERSION: u32 = 1;
 
 /// `workspaces.<name>.runtime_host` when the file does not say.
@@ -36,7 +42,9 @@ pub const DEFAULT_CCNM_BIN: &str = "~/.local/bin/ccnm";
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
-    pub version: u32,
+    /// Absent in anything ccnm writes now; see [`SUPPORTED_VERSION`].
+    #[serde(default)]
+    pub version: Option<u32>,
     #[serde(default)]
     pub hosts: BTreeMap<String, Host>,
     #[serde(default)]
@@ -274,10 +282,11 @@ impl Config {
     fn validate(&self) -> Result<()> {
         let mut problems = Vec::new();
 
-        if self.version != SUPPORTED_VERSION {
+        if let Some(version) = self.version
+            && version != SUPPORTED_VERSION
+        {
             problems.push(format!(
-                "version = {} is not supported; this ccnm understands version = {SUPPORTED_VERSION}",
-                self.version
+                "version = {version} is not supported; this ccnm understands version = {SUPPORTED_VERSION}, and no longer needs the line at all"
             ));
         }
 
@@ -491,7 +500,7 @@ mod tests {
     #[test]
     fn valid_fixture_parses_with_defaults() {
         let config = Config::load(&fixture("config-valid.toml")).unwrap();
-        assert_eq!(config.version, 1);
+        assert_eq!(config.version, Some(1));
         let r = config.workspace("xshun").unwrap();
         assert_eq!(r.work_ssh, "work");
         assert_eq!(r.home_alias, "ccnm-home");

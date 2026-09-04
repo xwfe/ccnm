@@ -245,6 +245,8 @@ mod tests {
     fn keep_cuts_on_a_line_and_falls_back_to_a_character_boundary() {
         assert_eq!(keep("a\nb\nc\n", 99), "a\nb\nc\n");
         assert_eq!(keep("a\nb\nc\n", 4), "a\nb\n");
+        // The budget lands mid-line: that line goes, whole.
+        assert_eq!(keep("a\nbbbb\n", 4), "a\n");
         // No newline to fall back to: the character boundary is the limit.
         assert_eq!(keep("中中中", 4), "中");
     }

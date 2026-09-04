@@ -347,6 +347,16 @@ fn select(
         if inside.is_empty() {
             continue;
         }
+        // ccnm's own staging files are never part of the project, so they
+        // are hidden even from `include_hidden`. They exist for the length
+        // of one `apply_patch`, or until the next one sweeps up after a
+        // kill; either way nobody should be offered one to read or patch.
+        if inside
+            .split('/')
+            .any(|s| s.starts_with(crate::mcp::patch::TEMP_PREFIX))
+        {
+            continue;
+        }
         if !include_hidden && inside.split('/').any(|s| s.starts_with('.')) {
             continue;
         }
@@ -722,6 +732,25 @@ mod tests {
         assert!(lines(&shown).contains(&".gitignore"), "{}", shown.text);
         // Including hidden entries must not include the git database.
         assert!(!shown.text.contains(".git/"), "{}", shown.text);
+    }
+
+    /// ccnm's own staging files belong to no project and are never shown,
+    /// not even to a caller that asked for hidden entries.
+    #[test]
+    fn a_patch_temp_file_is_never_listed() {
+        let root = workspace("temps", true);
+        fs::write(root.join("src/.ccnm-abcdef123456-main.rs"), "staged\n").unwrap();
+        for include_hidden in [false, true] {
+            let shown = list(
+                &root,
+                &ListFilesArgs {
+                    path: Some("src".into()),
+                    include_hidden: Some(include_hidden),
+                    ..Default::default()
+                },
+            );
+            assert!(!shown.text.contains(".ccnm-"), "{}", shown.text);
+        }
     }
 
     #[test]

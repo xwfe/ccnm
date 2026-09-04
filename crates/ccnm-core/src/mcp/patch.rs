@@ -50,6 +50,7 @@
 use std::collections::BTreeSet;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use rmcp::schemars;
 use serde::{Deserialize, Serialize};
@@ -175,10 +176,12 @@ pub fn apply_patch(root: &Path, args: &ApplyPatchArgs) -> Result<PatchResult> {
     if dry_run {
         return Ok(report(&plan, true, Vec::new()));
     }
+    sweep_stale_temps(&plan);
     let staged = stage(plan)?;
     let versions = commit(staged.as_slice())?;
-    let plan: Vec<Planned> = staged.into_iter().map(|s| s.planned).collect();
-    Ok(report(&plan, false, versions))
+    // Borrowed, not moved: `Staged` owns the cleanup of its temp files, so
+    // it must live until the end of the call rather than be taken apart.
+    Ok(report(staged.iter().map(|s| &s.planned), false, versions))
 }
 
 /// A change worked out in full, with nothing written yet.
@@ -530,6 +533,75 @@ struct Staged {
     created_dirs: Vec<PathBuf>,
 }
 
+/// Temp files are removed when the staging goes out of scope, whatever the
+/// reason it went out of scope.
+///
+/// The explicit paths already cover the ordinary ones: a failed stage
+/// discards, a successful commit renames the new content into place and
+/// unlinks the backups. This is for the rest — an early return added
+/// later, a panic — because the cost of missing one is a `.ccnm-…` file
+/// left in someone's source tree, which `git status` then shows as
+/// untracked and a later `git add -A` can commit.
+///
+/// After a commit the new temp has been renamed away and the backup is
+/// already gone, so both removals are no-ops. Directories are deliberately
+/// *not* touched here: a committed patch's new directories must stay.
+impl Drop for Staged {
+    fn drop(&mut self) {
+        for temp in [&self.new_temp, &self.backup].into_iter().flatten() {
+            let _ = std::fs::remove_file(temp);
+        }
+    }
+}
+
+/// The prefix of every temp file `apply_patch` writes.
+pub const TEMP_PREFIX: &str = ".ccnm-";
+
+/// A temp file this old is not one somebody is still working on.
+const STALE_TEMP: Duration = Duration::from_secs(60 * 60);
+
+/// Remove temp files an earlier run was killed before it could clean up.
+///
+/// The one hole [`Drop`] cannot cover is the process dying without
+/// unwinding: `kill -9`, the ssh transport dropping, the machine losing
+/// power mid-patch. What that leaves is a `.ccnm-…` file beside a real
+/// one, and nothing else would ever remove it.
+///
+/// Only the directories this patch is about to write to are swept, so the
+/// cost is one `read_dir` per directory already being written, not a walk
+/// of the workspace. Only files older than [`STALE_TEMP`] go, so a patch
+/// running concurrently in another session is never robbed of its staging.
+fn sweep_stale_temps(plan: &[Planned]) {
+    let mut swept: BTreeSet<PathBuf> = BTreeSet::new();
+    let dirs = plan
+        .iter()
+        .flat_map(|p| [Some(&p.abs), p.to_abs.as_ref()].into_iter().flatten())
+        .filter_map(|path| path.parent().map(Path::to_path_buf));
+    for dir in dirs {
+        if !swept.insert(dir.clone()) {
+            continue;
+        }
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            if !name.to_string_lossy().starts_with(TEMP_PREFIX) {
+                continue;
+            }
+            let stale = entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .map(|t| t.elapsed().is_ok_and(|age| age > STALE_TEMP))
+                .unwrap_or(false);
+            if stale {
+                tracing::warn!(path = %entry.path().display(), "removing a leftover patch temp file");
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+}
+
 /// Phase two. Everything that can fail for a boring reason — no space, no
 /// permission — fails here, where nothing user-visible has changed yet.
 fn stage(plan: Vec<Planned>) -> Result<Vec<Staged>> {
@@ -549,11 +621,24 @@ fn stage(plan: Vec<Planned>) -> Result<Vec<Staged>> {
 fn stage_one(planned: Planned) -> Result<Staged> {
     let mut created_dirs = Vec::new();
     for dir in &planned.new_dirs {
-        std::fs::create_dir(dir).map_err(|e| {
-            Error::invalid_args(format!("cannot create a directory for {}", planned.rel))
-                .with_source(e)
-        })?;
-        created_dirs.push(dir.clone());
+        match std::fs::create_dir(dir) {
+            Ok(()) => created_dirs.push(dir.clone()),
+            // Another file in this same patch already made it. Two files
+            // into one new directory is an ordinary patch — `add
+            // tests/a.py` and `tests/b.py` with no tests/ yet — and each
+            // was planned before either was staged, so both carry the
+            // directory in their list. It is not recorded as created here:
+            // whoever made it is the one that should remove it if this
+            // patch is rolled back.
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && dir.is_dir() => {}
+            Err(e) => {
+                return Err(Error::invalid_args(format!(
+                    "cannot create a directory for {}",
+                    planned.rel
+                ))
+                .with_source(e));
+            }
+        }
     }
 
     let new_temp = match &planned.new_content {
@@ -591,7 +676,7 @@ fn temp_beside(target: &Path) -> Result<PathBuf> {
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
     let unique = uuid::Uuid::new_v4().simple().to_string();
-    Ok(dir.join(format!(".ccnm-{}-{name}", &unique[..12])))
+    Ok(dir.join(format!("{TEMP_PREFIX}{}-{name}", &unique[..12])))
 }
 
 fn write_atomic_temp(
@@ -619,7 +704,9 @@ fn write_atomic_temp(
     Ok(())
 }
 
-/// Throw away staged work that was never committed.
+/// Throw away staged work that was never committed. The temp files go with
+/// [`Drop`]; what needs saying explicitly is the directories, which a
+/// committed patch has to keep.
 fn discard(staged: &[Staged]) {
     for one in staged {
         for temp in [&one.new_temp, &one.backup].into_iter().flatten() {
@@ -734,9 +821,13 @@ fn rollback(committed: &[Staged]) -> std::result::Result<(), String> {
     }
 }
 
-fn report(plan: &[Planned], dry_run: bool, versions: Vec<Option<String>>) -> PatchResult {
+fn report<'a>(
+    plan: impl IntoIterator<Item = &'a Planned>,
+    dry_run: bool,
+    versions: Vec<Option<String>>,
+) -> PatchResult {
     let files: Vec<FileChange> = plan
-        .iter()
+        .into_iter()
         .enumerate()
         .map(|(index, planned)| FileChange {
             op: planned.op.name().to_string(),
@@ -864,6 +955,143 @@ mod tests {
 
     fn text(root: &Path, path: &str) -> String {
         fs::read_to_string(root.join(path)).unwrap()
+    }
+
+    /// Two new files under one new directory is an ordinary patch, and it
+    /// used to fail: both were planned before either was staged, so both
+    /// carried `tests/` in their list of directories to create and the
+    /// second `create_dir` hit AlreadyExists. Nothing was written and the
+    /// model got "cannot create a directory for tests/b.py".
+    #[test]
+    fn two_new_files_can_share_one_new_directory() {
+        let root = workspace("shared-dir");
+        let add = |path: &str, content: &str| FilePatch {
+            op: Some(Op::Add),
+            path: path.to_string(),
+            content: Some(content.to_string()),
+            ..Default::default()
+        };
+        let out = apply(
+            &root,
+            vec![add("tests/deep/a.py", "a\n"), add("tests/deep/b.py", "b\n")],
+        );
+        assert_eq!(out.files_changed, 2);
+        assert_eq!(text(&root, "tests/deep/a.py"), "a\n");
+        assert_eq!(text(&root, "tests/deep/b.py"), "b\n");
+    }
+
+    /// A patch that fails after its directories exist must not leave them
+    /// behind, and must not remove a directory an earlier file in the same
+    /// patch made and still needs.
+    #[test]
+    fn a_shared_new_directory_is_removed_when_the_patch_fails() {
+        let root = workspace("shared-dir-fail");
+        let add = |path: &str, content: &str| FilePatch {
+            op: Some(Op::Add),
+            path: path.to_string(),
+            content: Some(content.to_string()),
+            ..Default::default()
+        };
+        let err = fails(
+            &root,
+            vec![
+                add("tests/deep/a.py", "a\n"),
+                // Refused in the planning phase: no version.
+                update("src/main.rs", "", "let x = 1;", "let x = 2;"),
+            ],
+        );
+        assert_eq!(err.code(), ErrorCode::StaleEpoch);
+        assert!(!root.join("tests").exists(), "no directory may be left");
+        assert!(!root.join("tests/deep/a.py").exists());
+    }
+
+    /// The one thing a killed patch can leave in someone's source tree is
+    /// a `.ccnm-…` temp file, which `git status` then shows as untracked
+    /// and a later `git add -A` can commit. The next patch in that
+    /// directory clears it out.
+    #[test]
+    fn a_leftover_temp_file_is_swept_by_the_next_patch() {
+        let root = workspace("sweep");
+        let old = root.join("src/.ccnm-deadbeef1234-main.rs");
+        fs::write(&old, "half-written").unwrap();
+        // Two hours old: nobody is still working on it.
+        let long_ago = std::time::SystemTime::now() - Duration::from_secs(2 * 60 * 60);
+        filetime(&old, long_ago);
+        // A fresh one, which could belong to a patch running right now.
+        let fresh = root.join("src/.ccnm-abcdef123456-lib.rs");
+        fs::write(&fresh, "in flight").unwrap();
+
+        let v = version(&root, "src/main.rs");
+        apply(
+            &root,
+            vec![update("src/main.rs", &v, "let x = 1;", "let x = 2;")],
+        );
+        assert!(!old.exists(), "the stale temp must be gone");
+        assert!(fresh.exists(), "a fresh temp may belong to another patch");
+    }
+
+    /// Every temp file is gone when the call returns, however it returned.
+    #[test]
+    fn no_temp_files_survive_a_patch_that_worked_or_one_that_failed() {
+        let root = workspace("no-temps");
+        let v = version(&root, "src/main.rs");
+        apply(
+            &root,
+            vec![update("src/main.rs", &v, "let x = 1;", "let x = 2;")],
+        );
+        assert_eq!(temps(&root.join("src")), Vec::<String>::new());
+
+        // A patch whose second file is refused in planning.
+        let v = version(&root, "src/main.rs");
+        let _ = fails(
+            &root,
+            vec![
+                update("src/main.rs", &v, "let x = 2;", "let x = 3;"),
+                update("src/lib.rs", "stale", "pub fn a() {}", "pub fn c() {}"),
+            ],
+        );
+        assert_eq!(temps(&root.join("src")), Vec::<String>::new());
+        assert_eq!(
+            text(&root, "src/main.rs"),
+            "fn main() {\n    let x = 2;\n}\n"
+        );
+    }
+
+    fn temps(dir: &Path) -> Vec<String> {
+        let mut found: Vec<String> = fs::read_dir(dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with(TEMP_PREFIX))
+            .collect();
+        found.sort();
+        found
+    }
+
+    /// Set a file's modification time, so "old enough to sweep" can be
+    /// tested without waiting an hour.
+    fn filetime(path: &Path, when: std::time::SystemTime) {
+        let secs = when
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let stamp = std::process::Command::new("/usr/bin/touch")
+            .arg("-t")
+            .arg(unix_to_touch(secs))
+            .arg(path)
+            .status()
+            .unwrap();
+        assert!(stamp.success(), "touch failed");
+    }
+
+    /// Unix seconds to touch(1)'s `[[CC]YY]MMDDhhmm[.SS]`, via date(1) so
+    /// this test carries no calendar arithmetic of its own.
+    fn unix_to_touch(secs: u64) -> String {
+        let out = std::process::Command::new("/bin/date")
+            .args(["-r", &secs.to_string(), "+%Y%m%d%H%M.%S"])
+            .output()
+            .unwrap();
+        String::from_utf8(out.stdout).unwrap().trim().to_string()
     }
 
     #[test]

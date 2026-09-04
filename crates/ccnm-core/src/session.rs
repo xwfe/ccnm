@@ -285,11 +285,12 @@ fn pretty<T: Serialize>(value: &T) -> Result<String> {
 /// probe that passes and a session that fails cannot differ in how they
 /// reached the home machine.
 pub fn mcp_config(spec: &Spec, ssh: &Ssh) -> Result<serde_json::Value> {
-    let wire = payload::encode(&ServePayload::new(
-        &spec.workspace,
-        spec.root.clone(),
-        &spec.id,
-    ))?;
+    let wire = payload::encode(
+        &ServePayload::new(&spec.workspace, spec.root.clone(), &spec.id)
+            // Only an interactive session has somebody who can answer a
+            // permission prompt; `--print` runs with prompting off.
+            .with_interactive(matches!(spec.mode, Mode::Interactive { .. })),
+    )?;
     let cmd = ssh.mcp_transport_cmd(&wire)?;
     let args: Vec<String> = cmd
         .args
@@ -666,6 +667,32 @@ mod tests {
         let sent: ServePayload = payload::decode(args.last().unwrap()).unwrap();
         assert_eq!(sent.session, "0b4c7a1e-2d3f-4a5b-8c6d-7e8f9a0b1c2d");
         assert_eq!(sent.root, PathBuf::from("/Users/bing/ccnm-fixture"));
+        // This spec is a --print run, and the far side uses that to decide
+        // whether exec_command may demand a permission prompt. Claude is
+        // started with prompting off here, so a tool that insists on one
+        // is a tool that can never run.
+        assert!(!sent.interactive);
+    }
+
+    /// The other half of the same decision: an interactive session says
+    /// so, which is what puts the permission prompt back on
+    /// `exec_command`. Getting this wrong in either direction is silent
+    /// -- either the prompt never appears, or every command is denied.
+    #[test]
+    fn an_interactive_session_tells_the_far_side_somebody_is_there() {
+        let mut spec = spec();
+        spec.mode = Mode::Interactive { prompt: None };
+        let config = mcp_config(&spec, &ssh()).unwrap();
+        let wire = config["mcpServers"]["ccnm"]["args"]
+            .as_array()
+            .unwrap()
+            .last()
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .to_string();
+        let sent: ServePayload = payload::decode(&wire).unwrap();
+        assert!(sent.interactive);
     }
 
     #[test]

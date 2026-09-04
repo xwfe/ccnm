@@ -207,6 +207,8 @@ struct Inner {
     project: Option<context::Project>,
     git: bool,
     git_subdir: Option<String>,
+    /// Somebody is at a terminal, so a permission prompt can be answered.
+    interactive: bool,
     calls: AtomicU64,
 }
 
@@ -256,6 +258,7 @@ impl Server {
                 project,
                 git,
                 git_subdir,
+                interactive: payload.interactive,
                 calls: AtomicU64::new(0),
             }),
             tool_router: Self::tool_router(),
@@ -265,6 +268,22 @@ impl Server {
     /// The canonical workspace root.
     pub fn root(&self) -> &Path {
         &self.inner.root
+    }
+
+    /// Every tool this session offers, with the interaction requirement
+    /// applied. One place, so `tools/list` and `get_tool` cannot drift.
+    fn tools(&self) -> Vec<rmcp::model::Tool> {
+        self.tool_router
+            .list_all()
+            .into_iter()
+            .map(|tool| {
+                if self.inner.interactive && tool.name == INTERACTION_TOOL {
+                    tool.with_meta(requires_user_interaction())
+                } else {
+                    tool
+                }
+            })
+            .collect()
     }
 
     /// What goes into `initialize.result.instructions`: ccnm's own
@@ -375,8 +394,7 @@ impl Server {
 
     #[tool(
         name = "exec_command",
-        description = "Run a command in the remote workspace. cmd is a program and its arguments, not a shell line: there are no pipes, redirection or globs. Long output stays on that machine; what comes back is the head and tail plus an output_ref. This runs with the full access of the account the runtime uses.",
-        meta = requires_user_interaction()
+        description = "Run a command in the remote workspace. cmd is a program and its arguments, not a shell line: there are no pipes, redirection or globs. Long output stays on that machine; what comes back is the head and tail plus an output_ref. This runs with the full access of the account the runtime uses."
     )]
     async fn exec_command(
         &self,
@@ -476,29 +494,41 @@ impl Server {
     }
 }
 
-/// The `_meta` that makes a tool ask the person every single time.
+/// The tool that asks the person every single time, and the key that
+/// makes a client do it.
 ///
 /// Claude Code honours `anthropic/requiresUserInteraction` in *every*
 /// permission mode, `bypassPermissions` included. That is the whole
 /// reason it is worth setting: measured by Anthropic, people approve
 /// about 93% of the prompts they see, and plenty of them run with
 /// prompting turned off entirely, so a gate the user can switch off is
-/// not a gate. This one they cannot.
+/// not a gate.
 ///
 /// Only `exec_command` carries it. The other six are bounded by the path
 /// policy and cannot reach past the workspace root; this one is a shell
 /// on somebody else's machine, running as whatever account the runtime
-/// uses. Putting it on the read tools as well would be the mistake the
-/// same research describes: prompts nobody reads any more.
+/// uses. Putting it on the read tools would manufacture exactly the
+/// prompt fatigue the same research describes.
 ///
-/// If a future client ignores the key, nothing breaks and nothing is
-/// claimed — this is a second lock, not the first one. The first is
-/// still `exec_gate`, on the answering side, which no client can talk
-/// its way past.
+/// **And only when somebody is there to answer.** `ccnm run --print`
+/// launches Claude with prompting switched off on purpose: one prompt in,
+/// one answer out, nobody at the terminal. Marking the tool there does
+/// not make it safer, it makes it unusable -- Claude denies the call and
+/// says it had no way to ask. Measured on the real pair before this was
+/// conditional: `1 permission denial`, and the model reporting it could
+/// not run the tests. In that mode the boundary is what it always was,
+/// `exec_gate` and the account the runtime runs as.
+///
+/// If a client ignores the key, nothing breaks and nothing is claimed:
+/// this is a second lock. The first is `exec_gate`, on this side, which
+/// no client can talk its way past.
+const INTERACTION_TOOL: &str = "exec_command";
+const REQUIRES_INTERACTION: &str = "anthropic/requiresUserInteraction";
+
 fn requires_user_interaction() -> rmcp::model::MetaObject {
     let mut meta = serde_json::Map::new();
     meta.insert(
-        "anthropic/requiresUserInteraction".to_string(),
+        REQUIRES_INTERACTION.to_string(),
         serde_json::Value::Bool(true),
     );
     rmcp::model::MetaObject(meta)
@@ -530,6 +560,32 @@ fn tool_error(err: &Error) -> CallToolResult {
 
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for Server {
+    /// The tool list, with `exec_command` marked as needing the user
+    /// every time — but only when there is a user.
+    ///
+    /// Written by hand rather than through the `#[tool(meta = ...)]`
+    /// attribute because that is evaluated without `self`: the mark has
+    /// to depend on how this session was started, and the macro leaves
+    /// this method alone when it is already defined.
+    async fn list_tools(
+        &self,
+        _request: Option<rmcp::model::PaginatedRequestParams>,
+        _context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> std::result::Result<rmcp::model::ListToolsResult, ErrorData> {
+        Ok(rmcp::model::ListToolsResult {
+            result_type: Some(rmcp::model::ResultType::COMPLETE),
+            tools: self.tools(),
+            meta: None,
+            next_cursor: None,
+            ttl_ms: None,
+            cache_scope: None,
+        })
+    }
+
+    fn get_tool(&self, name: &str) -> Option<rmcp::model::Tool> {
+        self.tools().into_iter().find(|tool| tool.name == name)
+    }
+
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new(SERVER_NAME, crate::VERSION))
@@ -646,29 +702,53 @@ mod tests {
         assert_eq!(served, allowed);
     }
 
-    /// `exec_command` is the one tool that is not bounded by the path
-    /// policy, so it is the one tool that asks the person every time --
-    /// in every permission mode, `bypassPermissions` included. The
-    /// assertion is on the serialized JSON because the key travels in
-    /// `_meta`, and a rename of that field by the crate would be
-    /// invisible to a check on the Rust value.
+    /// True when the tool's serialized form carries the key that makes a
+    /// client ask the user. Asserted on the JSON, not the Rust value,
+    /// because it travels in `_meta` and a rename of that field by the
+    /// crate would otherwise pass unnoticed.
+    fn asks_the_user(tool: &rmcp::model::Tool) -> bool {
+        serde_json::to_value(tool)
+            .unwrap()
+            .get("_meta")
+            .and_then(|m| m.get("anthropic/requiresUserInteraction"))
+            == Some(&serde_json::Value::Bool(true))
+    }
+
+    /// `exec_command` is the one tool not bounded by the path policy, so
+    /// it is the one tool that asks the person every time -- in every
+    /// permission mode, `bypassPermissions` included.
     #[test]
     fn only_exec_command_makes_the_client_ask_every_time() {
         let dir = temp("meta");
-        let server = Server::new(&ServePayload::new("xshun", dir, "s")).unwrap();
-        for tool in server.tool_router.list_all() {
-            let json = serde_json::to_value(&tool).unwrap();
-            let asks = json
-                .get("_meta")
-                .and_then(|m| m.get("anthropic/requiresUserInteraction"))
-                == Some(&serde_json::Value::Bool(true));
+        let payload = ServePayload::new("xshun", dir, "s").with_interactive(true);
+        let server = Server::new(&payload).unwrap();
+        let tools = server.tools();
+        assert_eq!(tools.len(), crate::session::MCP_TOOLS.len());
+        for tool in &tools {
             assert_eq!(
-                asks,
+                asks_the_user(tool),
                 tool.name == "exec_command",
-                "{} has the wrong interaction requirement: {json}",
+                "{} has the wrong interaction requirement",
                 tool.name
             );
         }
+        // get_tool has to say the same thing, or a client that asks about
+        // one tool gets a different answer from the one that listed it.
+        assert!(asks_the_user(&server.get_tool("exec_command").unwrap()));
+    }
+
+    /// `--print` starts Claude with prompting switched off on purpose:
+    /// one prompt in, one answer out, nobody at the terminal. Marking
+    /// the tool there does not make it safer, it makes it unusable --
+    /// measured on the real pair, Claude denied the call and reported it
+    /// had no way to ask.
+    #[test]
+    fn a_session_with_nobody_at_the_terminal_does_not_ask() {
+        let dir = temp("meta-print");
+        // `new` alone: not interactive, which is also what a probe sends.
+        let server = Server::new(&ServePayload::new("xshun", dir, "s")).unwrap();
+        assert!(!server.tools().iter().any(asks_the_user));
+        assert!(!asks_the_user(&server.get_tool("exec_command").unwrap()));
     }
 
     #[test]

@@ -25,6 +25,19 @@ pub struct ServePayload {
     pub session: String,
     /// Tool policy. Only `coding` exists.
     pub policy: String,
+    /// Whether a person is at a terminal for this session.
+    ///
+    /// It decides one thing: whether `exec_command` is marked as needing
+    /// the user's say-so on every call. That mark is worth having exactly
+    /// where somebody can answer it. `ccnm run --print` deliberately runs
+    /// with no prompting at all, so the same mark there does not make the
+    /// tool safer, it makes it impossible -- Claude denies the call and
+    /// reports that it could not ask.
+    ///
+    /// Defaults to false: a payload from anything that does not set it
+    /// (a probe, a test) is not a person waiting at a keyboard.
+    #[serde(default)]
+    pub interactive: bool,
 }
 
 impl ServePayload {
@@ -35,7 +48,14 @@ impl ServePayload {
             root,
             session: session.to_string(),
             policy: "coding".to_string(),
+            interactive: false,
         }
+    }
+
+    /// Say a person is at a terminal for this session.
+    pub fn with_interactive(mut self, interactive: bool) -> Self {
+        self.interactive = interactive;
+        self
     }
 }
 

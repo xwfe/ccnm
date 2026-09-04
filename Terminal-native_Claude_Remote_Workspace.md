@@ -802,6 +802,28 @@ ssh process 建立一次
 
 ---
 
+### 有的传输不传退出码（2026-09-04 实测，踩过）
+
+```text
+                              ssh work 'exit 3'   ssh work false   shell 拒绝执行
+Tailscale SSH（RunSSH=true）   0                   0                0
+OpenSSH sshd                   3                   1                126
+```
+
+tailscaled 1.102.2 服务的 ssh 会话**不把远程命令的退出码传回来**。ccnm 原来靠退出码分辨
+"命令没找到（127）/ 不可执行（126）/ 远程 ccnm 自己拒绝（CCNM_E_*）"，在这种链路上全部退化
+成"成功但 stdout 是空的"，于是**每一个远程失败都被报成"protocol 1 消息非法，两边版本可能不
+一致"**——一个没发生的故障，还正好指着唯一没问题的那个地方。
+
+现在的规则：**stdout 为空时看 stderr。** shell 自己的抱怨（permission denied / command not
+found / no such file or directory）认出来变成对应的 outcome；stderr 第一行是 `CCNM_E_*:` 的
+交给 `remote_failure`，那是远程 ccnm 跑起来了并且拒绝了，它自己说得更清楚。退出码为 0 的失败
+不再打印 "(exit 0)"，改成 "no exit status reported"——否则一句话里自相矛盾。
+
+调试时也要记住这条：在这种链路上你手敲 `ssh work '会失败的命令'` 拿到的 `$?` 也是 0。
+
+---
+
 ## 12. OpenSSH multiplexing 与 MCP transport 分开理解
 
 MCP stdio server 自己已经持有一条长连接：

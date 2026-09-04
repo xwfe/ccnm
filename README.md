@@ -374,12 +374,29 @@ ssh other 'ls -l ~/.local/bin/ccnm'      # 看是不是 -rw-r--r--
 ssh other 'chmod +x ~/.local/bin/ccnm'
 ```
 
-ccnm 自己撞上这个会直接说出来（远程 shell 退出码 126）：
+ccnm 自己撞上这个会直接说出来：
 
 ```text
-CCNM_E_VERSION: ~/.local/bin/ccnm on work is there but not executable (exit 126)
-                ssh work 'chmod +x ~/.local/bin/ccnm'
+Work SSH   FAIL   CCNM_E_VERSION: ~/.local/bin/ccnm on work is there but not executable (exit 126)
+                  ssh work 'chmod +x ~/.local/bin/ccnm'
+                  this is what copying it over with `scp` and no -p leaves behind
 ```
+
+### `message is not valid for protocol 1; ccnm versions probably differ`
+
+如果你看到的是这句、而两台机器的 `ccnm --version` 明明一样——那不是版本问题。
+
+**背景**：有的 SSH 传输不传递远程命令的退出码。实测 Tailscale SSH（tailscaled 1.102.2，
+`RunSSH = true`）：`ssh work 'exit 3'` 返回 **0**，`ssh work false` 也返回 **0**，
+换成 OpenSSH 服务的机器返回 3 和 1。ccnm 靠退出码分辨"命令没找到 / 不可执行 / 远程拒绝"，
+在这种链路上全部退化成"成功但没输出"，于是报成版本不一致。
+
+**现在不会了**：stdout 为空时 ccnm 改看 stderr，shell 的抱怨和远程 ccnm 自己的
+`CCNM_E_*` 都能认出来。要是你还看到这句，那才是真的版本对不上——
+`ssh work '~/.local/bin/ccnm --version'` 跟本机比一下。
+
+顺带：这个特性也意味着**你自己在命令行上 `ssh work '任何会失败的命令'` 都会得到 `$? = 0`**，
+调试的时候别信那个退出码。
 
 ### `Work controller ... Background`
 

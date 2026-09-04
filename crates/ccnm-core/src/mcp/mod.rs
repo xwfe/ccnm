@@ -28,6 +28,17 @@ pub mod server;
 /// accented word, a comment in Chinese or an emoji in a string hits it the
 /// moment a byte budget runs out mid-line. `str::floor_char_boundary` would
 /// do this, but it is still unstable.
+pub(crate) fn truncate_bytes(s: &str, max: usize) -> &str {
+    if s.len() <= max {
+        return s;
+    }
+    let mut end = max;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
 /// An opaque token that changes whenever a file is written.
 ///
 /// `read_file` returns it and `apply_patch` requires it back, which is how
@@ -54,17 +65,6 @@ pub(crate) fn version_of(meta: &std::fs::Metadata) -> String {
         .map(|d| d.as_nanos())
         .unwrap_or(0);
     format!("{}-{mtime:x}", meta.len())
-}
-
-pub(crate) fn truncate_bytes(s: &str, max: usize) -> &str {
-    if s.len() <= max {
-        return s;
-    }
-    let mut end = max;
-    while end > 0 && !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    &s[..end]
 }
 
 #[cfg(test)]

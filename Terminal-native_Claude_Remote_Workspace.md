@@ -2476,7 +2476,7 @@ isolation、runtime management 仍然有价值。
 
 ## A.0 现状与回退条件
 
-代码：commit `1a7d064`（phase 1: two-way ssh, smb mount, workspace identity, real doctor）
+代码：commit `042daab`（phase 1: two-way ssh, smb mount, workspace identity, real doctor）
 包含 `smb.rs`、`identity.rs`、`work.rs` 的 mount/unmount、`home.rs`、`runner.rs`，以及对应的
 doctor 行。之后的主线把它们移除了；要回退就从那个 commit 捡回来。
 

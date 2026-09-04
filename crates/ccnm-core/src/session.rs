@@ -177,20 +177,71 @@ impl Dir {
         self.0.join("exit")
     }
 
-    /// The security session Claude actually ran in, one word, written by
-    /// the supervisor from inside it (see [`crate::tmux`]).
+    /// What was measured about the context Claude actually ran in,
+    /// written by the supervisor from inside it.
     pub fn context(&self) -> PathBuf {
         self.0.join("context")
     }
 }
 
-/// What `launchctl managername` said where Claude runs. `None` when the
-/// file is not there yet or could not be read: it is evidence, and a
-/// missing measurement must not look like a measured `Background`.
-pub fn read_context(dir: &Dir) -> Option<String> {
-    let text = fs::read_to_string(dir.context()).ok()?;
-    let line = text.trim();
-    (!line.is_empty()).then(|| line.to_string())
+/// Two facts about the place Claude is running, measured there rather
+/// than inferred from who started it.
+///
+/// They are separate because on 2026-09-04 they turned out to disagree,
+/// and the disagreement is the interesting part:
+///
+/// ```text
+/// tmux server started by      managername   login Keychain
+/// the controller (a gui/ LaunchAgent)   Background    answers
+/// an ssh session                        Background    "User interaction is not allowed"
+/// ```
+///
+/// So the controller-starts-tmux rule is right — a server forked from an
+/// ssh session really cannot reach the Keychain — but `managername` cannot
+/// show it: tmux daemonizes out of the `gui/` launchd domain and reports
+/// `Background` either way. What survives that is the audit session, which
+/// is what the Keychain actually gates on. A session judged by
+/// `managername` alone would look broken when it works, which is the same
+/// class of lie the controller exists to stop telling (design doc section
+/// 21).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Context {
+    /// `launchctl managername`: `Aqua` for the GUI login session,
+    /// `Background` for an ssh session *and* for anything that
+    /// daemonized.
+    #[serde(default)]
+    pub manager: Option<String>,
+    /// Whether the login Keychain answers here. `None` when the question
+    /// could not be put (no login keychain on this machine, `security`
+    /// missing).
+    ///
+    /// This reads no secret. It asks the *keychain* about its own lock
+    /// settings — `security show-keychain-info`, whose whole output is a
+    /// line like `Keychain "…/login.keychain-db" no-timeout` — and keeps
+    /// only whether that succeeded. ccnm still never reads a credential
+    /// (design doc section 6).
+    #[serde(default)]
+    pub keychain: Option<bool>,
+}
+
+impl Context {
+    /// One phrase for a status line.
+    pub fn describe(&self) -> String {
+        let manager = self.manager.as_deref().unwrap_or("session unknown");
+        match self.keychain {
+            Some(true) => format!("{manager}, keychain reachable"),
+            Some(false) => format!("{manager}, keychain blocked"),
+            None => manager.to_string(),
+        }
+    }
+}
+
+/// What the supervisor measured, or `None` while it has not written it
+/// yet: evidence, and a missing measurement must never read as a measured
+/// failure.
+pub fn read_context(dir: &Dir) -> Option<Context> {
+    let bytes = fs::read(dir.context()).ok()?;
+    serde_json::from_slice(&bytes).ok()
 }
 
 /// Create the session directory with its three inputs. Refuses to reuse
@@ -318,21 +369,46 @@ pub fn read_outcome(dir: &Dir) -> Result<Option<Outcome>> {
     }
 }
 
-/// Record which security session this process is in, best effort.
+/// Record where this process is running, best effort.
 ///
 /// Never fails the run: the answer is diagnostic. A session that works is
 /// worth more than one refused because `launchctl` was slow.
 fn write_context(dir: &Dir) {
-    use crate::process::ProcessRunner as _;
-    let manager = crate::process::SystemRunner
-        .run(&crate::controller::managername_cmd())
-        .and_then(|out| crate::controller::parse_managername(&out));
-    match manager {
-        Ok(name) => {
-            let _ = fs::write(dir.context(), format!("{name}\n"));
-        }
-        Err(e) => tracing::warn!(error = %e, "cannot tell which security session this is"),
+    let measured = measure_context(&crate::process::SystemRunner);
+    tracing::info!(context = %measured.describe(), "claude will run here");
+    if let Ok(json) = pretty(&measured) {
+        let _ = fs::write(dir.context(), json);
     }
+}
+
+/// `security show-keychain-info <login keychain>`: does the login Keychain
+/// answer in this context? Nothing about its contents is asked for or
+/// kept — see [`Context::keychain`].
+fn keychain_cmd(home: &Path) -> process::Cmd {
+    process::Cmd::new("/usr/bin/security")
+        .arg("show-keychain-info")
+        .arg(home.join("Library/Keychains/login.keychain-db"))
+        .timeout(Duration::from_secs(10))
+}
+
+fn measure_context(runner: &dyn process::ProcessRunner) -> Context {
+    let manager = runner
+        .run(&crate::controller::managername_cmd())
+        .and_then(|out| crate::controller::parse_managername(&out))
+        .ok();
+    let keychain = paths::home_dir().ok().and_then(|home| {
+        let path = home.join("Library/Keychains/login.keychain-db");
+        // No login keychain on this machine: the question does not apply,
+        // which is not the same answer as "blocked".
+        if !path.exists() {
+            return None;
+        }
+        runner
+            .run(&keychain_cmd(&home))
+            .ok()
+            .map(|out| out.success())
+    });
+    Context { manager, keychain }
 }
 
 /// Written through a temporary file and a rename, so a reader polling for
@@ -439,7 +515,75 @@ pub fn wait_for_outcome(dir: &Dir, timeout: Duration) -> Result<Outcome> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::process::{FakeRunner, Output};
     use crate::protocol::payload;
+
+    /// The two facts are reported separately because they disagree: a
+    /// tmux session that says `Background` can still reach the Keychain,
+    /// and collapsing that into one word is how a working session gets
+    /// called broken.
+    #[test]
+    fn the_context_keeps_the_manager_and_the_keychain_apart() {
+        let fake = FakeRunner::new();
+        fake.push(Output::exited(0, "Background\n"));
+        fake.push(Output::exited(
+            0,
+            "Keychain \"login.keychain-db\" no-timeout\n",
+        ));
+        let measured = measure_context(&fake);
+        assert_eq!(measured.manager.as_deref(), Some("Background"));
+        // The keychain answer depends on this machine having a login
+        // keychain; the shape of the sentence does not.
+        assert!(
+            measured.describe().starts_with("Background"),
+            "{}",
+            measured.describe()
+        );
+
+        assert_eq!(
+            Context {
+                manager: Some("Background".into()),
+                keychain: Some(true),
+            }
+            .describe(),
+            "Background, keychain reachable"
+        );
+        assert_eq!(
+            Context {
+                manager: Some("Aqua".into()),
+                keychain: Some(false),
+            }
+            .describe(),
+            "Aqua, keychain blocked"
+        );
+        assert_eq!(
+            Context {
+                manager: None,
+                keychain: None,
+            }
+            .describe(),
+            "session unknown"
+        );
+    }
+
+    /// The keychain question is asked of the *login* keychain by name.
+    /// Asked without one, `security` answers about the default keychain,
+    /// which is the System keychain and answers "yes" from everywhere —
+    /// a probe that cannot fail is not a probe.
+    #[test]
+    fn the_keychain_probe_names_the_login_keychain_and_reads_no_secret() {
+        let cmd = keychain_cmd(Path::new("/Users/me"));
+        let line = cmd.display();
+        assert_eq!(
+            line,
+            "/usr/bin/security show-keychain-info /Users/me/Library/Keychains/login.keychain-db"
+        );
+        // Nothing that could return a secret: no find-generic-password, no
+        // -w, no unlock.
+        assert!(!line.contains("find-"), "{line}");
+        assert!(!line.contains("unlock"), "{line}");
+        assert!(!line.contains(" -w"), "{line}");
+    }
 
     fn spec() -> Spec {
         Spec {

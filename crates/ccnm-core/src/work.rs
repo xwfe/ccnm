@@ -148,7 +148,7 @@ pub fn start(req: &StartRequest, tools: &Tools<'_>) -> Result<StartReport> {
         let dir = session
             .as_ref()
             .map(|id| paths::session_dir(&tools.state, id));
-        let manager = dir
+        let context = dir
             .as_ref()
             .and_then(|path| session::read_context(&session::Dir::at(path)));
         return Ok(StartReport {
@@ -159,7 +159,7 @@ pub fn start(req: &StartRequest, tools: &Tools<'_>) -> Result<StartReport> {
             server_pid: server_pid(&tmux, tools)?,
             already_running: true,
             controller: None,
-            manager,
+            context,
         });
     }
 
@@ -204,7 +204,7 @@ pub fn start(req: &StartRequest, tools: &Tools<'_>) -> Result<StartReport> {
         controller: Some(ctx),
         // The supervisor writes this from inside tmux a moment from now;
         // `ccnm status` is where it shows up.
-        manager: wait_for_context(&dir),
+        context: wait_for_context(&dir),
     })
 }
 
@@ -213,12 +213,12 @@ pub fn start(req: &StartRequest, tools: &Tools<'_>) -> Result<StartReport> {
 /// Bounded and best effort: this is evidence for a status line, and a
 /// session that is up must not be reported as failed because a `launchctl`
 /// call was slow.
-fn wait_for_context(dir: &session::Dir) -> Option<String> {
-    const WAIT: Duration = Duration::from_secs(3);
+fn wait_for_context(dir: &session::Dir) -> Option<session::Context> {
+    const WAIT: Duration = Duration::from_secs(5);
     let deadline = std::time::Instant::now() + WAIT;
     loop {
-        if let Some(manager) = session::read_context(dir) {
-            return Some(manager);
+        if let Some(measured) = session::read_context(dir) {
+            return Some(measured);
         }
         if std::time::Instant::now() >= deadline {
             return None;
@@ -309,7 +309,7 @@ fn live_sessions(
         .filter(|live| wanted.as_ref().is_none_or(|name| &live.name == name))
         .map(|live| {
             let session = live_session_id(tmux, tools, &live.name);
-            let manager = session.as_ref().and_then(|id| {
+            let context = session.as_ref().and_then(|id| {
                 session::read_context(&session::Dir::at(paths::session_dir(&tools.state, id)))
             });
             protocol::run::LiveSession {
@@ -318,7 +318,7 @@ fn live_sessions(
                 session,
                 created: live.created,
                 attached: live.attached,
-                manager,
+                context,
             }
         })
         .collect()
@@ -716,7 +716,11 @@ mod tests {
         let id = "0b4c7a1e-2d3f-4a5b-8c6d-7e8f9a0b1c2d";
         let session_dir = session::Dir::at(paths::session_dir(&dir, id));
         std::fs::create_dir_all(session_dir.path()).unwrap();
-        std::fs::write(session_dir.context(), "Aqua\n").unwrap();
+        std::fs::write(
+            session_dir.context(),
+            r#"{"manager":"Background","keychain":true}"#,
+        )
+        .unwrap();
 
         let fake = FakeRunner::new();
         fake.push(Output::exited(0, "")); // has-session: live
@@ -728,7 +732,13 @@ mod tests {
         assert_eq!(rep.tmux_session, "ccnm-xshun");
         assert_eq!(rep.session.as_deref(), Some(id));
         assert_eq!(rep.server_pid, 4242);
-        assert_eq!(rep.manager.as_deref(), Some("Aqua"));
+        assert_eq!(
+            rep.context
+                .as_ref()
+                .map(session::Context::describe)
+                .as_deref(),
+            Some("Background, keychain reachable")
+        );
         assert!(rep.controller.is_none(), "no controller was needed");
         assert!(
             rep.summary().contains("already running"),
@@ -818,7 +828,11 @@ mod tests {
         let id = "0b4c7a1e-2d3f-4a5b-8c6d-7e8f9a0b1c2d";
         let session_dir = session::Dir::at(paths::session_dir(&dir, id));
         std::fs::create_dir_all(session_dir.path()).unwrap();
-        std::fs::write(session_dir.context(), "Aqua\n").unwrap();
+        std::fs::write(
+            session_dir.context(),
+            r#"{"manager":"Background","keychain":true}"#,
+        )
+        .unwrap();
 
         let fake = FakeRunner::new();
         fake.push(Output::exited(0, "tmux 3.7c\n")); // -V
@@ -840,16 +854,19 @@ mod tests {
         assert_eq!(rep.sessions.len(), 2);
         assert_eq!(rep.sessions[0].workspace.as_deref(), Some("xshun"));
         assert_eq!(rep.sessions[0].session.as_deref(), Some(id));
-        assert_eq!(rep.sessions[0].manager.as_deref(), Some("Aqua"));
+        assert_eq!(
+            rep.sessions[0].context.as_ref().unwrap().describe(),
+            "Background, keychain reachable"
+        );
         assert_eq!(rep.sessions[1].session, None);
-        assert_eq!(rep.sessions[1].manager, None);
+        assert_eq!(rep.sessions[1].context, None);
         let text = rep.render();
         assert!(
-            text.contains("ccnm-xshun  xshun  1 attached  Aqua"),
+            text.contains("ccnm-xshun  xshun  1 attached  Background, keychain reachable"),
             "{text}"
         );
         assert!(
-            text.contains("ccnm-other  other  detached  session unknown"),
+            text.contains("ccnm-other  other  detached  context unknown"),
             "{text}"
         );
     }

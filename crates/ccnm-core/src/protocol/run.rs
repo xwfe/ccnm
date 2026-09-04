@@ -127,11 +127,11 @@ pub struct StartReport {
     /// session was already up, since nothing needed starting.
     #[serde(default)]
     pub controller: Option<Context>,
-    /// Which security session Claude actually runs in, measured from
-    /// inside it by the supervisor. `None` before it has written that
-    /// down, which is the first second or so of a session's life.
+    /// Where Claude actually runs, measured from inside it by the
+    /// supervisor. `None` before it has written that down, which is the
+    /// first second or so of a session's life.
     #[serde(default)]
-    pub manager: Option<String>,
+    pub context: Option<crate::session::Context>,
 }
 
 impl Protocol for StartReport {
@@ -157,8 +157,8 @@ impl StartReport {
         if let Some(ctx) = &self.controller {
             lines.push(format!("started   by {}", ctx.describe()));
         }
-        if let Some(manager) = &self.manager {
-            lines.push(format!("claude in {manager}"));
+        if let Some(context) = &self.context {
+            lines.push(format!("claude in {}", context.describe()));
         }
         lines.join("\n")
     }
@@ -249,7 +249,7 @@ pub struct LiveSession {
     /// with nobody watching, which is the normal state after a detach.
     pub attached: u32,
     #[serde(default)]
-    pub manager: Option<String>,
+    pub context: Option<crate::session::Context>,
 }
 
 impl StatusReport {
@@ -271,7 +271,10 @@ impl StatusReport {
                     0 => "detached".to_string(),
                     n => format!("{n} attached"),
                 },
-                s.manager.as_deref().unwrap_or("session unknown"),
+                s.context.as_ref().map_or(
+                    "context unknown".to_string(),
+                    crate::session::Context::describe
+                ),
             ));
         }
         out

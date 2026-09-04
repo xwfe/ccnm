@@ -56,6 +56,15 @@ pub struct ProbeReport {
     pub server_version: String,
     /// Bytes of `initialize.result.instructions` the server sent.
     pub instructions_bytes: usize,
+    /// What the instructions said about the project's CLAUDE.md — the
+    /// `[project instructions: ...]` line, without its brackets (design
+    /// doc section 20). `None` from a build that sends no such line.
+    ///
+    /// It is here so the projection is proved *through the transport*:
+    /// doctor can read the file itself, but only this says the bytes
+    /// reached a client on the other side of the ssh.
+    #[serde(default)]
+    pub project_instructions: Option<String>,
     pub tools: Vec<String>,
     /// `tools/list` result serialized as JSON, in bytes: the schema budget
     /// of design doc section 27.
@@ -75,12 +84,17 @@ pub struct ProbeReport {
 
 impl ProbeReport {
     pub fn summary(&self) -> String {
+        let project = match &self.project_instructions {
+            Some(what) => format!(" ({what})"),
+            None => String::new(),
+        };
         format!(
-            "initialize in {} ms, tools/list ({} tool{}, {} B), workspace_info x{} p50 {} ms p95 {} ms max {} ms, pid {} throughout",
+            "initialize in {} ms, tools/list ({} tool{}, {} B), instructions {} B{project}, workspace_info x{} p50 {} ms p95 {} ms max {} ms, pid {} throughout",
             self.connect_us / 1000,
             self.tools.len(),
             if self.tools.len() == 1 { "" } else { "s" },
             self.tools_list_bytes,
+            self.instructions_bytes,
             self.calls,
             self.call_p50_us / 1000,
             self.call_p95_us / 1000,
@@ -111,6 +125,7 @@ mod tests {
             server_name: "ccnm".into(),
             server_version: "0.1.0".into(),
             instructions_bytes: 120,
+            project_instructions: Some("CLAUDE.md, 2731 bytes".into()),
             tools: vec!["workspace_info".into()],
             tools_list_bytes: 380,
             calls: 100,
@@ -122,7 +137,12 @@ mod tests {
         };
         assert_eq!(
             rep.summary(),
-            "initialize in 412 ms, tools/list (1 tool, 380 B), workspace_info x100 p50 21 ms p95 25 ms max 40 ms, pid 4242 throughout"
+            "initialize in 412 ms, tools/list (1 tool, 380 B), instructions 120 B (CLAUDE.md, 2731 bytes), workspace_info x100 p50 21 ms p95 25 ms max 40 ms, pid 4242 throughout"
         );
+        let old = ProbeReport {
+            project_instructions: None,
+            ..rep
+        };
+        assert!(old.summary().contains("instructions 120 B, workspace_info"));
     }
 }

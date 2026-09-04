@@ -108,7 +108,11 @@ async fn run(transport: &Cmd, calls: u32, unreachable: ErrorCode) -> Result<Prob
         .as_ref()
         .map(|s| (s.name.clone(), s.version.clone()))
         .unwrap_or_default();
-    let instructions_bytes = info.instructions.as_deref().map_or(0, str::len);
+    let instructions = info.instructions.as_deref().unwrap_or_default();
+    let instructions_bytes = instructions.len();
+    // Proof that the project's CLAUDE.md survived the trip, read from the
+    // same text the model is given (design doc section 20).
+    let project_instructions = crate::mcp::context::parse_marker(instructions);
 
     let list = client
         .list_tools(None)
@@ -168,6 +172,7 @@ async fn run(transport: &Cmd, calls: u32, unreachable: ErrorCode) -> Result<Prob
         server_name,
         server_version,
         instructions_bytes,
+        project_instructions,
         tools,
         tools_list_bytes,
         calls,

@@ -402,6 +402,7 @@ fn probe_rows(r: &Resolved<'_>, rep: &ProbeReport) -> Vec<Check> {
                     "the runtime host's hello did not report the root",
                 ),
             });
+            checks.push(terminal_row(r, rep));
         }
         Err(e) => {
             checks.push(Check::fail_report("Reverse SSH", e));
@@ -413,10 +414,54 @@ fn probe_rows(r: &Resolved<'_>, rep: &ProbeReport) -> Vec<Check> {
                 "Workspace root",
                 "not checked: reverse SSH failed",
             ));
+            checks.push(Check::skip(
+                "Terminal session",
+                "not checked: reverse SSH failed",
+            ));
         }
     }
 
     checks
+}
+
+/// tmux on the work machine, and whether this workspace has a session in
+/// it right now (design doc section 23).
+///
+/// No tmux is a WARN, not a FAIL: `--print` sessions do not need it, and
+/// half the product works without it. A live session is reported with what
+/// was measured about it, so "detached" reads as the normal state it is
+/// rather than as something wrong.
+fn terminal_row(r: &Resolved<'_>, rep: &ProbeReport) -> Check {
+    const NAME: &str = "Terminal session";
+    let Some(status) = &rep.terminal else {
+        return Check::skip(NAME, "not reported by that ccnm build");
+    };
+    let version = match &status.tmux {
+        Ok(v) => v,
+        Err(e) => return Check::warn(NAME, &e.message),
+    };
+    let wanted = crate::tmux::session_name(r.name);
+    match status.sessions.iter().find(|s| s.tmux_session == wanted) {
+        None => Check::ok(
+            NAME,
+            format!("tmux {version}, no live session for {}", r.name),
+        ),
+        Some(live) => Check::ok(
+            NAME,
+            format!(
+                "tmux {version}, {} {} ({})",
+                live.tmux_session,
+                match live.attached {
+                    0 => "detached".to_string(),
+                    n => format!("{n} attached"),
+                },
+                live.context.as_ref().map_or(
+                    "context unknown".to_string(),
+                    crate::session::Context::describe
+                )
+            ),
+        ),
+    }
 }
 
 /// One MCP session over the reverse ssh: initialize, tools/list, and a
@@ -611,6 +656,7 @@ fn skipped_after_work_ssh() -> Vec<Check> {
         "Reverse SSH",
         "Remote MCP handshake",
         "Workspace root",
+        "Terminal session",
     ]
     .into_iter()
     .map(|name| Check::skip(name, REASON))
@@ -761,7 +807,6 @@ fn not_yet_implemented() -> Vec<Check> {
         ),
         ("Runtime identity", "not implemented until phase 5"),
         ("Network isolation", "not implemented until phase 5"),
-        ("Terminal session", "not implemented until phase 6"),
     ]
     .into_iter()
     .map(|(name, reason)| Check::skip(name, reason))
@@ -919,6 +964,21 @@ mod tests {
                 server_pid: 4242,
                 single_process: true,
             })),
+            terminal: Some(crate::protocol::run::StatusReport {
+                protocol: PROTOCOL,
+                tmux: Ok("3.7c".into()),
+                sessions: vec![crate::protocol::run::LiveSession {
+                    tmux_session: "ccnm-xshun".into(),
+                    workspace: Some("xshun".into()),
+                    session: Some("s-1".into()),
+                    created: 1_788_496_263,
+                    attached: 0,
+                    context: Some(crate::session::Context {
+                        manager: Some("Background".into()),
+                        keychain: Some(true),
+                    }),
+                }],
+            }),
         }
     }
 
@@ -1131,8 +1191,12 @@ mod tests {
             row(&report, "Reverse SSH").detail,
             format!("ccnm-home as ccrun, ccnm {}", crate::VERSION)
         );
+        assert_eq!(
+            row(&report, "Terminal session").detail,
+            "tmux 3.7c, ccnm-xshun detached (Background, keychain reachable)"
+        );
         assert!(
-            text.ends_with("NOT READY (0 failed, 5 not checked)\n"),
+            text.ends_with("NOT READY (0 failed, 4 not checked)\n"),
             "{text}"
         );
         assert_eq!(report.blocking_code(), Some(ErrorCode::NotReady));

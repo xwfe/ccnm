@@ -400,6 +400,15 @@ pub fn probe(req: &ProbeRequest, tools: &Tools<'_>) -> ProbeReport {
         home_ssh,
         home_hello,
         mcp,
+        // Read-only, like everything else here: tmux is asked its version
+        // and which sessions exist, and nothing is started or stopped.
+        terminal: Some(status(
+            &StatusRequest {
+                protocol: PROTOCOL,
+                workspace: Some(req.workspace.clone()),
+            },
+            tools,
+        )),
     }
 }
 

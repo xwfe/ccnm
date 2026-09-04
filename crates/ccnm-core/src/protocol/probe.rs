@@ -64,6 +64,10 @@ pub struct ProbeReport {
     /// when the hello already failed).
     #[serde(default)]
     pub mcp: Option<Reported<super::mcp::ProbeReport>>,
+    /// tmux and this workspace's terminal session, for the "Terminal
+    /// session" row. `None` from a ccnm build that predates it.
+    #[serde(default)]
+    pub terminal: Option<super::run::StatusReport>,
 }
 
 impl Protocol for ProbeReport {

@@ -760,6 +760,38 @@ mod tests {
         assert!(!dir.join("sessions").exists(), "no session may be created");
     }
 
+    /// The same rule print mode has, and for the same reason: a Claude
+    /// started outside the login session cannot read its own credentials,
+    /// and the failure it produces is a lie about the machine.
+    #[test]
+    fn start_refuses_a_controller_outside_the_login_session() {
+        let dir = temp("start-bg");
+        let socket = PathBuf::from(format!("/tmp/ccnm-ws-bg-{}.sock", std::process::id()));
+        let _ = std::fs::remove_file(&socket);
+        let listener = crate::controller::Listener::bind(&socket).unwrap();
+        let served = std::thread::spawn(move || {
+            let inner = FakeRunner::new();
+            inner.push(Output::exited(0, "Background\n"));
+            let tools = crate::controller::Tools {
+                runner: &inner,
+                claude: Some(PathBuf::from("/opt/homebrew/bin/claude")),
+                tmux: Some(PathBuf::from("/opt/homebrew/bin/tmux")),
+                exe: PathBuf::from("/x/ccnm"),
+            };
+            listener.serve_one(&tools).unwrap();
+        });
+
+        let fake = FakeRunner::new();
+        fake.push(Output::exited(1, "")); // has-session: nothing running
+        let mut tools = tmux_tools(&fake, &dir, "start-bg");
+        tools.controller = socket;
+        let err = start(&start_request(), &tools).unwrap_err();
+        served.join().unwrap();
+        assert_eq!(err.code(), ErrorCode::NotReady);
+        assert!(err.message().contains("Background"), "{err}");
+        assert!(!dir.join("sessions").exists(), "no session may be created");
+    }
+
     #[test]
     fn without_tmux_every_interactive_command_says_how_to_get_it() {
         let dir = temp("no-tmux");

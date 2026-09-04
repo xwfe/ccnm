@@ -169,13 +169,13 @@ Claude authentication   OK     me@example.com via claude.ai (max)
 Reverse SSH             OK     xdwmbp as bing, ccnm 0.1.0
 Remote MCP handshake    OK     initialize in 541 ms, tools/list (7 tools, 8236 B), instructions 1184 B (CLAUDE.md, 552 bytes), workspace_info x1 p50 22 ms p95 22 ms max 22 ms, pid 66302 throughout
 Workspace root          OK     /Users/bing/ccnm-fixture is a directory for bing
+Terminal session        OK     tmux 3.7c, ccnm-fixture detached (Background, keychain reachable)
 Workspace policy        SKIP   not implemented until phase 2
 Native tools disabled   SKIP   not checked: only a live session shows which tools Claude ended up with
 Runtime identity        SKIP   not implemented until phase 5
 Network isolation       SKIP   not implemented until phase 5
-Terminal session        SKIP   not implemented until phase 6
 
-NOT READY (0 failed, 5 not checked)
+NOT READY (0 failed, 4 not checked)
 ```
 
 那五个 WARN 是这台开发机自己的状态（第 18 节的 runtime 审计），不是设计的目标状态。
@@ -242,14 +242,34 @@ ccnm work-controller uninstall             # 停掉并删掉 LaunchAgent
 `--dry-run` 只打印 plist 和两条 launchctl 命令，什么都不改——一个要装进你登录会话的东西，
 应该先能读一遍。
 
-### 正常使用（Phase 6 才实现）
+### 正常使用（2026-09-04 已实现）
 
 ```bash
-ccnm run xshun        # preflight，工作机起 official Claude，当前 TTY attach
-ccnm attach xshun     # 重新 attach 工作机 tmux，不新建第二个 MCP server
-ccnm status xshun
-ccnm stop xshun
+ccnm run xshun                     # 工作机起 Claude，当前终端 attach 上去
+ccnm run xshun "帮我修 X"           # 同上，开场白直接给它
+ccnm run xshun --detached          # 只起，不 attach
+ccnm run xshun --print "..."       # 非交互，一问一答，不需要 tmux
+ccnm attach xshun                  # 回到已经在跑的那个，不新建第二个 MCP server
+ccnm status xshun                  # 工作机上还活着什么
+ccnm stop xshun                    # 结束：Claude、终端、MCP 通道一起收
 ```
+
+`ccnm run xshun` 输出长这样，然后你的终端就变成 Claude 了：
+
+```text
+session   ccnm-fixture (started, tmux server pid 72371)
+id        a88ea928-60ba-4df3-9887-02860284e475
+started   by ccnm 0.1.0 as fodelf, pid 72289, Aqua
+claude in Background, keychain reachable
+```
+
+**断开不等于结束。** `ctrl-b d`（状态栏右下角会告诉你按什么，因为 prefix 是读你自己
+`~/.tmux.conf` 的）detach 之后 Claude 还在跑，`ccnm attach xshun` 回去接着聊，连上下文都在。
+网断了、笔记本合盖了、ssh 掉了，都一样。
+
+**第一次进一个 workspace，Claude 会问一句 "Is this a project you trust?"**——它问的是工作机上
+`~/.local/state/ccnm/workspaces/<name>/`，ccnm 自己建的、只装会话记录的目录，答 yes。这个对话框
+只在交互模式出现（`--print` 会跳过），每个目录只问一次。
 
 Primary 模式没有 `ccnm mount` / `ccnm unmount` / `ccnm workspace init` / `ccnm maintenance`：
 没有 mount，就没有需要维护的第二份视图。`git switch`、`pnpm install`、`cargo fmt` 就在家庭机上
@@ -1589,6 +1609,26 @@ Aqua + loggedIn=false        → FAIL，这是真答案
 
 最后一条的不对称是故意的：一个读不到凭证的上下文不可能"发现"一个登录，所以误差只朝一个方向走。
 
+### `managername` 不是终审（2026-09-04 交互式那步实测出来的）
+
+上面那张表容易读出一个太强的结论："Aqua 才能读 Keychain"。**不对，反过来才对：`Aqua` 是充分条件，
+不是必要条件。** 真正卡 Keychain 的是 audit session，`managername` 报的是 launchd domain，两者
+在 daemonize 的进程上会分家：
+
+```text
+                                    launchctl managername   登录 Keychain
+controller（Aqua）起的 tmux server   Background              答得出来
+ssh 会话起的 tmux server             Background              答不出来
+```
+
+同样是 `Background`，一个能读一个不能。所以：
+
+- **"controller 起 tmux"这条规矩仍然必须遵守**——ssh 起的那个真的读不到；
+- **但不能用 `managername` 去验证它**。会话里到底行不行，只能在会话里量。`ccnm status` 因此报
+  两件事：`Background, keychain reachable`。
+
+这条差点让一个能正常工作的交互式会话被判成坏的（第 23 节）。
+
 ### Keychain 里那条为什么是空的（2026-09-04 实测）
 
 `security find-generic-password -s "Claude Code-credentials"` 在 Aqua 下能读到，内容是：
@@ -1640,26 +1680,67 @@ hooks，发现冲突就报出来。
 
 ---
 
-## 23. tmux 与 MCP lifecycle（Phase 6）
+## 23. tmux 与 MCP lifecycle（2026-09-04 已实现）
 
 ```text
 家庭机 shell
-  ↓ ccnm run
-SSH TTY → work
-  ↓
-tmux ccnm-xshun
+  ↓ ccnm run xshun
+ssh -t → 工作机
+  ↓ ccnm internal attach
+tmux -L ccnm attach -t ccnm-xshun
+  ↓                          ← tmux server（controller 起的）
+ccnm internal supervise
   ↓
 official claude
   ↓ SSH stdio MCP
 home ccnm internal mcp-serve
 ```
 
-家庭机 terminal → work tmux 断开时 Claude 仍然活着，那么 work Claude → home MCP SSH 也应该继续
-活着。所以 MCP transport 的生命周期绑定 **Claude process**，而不是家庭机 outer SSH TTY。
+家庭机 terminal → work tmux 断开时 Claude 仍然活着，那么 work Claude → home MCP SSH 也继续活着：
+MCP transport 的生命周期绑 **Claude process**，不绑家庭机那条 outer ssh。实测：attach 的 ssh
+杀掉之后 `ccnm status` 还是 `detached`，家庭机上 `ccnm internal mcp-serve` 进程还在。
 
-`ccnm attach` 只重新 attach work tmux，不重新创建第二个 MCP server。
+`ccnm attach` 只重新 attach，不新建第二个 MCP server。同一个 workspace 起第二次 `ccnm run`
+也不会——它发现 tmux 里已经有了，直接把你接回去（这条路径**不经过 controller**：把你放回一个正在
+跑的会话，不该依赖"起东西"的那个组件此刻健康）。
 
-网络断开时 work Claude/tmux 与 home MCP lifecycle 的处理要明确写出来，但不在 spike 阶段先做漂亮 UX。
+### 三条硬规矩
+
+**一、server 只能由 controller 起。** tmux server 把自己的 security session 交给它跑的每个进程。
+2026-09-04 实测同一条 `tmux new-session`：
+
+```text
+server 是谁 fork 的                     launchctl managername   登录 Keychain
+controller（gui/ 里的 LaunchAgent）      Background              答得出来
+一个 ssh 会话                            Background              User interaction is not allowed
+```
+
+所以第 21 节那条规矩成立——从 ssh 起的 server 里，Claude 真的读不到凭证。**但 `managername` 看
+不出来**：tmux 会 daemonize，掉出 `gui/` 这个 launchd domain，两种情况都报 `Background`。真正
+继承下来的是 audit session，Keychain 卡的是它。所以 supervisor 在**会话内部**把两件事都量一遍
+写进 `sessions/<id>/context`，`ccnm status` 两个都显示：`Background, keychain reachable`。
+
+只按 `managername` 判会把一个能用的会话说成坏的——这跟 controller 当初要消灭的谎话是同一类。
+
+Keychain 那一问不读任何凭证：问的是 keychain 自己的锁设置（`security show-keychain-info`，整个
+输出就是 `Keychain "…/login.keychain-db" no-timeout`），只留"问得通/问不通"。必须点名 login
+keychain——不带参数时 `security` 回答的是 System keychain，从哪儿问都是通的，一个不可能失败的
+探针不叫探针。
+
+**二、ccnm 用自己的 socket**（`tmux -L ccnm`）。不能因为谁敲了一句 `tmux kill-server` 就没了，
+也不能反过来成为别人 tmux 挂掉的原因。
+
+**三、session 的命是 Claude 的命，不是任何外层进程的。** tmux server 自己 daemonize 到独立进程组，
+所以 `launchctl bootout`（每次 `ccnm work-controller install` 都会做）不会连着杀会话。实测：
+kickstart 重启 controller 之后，tmux server pid 不变，Claude 还在。
+
+### 会话名和一次一个
+
+一个 workspace 一个会话，名字 `ccnm-<workspace>`（`.` 和 `:` 会被换掉，那是 tmux 的地址分隔符）。
+tmux session 的环境里塞了 `CCNM_SESSION=<uuid>`，所以从一个活着的 tmux 能反查回它的 session
+目录，不用扫描。
+
+网络断开时的漂亮 UX（重连提示、断线重试）还没做。
 
 ---
 
@@ -1714,6 +1795,7 @@ crates/
         ├── process.rs
         ├── claude.rs
         ├── controller.rs   工作机登录会话里的 controller 与它的 socket（第 21 节）
+        ├── tmux.rs      交互式会话住的地方：ccnm 自己的 tmux server（第 23 节）
         ├── launchagent.rs  把 controller 装成 LaunchAgent（同上）
         ├── safety.rs    runtime 账号审计 + exec gate（第 18 节）
         ├── doctor.rs
@@ -1763,9 +1845,9 @@ TS 只能出现在 `tests/`、`tools/`、fixture 生成器里，`ccnm run` 永�
 → work-controller / Claude auth context  ✅ 2026-09-04，真机四种状态验过
 → Claude MCP 接入                        ✅ 2026-09-04，`ccnm run --print` 真机改 bug 跑通（7 turns）
 → 项目 CLAUDE.md 投影                    ✅ 2026-09-04，真机验过模型确实读到并遵守（第 20 节）
+→ terminal session UX（Phase 6）         ✅ 2026-09-04，run/attach/status/stop 真机跑通（第 23 节）
 → 真实 dogfood
 → process / Git / browser
-→ terminal session UX
 ```
 
 **下面的 "Phase N" 是历史标签，不是顺序。** 最明显的一处：Phase 5（production safety）被提到了
@@ -2070,9 +2152,17 @@ OS 那一半是**用户手动做**的，ccnm 一条都不替他做：完整步�
 （建 ccrun、用 ACL 只开这一个项目、去 sudo、去 admin 组、出网限制、把 ssh alias 的 User 改成
 ccrun）。ccnm 只验证结果，因为建用户改权限不该由一个诊断工具背着人干。
 
-### Phase 6 — Terminal UX
+### Phase 6 — Terminal UX（2026-09-04 完成）
 
-`ccnm run / attach / doctor / status / stop`，tmux，断线处理（第 23 节）。
+`ccnm run / attach / status / stop`，tmux，会话活过终端（第 23 节）。doctor 的
+`Terminal session` 行也随之从占位变成真检查。
+
+**真机结果**：家庭机 `ccnm run fixture` → 工作机 tmux 里的 Claude Code 出现在家庭机终端上，
+问一句话它走 ccnm 工具读到了家庭机的 README（回答末行还是 `FIXTURE-RULES-LOADED`，说明
+CLAUDE.md 投影在交互模式一样有效）；杀掉 attach 的 ssh 之后会话照跑、MCP 通道还在、
+`ccnm attach` 回去上下文都在；`launchctl kickstart -k` 重启 controller，tmux server pid 不变。
+
+断线重连的 UX、`ccnm run` 之外的多会话管理还没做。
 
 ### 浏览器同样属于家庭机 Runtime（2026-09-03 拍板）
 

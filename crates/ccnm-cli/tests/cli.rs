@@ -280,6 +280,9 @@ fn doctor_missing_home_ccnm_exits_version_code() {
 #[test]
 fn mcp_probe_local_speaks_to_one_persistent_server() {
     let (dir, config) = setup("mcp-local", env!("CARGO_BIN_EXE_ccnm"));
+    // The project's own rules have to survive a real handshake: written
+    // here, read by a separate process, and reported back by the client.
+    std::fs::write(dir.join("root/CLAUDE.md"), "- 提交要小\n").unwrap();
     let out = ccnm()
         .args([
             "mcp", "probe", "xshun", "--local", "--calls", "25", "--config",
@@ -313,6 +316,10 @@ fn mcp_probe_local_speaks_to_one_persistent_server() {
     assert_eq!(rep.calls, 25);
     assert!(rep.single_process);
     assert!(rep.server_pid > 0);
+    assert_eq!(
+        rep.project_instructions.as_deref(),
+        Some("CLAUDE.md, 15 bytes")
+    );
     assert!(rep.instructions_bytes > 0);
     assert!(
         rep.tools_list_bytes < 16 * 1024,
@@ -320,8 +327,13 @@ fn mcp_probe_local_speaks_to_one_persistent_server() {
         rep.tools_list_bytes
     );
     assert!(rep.call_p50_us <= rep.call_p95_us && rep.call_p95_us <= rep.call_max_us);
-    // Read-only: the server wrote nothing into the root.
-    assert_eq!(std::fs::read_dir(dir.join("root")).unwrap().count(), 0);
+    // Read-only: the server added nothing to the root, and the CLAUDE.md
+    // it read is still the only thing there.
+    let left: Vec<String> = std::fs::read_dir(dir.join("root"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(left, vec!["CLAUDE.md".to_string()]);
 }
 
 #[test]

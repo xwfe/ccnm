@@ -631,6 +631,24 @@ mod tests {
         assert!(!text.contains(&dir.display().to_string()), "{text}");
     }
 
+    /// The cap belongs to the server, not to whoever remembers to pass a
+    /// budget: a project with a long CLAUDE.md must not be able to push
+    /// the handshake past [`MAX_INSTRUCTIONS_BYTES`].
+    #[test]
+    fn a_long_claude_md_cannot_push_the_handshake_over_the_cap() {
+        let dir = temp("bigproject");
+        let big = "- 一条规则，写得很长很长。\n".repeat(2000);
+        std::fs::write(dir.join("CLAUDE.md"), &big).unwrap();
+        let server = Server::new(&ServePayload::new("xshun", dir, "s")).unwrap();
+        let text = server.instructions();
+        assert!(text.len() <= MAX_INSTRUCTIONS_BYTES, "{}", text.len());
+        let marker = crate::mcp::context::parse_marker(&text).unwrap();
+        assert!(
+            marker.contains(&format!("{} bytes, first ", big.len())),
+            "{marker}"
+        );
+    }
+
     /// A CLAUDE.md that cannot be read must not take the session down with
     /// it: without the project's rules the model is worse off, without a
     /// server it cannot work at all.

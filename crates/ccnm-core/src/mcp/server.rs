@@ -65,8 +65,18 @@ pub struct WorkspaceInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub git_subdir: Option<String>,
     pub platform: String,
+    /// False when the workspace root is no longer a directory on this
+    /// machine. Checked on every call rather than remembered from
+    /// startup, because it is the one fact here that can stop being true
+    /// while the server runs.
+    #[serde(default = "yes")]
+    pub root_present: bool,
     pub server_pid: u32,
     pub calls_served: u64,
+}
+
+fn yes() -> bool {
+    true
 }
 
 impl WorkspaceInfo {
@@ -96,15 +106,29 @@ impl WorkspaceInfo {
     }
 
     /// One line about the workspace, without the server's bookkeeping.
+    ///
+    /// Two lines when the root has gone: a session is bound to the
+    /// directory it started with, so if that directory is moved or deleted
+    /// underneath it, every other tool starts failing for reasons that
+    /// sound like something else -- `exec_command` reporting that
+    /// `/bin/echo` is not installed, which is what actually happened on
+    /// 2026-09-04. This is the tool the model calls to orient itself; it
+    /// is the right place to say the ground is gone.
     pub fn summary(&self) -> String {
         let git = match (&self.git, &self.git_subdir) {
             (false, _) => "not a git repository".to_string(),
             (true, None) => "git repository root".to_string(),
             (true, Some(sub)) => format!("inside git repository at {sub}"),
         };
-        format!(
+        let line = format!(
             "workspace {} ({git}, {}); all paths are relative to its root",
             self.workspace, self.platform
+        );
+        if self.root_present {
+            return line;
+        }
+        format!(
+            "{line}\nWARNING: the workspace root is not on this machine any more -- it was there when this session started, and every tool that touches a file or runs a command will fail until the session is restarted (ccnm stop <workspace>, then ccnm run <workspace>)"
         )
     }
 }
@@ -267,6 +291,7 @@ impl Server {
             git: self.inner.git,
             git_subdir: self.inner.git_subdir.clone(),
             platform: format!("{}/{}", std::env::consts::OS, std::env::consts::ARCH),
+            root_present: self.inner.root.is_dir(),
             server_pid: std::process::id(),
             calls_served,
         }
@@ -663,6 +688,36 @@ mod tests {
         );
     }
 
+    /// A session is bound to the directory it started with. When that
+    /// directory is moved or deleted underneath it, the tool the model
+    /// calls to orient itself has to say so -- otherwise it keeps
+    /// answering "workspace fixture (git repository root)" while every
+    /// other tool fails for reasons that sound like something else.
+    #[test]
+    fn workspace_info_says_when_the_root_has_gone() {
+        let dir = temp("vanish");
+        let server = Server::new(&ServePayload::new("xshun", dir.clone(), "s")).unwrap();
+        let before = server.info();
+        assert!(before.root_present);
+        assert!(
+            !before.summary().contains("WARNING"),
+            "{}",
+            before.summary()
+        );
+
+        std::fs::remove_dir_all(&dir).unwrap();
+        let after = server.info();
+        assert!(!after.root_present, "the check must not be cached");
+        let summary = after.summary();
+        assert!(
+            summary.contains("not on this machine any more"),
+            "{summary}"
+        );
+        assert!(summary.contains("ccnm stop"), "{summary}");
+        // Still no absolute path, even when saying it is gone.
+        assert!(!summary.contains(&dir.display().to_string()), "{summary}");
+    }
+
     #[test]
     fn git_facts_distinguish_root_subdir_and_none() {
         let dir = temp("git");
@@ -686,6 +741,7 @@ mod tests {
             git: true,
             git_subdir: Some("packages/core".into()),
             platform: "macos/aarch64".into(),
+            root_present: true,
             server_pid: 1,
             calls_served: 1,
         };

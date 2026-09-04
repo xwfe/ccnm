@@ -61,7 +61,7 @@ use std::time::Duration;
 use rmcp::schemars;
 use serde::{Deserialize, Serialize};
 
-use crate::error::{Error, Result};
+use crate::error::{Error, ErrorCode, Result};
 use crate::mcp::path;
 use crate::mcp::truncate_bytes;
 use crate::process::{Cmd, run_captured};
@@ -149,6 +149,24 @@ impl Retention {
     }
 }
 
+/// What to say when the directory a session works in is no longer there.
+///
+/// Never the absolute path: the server does not reveal where the
+/// workspace lives (design doc section 17), and it is not what anyone
+/// needs anyway. What they need is that this session cannot be saved by
+/// retrying -- its root was resolved when it started -- and the two
+/// commands that make a session with the right one.
+pub(crate) fn workspace_gone(rel: &str) -> String {
+    let what = if rel == "." {
+        "the workspace root".to_string()
+    } else {
+        format!("{rel}, and the workspace root it is under,")
+    };
+    format!(
+        "{what} is not on the runtime machine any more; it was there when this session started\nthe project was moved, renamed or deleted, or its disk is gone\na session cannot be repointed: end it and start another (ccnm stop <workspace>, then ccnm run <workspace>)"
+    )
+}
+
 /// Run `args.cmd` under `root`, retaining its output under `state`.
 pub fn exec_command(
     root: &Path,
@@ -201,16 +219,26 @@ pub fn exec_command(
     let stdout = Sink::create(&retention.stdout())?;
     let stderr = Sink::create(&retention.stderr())?;
     let captured = run_captured(&cmd, stdout, stderr).map_err(|e| {
-        // A program that is not installed is the caller's problem to fix,
-        // not a bug in ccnm.
-        if e.message().starts_with("cannot spawn") {
-            Error::dependency(format!(
-                "{} is not installed on the workspace machine, or is not on its PATH",
-                args.cmd[0]
-            ))
-        } else {
-            e
+        if !e.message().starts_with("cannot spawn") {
+            return e;
         }
+        // `spawn` fails with the same ENOENT for two different reasons:
+        // the program is not there, or the directory it would run in is
+        // not there. Blaming the program either way produces the most
+        // confidently wrong message this server has ever printed --
+        // "/bin/echo is not installed on the workspace machine" -- and
+        // sends whoever reads it looking for a missing echo.
+        //
+        // It happens: a session's root is fixed when the session starts,
+        // so moving or deleting the project out from under a running
+        // session leaves exactly this. Check before accusing.
+        if !cwd_abs.is_dir() {
+            return Error::new(ErrorCode::WrongWorkspace, workspace_gone(&cwd_rel));
+        }
+        Error::dependency(format!(
+            "{} is not installed on the workspace machine, or is not on its PATH",
+            args.cmd[0]
+        ))
     })?;
 
     let mut notes = Vec::new();
@@ -577,6 +605,42 @@ mod tests {
             !f.root.join("b").exists(),
             "a file was redirected into being"
         );
+    }
+
+    /// `spawn` fails with the same ENOENT whether the program is missing
+    /// or the directory it would run in is. Blaming the program produced
+    /// the most confidently wrong message this server has printed --
+    /// "/bin/echo is not installed on the workspace machine" -- on a
+    /// session whose project had been moved out from under it.
+    #[test]
+    fn a_vanished_workspace_is_not_reported_as_a_missing_program() {
+        let f = fixture("vanished");
+        assert_eq!(run(&f, &["/bin/echo", "hi"]).exit_code, Some(0));
+
+        // The way it happens for real: someone moves the project.
+        let moved = f.root.with_extension("moved");
+        let _ = fs::remove_dir_all(&moved);
+        fs::rename(&f.root, &moved).unwrap();
+
+        let e = exec_command(
+            &f.root,
+            "s-test",
+            &f.state,
+            &ExecCommandArgs {
+                cmd: vec!["/bin/echo".into(), "hi".into()],
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+        assert_eq!(e.code(), ErrorCode::WrongWorkspace);
+        assert!(
+            !e.message().contains("not installed"),
+            "/bin/echo is installed; the workspace is what is missing: {e}"
+        );
+        assert!(e.message().contains("not on the runtime machine"), "{e}");
+        assert!(e.message().contains("ccnm stop"), "{e}");
+        // The absolute path is never revealed, gone or not.
+        assert!(!e.message().contains(&moved.display().to_string()), "{e}");
     }
 
     #[test]

@@ -119,7 +119,7 @@ pub fn attach_cmd(resolved: &Resolved<'_>, env: &Env<'_>) -> Result<Cmd> {
         protocol: PROTOCOL,
         workspace: resolved.name.to_string(),
     })?;
-    ssh.interactive_cmd(&["internal", "attach", "--payload", &wire])
+    ssh.interactive_ccnm_cmd(&["internal", "attach", "--payload", &wire])
 }
 
 pub fn stop(resolved: &Resolved<'_>, env: &Env<'_>) -> Result<StopReport> {

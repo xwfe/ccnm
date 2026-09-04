@@ -246,13 +246,19 @@ impl Ssh {
             .timeout(timeout))
     }
 
-    /// `ssh <options> -t alias argv...`: the far side gets a terminal.
+    /// `ssh <options> -t alias <remote ccnm> subcommand...`: the far side
+    /// gets a terminal.
     ///
-    /// The only ccnm command that asks for one. It carries no timeout —
-    /// what is on the other end is a person's session, and a watchdog that
-    /// killed it after N seconds would be a bug, not a safety net. The
-    /// caller runs this with [`crate::process::run_attached`].
-    pub fn interactive_cmd(&self, argv: &[&str]) -> Result<Cmd> {
+    /// The only ccnm command that asks for one. Like
+    /// [`call_ccnm`](Self::call_ccnm) it puts the remote ccnm binary at the
+    /// front — the subcommand alone would be run as a program name, and the
+    /// login shell would answer `command not found: internal`. It carries
+    /// no timeout: what is on the other end is a person's session, and a
+    /// watchdog that killed it after N seconds would be a bug, not a safety
+    /// net. The caller runs it with [`crate::process::run_attached`].
+    pub fn interactive_ccnm_cmd(&self, subcommand: &[&str]) -> Result<Cmd> {
+        let mut argv: Vec<&str> = vec![self.ccnm_bin.as_str()];
+        argv.extend_from_slice(subcommand);
         if let Some(bad) = argv.iter().find(|a| !is_remote_safe(a)) {
             return Err(Error::internal(format!(
                 "refusing to send `{bad}` over ssh: it would need shell quoting"
@@ -473,6 +479,24 @@ mod tests {
                 .iter()
                 .any(|o| o.starts_with("HostName") || o.starts_with("IdentityFile") || o == "-i")
         );
+    }
+
+    /// Caught in the real thing: without the binary at the front, the
+    /// login shell is handed `internal` as a program name and answers
+    /// `command not found: internal`, which reads like a broken install
+    /// rather than a malformed command line.
+    #[test]
+    fn an_interactive_command_asks_for_a_terminal_and_names_the_remote_binary() {
+        let cmd = ssh()
+            .with_ccnm_bin("~/.local/bin/ccnm")
+            .interactive_ccnm_cmd(&["internal", "attach", "--payload", "abc_-9"])
+            .unwrap();
+        let text = cmd.display();
+        assert!(
+            text.ends_with("-t work ~/.local/bin/ccnm internal attach --payload abc_-9"),
+            "{text}"
+        );
+        assert!(!text.contains("-T "), "an attach needs a terminal: {text}");
     }
 
     #[test]

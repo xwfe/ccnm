@@ -989,6 +989,19 @@ struct JournalFile {
     files: Vec<JournalLine>,
 }
 
+/// Where a journal is written and where it ends up.
+///
+/// Two names, and the difference between them is the whole guarantee:
+/// the `.json` gets its name from a rename, so its existence *means* the
+/// file was written whole. Nothing has to infer that from whether the
+/// contents parse -- an inference that runs the wrong way, because a
+/// journal written completely by one build stops parsing the moment
+/// another build changes the struct.
+fn journal_names(dir: &Path, pid: u32, unique: &str) -> (PathBuf, PathBuf) {
+    let done = dir.join(format!("{pid}-{unique}.json"));
+    (done.with_extension("json.tmp"), done)
+}
+
 /// The record of a commit in progress: what is about to be renamed, and
 /// where the originals are.
 ///
@@ -1025,21 +1038,32 @@ impl Journal {
         };
         let body = serde_json::to_vec_pretty(&record)
             .map_err(|e| Error::internal("cannot describe the patch").with_source(e))?;
-        let path = dir.join(format!(
-            "{}-{}.json",
+        let (partial, path) = journal_names(
+            dir,
             std::process::id(),
-            &uuid::Uuid::new_v4().simple().to_string()[..12]
-        ));
-        // Same discipline as the content temps: durable before it is
-        // relied on, or a power cut leaves a journal that describes
-        // nothing.
-        let mut file = std::fs::File::create(&path).map_err(|e| {
-            Error::internal(format!("cannot write {}", path.display())).with_source(e)
+            &uuid::Uuid::new_v4().simple().to_string()[..12],
+        );
+        // Written under a different name and renamed into place, for the
+        // same reason the file contents are: a rename is atomic, so a
+        // `.json` existing *means* the journal was written whole.
+        //
+        // The alternative -- write in place and treat "cannot parse it"
+        // as "it was never finished" -- reads a one-way implication
+        // backwards. A journal written completely by one build is
+        // unparseable to another the moment the struct gains a field,
+        // and two machines running different builds is the normal state
+        // while somebody is deploying, not an anomaly. That way round,
+        // a real interruption gets silently skipped.
+        let mut file = std::fs::File::create(&partial).map_err(|e| {
+            Error::internal(format!("cannot write {}", partial.display())).with_source(e)
         })?;
         file.write_all(&body)
             .map_err(|e| Error::internal("cannot write the patch journal").with_source(e))?;
         file.sync_all()
             .map_err(|e| Error::internal("cannot flush the patch journal").with_source(e))?;
+        drop(file);
+        std::fs::rename(&partial, &path)
+            .map_err(|e| Error::internal("cannot place the patch journal").with_source(e))?;
         Ok(Journal {
             path,
             keep: std::cell::Cell::new(false),
@@ -1068,10 +1092,25 @@ impl Journal {
         };
         for entry in entries.flatten() {
             let path = entry.path();
+            let Ok(meta) = entry.metadata() else { continue };
+            // A journal whose rename never happened. The commit it would
+            // have described never started, so there is nothing to report
+            // and nothing to keep.
+            if path.extension().is_some_and(|ext| ext == "tmp") {
+                if meta
+                    .modified()
+                    .ok()
+                    .and_then(|at| at.elapsed().ok())
+                    .is_some_and(|age| age >= JOURNAL_STALE)
+                {
+                    tracing::warn!(journal = %path.display(), "removing a patch journal that was never finished");
+                    let _ = std::fs::remove_file(&path);
+                }
+                continue;
+            }
             if path.extension().is_none_or(|ext| ext != "json") {
                 continue;
             }
-            let Ok(meta) = entry.metadata() else { continue };
             let fresh = meta
                 .modified()
                 .ok()
@@ -1080,35 +1119,25 @@ impl Journal {
             if fresh {
                 continue;
             }
-            // A journal that cannot be read describes a commit that never
-            // began.
-            //
-            // `Journal::open` creates the file, writes it, fsyncs it, and
-            // only then returns -- and `commit` does not start until it
-            // has. So a truncated or empty journal means the process died
-            // before the first rename, which is the one case where
-            // nothing is inconsistent and there is nothing to report.
-            //
-            // An earlier version refused instead, on "an unreadable
-            // journal is still evidence". It was the wrong way round, and
-            // expensively so: the refusal was worded before the workspace
-            // was compared, so one zero-byte file -- left by exactly the
-            // power cut this feature exists for -- permanently blocked
-            // `apply_patch` in *every* workspace until somebody deleted
-            // it by hand.
+            // A `.json` is here because a rename put it here, which means
+            // it was written whole, which means the commit it describes
+            // had started. So one that cannot be parsed is the worst case,
+            // not the harmless one: something happened and this cannot say
+            // what. It blocks, and says that it blocks everything, because
+            // without the record there is no workspace to scope it to.
             let Some(record) = std::fs::read(&path)
                 .ok()
                 .and_then(|body| serde_json::from_slice::<JournalFile>(&body).ok())
             else {
-                tracing::warn!(
-                    journal = %path.display(),
-                    "unreadable patch journal; its commit never started, ignoring it"
-                );
-                continue;
+                return Err(Error::internal(format!(
+                    "{} records an apply_patch that was interrupted, and cannot be read to say which files it was changing.\nit was written whole, so a commit had started; check the workspace with git status and git diff before changing anything else.\nthis blocks patching in every workspace until it is deleted, because without the record there is no way to tell which one it belongs to.",
+                    path.display()
+                )));
             };
-            // Another project's interrupted commit says nothing about
-            // this project's files.
-            if record.root != root {
+            // Another project's interrupted commit says nothing about this
+            // project's files -- unless one root is inside the other, in
+            // which case they share directories and it says everything.
+            if !record.root.starts_with(root) && !root.starts_with(&record.root) {
                 continue;
             }
             return Err(Error::internal(interrupted_report(&record, &path)));
@@ -2770,33 +2799,38 @@ mod tests {
         assert!(elsewhere.exists());
     }
 
-    /// A journal that cannot be parsed describes a commit that never
-    /// began: `Journal::open` fsyncs before it returns, and `commit` does
-    /// not start until it has. So it must not block anything -- and it
-    /// especially must not block every *other* workspace, which is what
-    /// the first version did, because it refused before comparing roots.
-    /// A zero-byte journal is what a power cut during `Journal::open`
-    /// leaves, so this is the feature's own failure mode locking the
-    /// feature out.
+    /// The two names are the guarantee, so they are pinned. A journal
+    /// written straight to its final name would pass every other test in
+    /// this file -- the difference only shows up across a crash, which no
+    /// in-process test can stage -- and would quietly put the design back
+    /// to inferring completeness from whether the bytes parse.
     #[test]
-    fn an_unreadable_journal_blocks_nothing() {
-        let root = workspace("journal-corrupt");
-        let journals = root.join("../journal-corrupt-state");
+    fn a_journal_is_written_under_a_name_that_is_not_its_own() {
+        let (partial, done) = journal_names(Path::new("/state/patches"), 4321, "abcdef123456");
+        assert_eq!(done, Path::new("/state/patches/4321-abcdef123456.json"));
+        assert_eq!(
+            partial,
+            Path::new("/state/patches/4321-abcdef123456.json.tmp")
+        );
+        assert_ne!(partial, done, "the rename is what makes .json mean whole");
+    }
+
+    /// "Was it written whole" is a property of the file's name, not of
+    /// whether it parses. A `.json.tmp` is a write that never finished,
+    /// so its commit never started and it is cleaned up in silence.
+    #[test]
+    fn a_journal_that_was_never_finished_blocks_nothing() {
+        let root = workspace("journal-partial");
+        let journals = root.join("../journal-partial-state");
         let _ = fs::remove_dir_all(&journals);
         fs::create_dir_all(&journals).unwrap();
-        for (name, body) in [
-            ("55-zerobyte.json", b"".as_slice()),
-            (
-                "56-truncated.json",
-                b"{\"pid\": 55, \"files\": [{\"op\"".as_slice(),
-            ),
-        ] {
-            let path = journals.join(name);
-            fs::write(&path, body).unwrap();
-            let file = fs::File::options().write(true).open(&path).unwrap();
-            file.set_modified(std::time::SystemTime::now() - Duration::from_secs(3600))
-                .unwrap();
-        }
+        let partial = journals.join("55-torn.json.tmp");
+        fs::write(&partial, b"{\"pid\": 55, \"files\": [{\"op\"").unwrap();
+        let handle = fs::File::options().write(true).open(&partial).unwrap();
+        handle
+            .set_modified(std::time::SystemTime::now() - Duration::from_secs(3600))
+            .unwrap();
+        drop(handle);
 
         apply_patch(
             &root,
@@ -2811,82 +2845,107 @@ mod tests {
                 dry_run: None,
             },
         )
-        .expect("a journal whose commit never started must not block a patch");
+        .expect("a journal whose write never finished must not block a patch");
         assert_eq!(
             text(&root, "src/main.rs"),
             "fn main() {\n    let x = 3;\n}\n"
         );
+        assert!(!partial.exists(), "and it is tidied away");
     }
 
-    /// The interrupted-patch refusal tells a person where each original
-    /// is. The stale-temp sweep deletes `.ccnm-*` files over an hour old
-    /// in the directories a patch touches -- which is exactly what those
-    /// backups are. Nesting one workspace inside another is all it takes
-    /// for the sweep to run over another workspace's backups and make
-    /// that message a lie.
+    /// A `.json` got its name from a rename, so it was written whole, so
+    /// the commit it describes had started. One that cannot be parsed is
+    /// therefore the worst case and not the harmless one -- and the way
+    /// to produce it is not exotic: one build writes a journal, is
+    /// interrupted, and the other machine's build has since gained a
+    /// field. Two builds in flight is what deploying looks like.
     #[test]
-    fn the_sweep_leaves_backups_a_journal_still_points_at() {
-        let outer = workspace("journal-nested");
-        let inner = outer.join("sub");
-        fs::create_dir_all(&inner).unwrap();
-        fs::write(inner.join("app.rs"), "fn app() {}\n").unwrap();
-        let journals = outer.join("../journal-nested-state");
+    fn a_complete_journal_that_cannot_be_parsed_still_blocks() {
+        let root = workspace("journal-future");
+        let journals = root.join("../journal-future-state");
         let _ = fs::remove_dir_all(&journals);
         fs::create_dir_all(&journals).unwrap();
-
-        // An hour-old backup from an interrupted patch in the OUTER
-        // workspace, sitting in a directory the INNER one writes to.
-        let backup = inner.join(".ccnm-oldbackup-app.rs");
-        fs::write(&backup, "fn app() { original }\n").unwrap();
-        let ancient = std::time::SystemTime::now() - Duration::from_secs(7200);
-        let handle = fs::File::options().write(true).open(&backup).unwrap();
-        handle.set_modified(ancient).unwrap();
+        let path = journals.join("77-fromanotherbuild.json");
+        // Valid JSON, wrong shape: a build that renamed `files`.
+        fs::write(&path, br#"{"pid":77,"root":"/somewhere","entries":[]}"#).unwrap();
+        let handle = fs::File::options().write(true).open(&path).unwrap();
+        handle
+            .set_modified(std::time::SystemTime::now() - Duration::from_secs(3600))
+            .unwrap();
         drop(handle);
 
-        let journal = journals.join("31337-outer.json");
+        let err = apply_patch(
+            &root,
+            Some(&journals),
+            &ApplyPatchArgs {
+                files: vec![update(
+                    "src/main.rs",
+                    &version(&root, "src/main.rs"),
+                    "let x = 1;",
+                    "let x = 3;",
+                )],
+                dry_run: None,
+            },
+        )
+        .expect_err("a complete journal that cannot be read must block");
+        assert!(err.message().contains("cannot be read"), "{err}");
+        // And it says that it is blocking everything, because without the
+        // record there is no workspace to scope it to.
+        assert!(err.message().contains("every workspace"), "{err}");
+        assert_eq!(
+            text(&root, "src/main.rs"),
+            "fn main() {\n    let x = 1;\n}\n"
+        );
+    }
+
+    /// Nothing stops one workspace root from sitting inside another, and
+    /// then they share directories: a patch interrupted in the outer one
+    /// was renaming files the inner one is about to plan against.
+    #[test]
+    fn a_nested_workspace_is_blocked_by_the_outer_ones_interruption() {
+        let outer = workspace("journal-nest-block");
+        let inner = outer.join("web");
+        fs::create_dir_all(&inner).unwrap();
+        fs::write(inner.join("app.ts"), "export const a = 1;\n").unwrap();
+        let journals = outer.join("../journal-nest-block-state");
+        let _ = fs::remove_dir_all(&journals);
+        fs::create_dir_all(&journals).unwrap();
+        let path = journals.join("888-outer.json");
         fs::write(
-            &journal,
+            &path,
             serde_json::to_vec(&serde_json::json!({
-                "pid": 31337,
+                "pid": 888,
                 "root": outer.clone(),
                 "files": [{
                     "op": "update",
-                    "rel": "sub/app.rs",
-                    "abs": inner.join("app.rs"),
-                    "backup": backup.clone(),
+                    "rel": "web/app.ts",
+                    "abs": inner.join("app.ts"),
                 }],
             }))
             .unwrap(),
         )
         .unwrap();
-        let handle = fs::File::options().write(true).open(&journal).unwrap();
-        handle.set_modified(ancient).unwrap();
+        let handle = fs::File::options().write(true).open(&path).unwrap();
+        handle
+            .set_modified(std::time::SystemTime::now() - Duration::from_secs(3600))
+            .unwrap();
         drop(handle);
 
-        // A patch in the inner workspace, which sweeps that directory.
-        apply_patch(
+        let err = apply_patch(
             &inner,
             Some(&journals),
             &ApplyPatchArgs {
                 files: vec![update(
-                    "app.rs",
-                    &version(&inner, "app.rs"),
-                    "fn app() {}",
-                    "fn app() { changed }",
+                    "app.ts",
+                    &version(&inner, "app.ts"),
+                    "export const a = 1;",
+                    "export const a = 2;",
                 )],
                 dry_run: None,
             },
         )
-        .expect("the outer workspace's journal must not block the inner one");
-
-        assert!(
-            backup.exists(),
-            "the sweep deleted a backup the outer workspace's journal still names"
-        );
-        assert_eq!(
-            fs::read_to_string(&backup).unwrap(),
-            "fn app() { original }\n"
-        );
+        .expect_err("the inner workspace shares the directory that was left mid-rename");
+        assert!(err.message().contains("interrupted"), "{err}");
     }
 
     /// A journal young enough to be a commit that is still running is not

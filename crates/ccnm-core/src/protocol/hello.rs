@@ -77,6 +77,14 @@ pub struct HelloReport {
     /// The answering binary's own path, so the caller can see where the
     /// remote shell actually found it.
     pub exe: Option<PathBuf>,
+    /// What the answering side found at the path the request named.
+    ///
+    /// `None` means two different things and callers have to keep them
+    /// apart: the request did not ask about a path, or the answer came
+    /// from a build that predates the question. Serde already treats a
+    /// missing field of `Option` type as `None` without `#[serde(default)]`
+    /// -- measured, not assumed -- so a reply from an older ccnm decodes
+    /// and arrives here rather than failing as a malformed message.
     pub root: Option<PathStatus>,
 }
 

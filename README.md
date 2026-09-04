@@ -788,7 +788,17 @@ Linux                  controller 是 launchd LaunchAgent，只有 macOS
 ripgrep                家庭机没装 rg，doctor 全绿，等模型第一次 search_text 才炸
 项目工具链              cargo / node / python 装没装、版本对不对，一律不查
 原生工具是否真被禁       只有活会话能看出 Claude 最后拿到哪些工具，doctor 报 SKIP
+同版本号的不同 build     版本比的是 Cargo.toml 里那个号，两个都叫 0.1.0 的 build
+                       比出来就是相等。开发期正是 build 最容易漂的时候，而这个检查
+                       在那时候恒为通过（下面有细节）
 ```
+
+**"两台机器 build 必须一样"这句话，检查兑现不了全部。** `ccnm <workspace>` 起会话前会握手
+比版本，但比的是 `CARGO_PKG_VERSION`——发版时有用，开发时没用：你在一台上 `cargo build` 改了
+代码没改版本号，两边仍然都报 `0.1.0`，检查照过。
+
+能抓到的只有一种：对面的 build **老到少一个协议字段**，那会被认出来并明说"不是同一个 build"。
+其余情况只能靠纪律——**永远用 `scripts/deploy.sh` 装两边**，它从同一个二进制复制过去。
 
 ### 已知的洞
 

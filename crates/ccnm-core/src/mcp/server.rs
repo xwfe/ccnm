@@ -573,15 +573,24 @@ impl ServerHandler for Server {
     async fn list_tools(
         &self,
         _request: Option<rmcp::model::PaginatedRequestParams>,
-        _context: rmcp::service::RequestContext<rmcp::RoleServer>,
+        context: rmcp::service::RequestContext<rmcp::RoleServer>,
     ) -> std::result::Result<rmcp::model::ListToolsResult, ErrorData> {
+        // The cache hints the generated version sends, kept because
+        // replacing a method means inheriting everything it did, not just
+        // the part being changed. `ttl_ms: 0` with a public scope is what
+        // the macro emits: the list never changes for the life of a
+        // server, so a client may hold it, and every re-fetch of it over
+        // ssh is a round trip nobody needed.
+        let supports_cache_hints = context
+            .protocol_version()
+            .is_some_and(|version| version >= rmcp::model::ProtocolVersion::V_2026_07_28);
         Ok(rmcp::model::ListToolsResult {
             result_type: Some(rmcp::model::ResultType::COMPLETE),
             tools: self.tools(),
             meta: None,
             next_cursor: None,
-            ttl_ms: None,
-            cache_scope: None,
+            ttl_ms: supports_cache_hints.then_some(0),
+            cache_scope: supports_cache_hints.then_some(rmcp::model::CacheScope::Public),
         })
     }
 

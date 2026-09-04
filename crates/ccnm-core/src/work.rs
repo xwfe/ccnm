@@ -186,10 +186,19 @@ fn greet(ssh: &Ssh, workspace: &str, root: &Path, tools: &Tools<'_>) -> Result<(
                 status.describe()
             ),
         )),
-        // An older ccnm would not answer this, but the version check above
-        // has already refused an older ccnm.
-        None => Err(Error::internal(
-            "the workspace machine did not say whether the project root exists",
+        // No answer at all, from something calling itself the same
+        // version. That is the case the version numbers cannot catch:
+        // `VERSION` is the Cargo version, so every build of 0.1.0 compares
+        // equal to every other, and during development different builds
+        // carrying the same number is the normal state rather than the
+        // exception. A missing field is the one piece of hard evidence
+        // available that the two are not the same binary.
+        None => Err(Error::new(
+            ErrorCode::Version,
+            format!(
+                "the workspace machine reports ccnm {} like this one, but its reply is missing the project-root check, so the two are not the same build\ninstall this build there: scripts/deploy.sh <its alias>",
+                hello.ccnm_version
+            ),
         )),
     }
 }
@@ -1122,6 +1131,46 @@ mod tests {
         // And it never reached the network: the runner has no reply
         // queued, so a call would have failed differently.
         assert_eq!(fake.calls().len(), 0);
+    }
+
+    /// The version numbers cannot catch a build mismatch on their own:
+    /// `VERSION` is the Cargo version, so every 0.1.0 equals every other
+    /// 0.1.0, and while somebody is developing, two different binaries
+    /// carrying the same number is the normal state. A reply from a build
+    /// that predates a field has to decode -- otherwise the caller reports
+    /// a JSON problem and the sentence about versions never appears -- and
+    /// then the missing field is itself the evidence.
+    #[test]
+    fn a_reply_from_an_older_build_is_named_as_one() {
+        let dir = temp("greet-older");
+        let fake = FakeRunner::new();
+        // Exactly what a ccnm from before the root check answers.
+        fake.push(Output::exited(
+            0,
+            serde_json::json!({
+                "protocol": PROTOCOL,
+                "ccnm_version": crate::VERSION,
+                "user": "ccrun",
+                "platform": "macos/aarch64",
+                "exe": null,
+            })
+            .to_string(),
+        ));
+        let tools = Tools {
+            runner: &fake,
+            state: dir.clone(),
+            control_dir: control(&dir),
+            claude: None,
+            tmux: None,
+            controller: dir.join("nope.sock"),
+        };
+        let ssh = Ssh::new("xdwmbp", &tools.control_dir).unwrap();
+        let err = greet(&ssh, "fixture", Path::new("/Users/bing/fixture"), &tools)
+            .expect_err("a build that cannot answer the question is not this build");
+        assert_eq!(err.code(), ErrorCode::Version);
+        assert!(err.message().contains("not the same build"), "{err}");
+        // Not a decoding complaint, which is what it used to be.
+        assert!(!err.message().contains("missing field"), "{err}");
     }
 
     /// A project that moved used to be found out from inside the session,

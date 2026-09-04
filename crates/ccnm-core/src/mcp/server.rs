@@ -208,6 +208,9 @@ struct Inner {
     /// afterwards, so re-reading the file mid-session would only produce a
     /// number that disagrees with what the model was given.
     project: Option<context::Project>,
+    /// Further instruction files the project has, named in the handshake
+    /// rather than carried in it.
+    named: Vec<context::Named>,
     git: bool,
     git_subdir: Option<String>,
     /// Somebody is at a terminal, so a permission prompt can be answered.
@@ -233,7 +236,12 @@ impl Server {
         // model can still work, just without the project's rules. It is
         // logged here and reported by doctor's "Project instructions" row,
         // which is where someone can act on it.
-        let project = match context::find(&root, context::budget(&payload.workspace)) {
+        // Named once at startup, like everything else here: the
+        // handshake is sent once and cannot change afterwards, so
+        // re-scanning mid-session would only produce a list that
+        // disagrees with what the model was given.
+        let named = context::named(&root);
+        let project = match context::find(&root, context::budget(&payload.workspace, &named)) {
             Ok(project) => project,
             Err(e) => {
                 tracing::warn!(error = %e, "project instructions not readable");
@@ -259,6 +267,7 @@ impl Server {
                 exec_gate,
                 root,
                 project,
+                named,
                 git,
                 git_subdir,
                 interactive: payload.interactive,
@@ -293,7 +302,11 @@ impl Server {
     /// paragraph, then the project's CLAUDE.md, within
     /// [`MAX_INSTRUCTIONS_BYTES`] (design doc section 20).
     pub fn instructions(&self) -> String {
-        let text = context::instructions(&self.inner.workspace, self.inner.project.as_ref());
+        let text = context::instructions(
+            &self.inner.workspace,
+            self.inner.project.as_ref(),
+            &self.inner.named,
+        );
         debug_assert!(text.len() <= MAX_INSTRUCTIONS_BYTES);
         text
     }

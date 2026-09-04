@@ -675,7 +675,7 @@ fn project_instructions(r: &Resolved<'_>) -> Check {
     const NAME: &str = "Project instructions";
     let root = &r.workspace.root;
     let file = context::PROJECT_FILE;
-    match context::find(root, context::budget(r.name)) {
+    match context::find(root, context::budget(r.name, &context::named(root))) {
         Ok(None) => Check::ok(
             NAME,
             format!(

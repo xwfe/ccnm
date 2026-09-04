@@ -1,1 +1,4 @@
 /target/
+
+# macOS Finder droppings; they appear on any directory someone opens
+.DS_Store

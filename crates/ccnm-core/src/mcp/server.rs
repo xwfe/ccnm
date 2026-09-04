@@ -546,6 +546,28 @@ mod tests {
         assert!(err.message().contains("/nonexistent/ccnm-root"), "{err}");
     }
 
+    /// The settings allow-list on the work machine names these tools by
+    /// hand. A tool added or renamed here without updating that list would
+    /// be offered to the model and then denied on every call.
+    #[test]
+    fn tools_list_matches_the_sessions_allow_list() {
+        let dir = temp("tools");
+        let server = Server::new(&ServePayload::new("xshun", dir, "s")).unwrap();
+        let mut served: Vec<String> = server
+            .tool_router
+            .list_all()
+            .into_iter()
+            .map(|t| t.name.to_string())
+            .collect();
+        served.sort();
+        let mut allowed: Vec<String> = crate::session::MCP_TOOLS
+            .iter()
+            .map(|t| t.to_string())
+            .collect();
+        allowed.sort();
+        assert_eq!(served, allowed);
+    }
+
     #[test]
     fn root_is_canonical_and_info_counts_calls() {
         let dir = temp("info");

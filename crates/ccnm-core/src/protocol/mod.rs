@@ -8,5 +8,6 @@ pub mod hello;
 pub mod mcp;
 pub mod payload;
 pub mod probe;
+pub mod run;
 
 pub use payload::{PROTOCOL, Protocol};

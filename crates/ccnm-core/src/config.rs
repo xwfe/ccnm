@@ -17,7 +17,7 @@
 use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
 
@@ -161,9 +161,9 @@ pub enum MountMode {
 }
 
 /// Values accepted by `claude --permission-mode`, checked against Claude
-/// Code 2.1.259 `--help`. Serialized in Claude's own camelCase so the config
-/// file and the CLI flag read the same.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+/// Code 2.1.260 `--help`. Serialized in Claude's own camelCase so the config
+/// file, the session spec and the CLI flag all read the same.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum PermissionMode {
     #[default]

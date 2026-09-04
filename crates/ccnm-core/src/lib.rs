@@ -13,6 +13,7 @@ pub mod paths;
 pub mod process;
 pub mod protocol;
 pub mod safety;
+pub mod session;
 pub mod ssh;
 pub mod work;
 

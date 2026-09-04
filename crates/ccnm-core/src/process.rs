@@ -344,7 +344,11 @@ where
     let mut command = Command::new(&cmd.program);
     command
         .args(&cmd.args)
-        .stdin(Stdio::null())
+        .stdin(if cmd.stdin.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     if let Some(dir) = &cmd.cwd {
@@ -362,6 +366,17 @@ where
     let mut child = command.spawn().map_err(|e| {
         Error::internal(format!("cannot spawn {}", cmd.program.to_string_lossy())).with_source(e)
     })?;
+    // Same contract as [`SystemRunner::run`]: the bytes go in on their own
+    // thread, and a child that exits without reading them is not an error.
+    let stdin_writer = child
+        .stdin
+        .take()
+        .zip(cmd.stdin.clone())
+        .map(|(mut pipe, bytes)| {
+            thread::spawn(move || {
+                let _ = pipe.write_all(&bytes);
+            })
+        });
     let stdout = pump(child.stdout.take(), out);
     let stderr = pump(child.stderr.take(), err);
 
@@ -395,6 +410,9 @@ where
     // first means the wait below returns immediately.
     let stdout_bytes = join(stdout)?;
     let stderr_bytes = join(stderr)?;
+    if let Some(writer) = stdin_writer {
+        join(writer)?;
+    }
     finished.store(true, std::sync::atomic::Ordering::SeqCst);
     let timed_out = watchdog.join().unwrap_or(false);
     let status = child

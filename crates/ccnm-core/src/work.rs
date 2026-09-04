@@ -23,8 +23,8 @@ use crate::protocol::mcp::{ProbeReport as McpProbeReport, ServePayload};
 use crate::protocol::payload;
 use crate::protocol::probe::{ProbeReport, ProbeRequest};
 use crate::protocol::run::{
-    AttachRequest, RunReport, RunRequest, StartReport, StartRequest, StatusReport, StatusRequest,
-    StopReport, StopRequest,
+    AttachRequest, ResultReport, ResultRequest, RunReport, RunRequest, StartReport, StartRequest,
+    StatusReport, StatusRequest, StopReport, StopRequest,
 };
 use crate::protocol::{self};
 use crate::session::{self, Mode, Spec};
@@ -325,6 +325,93 @@ fn live_sessions(
             }
         })
         .collect()
+}
+
+/// What a session produced, for a caller that was not there when it
+/// finished.
+pub fn result(req: &ResultRequest, tools: &Tools<'_>) -> Result<ResultReport> {
+    let (id, dir, started) = match &req.session {
+        Some(id) => {
+            let dir = session::Dir::at(paths::session_dir(&tools.state, id));
+            if !dir.meta().is_file() {
+                return Err(Error::new(
+                    ErrorCode::NotReady,
+                    format!("no session {id} on this machine"),
+                ));
+            }
+            let started = started_at(&dir);
+            (id.clone(), dir, started)
+        }
+        None => newest_session(&tools.state, &req.workspace)?,
+    };
+    let spec = session::load(&dir)?;
+    let stdout = std::fs::read(dir.stdout()).unwrap_or_default();
+    let result = claude::parse_print(&stdout).ok();
+    Ok(ResultReport {
+        protocol: PROTOCOL,
+        session: id,
+        session_dir: dir.path().to_path_buf(),
+        mode: if spec.mode.is_interactive() {
+            "interactive".into()
+        } else {
+            "print".into()
+        },
+        started,
+        outcome: session::read_outcome(&dir)?,
+        result,
+        stdout_tail: tail(&stdout),
+        stderr_tail: tail(&std::fs::read(dir.stderr()).unwrap_or_default()),
+    })
+}
+
+/// The workspace's most recent **print** session, by when its directory
+/// was made.
+///
+/// Print only, because that is what this command is for. An interactive
+/// session's output went to a terminal as it happened and there is nothing
+/// stored to hand back; naming one explicitly still works, and says
+/// "still running" or how it ended.
+fn newest_session(state: &Path, workspace: &str) -> Result<(String, session::Dir, u64)> {
+    let sessions = paths::sessions_dir(state);
+    let mut best: Option<(String, session::Dir, u64)> = None;
+    let entries = std::fs::read_dir(&sessions).map_err(|e| {
+        Error::new(
+            ErrorCode::NotReady,
+            format!("no sessions on this machine yet ({})", sessions.display()),
+        )
+        .with_source(e)
+    })?;
+    for entry in entries.flatten() {
+        let dir = session::Dir::at(entry.path());
+        let Ok(spec) = session::load(&dir) else {
+            continue;
+        };
+        if spec.workspace != workspace || spec.mode.is_interactive() {
+            continue;
+        }
+        let started = started_at(&dir);
+        if best.as_ref().is_none_or(|(_, _, best)| started > *best) {
+            best = Some((spec.id, dir, started));
+        }
+    }
+    best.ok_or_else(|| {
+        Error::new(
+            ErrorCode::NotReady,
+            format!(
+                "no `--print` session for workspace {workspace} on this machine\nan interactive session prints to its own terminal; `ccnm attach {workspace}` goes back to it"
+            ),
+        )
+    })
+}
+
+/// Unix seconds the session directory was created, or 0 if that cannot be
+/// read. Only used for ordering and display.
+fn started_at(dir: &session::Dir) -> u64 {
+    std::fs::metadata(dir.meta())
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |d| d.as_secs())
 }
 
 /// Is this session's MCP transport still running?
@@ -964,6 +1051,150 @@ mod tests {
             text.contains("ccnm-other  other  detached  tools unknown  (context unknown)"),
             "{text}"
         );
+    }
+
+    /// The interruption `--print` cannot survive: the ssh carrying the
+    /// call dies, the session runs on and writes its answer, and without
+    /// this the answer is on another machine with no way to ask for it.
+    #[test]
+    fn result_finds_the_last_print_session_and_reads_what_it_wrote() {
+        let dir = temp("result");
+        let write_session = |id: &str, mode: Mode, stdout: Option<&str>| {
+            let sdir = session::Dir::at(paths::session_dir(&dir, id));
+            std::fs::create_dir_all(sdir.path()).unwrap();
+            let spec = Spec {
+                protocol: PROTOCOL,
+                id: id.to_string(),
+                workspace: "fixture".into(),
+                root: PathBuf::from("/Users/bing/ccnm-fixture"),
+                home_alias: "home".into(),
+                home_ccnm_bin: "ccnm".into(),
+                claude_config_dir: None,
+                permission_mode: crate::config::PermissionMode::default(),
+                mode,
+                timeout_secs: 600,
+                cwd: dir.clone(),
+            };
+            std::fs::write(sdir.meta(), serde_json::to_string(&spec).unwrap()).unwrap();
+            if let Some(text) = stdout {
+                std::fs::write(sdir.stdout(), text).unwrap();
+                std::fs::write(
+                    sdir.exit(),
+                    r#"{"exit_code":0,"timed_out":false,"duration_ms":4200}"#,
+                )
+                .unwrap();
+            }
+            sdir
+        };
+
+        let older = write_session(
+            "11111111-1111-4111-8111-111111111111",
+            Mode::Print {
+                prompt: "old".into(),
+            },
+            Some(r#"{"is_error":false,"result":"the older answer","num_turns":1}"#),
+        );
+        // Make the wanted one newer by a clear margin.
+        std::thread::sleep(Duration::from_millis(1100));
+        write_session(
+            "22222222-2222-4222-8222-222222222222",
+            Mode::Print {
+                prompt: "new".into(),
+            },
+            Some(r#"{"is_error":false,"result":"the answer nobody heard","num_turns":3}"#),
+        );
+        // Newest of all, and not what `ccnm result` is for.
+        std::thread::sleep(Duration::from_millis(1100));
+        write_session(
+            "33333333-3333-4333-8333-333333333333",
+            Mode::Interactive { prompt: None },
+            None,
+        );
+
+        let fake = FakeRunner::new();
+        let tools = tmux_tools(&fake, &dir, "result");
+        let rep = result(
+            &ResultRequest {
+                protocol: PROTOCOL,
+                workspace: "fixture".into(),
+                session: None,
+            },
+            &tools,
+        )
+        .unwrap();
+        assert_eq!(rep.session, "22222222-2222-4222-8222-222222222222");
+        assert_eq!(rep.mode, "print");
+        assert_eq!(
+            rep.result.as_ref().unwrap().result.as_deref(),
+            Some("the answer nobody heard")
+        );
+        assert!(rep.outcome.as_ref().unwrap().ok());
+        assert!(
+            rep.summary().contains("exited 0 in 4.2 s"),
+            "{}",
+            rep.summary()
+        );
+
+        // Naming one explicitly reaches an older session, and an
+        // interactive one.
+        let older_id = "11111111-1111-4111-8111-111111111111";
+        let rep = result(
+            &ResultRequest {
+                protocol: PROTOCOL,
+                workspace: "fixture".into(),
+                session: Some(older_id.into()),
+            },
+            &tools,
+        )
+        .unwrap();
+        assert_eq!(
+            rep.result.unwrap().result.as_deref(),
+            Some("the older answer")
+        );
+        assert_eq!(rep.session_dir, older.path());
+
+        let rep = result(
+            &ResultRequest {
+                protocol: PROTOCOL,
+                workspace: "fixture".into(),
+                session: Some("33333333-3333-4333-8333-333333333333".into()),
+            },
+            &tools,
+        )
+        .unwrap();
+        assert_eq!(rep.mode, "interactive");
+        assert!(rep.outcome.is_none(), "still running");
+
+        let missing = result(
+            &ResultRequest {
+                protocol: PROTOCOL,
+                workspace: "fixture".into(),
+                session: Some("44444444-4444-4444-8444-444444444444".into()),
+            },
+            &tools,
+        )
+        .unwrap_err();
+        assert_eq!(missing.code(), ErrorCode::NotReady);
+    }
+
+    /// A workspace with only interactive sessions has nothing stored to
+    /// hand back, and the error says where the output actually went.
+    #[test]
+    fn result_without_a_print_session_says_where_to_look_instead() {
+        let dir = temp("result-none");
+        std::fs::create_dir_all(paths::sessions_dir(&dir)).unwrap();
+        let fake = FakeRunner::new();
+        let err = result(
+            &ResultRequest {
+                protocol: PROTOCOL,
+                workspace: "fixture".into(),
+                session: None,
+            },
+            &tmux_tools(&fake, &dir, "result-none"),
+        )
+        .unwrap_err();
+        assert_eq!(err.code(), ErrorCode::NotReady);
+        assert!(err.message().contains("ccnm attach fixture"), "{err}");
     }
 
     /// A session whose transport died is the worst failure this system

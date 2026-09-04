@@ -13,8 +13,8 @@ use crate::protocol::mcp::{ProbeReport, ServePayload};
 use crate::protocol::payload;
 use crate::protocol::probe::{ProbeReport as WorkProbeReport, ProbeRequest};
 use crate::protocol::run::{
-    AttachRequest, RunReport, RunRequest, StartReport, StartRequest, StatusReport, StatusRequest,
-    StopReport, StopRequest,
+    AttachRequest, ResultReport, ResultRequest, RunReport, RunRequest, StartReport, StartRequest,
+    StatusReport, StatusRequest, StopReport, StopRequest,
 };
 use crate::ssh::{Master, Ssh};
 
@@ -132,6 +132,29 @@ pub fn stop(resolved: &Resolved<'_>, env: &Env<'_>) -> Result<StopReport> {
         env.runner,
         Master::Reuse,
         &["internal", "work-stop"],
+        &req,
+        Duration::from_secs(60),
+        ErrorCode::WorkUnreachable,
+    )
+}
+
+/// What a session produced, for a `--print` run whose ssh did not survive
+/// to hear the answer.
+pub fn result(
+    resolved: &Resolved<'_>,
+    env: &Env<'_>,
+    session: Option<&str>,
+) -> Result<ResultReport> {
+    let ssh = work_ssh(resolved, env)?;
+    let req = ResultRequest {
+        protocol: PROTOCOL,
+        workspace: resolved.name.to_string(),
+        session: session.map(str::to_string),
+    };
+    ssh.call_ccnm(
+        env.runner,
+        Master::Reuse,
+        &["internal", "work-result"],
         &req,
         Duration::from_secs(60),
         ErrorCode::WorkUnreachable,

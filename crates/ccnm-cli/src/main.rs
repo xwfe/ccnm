@@ -13,7 +13,7 @@ use ccnm_core::protocol::mcp::ServePayload;
 use ccnm_core::protocol::payload;
 use ccnm_core::protocol::probe::ProbeRequest;
 use ccnm_core::protocol::run::{
-    AttachRequest, RunReport, RunRequest, StartRequest, StatusRequest, StopRequest,
+    AttachRequest, ResultRequest, RunReport, RunRequest, StartRequest, StatusRequest, StopRequest,
 };
 use ccnm_core::{
     Config, Result, claude, controller, doctor, launchagent, launcher, mcp, paths, safety, session,
@@ -74,6 +74,15 @@ enum Command {
         /// Every ccnm session on that machine, not just this workspace's
         #[arg(long)]
         all: bool,
+    },
+    /// What a session produced, for a `--print` run this terminal did not
+    /// stay connected to
+    Result {
+        /// Workspace name from config.toml
+        workspace: String,
+        /// A session id; without one, the workspace's most recent session
+        #[arg(long, value_name = "ID")]
+        session: Option<String>,
     },
     /// End a workspace's session: Claude, its terminal and its MCP
     /// transport all go away
@@ -180,6 +189,11 @@ enum InternalCommand {
         #[arg(long)]
         payload: String,
     },
+    /// Work-side read of what a session produced
+    WorkResult {
+        #[arg(long)]
+        payload: String,
+    },
     /// Be Claude's parent for one session; started by the controller
     Supervise {
         #[arg(long)]
@@ -262,6 +276,27 @@ fn run(cli: Cli) -> Result<i32> {
             let resolved = config.workspace(workspace)?;
             let rep = launcher::status(&resolved, &home_env()?, *all)?;
             print!("{}", rep.render());
+            Ok(0)
+        }
+        Command::Result { workspace, session } => {
+            let config = Config::load(&config_path()?)?;
+            let resolved = config.workspace(workspace)?;
+            let rep = launcher::result(&resolved, &home_env()?, session.as_deref())?;
+            println!("{}", rep.summary());
+            match &rep.result {
+                Some(r) => {
+                    println!("\n--- result ---");
+                    println!("{}", r.result.as_deref().unwrap_or("").trim_end());
+                }
+                None if !rep.stdout_tail.is_empty() => {
+                    println!("\n--- stdout (tail) ---\n{}", rep.stdout_tail.trim_end());
+                }
+                None => {}
+            }
+            if !rep.stderr_tail.trim().is_empty() {
+                eprintln!("\n--- stderr (tail) ---\n{}", rep.stderr_tail.trim_end());
+            }
+            eprintln!("\nsession directory on work: {}", rep.session_dir.display());
             Ok(0)
         }
         Command::Stop { workspace } => {
@@ -356,6 +391,10 @@ fn run(cli: Cli) -> Result<i32> {
             InternalCommand::WorkStatus { payload } => {
                 let req: StatusRequest = payload::decode(payload)?;
                 print_json(&work::status(&req, &work_tools()?))
+            }
+            InternalCommand::WorkResult { payload } => {
+                let req: ResultRequest = payload::decode(payload)?;
+                print_json(&work::result(&req, &work_tools()?)?)
             }
         },
     }

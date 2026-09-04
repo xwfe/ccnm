@@ -206,6 +206,67 @@ impl Protocol for StopReport {
     }
 }
 
+/// `ccnm internal work-result`: what a session that already ran produced.
+///
+/// This exists for the interruption `--print` cannot survive. The session
+/// itself does: it is the supervisor's child, not the ssh's, so it runs on
+/// and writes its result to the session directory. What breaks is the
+/// waiting — the ssh carrying `work-run` dies with the laptop lid, and the
+/// answer is on the other machine with no way to ask for it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResultRequest {
+    pub protocol: u32,
+    pub workspace: String,
+    /// A session id; without one, the workspace's most recent session.
+    #[serde(default)]
+    pub session: Option<String>,
+}
+
+impl Protocol for ResultRequest {
+    fn protocol(&self) -> u32 {
+        self.protocol
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ResultReport {
+    pub protocol: u32,
+    pub session: String,
+    pub session_dir: PathBuf,
+    /// `print` or `interactive`.
+    pub mode: String,
+    /// When it started, unix seconds, from the session directory.
+    pub started: u64,
+    /// `None` while it is still running.
+    pub outcome: Option<Outcome>,
+    pub result: Option<PrintResult>,
+    pub stdout_tail: String,
+    pub stderr_tail: String,
+}
+
+impl Protocol for ResultReport {
+    fn protocol(&self) -> u32 {
+        self.protocol
+    }
+}
+
+impl ResultReport {
+    pub fn summary(&self) -> String {
+        let state = match &self.outcome {
+            None => "still running".to_string(),
+            Some(o) => o.describe(),
+        };
+        let mut lines = vec![
+            format!("session   {} ({})", self.session, self.mode),
+            format!("claude    {state}"),
+        ];
+        if let Some(r) = &self.result {
+            lines.push(format!("run       {}", r.summary()));
+        }
+        lines.join("\n")
+    }
+}
+
 /// `ccnm internal work-status`: every live session on the work machine.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StatusRequest {

@@ -341,8 +341,30 @@ fn start_session(session_dir: &Path, tools: &Tools<'_>) -> Result<u32> {
         )));
     }
     let pid = server_pid(&tmux, tools)?;
+    label_status_bar(&tmux, tools, &name);
     tracing::info!(session = %spec.id, %name, server_pid = pid, "started tmux session");
     Ok(pid)
+}
+
+/// Tell the status bar how to leave without killing Claude.
+///
+/// Cosmetic, so every failure here is ignored: a session that runs with a
+/// plain status bar is worth more than one refused because `set-option`
+/// did not like something.
+fn label_status_bar(tmux: &tmux::Tmux, tools: &Tools<'_>, name: &str) {
+    let prefix = tools
+        .runner
+        .run(&tmux.prefix_cmd())
+        .map(|out| out.stdout_lossy().trim().to_string())
+        .unwrap_or_default();
+    let prefix = if prefix.is_empty() {
+        "C-b".to_string()
+    } else {
+        prefix
+    };
+    let _ = tools
+        .runner
+        .run(&tmux.status_right_cmd(name, &format!(" ccnm · detach: {prefix} d ")));
 }
 
 /// The tmux server's pid: proof that the session is backed by a process,
@@ -719,6 +741,8 @@ mod tests {
         fake.push(Output::exited(1, "")); // has-session: not running
         fake.push(Output::exited(0, "")); // new-session
         fake.push(Output::exited(0, "4242\n")); // display-message: server pid
+        fake.push(Output::exited(0, "C-a\n")); // show-options: the prefix
+        fake.push(Output::exited(0, "")); // set-option: status-right
 
         let req = Request::new(RequestBody::Start {
             session_dir: dir.clone(),
@@ -729,8 +753,14 @@ mod tests {
         assert_eq!(pid, 4242, "the tmux server's pid is what comes back");
 
         let calls = fake.calls();
-        assert_eq!(calls.len(), 3);
+        assert_eq!(calls.len(), 5);
         assert!(calls[0].display().contains("has-session -t ccnm-xshun"));
+        // The way out is read from this machine's tmux, not assumed.
+        assert!(
+            calls[4].display().contains("ccnm · detach: C-a d"),
+            "{}",
+            calls[4].display()
+        );
         let new = calls[1].display();
         assert!(
             new.contains("-L ccnm new-session -d -s ccnm-xshun"),

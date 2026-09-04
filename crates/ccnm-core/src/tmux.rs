@@ -9,14 +9,23 @@
 //! Two rules decide everything in this module.
 //!
 //! **The controller starts the server, nobody else.** A tmux server
-//! inherits the security session of whoever forked it, and passes that on
-//! to every process it starts. Measured on 2026-09-04: a server started
-//! from an ssh session runs `Background`, and so does a Claude inside it,
-//! which on a machine that keeps its credentials in the Keychain means a
-//! logged-in machine reporting "not logged in" (section 21). Started by
-//! the LaunchAgent controller, the server is `Aqua` and so is Claude. The
-//! supervisor measures this from the inside and writes it down, so the
-//! answer is a fact about the running session rather than an inference.
+//! inherits the security session of whoever forked it and passes it on to
+//! everything it runs. Measured on 2026-09-04, the same `tmux
+//! new-session` from two places:
+//!
+//! ```text
+//! server forked by                    launchctl managername   login Keychain
+//! the controller (a gui/ LaunchAgent) Background              answers
+//! an ssh session                      Background              "User interaction is not allowed"
+//! ```
+//!
+//! So the rule holds — a server started from ssh really cannot reach the
+//! credentials — but the signal ccnm used until now cannot show it:
+//! `managername` says `Background` for both, because tmux daemonizes out
+//! of the `gui/` launchd domain either way. What actually survives that is
+//! the audit session, which is what the Keychain gates on. The supervisor
+//! therefore measures both facts from inside the session
+//! ([`crate::session::Context`]) instead of anyone inferring either.
 //!
 //! **ccnm gets its own server**, `tmux -L ccnm`, never the user's default
 //! one. A session must not disappear because someone typed `tmux
@@ -152,6 +161,25 @@ impl Tmux {
     pub fn session_id_cmd(&self, name: &str) -> Cmd {
         self.base()
             .args(["show-environment", "-t", name, SESSION_VAR])
+    }
+
+    /// The current prefix key, e.g. `C-b`.
+    ///
+    /// Asked rather than assumed: this server reads the user's
+    /// `~/.tmux.conf` like any other, so someone who rebound the prefix
+    /// would be told the wrong way out.
+    pub fn prefix_cmd(&self) -> Cmd {
+        self.base().args(["show-options", "-gv", "prefix"])
+    }
+
+    /// Put `text` in the session's status bar, on the right.
+    ///
+    /// The status bar is the only thing on screen that says this is tmux,
+    /// and the one thing a person needs from it is how to leave without
+    /// killing Claude.
+    pub fn status_right_cmd(&self, name: &str, text: &str) -> Cmd {
+        self.base()
+            .args(["set-option", "-t", name, "status-right", text])
     }
 
     /// `tmux has-session`: exit 0 when the session is live.

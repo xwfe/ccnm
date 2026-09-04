@@ -234,6 +234,10 @@ fn doctor_against_unreachable_work_exits_work_unreachable() {
         "{text}"
     );
     assert!(
+        text.contains("Work controller         SKIP   not checked: work SSH failed"),
+        "{text}"
+    );
+    assert!(
         text.contains("Remote MCP handshake    SKIP   not checked: work SSH failed"),
         "{text}"
     );
@@ -242,7 +246,7 @@ fn doctor_against_unreachable_work_exits_work_unreachable() {
         "{text}"
     );
     assert!(
-        text.contains("NOT READY (1 failed, 12 not checked)"),
+        text.contains("NOT READY (1 failed, 13 not checked)"),
         "{text}"
     );
     // Read-only: nothing appeared in the root.

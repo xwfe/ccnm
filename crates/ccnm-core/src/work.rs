@@ -1,13 +1,18 @@
-//! The work-controller role: what `ccnm` does on the work machine when the
-//! home launcher calls it over ssh. This build has `probe` (read-only, for
-//! doctor). `work-run`, which sets up a session and starts Claude, comes
-//! with phase 3.
+//! What `ccnm` does on the work machine when the home launcher calls it
+//! over ssh. This build has `probe` (read-only, for doctor). `work-run`,
+//! which sets up a session and starts Claude, comes next.
+//!
+//! This code runs in an **ssh session**, which is not the login session.
+//! Anything that needs the login session — asking Claude about its
+//! credentials, and later starting it — is forwarded to
+//! [`crate::controller`] rather than done here.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use crate::claude;
-use crate::error::{Error, ErrorCode, Result};
+use crate::claude::{self, ClaudeReport};
+use crate::controller;
+use crate::error::{Error, ErrorCode, ErrorReport, Reported, Result};
 use crate::mcp;
 use crate::process::ProcessRunner;
 use crate::protocol::PROTOCOL;
@@ -23,8 +28,12 @@ pub struct Tools<'a> {
     pub runner: &'a dyn ProcessRunner,
     /// Where ControlPath sockets live on this machine.
     pub control_dir: PathBuf,
-    /// The `claude` binary, if [`claude::locate`] found one.
+    /// The `claude` binary, if [`claude::locate`] found one. Only used as
+    /// a fallback for the version when no controller is running; the
+    /// controller finds its own, in launchd's environment.
     pub claude: Option<PathBuf>,
+    /// The controller's socket on this machine.
+    pub controller: PathBuf,
 }
 
 /// Everything doctor wants to know about this machine, in one round trip.
@@ -66,17 +75,62 @@ pub fn probe(req: &ProbeRequest, tools: &Tools<'_>) -> ProbeReport {
         }
     };
 
+    let (controller, claude) = ask_about_claude(tools, req.claude_config_dir.as_deref());
     ProbeReport {
         protocol: PROTOCOL,
         hello: hello::answer(&HelloRequest::new(None)),
-        claude: claude::report(
-            tools.claude.as_deref(),
-            req.claude_config_dir.as_deref(),
-            tools.runner,
-        ),
+        controller: Some(controller),
+        claude,
         home_ssh,
         home_hello,
         mcp,
+    }
+}
+
+/// Claude's login state, from the only context whose answer means
+/// anything.
+///
+/// With a controller, everything about Claude comes from it: not just the
+/// login but the binary and version too, because the controller's `PATH`
+/// is launchd's, and that is the `claude` a session would really start.
+///
+/// Without one, the version is still worth reporting — it needs no
+/// credential — but the login is left as `CCNM_E_NOT_READY`. This session
+/// *can* run `claude auth status`; the point is that its answer would be
+/// wrong, and a wrong row sends the user to log in on a machine that is
+/// already logged in.
+fn ask_about_claude(
+    tools: &Tools<'_>,
+    config_dir: Option<&Path>,
+) -> (Reported<controller::Context>, ClaudeReport) {
+    match controller::context(&tools.controller) {
+        Ok(ctx) => {
+            let claude =
+                controller::claude_auth(&tools.controller, config_dir).unwrap_or_else(|e| {
+                    ClaudeReport {
+                        path: None,
+                        version: Err((&e).into()),
+                        auth: Err(e.into()),
+                    }
+                });
+            (Ok(ctx), claude)
+        }
+        Err(missing) => {
+            let mut claude = claude::report(
+                tools.claude.as_deref(),
+                config_dir,
+                tools.runner,
+                claude::Ask::VersionOnly,
+            );
+            claude.auth = Err(ErrorReport::new(
+                ErrorCode::NotReady,
+                format!(
+                    "not checked: no work controller to ask, and this ssh session's answer would be wrong\n{}",
+                    missing.message()
+                ),
+            ));
+            (Err(missing.into()), claude)
+        }
     }
 }
 
@@ -100,7 +154,7 @@ mod tests {
     use std::path::Path;
 
     use super::*;
-    use crate::process::{FakeRunner, Output};
+    use crate::process::{Cmd, FakeRunner, Output};
     use crate::protocol::hello::PathStatus;
 
     fn temp(test: &str) -> PathBuf {
@@ -144,20 +198,31 @@ mod tests {
         }
     }
 
+    /// A socket path no controller is on, so the probe takes the
+    /// no-controller branch.
+    fn absent_socket(test: &str) -> PathBuf {
+        PathBuf::from(format!(
+            "/tmp/ccnm-absent-{}-{test}.sock",
+            std::process::id()
+        ))
+    }
+
     #[test]
     fn probe_collects_every_fact_in_one_report() {
         let dir = temp("probe");
         let fake = FakeRunner::new();
-        // Call order: ssh -G, ssh internal hello, claude --version, claude auth status.
+        // Call order: ssh -G, ssh internal hello, claude --version. No
+        // `claude auth status`: with no controller its answer would be
+        // wrong, so it is not asked at all.
         fake.push(Output::exited(0, "hostname home.ts\nuser ccrun\n"));
         fake.push(Output::exited(0, hello_json(true)));
         fake.push(Output::exited(0, "2.1.259 (Claude Code)\n"));
-        fake.push(Output::exited(0, r#"{"loggedIn":true,"email":"me@x"}"#));
 
         let tools = Tools {
             runner: &fake,
             control_dir: control(&dir),
             claude: Some(PathBuf::from("/usr/local/bin/claude")),
+            controller: absent_socket("probe"),
         };
         let rep = probe(&request(), &tools);
 
@@ -167,11 +232,29 @@ mod tests {
         assert_eq!(home.user, "ccrun");
         assert!(home.root.unwrap().is_ok());
         assert_eq!(rep.claude.version, Ok("2.1.259".into()));
-        assert!(rep.claude.auth.as_ref().unwrap().logged_in);
+        assert_eq!(
+            rep.claude.auth.as_ref().unwrap_err().code(),
+            ErrorCode::NotReady,
+            "an unaskable login must not be reported as logged out"
+        );
+        assert_eq!(
+            rep.controller
+                .as_ref()
+                .unwrap()
+                .as_ref()
+                .unwrap_err()
+                .code(),
+            ErrorCode::NotReady
+        );
         assert_eq!(rep.mcp, None, "mcp_calls = 0 means no handshake");
 
         let calls = fake.calls();
-        assert_eq!(calls.len(), 4);
+        assert_eq!(
+            calls.len(),
+            3,
+            "{:?}",
+            calls.iter().map(Cmd::display).collect::<Vec<_>>()
+        );
         assert_eq!(calls[0].display(), "ssh -G ccnm-home");
         let reverse = calls[1].display();
         assert!(
@@ -221,6 +304,7 @@ mod tests {
             runner: &fake,
             control_dir: control(&dir),
             claude: None,
+            controller: absent_socket("probe-fail"),
         };
         let rep = probe(
             &ProbeRequest {
@@ -248,10 +332,82 @@ mod tests {
             runner: &fake,
             control_dir: control(&dir),
             claude: None,
+            controller: absent_socket("probe-127"),
         };
         let rep = probe(&request(), &tools);
         let err = rep.home_hello.unwrap_err();
         assert_eq!(err.code(), ErrorCode::Version);
         assert!(err.message.contains("~/.local/bin/ccnm"), "{}", err.message);
+    }
+
+    /// The point of the whole phase: when a controller is listening, every
+    /// question about Claude goes to it, and this ssh session runs no
+    /// `claude` at all -- not even the version, because the controller's
+    /// PATH is the one Claude will really be started from.
+    #[test]
+    fn with_a_controller_claude_is_asked_there_and_not_here() {
+        let dir = temp("probe-controller");
+        let socket = PathBuf::from(format!("/tmp/ccnm-wp-{}.sock", std::process::id()));
+        let _ = std::fs::remove_file(&socket);
+        let listener = crate::controller::Listener::bind(&socket).unwrap();
+
+        // The controller's own environment: a login session, and a claude
+        // that answers both questions.
+        let served = std::thread::spawn(move || {
+            let inner = FakeRunner::new();
+            inner.push(Output::exited(0, "Aqua\n"));
+            inner.push(Output::exited(0, "2.1.259 (Claude Code)\n"));
+            inner.push(Output::exited(
+                0,
+                r#"{"loggedIn":true,"email":"me@x","authMethod":"claude.ai"}"#,
+            ));
+            let tools = crate::controller::Tools {
+                runner: &inner,
+                claude: Some(PathBuf::from("/opt/homebrew/bin/claude")),
+            };
+            listener.serve_one(&tools).unwrap(); // hello
+            listener.serve_one(&tools).unwrap(); // claude-auth
+            inner.calls()
+        });
+
+        let fake = FakeRunner::new();
+        fake.push(Output::exited(0, "hostname home.ts\nuser ccrun\n"));
+        fake.push(Output::exited(0, hello_json(true)));
+        let tools = Tools {
+            runner: &fake,
+            control_dir: control(&dir),
+            claude: Some(PathBuf::from("/usr/local/bin/claude")),
+            controller: socket.clone(),
+        };
+        let rep = probe(&request(), &tools);
+
+        let ctx = rep.controller.as_ref().unwrap().as_ref().unwrap();
+        assert!(ctx.login_session(), "{ctx:?}");
+        assert!(rep.claude.auth.as_ref().unwrap().logged_in);
+        assert_eq!(rep.claude.version, Ok("2.1.259".into()));
+        assert_eq!(
+            rep.claude.path,
+            Some(PathBuf::from("/opt/homebrew/bin/claude")),
+            "the binary reported must be the controller's, not this session's"
+        );
+        let ssh_calls: Vec<String> = fake.calls().iter().map(Cmd::display).collect();
+        assert_eq!(ssh_calls.len(), 2, "{ssh_calls:?}");
+        assert!(
+            !ssh_calls.iter().any(|c| c.contains("claude")),
+            "the ssh session must not run claude itself: {ssh_calls:?}"
+        );
+
+        // ...and the controller ran exactly the two claude commands, with
+        // the config dir from the request.
+        let inner_calls = served.join().unwrap();
+        assert_eq!(inner_calls.len(), 3);
+        assert!(inner_calls[1].display().contains("--version"));
+        assert!(inner_calls[2].display().contains("auth status"));
+        assert!(
+            inner_calls[2]
+                .env
+                .iter()
+                .any(|(k, v)| k == "CLAUDE_CONFIG_DIR" && v == "/x/claude")
+        );
     }
 }

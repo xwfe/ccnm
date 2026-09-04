@@ -43,6 +43,18 @@ pub struct ProbeReport {
     pub protocol: u32,
     /// The work machine's own hello.
     pub hello: HelloReport,
+    /// The login-session controller, as reached from this ssh session.
+    /// `None` only from a ccnm build that predates it.
+    #[serde(default)]
+    pub controller: Option<Reported<crate::controller::Context>>,
+    /// Claude Code on the work machine.
+    ///
+    /// Asked **through the controller** whenever one is running, because
+    /// an ssh session gets the wrong answer about the login: it cannot
+    /// read the Keychain, so a logged-in machine reports "Not logged in"
+    /// (see [`crate::controller`]). With no controller, `version` still
+    /// comes from this session — it needs no credential — and `auth` is a
+    /// `CCNM_E_NOT_READY` error rather than a guess.
     pub claude: ClaudeReport,
     /// What `ssh -G <home_alias>` resolves to on the work machine.
     pub home_ssh: Reported<ResolvedSsh>,

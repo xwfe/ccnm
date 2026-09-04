@@ -249,10 +249,13 @@ pub struct Tools<'a> {
 pub fn answer(req: &Request, tools: &Tools<'_>) -> Response {
     match &req.body {
         RequestBody::Hello => Response::new(ReplyBody::Hello(Context::of(tools.runner))),
+        // Everything, because this is the one place where the answer about
+        // the login is worth having.
         RequestBody::ClaudeAuth { config_dir } => Response::new(ReplyBody::Claude(claude::report(
             tools.claude.as_deref(),
             config_dir.as_deref(),
             tools.runner,
+            claude::Ask::Everything,
         ))),
     }
 }
@@ -310,10 +313,16 @@ impl Listener {
                 tracing::debug!(path = %path.display(), "removed a stale controller socket");
             }
         }
-        if let Some(dir) = path.parent() {
+        // A directory ccnm creates is its own, so it gets 0700. One that
+        // already exists is the user's, and is left exactly as it is: the
+        // lock that matters is the socket's own 0600 below, and silently
+        // re-permissioning somebody's directory (or failing on /tmp, which
+        // cannot be chmodded at all) is not a thing a tool should do to
+        // get a socket open.
+        if let Some(dir) = path.parent()
+            && !dir.exists()
+        {
             std::fs::create_dir_all(dir)?;
-            // The socket's own mode is set below; this is what keeps other
-            // accounts from reaching it at all.
             std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
         }
         let listener = UnixListener::bind(path).map_err(|e| {

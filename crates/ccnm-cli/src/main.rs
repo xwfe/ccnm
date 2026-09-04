@@ -205,10 +205,12 @@ fn run(cli: Cli) -> Result<i32> {
             }
             InternalCommand::Probe { payload } => {
                 let req: ProbeRequest = payload::decode(payload)?;
+                let state = paths::state_dir()?;
                 let tools = work::Tools {
                     runner: &SystemRunner,
-                    control_dir: paths::state_dir()?.join("ssh"),
+                    control_dir: state.join("ssh"),
                     claude: claude::locate_from_env(),
+                    controller: paths::controller_socket(&state),
                 };
                 print_json(&work::probe(&req, &tools))
             }

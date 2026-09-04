@@ -345,6 +345,8 @@ fn workspace_checks(r: &Resolved<'_>, env: &Env<'_>) -> Vec<Check> {
 fn probe_rows(r: &Resolved<'_>, rep: &ProbeReport) -> Vec<Check> {
     let mut checks = vec![version_row("Work ccnm", &rep.hello, "work")];
 
+    checks.push(controller_row(rep));
+
     checks.push(match &rep.claude.version {
         Ok(v) => {
             let path = rep
@@ -361,6 +363,12 @@ fn probe_rows(r: &Resolved<'_>, rep: &ProbeReport) -> Vec<Check> {
     checks.push(match &rep.claude.auth {
         Ok(a) if a.logged_in => Check::ok("Claude authentication", a.describe()),
         Ok(_) => Check::fail_with("Claude authentication", ErrorCode::Auth, auth_hint(r)),
+        // "Nobody asked the right process" is not a diagnosis about
+        // Claude. SKIP still blocks READY, so nothing runs on the strength
+        // of an unchecked login.
+        Err(e) if e.code() == ErrorCode::NotReady => {
+            Check::skip("Claude authentication", &e.message)
+        }
         Err(e) => Check::fail_report("Claude authentication", e),
     });
 
@@ -528,22 +536,44 @@ fn version_row(name: &'static str, hello: &HelloReport, side: &str) -> Check {
     }
 }
 
+/// The controller: is there one, and is it somewhere useful?
+///
+/// Three outcomes, and the middle one is why this row exists at all. A
+/// controller running outside the login session answers every request and
+/// is still useless, which no other row would have caught.
+fn controller_row(rep: &ProbeReport) -> Check {
+    const NAME: &str = "Work controller";
+    match &rep.controller {
+        None => Check::skip(NAME, "that ccnm build does not have one"),
+        Some(Err(e)) if e.code() == ErrorCode::NotReady => Check::skip(NAME, &e.message),
+        Some(Err(e)) => Check::fail_report(NAME, e),
+        Some(Ok(ctx)) if !ctx.login_session() => Check::fail_with(
+            NAME,
+            ErrorCode::NotReady,
+            format!(
+                "{}\nit answers, but not from a login session, so Claude started there could not read its own credentials\nrun on work: ccnm work-controller install",
+                ctx.describe()
+            ),
+        ),
+        Some(Ok(ctx)) => Check::ok(NAME, ctx.describe()),
+    }
+}
+
 /// Design doc section 21: report, point at the manual login, never log in.
 ///
-/// The probe runs `claude auth status` inside a non-interactive ssh
-/// session. On macOS the login lives in the Keychain, and a locked or
-/// UI-less session cannot read it (errSecInteractionNotAllowed, `security`
-/// exit 36), so "not authenticated" here can also mean "authenticated, but
-/// not from ssh". Verified on the real work machine 2026-09-03.
+/// This row is only reached when a controller answered, so the reading is
+/// unambiguous: Claude was asked from the work machine's login session and
+/// said no. There is no "…or maybe the Keychain was unreadable" left in
+/// it, which was the whole point of the controller.
 fn auth_hint(r: &Resolved<'_>) -> String {
-    const KEYCHAIN: &str = "if an interactive `claude auth status` on work says logged in, the login Keychain is not readable from a non-interactive ssh session; phase 3 must start Claude where the Keychain is (design doc section 21)";
+    const WHERE: &str = "asked from the work machine's login session, so this is Claude's real answer, not an artefact of ssh";
     match &r.work.claude_config_dir {
         Some(dir) => format!(
-            "Claude is not authenticated in configured CLAUDE_CONFIG_DIR, as seen from ssh\nrun on work: CLAUDE_CONFIG_DIR={} claude auth login\n{KEYCHAIN}",
+            "Claude is not authenticated in the configured CLAUDE_CONFIG_DIR ({WHERE})\nrun on work, on its own screen: CLAUDE_CONFIG_DIR={} claude auth login",
             dir.display()
         ),
         None => format!(
-            "Claude is not authenticated on the work machine, as seen from ssh\nrun on work: claude auth login\n{KEYCHAIN}"
+            "Claude is not authenticated on the work machine ({WHERE})\nrun on work, on its own screen: claude auth login\nan expired OAuth session looks the same as never having logged in; either way the fix is that command"
         ),
     }
 }
@@ -553,6 +583,7 @@ fn skipped_after_work_ssh() -> Vec<Check> {
     const REASON: &str = "not checked: work SSH failed";
     [
         "Work ccnm",
+        "Work controller",
         "Claude Code",
         "Claude authentication",
         "Reverse SSH",
@@ -650,8 +681,8 @@ fn home_ccnm(r: &Resolved<'_>, env: &Env<'_>) -> Check {
 fn not_yet_implemented() -> Vec<Check> {
     [
         ("Workspace policy", "2"),
-        ("Project instructions", "3"),
-        ("Native tools disabled", "3"),
+        ("Project instructions", "3.5"),
+        ("Native tools disabled", "3.5"),
         ("Runtime identity", "5"),
         ("Network isolation", "5"),
         ("Terminal session", "6"),
@@ -762,12 +793,23 @@ mod tests {
         }
     }
 
+    /// A controller answering from the login session, which is the only
+    /// context whose answer about Claude counts.
+    fn controller(manager: &str) -> crate::controller::Context {
+        crate::controller::Context {
+            hello: hello("me", crate::VERSION, None),
+            pid: 4711,
+            manager: Ok(manager.to_string()),
+        }
+    }
+
     fn good_probe() -> ProbeReport {
         use crate::claude::AuthStatus;
         use crate::claude::ClaudeReport;
         ProbeReport {
             protocol: PROTOCOL,
             hello: hello("me", crate::VERSION, None),
+            controller: Some(Ok(controller("Aqua"))),
             claude: ClaudeReport {
                 path: Some(PathBuf::from("/opt/homebrew/bin/claude")),
                 version: Ok("2.1.259".into()),
@@ -938,6 +980,7 @@ mod tests {
             "Home ccnm",
             "Work SSH",
             "Work ccnm",
+            "Work controller",
             "Claude Code",
             "Claude authentication",
             "Reverse SSH",
@@ -946,6 +989,10 @@ mod tests {
         ] {
             assert_eq!(row(&report, name).status, Status::Ok, "{name}:\n{text}");
         }
+        assert_eq!(
+            row(&report, "Work controller").detail,
+            format!("ccnm {} as me, pid 4711, Aqua", crate::VERSION)
+        );
         assert_eq!(
             row(&report, "Remote MCP handshake").detail,
             "initialize in 190 ms, tools/list (1 tool, 412 B), workspace_info x1 p50 22 ms p95 22 ms max 22 ms, pid 4242 throughout"
@@ -1051,7 +1098,7 @@ mod tests {
         assert_eq!(row(&report, "Workspace root").status, Status::Skip);
         let text = report.render();
         assert!(
-            text.ends_with("NOT READY (1 failed, 12 not checked)\n"),
+            text.ends_with("NOT READY (1 failed, 13 not checked)\n"),
             "{text}"
         );
     }
@@ -1084,11 +1131,10 @@ mod tests {
         );
         let auth = row(&report, "Claude authentication");
         assert_eq!(auth.status, Status::Fail(ErrorCode::Auth));
-        assert!(
-            auth.detail.contains("run on work: claude auth login"),
-            "{}",
-            auth.detail
-        );
+        assert!(auth.detail.contains("claude auth login"), "{}", auth.detail);
+        // The answer came from the login session, so the row says so
+        // instead of hedging about the Keychain.
+        assert!(auth.detail.contains("login session"), "{}", auth.detail);
         let root = row(&report, "Workspace root");
         assert_eq!(root.status, Status::Fail(ErrorCode::WrongWorkspace));
         assert!(
@@ -1098,6 +1144,71 @@ mod tests {
         );
         // First FAIL in table order decides.
         assert_eq!(report.exit_code(), 11);
+    }
+
+    /// No controller means nobody could ask Claude a question worth
+    /// trusting. That has to read as "not checked", never as "logged out":
+    /// the second sends someone to log in on a machine that already is.
+    #[test]
+    fn without_a_controller_the_login_is_unchecked_not_failed() {
+        let (dir, config) = setup("no-controller", true, true);
+        let mut probe = good_probe();
+        probe.controller = Some(Err(ErrorReport::new(
+            ErrorCode::NotReady,
+            "no socket at /Users/me/.local/state/ccnm/controller.sock\ninstall it on the work machine: ccnm work-controller install",
+        )));
+        probe.claude.auth = Err(ErrorReport::new(
+            ErrorCode::NotReady,
+            "not checked: no work controller to ask, and this ssh session's answer would be wrong",
+        ));
+
+        let fake = FakeRunner::new();
+        fake.push(Output::exited(0, "ccnm 0.1.0\n"));
+        fake.push(Output::exited(0, "hostname workmac\n"));
+        fake.push(Output::exited(0, serde_json::to_string(&probe).unwrap()));
+
+        let report = run(&config, Some("xshun"), &env(&fake, &dir));
+        let controller = row(&report, "Work controller");
+        assert_eq!(controller.status, Status::Skip);
+        assert!(
+            controller.detail.contains("work-controller install"),
+            "{}",
+            controller.detail
+        );
+        let auth = row(&report, "Claude authentication");
+        assert_eq!(auth.status, Status::Skip, "{}", auth.detail);
+        // Claude itself was still found: the version needs no credential.
+        assert_eq!(row(&report, "Claude Code").status, Status::Ok);
+        // Unverified, so still not READY -- and not for an auth reason.
+        assert_eq!(report.exit_code(), ErrorCode::NotReady.exit_code());
+    }
+
+    /// A controller in the wrong session answers everything and is still
+    /// useless. Nothing else in the table would catch that.
+    #[test]
+    fn a_controller_outside_the_login_session_fails_its_row() {
+        let (dir, config) = setup("bg-controller", true, true);
+        let mut probe = good_probe();
+        probe.controller = Some(Ok(controller("Background")));
+
+        let fake = FakeRunner::new();
+        fake.push(Output::exited(0, "ccnm 0.1.0\n"));
+        fake.push(Output::exited(0, "hostname workmac\n"));
+        fake.push(Output::exited(0, serde_json::to_string(&probe).unwrap()));
+
+        let report = run(&config, Some("xshun"), &env(&fake, &dir));
+        let controller = row(&report, "Work controller");
+        assert_eq!(controller.status, Status::Fail(ErrorCode::NotReady));
+        assert!(
+            controller.detail.contains("not from a login session"),
+            "{}",
+            controller.detail
+        );
+        assert!(
+            controller.detail.contains("Background"),
+            "{}",
+            controller.detail
+        );
     }
 
     #[test]

@@ -124,16 +124,31 @@ pub struct ClaudeReport {
     pub auth: Reported<AuthStatus>,
 }
 
+/// How much of [`report`] to ask for.
+///
+/// The login half only means something from a login session. Everywhere
+/// else this is [`Ask::VersionOnly`] — not because running the command
+/// would fail, but because its answer would be wrong, and a command whose
+/// result has to be discarded should not be run at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ask {
+    /// Version and login. Only from a login session (see
+    /// [`crate::controller`]).
+    Everything,
+    /// Version only; the login is reported as `CCNM_E_NOT_READY`.
+    VersionOnly,
+}
+
 /// Ask the local `claude` about itself.
 ///
 /// Deliberately shallow: ccnm never looks at a credential itself, not even
 /// to prove that it could. Everything it claims about the login is what
-/// `claude auth status --json` said, in whatever process context this ran.
-/// That context matters — see [`crate::controller`].
+/// `claude auth status --json` said, in the context it was asked from.
 pub fn report(
     bin: Option<&Path>,
     config_dir: Option<&Path>,
     runner: &dyn ProcessRunner,
+    ask: Ask,
 ) -> ClaudeReport {
     let Some(bin) = bin else {
         let missing = Error::new(
@@ -152,10 +167,16 @@ pub fn report(
             .run(&version_cmd(bin, config_dir))
             .and_then(|out| parse_version(&out))
             .map_err(Into::into),
-        auth: runner
-            .run(&auth_status_cmd(bin, config_dir))
-            .and_then(|out| parse_auth(&out))
-            .map_err(Into::into),
+        auth: match ask {
+            Ask::Everything => runner
+                .run(&auth_status_cmd(bin, config_dir))
+                .and_then(|out| parse_auth(&out))
+                .map_err(Into::into),
+            Ask::VersionOnly => Err(crate::error::ErrorReport::new(
+                ErrorCode::NotReady,
+                "not asked here: only a login session gets a true answer about the login",
+            )),
+        },
     }
 }
 

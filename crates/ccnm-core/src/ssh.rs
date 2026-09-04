@@ -344,6 +344,16 @@ impl Ssh {
             RemoteOutcome::Completed(out) if !out.success() => {
                 Err(remote_failure(&self.alias, subcommand, &out))
             }
+            // Nothing on stdout but something on stderr, and an exit code
+            // that claims success: a transport that does not carry the
+            // status (see `shell_complaint`). The remote side did fail,
+            // and what it said about it is on stderr.
+            RemoteOutcome::Completed(out)
+                if out.stdout.iter().all(u8::is_ascii_whitespace)
+                    && !out.stderr.iter().all(u8::is_ascii_whitespace) =>
+            {
+                Err(remote_failure(&self.alias, subcommand, &out))
+            }
             RemoteOutcome::Completed(out) => payload::decode_json(&out.stdout),
         }
     }
@@ -420,8 +430,57 @@ pub fn classify(out: Output) -> RemoteOutcome {
         // not from another. Left as a generic failure it reads as "ccnm
         // is broken"; what it is is one chmod.
         Some(126) => RemoteOutcome::NotExecutable,
-        _ => RemoteOutcome::Completed(out),
+        _ => match shell_complaint(&out) {
+            Some(outcome) => outcome,
+            None => RemoteOutcome::Completed(out),
+        },
     }
+}
+
+/// The exit code is not always there to be read.
+///
+/// Measured on 2026-09-04: a machine serving ssh through Tailscale SSH
+/// (tailscaled 1.102.2, `RunSSH = true`) returns 0 for everything --
+/// `ssh host 'exit 3'` is 0, `ssh host false` is 0, and a remote command
+/// the shell refused to run is 0. The same commands to a machine served by
+/// OpenSSH return 3, 1 and 126. So on such a tailnet every remote failure
+/// arrives looking like a success with no output, and ccnm reported all of
+/// them as "message is not valid for protocol 1" -- a version mismatch
+/// that was not happening, pointing at the one thing that was fine.
+///
+/// When nothing came back on stdout, the shell's own complaint on stderr
+/// is the diagnosis. A ccnm error is left alone: it starts with its
+/// `CCNM_E_*` name and belongs to [`remote_failure`], which says more than
+/// this can.
+fn shell_complaint(out: &Output) -> Option<RemoteOutcome> {
+    if !out.stdout.iter().all(u8::is_ascii_whitespace) {
+        return None;
+    }
+    let stderr = out.stderr_lossy();
+    let stderr = stderr.trim();
+    if stderr.is_empty() || first_line_is_ccnm_code(stderr) {
+        return None;
+    }
+    let lower = stderr.to_lowercase();
+    if lower.contains("permission denied") {
+        return Some(RemoteOutcome::NotExecutable);
+    }
+    if lower.contains("command not found") || lower.contains("no such file or directory") {
+        return Some(RemoteOutcome::CommandNotFound);
+    }
+    None
+}
+
+/// Does this stderr begin with a `CCNM_E_*:` line? That means the remote
+/// ccnm ran and refused, which is a different thing from the shell
+/// refusing to run it.
+fn first_line_is_ccnm_code(stderr: &str) -> bool {
+    stderr
+        .lines()
+        .next()
+        .and_then(|first| first.trim().strip_suffix(':'))
+        .and_then(ErrorCode::from_name)
+        .is_some()
 }
 
 /// The remote ccnm printed `CCNM_E_X:` on its first stderr line if it
@@ -439,9 +498,14 @@ fn remote_failure(alias: &str, subcommand: &[&str], out: &Output) -> Error {
         Some(code) => (code, lines.collect::<Vec<_>>().join("\n")),
         None => (ErrorCode::Internal, stderr.to_string()),
     };
-    let exit = out
-        .exit_code
-        .map_or_else(|| "signal".to_string(), |c| c.to_string());
+    // A transport that does not carry the exit status reports 0 for a
+    // command that failed; printing "(exit 0): <error>" would be a
+    // contradiction in the same sentence.
+    let exit = match out.exit_code {
+        Some(0) => "no exit status reported".to_string(),
+        Some(code) => format!("exit {code}"),
+        None => "signal".to_string(),
+    };
     let rest = if rest.trim().is_empty() {
         "no output".to_string()
     } else {
@@ -450,7 +514,7 @@ fn remote_failure(alias: &str, subcommand: &[&str], out: &Output) -> Error {
     Error::new(
         code,
         format!(
-            "ccnm {} on {alias} failed (exit {exit}): {rest}",
+            "ccnm {} on {alias} failed ({exit}): {rest}",
             subcommand.join(" ")
         ),
     )
@@ -668,6 +732,70 @@ mod tests {
         out.timed_out = true;
         out.exit_code = None;
         assert!(matches!(classify(out), RemoteOutcome::Unreachable(_)));
+    }
+
+    /// Some transports do not carry the remote exit status: measured on
+    /// 2026-09-04, a machine serving ssh through Tailscale SSH returns 0
+    /// for `exit 3`, for `false`, and for a command the shell refused to
+    /// run. Every remote failure then arrives looking like a success with
+    /// no output, and reading the exit code alone turns all of them into
+    /// "the two ccnm versions differ" -- which is both wrong and a fix
+    /// nobody can apply.
+    #[test]
+    fn a_transport_that_eats_the_exit_status_still_gets_a_diagnosis() {
+        let complaint = |stderr: &str| {
+            let mut out = Output::exited(0, "");
+            out.stderr = stderr.as_bytes().to_vec();
+            classify(out)
+        };
+        assert!(matches!(
+            complaint("zsh:1: permission denied: /Users/me/.local/bin/ccnm"),
+            RemoteOutcome::NotExecutable
+        ));
+        assert!(matches!(
+            complaint("zsh:1: command not found: ccnm"),
+            RemoteOutcome::CommandNotFound
+        ));
+        assert!(matches!(
+            complaint("zsh:1: no such file or directory: /opt/bin/ccnm"),
+            RemoteOutcome::CommandNotFound
+        ));
+        // A ccnm that ran and refused is not a shell complaint, however
+        // its stderr reads: it has more to say and says it itself.
+        assert!(matches!(
+            complaint("CCNM_E_WRONG_WORKSPACE:\n/x/y: No such file or directory"),
+            RemoteOutcome::Completed(_)
+        ));
+        // A real success is left alone even with chatter on stderr.
+        let mut ok = Output::exited(0, "{\"protocol\":1}");
+        ok.stderr = b"Warning: Permanently added a host key\n".to_vec();
+        assert!(matches!(classify(ok), RemoteOutcome::Completed(_)));
+    }
+
+    /// The same transport, one layer up: the remote ccnm refused with a
+    /// real error and the exit status said 0. The error has to survive.
+    #[test]
+    fn a_remote_refusal_survives_a_lost_exit_status() {
+        let fake = FakeRunner::new();
+        let mut refused = Output::exited(0, "");
+        refused.stderr = b"CCNM_E_POLICY:\nthis runtime is not confined\n".to_vec();
+        fake.push(refused);
+        let e = ssh()
+            .call_ccnm::<Ping, Ping>(
+                &fake,
+                Master::Reuse,
+                &["internal", "probe"],
+                &Ping { protocol: 1, n: 0 },
+                Duration::from_secs(1),
+                ErrorCode::WorkUnreachable,
+            )
+            .unwrap_err();
+        assert_eq!(e.code(), ErrorCode::Policy);
+        assert!(e.message().contains("not confined"), "{e}");
+        assert!(
+            e.message().contains("no exit status reported"),
+            "the contradiction of `exit 0` on a failure must not be printed: {e}"
+        );
     }
 
     #[derive(Debug, PartialEq, Serialize, Deserialize)]

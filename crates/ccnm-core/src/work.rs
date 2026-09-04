@@ -1019,7 +1019,9 @@ mod tests {
             0,
             "/usr/bin/ssh -T home ccnm internal mcp-serve --payload eyJwIjoxfQ\nlogin -pf me\n",
         ));
-        fake.push(Output::exited(0, "-CCNM_SESSION\n")); // the other one is untagged
+        // The other session is tagged, but its directory has no mcp.json,
+        // so the transport question cannot be put at all.
+        fake.push(Output::exited(0, "CCNM_SESSION=no-such-session\n"));
 
         let rep = status(
             &StatusRequest {
@@ -1037,9 +1039,12 @@ mod tests {
             "Background, keychain reachable"
         );
         assert_eq!(rep.sessions[0].tools, Some(true));
-        assert_eq!(rep.sessions[1].session, None);
+        assert_eq!(rep.sessions[1].session.as_deref(), Some("no-such-session"));
         assert_eq!(rep.sessions[1].context, None);
-        assert_eq!(rep.sessions[1].tools, None, "unknown, never a guessed no");
+        assert_eq!(
+            rep.sessions[1].tools, None,
+            "a question that could not be put is unknown, never a guessed no"
+        );
         let text = rep.render();
         assert!(
             text.contains(
@@ -1152,6 +1157,21 @@ mod tests {
             Some("the older answer")
         );
         assert_eq!(rep.session_dir, older.path());
+
+        // "Most recent" is by time, not by whatever order the directory
+        // happens to be read in: touch the older one and it wins.
+        std::thread::sleep(Duration::from_millis(1100));
+        std::fs::write(older.meta(), std::fs::read_to_string(older.meta()).unwrap()).unwrap();
+        let rep = result(
+            &ResultRequest {
+                protocol: PROTOCOL,
+                workspace: "fixture".into(),
+                session: None,
+            },
+            &tools,
+        )
+        .unwrap();
+        assert_eq!(rep.session, older_id, "newest by mtime, not by read order");
 
         let rep = result(
             &ResultRequest {

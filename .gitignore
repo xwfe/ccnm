@@ -2,3 +2,6 @@
 
 # macOS Finder droppings; they appear on any directory someone opens
 .DS_Store
+
+# scripts/dist.sh output
+/dist/

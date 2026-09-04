@@ -1,0 +1,90 @@
+# Cut a release from a tag.
+#
+#   git tag -a v0.1.0 -m "…" && git push origin v0.1.0
+#
+# What comes out is one universal macOS binary in a tarball, its sha256,
+# and a GitHub release. The whole gate runs first: a tag is not a reason
+# to skip it, it is the reason to run it.
+#
+# The tag has to match the version in the binary. A `v0.1.1` tag on a tree
+# that still says 0.1.0 would produce a download whose name lies about its
+# contents, and that is the kind of thing nobody notices for months.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  release:
+    # macos-latest is arm64; the x86_64 half of the universal binary is
+    # cross-compiled from it, which is what scripts/dist.sh does locally
+    # too.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+
+      - name: Install what the tools shell out to
+        run: brew install ripgrep tmux
+
+      - name: Gate
+        run: |
+          cargo fmt --all --check
+          cargo clippy --workspace --all-targets -- -D warnings
+          cargo test --workspace
+
+      - name: Build the universal binary
+        run: scripts/dist.sh
+
+      - name: The tag and the binary must agree
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          built=$(dist/ccnm --version | awk '{print $2}')
+          if [ "$tag" != "$built" ]; then
+            echo "tag $GITHUB_REF_NAME says $tag, the binary says $built" >&2
+            echo "bump version in Cargo.toml, or tag the right commit" >&2
+            exit 1
+          fi
+          echo "$GITHUB_REF_NAME == ccnm $built"
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # printf rather than a heredoc: a heredoc terminator indented to
+          # match the YAML never terminates, and the failure is baffling.
+          printf '%s\n' \
+            'macOS universal binary (arm64 + x86_64). Both machines need the same build.' \
+            '' \
+            '```' \
+            'tar -xzf ccnm-*-macos-universal.tar.gz' \
+            'mv ccnm ~/.local/bin/ccnm.new && mv ~/.local/bin/ccnm.new ~/.local/bin/ccnm' \
+            '```' \
+            '' \
+            'Two things that bite:' \
+            '' \
+            '* Never `cp` over a ccnm that has already run. On Apple Silicon the next' \
+            '  exec of it dies with SIGKILL (exit 137) while the running one carries on' \
+            '  with the old code. Rename over it, as above.' \
+            '* Downloaded through a browser it arrives quarantined and macOS refuses to' \
+            '  run it: `xattr -d com.apple.quarantine ccnm`. `curl` does not set that.' \
+            '' \
+            'Setup, the doctor table and troubleshooting: README.md' > notes.md
+          gh release create "$GITHUB_REF_NAME" \
+            dist/*.tar.gz dist/*.sha256 \
+            --title "ccnm $GITHUB_REF_NAME" \
+            --generate-notes \
+            --notes "$(cat notes.md)"

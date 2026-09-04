@@ -1,0 +1,74 @@
+# Format, lint and the whole test suite, on every push and pull request.
+#
+# macOS only, and not because nobody got around to Linux: the work
+# controller is a launchd LaunchAgent and the session context checks ask
+# `launchctl` and `security` directly. A green Linux job would be testing
+# something this program cannot run on.
+#
+# Only first-party actions are used (actions/checkout, actions/cache).
+# Every third-party action is a supply-chain dependency that runs with a
+# token in a repository whose whole point is being careful about what runs
+# where; caching by hand is a few lines and no trust.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # A failing build should not also cost a minute of backtrace-less guessing.
+  RUST_BACKTRACE: 1
+
+jobs:
+  test:
+    # macos-latest is arm64 today; nothing here depends on the arch.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+          rustc --version && cargo --version
+
+      # `search_text` shells out to ripgrep, and its tests search a real
+      # workspace, so without this they fail on a missing dependency
+      # rather than on anything about ccnm. tmux is only needed by
+      # interactive sessions, which no test starts -- it is here so
+      # `tmux::locate` is exercised against a machine that has one.
+      - name: Install what the tools shell out to
+        run: brew install ripgrep tmux
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace
+
+      # The one thing a release must not get wrong: a binary that cannot
+      # say what it is. Cheap here, expensive to find out from a tarball.
+      - name: The binary runs and reports its version
+        run: |
+          cargo build --release
+          ./target/release/ccnm --version
+          ./target/release/ccnm doctor --config tests/fixtures/config-valid.toml || true

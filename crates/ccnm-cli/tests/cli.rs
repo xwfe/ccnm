@@ -651,6 +651,62 @@ fn on_the_work_machine_attach_status_and_stop_stay_local() {
     }
 }
 
+/// `ccnm result` on the work machine reads the session off this disk.
+///
+/// The session's files -- what Claude printed, how it ended -- were
+/// written here by this machine's own supervisor. Asking home for them
+/// would mean ssh'ing there so that home could ssh straight back to read
+/// files that were under the person's feet the whole time, and it would
+/// fail outright when the link is down, which is one of the times you
+/// most want to see what a run produced. Until this branch existed the
+/// command answered `workspace 'x' is not defined` here, which is true of
+/// the config and useless as an answer.
+#[test]
+fn on_the_work_machine_result_is_read_off_this_disk() {
+    let xdg = std::env::temp_dir().join(format!("ccnm-cli-{}-workresult", std::process::id()));
+    let _ = std::fs::remove_dir_all(&xdg);
+    let workspace = "ccnm-test-result";
+    let id = "7c1d9f60-0a11-4c22-9d33-8e44f5566a77";
+    let dir = xdg.join("ccnm/sessions").join(id);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("session.json"),
+        format!(
+            r#"{{"protocol":{},"id":"{id}","workspace":"{workspace}","root":"/home/projects/x","home_alias":"home","home_ccnm_bin":"/opt/home/ccnm","permission_mode":"plan","mode":{{"mode":"print","prompt":"what broke"}},"timeout_secs":600,"cwd":"/tmp"}}"#,
+            payload::PROTOCOL
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("stdout"),
+        r#"{"is_error":false,"result":"the assertion on line 40","num_turns":3}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("exit"),
+        r#"{"exit_code":0,"timed_out":false,"duration_ms":8200}"#,
+    )
+    .unwrap();
+
+    let out = ccnm()
+        .env("XDG_STATE_HOME", &xdg)
+        .args(["result", workspace, "--config"])
+        .arg(fixture("config-work-side.toml"))
+        .output()
+        .unwrap();
+    let said = format!("{}{}", stdout(&out), stderr(&out));
+    assert_eq!(out.status.code(), Some(0), "{said}");
+    assert!(
+        said.contains("the assertion on line 40"),
+        "Claude's answer, read from this machine's own session directory: {said}"
+    );
+    assert!(said.contains(id), "which session it was: {said}");
+    assert!(
+        !said.contains("no-such-host-for-tests") && !said.contains("not defined"),
+        "it must not have gone looking for home: {said}"
+    );
+}
+
 /// A stand-in for `ssh`, put first on PATH so every remote call the real
 /// binary makes lands here instead of on the network.
 ///

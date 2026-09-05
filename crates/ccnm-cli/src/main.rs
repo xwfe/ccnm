@@ -417,24 +417,22 @@ fn run(cli: Cli) -> Result<i32> {
         }
         Command::Result { workspace, session } => {
             let config = Config::load(&config_path()?)?;
+            // On the work machine the session's files are right here --
+            // stdout, stderr and the outcome were written by this
+            // machine's own supervisor. Asking home for them would mean
+            // ssh'ing there so it could ssh back to read local files.
+            if work_side(&config, workspace).is_some() {
+                let req = ResultRequest {
+                    protocol: ccnm_core::protocol::payload::PROTOCOL,
+                    workspace: workspace.to_string(),
+                    session: session.clone(),
+                };
+                let rep = work::result(&req, &work_tools()?)?;
+                return print_result_report(&rep);
+            }
             let resolved = config.workspace(workspace)?;
             let rep = launcher::result(&resolved, &home_env()?, session.as_deref())?;
-            println!("{}", rep.summary());
-            match &rep.result {
-                Some(r) => {
-                    println!("\n--- result ---");
-                    println!("{}", r.result.as_deref().unwrap_or("").trim_end());
-                }
-                None if !rep.stdout_tail.is_empty() => {
-                    println!("\n--- stdout (tail) ---\n{}", rep.stdout_tail.trim_end());
-                }
-                None => {}
-            }
-            if !rep.stderr_tail.trim().is_empty() {
-                eprintln!("\n--- stderr (tail) ---\n{}", rep.stderr_tail.trim_end());
-            }
-            eprintln!("\nsession directory on work: {}", rep.session_dir.display());
-            Ok(0)
+            print_result_report(&rep)
         }
         Command::Stop { workspace } => {
             let config = Config::load(&config_path()?)?;
@@ -941,6 +939,35 @@ fn print_run_report(rep: &RunReport) -> Result<i32> {
     eprintln!("\nsession directory on work: {}", rep.session_dir.display());
     let ok = rep.outcome.ok() && rep.result.as_ref().is_some_and(|r| !r.is_error);
     Ok(if ok { 0 } else { 1 })
+}
+
+/// What `ccnm result` prints, from whichever machine asked.
+///
+/// One function because the two machines get their report from different
+/// places -- home over ssh, the work machine off its own disk -- and the
+/// person reading it should not be able to tell which they are looking at.
+/// Two copies of this drifted apart the moment one of them was edited.
+///
+/// Always exit 0: this reports on a session, it does not run one, and a
+/// non-zero exit here would say "the lookup failed" about a lookup that
+/// worked.
+fn print_result_report(rep: &ccnm_core::protocol::run::ResultReport) -> Result<i32> {
+    println!("{}", rep.summary());
+    match &rep.result {
+        Some(r) => {
+            println!("\n--- result ---");
+            println!("{}", r.result.as_deref().unwrap_or("").trim_end());
+        }
+        None if !rep.stdout_tail.is_empty() => {
+            println!("\n--- stdout (tail) ---\n{}", rep.stdout_tail.trim_end());
+        }
+        None => {}
+    }
+    if !rep.stderr_tail.trim().is_empty() {
+        eprintln!("\n--- stderr (tail) ---\n{}", rep.stderr_tail.trim_end());
+    }
+    eprintln!("\nsession directory on work: {}", rep.session_dir.display());
+    Ok(0)
 }
 
 /// `ccnm work-controller ...`, run on the work machine.

@@ -72,10 +72,18 @@ ssh "$OTHER" "~/$REMOTE_BIN --version"
 
 if [ -n "$WORKSPACE" ]; then
   echo "==> doctor $WORKSPACE"
-  # Config lives on the home machine, so doctor runs wherever that is.
-  if [ -f "$HOME/.config/ccnm/config.toml" ]; then
-    "$BIN" doctor "$WORKSPACE" || true
-  else
+  # `doctor <ws>` needs the workspace's definition, and that lives on
+  # exactly one machine. "A config file exists here" is not the same
+  # question: the work machine has a config too, holding only the way
+  # home and no workspaces at all, so testing for the file ran doctor on
+  # the machine guaranteed not to be able to answer.
+  #
+  # Ask instead, and let the exit code say: CCNM_E_CONFIG (10) is what a
+  # machine that does not define this workspace replies.
+  rc=0
+  "$BIN" doctor "$WORKSPACE" || rc=$?
+  if [ "$rc" -eq 10 ]; then
+    echo "    (not defined on this machine; asking $OTHER)"
     ssh "$OTHER" "~/$REMOTE_BIN doctor $WORKSPACE" || true
   fi
 fi

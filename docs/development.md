@@ -110,7 +110,7 @@ scripts/deploy.sh <另一台的 ssh 别名> [workspace]
 ### 变异测试
 
 ```bash
-scripts/mutate.sh        # 需要干净的工作区，31 个 case 跑一遍约 8 分钟
+scripts/mutate.sh        # 需要干净的工作区，31 个 case 跑一遍约 10 分钟
 ```
 
 测试全绿只说明代码通过了测试，**不说明测试能抓住代码变错**。这个脚本一次拆掉一处 guard

@@ -52,7 +52,10 @@ PY
     return
   fi
   local out
-  out=$(cargo test --workspace 2>&1)
+  # --no-fail-fast so "caught by" names every test that noticed, not
+  # only those in the first test binary that happened to run. A guard
+  # covered at two layers should say so.
+  out=$(cargo test --workspace --no-fail-fast 2>&1)
   if echo "$out" | grep -q 'could not compile'; then
     echo "DID NOT COMPILE  $name"
     broken=$((broken + 1))
@@ -76,6 +79,14 @@ T=crates/ccnm-core/src/tmux.rs
 N=crates/ccnm-core/src/launcher.rs
 E=crates/ccnm-core/src/session.rs
 C=crates/ccnm-cli/src/main.rs
+
+# Stopped in the middle of a case -- ctrl-c, a timeout, a closed
+# terminal -- the mutation would stay in the tree, and a tree with one
+# guard quietly removed looks exactly like a clean one until it ships.
+# It has happened twice. So every file a case can touch is restored on
+# the way out, whatever the way out was. `kill -9` cannot be caught, so
+# after one of those: `git status`, and `git checkout` whatever is M.
+trap 'git checkout -q -- "$P" "$L" "$W" "$S" "$K" "$T" "$N" "$E" "$C"' EXIT
 
 # --- the write path ---------------------------------------------------
 

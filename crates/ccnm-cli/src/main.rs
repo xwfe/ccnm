@@ -886,7 +886,7 @@ fn opening_prompt(prompt: Option<&str>, from_stdin: bool) -> Result<Option<Strin
     std::io::stdin().read_to_string(&mut text)?;
     if text.trim().is_empty() {
         return Err(Error::invalid_args(
-            "--prompt-stdin, but nothing arrived on stdin\nthe opening line goes in on stdin:  ccnm <workspace> --prompt-stdin <<'EOF'",
+            "--prompt-stdin, but nothing arrived on stdin\nit reads the opening line from stdin:  echo 'fix the failing test' | ccnm <workspace> --prompt-stdin",
         ));
     }
     Ok(Some(text.trim_end().to_string()))

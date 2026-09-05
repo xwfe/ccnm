@@ -109,7 +109,10 @@ ccnm stop xshun     # 结束它
 会话本来就起在工作机上，所以**接管、看状态、停都是本地的**——不走网络。这点重要：最想停掉
 一个会话的时候，往往正是链路出问题的时候。
 
-**`--print` 只能在家庭机上敲**（工作机上会直接拒绝并告诉你去哪敲）。
+**`--print` 和开场白（`ccnm xshun "..."`）都只能在家庭机上给。** 工作机上两个都会直接拒绝并
+告诉你去哪敲：`--print` 要在项目所在的机器上跑；开场白是自由文本，而 ccnm 不往 ssh 上送任何
+需要引号的东西（这是条硬规则，见设计文档第 8 节）。接上之后直接打字就是了。以前这一句会被
+**悄悄丢掉**——会话起来了，Claude 开着一个空提示，没有任何提示说为什么——现在拒绝出声。
 
 ---
 
@@ -481,6 +484,7 @@ read_output      按字节偏移翻 exec_command 的输出
 | `Killed: 9` / exit 137，升级完全炸 | 用 `cp` 覆盖了跑过的二进制。改用 rename |
 | `command not found: ccnm`（在 ssh 命令里） | 非交互 shell 不读 `.zshrc`，写全路径 |
 | 在**工作机**上 `ccnm <ws>` 报 `not found ... exited 127` | 家庭机的 ccnm 不在默认路径。工作机这份 config 里补 `[hosts.home] ccnm_bin` |
+| 在**工作机**上 `ccnm <ws> "开场白"` 报 `CCNM_E_INVALID_ARGS` | 开场白带不过 ssh（见[上面](#你坐在哪台前面都行)）。接上再打，或去家庭机上敲 |
 | `permission denied: ccnm` | `scp` 丢了执行位。`scp -p` + `chmod +x` |
 | `ccnm versions probably differ` | 两台的 build 不一样，或者 Tailscale SSH 吞了退出码 |
 | 工具全废却说 "xxx is not installed" | 项目目录被移走了，会话还绑在旧路径上 |
@@ -563,6 +567,7 @@ Git 专用工具           git_status / git_diff 现在靠 exec_command，输出
 后台长任务             exec_command 最长 10 分钟，没有"起个 dev server 然后轮询"
 目录操作               apply_patch 只处理普通文件。删目录、改目录名、建空目录只能
                       走 exec_command，而那条路没有事务、没有版本检查、没有回滚
+工作机上给开场白        自由文本过不了 ssh，现在是拒绝。走 stdin 传过去是可行的做法，没做
 项目 skills 的脚本部分   SKILL.md 会被点名，模型能读；skill 附带的脚本不会被执行
 二进制文件             content 是字符串，写不了；read_file 也拒绝二进制
 浏览器                 属于家庭机 runtime，还没做

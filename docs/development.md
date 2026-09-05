@@ -12,7 +12,7 @@
 ### 本地跑测试
 
 ```bash
-cargo test --workspace        # 405 个测试，14 秒，不需要第二台机器，不碰网络
+cargo test --workspace        # 408 个测试，15 秒，不需要第二台机器，不碰网络
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 ```
@@ -44,22 +44,47 @@ workspace_info x100 p50 0 ms p95 0 ms max 0 ms, pid 44296 throughout
 
 跟走 ssh 的那次（`ccnm mcp probe <ws>`，不带 `--local`）一比，差值就是链路成本。
 
-链路上**传的是什么**也能在本机验，虽然进程都是假的。`launcher.rs` 里那组测试把一端真实的
-输出喂进另一端真实的输入：
+链路上**传的是什么**也能在本机验，虽然进程都是假的。分两层。
+
+**库这一层**（`launcher.rs` 里那组）把一端真实的输出喂进另一端真实的输入：
 
 ```bash
 cargo test -p ccnm-core --lib launcher
 ```
 
-其中一个走完 `家庭机 → 工作机 → 家庭机` 一整圈——家庭机发出的启动请求，被工作机那半段真的
-解开、真的握手、真的写出会话的 `mcp.json`，然后测试**读那个文件**（就是 Claude Code 会去跑的
-那个 ssh，模型碰项目唯一的路），把 payload 从 argv 里解出来，比对第三跳打开的项目是不是第一跳
-说的那个。两个别名、两个二进制路径故意写成四个不同的字符串，蒙对不了。
+两个走完 `家庭机 → 工作机 → 家庭机` 一整圈，一个交互模式，一个 `--print`——家庭机发出的
+启动请求，被工作机那半段真的解开、真的握手、真的写出会话的 `mcp.json`，然后测试**读那个文件**
+（就是 Claude Code 会去跑的那个 ssh，模型碰项目唯一的路），把 payload 从 argv 里解出来，比对
+第三跳打开的项目是不是第一跳说的那个。`--print` 那圈多两步：transport 里必须写着"没人在看"
+（`exec_command` 跑之前会问，一个等着没人答的 print 会话会把整个超时等满），以及工作机真实
+产出的报告再喂回家庭机的解码器——最后一跳不是测试自己编的文档。
+
+两个别名、两个二进制路径故意写成四个不同的字符串，蒙对不了。Claude 启动时拿到的三样东西
+（权限模式、config 目录、开场白）也全设成非默认值，因为"默认值到了"和"配置里的值到了"得
+分得开——加这条之前，`start_interactive` 发默认权限模式出去，所有测试照样绿。
+
+**真二进制这一层**（`crates/ccnm-cli/tests/cli.rs` 里 `sitting_at_*` 那两个）：往 `PATH` 最前面塞
+一个假 `ssh`，它记下每次收到的 argv、按剧本作答，然后跑真的 `ccnm`。这是库测试够不着的一层：
+`main.rs` 判断自己在哪台机器、clap、config 文件、以及 `--detached` 在两边各自有没有被当回事。
+
+```bash
+cargo test -p ccnm-cli --test cli sitting_at
+```
+
+坐在家庭机：带 `--detached` 正好一次 ssh，终端留在本地；不带，第二次 ssh 带 `-t` 把终端送过去，
+第三次问会话怎么结束的。坐在工作机：发给家庭机的那一行就是人在那边会敲的命令加 `--detached`；
+attach 在本地发生（是 tmux 在答，不是对面）；config 里写的家庭机 ccnm 路径是真被跑的那个；
+开场白在任何东西上网之前就被拒绝。能这么做是因为 ccnm 自己调 ssh 是按名字找的——只有
+`mcp.json` 里给 Claude 的那行 transport 写的是绝对路径。
 
 **为什么非得连起来测**：两端各自的单元测试都自己手搓消息，所以"两端各自都合理、但拿到的是
 对方那个值"这类 bug 在里面永远不会出现。**加这组之前**试过：把 `start_interactive` 里的
 `home_alias` 和 `work_ssh` 对调，当时那 369 个测试一个没红，而会话连到了错的机器上。现在它
 红在那一条上。
+
+**这轮直接抓出来的**：工作机上 `ccnm xshun "开场白"` 会把开场白悄悄丢掉。家庭机那半边把它
+带到底，对工作机提同样的要求时才发现那边根本没东西带它。现在拒绝出声（原因和两条出路见
+[README](../README.md#你坐在哪台前面都行)）。
 
 **还是测不到的**：controller / 登录会话是不是真的能读到 Keychain、tmux 里 Claude 到底起没起来、
 真实的延迟——那些需要两台机器（或者一台机器 ssh 自己，见下）。
@@ -85,7 +110,7 @@ scripts/deploy.sh <另一台的 ssh 别名> [workspace]
 ### 变异测试
 
 ```bash
-scripts/mutate.sh        # 需要干净的工作区，跑一遍约 3 分钟
+scripts/mutate.sh        # 需要干净的工作区，31 个 case 跑一遍约 8 分钟
 ```
 
 测试全绿只说明代码通过了测试，**不说明测试能抓住代码变错**。这个脚本一次拆掉一处 guard
@@ -95,11 +120,20 @@ scripts/mutate.sh        # 需要干净的工作区，跑一遍约 3 分钟
 RED    two files may not share a new directory
        caught by: mcp::patch::tests::two_new_files_can_share_one_new_directory
 ...
-15 red, 0 green, 0 not applied
+31 red, 0 green, 0 not applied
 ```
 
 出现 `GREEN` 就是测试有洞：要么补测试，要么确认这处变异**根本不改变可观察行为**
 （等价变异），说清楚然后把这条删掉。不能当成通过混过去。
+
+出现 `COULD NOT APPLY` 是 case 过时了：它是照着当时的源码写的，源码一动它就贴不上，什么也
+证明不了。改写或者删掉，别留着。（`sweep_stale_temps` 多了个参数之后那条就是这样过时的。）
+
+**别在中间打断它。** 每个 case 是"改源码 → `cargo test` → `git checkout` 还原"，停在中间
+变异就留在工作区里——看着像干净的树，实际少了一个 guard，`git status` 会显示一个你没改过的
+文件是 `M`。脚本退出时（包括 Ctrl-C）会把它可能碰过的文件全还原一遍，但 `kill -9` 拦不住，
+所以中断后 `git status` 看一眼，有 `M` 就 `git checkout` 它。要一边跑一边接着干活，放到一个
+`git worktree` 里跑：它的还原只碰自己那份。
 
 ### 打包
 

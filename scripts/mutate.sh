@@ -17,9 +17,10 @@
 #
 # Cases are written against the code as it is now, so they go stale as it
 # moves. A case that prints COULD NOT APPLY has to be rewritten or dropped
-# -- it is proving nothing. The set below is the newest round (the write
-# path and the interruption paths); earlier rounds were run the same way
-# and are recorded in the design doc rather than kept here forever.
+# -- it is proving nothing. The set below is the newest rounds (the write
+# path, the interruption paths, and the two directions a session is
+# started from); earlier rounds were run the same way and are recorded in
+# the design doc rather than kept here forever.
 #
 # Needs a clean tree: every restore is `git checkout <file>`.
 set -uo pipefail
@@ -191,6 +192,85 @@ mutate "the work machine never recognises itself" "$C" \
     }
     let _ = config.home_from_work();
     None'
+
+# --- what Claude is started with crosses the boundary too -------------
+#
+# The permission mode, the config dir and the opening line ride the same
+# request as the alias, and a default arriving in place of the config's
+# value is a session with more or less permission than the person wrote
+# down. Each end has to be caught separately: the home side building the
+# request, the work side turning it into the spec the supervisor reads.
+
+mutate "a session starts with the default permission mode, not the workspace's" "$N" \
+  '        permission_mode: resolved.workspace.claude_permission_mode,
+        prompt: prompt.map(str::to_string),' \
+  '        permission_mode: Default::default(),
+        prompt: prompt.map(str::to_string),'
+
+mutate "the work machine is not told which Claude config dir to use" "$N" \
+  '        claude_config_dir: resolved.work.claude_config_dir.clone(),
+        permission_mode: resolved.workspace.claude_permission_mode,
+        prompt: prompt.map(str::to_string),' \
+  '        claude_config_dir: None,
+        permission_mode: resolved.workspace.claude_permission_mode,
+        prompt: prompt.map(str::to_string),'
+
+mutate "the opening line is dropped on the way over" "$N" \
+  '        prompt: prompt.map(str::to_string),' \
+  '        prompt: None,'
+
+mutate "print mode names the work machine's own ccnm for the way back" "$N" \
+  '        home_ccnm_bin: resolved.runtime.ccnm_bin(),
+        claude_config_dir: resolved.work.claude_config_dir.clone(),
+        permission_mode: resolved.workspace.claude_permission_mode,
+        prompt: prompt.to_string(),' \
+  '        home_ccnm_bin: resolved.work.ccnm_bin(),
+        claude_config_dir: resolved.work.claude_config_dir.clone(),
+        permission_mode: resolved.workspace.claude_permission_mode,
+        prompt: prompt.to_string(),'
+
+mutate "print mode says somebody is watching" "$E" \
+  '.with_interactive(matches!(spec.mode, Mode::Interactive { .. })),' \
+  '.with_interactive(true),'
+
+mutate "the work side builds a print session with the default permission mode" "$W" \
+  '        permission_mode: req.permission_mode,
+        mode: Mode::Print {' \
+  '        permission_mode: Default::default(),
+        mode: Mode::Print {'
+
+mutate "the work side builds an interactive session with the default permission mode" "$W" \
+  '        permission_mode: req.permission_mode,
+        mode: Mode::Interactive {' \
+  '        permission_mode: Default::default(),
+        mode: Mode::Interactive {'
+
+# --- main.rs: where the binary decides which side it is on -------------
+#
+# Nothing below is reachable from a library test. Each is caught by a
+# CLI test running the real binary against a scripted ssh.
+
+mutate "home hands the terminal over when told not to" "$C" \
+  '            if *detached {
+                eprintln!("\nattach when you want it: ccnm attach {workspace}");' \
+  '            if false {
+                eprintln!("\nattach when you want it: ccnm attach {workspace}");'
+
+mutate "the work machine attaches when told not to" "$C" \
+  '                if *detached {
+                    // The far side already said how to attach' \
+  '                if false {
+                    // The far side already said how to attach'
+
+mutate "the work machine runs the default ccnm path at home, not the configured one" "$C" \
+  '                launcher::start_from_work(home, &host.ccnm_bin(), workspace, &env)?;' \
+  '                launcher::start_from_work(home, "~/.local/bin/ccnm", workspace, &env)?;'
+
+mutate "an opening prompt typed at the work machine is silently dropped" "$C" \
+  '                if prompt.is_some() {
+                    return Err(Error::invalid_args(format!(' \
+  '                if false {
+                    return Err(Error::invalid_args(format!('
 
 echo
 echo "$red red, $green green, $broken not applied"

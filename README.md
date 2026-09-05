@@ -475,7 +475,8 @@ read_output      按字节偏移翻 exec_command 的输出
   不会盖掉别人的改动。
 - **一次 patch 要么全成要么全不动。** 中间失败会回滚，回滚失败会大声说"工作区被改了一半"。
   连进程被 `kill -9` 打断都盖住了：提交前会写一份 journal，下一次 patch 撞见它就**拒绝**，
-  并列出当时正在改的每个文件——见[下面那一节](#会话里的-apply_patch-报-a-previous-apply_patch-was-interrupted)。
+  并列出当时正在改的每个文件——撞上了怎么办见
+  [docs/troubleshooting.md](docs/troubleshooting.md#会话里的-apply_patch-报-a-previous-apply_patch-was-interrupted)。
 - **`old` 找不到时会告诉你差在哪。** 同一段文字只是空白/缩进不同，报错会说在第几行、
   并把文件里真正的字节打出来给你抄。**只诊断，不替你改**——在大仓库里"改成最像的那个"
   往往改到另一个函数上去，几周后才发现。

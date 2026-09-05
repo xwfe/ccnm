@@ -1500,6 +1500,34 @@ mod tests {
         fs::canonicalize(&dir).unwrap()
     }
 
+    /// The journal directory for one test, beside its workspace rather
+    /// than inside it -- a journal inside the root would be listed as a
+    /// project file.
+    ///
+    /// The process id is in the name for the same reason it is in
+    /// [`workspace`], and it is easy to lose: `root.join("..")` walks out
+    /// of the per-process directory and lands every test binary on one
+    /// shared path under `$TMPDIR`. Two `cargo test` runs at once -- the
+    /// normal state of affairs while `scripts/mutate.sh` is going -- then
+    /// delete each other's journals mid-test, and the failure lands on
+    /// whichever journal test was unlucky, describing a locking bug that
+    /// is not there.
+    fn journals(name: &str) -> PathBuf {
+        let dir = journals_path(name);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// The same path with nothing at it, for the one test that needs a
+    /// *file* where the journal directory should be.
+    fn journals_path(name: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("ccnm-patch-{}-{name}-state", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_file(&dir);
+        dir
+    }
+
     /// The version a model would have: read the file, keep what came back.
     fn version(root: &Path, path: &str) -> String {
         read::read_file(
@@ -2687,8 +2715,7 @@ mod tests {
     #[test]
     fn the_journal_describes_the_commit_while_it_is_happening() {
         let root = workspace("journal-content");
-        let journals = root.join("../journal-content-state");
-        let _ = fs::remove_dir_all(&journals);
+        let journals = journals("journal-content");
         let plan = plan(
             &root,
             &ApplyPatchArgs {
@@ -2736,8 +2763,7 @@ mod tests {
     #[test]
     fn an_abandoned_journal_survives_being_dropped() {
         let root = workspace("journal-keep");
-        let journals = root.join("../journal-keep-state");
-        let _ = fs::remove_dir_all(&journals);
+        let journals = journals("journal-keep");
         let plan = plan(
             &root,
             &ApplyPatchArgs {
@@ -2768,8 +2794,7 @@ mod tests {
     #[test]
     fn a_patch_that_worked_leaves_no_journal() {
         let root = workspace("journal-clean");
-        let journals = root.join("../journal-clean-state");
-        let _ = fs::remove_dir_all(&journals);
+        let journals = journals("journal-clean");
         apply_patch(
             &root,
             Some(&journals),
@@ -2802,9 +2827,7 @@ mod tests {
     #[test]
     fn an_abandoned_journal_stops_the_next_patch_and_names_the_files() {
         let root = workspace("journal-abandoned");
-        let journals = root.join("../journal-abandoned-state");
-        let _ = fs::remove_dir_all(&journals);
-        fs::create_dir_all(&journals).unwrap();
+        let journals = journals("journal-abandoned");
         let record = serde_json::json!({
             "pid": 4321,
             "root": root.clone(),
@@ -2900,9 +2923,7 @@ mod tests {
     #[test]
     fn an_interruption_in_one_workspace_does_not_block_another() {
         let root = workspace("journal-mine");
-        let journals = root.join("../journal-shared-state");
-        let _ = fs::remove_dir_all(&journals);
-        fs::create_dir_all(&journals).unwrap();
+        let journals = journals("journal-shared");
         let elsewhere = journals.join("777-otherproject.json");
         fs::write(
             &elsewhere,
@@ -3000,9 +3021,7 @@ mod tests {
     #[test]
     fn whether_a_journal_is_abandoned_does_not_depend_on_the_clock() {
         let root = workspace("journal-clock");
-        let journals = root.join("../journal-clock-state");
-        let _ = fs::remove_dir_all(&journals);
-        fs::create_dir_all(&journals).unwrap();
+        let journals = journals("journal-clock");
         let path = journals.join("99-tomorrow.json");
         fs::write(
             &path,
@@ -3066,8 +3085,7 @@ mod tests {
     fn a_journal_that_cannot_be_opened_takes_its_new_directories_with_it() {
         let root = workspace("journal-nodir");
         // The journal directory cannot be created: there is a file there.
-        let journals = root.join("../journal-nodir-state");
-        let _ = fs::remove_dir_all(&journals);
+        let journals = journals_path("journal-nodir");
         fs::write(&journals, b"not a directory\n").unwrap();
 
         let err = apply_patch(
@@ -3114,9 +3132,7 @@ mod tests {
     #[test]
     fn a_journal_that_was_never_finished_blocks_nothing() {
         let root = workspace("journal-partial");
-        let journals = root.join("../journal-partial-state");
-        let _ = fs::remove_dir_all(&journals);
-        fs::create_dir_all(&journals).unwrap();
+        let journals = journals("journal-partial");
         let partial = journals.join("55-torn.json.tmp");
         fs::write(&partial, b"{\"pid\": 55, \"files\": [{\"op\"").unwrap();
         let handle = fs::File::options().write(true).open(&partial).unwrap();
@@ -3155,9 +3171,7 @@ mod tests {
     #[test]
     fn a_complete_journal_that_cannot_be_parsed_still_blocks() {
         let root = workspace("journal-future");
-        let journals = root.join("../journal-future-state");
-        let _ = fs::remove_dir_all(&journals);
-        fs::create_dir_all(&journals).unwrap();
+        let journals = journals("journal-future");
         let path = journals.join("77-fromanotherbuild.json");
         // Valid JSON, wrong shape: a build that renamed `files`.
         fs::write(&path, br#"{"pid":77,"root":"/somewhere","entries":[]}"#).unwrap();
@@ -3200,9 +3214,7 @@ mod tests {
         let inner = outer.join("web");
         fs::create_dir_all(&inner).unwrap();
         fs::write(inner.join("app.ts"), "export const a = 1;\n").unwrap();
-        let journals = outer.join("../journal-nest-block-state");
-        let _ = fs::remove_dir_all(&journals);
-        fs::create_dir_all(&journals).unwrap();
+        let journals = journals("journal-nest-block");
         let path = journals.join("888-outer.json");
         fs::write(
             &path,
@@ -3248,9 +3260,7 @@ mod tests {
     #[test]
     fn a_journal_held_by_a_running_commit_is_left_alone() {
         let root = workspace("journal-locked");
-        let journals = root.join("../journal-locked-state");
-        let _ = fs::remove_dir_all(&journals);
-        fs::create_dir_all(&journals).unwrap();
+        let journals = journals("journal-locked");
         let path = journals.join("999-inflight.json");
         fs::write(
             &path,

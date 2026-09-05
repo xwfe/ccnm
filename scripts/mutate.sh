@@ -275,8 +275,8 @@ mutate "the work machine attaches when told not to" "$C" \
                     // The far side already said how to attach'
 
 mutate "the work machine runs the default ccnm path at home, not the configured one" "$C" \
-  '                launcher::start_from_work(home, &host.ccnm_bin(), workspace, &env)?;' \
-  '                launcher::start_from_work(home, "~/.local/bin/ccnm", workspace, &env)?;'
+  '                    &host.ccnm_bin(),' \
+  '                    "~/.local/bin/ccnm",'
 
 mutate "result is fetched from home by the machine the session is on" "$C" \
   '            if work_side(&config, workspace).is_some() {

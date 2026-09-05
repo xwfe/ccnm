@@ -186,8 +186,8 @@ mutate "the session is not told a person is watching" "$E" \
   '.with_interactive(false),'
 
 mutate "the work machine waits for a terminal that is elsewhere" "$N" \
-  '&[ssh.ccnm_bin(), "run", workspace, "--detached"],' \
-  '&[ssh.ccnm_bin(), "run", workspace],'
+  'let mut argv: Vec<&str> = vec![ssh.ccnm_bin(), "run", workspace, "--detached"];' \
+  'let mut argv: Vec<&str> = vec![ssh.ccnm_bin(), "run", workspace];'
 
 mutate "where home keeps ccnm is ignored" "$N" \
   'let ssh = Ssh::new(home_alias, env.control_dir.clone())?.with_ccnm_bin(home_ccnm_bin);' \
@@ -277,11 +277,54 @@ mutate "the work machine runs the default ccnm path at home, not the configured 
   '                launcher::start_from_work(home, &host.ccnm_bin(), workspace, &env)?;' \
   '                launcher::start_from_work(home, "~/.local/bin/ccnm", workspace, &env)?;'
 
-mutate "an opening prompt typed at the work machine is silently dropped" "$C" \
-  '                if prompt.is_some() {
-                    return Err(Error::invalid_args(format!(' \
-  '                if false {
-                    return Err(Error::invalid_args(format!('
+mutate "result is fetched from home by the machine the session is on" "$C" \
+  '            if work_side(&config, workspace).is_some() {
+                let req = ResultRequest {' \
+  '            if false {
+                let req = ResultRequest {'
+
+# --- the opening line, which cannot ride an ssh command line ----------
+#
+# It is free text, so it goes on the connection's stdin instead (design
+# doc section 8). Three things have to be true for that to work and none
+# of them is visible in a passing session: the far side has to be told to
+# read stdin, the bytes have to actually be written, and neither end may
+# quietly turn "" into "no prompt" -- which is exactly what the dropped
+# prompt looked like.
+
+mutate "home is not told to read the opening line from stdin" "$N" \
+  '    if prompt.is_some() {
+        argv.push("--prompt-stdin");
+    }' \
+  '    if false {
+        argv.push("--prompt-stdin");
+    }'
+
+mutate "the opening line is never written to the connection" "$N" \
+  '        cmd = cmd.stdin(prompt.as_bytes());' \
+  '        cmd = cmd.stdin(&prompt.as_bytes()[..0]);'
+
+mutate "the work side drops the opening line again" "$C" \
+  '                let opening = opening_prompt(prompt.as_deref(), *prompt_stdin)?;
+                let env = home_env()?;' \
+  '                let opening: Option<String> = None;
+                let env = home_env()?;'
+
+mutate "the home side ignores the opening line it was handed" "$C" \
+  '            let opening = opening_prompt(prompt.as_deref(), *prompt_stdin)?;
+            let rep = launcher::start_interactive' \
+  '            let opening: Option<String> = None;
+            let rep = launcher::start_interactive'
+
+mutate "an empty stdin passes for an opening line" "$C" \
+  '    if text.trim().is_empty() {
+        return Err(Error::invalid_args(' \
+  '    if false {
+        return Err(Error::invalid_args('
+
+mutate "the trailing newline rides along into the prompt" "$C" \
+  '    Ok(Some(text.trim_end().to_string()))' \
+  '    Ok(Some(text))'
 
 echo
 echo "$red red, $green green, $broken not applied"

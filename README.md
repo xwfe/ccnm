@@ -188,9 +188,22 @@ ssh <工作机别名> 'which claude tmux' # 工作机那两个
 装完之后用 `ccnm doctor <workspace>` 复查——但注意**它不查 ripgrep**（见
 [还没做的](#还没做的)），rg 得你自己确认。
 
-### 1. 编译
+### 1. 拿到二进制
 
-在**哪台机器有 Rust toolchain 就在哪台编译**（常常是工作机；家庭机不装 cargo 也完全能用）：
+两条路，选一条。**下载**不需要 Rust：
+
+```bash
+curl -sSLO https://github.com/xwfe/ccnm/releases/latest/download/ccnm-0.2.0-macos-universal.tar.gz
+curl -sSLO https://github.com/xwfe/ccnm/releases/latest/download/ccnm-0.2.0-macos-universal.tar.gz.sha256
+shasum -a 256 -c ccnm-0.2.0-macos-universal.tar.gz.sha256   # 必须打印 OK
+tar -xzf ccnm-0.2.0-macos-universal.tar.gz                  # 解出来就是 ccnm，执行位在
+```
+
+是 arm64 + x86_64 的通用二进制，两台机器一台 M 系列一台 Intel 也是同一个文件。**用 `curl` 下，
+别用浏览器**——浏览器下的会被 macOS 隔离，跑起来报"无法打开"，得 `xattr -d com.apple.quarantine ccnm`
+解开；`curl` 不会加那个标记。
+
+**编译**则在哪台机器有 Rust toolchain 就在哪台编（常常是工作机；家庭机不装 cargo 也完全能用）：
 
 ```bash
 cargo build --release        # 产物在 target/release/ccnm
@@ -621,11 +634,6 @@ ripgrep                家庭机没装 rg，doctor 全绿，等模型第一次 s
 记在这里是因为它真实存在。
 
 ### 没跑过的
-
-**GitHub 上的两个 workflow 一次都没真跑过，因为代码还没推上去。** `origin/main` 停在最早
-那个加 LICENSE 的 commit，`v0.1.0` 这个 tag 也只在本地——CI 和 release 两条流水线
-一次都没被触发过。每一步都在本机单独验过，但本机验过不等于 runner 上跑得起来（细节见
-[docs/development.md](docs/development.md#github-上的自动构建和发版)）。
 
 **没在真实项目上日用过。** 目前所有验证都在一个 Python fixture 上：搜索、读、改、跑测试、
 读输出、CLAUDE.md 投影、断开重连、被中断的 patch，都是真机跑通的，但那是一个小项目。

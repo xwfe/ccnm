@@ -187,21 +187,15 @@ ci.yml       每次 push / PR：fmt + clippy + 全部测试 + 跑一下二进制
 release.yml  推 tag（v*）：过一遍同样的门禁 → dist.sh → 校验 tag 和版本号一致 → 建 release
 ```
 
-**东西还在本地**：远端 `github.com/xwfe/ccnm` 上只有最早那个加 LICENSE 的 commit，
-`origin` 配好了但从没推过，`v0.1.0` 和 `v0.2.0` 两个 tag 也都只在这台机器上。所以这两个
-workflow 一次都没跑过。
-
-第一次 push：
-
-```bash
-git push -u origin main
-git push origin v0.1.0 v0.2.0   # 每个 tag 触发一次 release
-```
+**两条都真跑过了（2026-09-05 第一次 push）**：`main` 上的 ci 绿，`v0.1.0` 和 `v0.2.0` 各触发
+一次 release，都绿，两个 release 建出来了、带 tar 和 sha256。下载回来验过：sha256 对得上、
+`lipo -info` 是 `x86_64 arm64`、解出来 `rwxr-xr-x`、`ccnm --version` 报的号跟 tag 一致。
+在此之前这两个 workflow 只在本机逐步验过，没在 runner 上跑过。
 
 **推 tag 就是发版，撤不回来**——GitHub release 建出来了，别人可能已经下过。所以推之前
 本机先把门禁和 `scripts/dist.sh` 跑一遍。
 
-之后发一个版本：
+发一个版本：
 
 ```bash
 # 先把 Cargo.toml 里的 version 改好并提交
@@ -219,9 +213,8 @@ git push origin v0.2.1
   手写几行缓存比引入一个信任关系便宜。
 - **runner 上要 `brew install ripgrep tmux`**，否则 search 那组测试会因为缺依赖而不是因为
   ccnm 有问题而失败。
-- **没跑过不等于跑得起来。** 里面每一步——fmt、clippy、test、`scripts/dist.sh`、tag/版本
-  校验的两个分支、release notes 的渲染——都在这台机器上单独跑通了，但 runner 是一台干净的
-  macOS，`rg` 和 `tmux` 靠上一条那句 `brew install` 才有。第一次 push 之后去 Actions 看一眼
-  再说话。
+- **runner 编出来的二进制比本机的大一点**（18.4 MB vs 16.9 MB，打包后 6.2 vs 6.1 MB）。
+  toolchain 版本不同而已，不是哪边出了问题；也因此**两边的 sha256 对不上是正常的**，
+  校验和只用来验"下载到的那个文件没坏"，不是用来比对本机构建的。
 - 从浏览器下载的二进制会被 macOS 隔离，`xattr -d com.apple.quarantine ccnm` 解开；
   `curl` 下的不会。release notes 里写了这条。

@@ -84,7 +84,7 @@ mutate "two files may not share a new directory" "$P" \
   '            Err(e) if false => { let _ = e; }'
 
 mutate "leftover temp files are never swept" "$P" \
-  '    sweep_stale_temps(&plan);
+  '    sweep_stale_temps(&plan, journal_dir);
 ' \
   ''
 

@@ -12,7 +12,7 @@
 ### 本地跑测试
 
 ```bash
-cargo test --workspace        # 410 个测试，15 秒，不需要第二台机器，不碰网络
+cargo test --workspace        # 411 个测试，15 秒，不需要第二台机器，不碰网络
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 ```
@@ -20,6 +20,21 @@ cargo clippy --workspace --all-targets -- -D warnings
 这三条就是 CI 的全部内容。测试里所有外部命令（ssh、tmux、launchctl、claude）都是注进去的
 假 runner，**除了**几个故意用真东西的：`git`（list_files 的 git 模式）、`rg`（search_text）、
 `/bin/sh`（进程超时和进程组那几个）。所以本机要有 `git` 和 `ripgrep`。
+
+**`cargo test` 是 fail-fast 的**：第一个失败的测试二进制之后就不跑了，而 cli 集成测试排在
+core lib 前面。看到 cli 红了一条，别以为 lib 那 379 个是绿的——它们根本没跑。要全跑
+`--no-fail-fast`。
+
+写新测试时两条硬规矩，都是撞出来的：
+
+- **临时目录必须带 `std::process::id()`。** 同一个用户的两个 `cargo test` 进程共用一个
+  `$TMPDIR`（一边跑变异测试一边开发就是这个局面，CI 上一台 runner 跑两个 job 也是），
+  路径撞上就是互删对方的文件。表现极具迷惑性：`patch` 的 11 个 journal 测试原来把目录写成
+  `root.join("../xxx-state")`，`root` 带 pid 而 `..` 正好走出去，于是**一个关于文件锁的测试
+  偶发失败**，单跑 25 次不复现。两个进程并发跑，三次全挂。
+- **别写"多久之内跑完"这种断言，除非余量是数量级的。** `supervise` 那条原来要求 5 秒内完成
+  （证明没有干等一个没关的 stdin），机器一忙就红。现在会话超时 60 秒、断言 10 秒——真卡住是
+  60 秒，跟 10 秒差 6 倍，忙不忙都分得开。
 
 ### 不用第二台机器，能测到哪一步
 
@@ -119,7 +134,7 @@ scripts/deploy.sh <另一台的 ssh 别名> [workspace]
 ### 变异测试
 
 ```bash
-scripts/mutate.sh        # 需要干净的工作区，31 个 case 跑一遍约 10 分钟
+scripts/mutate.sh        # 需要干净的工作区，38 个 case
 ```
 
 测试全绿只说明代码通过了测试，**不说明测试能抓住代码变错**。这个脚本一次拆掉一处 guard
@@ -129,7 +144,7 @@ scripts/mutate.sh        # 需要干净的工作区，31 个 case 跑一遍约 1
 RED    two files may not share a new directory
        caught by: mcp::patch::tests::two_new_files_can_share_one_new_directory
 ...
-31 red, 0 green, 0 not applied
+38 red, 0 green, 0 not applied
 ```
 
 出现 `GREEN` 就是测试有洞：要么补测试，要么确认这处变异**根本不改变可观察行为**
@@ -143,6 +158,10 @@ RED    two files may not share a new directory
 文件是 `M`。脚本退出时（包括 Ctrl-C）会把它可能碰过的文件全还原一遍，但 `kill -9` 拦不住，
 所以中断后 `git status` 看一眼，有 `M` 就 `git checkout` 它。要一边跑一边接着干活，放到一个
 `git worktree` 里跑：它的还原只碰自己那份。
+
+**耗时差 5 倍，按 target 热不热算。** 主树上 `target/` 是热的，一个 case 只重编改动的那个
+crate，38 个大约 15 分钟；新开的 `git worktree` 里 `target/` 是空的，第一次全量编译加上
+每次重编，同样 38 个跑了约 50 分钟。想边跑边干活就得用 worktree，那就按后面这个数等。
 
 ### 打包
 

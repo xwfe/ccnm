@@ -131,6 +131,10 @@ scripts/deploy.sh <另一台的 ssh 别名> [workspace]
 [README 的「升级」](../README.md#升级)那个安全办法装到两边、重启 controller（哪台有它就重启哪台）、然后跑一次
 `ccnm doctor`。正在跑的会话不受影响。
 
+最后那次 `doctor` 是**先在本机跑、只在收到 `CCNM_E_CONFIG`(10) 时才转去另一台**。别改成
+"有 config 文件就在这台跑"：工作机也有 config，里面只有回家的路、一个 workspace 都没有，
+于是那个判断在唯一答不出来的机器上说"是"。
+
 ### 变异测试
 
 ```bash

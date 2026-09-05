@@ -2369,6 +2369,18 @@ stdout、stderr、退出记录就躺在这台机器上，是它自己的 supervi
 stop 一样本地作答。反过来做要先 ssh 去家庭机、让它再 ssh 回来读脚底下的文件，链路一断就彻底
 读不到——而那正是最想看看那次跑出了什么的时候。
 
+**两条都在真机上验过了（2026-09-05，v0.2.0 装到 xdwmbp/fodelf 两台之后）**，因为测试证明的是
+「发出去的是对的东西、收到的被正确解开」，证明不了真 ssh + 真 tmux + 真 Claude 合起来什么样：
+
+```text
+开场白   工作机上 heredoc 灌一段三行、带双引号和撇号的话，--detached
+         工作机 sessions/<id>/session.json 里存的 prompt 与输入逐字节相同
+         tmux 里 Claude 开场就是那三行，并原样回读出来
+result   家庭机上跑一次 --print，然后在工作机上 `ccnm result fixture`
+         输出与家庭机那次完全一致；把一个必定失败的假 ssh 放到 PATH 最前面再跑一次，
+         它一次都没被调用——这条真的不碰网络
+```
+
 ### Phase 7 — Tool Parity
 
 只有真实日用证明需要才加，优先顺序：

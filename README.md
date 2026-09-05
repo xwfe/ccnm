@@ -638,11 +638,10 @@ ripgrep                家庭机没装 rg，doctor 全绿，等模型第一次 s
 **没在真实项目上日用过。** 目前所有验证都在一个 Python fixture 上：搜索、读、改、跑测试、
 读输出、CLAUDE.md 投影、断开重连、被中断的 patch，都是真机跑通的，但那是一个小项目。
 
-**v0.2.0 新加的东西只有测试，没上过真机。** 工作机上给开场白（`--prompt-stdin`）和工作机上的
-`ccnm result` 是这个版本才有的，它们在两层测试里都验过——库层走完整圈，真二进制层对着一个
-假 `ssh`——但**没有在两台真机器之间跑过一次**。这两层证明的是"发出去的是对的东西、收到的
-被正确解开"，证明不了真的 ssh、真的 tmux、真的 Claude 合起来是什么样。v0.1.0 那批命令是真机
-跑通过的，这批还没有。
+**专用账号（ccrun）还没建。** 家庭机的 runtime 现在跑在开发者自己的账号上，所以 doctor 那几行
+安全检查是 WARN 不是 OK：能读到 6 个 ssh 私钥、在 admin 组、机器上还有一份 Claude 凭证。
+`exec_command` 因此靠 `allow_unconfined_exec = true` 开着，每条结果都带一句 "NOT confined"。
+怎么建见 [docs/production-safety.md](docs/production-safety.md)——ccnm 一条都不会替你做。
 
 ---
 

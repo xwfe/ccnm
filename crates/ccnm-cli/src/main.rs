@@ -349,6 +349,16 @@ fn run(cli: Cli) -> Result<i32> {
                         "--print has to be run where the projects are; ssh there and run it",
                     ));
                 }
+                // An opening prompt is free text, and nothing that would
+                // need shell quoting goes over ssh (ssh::is_remote_safe).
+                // Refused out loud rather than dropped: this used to start
+                // the session with an empty prompt and say nothing, so the
+                // person typed a sentence and Claude opened with none of it.
+                if prompt.is_some() {
+                    return Err(Error::invalid_args(format!(
+                        "an opening prompt is not carried from this machine (free text would need shell quoting over ssh)\neither:  ccnm {workspace}            and type it once attached\nor, on {home}:  ccnm {workspace} \"...\""
+                    )));
+                }
                 let env = home_env()?;
                 launcher::start_from_work(home, &host.ccnm_bin(), workspace, &env)?;
                 if *detached {

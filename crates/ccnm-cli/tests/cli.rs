@@ -593,19 +593,27 @@ fn on_the_work_machine_an_unknown_workspace_is_asked_about_not_refused() {
 /// workspace.
 #[test]
 fn the_line_the_work_machine_sends_home_is_one_home_accepts() {
-    let out = ccnm()
-        .args(["run", "xshun", "--detached", "--config"])
-        .arg(fixture("config-valid.toml"))
-        .output()
-        .unwrap();
-    let err = stderr(&out);
-    assert!(
-        !err.contains("unexpected argument") && !err.contains("Usage"),
-        "home must accept the line work sends it: {err}"
-    );
-    // Past clap and into the local preflight, which is as far as it can
-    // get without the project being here.
-    assert_eq!(out.status.code(), Some(30), "{err}");
+    // Both shapes: without an opening line, and with one -- which adds
+    // --prompt-stdin and is the half where the two sides are furthest
+    // apart, the flag being what tells home the prompt is coming.
+    for args in [
+        vec!["run", "xshun", "--detached"],
+        vec!["run", "xshun", "--detached", "--prompt-stdin"],
+    ] {
+        let mut cmd = ccnm();
+        cmd.args(&args)
+            .arg("--config")
+            .arg(fixture("config-valid.toml"));
+        let out = with_stdin(&mut cmd, "fix the failing test");
+        let err = stderr(&out);
+        assert!(
+            !err.contains("unexpected argument") && !err.contains("Usage"),
+            "home must accept the line work sends it ({args:?}): {err}"
+        );
+        // Past clap and into the local preflight, which is as far as it
+        // can get without the project being here.
+        assert_eq!(out.status.code(), Some(30), "{args:?}: {err}");
+    }
 }
 
 /// On the work machine the session is *on this machine*, so attach,

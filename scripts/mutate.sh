@@ -79,6 +79,7 @@ T=crates/ccnm-core/src/tmux.rs
 N=crates/ccnm-core/src/launcher.rs
 E=crates/ccnm-core/src/session.rs
 C=crates/ccnm-cli/src/main.rs
+G=crates/ccnm-core/src/config.rs
 
 # Stopped in the middle of a case -- ctrl-c, a timeout, a closed
 # terminal -- the mutation would stay in the tree, and a tree with one
@@ -86,7 +87,7 @@ C=crates/ccnm-cli/src/main.rs
 # It has happened twice. So every file a case can touch is restored on
 # the way out, whatever the way out was. `kill -9` cannot be caught, so
 # after one of those: `git status`, and `git checkout` whatever is M.
-trap 'git checkout -q -- "$P" "$L" "$W" "$S" "$K" "$T" "$N" "$E" "$C"' EXIT
+trap 'git checkout -q -- "$P" "$L" "$W" "$S" "$K" "$T" "$N" "$E" "$C" "$G"' EXIT
 
 # --- the write path ---------------------------------------------------
 
@@ -325,6 +326,10 @@ mutate "an empty stdin passes for an opening line" "$C" \
 mutate "the trailing newline rides along into the prompt" "$C" \
   '    Ok(Some(text.trim_end().to_string()))' \
   '    Ok(Some(text))'
+
+mutate "an unknown name on the work machine does not say where the list is" "$G" \
+  '                match self.home_from_work() {' \
+  '                match None::<(&str, &Host)> {'
 
 echo
 echo "$red red, $green green, $broken not applied"

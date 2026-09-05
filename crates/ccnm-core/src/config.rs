@@ -283,9 +283,23 @@ impl Config {
     pub fn workspace<'a>(&'a self, name: &'a str) -> Result<Resolved<'a>> {
         let workspace = self.workspaces.get(name).ok_or_else(|| {
             if self.workspaces.is_empty() {
-                Error::config(format!(
-                    "workspace '{name}' is not defined (no workspaces in config)"
-                ))
+                // A config with no workspaces and one way home is the
+                // work machine's, on purpose: a project's root is
+                // defined in exactly one place. So "not defined" is true
+                // and unhelpful here -- it reads as "add it", and adding
+                // it is the one thing this split exists to prevent. Say
+                // where the list lives instead. The commands that work
+                // from this side never reach this, because they answer
+                // locally; what reaches it is `doctor <ws>` and
+                // `mcp probe`, which need the definition.
+                match self.home_from_work() {
+                    Some((home, _)) => Error::config(format!(
+                        "workspace '{name}' is not defined on this machine, and this machine keeps no workspace list -- the projects are on {home}\nrun the ones that need the definition there:  ssh {home} ccnm doctor {name}"
+                    )),
+                    None => Error::config(format!(
+                        "workspace '{name}' is not defined (no workspaces in config)"
+                    )),
+                }
             } else {
                 let defined: Vec<&str> = self.workspaces.keys().map(String::as_str).collect();
                 Error::config(format!(
@@ -569,6 +583,30 @@ mod tests {
             DEFAULT_CCNM_BIN
         );
     }
+    /// On the work machine, "not defined" is true and points the wrong
+    /// way: it reads as "so define it", and a second copy of a project's
+    /// root on this machine is the exact thing the split exists to
+    /// prevent -- one of them goes stale and a session binds to a
+    /// directory that moved. So the error names the machine that does
+    /// keep the list. Only `doctor <ws>` and `mcp probe` can reach it;
+    /// everything else on the work machine answers locally.
+    #[test]
+    fn on_the_work_machine_an_unknown_name_says_where_the_list_is() {
+        let work_side = Config::parse("[hosts.home]\nssh_from_work = \"xdwmbp\"\n").unwrap();
+        let err = work_side.workspace("xshun").unwrap_err();
+        assert!(err.message().contains("xdwmbp"), "{err}");
+        assert!(
+            err.message().contains("ssh xdwmbp ccnm doctor xshun"),
+            "{err}"
+        );
+
+        // No way home either: nothing to point at, so do not invent one.
+        let neither = Config::parse("").unwrap();
+        let err = neither.workspace("xshun").unwrap_err();
+        assert!(!err.message().contains("ssh "), "{err}");
+        assert!(err.message().contains("no workspaces in config"), "{err}");
+    }
+
     use crate::error::ErrorCode;
 
     fn fixture(name: &str) -> PathBuf {

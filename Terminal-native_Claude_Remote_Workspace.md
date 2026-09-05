@@ -1,5 +1,8 @@
 # ccnm — Terminal-native Claude Remote Workspace
 
+> **Terminology note (pre-release):** current public docs use **Node + Agent / Runtime / Controller roles**. Older sections below record experiments using the former “work/home machine” names; those names are historical, not the current config/API model. See `docs/architecture.md`.
+
+
 ```text
 Primary architecture   SSH stdio Remote Coding MCP        （正文）
 Fallback architecture  SMB Hybrid Remote Workspace        （附录 A）

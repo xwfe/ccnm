@@ -10,7 +10,7 @@ ccnm-xshun  xshun  detached  TOOLS DOWN (in Claude: /mcp -> ccnm -> Reconnect)  
 ```
 
 **症状**：Claude 还能聊天，但一让它读文件就开始瞎猜，或者去调它自己机器上的 Bash
-（会被拒，那是第二道锁）。原因是那条 MCP ssh 断了——网断太久、工作机睡了、有人 kill 了它。
+（会被拒，那是第二道锁）。原因是那条 MCP ssh 断了——网断太久、Agent Node睡了、有人 kill 了它。
 Claude 不会自己重连。
 
 **修**：在 Claude 里敲
@@ -42,18 +42,18 @@ Claude 不会自己重连。
 ccnm 自己调对面时一直是全路径（`hosts.<x>.ccnm_bin`，默认 `~/.local/bin/ccnm`），所以
 `ccnm doctor` 能通而你手敲的那条不通，是正常的，不是配置坏了。
 
-### 在工作机上 `ccnm <ws>` 报 `/xxx/ccnm not found on <home> (the login shell exited 127)`
+### 在Agent Node上 `ccnm <ws>` 报 `/xxx/ccnm not found on <home> (the login shell exited 127)`
 
-家庭机的 ccnm 不在 `~/.local/bin/ccnm`，而工作机这份 config 没说它在哪。补一行：
+Runtime Node的 ccnm 不在 `~/.local/bin/ccnm`，而Agent Node这份 config 没说它在哪。补一行：
 
 ```toml
-[hosts.home]
-ssh_from_work = "xdwmbp"
-ccnm_bin = "/opt/homebrew/bin/ccnm"     # 家庭机上的实际路径
+[nodes.runtime]
+ssh_from_agent = "xdwmbp"
+ccnm_bin = "/opt/homebrew/bin/ccnm"     # Runtime Node上的实际路径
 ```
 
 `ccnm init --home <alias>` 只写别名，因为绝大多数情况默认路径就是对的。**报错里的那个路径
-就是它试过的那个**——如果它跟你在家庭机上 `which ccnm` 的结果不一样，那这行就是要补的。
+就是它试过的那个**——如果它跟你在Runtime Node上 `which ccnm` 的结果不一样，那这行就是要补的。
 
 ### `zsh: permission denied: ccnm`
 
@@ -111,8 +111,8 @@ ccnm xshun                            # 它会自己发现老会话指向别处�
 controller 不在登录会话里。两种可能：
 
 ```text
-它是手工起的，不是 launchd 起的       → ssh work 'ccnm work-controller install'
-工作机屏幕前根本没人登录过            → 去那台机器上登录一次（之后锁屏无所谓）
+它是手工起的，不是 launchd 起的       → ssh work 'ccnm controller install'
+Agent Node屏幕前根本没人登录过            → 去那台机器上登录一次（之后锁屏无所谓）
 ```
 
 ### `Claude authentication` 是 SKIP 不是 FAIL
@@ -122,7 +122,7 @@ controller 不在登录会话里。两种可能：
 
 ### `CCNM_E_DEPENDENCY: tmux is not installed`
 
-工作机没装 tmux。`brew install tmux`。或者用 `--print` 模式，那个不需要 tmux。
+Agent Node没装 tmux。`brew install tmux`。或者用 `--print` 模式，那个不需要 tmux。
 
 ### `Project instructions ... WARN`
 
@@ -138,7 +138,7 @@ ccnm result xshun                 # 最近一次 --print 的结果
 ccnm result xshun --session <id>  # 指定某一次
 ```
 
-**两台机器上都能敲**。会话目录在工作机上，所以在工作机上敲它读的是本地文件，链路彻底
+**两台机器上都能敲**。会话目录在Agent Node上，所以在Agent Node上敲它读的是本地文件，链路彻底
 不通的时候也能捞——而那恰好是最想看看那次跑出了什么的时候。
 
 ### 会话里的 `apply_patch` 报 "workspace is PARTIALLY CHANGED"

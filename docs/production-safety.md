@@ -1,265 +1,309 @@
-# 把家庭机变成一个可以放心跑 exec_command 的地方
+# Runtime 安全与 `ccrun`
 
-**先说结论：`exec_command` 是一个远程 shell。** 它能跑的东西，等于 ccnm runtime 所在那个
-账号能跑的东西——包括 `cat ~/.ssh/id_ed25519`、`curl -d @secrets ...`、`rm -rf ~`。
+`exec_command` 本质上是在 **Runtime Node** 上，以某个真实操作系统账号执行命令。这个账号才是 ccnm 当前最重要的权限边界。
 
-ccnm 自己**做不到**限制这件事，也不打算假装能做到。设计文档第 18 节的原话是
-"command parser 不是 sandbox"。真正的边界是操作系统给的：一个专用 Unix 账号，只能碰这一个项目，
-没有 sudo、没有 ssh key、没有 Claude 凭证、没有浏览器 profile。
+`ccrun` 是建议使用的 **Runtime Service Account**：一个只用于 ccnm Runtime 执行的低权限 Unix 账号。
 
-ccnm 能做的只有两件：**验证**这些性质成不成立，以及在不成立时**拒绝**跑命令。
+它不绑定“家庭机”这种物理位置，也不只是为了隐藏某几个目录。它真正解决的是：**AI 的一次工具调用，不应该自动继承你个人登录账号能做的一切。**
+
+## `ccrun` 能解决什么
+
+如果直接让 Runtime 以个人账号运行，`exec_command` 理论上可以继承这个账号能访问的所有资源，例如：
+
+- 个人 SSH 私钥和 SSH agent；
+- Git / 云服务凭证；
+- 其他仓库和 home 目录数据；
+- admin 或 passwordless sudo 能力；
+- 浏览器 profile 和本地应用数据；
+- Docker socket；
+- 该账号可读写的其他本地资源。
+
+换成专用 `ccrun` 后，可以把影响范围缩小到你明确授予它的 workspace 和 toolchain。
+
+所以它解决的是：
 
 ```text
-ccnm doctor <workspace>      看每一条性质当前是什么状态
-exec_command                 不满足就直接拒绝，除非你显式说了接受
+host/account blast radius
+credential inheritance
+filesystem authority
+privilege inheritance
 ```
 
-本文是你要在**家庭机**（也就是 runtime 所在那台）上手动做的事。ccnm 一条都不会替你做——
-创建用户、改权限这种事，一个诊断工具不该背着你干。
+而不只是“防止 AI 读到别的文件”。
 
----
+## `ccrun` 不能解决什么
 
-## 0. 先看现在是什么状态
+**Unix 账号不是完整 sandbox。**
+
+如果 `ccrun` 同时：
+
+```text
+能读项目源码
++
+可以自由访问公网
+```
+
+那么某条命令仍然可以把源码上传出去。
+
+如果它可以写 Docker socket、调用特权本地服务、使用错误配置的 sudoers，也可能突破预期边界。
+
+所以更强的隔离还需要根据威胁模型叠加：
+
+- OS 网络策略；
+- 独立 VM；
+- 容器隔离；
+- 更严格的文件系统挂载；
+- egress policy。
+
+ccnm 不会假装“禁止 `curl` / `wget` / 某几个程序名”就等于 sandbox，因为 shell、解释器、绝对路径、wrapper 和自定义二进制都可以绕过这种黑名单。
+
+## ccnm 当前会检查什么
+
+在 Runtime Node 执行：
 
 ```bash
 ccnm doctor <workspace>
 ```
 
-关注这几行。它们就是下面每一节要解决的：
+confinement gate 会检查它能在本机可靠判断的性质：
 
 ```text
-Runs as root            runtime 不能是 root
-Runtime user            必须是你在 config.toml 里声明的那个专用账号
-No sudo                 不能免密 sudo
-Not an admin            不能在 admin / wheel / sudo 组里
-No SSH keys             这个账号的 ~/.ssh 里不能有可读的私钥
-No Claude credential    这台机器不能有 Claude 凭证（核心 invariant）
-No Docker socket        不能写 /var/run/docker.sock（那等于 root）
-exec_command            上面全过才是 "confined"
+Runs as root            Runtime 不能是 root
+Runtime user            当前用户必须匹配 nodes.<runtime>.runtime_user
+No sudo                 不能 passwordless sudo
+Not an admin            不应属于 admin / wheel / sudo 等管理组
+No SSH keys             ~/.ssh 中不应存在当前账号可读的私钥
+No Claude credential    Runtime identity 不应持有 Claude 凭证
+No Docker socket        当前账号不应能写 Docker socket
+exec_command            confinement 通过后才正常允许
 ```
 
----
+`allow_unconfined_exec = true` 是发布前 dogfood 逃生开关。
 
-## 1. 建一个专用账号 `ccrun`
+它的含义只是：
 
-macOS 上没有 `useradd`。下面这些命令**需要 sudo，需要你自己敲**，我没有在你的机器上跑过它们
-（跑了就等于我替你建了个用户）。
+> 我知道当前 Runtime 没有隔离，但这个测试 workspace 暂时允许执行命令。
 
-先挑一个没被占用的 UID：
+它不会让 Runtime 变安全，而且命令结果会明确标记为 unconfined。
+
+## macOS 创建 Runtime Service Account
+
+下面这些命令会修改主机安全模型，所以 ccnm **不会自动执行**。应由你自己在 Runtime Node 上完成。
+
+先找一个未使用 UID：
 
 ```bash
 dscl . -list /Users UniqueID | awk '{print $2}' | sort -n | tail -1
 ```
 
-假设最大是 501，那就用 502：
+然后用空闲 UID 创建 `ccrun`。下面仅以 `502` 为例，实际必须确认没有占用：
 
 ```bash
 sudo dscl . -create /Users/ccrun
 sudo dscl . -create /Users/ccrun UserShell /bin/zsh
 sudo dscl . -create /Users/ccrun RealName "ccnm runtime"
 sudo dscl . -create /Users/ccrun UniqueID 502
-sudo dscl . -create /Users/ccrun PrimaryGroupID 20          # staff
+sudo dscl . -create /Users/ccrun PrimaryGroupID 20
 sudo dscl . -create /Users/ccrun NFSHomeDirectory /Users/ccrun
 sudo mkdir -p /Users/ccrun
 sudo chown -R ccrun:staff /Users/ccrun
 sudo chmod 700 /Users/ccrun
 ```
 
-**不要**把它加进 `admin`：
+不要把它加入 `admin`：
 
 ```bash
-dscl . -read /Groups/admin GroupMembership          # ccrun 不该出现在这里
+dscl . -read /Groups/admin GroupMembership
 ```
 
-它需要能被 ssh 进来（工作机启动 runtime 走的就是 ssh）：
+## SSH：只放公钥，不放私钥
+
+Agent Node 需要以 `ccrun` 身份进入 Runtime Node。
+
+在 Runtime Node：
 
 ```bash
 sudo mkdir -p /Users/ccrun/.ssh
 sudo chmod 700 /Users/ccrun/.ssh
-# 把工作机的公钥放进去 —— 只放公钥，永远不放私钥
-sudo tee /Users/ccrun/.ssh/authorized_keys < /path/to/work-machine.pub
+sudo tee /Users/ccrun/.ssh/authorized_keys < /path/to/agent-node.pub
 sudo chown -R ccrun:staff /Users/ccrun/.ssh
 sudo chmod 600 /Users/ccrun/.ssh/authorized_keys
 ```
 
-`No SSH keys` 那条检查的是**私钥**：它会读 `~/.ssh` 里每个文件的开头找 `PRIVATE KEY`。
-`authorized_keys`、`known_hosts`、`.pub` 都不算。
+这里只应该放 Agent Node 的**公钥**。
 
-装 ccnm 和它需要的工具：
+不要在 `/Users/ccrun/.ssh/` 放任何私钥，也不要把个人 SSH agent 转发给它。
 
-```bash
-sudo -u ccrun mkdir -p /Users/ccrun/.local/bin
-# 先传成 .new 再 mv，不要直接 cp 覆盖，理由见 README「升级」一节
-sudo cp target/release/ccnm /Users/ccrun/.local/bin/ccnm.new
-sudo chown ccrun:staff /Users/ccrun/.local/bin/ccnm.new
-sudo -u ccrun mv /Users/ccrun/.local/bin/ccnm.new /Users/ccrun/.local/bin/ccnm
-# search_text 需要 rg。Homebrew 装的对所有用户可见，不用重装
-```
-
-在 config.toml 里声明它：
-
-```toml
-[hosts.home]
-ssh_from_work = "ccnm-home"
-runtime_user  = "ccrun"        # ← 这一行
-```
-
-**不声明 `runtime_user` 本身就是一条失败。** 没有它，ccnm 分不出"这是专用账号"和
-"这是开发者自己的账号"，而这时候回答"看起来没问题"是所有答案里最糟的一个。
-
----
-
-## 2. 只给它这一个项目
-
-默认情况下 `ccrun` 读不到 `/Users/你/` 下面的东西（macOS 家目录是 700），但它也读不到
-你的项目。用 ACL 精确开一个口子：
-
-```bash
-PROJ=/Users/你/code/你的项目
-
-# 让 ccrun 能穿过路径上的每一层目录（只是 execute，不是 read）
-chmod +a "user:ccrun allow execute" /Users/你 /Users/你/code
-
-# 项目本身给读写，并且让新建的文件继承这条规则
-chmod -R +a "user:ccrun allow \
-list,search,add_file,add_subdirectory,delete_child,readattr,writeattr,\
-readextattr,writeextattr,readsecurity,file_inherit,directory_inherit" "$PROJ"
-```
-
-验证一下（这条我在本机验过语法，ACL 确实生效）：
-
-```bash
-ls -lde "$PROJ"                       # 应该看到 user:ccrun allow ...
-sudo -u ccrun ls "$PROJ"              # 能列
-sudo -u ccrun ls /Users/你            # 应该 Permission denied
-sudo -u ccrun cat /Users/你/.ssh/id_ed25519   # 必须 Permission denied
-```
-
-最后一条是这一整节的意义所在：**穿得过去，但只能到项目那一层。**
-
-> 想撤销：`chmod -R -a "user:ccrun allow ..." "$PROJ"`，或者 `chmod -R -N "$PROJ"`
-> 清掉全部 ACL（会连你自己加的其它 ACL 一起清）。
-
----
-
-## 3. 不给 sudo
-
-`ccrun` 不在 `admin` 组就已经没有 sudo 了。确认一下：
-
-```bash
-sudo -u ccrun sudo -n true          # 应该失败
-```
-
-如果你的 `/etc/sudoers.d/` 里有什么通配规则，检查它没有覆盖到 `ccrun`。
-
----
-
-## 4. 这台机器不能有 Claude 凭证
-
-这是第 6 节的核心 invariant，不是建议：**家庭机不持有 Claude 凭证，也不能成为 Anthropic 的推理出口。**
-
-`ccrun` 的家目录是全新的，所以默认就没有。要保证的是不要在这台机器上做这两件事：
-
-```bash
-claude auth login          # 永远不要在家庭机上跑
-claude                     # 也不要，即使只是想试试
-```
-
-如果 `ccnm doctor` 报 `No Claude credential FAIL`，说明**当前 runtime 账号的家目录里有
-`.claude/.credentials.json`**。如果你还在用自己的账号跑 runtime（也就是还没做完第 1 节），
-那报的就是你自己那份——这正是为什么要有专用账号。
-
----
-
-## 5. 出网限制
-
-设计文档第 19 节把这条写成**有条件**的：
-
-> 如果这条网络出口约束是绝对合规边界，Production gate 要求 ccrun 账户 / 执行沙箱没有公网
-> egress，或至少由 OS / network policy 阻断 Anthropic。**不要把静态 command deny 写成
-> "网络安全边界"。**
-
-所以 `ccnm doctor` 对这条只报 WARN，判断留给你。macOS 上按用户限制出网没有干净的内建做法
-（`pf` 按 UID 过滤要 `pf.conf` 里写 `user` 规则，且和系统更新打架）。可选路线：
-
-```text
-pf + user 规则       /etc/pf.conf 里 `block drop out proto tcp from any to any user ccrun`
-                     然后 pfctl -f /etc/pf.conf。会被系统更新覆盖，要自己管
-容器 / VM            把 runtime 跑在一个网络受限的容器里。代价是项目工具链要进容器
-不做                 如果这不是你的合规边界，就明确记下来"不做"，别假装做了
-```
-
-**别用 `exec_command` 的命令名黑名单来当这一层。** 一张禁止程序名的表，`env curl`、
-绝对路径、一个 wrapper 脚本就绕过去了；它真正的作用是让人以为被管着。ccnm 因此**故意不做**
-这张表。
-
----
-
-## 6. 让 runtime 以 ccrun 身份启动
-
-工作机 ssh 到家庭机时用哪个账号，决定了 runtime 是谁。改工作机的 `~/.ssh/config`：
+在 Agent Node 的 `~/.ssh/config` 中，让 `nodes.runtime.ssh_from_agent` 对应的 alias 使用 `ccrun`：
 
 ```sshconfig
-Host ccnm-home
-    HostName <家庭机地址>
-    User ccrun              # ← 从你自己的账号改成 ccrun
+Host runtime-ssh-alias
+    HostName <runtime-node-address>
+    User ccrun
     IdentityFile ~/.ssh/id_ed25519
 ```
 
-`ccnm-home` 这个别名后面走 Tailscale、WireGuard、公网还是局域网，ccnm 不关心也看不到
-（第 6 节：ccnm owns orchestration, not networking）。
+ccnm 只消费这个 alias，不接管 SSH 身份或网络层。
 
----
+## 只授权目标 workspace
 
-## 7. 再跑一次 doctor
+`ccrun` 需要的是目标项目，不是你的整个 home 目录。
+
+macOS 可以用 ACL 精确授权。
+
+例如：
+
+```bash
+PROJ=/Users/you/code/project
+
+# 父目录只允许穿过，不需要授予目录内容读取权限。
+chmod +a "user:ccrun allow execute" /Users/you /Users/you/code
+
+# 项目目录授予需要的访问能力，并让 ACL 向下继承。
+chmod -R +a "user:ccrun allow list,search,add_file,add_subdirectory,delete_child,readattr,writeattr,readextattr,writeextattr,readsecurity,file_inherit,directory_inherit" "$PROJ"
+```
+
+实际权限应以项目需求为准，不要机械复制一份比项目需要更大的 ACL。
+
+然后直接验证边界：
+
+```bash
+sudo -u ccrun ls "$PROJ"
+sudo -u ccrun cat /Users/you/.ssh/id_ed25519
+```
+
+第一条应该成功，第二条必须失败。
+
+还要用**同一个身份**验证项目 toolchain，否则“能读代码但跑不了测试”的 Runtime 也没有实际价值：
+
+```bash
+sudo -u ccrun git -C "$PROJ" status
+# 再执行该项目日常真正使用的 build / test 命令
+```
+
+## 给 `ccrun` 安装 ccnm
+
+Agent Node 反向 SSH 到 Runtime Node 后，需要能执行 Runtime 侧 ccnm。
+
+一种安装方式：
+
+```bash
+sudo -u ccrun mkdir -p /Users/ccrun/.local/bin
+sudo cp target/release/ccnm /Users/ccrun/.local/bin/ccnm.new
+sudo chown ccrun:staff /Users/ccrun/.local/bin/ccnm.new
+sudo -u ccrun mv /Users/ccrun/.local/bin/ccnm.new /Users/ccrun/.local/bin/ccnm
+```
+
+仍然使用 `.new` + `mv`，不要直接覆盖正在运行过的二进制 inode。
+
+Runtime 依赖，例如 `ripgrep`，也必须安装在 `ccrun` 能执行到的位置。
+
+## 配置 Runtime identity
+
+Runtime Node 的 ccnm 配置：
+
+```toml
+[nodes.runtime]
+ssh_from_agent = "runtime-ssh-alias"
+runtime_user = "ccrun"
+```
+
+真实项目应移除 dogfood bypass：
+
+```toml
+[workspaces.my-project]
+allow_unconfined_exec = false
+```
+
+然后重新：
+
+```bash
+ccnm doctor my-project
+```
+
+## 凭证边界
+
+Runtime Service Account 不应该持有 AI Provider 凭证。
+
+当前 Claude 架构明确要求：
+
+```text
+Claude login / OAuth -> Agent Node
+workspace / toolchain -> Runtime Node
+```
+
+不要为了让某个测试绿，就在 `ccrun` 下执行：
+
+```bash
+claude auth login
+```
+
+这会直接破坏凭证边界。
+
+如果项目必须访问私有 Git 仓库，应只为该项目提供最小必要凭证，而不是把个人 Keychain、整个 SSH agent 或全部 Git 身份共享给 `ccrun`。
+
+## sudo 与其他提权面
+
+确认：
+
+```bash
+sudo -u ccrun sudo -n true
+```
+
+它应该失败。
+
+但这还不是全部。还应检查：
+
+- 自定义 sudoers 规则；
+- setuid helper；
+- 可写 Docker socket；
+- SSH agent forwarding；
+- 有特权能力的本地服务；
+- 项目自己的管理工具；
+- Runtime 账号能调用的其他提权入口。
+
+ccnm 的 doctor 能覆盖一部分明确可验证项，但不能证明整个操作系统不存在其他提权路径。
+
+## 网络出口
+
+网络隔离是单独一层策略。
+
+如果你的安全要求是：
+
+> Runtime 项目代码永远不能访问 Anthropic，甚至不能访问公网。
+
+那么必须在 Runtime Node / `ccrun` 周围通过 OS、网络、防火墙、VM 或容器环境真正执行这个策略。
+
+不要用下面这种方式代替：
+
+```text
+禁止 curl
+禁止 wget
+禁止 python
+```
+
+因为这不是可靠安全边界。
+
+## 最终门禁
+
+完成 Runtime identity、SSH alias 和 ACL 后：
 
 ```bash
 ccnm doctor <workspace>
 ```
 
-目标是这样：
+目标是这些行全部成为 OK：
 
 ```text
-Runs as root            OK     ...
-Runtime user            OK     ccrun
-No sudo                 OK     cannot become root without a password
-Not an admin            OK     not in admin, wheel or sudo
-No SSH keys             OK     no readable private key in ~/.ssh
-No Claude credential    OK     no Claude credentials file on this machine
-No Docker socket        OK     the Docker socket is not writable by this account
-exec_command            OK     the runtime account is confined
+Runtime user
+No sudo
+Not an admin
+No SSH keys
+No Claude credential
+No Docker socket
+exec_command
 ```
 
----
+达到这个状态后，再让有价值的真实项目脱离 `allow_unconfined_exec` 进入长期 dogfood。
 
-## 还没做完就想先跑？
-
-可以，但要写出来：
-
-```toml
-[workspaces.<名字>]
-allow_unconfined_exec = true
-```
-
-代价是这个 workspace 的**每一条命令结果**都会带上一句 "this runtime is NOT confined"。
-接受一次风险，不等于以后就看不见它。
-
-**别对真实项目这么干。** 一个没有 confined 的 runtime，意味着模型跑的任何命令都拥有你
-自己账号的全部权限。
-
----
-
-## ccnm 检查的和不检查的
-
-| ccnm 会验 | ccnm 不会验（你自己负责） |
-|---|---|
-| 跑在哪个账号上 | 那个账号能读到项目以外的哪些文件 |
-| 能不能免密 sudo | `/etc/sudoers.d/` 里的通配规则 |
-| 在不在 admin / wheel 组 | 别的提权路径（setuid、LaunchDaemon、SSH agent 转发） |
-| `~/.ssh` 里有没有可读私钥 | 别处放着的凭证 |
-| 这台机器有没有 Claude 凭证 | 子进程会不会自己去访问 Anthropic |
-| Docker socket 可不可写 | 别的 root-equivalent socket |
-| 能不能连到 api.anthropic.com（WARN） | 你的合规边界到底是什么 |
-
-**通过全部检查不等于 `exec_command` 可以指向不可信输入。** 它的意思只是：出事时炸的是
-`ccrun` 这个账号，而不是你自己的账号。这正是设计文档要的那个区别——它值得做，但它不是 sandbox。
+如果还需要更强的数据防外传边界，再继续叠加 network policy / VM / container，而不是继续往 ccnm 命令解析器里堆假的安全规则。

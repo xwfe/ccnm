@@ -138,6 +138,9 @@ ccnm result xshun                 # 最近一次 --print 的结果
 ccnm result xshun --session <id>  # 指定某一次
 ```
 
+**两台机器上都能敲**。会话目录在工作机上，所以在工作机上敲它读的是本地文件，链路彻底
+不通的时候也能捞——而那恰好是最想看看那次跑出了什么的时候。
+
 ### 会话里的 `apply_patch` 报 "workspace is PARTIALLY CHANGED"
 
 这句只在**极端情况**下出现：staging 全部成功了，commit 阶段文件系统开始失败，回滚也失败。

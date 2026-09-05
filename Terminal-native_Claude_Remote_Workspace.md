@@ -247,6 +247,7 @@ ccnm work-controller uninstall             # 停掉并删掉 LaunchAgent
 ```bash
 ccnm run xshun                     # 工作机起 Claude，当前终端 attach 上去
 ccnm run xshun "帮我修 X"           # 同上，开场白直接给它
+ccnm run xshun --prompt-stdin      # 开场白从 stdin 读（多行、带引号，两台机器都能给）
 ccnm run xshun --detached          # 只起，不 attach
 ccnm run xshun --print "..."       # 非交互，一问一答，不需要 tmux
 ccnm attach xshun                  # 回到已经在跑的那个，不新建第二个 MCP server
@@ -2341,17 +2342,32 @@ controller），然后本地 `tmux attach`——接管只需要名字，不需�
 - **真二进制层**：`PATH` 最前面放一个假 `ssh`，真 `ccnm` 跑两个方向。盖的是 `main.rs`——判断自己在
   哪台机器、`--detached` 在两边各自有没有被当回事、工作机拼给家庭机的那行字面量
   `ccnm run <ws> --detached`（改了 flag 名，断在对面，而报错讲的是参数、人看的是 workspace）、
-  以及工作机上 attach / status / stop 必须本地作答（最想停掉一个会话的时候，往往正是链路出问题的
-  时候）。库测试碰不到这一层。
+  以及工作机上 attach / status / stop / result 必须本地作答（最想停掉一个会话、或者最想看看它
+  跑出了什么的时候，往往正是链路出问题的时候）。库测试碰不到这一层。
 
 两条原则。**跨机器的每个值都设成非默认**：两个别名、两个二进制路径互不相同；权限模式、config
 目录、开场白也都不是默认值，因为「默认值到了」和「配置里的值到了」得分得开——在此之前
 `start_interactive` 发默认权限模式出去，所有测试照样绿。**每个 guard 都用变异证明**：
 `scripts/mutate.sh` 一处一处拆，每处得正好红在声称盖住它的那条测试上。
 
-这轮直接抓到一个：工作机上 `ccnm <ws> "开场白"` 把开场白**悄悄丢掉**——`main.rs` 那个分支只拦了
-`--print`。它也带不过去：发给家庭机的是一行普通远程命令，而第 8 节的规矩是任何需要引号的东西
-都不上 ssh。所以改成拒绝出声，说明两条路：接上再打，或者去家庭机上敲。
+抓到的是两个功能缺口，不是两个实现错误——只有把一边支持的命令逐条对着另一边提一遍才看得见。
+
+**一，开场白悄悄丢掉。** 工作机上 `ccnm <ws> "开场白"`，`main.rs` 那个分支只拦了 `--print`，
+开场白就此消失，会话照起，Claude 开着一个空提示。它确实不能走原来那条路：发给家庭机的是一行
+普通远程命令，而第 8 节的规矩是任何需要引号的东西都不上 ssh 命令行。**但同一条连接的 stdin
+是字节流，不需要引号**——所以开场白改走 stdin，远端那行加一个 `--prompt-stdin` 告诉家庭机去
+那儿读。从家庭机往后就是原来那条路，payload 是 base64，引号和换行本来就带得过去。
+
+这条也是 argv 之外唯一的跨机器值，所以测试里假 `ssh` 除了记 argv 还要抓 stdin，并且要求那句话
+**一个字都不出现在 argv 里**。`--prompt-stdin` 没做成内部开关：手工 `heredoc` 管一段多行开场白
+是同样有用的事，一条路两种用法，就是一条被测到的路。空 stdin 拒绝而不是当成「没开场白」——
+空开场白跟丢掉的那个 bug 长得一模一样。
+
+**二，`ccnm result` 在工作机上答不了。** 它落到 workspace 查表，而那台机器按设计没有 workspace
+列表，于是回「workspace 未定义」——关于 config 是真话，作为回答毫无用处，而那个 session 的
+stdout、stderr、退出记录就躺在这台机器上，是它自己的 supervisor 写的。现在跟 attach / status /
+stop 一样本地作答。反过来做要先 ssh 去家庭机、让它再 ssh 回来读脚底下的文件，链路一断就彻底
+读不到——而那正是最想看看那次跑出了什么的时候。
 
 ### Phase 7 — Tool Parity
 

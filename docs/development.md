@@ -12,7 +12,7 @@
 ### 本地跑测试
 
 ```bash
-cargo test --workspace        # 408 个测试，15 秒，不需要第二台机器，不碰网络
+cargo test --workspace        # 410 个测试，15 秒，不需要第二台机器，不碰网络
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 ```
@@ -73,18 +73,27 @@ cargo test -p ccnm-cli --test cli sitting_at
 
 坐在家庭机：带 `--detached` 正好一次 ssh，终端留在本地；不带，第二次 ssh 带 `-t` 把终端送过去，
 第三次问会话怎么结束的。坐在工作机：发给家庭机的那一行就是人在那边会敲的命令加 `--detached`；
-attach 在本地发生（是 tmux 在答，不是对面）；config 里写的家庭机 ccnm 路径是真被跑的那个；
-开场白在任何东西上网之前就被拒绝。能这么做是因为 ccnm 自己调 ssh 是按名字找的——只有
-`mcp.json` 里给 Claude 的那行 transport 写的是绝对路径。
+attach 在本地发生（是 tmux 在答，不是对面）；`ccnm result` 也在本地答（读的是这台自己写的
+session 目录）；config 里写的家庭机 ccnm 路径是真被跑的那个。能这么做是因为 ccnm 自己调 ssh
+是按名字找的——只有 `mcp.json` 里给 Claude 的那行 transport 写的是绝对路径。
+
+开场白那条单拎出来说，因为它是唯一一个**不在 argv 里**的跨机器值：假 ssh 除了记 argv，还在
+命令行里出现 `--prompt-stdin` 时把 stdin `cat` 到另一个文件。测试要的是三件事同时成立——
+远端那行以 `--prompt-stdin` 结尾、字节一个不差地出现在 stdin 那个文件里、argv 里**一个字都
+没有**。用的句子带引号带撇号带换行，就是为了让"不小心塞进命令行"这条路走不通。（假 ssh 只在
+看见那个 flag 时才 `cat`：attach 那一跳的 stdin 是测试进程自己的，读到不了 EOF，无条件 `cat`
+会把整个测试挂住。）
 
 **为什么非得连起来测**：两端各自的单元测试都自己手搓消息，所以"两端各自都合理、但拿到的是
 对方那个值"这类 bug 在里面永远不会出现。**加这组之前**试过：把 `start_interactive` 里的
 `home_alias` 和 `work_ssh` 对调，当时那 369 个测试一个没红，而会话连到了错的机器上。现在它
 红在那一条上。
 
-**这轮直接抓出来的**：工作机上 `ccnm xshun "开场白"` 会把开场白悄悄丢掉。家庭机那半边把它
-带到底，对工作机提同样的要求时才发现那边根本没东西带它。现在拒绝出声（原因和两条出路见
-[README](../README.md#你坐在哪台前面都行)）。
+**这组抓出来的两个**：①工作机上 `ccnm xshun "开场白"` 会把开场白悄悄丢掉——家庭机那半边把它
+带到底，对工作机提同样的要求时才发现那边根本没东西带它（现在走 stdin 送过去，见
+[README](../README.md#你坐在哪台前面都行)）。②`ccnm result` 在工作机上会答 "workspace 未定义"，
+而那台机器上就躺着那个 session 的全部输出。两个都是"这半边根本没实现"，而不是实现错了——
+只有把另一半的命令逐条对着提一遍才看得见。
 
 **还是测不到的**：controller / 登录会话是不是真的能读到 Keychain、tmux 里 Claude 到底起没起来、
 真实的延迟——那些需要两台机器（或者一台机器 ssh 自己，见下）。

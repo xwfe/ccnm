@@ -106,13 +106,26 @@ ccnm stop xshun     # 结束它
 让家庭机走它原本那条完整路径（config 解析、版本+root 握手、controller）。多的那一跳买到的是
 每个 workspace 只有一处定义，以及一行都没重复的启动代码。
 
-会话本来就起在工作机上，所以**接管、看状态、停都是本地的**——不走网络。这点重要：最想停掉
-一个会话的时候，往往正是链路出问题的时候。
+会话本来就起在工作机上，所以**接管、看状态、停、捞 `--print` 的结果都是本地的**——不走网络。
+这点重要：最想停掉一个会话、或者最想看看它到底跑出了什么的时候，往往正是链路出问题的时候。
 
-**`--print` 和开场白（`ccnm xshun "..."`）都只能在家庭机上给。** 工作机上两个都会直接拒绝并
-告诉你去哪敲：`--print` 要在项目所在的机器上跑；开场白是自由文本，而 ccnm 不往 ssh 上送任何
-需要引号的东西（这是条硬规则，见设计文档第 8 节）。接上之后直接打字就是了。以前这一句会被
-**悄悄丢掉**——会话起来了，Claude 开着一个空提示，没有任何提示说为什么——现在拒绝出声。
+**开场白两边都能给**，`ccnm xshun "把登录那块重构一下"` 在哪台敲都一样。带引号、带撇号、带
+换行都行：
+
+```bash
+ccnm xshun --prompt-stdin <<'EOF'      # 多行开场白，两台机器都认
+把 login.rs 里的 "remember me" 那段重构一下
+测试在 tests/auth.rs
+EOF
+```
+
+工作机上敲的时候，这句话**不走命令行**。ccnm 发给家庭机的是一行 ssh 命令，而 ccnm 不往 ssh
+命令行上送任何需要引号的东西（硬规则，见设计文档第 8 节）——一句带引号的话过去要么被拒，
+要么被对面的登录 shell 拆开。所以它走同一条连接的 stdin，字节进字节出，家庭机那边用
+`--prompt-stdin` 读。`--prompt-stdin` 不是内部开关，你自己 `echo` 或者用上面那个 heredoc
+管进去一样用。
+
+**`--print` 仍然只能在家庭机上给**，工作机上会直接拒绝并告诉你去哪敲：它要在项目所在的机器上跑。
 
 ---
 
@@ -242,8 +255,8 @@ ccnm init --home xdwmbp     # 在工作机上
 ```
 
 它只写"projects 在 xdwmbp 上"，**不写 workspace 列表**。之后工作机上 `ccnm xshun` /
-`attach` / `status` / `stop` 都能用：遇到不认识的名字就去问 xdwmbp，会话本来就起在工作机上，
-所以接管是本地的。
+`attach` / `status` / `stop` / `result` 都能用：遇到不认识的名字就去问 xdwmbp，会话本来就起在
+工作机上，所以接管、看状态、停、捞结果全是本地的。
 
 **家庭机上的 ccnm 不在 `~/.local/bin/ccnm` 的话**（比如你装到了 `/opt/homebrew/bin`），
 在工作机这份配置里补一行，否则 `ccnm xshun` 会报 `not found ... (the login shell exited 127)`：
@@ -379,6 +392,7 @@ NOT READY (0 failed, 4 not checked)
 ccnm xshun                        # 起会话 + 把当前终端接上去（run 可以省掉）
 ccnm run xshun                    # 同上，完整写法
 ccnm run xshun "把登录那块重构一下"   # 同上，开场白直接给
+ccnm run xshun --prompt-stdin     # 开场白从 stdin 读到 EOF（多行、带引号用这个）
 ccnm run xshun --detached         # 只起，不接
 ccnm attach xshun                 # 回到已经在跑的那个
 ccnm status xshun                 # 工作机上还活着什么
@@ -484,7 +498,7 @@ read_output      按字节偏移翻 exec_command 的输出
 | `Killed: 9` / exit 137，升级完全炸 | 用 `cp` 覆盖了跑过的二进制。改用 rename |
 | `command not found: ccnm`（在 ssh 命令里） | 非交互 shell 不读 `.zshrc`，写全路径 |
 | 在**工作机**上 `ccnm <ws>` 报 `not found ... exited 127` | 家庭机的 ccnm 不在默认路径。工作机这份 config 里补 `[hosts.home] ccnm_bin` |
-| 在**工作机**上 `ccnm <ws> "开场白"` 报 `CCNM_E_INVALID_ARGS` | 开场白带不过 ssh（见[上面](#你坐在哪台前面都行)）。接上再打，或去家庭机上敲 |
+| `--prompt-stdin, but nothing arrived on stdin` | 管子是空的（`</dev/null`、heredoc 写错）。空开场白会被拒，不会当成"没开场白" |
 | `permission denied: ccnm` | `scp` 丢了执行位。`scp -p` + `chmod +x` |
 | `ccnm versions probably differ` | 两台的 build 不一样，或者 Tailscale SSH 吞了退出码 |
 | 工具全废却说 "xxx is not installed" | 项目目录被移走了，会话还绑在旧路径上 |
@@ -567,7 +581,6 @@ Git 专用工具           git_status / git_diff 现在靠 exec_command，输出
 后台长任务             exec_command 最长 10 分钟，没有"起个 dev server 然后轮询"
 目录操作               apply_patch 只处理普通文件。删目录、改目录名、建空目录只能
                       走 exec_command，而那条路没有事务、没有版本检查、没有回滚
-工作机上给开场白        自由文本过不了 ssh，现在是拒绝。走 stdin 传过去是可行的做法，没做
 项目 skills 的脚本部分   SKILL.md 会被点名，模型能读；skill 附带的脚本不会被执行
 二进制文件             content 是字符串，写不了；read_file 也拒绝二进制
 浏览器                 属于家庭机 runtime，还没做
@@ -608,8 +621,10 @@ ripgrep                家庭机没装 rg，doctor 全绿，等模型第一次 s
 
 ### 没跑过的
 
-**GitHub 上的两个 workflow 一次都没真跑过**（东西刚推上去）。每一步都在本机单独验过——
-fmt、clippy、test、`scripts/dist.sh`、tag/版本校验的两个分支、release notes 渲染。
+**GitHub 上的两个 workflow 一次都没真跑过，因为代码还没推上去。** `origin/main` 停在最早
+那个加 LICENSE 的 commit，`v0.1.0` 这个 tag 也只在本地——CI 和 release 两条流水线
+一次都没被触发过。每一步都在本机单独验过，但本机验过不等于 runner 上跑得起来（细节见
+[docs/development.md](docs/development.md#github-上的自动构建和发版)）。
 
 **没在真实项目上日用过。** 目前所有验证都在一个 Python fixture 上：搜索、读、改、跑测试、
 读输出、CLAUDE.md 投影、断开重连、被中断的 patch，都是真机跑通的，但那是一个小项目。

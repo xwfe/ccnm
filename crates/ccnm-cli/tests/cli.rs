@@ -651,6 +651,328 @@ fn on_the_work_machine_attach_status_and_stop_stay_local() {
     }
 }
 
+/// A stand-in for `ssh`, put first on PATH so every remote call the real
+/// binary makes lands here instead of on the network.
+///
+/// It records each argv it is given -- one argument per line, a blank
+/// line between calls -- and then answers the way `answers` says, which
+/// is the body of a `case` over `"$*"`. Possible because ccnm runs its
+/// own ssh by name; only the transport line in a session's `mcp.json` is
+/// written with an absolute path, and that one Claude runs, not ccnm.
+///
+/// This is the layer the library tests cannot reach: `main.rs` deciding
+/// which side it is on, clap, the config file, and what is printed for
+/// a person -- with the real binary and a scripted far end.
+struct FakeSsh {
+    bin: PathBuf,
+    log: PathBuf,
+}
+
+impl FakeSsh {
+    fn install(dir: &Path, answers: &str) -> FakeSsh {
+        let bin = dir.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let log = dir.join("ssh-argv");
+        let script = format!(
+            "#!/bin/sh\n{{ printf '%s\\n' \"$@\"; printf '\\n'; }} >> '{}'\ncase \"$*\" in\n{answers}\nesac\n",
+            log.display()
+        );
+        std::fs::write(bin.join("ssh"), script).unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(bin.join("ssh"), std::fs::Permissions::from_mode(0o755))
+                .unwrap();
+        }
+        FakeSsh { bin, log }
+    }
+
+    /// `PATH` with the fake in front of everything else.
+    fn path(&self) -> String {
+        format!(
+            "{}:{}",
+            self.bin.display(),
+            std::env::var("PATH").unwrap_or_default()
+        )
+    }
+
+    /// Every argv the fake was run with since the last `forget`, in order.
+    fn calls(&self) -> Vec<Vec<String>> {
+        std::fs::read_to_string(&self.log)
+            .unwrap_or_default()
+            .split("\n\n")
+            .filter(|call| !call.trim().is_empty())
+            .map(|call| call.lines().map(str::to_string).collect())
+            .collect()
+    }
+
+    fn forget(&self) {
+        let _ = std::fs::remove_file(&self.log);
+    }
+}
+
+/// ControlPath expands to at most 103 bytes and macOS `temp_dir()` is
+/// most of that by itself, so the state directory goes under /tmp.
+fn short_state(test: &str) -> PathBuf {
+    let dir = PathBuf::from("/tmp/ccnm-cli-st").join(format!("{}-{test}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    dir
+}
+
+/// The words after `-T`/`-t` in one recorded ssh call: the alias, then
+/// the remote command line.
+fn remote_line(call: &[String]) -> Vec<String> {
+    let at = call
+        .iter()
+        .position(|a| a == "-T" || a == "-t")
+        .unwrap_or_else(|| panic!("no -T/-t in {call:?}"));
+    call[at + 1..].to_vec()
+}
+
+/// Direction one, through the real binary: `ccnm run <ws>` typed at the
+/// home machine, with the work machine scripted.
+///
+/// `--detached` is the flag the *other* direction depends on: the work
+/// machine sends it so that home does not try to give a terminal to a
+/// session whose person is elsewhere. So the two halves are pinned here
+/// side by side -- with the flag, exactly one ssh and the terminal stays;
+/// without it, a second ssh carries the terminal over.
+#[test]
+fn sitting_at_home_detached_starts_the_session_and_keeps_the_terminal_here() {
+    use ccnm_core::protocol::PROTOCOL;
+    use ccnm_core::protocol::run::{AttachRequest, StartReport, StartRequest, StatusReport};
+
+    let dir = std::env::temp_dir().join(format!("ccnm-cli-{}-home-loop", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let root = dir.join("root");
+    std::fs::create_dir_all(&root).unwrap();
+    // Nothing here is a default: the permission mode, the config dir and
+    // the opening line all have to be seen arriving, not assumed.
+    let config = dir.join("config.toml");
+    std::fs::write(
+        &config,
+        format!(
+            "version = 1\n[hosts.work]\nssh = \"ccnm-test-nowhere.invalid\"\nclaude_config_dir = \"/x/claude\"\n[hosts.home]\nssh_from_work = \"ccnm-home\"\nccnm_bin = \"/opt/home/ccnm\"\n[workspaces.xshun]\nwork_host = \"work\"\nroot = \"{}\"\nclaude_permission_mode = \"plan\"\nallow_unconfined_exec = true\n",
+            root.display()
+        ),
+    )
+    .unwrap();
+
+    let started = serde_json::to_string(&StartReport {
+        protocol: PROTOCOL,
+        session: Some("2f1e2d3c-4b5a-6978-8a9b-0c1d2e3f4a5b".into()),
+        session_dir: Some(PathBuf::from("/Users/bing/.local/state/ccnm/sessions/2f1e")),
+        tmux_session: "ccnm-xshun".into(),
+        server_pid: 4242,
+        already_running: false,
+        replaced: None,
+        controller: None,
+        context: None,
+    })
+    .unwrap();
+    let nothing_running = serde_json::to_string(&StatusReport {
+        protocol: PROTOCOL,
+        tmux: Ok("3.7c".into()),
+        sessions: Vec::new(),
+    })
+    .unwrap();
+    let ssh = FakeSsh::install(
+        &dir,
+        &format!(
+            "  *'internal work-start'*) printf '%s\\n' '{started}' ;;\n  *'internal attach'*) exit 0 ;;\n  *'internal work-status'*) printf '%s\\n' '{nothing_running}' ;;"
+        ),
+    );
+    let state = short_state("home-loop");
+    let run = |args: &[&str]| {
+        ccnm()
+            .env("PATH", ssh.path())
+            .env("XDG_STATE_HOME", &state)
+            .args(args)
+            .args(["--config"])
+            .arg(&config)
+            .output()
+            .unwrap()
+    };
+
+    // ---- with --detached: one ssh, and the terminal stays here -------
+    let out = run(&["run", "xshun", "fix the failing test", "--detached"]);
+    let err = stderr(&out);
+    assert_eq!(out.status.code(), Some(0), "{err}");
+    assert!(
+        err.contains("attach when you want it: ccnm attach xshun"),
+        "{err}"
+    );
+    let calls = ssh.calls();
+    assert_eq!(calls.len(), 1, "one ssh, to one machine: {calls:?}");
+    let line = remote_line(&calls[0]);
+    assert_eq!(
+        line[..4],
+        [
+            "ccnm-test-nowhere.invalid",
+            "~/.local/bin/ccnm",
+            "internal",
+            "work-start"
+        ],
+        "hop 1 goes to the work machine, running the work machine's ccnm"
+    );
+    assert_eq!(line[4], "--payload");
+    // The request, decoded the way the work machine decodes it: the
+    // alias to come *back* on, and everything Claude is started with.
+    let req: StartRequest = payload::decode(&line[5]).unwrap();
+    assert_eq!(req.workspace, "xshun");
+    assert_eq!(req.root, root);
+    assert_eq!(req.home_alias, "ccnm-home");
+    assert_eq!(req.home_ccnm_bin, "/opt/home/ccnm");
+    assert_eq!(req.claude_config_dir, Some(PathBuf::from("/x/claude")));
+    assert_eq!(req.permission_mode, ccnm_core::config::PermissionMode::Plan);
+    assert_eq!(req.prompt.as_deref(), Some("fix the failing test"));
+    assert!(
+        !calls[0].iter().any(|a| a == "-t"),
+        "--detached must not ask for a terminal: {:?}",
+        calls[0]
+    );
+
+    // ---- without it: the terminal goes over, then home asks how it went
+    ssh.forget();
+    let out = run(&["xshun"]);
+    let err = stderr(&out);
+    assert_eq!(out.status.code(), Some(0), "{err}");
+    let calls = ssh.calls();
+    assert_eq!(
+        calls.len(),
+        3,
+        "start, attach, then status: {:?}",
+        calls.iter().map(|c| remote_line(c)).collect::<Vec<_>>()
+    );
+    assert!(
+        calls[1].iter().any(|a| a == "-t"),
+        "attach needs a terminal"
+    );
+    let attach = remote_line(&calls[1]);
+    assert_eq!(
+        attach[..3],
+        ["ccnm-test-nowhere.invalid", "~/.local/bin/ccnm", "internal"]
+    );
+    assert_eq!(attach[3], "attach");
+    let req: AttachRequest = payload::decode(&attach[5]).unwrap();
+    assert_eq!(req.workspace, "xshun");
+    assert!(
+        err.contains("the session has ended"),
+        "after the terminal comes back, home says what became of the session: {err}"
+    );
+}
+
+/// Direction two, through the real binary: `ccnm <ws>` typed at the work
+/// machine, with the home machine scripted.
+///
+/// This side has no workspace list, so it runs the user-facing command on
+/// the home machine and attaches locally. Four things are pinned: the
+/// exact line sent (that `--detached` is on it is what stops the far side
+/// from waiting for a terminal that is here); that the attach then
+/// happens *here*, over no ssh; that where the config says home keeps
+/// ccnm is what gets run; and that an opening prompt is refused out loud
+/// rather than dropped, which is what used to happen.
+#[test]
+fn sitting_at_work_the_start_goes_home_and_the_attach_stays_here() {
+    let dir = std::env::temp_dir().join(format!("ccnm-cli-{}-work-loop", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    // A name nothing can have a live session for on this machine.
+    let workspace = "ccnm-test-loop";
+    let ssh = FakeSsh::install(
+        &dir,
+        "  *' run ccnm-test-loop --detached') printf 'session   ccnm-ccnm-test-loop (started, tmux server pid 1)\\n' >&2 ;;",
+    );
+    let state = short_state("work-loop");
+    let run = |args: &[&str], config: &Path| {
+        ccnm()
+            .env("PATH", ssh.path())
+            .env("XDG_STATE_HOME", &state)
+            .args(args)
+            .args(["--config"])
+            .arg(config)
+            .output()
+            .unwrap()
+    };
+    let work_side = fixture("config-work-side.toml");
+
+    // ---- the plain command: home starts it, this machine attaches -----
+    let out = run(&[workspace], &work_side);
+    let said = format!("{}{}", stdout(&out), stderr(&out));
+    let calls = ssh.calls();
+    assert_eq!(
+        calls.len(),
+        1,
+        "one hop, and nothing decided here: {calls:?}"
+    );
+    assert_eq!(
+        remote_line(&calls[0]),
+        [
+            "no-such-host-for-tests",
+            "~/.local/bin/ccnm",
+            "run",
+            workspace,
+            "--detached"
+        ],
+        "the line home receives is the one a person would type there, plus --detached"
+    );
+    assert!(
+        said.contains("(started, tmux server pid 1)"),
+        "what home said about the session is relayed as it was: {said}"
+    );
+    // Then the local attach, which on a machine with no such session
+    // ends at tmux: no session (3), or no tmux at all (35). Either is a
+    // local answer; 21 would mean it went looking for home again.
+    assert!(
+        matches!(out.status.code(), Some(3 | 35)),
+        "attach must happen on this machine, exit was {:?}: {said}",
+        out.status.code()
+    );
+
+    // ---- --detached: the same hop, and no attach ----------------------
+    ssh.forget();
+    let out = run(&[workspace, "--detached"], &work_side);
+    let said = format!("{}{}", stdout(&out), stderr(&out));
+    assert_eq!(out.status.code(), Some(0), "{said}");
+    assert_eq!(ssh.calls().len(), 1);
+    assert!(said.contains("(started, tmux server pid 1)"), "{said}");
+    assert!(
+        !said.contains("no live session"),
+        "--detached must not try to attach: {said}"
+    );
+
+    // ---- where home keeps ccnm is read from this machine's config -----
+    ssh.forget();
+    let elsewhere = dir.join("elsewhere.toml");
+    std::fs::write(
+        &elsewhere,
+        "[hosts.home]\nssh_from_work = \"no-such-host-for-tests\"\nccnm_bin = \"/opt/elsewhere/ccnm\"\n",
+    )
+    .unwrap();
+    let out = run(&[workspace, "--detached"], &elsewhere);
+    let calls = ssh.calls();
+    assert_eq!(calls.len(), 1, "{}", stderr(&out));
+    assert_eq!(
+        remote_line(&calls[0])[..3],
+        ["no-such-host-for-tests", "/opt/elsewhere/ccnm", "run"],
+        "the configured path is the one that runs"
+    );
+
+    // ---- an opening prompt cannot make the trip, and says so ---------
+    ssh.forget();
+    let out = run(&[workspace, "fix the failing test"], &work_side);
+    let err = stderr(&out);
+    assert_eq!(out.status.code(), Some(34), "invalid arguments: {err}");
+    assert!(
+        ssh.calls().is_empty(),
+        "refused before anything went over the network: {:?}",
+        ssh.calls()
+    );
+    assert!(
+        err.contains("type it once attached") && err.contains("no-such-host-for-tests"),
+        "the refusal says both ways to get the prompt in: {err}"
+    );
+}
+
 #[test]
 fn a_bare_workspace_name_means_run() {
     let out = ccnm()

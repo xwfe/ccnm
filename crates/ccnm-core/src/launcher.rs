@@ -387,12 +387,12 @@ mod tests {
     //! it.
 
     use super::*;
-    use crate::config::Config;
+    use crate::config::{Config, PermissionMode};
     use crate::error::ErrorCode;
     use crate::process::{FakeRunner, Output};
     use crate::protocol::hello::{HelloReport, PathStatus};
     use crate::protocol::run::StartReport;
-    use crate::session;
+    use crate::session::{self, Mode};
     use crate::work;
 
     fn temp(test: &str) -> PathBuf {
@@ -450,7 +450,11 @@ mod tests {
     /// project the first hop named.
     ///
     /// The two aliases and the two binary paths are deliberately four
-    /// different strings, so a swap cannot pass by coincidence.
+    /// different strings, so a swap cannot pass by coincidence. The same
+    /// goes for the three things Claude itself is started with -- the
+    /// permission mode, the config dir, the opening line: each is set to
+    /// something other than its default, because "the default arrived"
+    /// and "the config's value arrived" have to be told apart.
     #[test]
     fn the_alias_home_sends_is_the_one_the_session_comes_back_on() {
         let dir = temp("loop");
@@ -460,9 +464,9 @@ mod tests {
         // ---- hop 1: home asks work ---------------------------------
         let config = Config::parse(&format!(
             "version = 1\n\
-             [hosts.work]\nssh = \"to-work\"\nccnm_bin = \"/opt/work/ccnm\"\n\
+             [hosts.work]\nssh = \"to-work\"\nccnm_bin = \"/opt/work/ccnm\"\nclaude_config_dir = \"/x/claude\"\n\
              [hosts.home]\nssh_from_work = \"to-home\"\nccnm_bin = \"/opt/home/ccnm\"\n\
-             [workspaces.xshun]\nwork_host = \"work\"\nroot = \"{}\"\n",
+             [workspaces.xshun]\nwork_host = \"work\"\nroot = \"{}\"\nclaude_permission_mode = \"plan\"\n",
             root.display()
         ))
         .unwrap();
@@ -475,7 +479,8 @@ mod tests {
             control_dir: control("loop"),
             current_exe: PathBuf::from("/opt/home/ccnm"),
         };
-        start_interactive(&resolved, &env, None).expect("home's half of the call");
+        start_interactive(&resolved, &env, Some("fix the failing test"))
+            .expect("home's half of the call");
 
         let calls = home.calls();
         assert_eq!(calls.len(), 1, "one ssh, to one machine");
@@ -495,6 +500,14 @@ mod tests {
         assert_eq!(req.home_ccnm_bin, "/opt/home/ccnm");
         assert_eq!(req.root, root);
         assert_eq!(req.workspace, "xshun");
+        // What the supervisor will hand Claude: `--permission-mode`,
+        // `CLAUDE_CONFIG_DIR`, the opening line. A default arriving here
+        // in place of the config's value is a session with more or less
+        // permission than the person wrote down, and nothing on the work
+        // machine can tell.
+        assert_eq!(req.permission_mode, PermissionMode::Plan);
+        assert_eq!(req.claude_config_dir, Some(PathBuf::from("/x/claude")));
+        assert_eq!(req.prompt.as_deref(), Some("fix the failing test"));
 
         // ---- hop 2: work builds the session -------------------------
         // From here this is the work machine: a controller in a login
@@ -599,6 +612,185 @@ mod tests {
         assert_eq!(spec.id, serve.session);
         assert_eq!(spec.home_alias, "to-home");
         assert_eq!(spec.root, root);
+        // The spec is what the supervisor reads to start Claude, so this
+        // is where the three values from hop 1 have to have landed.
+        assert_eq!(spec.permission_mode, PermissionMode::Plan);
+        assert_eq!(spec.claude_config_dir, Some(PathBuf::from("/x/claude")));
+        assert_eq!(
+            spec.mode,
+            Mode::Interactive {
+                prompt: Some("fix the failing test".into())
+            }
+        );
+    }
+
+    /// The same loop for `--print`: home asks, waits, and gets the answer
+    /// back in the same call.
+    ///
+    /// Print mode has its own request type, its own work-side entry and
+    /// its own copy of the request-to-spec mapping, so the interactive
+    /// loop passing says nothing about it. Two things are specific to it.
+    /// The transport must say *nobody is watching*: `exec_command` asks
+    /// before it runs, and a print session that waited for an answer
+    /// would wait for its whole timeout and report nothing. And the
+    /// report comes back through the same ssh that carried the request,
+    /// so the last hop is home decoding what work really wrote -- not a
+    /// document the test made up.
+    #[test]
+    fn a_print_run_comes_back_on_the_alias_home_sent_and_asks_nobody() {
+        let dir = temp("print-loop");
+        let root = dir.join("project");
+        std::fs::create_dir_all(&root).unwrap();
+        let config = Config::parse(&format!(
+            "version = 1\n\
+             [hosts.work]\nssh = \"to-work\"\nccnm_bin = \"/opt/work/ccnm\"\nclaude_config_dir = \"/x/claude\"\n\
+             [hosts.home]\nssh_from_work = \"to-home\"\nccnm_bin = \"/opt/home/ccnm\"\n\
+             [workspaces.xshun]\nwork_host = \"work\"\nroot = \"{}\"\nclaude_permission_mode = \"plan\"\n",
+            root.display()
+        ))
+        .unwrap();
+        let resolved = config.workspace("xshun").unwrap();
+
+        // ---- hop 1: home asks work, and waits ----------------------
+        // Work's real answer does not exist yet; it is made further down
+        // and fed back at the end. This first call only has to send.
+        let home = FakeRunner::new();
+        home.push(Output::exited(0, "not an answer yet"));
+        let env = Env {
+            runner: &home,
+            control_dir: control("print-loop"),
+            current_exe: PathBuf::from("/opt/home/ccnm"),
+        };
+        let session = Duration::from_secs(60);
+        let _ = run_print(&resolved, &env, "say hi", session);
+
+        let calls = home.calls();
+        assert_eq!(calls.len(), 1, "one ssh, to one machine");
+        let line = calls[0].display();
+        assert!(
+            line.contains("-T to-work /opt/work/ccnm internal work-run"),
+            "{line}"
+        );
+        let wire = calls[0].args.last().unwrap().to_string_lossy().into_owned();
+        let req: RunRequest = payload::decode(&wire).unwrap();
+        assert_eq!(req.home_alias, "to-home");
+        assert_eq!(
+            req.home_ccnm_bin, "/opt/home/ccnm",
+            "print mode names home's ccnm for the way back, like interactive does"
+        );
+        assert_eq!(req.root, root);
+        assert_eq!(req.workspace, "xshun");
+        assert_eq!(req.prompt, "say hi");
+        assert_eq!(req.timeout_secs, 60);
+        assert_eq!(req.permission_mode, PermissionMode::Plan);
+        assert_eq!(req.claude_config_dir, Some(PathBuf::from("/x/claude")));
+
+        // ---- hop 2: work runs it ------------------------------------
+        // A controller on a socket, and a script standing in for the
+        // supervisor: it ends every session it finds the way the real one
+        // would, by writing `exit` last.
+        let socket = PathBuf::from(format!("/tmp/ccnm-ploop-{}.sock", std::process::id()));
+        let _ = std::fs::remove_file(&socket);
+        let state = dir.join("work-state");
+        let sessions = crate::paths::sessions_dir(&state);
+        let supervisor = dir.join("fake-supervisor");
+        std::fs::write(
+            &supervisor,
+            format!(
+                "#!/bin/sh\nfor s in {sessions}/*/; do\n  printf '{{\"is_error\":false,\"result\":\"hi from claude\",\"num_turns\":1}}' > \"$s/stdout\"\n  : > \"$s/stderr\"\n  printf '{{\"exit_code\":0,\"timed_out\":false,\"duration_ms\":42}}' > \"$s/exit.tmp\"\n  mv \"$s/exit.tmp\" \"$s/exit\"\ndone\n",
+                sessions = sessions.display(),
+            ),
+        )
+        .unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&supervisor, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let listener = crate::controller::Listener::bind(&socket).unwrap();
+        let served = std::thread::spawn({
+            let supervisor = supervisor.clone();
+            move || {
+                let inner = FakeRunner::new();
+                inner.push(Output::exited(0, "Aqua\n")); // hello: the login session
+                let tools = crate::controller::Tools {
+                    runner: &inner,
+                    claude: Some(PathBuf::from("/opt/homebrew/bin/claude")),
+                    tmux: None,
+                    exe: supervisor,
+                };
+                listener.serve_one(&tools).expect("hello");
+                listener.serve_one(&tools).expect("start");
+            }
+        });
+
+        let work_runner = FakeRunner::new();
+        work_runner.push(Output::exited(0, hello_json())); // the handshake home
+        let tools = work::Tools {
+            runner: &work_runner,
+            state: state.clone(),
+            control_dir: control("print-loop-work"),
+            claude: None,
+            tmux: None,
+            controller: socket.clone(),
+        };
+        let rep = work::run(&req, &tools).expect("work's half of the call");
+        served.join().unwrap();
+        let _ = std::fs::remove_file(&socket);
+
+        assert!(rep.outcome.ok(), "{:?}", rep.outcome);
+        assert_eq!(
+            rep.result.as_ref().and_then(|r| r.result.as_deref()),
+            Some("hi from claude")
+        );
+        let greeting = work_runner.calls()[0].display();
+        assert!(
+            greeting.contains("-T to-home /opt/home/ccnm internal hello"),
+            "hop 2's check goes home, running home's ccnm: {greeting}"
+        );
+
+        // ---- hop 3: the session reaches back ------------------------
+        let session_dir = session::Dir::at(&rep.session_dir);
+        let mcp: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(session_dir.mcp_config()).unwrap()).unwrap();
+        let args: Vec<String> = mcp["mcpServers"][crate::mcp::server::SERVER_NAME]["args"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| a.as_str().unwrap().to_string())
+            .collect();
+        let at = args.iter().position(|a| a == "--payload").unwrap();
+        assert_eq!(args[at - 4], "to-home", "the third hop goes home");
+        assert_eq!(args[at - 3], "/opt/home/ccnm", "running home's ccnm");
+        let serve: ServePayload = payload::decode(&args[at + 1]).unwrap();
+        assert_eq!(serve.root, root);
+        assert_eq!(serve.workspace, "xshun");
+        assert_eq!(serve.session, rep.session);
+        assert!(
+            !serve.interactive,
+            "nobody is at a terminal, so exec_command must not wait for one"
+        );
+
+        let spec = session::load(&session_dir).unwrap();
+        assert_eq!(spec.id, rep.session);
+        assert_eq!(spec.home_alias, "to-home");
+        assert_eq!(spec.permission_mode, PermissionMode::Plan);
+        assert_eq!(spec.claude_config_dir, Some(PathBuf::from("/x/claude")));
+        assert_eq!(
+            spec.mode,
+            Mode::Print {
+                prompt: "say hi".into()
+            }
+        );
+
+        // ---- and back: home decodes what work actually wrote ---------
+        home.push(Output::exited(0, serde_json::to_string(&rep).unwrap()));
+        let back = run_print(&resolved, &env, "say hi", session)
+            .expect("home decodes the report work really produced");
+        assert_eq!(back.session, rep.session);
+        assert_eq!(
+            back.result.and_then(|r| r.result),
+            Some("hi from claude".to_string())
+        );
     }
 
     /// Direction two: the same session, asked for from the work machine.

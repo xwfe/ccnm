@@ -112,7 +112,7 @@ dependencies = [
 
 [[package]]
 name = "ccnm-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ccnm-core",
  "clap",
@@ -124,7 +124,7 @@ dependencies = [
 
 [[package]]
 name = "ccnm-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64",
  "rmcp",

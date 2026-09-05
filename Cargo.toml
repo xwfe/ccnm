@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/ccnm-cli", "crates/ccnm-core"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 # 1.89 for `File::try_lock`, which is how `apply_patch` tells an
 # interrupted commit from one that is still running. The alternative was a

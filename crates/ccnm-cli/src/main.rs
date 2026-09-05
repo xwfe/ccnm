@@ -73,6 +73,10 @@ enum Command {
         workspace: String,
         /// What Claude opens with; without it the prompt starts empty
         prompt: Option<String>,
+        /// Read what Claude opens with from stdin, to the end of input.
+        /// Takes quotes and newlines, which a command line here would not
+        #[arg(long, conflicts_with_all = ["prompt", "print"])]
+        prompt_stdin: bool,
         /// Run one prompt non-interactively and print the result instead of
         /// attaching a terminal
         #[arg(long, value_name = "PROMPT", conflicts_with = "prompt")]
@@ -335,6 +339,7 @@ fn run(cli: Cli) -> Result<i32> {
         Command::Run {
             workspace,
             prompt,
+            prompt_stdin,
             print,
             timeout,
             detached,
@@ -349,18 +354,15 @@ fn run(cli: Cli) -> Result<i32> {
                         "--print has to be run where the projects are; ssh there and run it",
                     ));
                 }
-                // An opening prompt is free text, and nothing that would
-                // need shell quoting goes over ssh (ssh::is_remote_safe).
-                // Refused out loud rather than dropped: this used to start
-                // the session with an empty prompt and say nothing, so the
-                // person typed a sentence and Claude opened with none of it.
-                if prompt.is_some() {
-                    return Err(Error::invalid_args(format!(
-                        "an opening prompt is not carried from this machine (free text would need shell quoting over ssh)\neither:  ccnm {workspace}            and type it once attached\nor, on {home}:  ccnm {workspace} \"...\""
-                    )));
-                }
+                let opening = opening_prompt(prompt.as_deref(), *prompt_stdin)?;
                 let env = home_env()?;
-                launcher::start_from_work(home, &host.ccnm_bin(), workspace, &env)?;
+                launcher::start_from_work(
+                    home,
+                    &host.ccnm_bin(),
+                    workspace,
+                    opening.as_deref(),
+                    &env,
+                )?;
                 if *detached {
                     // The far side already said how to attach, and its
                     // wording is the one that matters -- it knows whether
@@ -380,7 +382,8 @@ fn run(cli: Cli) -> Result<i32> {
                 )?;
                 return print_run_report(&rep);
             }
-            let rep = launcher::start_interactive(&resolved, &env, prompt.as_deref())?;
+            let opening = opening_prompt(prompt.as_deref(), *prompt_stdin)?;
+            let rep = launcher::start_interactive(&resolved, &env, opening.as_deref())?;
             eprintln!("{}", rep.summary());
             if *detached {
                 eprintln!("\nattach when you want it: ccnm attach {workspace}");
@@ -858,6 +861,35 @@ fn work_side<'a>(
         return None;
     }
     config.home_from_work()
+}
+
+/// The line Claude opens with: typed here, or read from stdin.
+///
+/// stdin exists because of the work machine. A prompt is free text, and
+/// nothing that would need shell quoting is allowed on a remote command
+/// line (design doc section 8), so the work machine cannot put one in the
+/// `ccnm run` it sends home -- it pipes the bytes down the same
+/// connection and passes `--prompt-stdin`. The flag is not hidden: piping
+/// a prompt in is just as useful by hand, and a heredoc keeps the
+/// newlines that a shell argument would fight you over.
+///
+/// Empty input is refused rather than treated as "no prompt". An empty
+/// prompt looks exactly like the bug this replaced -- a sentence typed on
+/// the work machine, silently dropped, Claude opening with nothing -- and
+/// the whole point is that that failure is now audible.
+fn opening_prompt(prompt: Option<&str>, from_stdin: bool) -> Result<Option<String>> {
+    if !from_stdin {
+        return Ok(prompt.map(str::to_string));
+    }
+    use std::io::Read;
+    let mut text = String::new();
+    std::io::stdin().read_to_string(&mut text)?;
+    if text.trim().is_empty() {
+        return Err(Error::invalid_args(
+            "--prompt-stdin, but nothing arrived on stdin\nthe opening line goes in on stdin:  ccnm <workspace> --prompt-stdin <<'EOF'",
+        ));
+    }
+    Ok(Some(text.trim_end().to_string()))
 }
 
 fn attach_request(workspace: &str) -> AttachRequest {

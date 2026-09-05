@@ -131,18 +131,30 @@ pub fn start_interactive(
 /// The cost is one extra hop, work -> home -> work. That buys a single
 /// definition of every workspace and not one line of duplicated
 /// launching.
+///
+/// `prompt` is the line Claude opens with, and it does **not** go on the
+/// command line: it is free text, and nothing that would need shell
+/// quoting is allowed on a remote command line (design doc section 8,
+/// [`crate::ssh::is_remote_safe`]). It rides the connection's stdin
+/// instead, which is bytes and needs no quoting, so `--prompt-stdin`
+/// tells the far side to read it there. Newlines and quotes survive.
 pub fn start_from_work(
     home_alias: &str,
     home_ccnm_bin: &str,
     workspace: &str,
+    prompt: Option<&str>,
     env: &Env<'_>,
 ) -> Result<()> {
     let ssh = Ssh::new(home_alias, env.control_dir.clone())?.with_ccnm_bin(home_ccnm_bin);
-    let out = env.runner.run(&ssh.remote_cmd(
-        Master::Reuse,
-        &[ssh.ccnm_bin(), "run", workspace, "--detached"],
-        Duration::from_secs(180),
-    )?)?;
+    let mut argv: Vec<&str> = vec![ssh.ccnm_bin(), "run", workspace, "--detached"];
+    if prompt.is_some() {
+        argv.push("--prompt-stdin");
+    }
+    let mut cmd = ssh.remote_cmd(Master::Reuse, &argv, Duration::from_secs(180))?;
+    if let Some(prompt) = prompt {
+        cmd = cmd.stdin(prompt.as_bytes());
+    }
+    let out = env.runner.run(&cmd)?;
     // Same three diagnoses every other remote call gets, from the same
     // function. This used to read the exit code by hand, so the two
     // failures that have a fix in one sentence -- ccnm is somewhere else
@@ -819,7 +831,7 @@ mod tests {
             control_dir: control("delegate"),
             current_exe: PathBuf::from("/opt/work/ccnm"),
         };
-        start_from_work(alias, &host.ccnm_bin(), "xshun", &env).unwrap();
+        start_from_work(alias, &host.ccnm_bin(), "xshun", None, &env).unwrap();
 
         let calls = fake.calls();
         assert_eq!(calls.len(), 1, "one hop, and nothing decided on this side");
@@ -831,6 +843,57 @@ mod tests {
         // --detached is not decoration. Without it the far side would sit
         // there waiting to attach a terminal that is on this machine.
         assert!(line.ends_with("--detached"), "{line}");
+    }
+
+    /// The opening line makes the trip, and it makes it on stdin.
+    ///
+    /// Two halves, and the second one is the point. That the prompt
+    /// arrives is half: it used to be dropped without a word, so somebody
+    /// typed a sentence and Claude opened with nothing. That it arrives
+    /// *on stdin* is the other half, and it is not a style choice --
+    /// remote command lines are unquoted (`ssh::is_remote_safe`), so a
+    /// prompt with a quote or a newline in it either gets refused or,
+    /// worse, gets taken apart by the far side's login shell. stdin is
+    /// bytes. The prompt below has a quote, an apostrophe, a backtick and
+    /// a newline in it for exactly that reason.
+    #[test]
+    fn an_opening_line_typed_at_work_rides_stdin_not_the_command_line() {
+        let fake = FakeRunner::new();
+        fake.push(Output::exited(0, ""));
+        let env = Env {
+            runner: &fake,
+            control_dir: control("prompt-over"),
+            current_exe: PathBuf::from("/opt/work/ccnm"),
+        };
+        let prompt = "fix the \"failing\" test\nit's in `mod tests`";
+        start_from_work("to-home", "/opt/home/ccnm", "xshun", Some(prompt), &env).unwrap();
+
+        let call = fake.calls().remove(0);
+        let line = call.display();
+        assert!(
+            line.ends_with("/opt/home/ccnm run xshun --detached --prompt-stdin"),
+            "the far side is told to read it from stdin: {line}"
+        );
+        assert!(
+            !line.contains("failing"),
+            "not one word of it on the command line: {line}"
+        );
+        assert_eq!(
+            call.stdin.as_deref(),
+            Some(prompt.as_bytes()),
+            "byte for byte, newline included"
+        );
+        // The rule that forced the prompt onto stdin still holds for
+        // everything that did stay on the remote line -- everything after
+        // the alias, which is what the far side's login shell reads.
+        let alias = call.args.iter().position(|a| a == "to-home").unwrap();
+        for arg in call.args.iter().skip(alias + 1) {
+            let arg = arg.to_string_lossy();
+            assert!(
+                crate::ssh::is_remote_safe(&arg),
+                "{arg} would need quoting on the way over"
+            );
+        }
     }
 
     /// The home machine keeping ccnm somewhere other than the default is
@@ -848,7 +911,8 @@ mod tests {
             control_dir: control("notfound"),
             current_exe: PathBuf::from("/opt/work/ccnm"),
         };
-        let err = start_from_work("to-home", "/opt/homebrew/bin/ccnm", "xshun", &env).unwrap_err();
+        let err =
+            start_from_work("to-home", "/opt/homebrew/bin/ccnm", "xshun", None, &env).unwrap_err();
 
         assert!(
             fake.calls()[0]
@@ -881,8 +945,8 @@ mod tests {
         let mut timeout = Output::exited(255, "");
         timeout.stderr = b"ssh: connect to host to-home port 22: Operation timed out\n".to_vec();
         down.push(timeout);
-        let err =
-            start_from_work("to-home", "/opt/home/ccnm", "xshun", &env_for(&down)).unwrap_err();
+        let err = start_from_work("to-home", "/opt/home/ccnm", "xshun", None, &env_for(&down))
+            .unwrap_err();
         assert_eq!(err.code(), ErrorCode::HomeUnreachable);
         assert!(err.message().contains("Operation timed out"), "{err}");
 
@@ -893,8 +957,14 @@ mod tests {
         no.stderr =
             b"CCNM_E_CONFIG:\nworkspace 'xshun' is not defined; defined: fixture\n".to_vec();
         refused.push(no);
-        let err =
-            start_from_work("to-home", "/opt/home/ccnm", "xshun", &env_for(&refused)).unwrap_err();
+        let err = start_from_work(
+            "to-home",
+            "/opt/home/ccnm",
+            "xshun",
+            None,
+            &env_for(&refused),
+        )
+        .unwrap_err();
         assert_eq!(err.code(), ErrorCode::HomeUnreachable);
         assert!(err.message().contains("exited 10"), "{err}");
         assert!(err.message().contains("xshun"), "{err}");

@@ -722,6 +722,7 @@ fn on_the_work_machine_result_is_read_off_this_disk() {
 struct FakeSsh {
     bin: PathBuf,
     log: PathBuf,
+    fed: PathBuf,
 }
 
 impl FakeSsh {
@@ -729,9 +730,14 @@ impl FakeSsh {
         let bin = dir.join("bin");
         std::fs::create_dir_all(&bin).unwrap();
         let log = dir.join("ssh-argv");
+        let fed = dir.join("ssh-stdin");
+        // stdin is only drained when the remote line asks for it. `cat`
+        // on every call would block the attach hop, whose stdin is this
+        // test process's own and never reaches EOF.
         let script = format!(
-            "#!/bin/sh\n{{ printf '%s\\n' \"$@\"; printf '\\n'; }} >> '{}'\ncase \"$*\" in\n{answers}\nesac\n",
-            log.display()
+            "#!/bin/sh\n{{ printf '%s\\n' \"$@\"; printf '\\n'; }} >> '{}'\ncase \"$*\" in\n  *--prompt-stdin*) cat >> '{}' ;;\nesac\ncase \"$*\" in\n{answers}\nesac\n",
+            log.display(),
+            fed.display()
         );
         std::fs::write(bin.join("ssh"), script).unwrap();
         {
@@ -739,7 +745,13 @@ impl FakeSsh {
             std::fs::set_permissions(bin.join("ssh"), std::fs::Permissions::from_mode(0o755))
                 .unwrap();
         }
-        FakeSsh { bin, log }
+        FakeSsh { bin, log, fed }
+    }
+
+    /// Everything that was piped down the connection since the last
+    /// `forget`.
+    fn fed_in(&self) -> String {
+        std::fs::read_to_string(&self.fed).unwrap_or_default()
     }
 
     /// `PATH` with the fake in front of everything else.
@@ -763,7 +775,29 @@ impl FakeSsh {
 
     fn forget(&self) {
         let _ = std::fs::remove_file(&self.log);
+        let _ = std::fs::remove_file(&self.fed);
     }
+}
+
+/// Run a prepared `ccnm` with `input` on its stdin and wait for it.
+/// `Command::output()` gives the child `/dev/null`, which is right for
+/// every other test here and useless for the one flag that reads stdin.
+fn with_stdin(cmd: &mut Command, input: &str) -> Output {
+    use std::io::Write;
+    use std::process::Stdio;
+    let mut child = cmd
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(input.as_bytes())
+        .unwrap();
+    child.wait_with_output().unwrap()
 }
 
 /// ControlPath expands to at most 103 bytes and macOS `temp_dir()` is
@@ -838,16 +872,17 @@ fn sitting_at_home_detached_starts_the_session_and_keeps_the_terminal_here() {
         ),
     );
     let state = short_state("home-loop");
-    let run = |args: &[&str]| {
-        ccnm()
-            .env("PATH", ssh.path())
+    let prepared = |args: &[&str]| {
+        let mut cmd = ccnm();
+        cmd.env("PATH", ssh.path())
             .env("XDG_STATE_HOME", &state)
             .args(args)
             .args(["--config"])
-            .arg(&config)
-            .output()
-            .unwrap()
+            .arg(&config);
+        cmd
     };
+    let run = |args: &[&str]| prepared(args).output().unwrap();
+    let pipe_in = |args: &[&str], input: &str| with_stdin(&mut prepared(args), input);
 
     // ---- with --detached: one ssh, and the terminal stays here -------
     let out = run(&["run", "xshun", "fix the failing test", "--detached"]);
@@ -915,6 +950,30 @@ fn sitting_at_home_detached_starts_the_session_and_keeps_the_terminal_here() {
         err.contains("the session has ended"),
         "after the terminal comes back, home says what became of the session: {err}"
     );
+
+    // ---- the same opening line, arriving on stdin --------------------
+    //
+    // This is home's half of what the work machine does: the work
+    // machine cannot put free text on an ssh command line, so it pipes
+    // the bytes and passes --prompt-stdin. What reaches Claude has to be
+    // the same as if it had been typed here -- quotes and all, which the
+    // payload is base64 precisely so that it can carry.
+    ssh.forget();
+    let out = pipe_in(
+        &["run", "xshun", "--prompt-stdin", "--detached"],
+        "fix the \"failing\" test\n",
+    );
+    let err = stderr(&out);
+    assert_eq!(out.status.code(), Some(0), "{err}");
+    let calls = ssh.calls();
+    assert_eq!(calls.len(), 1, "{err}");
+    let line = remote_line(&calls[0]);
+    let req: StartRequest = payload::decode(&line[5]).unwrap();
+    assert_eq!(
+        req.prompt.as_deref(),
+        Some("fix the \"failing\" test"),
+        "read off stdin, trailing newline off, quotes intact"
+    );
 }
 
 /// Direction two, through the real binary: `ccnm <ws>` typed at the work
@@ -939,16 +998,18 @@ fn sitting_at_work_the_start_goes_home_and_the_attach_stays_here() {
         "  *' run ccnm-test-loop --detached') printf 'session   ccnm-ccnm-test-loop (started, tmux server pid 1)\\n' >&2 ;;",
     );
     let state = short_state("work-loop");
-    let run = |args: &[&str], config: &Path| {
-        ccnm()
-            .env("PATH", ssh.path())
+    let prepared = |args: &[&str], config: &Path| {
+        let mut cmd = ccnm();
+        cmd.env("PATH", ssh.path())
             .env("XDG_STATE_HOME", &state)
             .args(args)
             .args(["--config"])
-            .arg(config)
-            .output()
-            .unwrap()
+            .arg(config);
+        cmd
     };
+    let run = |args: &[&str], config: &Path| prepared(args, config).output().unwrap();
+    let pipe_in =
+        |args: &[&str], config: &Path, input: &str| with_stdin(&mut prepared(args, config), input);
     let work_side = fixture("config-work-side.toml");
 
     // ---- the plain command: home starts it, this machine attaches -----
@@ -1013,20 +1074,67 @@ fn sitting_at_work_the_start_goes_home_and_the_attach_stays_here() {
         "the configured path is the one that runs"
     );
 
-    // ---- an opening prompt cannot make the trip, and says so ---------
+    // ---- the opening line goes over, and it goes over on stdin -------
+    //
+    // It used to be dropped here without a word. It cannot go on the
+    // remote command line -- that line is unquoted, and this prompt has
+    // a quote and an apostrophe in it -- so the far side is told to read
+    // it from stdin and the bytes go down the same connection.
     ssh.forget();
-    let out = run(&[workspace, "fix the failing test"], &work_side);
+    let prompt = "fix the \"failing\" test, it's in mod tests";
+    let out = run(&[workspace, prompt, "--detached"], &work_side);
+    let said = format!("{}{}", stdout(&out), stderr(&out));
+    assert_eq!(out.status.code(), Some(0), "{said}");
+    let calls = ssh.calls();
+    assert_eq!(calls.len(), 1, "{said}");
+    assert_eq!(
+        remote_line(&calls[0]),
+        [
+            "no-such-host-for-tests",
+            "~/.local/bin/ccnm",
+            "run",
+            workspace,
+            "--detached",
+            "--prompt-stdin"
+        ],
+        "the line home receives says where to read the prompt, not what it is"
+    );
+    assert_eq!(ssh.fed_in(), prompt, "byte for byte, down the connection");
+    assert!(
+        !calls[0].iter().any(|a| a.contains("failing")),
+        "not one word of it in the argv: {:?}",
+        calls[0]
+    );
+
+    // ---- and it can be piped in here too, which is how newlines get in
+    ssh.forget();
+    let out = pipe_in(
+        &[workspace, "--prompt-stdin", "--detached"],
+        &work_side,
+        "first line\nsecond line\n",
+    );
+    let said = format!("{}{}", stdout(&out), stderr(&out));
+    assert_eq!(out.status.code(), Some(0), "{said}");
+    assert_eq!(
+        ssh.fed_in(),
+        "first line\nsecond line",
+        "trailing newline off, the one in the middle kept"
+    );
+
+    // ---- --prompt-stdin with nothing on stdin is refused, not empty ---
+    //
+    // An empty prompt is indistinguishable from the bug this replaced:
+    // Claude opens with nothing and nobody is told why.
+    ssh.forget();
+    let out = pipe_in(&[workspace, "--prompt-stdin", "--detached"], &work_side, "");
     let err = stderr(&out);
     assert_eq!(out.status.code(), Some(34), "invalid arguments: {err}");
     assert!(
         ssh.calls().is_empty(),
-        "refused before anything went over the network: {:?}",
+        "refused before the network: {:?}",
         ssh.calls()
     );
-    assert!(
-        err.contains("type it once attached") && err.contains("no-such-host-for-tests"),
-        "the refusal says both ways to get the prompt in: {err}"
-    );
+    assert!(err.contains("nothing arrived on stdin"), "{err}");
 }
 
 #[test]

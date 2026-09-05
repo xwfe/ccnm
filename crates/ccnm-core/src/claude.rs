@@ -15,6 +15,21 @@ use crate::session::{Dir, Mode, Spec};
 /// Find the `claude` binary. Non-interactive ssh sessions often have a bare
 /// PATH, so the usual install locations are tried after it.
 pub fn locate(path_var: Option<&OsStr>, home: Option<&Path>) -> Option<PathBuf> {
+    locate_with_known_dirs(
+        path_var,
+        home,
+        &[
+            PathBuf::from("/usr/local/bin/claude"),
+            PathBuf::from("/opt/homebrew/bin/claude"),
+        ],
+    )
+}
+
+fn locate_with_known_dirs(
+    path_var: Option<&OsStr>,
+    home: Option<&Path>,
+    known: &[PathBuf],
+) -> Option<PathBuf> {
     let mut candidates: Vec<PathBuf> = Vec::new();
     if let Some(path) = path_var {
         candidates.extend(std::env::split_paths(path).map(|dir| dir.join("claude")));
@@ -23,8 +38,7 @@ pub fn locate(path_var: Option<&OsStr>, home: Option<&Path>) -> Option<PathBuf> 
         candidates.push(home.join(".local/bin/claude"));
         candidates.push(home.join(".claude/local/claude"));
     }
-    candidates.push(PathBuf::from("/usr/local/bin/claude"));
-    candidates.push(PathBuf::from("/opt/homebrew/bin/claude"));
+    candidates.extend(known.iter().cloned());
     candidates.into_iter().find(|p| is_executable(p))
 }
 
@@ -202,12 +216,12 @@ pub fn report(
 ///   into a denial, which shows up in the result's `permission_denials`
 ///   rather than as a hang.
 /// - `--setting-sources user,project,local` is the default, spelled out.
-///   The user's own settings must load: on the real work machine that is
+///   The user's own settings must load: on the real Agent Node that is
 ///   where the proxy Claude needs to reach the API is configured (section
 ///   24). "project" resolves against the cwd, a directory ccnm owns.
 /// - `--session-id` makes Claude's id the ccnm session id, so one
 ///   identifier names the directory here, the output directory on the
-///   home machine, and Claude's own transcript.
+///   Runtime Node, and Claude's own transcript.
 /// - `--no-session-persistence` in print mode: a one-shot run leaves no
 ///   entry for `claude --resume` to find. Its record is the session
 ///   directory.
@@ -551,6 +565,6 @@ mod tests {
 
         // A non-executable file does not count.
         std::fs::write(&fake, "").unwrap();
-        assert_eq!(locate(Some(&path_var), None), None);
+        assert_eq!(locate_with_known_dirs(Some(&path_var), None, &[]), None);
     }
 }

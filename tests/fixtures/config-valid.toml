@@ -2,12 +2,12 @@
 # default, so this is the smallest config that names a workspace.
 version = 1
 
-[hosts.work]
-ssh = "work"
+[nodes.agent]
+ssh_from_runtime = "work"
 
-[hosts.home]
-ssh_from_work = "ccnm-home"
+[nodes.runtime]
+ssh_from_agent = "ccnm-home"
 
 [workspaces.xshun]
-work_host = "work"
+agent_node = "agent"
 root = "/Users/fodelf/Projects/xshun"

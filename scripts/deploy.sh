@@ -55,13 +55,13 @@ ssh "$OTHER" "mkdir -p \$(dirname ~/$REMOTE_BIN) && chmod +x ~/$REMOTE_BIN.new &
 
 # The controller lives on the work machine. Whichever of the two this is,
 # restart the one that exists rather than making the caller say which.
-PLIST="$HOME/Library/LaunchAgents/dev.ccnm.work-controller.plist"
+PLIST="$HOME/Library/LaunchAgents/dev.ccnm.controller.plist"
 if [ -f "$PLIST" ]; then
   echo "==> restarting the controller here"
-  "$BIN" work-controller install | tail -2
-elif ssh "$OTHER" "test -f ~/Library/LaunchAgents/dev.ccnm.work-controller.plist"; then
+  "$BIN" controller install | tail -2
+elif ssh "$OTHER" "test -f ~/Library/LaunchAgents/dev.ccnm.controller.plist"; then
   echo "==> restarting the controller on $OTHER"
-  ssh "$OTHER" "~/$REMOTE_BIN work-controller install" | tail -2
+  ssh "$OTHER" "~/$REMOTE_BIN controller install" | tail -2
 else
   echo "==> no controller installed on either machine; skipping the restart"
 fi

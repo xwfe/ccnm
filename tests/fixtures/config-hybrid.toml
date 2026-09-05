@@ -2,17 +2,17 @@
 # implement the backend; doctor says so instead of pretending.
 version = 1
 
-[hosts.work]
-ssh = "work"
+[nodes.agent]
+ssh_from_runtime = "work"
 
-[hosts.home]
-ssh_from_work = "ccnm-home"
+[nodes.runtime]
+ssh_from_agent = "ccnm-home"
 smb_user = "fodelf"
 
 [workspaces.legacy]
 backend = "hybrid-smb"
-work_host = "work"
-runtime_host = "home"
+agent_node = "agent"
+runtime_node = "runtime"
 root = "/Users/Shared/cc-workspaces/legacy"
 runtime_root = "/Users/Shared/cc-runtime/legacy"
 share = "legacy"

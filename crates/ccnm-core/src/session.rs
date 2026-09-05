@@ -1,8 +1,8 @@
-//! One Claude session on the work machine: what it is, where its files
+//! One Claude session on the Agent Node: what it is, where its files
 //! live, and the supervisor that runs it.
 //!
 //! ```text
-//! ~/.local/state/ccnm/sessions/<uuid>/          (work machine)
+//! ~/.local/state/ccnm/sessions/<uuid>/          (Agent Node)
 //! ├── session.json     the Spec: everything needed to start it
 //! ├── mcp.json         --mcp-config: the one ssh transport to the home runtime
 //! ├── settings.json    --settings: permission to use exactly the ccnm tools
@@ -12,7 +12,7 @@
 //! └── exit             written last: how Claude ended, as JSON
 //! ```
 //!
-//! The same id names `sessions/<uuid>/output/` on the home machine, where
+//! The same id names `sessions/<uuid>/output/` on the Runtime Node, where
 //! `exec_command` keeps what commands printed. One session, two halves.
 //!
 //! # Who writes what
@@ -28,7 +28,7 @@
 //! Something has to be Claude's parent: only a parent gets the exit
 //! status, and the ssh side wants it. The controller could be that parent
 //! and watch its children on threads, but then a controller restart (every
-//! `ccnm work-controller install` after a binary upgrade) would orphan or
+//! `ccnm controller install` after a binary upgrade) would orphan or
 //! kill every running session. A supervisor is a process that lives
 //! exactly as long as its Claude, in its own process group, and owes the
 //! controller nothing once started. Design doc section 23: the session's
@@ -83,7 +83,7 @@ pub struct Spec {
     /// A UUID; also the session id Claude itself is told to use.
     pub id: String,
     pub workspace: String,
-    /// Project root on the home machine. Never a path on this one.
+    /// Project root on the Runtime Node. Never a path on this one.
     pub root: PathBuf,
     /// Alias in this machine's `~/.ssh/config` for the home runtime.
     pub home_alias: String,
@@ -95,7 +95,7 @@ pub struct Spec {
     /// Claude is killed after this many seconds. The supervisor's hard
     /// limit, so a session that wedges cannot outlive everyone waiting.
     pub timeout_secs: u64,
-    /// Claude's working directory on the work machine: the workspace's
+    /// Claude's working directory on the Agent Node: the workspace's
     /// long-lived state directory, never the project (which is not here).
     /// Stable per workspace, so Claude's own session storage under
     /// `~/.claude/projects/` collects in one place instead of one
@@ -114,7 +114,7 @@ impl Protocol for Spec {
 pub enum Mode {
     /// `claude -p`: one prompt in, one JSON result out, no terminal.
     Print { prompt: String },
-    /// The real Claude Code terminal, inside tmux on the work machine, with
+    /// The real Claude Code terminal, inside tmux on the Agent Node, with
     /// the person's own terminal attached over ssh (design doc section 23).
     /// The optional prompt is what it starts with; without one it opens
     /// empty.
@@ -246,7 +246,7 @@ pub fn read_context(dir: &Dir) -> Option<Context> {
 
 /// Create the session directory with its three inputs. Refuses to reuse
 /// an existing directory: two sessions with one id would share an
-/// `output/` on the home machine and overwrite each other's `exit` here.
+/// `output/` on the Runtime Node and overwrite each other's `exit` here.
 pub fn create(state: &Path, spec: &Spec, ssh: &Ssh) -> Result<Dir> {
     let dir = Dir::at(paths::session_dir(state, &spec.id));
     if dir.path().exists() {
@@ -283,7 +283,7 @@ fn pretty<T: Serialize>(value: &T) -> Result<String> {
 /// The `--mcp-config` file (design doc section 11): one stdio server,
 /// whose command is the same ssh transport doctor's probe uses, so a
 /// probe that passes and a session that fails cannot differ in how they
-/// reached the home machine.
+/// reached the Runtime Node.
 pub fn mcp_config(spec: &Spec, ssh: &Ssh) -> Result<serde_json::Value> {
     let wire = payload::encode(
         &ServePayload::new(&spec.workspace, spec.root.clone(), &spec.id)
@@ -663,7 +663,7 @@ mod tests {
         assert!(args.contains(&"SendEnv=-ANTHROPIC_*"));
         assert_eq!(args[args.len() - 3], "mcp-serve");
         // The payload names this session, so exec_command output lands
-        // under the same id on the home machine.
+        // under the same id on the Runtime Node.
         let sent: ServePayload = payload::decode(args.last().unwrap()).unwrap();
         assert_eq!(sent.session, "0b4c7a1e-2d3f-4a5b-8c6d-7e8f9a0b1c2d");
         assert_eq!(sent.root, PathBuf::from("/Users/bing/ccnm-fixture"));

@@ -1,4 +1,4 @@
-//! tmux on the work machine: the thing that keeps an interactive Claude
+//! tmux on the Agent Node: the thing that keeps an interactive Claude
 //! alive when the terminal it was started from goes away (design doc
 //! section 23).
 //!
@@ -105,7 +105,7 @@ pub fn locate_from_env() -> Option<PathBuf> {
 /// and the one command that fixes it.
 pub fn missing() -> Error {
     Error::dependency(
-        "tmux is not installed on the work machine, and an interactive session needs it to outlive the terminal that started it\non work: brew install tmux\n(`ccnm run <workspace> --print \"<prompt>\"` needs no tmux)",
+        "tmux is not installed on the Agent Node, and an interactive session needs it to outlive the terminal that started it\non work: brew install tmux\n(`ccnm run <workspace> --print \"<prompt>\"` needs no tmux)",
     )
 }
 
@@ -274,7 +274,7 @@ pub fn no_session(name: &str) -> Error {
     Error::new(
         ErrorCode::NotReady,
         format!(
-            "no live session {name} on the work machine\nstart one: ccnm run {}",
+            "no live session {name} on the Agent Node\nstart one: ccnm run {}",
             workspace_of(name).unwrap_or("<workspace>")
         ),
     )

@@ -20,7 +20,7 @@
 //! parser 不是 sandbox*.
 //!
 //! What actually makes this safe is phase 5's work, not phase 2's: a
-//! dedicated Unix user (`ccrun`) on the home machine with access to the
+//! dedicated Unix user (`ccrun`) on the Runtime Node with access to the
 //! project and nothing else — no sudo, no ssh key, no Claude credential,
 //! no browser profile — plus filesystem ACLs and the network policy of
 //! section 19. Until that exists, `exec_command` is exactly as trusted as
@@ -100,7 +100,7 @@ pub struct ExecCommandArgs {
     #[schemars(range(min = 1, max = 600_000))]
     pub timeout_ms: Option<u64>,
     /// Bytes of output to return inline. Default 4096, max 16384. The rest
-    /// stays on the workspace machine; use read_output to page through it.
+    /// stays on the Runtime Node; use read_output to page through it.
     #[serde(default)]
     #[schemars(range(min = 0, max = 16_384))]
     pub preview_bytes: Option<u32>,
@@ -226,7 +226,7 @@ pub fn exec_command(
         // the program is not there, or the directory it would run in is
         // not there. Blaming the program either way produces the most
         // confidently wrong message this server has ever printed --
-        // "/bin/echo is not installed on the workspace machine" -- and
+        // "/bin/echo is not installed on the Runtime Node" -- and
         // sends whoever reads it looking for a missing echo.
         //
         // It happens: a session's root is fixed when the session starts,
@@ -236,7 +236,7 @@ pub fn exec_command(
             return Error::new(ErrorCode::WrongWorkspace, workspace_gone(&cwd_rel));
         }
         Error::dependency(format!(
-            "{} is not installed on the workspace machine, or is not on its PATH",
+            "{} is not installed on the Runtime Node, or is not on its PATH",
             args.cmd[0]
         ))
     })?;
@@ -293,7 +293,7 @@ impl Write for Sink {
 
 /// Every `ANTHROPIC_*` and `CLAUDE_*` name in this process's environment.
 ///
-/// The core invariant is that the home machine holds no Claude credential
+/// The core invariant is that the Runtime Node holds no Claude credential
 /// (section 6). It also must not hand one to a command it runs: the ssh
 /// session that started this server could have carried one in, and a
 /// child that inherited it could use it or log it.
@@ -610,7 +610,7 @@ mod tests {
     /// `spawn` fails with the same ENOENT whether the program is missing
     /// or the directory it would run in is. Blaming the program produced
     /// the most confidently wrong message this server has printed --
-    /// "/bin/echo is not installed on the workspace machine" -- on a
+    /// "/bin/echo is not installed on the Runtime Node" -- on a
     /// session whose project had been moved out from under it.
     #[test]
     fn a_vanished_workspace_is_not_reported_as_a_missing_program() {

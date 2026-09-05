@@ -10,7 +10,7 @@
 //! purpose and has five tests locking that in
 //! (`docs/research/coding-tools-mcp.md`, section b). That service is
 //! designed to be tunnelled to a chat client and accepts the trade; ccnm's
-//! whole point is that the home machine's secrets never reach the control
+//! whole point is that the Runtime Node's secrets never reach the control
 //! plane, so its reader gets the strict rules its writer gets.
 //!
 //! What each rejection means to the caller:

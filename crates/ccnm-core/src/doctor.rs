@@ -14,10 +14,10 @@
 //! broken, but the workspace is not proven usable either, and `ccnm run`
 //! must be able to tell those two apart. Only OK/WARN rows exit 0.
 //!
-//! The home machine checks what it can see on its own (config, the project
-//! root, the ccnm binary the work machine will invoke back here, how the
+//! The Runtime Node checks what it can see on its own (config, the project
+//! root, the ccnm binary the Agent Node will invoke back here, how the
 //! work alias resolves), then makes one `ccnm internal probe` call to the
-//! work machine and renders a row per fact it brings back: its ccnm,
+//! Agent Node and renders a row per fact it brings back: its ccnm,
 //! Claude and its login, and the reverse ssh's hello from this machine.
 //! The MCP handshake and everything after it stay SKIP until their phase
 //! lands, and a SKIP still blocks READY.
@@ -252,12 +252,12 @@ pub fn run(config_path: &Path, workspace: Option<&str>, env: &Env<'_>) -> Report
                 checks.push(Check::ok(
                     "Workspace config",
                     format!(
-                        "backend={} work_host={} (ssh {}), runtime_host={} (ssh_from_work {})",
+                        "backend={} agent_node={} (ssh_from_runtime {}), runtime_node={} (ssh_from_agent {})",
                         resolved.workspace.backend.as_str(),
-                        resolved.workspace.work_host,
-                        resolved.work_ssh,
-                        resolved.workspace.runtime_host,
-                        resolved.home_alias
+                        resolved.workspace.agent_node,
+                        resolved.agent_ssh,
+                        resolved.workspace.runtime_node,
+                        resolved.runtime_alias
                     ),
                 ));
                 checks.extend(workspace_checks(&resolved, env));
@@ -285,18 +285,18 @@ fn workspace_checks(r: &Resolved<'_>, env: &Env<'_>) -> Vec<Check> {
         home_ccnm(r, env),
     ];
     // Before anything that needs the network: this is an audit of the
-    // local account, and it is exactly as true when the work machine is
+    // local account, and it is exactly as true when the Agent Node is
     // unreachable.
     checks.extend(runtime_safety_rows(env, r));
 
-    let ssh = match Ssh::new(r.work_ssh, &env.control_dir).and_then(|ssh| {
+    let ssh = match Ssh::new(r.agent_ssh, &env.control_dir).and_then(|ssh| {
         ssh.check_control_path()?;
-        Ok(ssh.with_ccnm_bin(r.work.ccnm_bin()))
+        Ok(ssh.with_ccnm_bin(r.agent.ccnm_bin()))
     }) {
         Ok(ssh) => ssh,
         Err(e) => {
-            checks.push(Check::fail("Work SSH", &e));
-            checks.extend(skipped_after_work_ssh());
+            checks.push(Check::fail("Agent SSH", &e));
+            checks.extend(skipped_after_agent_ssh());
             checks.extend(not_yet_implemented());
             return checks;
         }
@@ -305,11 +305,11 @@ fn workspace_checks(r: &Resolved<'_>, env: &Env<'_>) -> Vec<Check> {
         Ok(resolved) => resolved,
         Err(e) => {
             checks.push(Check::fail_with(
-                "Work SSH",
+                "Agent SSH",
                 ErrorCode::WorkUnreachable,
                 e.message(),
             ));
-            checks.extend(skipped_after_work_ssh());
+            checks.extend(skipped_after_agent_ssh());
             checks.extend(not_yet_implemented());
             return checks;
         }
@@ -319,9 +319,9 @@ fn workspace_checks(r: &Resolved<'_>, env: &Env<'_>) -> Vec<Check> {
         protocol: PROTOCOL,
         workspace: r.name.to_string(),
         root: ws.root.clone(),
-        home_alias: r.home_alias.to_string(),
+        home_alias: r.runtime_alias.to_string(),
         home_ccnm_bin: r.runtime.ccnm_bin(),
-        claude_config_dir: r.work.claude_config_dir.clone(),
+        claude_config_dir: r.agent.claude_config_dir.clone(),
         // One real MCP session, shut down before the probe returns.
         mcp_calls: 1,
     };
@@ -334,12 +334,12 @@ fn workspace_checks(r: &Resolved<'_>, env: &Env<'_>) -> Vec<Check> {
         ErrorCode::WorkUnreachable,
     ) {
         Ok(rep) => {
-            checks.push(Check::ok("Work SSH", resolved.target()));
+            checks.push(Check::ok("Agent SSH", resolved.target()));
             checks.extend(probe_rows(r, &rep));
         }
         Err(e) => {
-            checks.push(Check::fail("Work SSH", &e));
-            checks.extend(skipped_after_work_ssh());
+            checks.push(Check::fail("Agent SSH", &e));
+            checks.extend(skipped_after_agent_ssh());
         }
     }
 
@@ -348,7 +348,7 @@ fn workspace_checks(r: &Resolved<'_>, env: &Env<'_>) -> Vec<Check> {
 }
 
 fn probe_rows(r: &Resolved<'_>, rep: &ProbeReport) -> Vec<Check> {
-    let mut checks = vec![version_row("Work ccnm", &rep.hello, "work")];
+    let mut checks = vec![version_row("Agent ccnm", &rep.hello, "work")];
 
     checks.push(controller_row(rep));
 
@@ -372,7 +372,7 @@ fn probe_rows(r: &Resolved<'_>, rep: &ProbeReport) -> Vec<Check> {
             checks.push(match version_row("Reverse SSH", h, "the runtime host") {
                 ok if ok.status == Status::Ok => Check::ok(
                     "Reverse SSH",
-                    format!("{} as {}, ccnm {}", r.home_alias, h.user, h.ccnm_version),
+                    format!("{} as {}, ccnm {}", r.runtime_alias, h.user, h.ccnm_version),
                 ),
                 fail => fail,
             });
@@ -394,7 +394,7 @@ fn probe_rows(r: &Resolved<'_>, rep: &ProbeReport) -> Vec<Check> {
                         r.workspace.root.display(),
                         status.describe(),
                         h.user,
-                        r.home_alias
+                        r.runtime_alias
                     ),
                 ),
                 None => Check::warn(
@@ -424,7 +424,7 @@ fn probe_rows(r: &Resolved<'_>, rep: &ProbeReport) -> Vec<Check> {
     checks
 }
 
-/// tmux on the work machine, and whether this workspace has a session in
+/// tmux on the Agent Node, and whether this workspace has a session in
 /// it right now (design doc section 23).
 ///
 /// No tmux is a WARN, not a FAIL: `--print` sessions do not need it, and
@@ -483,7 +483,7 @@ fn mcp_row(rep: &ProbeReport) -> Check {
 /// machines must run the same binary (design doc section 7).
 /// What the account this machine's runtime runs as can reach.
 ///
-/// Doctor runs on the home machine, which is the runtime host, so this is
+/// Doctor runs on the Runtime Node, which is the runtime host, so this is
 /// an audit of the account that would actually execute `exec_command`.
 /// One row per finding, because "the runtime is not confined" is not
 /// something anyone can act on and "this account is in the admin group,
@@ -578,7 +578,7 @@ fn version_row(name: &'static str, hello: &HelloReport, side: &str) -> Check {
 /// controller running outside the login session answers every request and
 /// is still useless, which no other row would have caught.
 fn controller_row(rep: &ProbeReport) -> Check {
-    const NAME: &str = "Work controller";
+    const NAME: &str = "Controller";
     match &rep.controller {
         None => Check::skip(NAME, "that ccnm build does not have one"),
         Some(Err(e)) if e.code() == ErrorCode::NotReady => Check::skip(NAME, &e.message),
@@ -587,7 +587,7 @@ fn controller_row(rep: &ProbeReport) -> Check {
             NAME,
             ErrorCode::NotReady,
             format!(
-                "{}\nit answers, but not from a login session, so Claude started there could not read its own credentials\nrun on work: ccnm work-controller install",
+                "{}\nit answers, but not from a login session, so Claude started there could not read its own credentials\nrun on the Agent Node: ccnm controller install",
                 ctx.describe()
             ),
         ),
@@ -612,7 +612,7 @@ fn auth_row(r: &Resolved<'_>, rep: &ProbeReport) -> Check {
         Ok(a) if a.logged_in => Check::ok(NAME, a.describe()),
         Ok(_) if !from_login_session => Check::skip(
             NAME,
-            "a controller answered, but not from a login session, so \"not logged in\" here means nothing\nfix the Work controller row first",
+            "a controller answered, but not from a login session, so \"not logged in\" here means nothing\nfix the Controller row first",
         ),
         Ok(_) => Check::fail_with(NAME, ErrorCode::Auth, auth_hint(r)),
         // "Nobody asked the right process" is not a diagnosis about
@@ -629,24 +629,24 @@ fn auth_row(r: &Resolved<'_>, rep: &ProbeReport) -> Check {
 /// unambiguous. There is no "…or maybe the Keychain was unreadable" left
 /// in it, which was the whole point of the controller.
 fn auth_hint(r: &Resolved<'_>) -> String {
-    const WHERE: &str = "asked from the work machine's login session, so this is Claude's real answer, not an artefact of ssh";
-    match &r.work.claude_config_dir {
+    const WHERE: &str = "asked from the Agent Node's login session, so this is Claude's real answer, not an artefact of ssh";
+    match &r.agent.claude_config_dir {
         Some(dir) => format!(
-            "Claude is not authenticated in the configured CLAUDE_CONFIG_DIR ({WHERE})\nrun on work, on its own screen: CLAUDE_CONFIG_DIR={} claude auth login",
+            "Claude is not authenticated in the configured CLAUDE_CONFIG_DIR ({WHERE})\nrun on the Agent Node, on its own screen: CLAUDE_CONFIG_DIR={} claude auth login",
             dir.display()
         ),
         None => format!(
-            "Claude is not authenticated on the work machine ({WHERE})\nrun on work, on its own screen: claude auth login\nan expired OAuth session looks the same as never having logged in; either way the fix is that command"
+            "Claude is not authenticated on the Agent Node ({WHERE})\nrun on the Agent Node, on its own screen: claude auth login\nan expired OAuth session looks the same as never having logged in; either way the fix is that command"
         ),
     }
 }
 
 /// Rows that depend on the probe, when the probe never happened.
-fn skipped_after_work_ssh() -> Vec<Check> {
-    const REASON: &str = "not checked: work SSH failed";
+fn skipped_after_agent_ssh() -> Vec<Check> {
+    const REASON: &str = "not checked: Agent SSH failed";
     [
-        "Work ccnm",
-        "Work controller",
+        "Agent ccnm",
+        "Controller",
         "Claude Code",
         "Claude authentication",
         "Reverse SSH",
@@ -709,30 +709,30 @@ fn project_instructions(r: &Resolved<'_>) -> Check {
 /// The project root must exist on this (home) machine.
 fn home_workspace(root: &Path) -> Check {
     match std::fs::metadata(root) {
-        Ok(meta) if meta.is_dir() => Check::ok("Home workspace", root.display().to_string()),
+        Ok(meta) if meta.is_dir() => Check::ok("Runtime workspace", root.display().to_string()),
         Ok(_) => Check::fail_with(
-            "Home workspace",
+            "Runtime workspace",
             ErrorCode::WrongWorkspace,
             format!("{} is not a directory", root.display()),
         ),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Check::fail_with(
-            "Home workspace",
+            "Runtime workspace",
             ErrorCode::WrongWorkspace,
             format!("{} does not exist on this machine", root.display()),
         ),
         Err(e) => Check::fail(
-            "Home workspace",
+            "Runtime workspace",
             &Error::internal(format!("cannot stat {}", root.display())).with_source(e),
         ),
     }
 }
 
-/// The work machine will run `<runtime ccnm_bin> internal ...` over ssh on
+/// The Agent Node will run `<runtime ccnm_bin> internal ...` over ssh on
 /// this machine. Look at that exact path now, as this user, so a missing
 /// or stale install is reported here instead of as a cryptic exit 127
 /// from the other side.
 fn home_ccnm(r: &Resolved<'_>, env: &Env<'_>) -> Check {
-    const NAME: &str = "Home ccnm";
+    const NAME: &str = "Runtime ccnm";
     let configured = r.runtime.ccnm_bin();
     let path = paths::expand_home(&configured, &env.home);
     if !claude::is_executable(&path) {
@@ -740,10 +740,10 @@ fn home_ccnm(r: &Resolved<'_>, env: &Env<'_>) -> Check {
             NAME,
             ErrorCode::Version,
             format!(
-                "{configured} is not an executable on this machine, but the work machine will invoke it over ssh {}\ninstall this build there: cp $(which ccnm) {}   (or set hosts.{}.ccnm_bin)",
-                r.home_alias,
+                "{configured} is not an executable on this Runtime Node, but the Agent Node will invoke it over ssh {}\ninstall this build there: cp $(which ccnm) {}   (or set nodes.{}.ccnm_bin)",
+                r.runtime_alias,
                 path.display(),
-                r.workspace.runtime_host
+                r.workspace.runtime_node
             ),
         );
     }
@@ -795,7 +795,7 @@ fn not_yet_implemented() -> Vec<Check> {
         // Every session is launched with `--tools ""` and an allow-list
         // (see `crate::session`), and that was verified by hand against
         // Claude Code 2.1.260. What doctor cannot do is prove it about the
-        // Claude on the work machine without starting a session, so the
+        // Claude on the Agent Node without starting a session, so the
         // row stays SKIP rather than claiming a check it did not make.
         (
             "Native tools disabled",
@@ -844,7 +844,7 @@ mod tests {
         std::fs::write(
             &config,
             format!(
-                "version = 1\n[hosts.work]\nssh = \"work\"\n[hosts.home]\nssh_from_work = \"ccnm-home\"\n[workspaces.xshun]\nwork_host = \"work\"\nroot = \"{}\"\n",
+                "version = 1\n[nodes.agent]\nssh_from_runtime = \"work\"\n[nodes.runtime]\nssh_from_agent = \"ccnm-home\"\n[workspaces.xshun]\nagent_node = \"agent\"\nroot = \"{}\"\n",
                 root.display()
             ),
         )
@@ -1149,12 +1149,12 @@ mod tests {
         for name in [
             "Config",
             "Workspace config",
-            "Home workspace",
+            "Runtime workspace",
             "Project instructions",
-            "Home ccnm",
-            "Work SSH",
-            "Work ccnm",
-            "Work controller",
+            "Runtime ccnm",
+            "Agent SSH",
+            "Agent ccnm",
+            "Controller",
             "Claude Code",
             "Claude authentication",
             "Reverse SSH",
@@ -1164,7 +1164,7 @@ mod tests {
             assert_eq!(row(&report, name).status, Status::Ok, "{name}:\n{text}");
         }
         assert_eq!(
-            row(&report, "Work controller").detail,
+            row(&report, "Controller").detail,
             format!("ccnm {} as me, pid 4711, Aqua", crate::VERSION)
         );
         assert_eq!(
@@ -1172,16 +1172,16 @@ mod tests {
             "initialize in 190 ms, tools/list (1 tool, 412 B), instructions 180 B (no CLAUDE.md at the workspace root), workspace_info x1 p50 22 ms p95 22 ms max 22 ms, pid 4242 throughout"
         );
         assert_eq!(
-            row(&report, "Home ccnm").detail,
+            row(&report, "Runtime ccnm").detail,
             format!(
                 "{} at {}",
                 crate::VERSION,
                 dir.join("home/.local/bin/ccnm").display()
             )
         );
-        assert_eq!(row(&report, "Work SSH").detail, "me@workmac");
+        assert_eq!(row(&report, "Agent SSH").detail, "me@workmac");
         assert_eq!(
-            row(&report, "Work ccnm").detail,
+            row(&report, "Agent ccnm").detail,
             format!("{} at /Users/me/.local/bin/ccnm", crate::VERSION)
         );
         assert_eq!(
@@ -1272,7 +1272,7 @@ mod tests {
         let report = run(&config, Some("xshun"), &env(&fake, &dir));
         assert_eq!(report.exit_code(), 20, "{}", report.render());
         assert!(
-            row(&report, "Work SSH")
+            row(&report, "Agent SSH")
                 .detail
                 .contains("Operation timed out")
         );
@@ -1304,7 +1304,7 @@ mod tests {
         fake.push(Output::exited(0, serde_json::to_string(&probe).unwrap()));
 
         let report = run(&config, Some("xshun"), &env(&fake, &dir));
-        let work = row(&report, "Work ccnm");
+        let work = row(&report, "Agent ccnm");
         assert_eq!(work.status, Status::Fail(ErrorCode::Version));
         assert!(
             work.detail.contains("work runs ccnm 0.0.1"),
@@ -1337,11 +1337,11 @@ mod tests {
         let mut probe = good_probe();
         probe.controller = Some(Err(ErrorReport::new(
             ErrorCode::NotReady,
-            "no socket at /Users/me/.local/state/ccnm/controller.sock\ninstall it on the work machine: ccnm work-controller install",
+            "no socket at /Users/me/.local/state/ccnm/controller.sock\ninstall it on the Agent Node: ccnm controller install",
         )));
         probe.claude.auth = Err(ErrorReport::new(
             ErrorCode::NotReady,
-            "not checked: no work controller to ask, and this ssh session's answer would be wrong",
+            "not checked: no controller to ask, and this ssh session's answer would be wrong",
         ));
 
         let fake = FakeRunner::new();
@@ -1350,10 +1350,10 @@ mod tests {
         fake.push(Output::exited(0, serde_json::to_string(&probe).unwrap()));
 
         let report = run(&config, Some("xshun"), &env(&fake, &dir));
-        let controller = row(&report, "Work controller");
+        let controller = row(&report, "Controller");
         assert_eq!(controller.status, Status::Skip);
         assert!(
-            controller.detail.contains("work-controller install"),
+            controller.detail.contains("controller install"),
             "{}",
             controller.detail
         );
@@ -1379,7 +1379,7 @@ mod tests {
         fake.push(Output::exited(0, serde_json::to_string(&probe).unwrap()));
 
         let report = run(&config, Some("xshun"), &env(&fake, &dir));
-        let controller = row(&report, "Work controller");
+        let controller = row(&report, "Controller");
         assert_eq!(controller.status, Status::Fail(ErrorCode::NotReady));
         assert!(
             controller.detail.contains("not from a login session"),
@@ -1393,7 +1393,7 @@ mod tests {
         );
     }
 
-    /// Caught on the real work machine: with a controller in the wrong
+    /// Caught on the real Agent Node: with a controller in the wrong
     /// session, the auth row still claimed to have asked the login session
     /// and failed on the answer. That is the same false negative the
     /// controller exists to remove, told with more confidence.
@@ -1425,7 +1425,7 @@ mod tests {
         );
         // The controller's own row is where the fix is.
         assert_eq!(
-            row(&report, "Work controller").status,
+            row(&report, "Controller").status,
             Status::Fail(ErrorCode::NotReady)
         );
     }
@@ -1484,11 +1484,15 @@ mod tests {
             serde_json::to_string(&good_probe()).unwrap(),
         ));
         let report = run(&config, Some("xshun"), &env(&fake, &dir));
-        let bin = row(&report, "Home ccnm");
+        let bin = row(&report, "Runtime ccnm");
         assert_eq!(bin.status, Status::Fail(ErrorCode::Version));
         assert!(bin.detail.contains("~/.local/bin/ccnm"), "{}", bin.detail);
         assert!(bin.detail.contains("cp $(which ccnm)"), "{}", bin.detail);
-        assert!(bin.detail.contains("hosts.home.ccnm_bin"), "{}", bin.detail);
+        assert!(
+            bin.detail.contains("nodes.runtime.ccnm_bin"),
+            "{}",
+            bin.detail
+        );
         assert_eq!(report.exit_code(), 11);
         let calls = fake.calls();
         assert_eq!(calls.len(), 2, "no --version for a missing file");
@@ -1502,7 +1506,7 @@ mod tests {
         fake.push(Output::exited(0, "ccnm 0.0.9\n"));
         fake.push(Output::exited(0, "hostname workmac\n"));
         let report = run(&config, Some("xshun"), &env(&fake, &dir));
-        let bin = row(&report, "Home ccnm");
+        let bin = row(&report, "Runtime ccnm");
         assert_eq!(bin.status, Status::Fail(ErrorCode::Version));
         assert!(bin.detail.contains("is ccnm 0.0.9"), "{}", bin.detail);
     }
@@ -1516,7 +1520,7 @@ mod tests {
         let report = run(&config, Some("xshun"), &env(&fake, &dir));
         assert_eq!(report.blocking_code(), Some(ErrorCode::WrongWorkspace));
         assert!(
-            row(&report, "Home workspace")
+            row(&report, "Runtime workspace")
                 .detail
                 .contains("does not exist on this machine")
         );
@@ -1533,7 +1537,7 @@ mod tests {
         let report = run(&config, Some("xshun"), &env(&fake, &dir));
         assert_eq!(report.exit_code(), 20, "{}", report.render());
         assert!(
-            row(&report, "Work SSH")
+            row(&report, "Agent SSH")
                 .detail
                 .contains("Name or service not known")
         );

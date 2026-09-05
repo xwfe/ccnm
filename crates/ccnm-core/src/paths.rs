@@ -42,7 +42,7 @@ pub fn config_path() -> Result<PathBuf> {
 /// ├── workspaces/<name>/       one project, for as long as it exists:
 /// │                            metadata, the remote root, projected rules
 /// ├── cache/                   rebuildable, safe to delete
-/// └── controller.sock          the work machine's login-session
+/// └── controller.sock          the Agent Node's login-session
 ///                              controller, while it is running
 /// ```
 ///
@@ -90,7 +90,7 @@ pub fn patches_dir(state: &Path) -> PathBuf {
     state.join("patches")
 }
 
-/// The work controller's socket (see [`crate::controller`]).
+/// The controller's socket (see [`crate::controller`]).
 ///
 /// Directly under the state root rather than in a subdirectory because
 /// `sun_path` is only 104 bytes on macOS, and because it belongs to

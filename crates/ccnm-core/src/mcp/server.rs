@@ -159,7 +159,7 @@ impl ExecGate {
             .ok();
         let expected = config.as_ref().and_then(|config| {
             let workspace = config.workspaces.get(workspace)?;
-            let host = config.hosts.get(&workspace.runtime_host)?;
+            let host = config.nodes.get(&workspace.runtime_node)?;
             host.runtime_user.clone()
         });
         let accepted = config
@@ -429,7 +429,7 @@ impl Server {
         let Some(state) = self.inner.state.clone() else {
             return Ok(tool_error(&Error::new(
                 ErrorCode::NotReady,
-                "ccnm cannot find a state directory on the workspace machine, so it has nowhere to keep a command's output",
+                "ccnm cannot find a state directory on the Runtime Node, so it has nowhere to keep a command's output",
             )));
         };
         let root = self.inner.root.clone();
@@ -467,7 +467,7 @@ impl Server {
         let Some(state) = self.inner.state.clone() else {
             return Ok(tool_error(&Error::new(
                 ErrorCode::NotReady,
-                "ccnm cannot find a state directory on the workspace machine, so there is nowhere for a command's output to have been kept",
+                "ccnm cannot find a state directory on the Runtime Node, so there is nowhere for a command's output to have been kept",
             )));
         };
         // The session's own directory and no other: an output_ref is a
@@ -705,7 +705,7 @@ mod tests {
         assert!(err.message().contains("/nonexistent/ccnm-root"), "{err}");
     }
 
-    /// The settings allow-list on the work machine names these tools by
+    /// The settings allow-list on the Agent Node names these tools by
     /// hand. A tool added or renamed here without updating that list would
     /// be offered to the model and then denied on every call.
     #[test]

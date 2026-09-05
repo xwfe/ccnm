@@ -23,9 +23,9 @@ pub enum ErrorCode {
     Config,
     /// ccnm binaries on the two machines disagree, or Claude Code is too old.
     Version,
-    /// Claude Code on the work machine is not logged in.
+    /// Claude Code on the Agent Node is not logged in.
     Auth,
-    /// Home machine cannot reach the work machine over SSH.
+    /// Home machine cannot reach the Agent Node over SSH.
     WorkUnreachable,
     /// Work machine cannot reach the home runner over SSH.
     HomeUnreachable,
@@ -34,7 +34,7 @@ pub enum ErrorCode {
     /// `.ccnm-workspace-id` differs between the mounted view and the home
     /// filesystem, so the two sides are not looking at the same project.
     WrongWorkspace,
-    /// A file Claude just wrote does not hash the same on the home machine
+    /// A file Claude just wrote does not hash the same on the Runtime Node
     /// yet. The command was not executed.
     Coherence,
     /// The command is not allowed on the runner (source mutation, background
@@ -51,7 +51,7 @@ pub enum ErrorCode {
     /// and call again". A model that cannot tell them apart either gives
     /// up on a typo or keeps hammering a wall.
     InvalidArgs,
-    /// The workspace machine is missing a program the runtime needs, such
+    /// The Runtime Node is missing a program the runtime needs, such
     /// as `rg` for `search_text`. Kept apart from
     /// [`NotReady`](Self::NotReady), which is about ccnm not having
     /// verified or not having implemented something: this one is about the

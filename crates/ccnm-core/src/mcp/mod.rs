@@ -1,4 +1,4 @@
-//! The MCP side of ccnm: the stdio server that runs on the home machine
+//! The MCP side of ccnm: the stdio server that runs on the Runtime Node
 //! (`ccnm internal mcp-serve`) and the client used to probe it.
 //!
 //! This is the only async code in the binary. Both entry points build a

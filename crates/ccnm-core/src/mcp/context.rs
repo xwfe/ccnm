@@ -4,7 +4,7 @@
 //! Why this file exists at all: Claude Code loads `CLAUDE.md` from its own
 //! working directory. Under ccnm that directory is on the *work* machine
 //! and holds nothing but session bookkeeping, while the project — and its
-//! `CLAUDE.md` — is on the home machine, reachable only through the tools.
+//! `CLAUDE.md` — is on the Runtime Node, reachable only through the tools.
 //! So nothing loads it, and the model works on a project whose rules it
 //! has never read. Nobody notices, because the result is not an error: it
 //! is a session that ignores conventions it was never told about.
@@ -32,7 +32,7 @@
 //! honouring them would let any repository this tool opens execute
 //! commands where the credentials are. That is the inversion the whole
 //! architecture exists to prevent. The user's own Claude settings still
-//! load, from the work machine, which is where they belong.
+//! load, from the Agent Node, which is where they belong.
 //!
 //! And at most [`MAX_INSTRUCTIONS_BYTES`] for the whole handshake text. A
 //! long `CLAUDE.md` is cut at a line boundary and the model is told, in
@@ -278,7 +278,7 @@ fn named_block(named: &[Named]) -> String {
 pub fn instructions(workspace: &str, project: Option<&Project>, named: &[Named]) -> String {
     // The second sentence exists because of a real session: Claude's own
     // environment block said its cwd was not a git repository (true --
-    // that is the work machine's state directory), while workspace_info
+    // that is the Agent Node's state directory), while workspace_info
     // said the project was one, and it refused to commit on the
     // contradiction. Claude Code cannot be stopped from describing the
     // directory it runs in, so the instructions say which one to believe.

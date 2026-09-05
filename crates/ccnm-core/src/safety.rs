@@ -153,7 +153,7 @@ pub fn audit(expected_user: Option<&str>, home: &Path, runner: &dyn ProcessRunne
         (None, _) => Finding::fail(
             "Runs as root",
             "cannot determine which account the runtime is running as",
-            "check that `id` works on the workspace machine",
+            "check that `id` works on the Runtime Node",
         ),
         (Some(_), Some(want)) if identity.user != want => Finding::fail(
             "Runtime user",
@@ -170,7 +170,7 @@ pub fn audit(expected_user: Option<&str>, home: &Path, runner: &dyn ProcessRunne
                 "no runtime_user is configured, so ccnm cannot tell whether {} is the dedicated account or the developer's own",
                 identity.user
             ),
-            "set runtime_user on the home host in config.toml to the dedicated account",
+            "set runtime_user on the Runtime Node in config.toml to the dedicated account",
         ),
     });
 
@@ -220,7 +220,7 @@ fn group_finding(identity: &Identity) -> Finding {
         return Finding::fail(
             NAME,
             "cannot list this account's groups, so admin membership cannot be ruled out",
-            "check that `id -Gn` works on the workspace machine",
+            "check that `id -Gn` works on the Runtime Node",
         );
     }
     if escalating.is_empty() {
@@ -286,7 +286,7 @@ fn looks_like_private_key(path: &Path) -> bool {
     text.contains("PRIVATE KEY")
 }
 
-/// The core invariant of section 6: the home machine holds no Claude
+/// The core invariant of section 6: the Runtime Node holds no Claude
 /// credential. A credential here would make this machine an Anthropic
 /// egress point, which is the whole thing the architecture exists to
 /// avoid.
@@ -311,10 +311,10 @@ fn claude_credential_finding(home: &Path) -> Finding {
         Finding::fail(
             NAME,
             format!(
-                "this machine holds a Claude credential ({}); the workspace machine must never be an Anthropic egress point",
+                "this machine holds a Claude credential ({}); the Runtime Node must never be an Anthropic egress point",
                 found.join(", ")
             ),
-            "remove it, and never run `claude auth login` on the workspace machine",
+            "remove it, and never run `claude auth login` on the Runtime Node",
         )
     }
 }

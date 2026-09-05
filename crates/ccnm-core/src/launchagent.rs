@@ -1,4 +1,4 @@
-//! Installing the work controller as a macOS LaunchAgent.
+//! Installing the controller as a macOS LaunchAgent.
 //!
 //! This is how [`crate::controller`] gets into the login session in the
 //! first place. launchd starts a job in `gui/<uid>` inside the user's Aqua
@@ -8,14 +8,14 @@
 //!
 //! # Installing over ssh works
 //!
-//! Verified on the real work machine 2026-09-03: an ssh session can
+//! Verified on the real Agent Node 2026-09-03: an ssh session can
 //! `launchctl bootstrap gui/<uid>`, and the job it starts reports
 //! `managername = Aqua`. The ssh session does not have to *be* in the
-//! login session to put something there. So the home machine can set the
-//! work machine up in one line:
+//! login session to put something there. So the Runtime Node can set the
+//! Agent Node up in one line:
 //!
 //! ```text
-//! ssh work ccnm work-controller install
+//! ssh work ccnm controller install
 //! ```
 //!
 //! # Why ccnm installs this one but does not create `ccrun`
@@ -39,7 +39,7 @@ use crate::process::{Cmd, ProcessRunner};
 const START_TIMEOUT: Duration = Duration::from_secs(10);
 const POLL: Duration = Duration::from_millis(100);
 
-/// `~/Library/LaunchAgents/dev.ccnm.work-controller.plist`.
+/// `~/Library/LaunchAgents/dev.ccnm.controller.plist`.
 ///
 /// A user agent, not `/Library/LaunchAgents` (which needs root and would
 /// load for every account on the machine) and not
@@ -73,7 +73,7 @@ pub fn plist(exe: &Path, log: &Path) -> String {
     <array>
         <string>{exe}</string>
         <string>internal</string>
-        <string>work-controller</string>
+        <string>controller</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
@@ -305,14 +305,14 @@ mod tests {
         let fake = with_uid();
         let plan = plan(&fake);
         assert_eq!(plan.domain, "gui/501");
-        assert_eq!(plan.target(), "gui/501/dev.ccnm.work-controller");
+        assert_eq!(plan.target(), "gui/501/dev.ccnm.controller");
         assert_eq!(
             plan.plist_path,
-            PathBuf::from("/Users/bing/Library/LaunchAgents/dev.ccnm.work-controller.plist")
+            PathBuf::from("/Users/bing/Library/LaunchAgents/dev.ccnm.controller.plist")
         );
         let plist = &plan.plist;
         assert!(plist.contains("<string>/Users/bing/.local/bin/ccnm</string>"));
-        assert!(plist.contains("<string>work-controller</string>"));
+        assert!(plist.contains("<string>controller</string>"));
         assert!(
             plist.contains("<key>KeepAlive</key>\n    <true/>"),
             "{plist}"
@@ -378,7 +378,7 @@ mod tests {
         let calls = fake.calls();
         assert_eq!(
             calls[1].display(),
-            "/bin/launchctl bootout gui/501/dev.ccnm.work-controller"
+            "/bin/launchctl bootout gui/501/dev.ccnm.controller"
         );
         assert!(
             calls[2]
@@ -448,8 +448,8 @@ mod tests {
     fn describe_names_every_step_and_the_socket() {
         let fake = with_uid();
         let text = plan(&fake).describe();
-        assert!(text.contains("Library/LaunchAgents/dev.ccnm.work-controller.plist"));
-        assert!(text.contains("launchctl bootout gui/501/dev.ccnm.work-controller"));
+        assert!(text.contains("Library/LaunchAgents/dev.ccnm.controller.plist"));
+        assert!(text.contains("launchctl bootout gui/501/dev.ccnm.controller"));
         assert!(text.contains("launchctl bootstrap gui/501"));
         assert!(text.contains("controller.sock"), "{text}");
     }

@@ -2,5 +2,5 @@
 # the projects, and deliberately nothing about them. The workspace list
 # lives on one machine, because two lists are two answers to "where is
 # this project".
-[hosts.home]
-ssh_from_work = "no-such-host-for-tests"
+[nodes.runtime]
+ssh_from_agent = "no-such-host-for-tests"

@@ -1,4 +1,5 @@
-//! `~/.config/ccnm/config.toml`, the home machine's source of truth.
+//! `~/.config/ccnm/config.toml`, the Runtime Node's source of truth for
+//! workspace definitions.
 //!
 //! Secrets never live here (design doc section 5); SSH keys and Claude
 //! OAuth stay with OpenSSH and Claude Code itself.
@@ -8,9 +9,9 @@
 //! catch, so the parser refuses it up front.
 //!
 //! Two backends share the schema. `mcp-ssh` (the default and the only one
-//! this build implements) needs nothing beyond hosts and `root`. The
+//! this build implements) needs nothing beyond nodes and `root`. The
 //! `hybrid-smb` fallback (appendix A) additionally needs `share`,
-//! `runtime_root`, `mount_mode` and the runtime host's `smb_user`; those
+//! `runtime_root`, `mount_mode` and the Runtime Node's `smb_user`; those
 //! fields are rejected on an `mcp-ssh` workspace so a half-migrated config
 //! cannot look valid.
 
@@ -24,16 +25,16 @@ use crate::error::{Error, Result};
 /// The only `version = N` this binary understands.
 ///
 /// It is no longer written, and no longer required: a config is what its
-/// hosts and workspaces say, and a schema version nobody has ever needed
+/// nodes and workspaces say, and a schema version nobody has ever needed
 /// to bump is a line every reader has to wonder about. Old configs still
 /// have it, so it is still accepted -- and still checked, because a file
 /// that says `version = 2` was written for a ccnm this is not.
 pub const SUPPORTED_VERSION: u32 = 1;
 
-/// `workspaces.<name>.runtime_host` when the file does not say.
-pub const DEFAULT_RUNTIME_HOST: &str = "home";
+/// `workspaces.<name>.runtime_node` when the file does not say.
+pub const DEFAULT_RUNTIME_NODE: &str = "runtime";
 
-/// Where a remote ccnm is invoked when `hosts.<x>.ccnm_bin` is unset. The
+/// Where a remote ccnm is invoked when `nodes.<x>.ccnm_bin` is unset. The
 /// `~` is expanded by the remote login shell, which is the one thing
 /// every POSIX shell and fish agree on; a bare `ccnm` would depend on the
 /// PATH of a non-interactive shell (design doc section 7).
@@ -46,24 +47,25 @@ pub struct Config {
     #[serde(default)]
     pub version: Option<u32>,
     #[serde(default)]
-    pub hosts: BTreeMap<String, Host>,
+    pub nodes: BTreeMap<String, Node>,
     #[serde(default)]
     pub workspaces: BTreeMap<String, Workspace>,
 }
 
-/// One machine. Which fields are required depends on the role a workspace
-/// gives it: a `work_host` needs `ssh`, a `runtime_host` needs
-/// `ssh_from_work`.
+/// One physical or virtual machine. A node may carry one or more roles.
+/// Which fields are required depends on how a workspace refers to it:
+/// an `agent_node` needs `ssh_from_runtime`, while a `runtime_node` needs
+/// `ssh_from_agent`.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Host {
-    /// Alias in the home machine's `~/.ssh/config` that reaches this host.
+pub struct Node {
+    /// Alias in the Runtime Node's `~/.ssh/config` that reaches this node.
     #[serde(default)]
-    pub ssh: Option<String>,
-    /// Alias in the *work* machine's `~/.ssh/config` that reaches this host.
+    pub ssh_from_runtime: Option<String>,
+    /// Alias in the Agent Node's `~/.ssh/config` that reaches this node.
     #[serde(default)]
-    pub ssh_from_work: Option<String>,
-    /// Absolute path of the ccnm binary on this host, for the machine that
+    pub ssh_from_agent: Option<String>,
+    /// Absolute path of the ccnm binary on this node, for the machine that
     /// sshes in. Unset means [`DEFAULT_CCNM_BIN`].
     #[serde(default)]
     pub ccnm_bin: Option<PathBuf>,
@@ -73,22 +75,22 @@ pub struct Host {
     /// ccnm never performs that login (design doc section 21).
     #[serde(default)]
     pub claude_config_dir: Option<PathBuf>,
-    /// The dedicated account the MCP runtime must run as on this host
+    /// The dedicated account the MCP runtime must run as on this node
     /// (design doc section 18). ccnm never creates it and never switches
     /// to it; it checks that it is what the runtime is running as, and
     /// refuses `exec_command` when it is not.
     ///
-    /// Unset is itself a failure on the runtime host: without it ccnm
+    /// Unset is itself a failure on the Runtime Node: without it ccnm
     /// cannot tell the dedicated account from the developer's own.
     #[serde(default)]
     pub runtime_user: Option<String>,
-    /// Hybrid only: account the work machine mounts the SMB share as.
+    /// Hybrid only: account the Agent Node mounts the SMB share as.
     #[serde(default)]
     pub smb_user: Option<String>,
 }
 
-impl Host {
-    /// The path to run on this host from the other machine.
+impl Node {
+    /// The path to run on this node from another node.
     pub fn ccnm_bin(&self) -> String {
         match &self.ccnm_bin {
             Some(path) => path.to_string_lossy().into_owned(),
@@ -102,13 +104,13 @@ impl Host {
 pub struct Workspace {
     #[serde(default)]
     pub backend: Backend,
-    /// Key into `hosts`: where Claude Code runs.
-    pub work_host: String,
-    /// Key into `hosts`: where the project lives and every tool runs.
-    #[serde(default = "default_runtime_host")]
-    pub runtime_host: String,
-    /// Project root on the runtime host. With `mcp-ssh` it neither needs
-    /// nor should exist on the work machine.
+    /// Key into `nodes`: where the AI coding agent runs.
+    pub agent_node: String,
+    /// Key into `nodes`: where the project lives and every tool runs.
+    #[serde(default = "default_runtime_node")]
+    pub runtime_node: String,
+    /// Project root on the Runtime Node. With `mcp-ssh` it neither needs
+    /// nor should exist on the Agent Node.
     pub root: PathBuf,
     #[serde(default)]
     pub claude_permission_mode: PermissionMode,
@@ -125,7 +127,7 @@ pub struct Workspace {
     /// `root`.
     #[serde(default)]
     pub runtime_root: Option<PathBuf>,
-    /// Hybrid only: SMB share name the work machine mounts.
+    /// Hybrid only: SMB share name the Agent Node mounts.
     #[serde(default)]
     pub share: Option<String>,
     /// Hybrid only.
@@ -133,15 +135,15 @@ pub struct Workspace {
     pub mount_mode: Option<MountMode>,
 }
 
-fn default_runtime_host() -> String {
-    DEFAULT_RUNTIME_HOST.to_string()
+fn default_runtime_node() -> String {
+    DEFAULT_RUNTIME_NODE.to_string()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Backend {
     /// One persistent SSH stdio transport carrying MCP to a ccnm runtime
-    /// on the home machine. The primary architecture.
+    /// on the Runtime Node. The primary architecture.
     #[default]
     McpSsh,
     /// SMB mount plus SSH runner (appendix A). Parsed so a config can name
@@ -197,23 +199,23 @@ impl PermissionMode {
     }
 }
 
-/// A workspace together with both hosts it spans and the role-specific
+/// A workspace together with both nodes it spans and the role-specific
 /// fields validation has already proven present.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Resolved<'a> {
     pub name: &'a str,
     pub workspace: &'a Workspace,
-    pub work: &'a Host,
-    pub runtime: &'a Host,
-    /// `hosts.<work_host>.ssh`: home -> work.
-    pub work_ssh: &'a str,
-    /// `hosts.<runtime_host>.ssh_from_work`: work -> home runtime.
-    pub home_alias: &'a str,
+    pub agent: &'a Node,
+    pub runtime: &'a Node,
+    /// `nodes.<agent_node>.ssh_from_runtime`: Runtime -> Agent.
+    pub agent_ssh: &'a str,
+    /// `nodes.<runtime_node>.ssh_from_agent`: Agent -> Runtime.
+    pub runtime_alias: &'a str,
 }
 
 impl Config {
     /// The alias this machine uses to reach the machine holding the
-    /// projects, and that host's other settings, when this is a work-side
+    /// projects, and that host's other settings, when this is a Agent-side
     /// config.
     ///
     /// The [`Host`] comes back with the alias because `ccnm_bin` is on it:
@@ -222,7 +224,7 @@ impl Config {
     /// "command not found" on the one machine whose ccnm is somewhere
     /// else.
     ///
-    /// A work machine's config is the same file with the workspaces left
+    /// A Agent Node's config is the same file with the workspaces left
     /// out: it says how to reach home and nothing else, because the
     /// workspace list has exactly one home and duplicating it here is how
     /// the two copies start disagreeing about where a project is. That
@@ -230,24 +232,28 @@ impl Config {
     /// config no longer names is the failure this project has already
     /// spent an afternoon on.
     ///
-    /// `None` unless this really is a work-side config.
+    /// `None` unless this really is an Agent-only config.
     ///
-    /// The test is the absence of any `ssh`, not the presence of
-    /// `ssh_from_work`: a *home* config has both -- `ssh` to reach the
-    /// work machine, `ssh_from_work` to say how the work machine reaches
-    /// back -- so keying on `ssh_from_work` alone would make every
-    /// mistyped workspace name at home look like a work machine and send
+    /// The test is the absence of any `ssh_from_runtime`, not the presence
+    /// of `ssh_from_agent`: a Runtime Node config can contain both
+    /// directions, so keying on `ssh_from_agent` alone would make every
+    /// mistyped workspace name on the Runtime Node look like an Agent-only
+    /// config and send
     /// it over ssh. That is not hypothetical; it is what the first
     /// version did, and a test that asks for a workspace which does not
     /// exist is what caught it.
-    pub fn home_from_work(&self) -> Option<(&str, &Host)> {
-        if self.hosts.values().any(|h| h.ssh.is_some()) {
+    pub fn runtime_from_agent(&self) -> Option<(&str, &Node)> {
+        if self
+            .nodes
+            .values()
+            .any(|node| node.ssh_from_runtime.is_some())
+        {
             return None;
         }
         let mut named = self
-            .hosts
+            .nodes
             .values()
-            .filter_map(|h| Some((h.ssh_from_work.as_deref()?, h)));
+            .filter_map(|node| Some((node.ssh_from_agent.as_deref()?, node)));
         match (named.next(), named.next()) {
             (Some(only), None) => Some(only),
             _ => None,
@@ -279,12 +285,12 @@ impl Config {
         Ok(config)
     }
 
-    /// Look up a workspace by name together with its hosts.
+    /// Look up a workspace by name together with its nodes.
     pub fn workspace<'a>(&'a self, name: &'a str) -> Result<Resolved<'a>> {
         let workspace = self.workspaces.get(name).ok_or_else(|| {
             if self.workspaces.is_empty() {
                 // A config with no workspaces and one way home is the
-                // work machine's, on purpose: a project's root is
+                // Agent Node's, on purpose: a project's root is
                 // defined in exactly one place. So "not defined" is true
                 // and unhelpful here -- it reads as "add it", and adding
                 // it is the one thing this split exists to prevent. Say
@@ -292,9 +298,9 @@ impl Config {
                 // from this side never reach this, because they answer
                 // locally; what reaches it is `doctor <ws>` and
                 // `mcp probe`, which need the definition.
-                match self.home_from_work() {
-                    Some((home, _)) => Error::config(format!(
-                        "workspace '{name}' is not defined on this machine, and this machine keeps no workspace list -- the projects are on {home}\nrun the ones that need the definition there:  ssh {home} ccnm doctor {name}"
+                match self.runtime_from_agent() {
+                    Some((runtime, _)) => Error::config(format!(
+                        "workspace '{name}' is not defined on this node, and this node keeps no workspace list -- the projects are on Runtime Node {runtime}\nrun the commands that need the definition there:  ssh {runtime} ccnm doctor {name}"
                     )),
                     None => Error::config(format!(
                         "workspace '{name}' is not defined (no workspaces in config)"
@@ -314,24 +320,27 @@ impl Config {
                 "workspace '{name}' passed validation but {what} is missing"
             ))
         };
-        let work = self
-            .hosts
-            .get(&workspace.work_host)
-            .ok_or_else(|| bug("its work host"))?;
+        let agent = self
+            .nodes
+            .get(&workspace.agent_node)
+            .ok_or_else(|| bug("its Agent Node"))?;
         let runtime = self
-            .hosts
-            .get(&workspace.runtime_host)
-            .ok_or_else(|| bug("its runtime host"))?;
+            .nodes
+            .get(&workspace.runtime_node)
+            .ok_or_else(|| bug("its Runtime Node"))?;
         Ok(Resolved {
             name,
             workspace,
-            work,
+            agent,
             runtime,
-            work_ssh: work.ssh.as_deref().ok_or_else(|| bug("work ssh"))?,
-            home_alias: runtime
-                .ssh_from_work
+            agent_ssh: agent
+                .ssh_from_runtime
                 .as_deref()
-                .ok_or_else(|| bug("runtime ssh_from_work"))?,
+                .ok_or_else(|| bug("Agent Node ssh_from_runtime"))?,
+            runtime_alias: runtime
+                .ssh_from_agent
+                .as_deref()
+                .ok_or_else(|| bug("Runtime Node ssh_from_agent"))?,
         })
     }
 
@@ -346,22 +355,22 @@ impl Config {
             ));
         }
 
-        for (name, host) in &self.hosts {
-            let at = format!("hosts.{name}");
+        for (name, node) in &self.nodes {
+            let at = format!("nodes.{name}");
             check_name(&at, name, &mut problems);
             for (field, value) in [
-                ("ssh", &host.ssh),
-                ("ssh_from_work", &host.ssh_from_work),
-                ("smb_user", &host.smb_user),
+                ("ssh_from_runtime", &node.ssh_from_runtime),
+                ("ssh_from_agent", &node.ssh_from_agent),
+                ("smb_user", &node.smb_user),
             ] {
                 if let Some(value) = value {
                     check_token(&format!("{at}.{field}"), value, &mut problems);
                 }
             }
-            if let Some(dir) = &host.claude_config_dir {
+            if let Some(dir) = &node.claude_config_dir {
                 check_absolute(&format!("{at}.claude_config_dir"), dir, &mut problems);
             }
-            if let Some(bin) = &host.ccnm_bin {
+            if let Some(bin) = &node.ccnm_bin {
                 let at = format!("{at}.ccnm_bin");
                 if check_absolute(&at, bin, &mut problems) && !is_remote_path(bin) {
                     problems.push(format!(
@@ -375,26 +384,26 @@ impl Config {
         for (name, ws) in &self.workspaces {
             let at = format!("workspaces.{name}");
             check_name(&at, name, &mut problems);
-            match self.hosts.get(&ws.work_host) {
+            match self.nodes.get(&ws.agent_node) {
                 None => problems.push(format!(
-                    "{at}.work_host = \"{}\" does not match any [hosts.*] entry",
-                    ws.work_host
+                    "{at}.agent_node = \"{}\" does not match any [nodes.*] entry",
+                    ws.agent_node
                 )),
-                Some(host) if host.ssh.is_none() => problems.push(format!(
-                    "{at}.work_host = \"{}\" names a host without `ssh` (the alias the home machine uses to reach it)",
-                    ws.work_host
+                Some(node) if node.ssh_from_runtime.is_none() => problems.push(format!(
+                    "{at}.agent_node = \"{}\" names a node without `ssh_from_runtime` (the alias the Runtime Node uses to reach it)",
+                    ws.agent_node
                 )),
                 Some(_) => {}
             }
-            let runtime = self.hosts.get(&ws.runtime_host);
+            let runtime = self.nodes.get(&ws.runtime_node);
             match runtime {
                 None => problems.push(format!(
-                    "{at}.runtime_host = \"{}\" does not match any [hosts.*] entry",
-                    ws.runtime_host
+                    "{at}.runtime_node = \"{}\" does not match any [nodes.*] entry",
+                    ws.runtime_node
                 )),
-                Some(host) if host.ssh_from_work.is_none() => problems.push(format!(
-                    "{at}.runtime_host = \"{}\" names a host without `ssh_from_work` (the alias the work machine uses to reach it)",
-                    ws.runtime_host
+                Some(node) if node.ssh_from_agent.is_none() => problems.push(format!(
+                    "{at}.runtime_node = \"{}\" names a node without `ssh_from_agent` (the alias the Agent Node uses to reach it)",
+                    ws.runtime_node
                 )),
                 Some(_) => {}
             }
@@ -445,8 +454,8 @@ impl Config {
                         && host.smb_user.is_none()
                     {
                         problems.push(format!(
-                            "{at}.runtime_host = \"{}\" names a host without `smb_user`, which backend = \"hybrid-smb\" needs to mount the share",
-                            ws.runtime_host
+                            "{at}.runtime_node = \"{}\" names a host without `smb_user`, which backend = \"hybrid-smb\" needs to mount the share",
+                            ws.runtime_node
                         ));
                     }
                 }
@@ -533,20 +542,20 @@ fn overlaps(a: &Path, b: &Path) -> bool {
 mod tests {
     use super::*;
 
-    /// A config with only a way home is the work machine's, and a name it
+    /// A config with only a way home is the Agent Node's, and a name it
     /// does not know is a question for the other side. A *home* config has
-    /// `ssh_from_work` too -- that is how the work machine reaches back --
+    /// `ssh_from_agent` too -- that is how the Agent Node reaches back --
     /// so keying on that alone would send every mistyped workspace name at
     /// home over ssh to be asked about.
     #[test]
     fn only_a_config_with_no_way_to_reach_work_is_the_work_machines() {
-        let alias = |c: &Config| c.home_from_work().map(|(alias, _)| alias.to_string());
+        let alias = |c: &Config| c.runtime_from_agent().map(|(alias, _)| alias.to_string());
 
-        let work_side = Config::parse("[hosts.home]\nssh_from_work = \"xdwmbp\"\n").unwrap();
+        let work_side = Config::parse("[nodes.runtime]\nssh_from_agent = \"xdwmbp\"\n").unwrap();
         assert_eq!(alias(&work_side).as_deref(), Some("xdwmbp"));
 
         let home_side = Config::parse(
-            "[hosts.work]\nssh = \"fodelf\"\n[hosts.home]\nssh_from_work = \"xdwmbp\"\n",
+            "[nodes.agent]\nssh_from_runtime = \"fodelf\"\n[nodes.runtime]\nssh_from_agent = \"xdwmbp\"\n",
         )
         .unwrap();
         assert_eq!(alias(&home_side), None);
@@ -555,13 +564,13 @@ mod tests {
         let empty = Config::parse("").unwrap();
         assert_eq!(alias(&empty), None);
         let two =
-            Config::parse("[hosts.a]\nssh_from_work = \"x\"\n[hosts.b]\nssh_from_work = \"y\"\n")
+            Config::parse("[nodes.a]\nssh_from_agent = \"x\"\n[nodes.b]\nssh_from_agent = \"y\"\n")
                 .unwrap();
         assert_eq!(alias(&two), None);
     }
 
     /// The host comes back with the alias, because `ccnm_bin` is on it.
-    /// A work machine whose home keeps ccnm somewhere other than the
+    /// A Agent Node whose home keeps ccnm somewhere other than the
     /// default is a supported, documented config; a caller handed only the
     /// alias would silently run the default path instead and fail with
     /// "command not found" on the one machine that was configured
@@ -569,30 +578,30 @@ mod tests {
     #[test]
     fn the_work_side_lookup_carries_where_ccnm_lives_over_there() {
         let config = Config::parse(
-            "[hosts.home]\nssh_from_work = \"xdwmbp\"\nccnm_bin = \"/opt/homebrew/bin/ccnm\"\n",
+            "[nodes.runtime]\nssh_from_agent = \"xdwmbp\"\nccnm_bin = \"/opt/homebrew/bin/ccnm\"\n",
         )
         .unwrap();
-        let (alias, host) = config.home_from_work().unwrap();
+        let (alias, host) = config.runtime_from_agent().unwrap();
         assert_eq!(alias, "xdwmbp");
         assert_eq!(host.ccnm_bin(), "/opt/homebrew/bin/ccnm");
 
         // Unset still means the default, as everywhere else.
-        let plain = Config::parse("[hosts.home]\nssh_from_work = \"xdwmbp\"\n").unwrap();
+        let plain = Config::parse("[nodes.runtime]\nssh_from_agent = \"xdwmbp\"\n").unwrap();
         assert_eq!(
-            plain.home_from_work().unwrap().1.ccnm_bin(),
+            plain.runtime_from_agent().unwrap().1.ccnm_bin(),
             DEFAULT_CCNM_BIN
         );
     }
-    /// On the work machine, "not defined" is true and points the wrong
+    /// On the Agent Node, "not defined" is true and points the wrong
     /// way: it reads as "so define it", and a second copy of a project's
     /// root on this machine is the exact thing the split exists to
     /// prevent -- one of them goes stale and a session binds to a
     /// directory that moved. So the error names the machine that does
     /// keep the list. Only `doctor <ws>` and `mcp probe` can reach it;
-    /// everything else on the work machine answers locally.
+    /// everything else on the Agent Node answers locally.
     #[test]
     fn on_the_work_machine_an_unknown_name_says_where_the_list_is() {
-        let work_side = Config::parse("[hosts.home]\nssh_from_work = \"xdwmbp\"\n").unwrap();
+        let work_side = Config::parse("[nodes.runtime]\nssh_from_agent = \"xdwmbp\"\n").unwrap();
         let err = work_side.workspace("xshun").unwrap_err();
         assert!(err.message().contains("xdwmbp"), "{err}");
         assert!(
@@ -622,24 +631,24 @@ mod tests {
     /// Minimal valid config with the given workspace body appended.
     fn with_workspace(body: &str) -> String {
         format!(
-            "version = 1\n[hosts.work]\nssh = \"work\"\n[hosts.home]\nssh_from_work = \"ccnm-home\"\n[workspaces.x]\n{body}\n"
+            "version = 1\n[nodes.agent]\nssh_from_runtime = \"work\"\n[nodes.runtime]\nssh_from_agent = \"ccnm-home\"\n[workspaces.x]\n{body}\n"
         )
     }
 
-    const VALID_WS: &str = "work_host = \"work\"\nroot = \"/a\"";
+    const VALID_WS: &str = "agent_node = \"agent\"\nroot = \"/a\"";
 
     #[test]
     fn valid_fixture_parses_with_defaults() {
         let config = Config::load(&fixture("config-valid.toml")).unwrap();
         assert_eq!(config.version, Some(1));
         let r = config.workspace("xshun").unwrap();
-        assert_eq!(r.work_ssh, "work");
-        assert_eq!(r.home_alias, "ccnm-home");
-        assert_eq!(r.work.claude_config_dir, None);
-        assert_eq!(r.work.ccnm_bin(), "~/.local/bin/ccnm");
+        assert_eq!(r.agent_ssh, "work");
+        assert_eq!(r.runtime_alias, "ccnm-home");
+        assert_eq!(r.agent.claude_config_dir, None);
+        assert_eq!(r.agent.ccnm_bin(), "~/.local/bin/ccnm");
         assert_eq!(r.runtime.ccnm_bin(), "~/.local/bin/ccnm");
         assert_eq!(r.workspace.backend, Backend::McpSsh);
-        assert_eq!(r.workspace.runtime_host, "home");
+        assert_eq!(r.workspace.runtime_node, "runtime");
         assert_eq!(
             r.workspace.root,
             PathBuf::from("/Users/fodelf/Projects/xshun")
@@ -657,13 +666,13 @@ mod tests {
         let config = Config::load(&fixture("config-custom-claude-dir.toml")).unwrap();
         let r = config.workspace("xshun").unwrap();
         assert_eq!(
-            r.work.claude_config_dir,
+            r.agent.claude_config_dir,
             Some(PathBuf::from("/Users/me/.ccnm/claude"))
         );
-        assert_eq!(r.work.ccnm_bin(), "/Users/me/bin/ccnm");
+        assert_eq!(r.agent.ccnm_bin(), "/Users/me/bin/ccnm");
         assert_eq!(r.runtime.ccnm_bin(), "/Users/ccrun/.local/bin/ccnm");
-        assert_eq!(r.workspace.runtime_host, "runtime");
-        assert_eq!(r.home_alias, "home");
+        assert_eq!(r.workspace.runtime_node, "runtime");
+        assert_eq!(r.runtime_alias, "home");
     }
 
     #[test]
@@ -679,7 +688,7 @@ mod tests {
         );
 
         let err = parse_err(
-            "version = 1\n[hosts.work]\nssh = \"work\"\n[hosts.home]\nssh_from_work = \"h\"\n[workspaces.x]\nbackend = \"hybrid-smb\"\nwork_host = \"work\"\nroot = \"/a\"\n",
+            "version = 1\n[nodes.agent]\nssh_from_runtime = \"work\"\n[nodes.runtime]\nssh_from_agent = \"h\"\n[workspaces.x]\nbackend = \"hybrid-smb\"\nagent_node = \"agent\"\nroot = \"/a\"\n",
         );
         let msg = err.message();
         assert!(msg.contains("share is required"), "{msg}");
@@ -690,7 +699,7 @@ mod tests {
     #[test]
     fn hybrid_fields_are_rejected_on_mcp_ssh() {
         let err = parse_err(&with_workspace(
-            "work_host = \"work\"\nroot = \"/a\"\nshare = \"x\"\nmount_mode = \"coherence\"\nruntime_root = \"/b\"",
+            "agent_node = \"agent\"\nroot = \"/a\"\nshare = \"x\"\nmount_mode = \"coherence\"\nruntime_root = \"/b\"",
         ));
         let msg = err.message();
         for field in ["share", "mount_mode", "runtime_root"] {
@@ -735,27 +744,27 @@ mod tests {
     #[test]
     fn unknown_hosts_are_rejected() {
         let err = parse_err(&with_workspace(
-            "work_host = \"nope\"\nruntime_host = \"nada\"\nroot = \"/a\"",
+            "agent_node = \"nope\"\nruntime_node = \"nada\"\nroot = \"/a\"",
         ));
         let msg = err.message();
-        assert!(msg.contains("work_host = \"nope\""), "{msg}");
-        assert!(msg.contains("runtime_host = \"nada\""), "{msg}");
+        assert!(msg.contains("agent_node = \"nope\""), "{msg}");
+        assert!(msg.contains("runtime_node = \"nada\""), "{msg}");
     }
 
     #[test]
     fn role_specific_fields_are_required() {
         let err = parse_err(
-            "version = 1\n[hosts.work]\nssh_from_work = \"x\"\n[hosts.home]\nssh = \"y\"\n[workspaces.x]\nwork_host = \"work\"\nroot = \"/a\"\n",
+            "version = 1\n[nodes.agent]\nssh_from_agent = \"x\"\n[nodes.runtime]\nssh_from_runtime = \"y\"\n[workspaces.x]\nagent_node = \"agent\"\nroot = \"/a\"\n",
         );
         let msg = err.message();
-        assert!(msg.contains("host without `ssh`"), "{msg}");
-        assert!(msg.contains("host without `ssh_from_work`"), "{msg}");
+        assert!(msg.contains("node without `ssh_from_runtime`"), "{msg}");
+        assert!(msg.contains("node without `ssh_from_agent`"), "{msg}");
     }
 
     #[test]
     fn relative_and_dotty_paths_are_rejected() {
         let err = parse_err(
-            "version = 1\n[hosts.work]\nssh = \"work\"\nclaude_config_dir = \"relative/dir\"\nccnm_bin = \"bin/ccnm\"\n[hosts.home]\nssh_from_work = \"h\"\n[workspaces.x]\nwork_host = \"work\"\nroot = \"/tmp/../x\"\n",
+            "version = 1\n[nodes.agent]\nssh_from_runtime = \"work\"\nclaude_config_dir = \"relative/dir\"\nccnm_bin = \"bin/ccnm\"\n[nodes.runtime]\nssh_from_agent = \"h\"\n[workspaces.x]\nagent_node = \"agent\"\nroot = \"/tmp/../x\"\n",
         );
         let msg = err.message();
         assert!(
@@ -769,20 +778,20 @@ mod tests {
     #[test]
     fn ccnm_bin_must_be_a_remote_safe_path() {
         let err = parse_err(
-            "version = 1\n[hosts.work]\nssh = \"work\"\nccnm_bin = \"/Users/me/my tools/ccnm\"\n[hosts.home]\nssh_from_work = \"h\"\n",
+            "version = 1\n[nodes.agent]\nssh_from_runtime = \"work\"\nccnm_bin = \"/Users/me/my tools/ccnm\"\n[nodes.runtime]\nssh_from_agent = \"h\"\n",
         );
         assert!(err.message().contains("never has to quote"), "{err}");
         let ok = Config::parse(
-            "version = 1\n[hosts.work]\nssh = \"work\"\nccnm_bin = \"/opt/ccnm-0.1/bin/ccnm\"\n",
+            "version = 1\n[nodes.agent]\nssh_from_runtime = \"work\"\nccnm_bin = \"/opt/ccnm-0.1/bin/ccnm\"\n",
         )
         .unwrap();
-        assert_eq!(ok.hosts["work"].ccnm_bin(), "/opt/ccnm-0.1/bin/ccnm");
+        assert_eq!(ok.nodes["agent"].ccnm_bin(), "/opt/ccnm-0.1/bin/ccnm");
     }
 
     #[test]
     fn hybrid_runtime_root_inside_root_is_rejected() {
         let err = parse_err(
-            "version = 1\n[hosts.work]\nssh = \"work\"\n[hosts.home]\nssh_from_work = \"h\"\nsmb_user = \"u\"\n[workspaces.x]\nbackend = \"hybrid-smb\"\nwork_host = \"work\"\nroot = \"/Users/Shared/cc-workspaces/x\"\nruntime_root = \"/Users/Shared/cc-workspaces/x/target\"\nshare = \"x\"\n",
+            "version = 1\n[nodes.agent]\nssh_from_runtime = \"work\"\n[nodes.runtime]\nssh_from_agent = \"h\"\nsmb_user = \"u\"\n[workspaces.x]\nbackend = \"hybrid-smb\"\nagent_node = \"agent\"\nroot = \"/Users/Shared/cc-workspaces/x\"\nruntime_root = \"/Users/Shared/cc-workspaces/x/target\"\nshare = \"x\"\n",
         );
         assert!(err.message().contains("must not overlap root"), "{err}");
     }
@@ -790,17 +799,20 @@ mod tests {
     #[test]
     fn bad_names_and_tokens_are_rejected() {
         let err = parse_err(
-            "version = 1\n[hosts.\"my host\"]\nssh = \"-oProxyCommand=x\"\n[hosts.home]\nssh_from_work = \"h\"\n[workspaces.\"-x\"]\nwork_host = \"my host\"\nroot = \"/a\"\n",
+            "version = 1\n[nodes.\"my host\"]\nssh_from_runtime = \"-oProxyCommand=x\"\n[nodes.runtime]\nssh_from_agent = \"h\"\n[workspaces.\"-x\"]\nagent_node = \"my host\"\nroot = \"/a\"\n",
         );
         let msg = err.message();
-        assert!(msg.contains("hosts.my host: name must be"), "{msg}");
-        assert!(msg.contains("hosts.my host.ssh must match"), "{msg}");
+        assert!(msg.contains("nodes.my host: name must be"), "{msg}");
+        assert!(
+            msg.contains("nodes.my host.ssh_from_runtime must match"),
+            "{msg}"
+        );
         assert!(msg.contains("workspaces.-x: name must be"), "{msg}");
     }
 
     #[test]
     fn all_problems_are_reported_together() {
-        let err = parse_err("version = 3\n[workspaces.x]\nwork_host = \"nope\"\nroot = \"rel\"\n");
+        let err = parse_err("version = 3\n[workspaces.x]\nagent_node = \"nope\"\nroot = \"rel\"\n");
         let lines = err.message().lines().count();
         assert!(lines >= 4, "expected several problems, got:\n{err}");
     }

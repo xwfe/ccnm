@@ -1,4 +1,4 @@
-//! Core logic shared by every ccnm role (home launcher, work controller,
+//! Core logic shared by every ccnm role (home launcher, controller,
 //! home MCP runtime). The CLI crate is a thin argument parser over this.
 
 pub mod claude;

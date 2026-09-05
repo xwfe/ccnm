@@ -1,7 +1,7 @@
 //! `ccnm internal probe`: everything doctor wants to know about the work
 //! machine and, through it, the home runtime, in one round trip.
 //!
-//! The work machine has no config file. Everything it needs arrives in
+//! The Agent Node has no config file. Everything it needs arrives in
 //! the request; everything it learned goes back in the report, errors
 //! included, so doctor can render one row per fact.
 
@@ -19,9 +19,9 @@ use crate::ssh::ResolvedSsh;
 pub struct ProbeRequest {
     pub protocol: u32,
     pub workspace: String,
-    /// Project root on the runtime host; the work side only passes it on.
+    /// Project root on the runtime host; the Agent side only passes it on.
     pub root: PathBuf,
-    /// Alias in the work machine's `~/.ssh/config` for the home runtime.
+    /// Alias in the Agent Node's `~/.ssh/config` for the home runtime.
     pub home_alias: String,
     /// ccnm path to invoke on the home runtime (design doc section 7).
     pub home_ccnm_bin: String,
@@ -41,13 +41,13 @@ impl Protocol for ProbeRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProbeReport {
     pub protocol: u32,
-    /// The work machine's own hello.
+    /// The Agent Node's own hello.
     pub hello: HelloReport,
     /// The login-session controller, as reached from this ssh session.
     /// `None` only from a ccnm build that predates it.
     #[serde(default)]
     pub controller: Option<Reported<crate::controller::Context>>,
-    /// Claude Code on the work machine.
+    /// Claude Code on the Agent Node.
     ///
     /// Asked **through the controller** whenever one is running, because
     /// an ssh session gets the wrong answer about the login: it cannot
@@ -56,7 +56,7 @@ pub struct ProbeReport {
     /// comes from this session — it needs no credential — and `auth` is a
     /// `CCNM_E_NOT_READY` error rather than a guess.
     pub claude: ClaudeReport,
-    /// What `ssh -G <home_alias>` resolves to on the work machine.
+    /// What `ssh -G <home_alias>` resolves to on the Agent Node.
     pub home_ssh: Reported<ResolvedSsh>,
     /// The home runtime's hello, fetched over the reverse ssh.
     pub home_hello: Reported<HelloReport>,

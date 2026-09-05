@@ -2,7 +2,7 @@
 //!
 //! The seventh and last tool of the set (design doc section 14).
 //! `exec_command` returns the head and the tail of its output and keeps
-//! all of it on the workspace machine; this is how the middle is reached.
+//! all of it on the Runtime Node; this is how the middle is reached.
 //!
 //! Offsets are byte offsets into the retained file and they are stable,
 //! because the file is finished before the reference exists: a run's

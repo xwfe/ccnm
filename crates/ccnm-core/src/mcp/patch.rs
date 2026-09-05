@@ -2874,7 +2874,7 @@ mod tests {
         assert!(message.contains("src/main.rs"), "{message}");
         assert!(message.contains("src/lib.rs"), "{message}");
         // Relative, like every other path the model is shown: the
-        // workspace machine's directory layout is not its business and
+        // Runtime Node's directory layout is not its business and
         // travels back to Anthropic in the transcript.
         assert!(message.contains("src/.ccnm-abc-main.rs"), "{message}");
         assert!(

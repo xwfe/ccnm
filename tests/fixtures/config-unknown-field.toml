@@ -1,14 +1,14 @@
-# "runtime_hots" is a typo for "runtime_host". Must be rejected, not
-# ignored: with the default it would silently point at [hosts.home].
+# "runtime_hots" is a typo for "runtime_node". Must be rejected, not
+# ignored: with the default it would silently point at [nodes.runtime].
 version = 1
 
-[hosts.work]
-ssh = "work"
+[nodes.agent]
+ssh_from_runtime = "work"
 
-[hosts.home]
-ssh_from_work = "ccnm-home"
+[nodes.runtime]
+ssh_from_agent = "ccnm-home"
 
 [workspaces.xshun]
-work_host = "work"
+agent_node = "agent"
 runtime_hots = "home"
 root = "/Users/fodelf/Projects/xshun"

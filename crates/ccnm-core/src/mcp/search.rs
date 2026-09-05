@@ -2,7 +2,7 @@
 //!
 //! The search runs where the files are. Nothing is shipped to the work
 //! machine to be searched there — only the hits come back, which is the
-//! whole reason the runtime lives on the home machine at all.
+//! whole reason the runtime lives on the Runtime Node at all.
 //!
 //! `rg` does the scanning. ccnm does not implement a text scanner: matching
 //! semantics, encoding detection, ignore-file precedence and multiline
@@ -21,7 +21,7 @@
 //!                 turns hidden files back on must not turn this off
 //! cwd = root      rg is given a relative scope from the workspace root, so
 //!                 the paths it prints are relative and no absolute path of
-//!                 the home machine can reach the model
+//!                 the Runtime Node can reach the model
 //! ```
 //!
 //! and then checks rg's output anyway: any hit whose path is absolute, has
@@ -147,7 +147,7 @@ pub fn search_text(root: &Path, args: &SearchTextArgs) -> Result<SearchResult> {
     let plan = Plan::new(root, args)?;
     let rg = locate_rg().ok_or_else(|| {
         Error::dependency(
-            "ripgrep is not installed on the workspace machine, and ccnm searches with it rather than scanning files itself; install it (`brew install ripgrep`) and try again",
+            "ripgrep is not installed on the Runtime Node, and ccnm searches with it rather than scanning files itself; install it (`brew install ripgrep`) and try again",
         )
     })?;
 
@@ -545,7 +545,7 @@ fn column_of(data: &Value, line: &str) -> u32 {
     prefix.chars().count() as u32 + 1
 }
 
-/// Never let the home machine's absolute paths reach the model, even
+/// Never let the Runtime Node's absolute paths reach the model, even
 /// through an error message.
 fn sanitize(message: &str, root: &Path) -> String {
     let root = root.display().to_string();

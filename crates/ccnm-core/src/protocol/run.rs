@@ -3,7 +3,7 @@
 //! `work-start` / `attach` / `status` / `stop` (interactive, which return
 //! immediately because the session outlives the call).
 //!
-//! Like the probe, the work machine has no config file: everything it
+//! Like the probe, the Agent Node has no config file: everything it
 //! needs is in the request, and everything it learned is in the report.
 
 use std::path::PathBuf;
@@ -20,7 +20,7 @@ use crate::session::Outcome;
 pub struct RunRequest {
     pub protocol: u32,
     pub workspace: String,
-    /// Project root on the home machine; passed through to the MCP payload.
+    /// Project root on the Runtime Node; passed through to the MCP payload.
     pub root: PathBuf,
     pub home_alias: String,
     pub home_ccnm_bin: String,
@@ -313,7 +313,7 @@ impl Protocol for PurgeReport {
     }
 }
 
-/// `ccnm internal work-status`: every live session on the work machine.
+/// `ccnm internal work-status`: every live session on the Agent Node.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StatusRequest {
     pub protocol: u32,
@@ -342,7 +342,7 @@ impl Protocol for StatusReport {
     }
 }
 
-/// One live interactive session, as the work machine sees it.
+/// One live interactive session, as the Agent Node sees it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LiveSession {
     pub tmux_session: String,
@@ -394,7 +394,7 @@ impl LiveSession {
 impl StatusReport {
     pub fn render(&self) -> String {
         let mut out = match &self.tmux {
-            Ok(v) => format!("tmux {v} on the work machine\n"),
+            Ok(v) => format!("tmux {v} on the Agent Node\n"),
             Err(e) => format!("tmux: {}\n", e.message),
         };
         if self.sessions.is_empty() {

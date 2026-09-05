@@ -3,18 +3,18 @@
 # a non-default name, and the backend spelled out.
 version = 1
 
-[hosts.work]
-ssh = "work"
+[nodes.agent]
+ssh_from_runtime = "work"
 ccnm_bin = "/Users/me/bin/ccnm"
 claude_config_dir = "/Users/me/.ccnm/claude"
 
-[hosts.runtime]
-ssh_from_work = "home"
+[nodes.runtime]
+ssh_from_agent = "home"
 ccnm_bin = "/Users/ccrun/.local/bin/ccnm"
 
 [workspaces.xshun]
 backend = "mcp-ssh"
-work_host = "work"
-runtime_host = "runtime"
+agent_node = "agent"
+runtime_node = "runtime"
 root = "/Users/ccrun/Projects/xshun"
 claude_permission_mode = "acceptEdits"

@@ -14,7 +14,8 @@
 //! why this edits the document ([`toml_edit`]) rather than re-emitting it.
 //!
 //! **Surprise anyone.** Every operation here reports what it changed, in
-//! the terms of the file: "added workspaces.x", "hosts.work.ssh: a -> b",
+//! the terms of the file: "added workspaces.x",
+//! "nodes.agent.ssh_from_runtime: a -> b",
 //! or "nothing to change". Running one twice is not an error and does not
 //! do the work twice; the second run says the setting is already what was
 //! asked for.
@@ -87,27 +88,27 @@ impl Edit {
         &self.path
     }
 
-    /// Point `hosts.<name>.<field>` at `alias`, creating the table if this
-    /// is the first mention of that host.
-    pub fn set_host(&mut self, name: &str, field: &str, alias: &str, changes: &mut Changes) {
-        let hosts = self.table("hosts");
-        let host = hosts
+    /// Point `nodes.<name>.<field>` at `alias`, creating the table if this
+    /// is the first mention of that node.
+    pub fn set_node(&mut self, name: &str, field: &str, alias: &str, changes: &mut Changes) {
+        let nodes = self.table("nodes");
+        let node = nodes
             .entry(name)
             .or_insert_with(|| Item::Table(implicit_table()));
-        let Some(host) = host.as_table_mut() else {
-            changes.note(format!("hosts.{name} is not a table; left alone"));
+        let Some(node) = node.as_table_mut() else {
+            changes.note(format!("nodes.{name} is not a table; left alone"));
             return;
         };
-        let before = host.get(field).and_then(Item::as_str).map(str::to_string);
+        let before = node.get(field).and_then(Item::as_str).map(str::to_string);
         match before {
             Some(current) if current == alias => {}
             Some(current) => {
-                host[field] = value(alias);
-                changes.note(format!("hosts.{name}.{field}: {current} -> {alias}"));
+                node[field] = value(alias);
+                changes.note(format!("nodes.{name}.{field}: {current} -> {alias}"));
             }
             None => {
-                host[field] = value(alias);
-                changes.note(format!("hosts.{name}.{field} = {alias}"));
+                node[field] = value(alias);
+                changes.note(format!("nodes.{name}.{field} = {alias}"));
             }
         }
     }
@@ -117,7 +118,7 @@ impl Edit {
         &mut self,
         name: &str,
         root: &Path,
-        work_host: &str,
+        agent_node: &str,
         permission_mode: Option<PermissionMode>,
         allow_unconfined_exec: Option<bool>,
         changes: &mut Changes,
@@ -138,7 +139,7 @@ impl Edit {
         if !existed {
             changes.note(format!("added workspaces.{name}"));
         }
-        set_str(ws, "work_host", work_host, name, changes);
+        set_str(ws, "agent_node", agent_node, name, changes);
         set_str(ws, "root", &root.display().to_string(), name, changes);
         if let Some(mode) = permission_mode {
             set_str(
@@ -239,7 +240,7 @@ fn set_str(table: &mut Table, field: &str, wanted: &str, name: &str, changes: &m
     }
 }
 
-/// A table that prints as `[hosts.work]` rather than as an inline table.
+/// A table that prints as `[nodes.agent]` rather than as an inline table.
 fn implicit_table() -> Table {
     let mut table = Table::new();
     table.set_implicit(true);
@@ -263,12 +264,12 @@ mod tests {
         let mut edit = Edit::open(&path).unwrap();
         assert!(!edit.existed());
         let mut changes = Changes::default();
-        edit.set_host("work", "ssh", "fodelf", &mut changes);
-        edit.set_host("home", "ssh_from_work", "xdwmbp", &mut changes);
+        edit.set_node("agent", "ssh_from_runtime", "fodelf", &mut changes);
+        edit.set_node("runtime", "ssh_from_agent", "xdwmbp", &mut changes);
         edit.set_workspace(
             "xshun",
             Path::new("/Users/bing/code/xshun"),
-            "work",
+            "agent",
             None,
             None,
             &mut changes,
@@ -278,8 +279,8 @@ mod tests {
         let config = Config::load(&path).unwrap();
         assert_eq!(config.version, None, "nothing writes a version any more");
         let resolved = config.workspace("xshun").unwrap();
-        assert_eq!(resolved.work_ssh, "fodelf");
-        assert_eq!(resolved.home_alias, "xdwmbp");
+        assert_eq!(resolved.agent_ssh, "fodelf");
+        assert_eq!(resolved.runtime_alias, "xdwmbp");
         assert_eq!(resolved.workspace.root, Path::new("/Users/bing/code/xshun"));
     }
 
@@ -291,12 +292,12 @@ mod tests {
         let path = temp("comments");
         std::fs::write(
             &path,
-            "# the work machine is the mac mini\n\
-             [hosts.work]\n\
-             ssh = \"fodelf\"\n\
+            "# the Agent Node is the mac mini\n\
+             [nodes.agent]\n\
+             ssh_from_runtime = \"fodelf\"\n\
              \n\
              [workspaces.old]\n\
-             work_host = \"work\"\n\
+             agent_node = \"agent\"\n\
              root = \"/a\"\n\
              # temporary, until ccrun exists\n\
              allow_unconfined_exec = true\n",
@@ -305,15 +306,12 @@ mod tests {
 
         let mut edit = Edit::open(&path).unwrap();
         let mut changes = Changes::default();
-        edit.set_host("home", "ssh_from_work", "xdwmbp", &mut changes);
-        edit.set_workspace("new", Path::new("/b"), "work", None, None, &mut changes);
+        edit.set_node("runtime", "ssh_from_agent", "xdwmbp", &mut changes);
+        edit.set_workspace("new", Path::new("/b"), "agent", None, None, &mut changes);
         edit.save(&changes).unwrap();
 
         let text = std::fs::read_to_string(&path).unwrap();
-        assert!(
-            text.contains("# the work machine is the mac mini"),
-            "{text}"
-        );
+        assert!(text.contains("# the Agent Node is the mac mini"), "{text}");
         assert!(text.contains("# temporary, until ccrun exists"), "{text}");
         assert!(text.contains("[workspaces.old]"), "{text}");
         assert!(text.contains("[workspaces.new]"), "{text}");
@@ -326,18 +324,18 @@ mod tests {
         let path = temp("idempotent");
         let mut first = Edit::open(&path).unwrap();
         let mut changes = Changes::default();
-        first.set_host("work", "ssh", "fodelf", &mut changes);
-        first.set_host("home", "ssh_from_work", "xdwmbp", &mut changes);
-        first.set_workspace("x", Path::new("/a"), "work", None, None, &mut changes);
+        first.set_node("agent", "ssh_from_runtime", "fodelf", &mut changes);
+        first.set_node("runtime", "ssh_from_agent", "xdwmbp", &mut changes);
+        first.set_workspace("x", Path::new("/a"), "agent", None, None, &mut changes);
         first.save(&changes).unwrap();
         let after_first = std::fs::read_to_string(&path).unwrap();
         assert!(!changes.is_empty());
 
         let mut again = Edit::open(&path).unwrap();
         let mut changes = Changes::default();
-        again.set_host("work", "ssh", "fodelf", &mut changes);
-        again.set_host("home", "ssh_from_work", "xdwmbp", &mut changes);
-        again.set_workspace("x", Path::new("/a"), "work", None, None, &mut changes);
+        again.set_node("agent", "ssh_from_runtime", "fodelf", &mut changes);
+        again.set_node("runtime", "ssh_from_agent", "xdwmbp", &mut changes);
+        again.set_workspace("x", Path::new("/a"), "agent", None, None, &mut changes);
         again.save(&changes).unwrap();
         assert!(changes.is_empty(), "{:?}", changes.lines());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), after_first);
@@ -348,13 +346,16 @@ mod tests {
         let path = temp("change");
         let mut edit = Edit::open(&path).unwrap();
         let mut changes = Changes::default();
-        edit.set_host("work", "ssh", "old-alias", &mut changes);
+        edit.set_node("agent", "ssh_from_runtime", "old-alias", &mut changes);
         edit.save(&changes).unwrap();
 
         let mut edit = Edit::open(&path).unwrap();
         let mut changes = Changes::default();
-        edit.set_host("work", "ssh", "new-alias", &mut changes);
-        assert_eq!(changes.lines(), ["hosts.work.ssh: old-alias -> new-alias"]);
+        edit.set_node("agent", "ssh_from_runtime", "new-alias", &mut changes);
+        assert_eq!(
+            changes.lines(),
+            ["nodes.agent.ssh_from_runtime: old-alias -> new-alias"]
+        );
     }
 
     #[test]
@@ -362,9 +363,9 @@ mod tests {
         let path = temp("remove");
         let mut edit = Edit::open(&path).unwrap();
         let mut changes = Changes::default();
-        edit.set_host("work", "ssh", "w", &mut changes);
-        edit.set_host("home", "ssh_from_work", "h", &mut changes);
-        edit.set_workspace("x", Path::new("/a"), "work", None, None, &mut changes);
+        edit.set_node("agent", "ssh_from_runtime", "w", &mut changes);
+        edit.set_node("runtime", "ssh_from_agent", "h", &mut changes);
+        edit.set_workspace("x", Path::new("/a"), "agent", None, None, &mut changes);
         edit.save(&changes).unwrap();
 
         let mut edit = Edit::open(&path).unwrap();
@@ -385,7 +386,7 @@ mod tests {
         let path = temp("invalid");
         let mut edit = Edit::open(&path).unwrap();
         let mut changes = Changes::default();
-        // A workspace whose work_host is not defined anywhere.
+        // A workspace whose agent_node is not defined anywhere.
         edit.set_workspace("x", Path::new("/a"), "nowhere", None, None, &mut changes);
         let err = edit.save(&changes).unwrap_err();
         assert!(err.message().contains("nothing was written"), "{err}");

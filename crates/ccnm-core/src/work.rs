@@ -1,4 +1,4 @@
-//! What `ccnm` does on the work machine when the home launcher calls it
+//! What `ccnm` does on the Agent Node when the home launcher calls it
 //! over ssh: `probe` (read-only, for doctor) and `work-run` (create a
 //! session, have the controller start it, wait for the result).
 //!
@@ -31,7 +31,7 @@ use crate::session::{self, Mode, Spec};
 use crate::ssh::{Master, Ssh};
 use crate::tmux;
 
-/// What the work-side code needs from its environment. Injected so tests
+/// What the Agent-side code needs from its environment. Injected so tests
 /// can script every external command and decide whether `claude` exists.
 pub struct Tools<'a> {
     pub runner: &'a dyn ProcessRunner,
@@ -79,7 +79,7 @@ pub fn run(req: &RunRequest, tools: &Tools<'_>) -> Result<RunReport> {
         return Err(Error::new(
             ErrorCode::NotReady,
             format!(
-                "the work controller answers from {}, not from a login session, so a Claude it started could not read its credentials\nrun on work: ccnm work-controller install",
+                "the controller answers from {}, not from a login session, so a Claude it started could not read its credentials\nrun on the Agent Node: ccnm controller install",
                 ctx.describe()
             ),
         ));
@@ -212,7 +212,7 @@ pub fn start(req: &StartRequest, tools: &Tools<'_>) -> Result<StartReport> {
     start_fresh(req, tools, &tmux, name, ctx, ssh, None)
 }
 
-/// One round trip to the workspace machine before a session is built, to
+/// One round trip to the Runtime Node before a session is built, to
 /// answer the two questions that are cheap now and expensive later.
 ///
 /// **Do the two binaries agree?** They have to be the same build: the
@@ -255,7 +255,7 @@ fn greet(ssh: &Ssh, workspace: &str, root: &Path, tools: &Tools<'_>) -> Result<(
         return Err(Error::new(
             ErrorCode::Version,
             format!(
-                "the workspace machine runs ccnm {}, this one runs {}; install the same build on both before starting a session",
+                "the Runtime Node runs ccnm {}, this one runs {}; install the same build on both before starting a session",
                 hello.ccnm_version,
                 crate::VERSION
             ),
@@ -281,7 +281,7 @@ fn greet(ssh: &Ssh, workspace: &str, root: &Path, tools: &Tools<'_>) -> Result<(
         None => Err(Error::new(
             ErrorCode::Version,
             format!(
-                "the workspace machine reports ccnm {} like this one, but its reply is missing the project-root check, so the two are not the same build\ninstall this build there: scripts/deploy.sh <its alias>",
+                "the Runtime Node reports ccnm {} like this one, but its reply is missing the project-root check, so the two are not the same build\ninstall this build there: scripts/deploy.sh <its alias>",
                 hello.ccnm_version
             ),
         )),
@@ -304,7 +304,7 @@ fn preflight(req: &StartRequest, tools: &Tools<'_>) -> Result<(controller::Conte
         return Err(Error::new(
             ErrorCode::NotReady,
             format!(
-                "the work controller answers from {}, not from a login session, so a Claude it started could not read its credentials\nrun on work: ccnm work-controller install",
+                "the controller answers from {}, not from a login session, so a Claude it started could not read its credentials\nrun on the Agent Node: ccnm controller install",
                 ctx.describe()
             ),
         ));
@@ -382,7 +382,7 @@ fn wait_for_context(dir: &session::Dir) -> Option<session::Context> {
 /// Hand this process's terminal to the workspace's session.
 ///
 /// Runs under `ssh -t`, so "this process's terminal" is the one on the
-/// home machine. Returns tmux's own exit code: 0 both when the person
+/// Runtime Node. Returns tmux's own exit code: 0 both when the person
 /// detaches and when Claude ends.
 pub fn attach(req: &AttachRequest, tools: &Tools<'_>) -> Result<i32> {
     let tmux = tools.tmux()?;
@@ -775,7 +775,7 @@ fn ask_about_claude(
             claude.auth = Err(ErrorReport::new(
                 ErrorCode::NotReady,
                 format!(
-                    "not checked: no work controller to ask, and this ssh session's answer would be wrong\n{}",
+                    "not checked: no controller to ask, and this ssh session's answer would be wrong\n{}",
                     missing.message()
                 ),
             ));
@@ -917,7 +917,7 @@ mod tests {
             reverse.contains("-T ccnm-home ~/.local/bin/ccnm internal hello --payload"),
             "{reverse}"
         );
-        // The hello asked the home side to look at the workspace root.
+        // The hello asked the Runtime side to look at the workspace root.
         let wire = calls[1].args.last().unwrap().to_string_lossy().into_owned();
         let sent: HelloRequest = crate::protocol::payload::decode(&wire).unwrap();
         assert_eq!(

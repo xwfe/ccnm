@@ -1,11 +1,11 @@
-//! The work-controller: the process that runs inside the work machine's
+//! The controller: the process that runs inside the Agent Node's
 //! **login session**, and the socket the ssh side reaches it through.
 //!
 //! # Why a second process at all
 //!
 //! An ssh session on macOS is not in the user's login session. It cannot
 //! read the login Keychain, and Claude Code keeps its OAuth there. Measured
-//! on the real work machine (macOS, Claude Code 2.1.259, 2026-09-03), the
+//! on the real Agent Node (macOS, Claude Code 2.1.259, 2026-09-03), the
 //! same user running the same two commands two ways:
 //!
 //! ```text
@@ -27,12 +27,12 @@
 //! # Shape
 //!
 //! ```text
-//! work machine, GUI login
+//! Agent Node, GUI login
 //!   launchd gui/<uid>
-//!     └── ccnm internal work-controller        LaunchAgent, so: Aqua
+//!     └── ccnm internal controller        LaunchAgent, so: Aqua
 //!           └── listens on ~/.local/state/ccnm/controller.sock
 //!
-//! home machine ── ssh ──> work machine, ssh session (Background)
+//! Runtime Node ── ssh ──> Agent Node, ssh session (Background)
 //!                           └── ccnm internal probe
 //!                                 └── connect(controller.sock), one JSON line each way
 //! ```
@@ -74,7 +74,7 @@ use crate::tmux;
 
 /// launchd label for the agent. Also the basename of its plist and what
 /// every `launchctl` line in an error message names.
-pub const LABEL: &str = "dev.ccnm.work-controller";
+pub const LABEL: &str = "dev.ccnm.controller";
 
 /// A message cannot be longer than this. A client that never sends a
 /// newline must not be able to grow the controller's memory.
@@ -194,7 +194,7 @@ pub enum RequestBody {
     /// `claude --version` and, unless the caller says otherwise,
     /// `claude auth status --json`, run here.
     ClaudeAuth {
-        /// `CLAUDE_CONFIG_DIR` for the call, from the home machine's
+        /// `CLAUDE_CONFIG_DIR` for the call, from the Runtime Node's
         /// config. `None` means Claude's own default (design doc
         /// section 21).
         #[serde(default)]
@@ -387,7 +387,7 @@ pub fn supervisor_cmd(exe: &Path, req: &SuperviseRequest) -> Result<Cmd> {
 /// let it go.
 ///
 /// Its own process group, because launchd kills the agent's whole group
-/// when the agent is booted out — which `ccnm work-controller install`
+/// when the agent is booted out — which `ccnm controller install`
 /// does on every upgrade — and a session must not die of its controller
 /// being replaced (design doc section 23). A thread waits on the child so
 /// finished supervisors do not pile up as zombies; the wait is all it does.
@@ -447,7 +447,7 @@ impl Listener {
                 return Err(Error::new(
                     ErrorCode::Policy,
                     format!(
-                        "another work controller is already listening on {}\nask it instead of starting a second one, or stop it with: launchctl bootout gui/$(id -u)/{}",
+                        "another controller is already listening on {}\nask it instead of starting a second one, or stop it with: launchctl bootout gui/$(id -u)/{}",
                         path.display(),
                         crate::controller::LABEL
                     ),
@@ -483,7 +483,7 @@ impl Listener {
             Error::internal(format!("cannot listen on {}", path.display())).with_source(e)
         })?;
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
-        tracing::info!(path = %path.display(), "work controller listening");
+        tracing::info!(path = %path.display(), "controller listening");
         Ok(Listener {
             listener,
             path: path.to_path_buf(),
@@ -633,26 +633,26 @@ fn unexpected(body: &ReplyBody) -> Error {
 /// situations this is and what to type.
 ///
 /// `NotReady` rather than a FAIL code: a missing controller means nothing
-/// about the work machine has been *disproven*. Doctor renders it as SKIP,
+/// about the Agent Node has been *disproven*. Doctor renders it as SKIP,
 /// which blocks READY without claiming something is broken.
 fn not_listening(path: &Path, err: &std::io::Error) -> Error {
     let (what, fix) = if err.kind() == std::io::ErrorKind::NotFound {
         (
             "no socket at",
-            "install it on the work machine: ccnm work-controller install".to_string(),
+            "install it on the Agent Node: ccnm controller install".to_string(),
         )
     } else {
         (
             "nothing is listening on",
             format!(
-                "the controller is installed but not running; on the work machine: launchctl kickstart -k gui/$(id -u)/{LABEL}"
+                "the controller is installed but not running; on the Agent Node: launchctl kickstart -k gui/$(id -u)/{LABEL}"
             ),
         )
     };
     Error::new(
         ErrorCode::NotReady,
         format!(
-            "{what} {}\nthe work controller is the process that answers from the work machine's login session; an ssh session cannot read the login Keychain, so Claude's login cannot be checked without it\n{fix}",
+            "{what} {}\nthe controller is the process that answers from the Agent Node's login session; an ssh session cannot read the login Keychain, so Claude's login cannot be checked without it\n{fix}",
             path.display()
         ),
     )
@@ -1030,7 +1030,7 @@ mod tests {
         let err = context(&path).unwrap_err();
         assert_eq!(err.code(), ErrorCode::NotReady);
         assert!(err.message().contains("no socket at"), "{err}");
-        assert!(err.message().contains("work-controller install"), "{err}");
+        assert!(err.message().contains("controller install"), "{err}");
 
         std::fs::write(&path, b"").unwrap();
         let err = context(&path).unwrap_err();

@@ -39,20 +39,18 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Write the config: which ssh alias reaches the work machine, and
-    /// which one reaches back here. Safe to run again.
+    /// Write the config: which SSH alias reaches the Agent Node, and
+    /// which one reaches the Runtime Node. Safe to run again.
     ///
-    /// On the work machine give only --home: it needs to know how to
-    /// reach the projects, and nothing about them
+    /// On an Agent-only node give only --runtime: it needs to know how to
+    /// reach the Runtime Node, and nothing about its workspace list
     Init {
-        /// This machine's ssh alias for the work machine (the one running
-        /// Claude Code). Omit on the work machine itself
+        /// This Runtime Node's SSH alias for the Agent Node. Omit on an Agent-only node
         #[arg(long, value_name = "ALIAS")]
-        work: Option<String>,
-        /// The alias for the machine holding the projects, as the work
-        /// machine reaches it
+        agent: Option<String>,
+        /// The Agent Node's SSH alias for the Runtime Node holding the projects
         #[arg(long, value_name = "ALIAS")]
-        home: String,
+        runtime: String,
     },
     /// Add, list and remove workspaces without editing the config by hand
     #[command(alias = "ws")]
@@ -66,7 +64,7 @@ enum Command {
         /// Workspace name from config.toml; omit to check only the config
         workspace: Option<String>,
     },
-    /// Start a Claude session for a workspace on the work machine, and
+    /// Start a Claude session for a workspace on the Agent Node, and
     /// attach this terminal to it
     Run {
         /// Workspace name from config.toml
@@ -93,7 +91,7 @@ enum Command {
         /// Workspace name from config.toml
         workspace: String,
     },
-    /// What is running on the work machine
+    /// What is running on the Agent Node
     Status {
         /// Workspace name from config.toml
         workspace: String,
@@ -121,11 +119,11 @@ enum Command {
         #[command(subcommand)]
         command: McpCommand,
     },
-    /// The login-session controller. Run these ON the work machine, or
-    /// over ssh to it: `ssh work ccnm work-controller install`
-    WorkController {
+    /// The login-session controller. Run these ON the Agent Node, or
+    /// over ssh to it: `ssh work ccnm controller install`
+    Controller {
         #[command(subcommand)]
-        command: WorkControllerCommand,
+        command: ControllerCommand,
     },
     /// Internal: invoked over ssh by the ccnm on the other machine
     #[command(hide = true)]
@@ -160,7 +158,7 @@ enum WorkspaceCommand {
     /// Forget a workspace. Ends its session first if one is running
     Remove {
         name: String,
-        /// Also delete what ccnm kept for it on the work machine
+        /// Also delete what ccnm kept for it on the Agent Node
         /// (session records and its Claude working directory)
         #[arg(long)]
         purge: bool,
@@ -186,7 +184,7 @@ enum McpCommand {
 }
 
 #[derive(Subcommand)]
-enum WorkControllerCommand {
+enum ControllerCommand {
     /// Install the LaunchAgent, start it, and check that it answers from
     /// the login session
     Install {
@@ -262,12 +260,12 @@ enum InternalCommand {
         #[arg(long)]
         payload: String,
     },
-    /// Answer on the work machine's controller socket until killed.
+    /// Answer on the Agent Node's controller socket until killed.
     ///
     /// The one internal command with no `--payload`: it is started by
     /// launchd inside the login session, not by the other machine, so
     /// there is no request to carry (see ccnm_core::controller).
-    WorkController,
+    Controller,
 }
 
 fn main() -> ExitCode {
@@ -323,7 +321,7 @@ fn run(cli: Cli) -> Result<i32> {
     };
 
     match &cli.command {
-        Command::Init { work, home } => init(&config_path()?, work.as_deref(), home),
+        Command::Init { agent, runtime } => init(&config_path()?, agent.as_deref(), runtime),
         Command::Workspace { command } => workspace_command(&config_path()?, command),
         Command::Doctor { workspace } => {
             let env = doctor::Env {
@@ -345,10 +343,10 @@ fn run(cli: Cli) -> Result<i32> {
             detached,
         } => {
             let config = Config::load(&config_path()?)?;
-            // Sitting at the work machine: this config knows how to reach
+            // Sitting at the Agent Node: this config knows how to reach
             // home and nothing about workspaces, so home is asked to start
             // the session and this terminal attaches to it locally.
-            if let Some((home, host)) = work_side(&config, workspace) {
+            if let Some((home, host)) = agent_side(&config, workspace) {
                 if print.is_some() {
                     return Err(Error::invalid_args(
                         "--print has to be run where the projects are; ssh there and run it",
@@ -393,9 +391,9 @@ fn run(cli: Cli) -> Result<i32> {
         }
         Command::Attach { workspace } => {
             let config = Config::load(&config_path()?)?;
-            // On the work machine the session is right here; attaching
+            // On the Agent Node the session is right here; attaching
             // needs the workspace name and nothing else.
-            if work_side(&config, workspace).is_some() {
+            if agent_side(&config, workspace).is_some() {
                 return work::attach(&attach_request(workspace), &work_tools()?);
             }
             let resolved = config.workspace(workspace)?;
@@ -405,7 +403,7 @@ fn run(cli: Cli) -> Result<i32> {
             let config = Config::load(&config_path()?)?;
             // Same as attach: the sessions are on this machine, so
             // reporting on them needs the name and nothing else.
-            if work_side(&config, workspace).is_some() {
+            if agent_side(&config, workspace).is_some() {
                 let req = StatusRequest {
                     protocol: ccnm_core::protocol::payload::PROTOCOL,
                     workspace: (!*all).then(|| workspace.to_string()),
@@ -420,11 +418,11 @@ fn run(cli: Cli) -> Result<i32> {
         }
         Command::Result { workspace, session } => {
             let config = Config::load(&config_path()?)?;
-            // On the work machine the session's files are right here --
+            // On the Agent Node the session's files are right here --
             // stdout, stderr and the outcome were written by this
             // machine's own supervisor. Asking home for them would mean
             // ssh'ing there so it could ssh back to read local files.
-            if work_side(&config, workspace).is_some() {
+            if agent_side(&config, workspace).is_some() {
                 let req = ResultRequest {
                     protocol: ccnm_core::protocol::payload::PROTOCOL,
                     workspace: workspace.to_string(),
@@ -439,7 +437,7 @@ fn run(cli: Cli) -> Result<i32> {
         }
         Command::Stop { workspace } => {
             let config = Config::load(&config_path()?)?;
-            if work_side(&config, workspace).is_some() {
+            if agent_side(&config, workspace).is_some() {
                 let req = StopRequest {
                     protocol: ccnm_core::protocol::payload::PROTOCOL,
                     workspace: workspace.to_string(),
@@ -488,7 +486,7 @@ fn run(cli: Cli) -> Result<i32> {
                 ccnm_core::ErrorCode::Internal.exit_code()
             })
         }
-        Command::WorkController { command } => work_controller(command),
+        Command::Controller { command } => controller_command(command),
         Command::Internal { command } => match command {
             InternalCommand::Hello { payload } => {
                 let req: HelloRequest = payload::decode(payload)?;
@@ -499,7 +497,7 @@ fn run(cli: Cli) -> Result<i32> {
                 mcp::server::serve(&req)?;
                 Ok(0)
             }
-            InternalCommand::WorkController => {
+            InternalCommand::Controller => {
                 let socket = paths::controller_socket(&paths::state_dir()?);
                 let listener = controller::Listener::bind(&socket)?;
                 let tools = controller::Tools {
@@ -563,18 +561,18 @@ fn run(cli: Cli) -> Result<i32> {
 /// Everything else has a default. Running it again is not an error and
 /// not a rewrite: it reports what it changed, or that there was nothing
 /// to change.
-fn init(path: &std::path::Path, work: Option<&str>, home: &str) -> Result<i32> {
+fn init(path: &std::path::Path, agent: Option<&str>, runtime: &str) -> Result<i32> {
     let mut edit = configedit::Edit::open(path)?;
     let existed = edit.existed();
     let mut changes = configedit::Changes::default();
-    // Without --work this is the work machine's own config: how to reach
+    // Without --agent this is the Agent Node's own config: how to reach
     // the projects, and deliberately nothing else. The workspace list
     // lives on one machine, because two lists are two answers to "where
     // is this project".
-    if let Some(work) = work {
-        edit.set_host("work", "ssh", work, &mut changes);
+    if let Some(agent) = agent {
+        edit.set_node("agent", "ssh_from_runtime", agent, &mut changes);
     }
-    edit.set_host("home", "ssh_from_work", home, &mut changes);
+    edit.set_node("runtime", "ssh_from_agent", runtime, &mut changes);
     edit.save(&changes)?;
 
     if !existed {
@@ -585,8 +583,10 @@ fn init(path: &std::path::Path, work: Option<&str>, home: &str) -> Result<i32> {
         println!();
     }
     let config = Config::load(path)?;
-    if work.is_none() {
-        println!("this machine will ask {home} for a workspace it does not know");
+    if agent.is_none() {
+        println!(
+            "this Agent Node will ask Runtime Node {runtime} for a workspace it does not know"
+        );
         println!("next, from here:");
         println!("  ccnm <workspace>       start it there, attach here");
     } else if config.workspaces.is_empty() {
@@ -596,15 +596,15 @@ fn init(path: &std::path::Path, work: Option<&str>, home: &str) -> Result<i32> {
     // ssh has to work before anything else can; say so plainly rather than
     // testing it here, where a slow or absent network would turn `init`
     // into something that hangs.
-    match work {
-        Some(work) => {
+    match agent {
+        Some(agent) => {
             println!("\nboth of these must work without a password:");
-            println!("  ssh {work} true");
-            println!("  ssh {work} 'ssh {home} true'");
+            println!("  ssh {agent} true");
+            println!("  ssh {agent} 'ssh {runtime} true'");
         }
         None => {
             println!("\nthis must work without a password:");
-            println!("  ssh {home} true");
+            println!("  ssh {runtime} true");
         }
     }
     Ok(0)
@@ -648,7 +648,7 @@ fn workspace_command(path: &std::path::Path, command: &WorkspaceCommand) -> Resu
             edit.set_workspace(
                 &name,
                 &root,
-                "work",
+                "agent",
                 mode,
                 allow_unconfined_exec.then_some(true),
                 &mut changes,
@@ -658,7 +658,7 @@ fn workspace_command(path: &std::path::Path, command: &WorkspaceCommand) -> Resu
                     e
                 } else {
                     ccnm_core::Error::config(format!(
-                        "there is no config yet, so a workspace has nowhere to go\nrun this first: ccnm init --work <alias> --home <alias>\n({})",
+                        "there is no config yet, so a workspace has nowhere to go\nrun this first: ccnm init --agent <alias> --runtime <alias>\n({})",
                         e.message()
                     ))
                 }
@@ -705,7 +705,7 @@ fn remove_workspace(path: &std::path::Path, name: &str, purge: bool) -> Result<i
         match launcher::stop(&resolved, &home_env()?) {
             Ok(rep) if rep.killed => println!("stopped {}", rep.tmux_session),
             Ok(_) => {}
-            Err(e) => eprintln!("could not reach the work machine to stop it: {e}"),
+            Err(e) => eprintln!("could not reach the Agent Node to stop it: {e}"),
         }
         if purge {
             match launcher::purge(&resolved, &home_env()?) {
@@ -714,7 +714,7 @@ fn remove_workspace(path: &std::path::Path, name: &str, purge: bool) -> Result<i
                         println!("removed {line}");
                     }
                 }
-                Err(e) => eprintln!("could not clean up on the work machine: {e}"),
+                Err(e) => eprintln!("could not clean up on the Agent Node: {e}"),
             }
         }
     }
@@ -844,30 +844,30 @@ fn report_changes(changes: &configedit::Changes, path: &std::path::Path) {
 }
 
 /// The home alias to delegate to and that host's settings, when this
-/// machine is the work machine.
+/// machine is the Agent Node.
 ///
 /// The test is not "which machine am I" -- ccnm never tries to guess that
 /// -- but "does this config define the workspace being asked for". A home
 /// config does. A work config has no workspaces at all, only how to reach
-/// home, so a name it does not know plus a home to ask is exactly the
-/// work-side case. A home config with a typo'd workspace name still falls
-/// through to the normal error, because it has no `ssh_from_work` to
-/// single out.
-fn work_side<'a>(
+/// the Runtime Node, so a name it does not know plus a Runtime Node to ask
+/// is exactly the Agent-only case. A Runtime Node config with a typo'd
+/// workspace name still falls through to the normal error because it has
+/// `ssh_from_runtime` as well.
+fn agent_side<'a>(
     config: &'a Config,
     workspace: &str,
-) -> Option<(&'a str, &'a ccnm_core::config::Host)> {
+) -> Option<(&'a str, &'a ccnm_core::config::Node)> {
     if config.workspace(workspace).is_ok() {
         return None;
     }
-    config.home_from_work()
+    config.runtime_from_agent()
 }
 
 /// The line Claude opens with: typed here, or read from stdin.
 ///
-/// stdin exists because of the work machine. A prompt is free text, and
+/// stdin exists because of the Agent Node. A prompt is free text, and
 /// nothing that would need shell quoting is allowed on a remote command
-/// line (design doc section 8), so the work machine cannot put one in the
+/// line (design doc section 8), so the Agent Node cannot put one in the
 /// `ccnm run` it sends home -- it pipes the bytes down the same
 /// connection and passes `--prompt-stdin`. The flag is not hidden: piping
 /// a prompt in is just as useful by hand, and a heredoc keeps the
@@ -875,7 +875,7 @@ fn work_side<'a>(
 ///
 /// Empty input is refused rather than treated as "no prompt". An empty
 /// prompt looks exactly like the bug this replaced -- a sentence typed on
-/// the work machine, silently dropped, Claude opening with nothing -- and
+/// the Agent Node, silently dropped, Claude opening with nothing -- and
 /// the whole point is that that failure is now audible.
 fn opening_prompt(prompt: Option<&str>, from_stdin: bool) -> Result<Option<String>> {
     if !from_stdin {
@@ -919,7 +919,7 @@ fn home_env() -> Result<launcher::Env<'static>> {
     })
 }
 
-/// Give this terminal to the work machine's tmux and stay out of the way
+/// Give this terminal to the Agent Node's tmux and stay out of the way
 /// until it comes back.
 ///
 /// Not `exec`: when the person detaches or Claude ends, there is one more
@@ -935,7 +935,7 @@ fn attach(
     let code = captured.exit_code.unwrap_or(1);
     match launcher::status(resolved, env, false) {
         Ok(rep) if !rep.sessions.is_empty() => {
-            eprintln!("\nstill running on the work machine; back in with: ccnm attach {workspace}");
+            eprintln!("\nstill running on the Agent Node; back in with: ccnm attach {workspace}");
         }
         Ok(_) => eprintln!("\nthe session has ended"),
         // The session's own exit code is worth more than a failure to look
@@ -976,7 +976,7 @@ fn print_run_report(rep: &RunReport) -> Result<i32> {
 /// What `ccnm result` prints, from whichever machine asked.
 ///
 /// One function because the two machines get their report from different
-/// places -- home over ssh, the work machine off its own disk -- and the
+/// places -- home over ssh, the Agent Node off its own disk -- and the
 /// person reading it should not be able to tell which they are looking at.
 /// Two copies of this drifted apart the moment one of them was edited.
 ///
@@ -1002,13 +1002,13 @@ fn print_result_report(rep: &ccnm_core::protocol::run::ResultReport) -> Result<i
     Ok(0)
 }
 
-/// `ccnm work-controller ...`, run on the work machine.
+/// `ccnm controller ...`, run on the Agent Node.
 ///
 /// A controller that is running but not in a login session exits
 /// `CCNM_E_NOT_READY` rather than 0: it answers, so nothing is broken, but
 /// it cannot do the one job it exists for, and a green exit code there
 /// would be the same lie this whole component was built to stop telling.
-fn work_controller(command: &WorkControllerCommand) -> Result<i32> {
+fn controller_command(command: &ControllerCommand) -> Result<i32> {
     let state = paths::state_dir()?;
     let socket = paths::controller_socket(&state);
     let plan = || -> Result<launchagent::Plan> {
@@ -1021,7 +1021,7 @@ fn work_controller(command: &WorkControllerCommand) -> Result<i32> {
     };
 
     match command {
-        WorkControllerCommand::Install { dry_run } => {
+        ControllerCommand::Install { dry_run } => {
             let plan = plan()?;
             println!("{}", plan.describe());
             if *dry_run {
@@ -1032,13 +1032,13 @@ fn work_controller(command: &WorkControllerCommand) -> Result<i32> {
             println!("\nlistening: {}", ctx.describe());
             Ok(login_session_verdict(&ctx))
         }
-        WorkControllerCommand::Status => {
+        ControllerCommand::Status => {
             let ctx = controller::context(&socket)?;
             println!("{}", ctx.describe());
             println!("socket:    {}", socket.display());
             Ok(login_session_verdict(&ctx))
         }
-        WorkControllerCommand::Uninstall => {
+        ControllerCommand::Uninstall => {
             for line in launchagent::uninstall(&plan()?, &SystemRunner)? {
                 println!("{line}");
             }
@@ -1055,8 +1055,8 @@ fn login_session_verdict(ctx: &controller::Context) -> i32 {
         "\nthis controller is NOT in a login session ({}), so Claude started from it\n\
          would not be able to read its own credentials.\n\
          two ways that happens:\n\
-         - it was started by hand instead of by launchd: ccnm work-controller install\n\
-         - nobody is logged in on the work machine's screen; log in there once",
+         - it was started by hand instead of by launchd: ccnm controller install\n\
+         - nobody is logged in on the Agent Node's screen; log in there once",
         match &ctx.manager {
             Ok(name) => name.as_str(),
             Err(_) => "session unknown",

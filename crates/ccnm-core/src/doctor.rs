@@ -836,7 +836,7 @@ mod tests {
             let bin_dir = dir.join("home/.local/bin");
             std::fs::create_dir_all(&bin_dir).unwrap();
             let bin = bin_dir.join("ccnm");
-            std::fs::write(&bin, "#!/bin/sh\necho ccnm 0.1.0\n").unwrap();
+            std::fs::write(&bin, format!("#!/bin/sh\necho ccnm {}\n", crate::VERSION)).unwrap();
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
@@ -1062,7 +1062,7 @@ mod tests {
     fn an_unconfined_runtime_fails_the_exec_row_and_the_whole_report() {
         let (dir, config) = setup("unconfined", true, true);
         let fake = FakeRunner::new();
-        fake.push(Output::exited(0, "ccnm 0.1.0\n"));
+        fake.push(Output::exited(0, format!("ccnm {}\n", crate::VERSION)));
         fake.push(Output::exited(0, "hostname workmac\nuser me\n"));
         fake.push(Output::exited(
             0,
@@ -1137,7 +1137,7 @@ mod tests {
     fn everything_good_blocks_only_on_future_phases() {
         let (dir, config) = setup("good", true, true);
         let fake = FakeRunner::new();
-        fake.push(Output::exited(0, "ccnm 0.1.0\n"));
+        fake.push(Output::exited(0, format!("ccnm {}\n", crate::VERSION)));
         fake.push(Output::exited(0, "hostname workmac\nuser me\n"));
         fake.push(Output::exited(
             0,
@@ -1173,7 +1173,11 @@ mod tests {
         );
         assert_eq!(
             row(&report, "Home ccnm").detail,
-            format!("0.1.0 at {}", dir.join("home/.local/bin/ccnm").display())
+            format!(
+                "{} at {}",
+                crate::VERSION,
+                dir.join("home/.local/bin/ccnm").display()
+            )
         );
         assert_eq!(row(&report, "Work SSH").detail, "me@workmac");
         assert_eq!(
@@ -1242,7 +1246,7 @@ mod tests {
             m.calls = 3;
         }
         let fake = FakeRunner::new();
-        fake.push(Output::exited(0, "ccnm 0.1.0\n"));
+        fake.push(Output::exited(0, format!("ccnm {}\n", crate::VERSION)));
         fake.push(Output::exited(0, "hostname workmac\n"));
         fake.push(Output::exited(0, serde_json::to_string(&probe).unwrap()));
         let report = run(&config, Some("xshun"), &env(&fake, &dir));
@@ -1259,7 +1263,7 @@ mod tests {
     fn unreachable_work_fails_once_and_skips_the_rest() {
         let (dir, config) = setup("unreachable", true, true);
         let fake = FakeRunner::new();
-        fake.push(Output::exited(0, "ccnm 0.1.0\n"));
+        fake.push(Output::exited(0, format!("ccnm {}\n", crate::VERSION)));
         fake.push(Output::exited(0, "hostname workmac\n"));
         let mut down = Output::exited(255, "");
         down.stderr = b"ssh: connect to host workmac port 22: Operation timed out\n".to_vec();
@@ -1295,7 +1299,7 @@ mod tests {
         probe.home_hello = Ok(hello("ccrun", crate::VERSION, Some(false)));
 
         let fake = FakeRunner::new();
-        fake.push(Output::exited(0, "ccnm 0.1.0\n"));
+        fake.push(Output::exited(0, format!("ccnm {}\n", crate::VERSION)));
         fake.push(Output::exited(0, "hostname workmac\n"));
         fake.push(Output::exited(0, serde_json::to_string(&probe).unwrap()));
 
@@ -1341,7 +1345,7 @@ mod tests {
         ));
 
         let fake = FakeRunner::new();
-        fake.push(Output::exited(0, "ccnm 0.1.0\n"));
+        fake.push(Output::exited(0, format!("ccnm {}\n", crate::VERSION)));
         fake.push(Output::exited(0, "hostname workmac\n"));
         fake.push(Output::exited(0, serde_json::to_string(&probe).unwrap()));
 
@@ -1370,7 +1374,7 @@ mod tests {
         probe.controller = Some(Ok(controller("Background")));
 
         let fake = FakeRunner::new();
-        fake.push(Output::exited(0, "ccnm 0.1.0\n"));
+        fake.push(Output::exited(0, format!("ccnm {}\n", crate::VERSION)));
         fake.push(Output::exited(0, "hostname workmac\n"));
         fake.push(Output::exited(0, serde_json::to_string(&probe).unwrap()));
 
@@ -1406,7 +1410,7 @@ mod tests {
         });
 
         let fake = FakeRunner::new();
-        fake.push(Output::exited(0, "ccnm 0.1.0\n"));
+        fake.push(Output::exited(0, format!("ccnm {}\n", crate::VERSION)));
         fake.push(Output::exited(0, "hostname workmac\n"));
         fake.push(Output::exited(0, serde_json::to_string(&probe).unwrap()));
 
@@ -1436,7 +1440,7 @@ mod tests {
         probe.controller = Some(Ok(controller("Background")));
 
         let fake = FakeRunner::new();
-        fake.push(Output::exited(0, "ccnm 0.1.0\n"));
+        fake.push(Output::exited(0, format!("ccnm {}\n", crate::VERSION)));
         fake.push(Output::exited(0, "hostname workmac\n"));
         fake.push(Output::exited(0, serde_json::to_string(&probe).unwrap()));
 
@@ -1453,7 +1457,7 @@ mod tests {
             "ssh ccnm-home: Permission denied (publickey)",
         ));
         let fake = FakeRunner::new();
-        fake.push(Output::exited(0, "ccnm 0.1.0\n"));
+        fake.push(Output::exited(0, format!("ccnm {}\n", crate::VERSION)));
         fake.push(Output::exited(0, "hostname workmac\n"));
         fake.push(Output::exited(0, serde_json::to_string(&probe).unwrap()));
 
@@ -1507,7 +1511,7 @@ mod tests {
     fn missing_root_is_wrong_workspace() {
         let (dir, config) = setup("no-root", false, true);
         let fake = FakeRunner::new();
-        fake.push(Output::exited(0, "ccnm 0.1.0\n"));
+        fake.push(Output::exited(0, format!("ccnm {}\n", crate::VERSION)));
         fake.push(Output::exited(0, "hostname workmac\n"));
         let report = run(&config, Some("xshun"), &env(&fake, &dir));
         assert_eq!(report.blocking_code(), Some(ErrorCode::WrongWorkspace));
@@ -1522,7 +1526,7 @@ mod tests {
     fn unresolvable_work_alias_is_work_unreachable() {
         let (dir, config) = setup("bad-alias", true, true);
         let fake = FakeRunner::new();
-        fake.push(Output::exited(0, "ccnm 0.1.0\n"));
+        fake.push(Output::exited(0, format!("ccnm {}\n", crate::VERSION)));
         let mut failed = Output::exited(255, "");
         failed.stderr = b"work: Name or service not known\n".to_vec();
         fake.push(failed);

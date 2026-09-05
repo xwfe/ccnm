@@ -1237,7 +1237,7 @@ fn supervise_runs_the_session_and_writes_its_exit_record() {
         mode: Mode::Print {
             prompt: "say ok".into(),
         },
-        timeout_secs: 10,
+        timeout_secs: 60,
         cwd: dir.clone(),
     };
     let ssh = ccnm_core::ssh::Ssh::new("ccnm-home", "/tmp/ccnm-t/cli-sup").unwrap();
@@ -1264,9 +1264,15 @@ fn supervise_runs_the_session_and_writes_its_exit_record() {
         std::fs::read_to_string(dir.join("prompt-seen")).unwrap(),
         "say ok"
     );
+    // The prompt is written and stdin is then *closed*. Left open, the
+    // stand-in's `cat` would block until the supervisor's own kill, so
+    // the gap between an honest run and a hang is the whole 60 s below.
+    // The bound is 10 s and not 5: at 5 it failed on a machine that was
+    // running a mutation sweep at the same time, which says nothing
+    // about stdin and is exactly the kind of red that gets ignored.
     assert!(
-        outcome.duration_ms < 5000,
-        "claude must not have waited for a stdin timeout: {} ms",
+        outcome.duration_ms < 10_000,
+        "claude must not have waited for a stdin that was never closed: {} ms",
         outcome.duration_ms
     );
 }

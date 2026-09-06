@@ -37,7 +37,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::claude;
-use crate::config::{Backend, Config, Resolved};
+use crate::config::{Backend, Config, Resolved, Topology};
 use crate::error::{Error, ErrorCode, ErrorReport};
 use crate::mcp::context;
 use crate::paths;
@@ -294,15 +294,35 @@ fn workspace_checks(r: &Resolved<'_>, env: &Env<'_>) -> Vec<Check> {
         )];
     }
 
-    let mut checks = vec![
-        runtime_workspace(&ws.root),
-        project_instructions(r),
-        runtime_ccnm(r, env),
-    ];
-    // Before anything that needs the network: this is an audit of the
-    // local account, and it is exactly as true when the Agent Node is
-    // unreachable.
-    checks.extend(runtime_safety_rows(env, r));
+    // The local half of the report is only about this machine, so it is
+    // only run when this machine is the one holding the project. In the
+    // other two topologies the project, its CLAUDE.md, the ccnm that
+    // serves it and the account it runs as are all on the far side, and
+    // the probe reports them from there. Auditing this machine's account
+    // instead would answer a question nobody asked, and answer it FAIL.
+    let mut checks = Vec::new();
+    if r.topology() == Topology::FromRuntime {
+        checks.push(runtime_workspace(&ws.root));
+        checks.push(project_instructions(r));
+        checks.push(runtime_ccnm(r, env));
+        // Before anything that needs the network: this is an audit of the
+        // local account, and it is exactly as true when the Agent Node is
+        // unreachable.
+        checks.extend(runtime_safety_rows(env, r));
+    } else {
+        let why = format!(
+            "the project is on {}, not on this machine",
+            ws.runtime_node
+        );
+        for name in [
+            "Runtime workspace",
+            "Project instructions",
+            "Runtime ccnm",
+            "Runtime user",
+        ] {
+            checks.push(Check::skip(name, &why));
+        }
+    }
 
     let ssh = match r.agent_ssh().and_then(|alias| {
         let ssh = Ssh::new(alias, &env.control_dir)?;

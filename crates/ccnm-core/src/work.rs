@@ -1738,6 +1738,90 @@ mod tests {
         assert!(text.contains("/mcp -> ccnm -> Reconnect"), "{text}");
     }
 
+    /// `runtime -> agent`: the workspace names this machine as its own
+    /// Runtime Node, so there is nothing to dial and Claude works the
+    /// project in front of it.
+    ///
+    /// The two files are the whole difference. No mcp.json, because a
+    /// transport here would point at this same machine; and no deny list,
+    /// because the native tools are the only ones that can touch a project
+    /// no MCP server is serving. Getting either wrong gives a session that
+    /// starts fine and cannot read a file.
+    #[test]
+    fn a_colocated_session_gets_no_transport_and_keeps_its_native_tools() {
+        let dir = temp("colocated");
+        let socket = PathBuf::from(format!("/tmp/ccnm-colo-{}.sock", std::process::id()));
+        let _ = std::fs::remove_file(&socket);
+        let sessions = dir.join("sessions");
+        let supervisor = dir.join("fake-supervisor");
+        std::fs::write(
+            &supervisor,
+            format!(
+                "#!/bin/sh\nfor s in {sessions}/*/; do\n  printf '{{\"is_error\":false,\"result\":\"done\",\"num_turns\":1}}' > \"$s/stdout\"\n  : > \"$s/stderr\"\n  printf '{{\"exit_code\":0,\"timed_out\":false,\"duration_ms\":7}}' > \"$s/exit.tmp\"\n  mv \"$s/exit.tmp\" \"$s/exit\"\ndone\n",
+                sessions = sessions.display(),
+            ),
+        )
+        .unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&supervisor, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        let listener = crate::controller::Listener::bind(&socket).unwrap();
+        let served = std::thread::spawn(move || {
+            let inner = FakeRunner::new();
+            inner.push(Output::exited(0, "Aqua\n"));
+            let tools = crate::controller::Tools {
+                runner: &inner,
+                claude: Some(PathBuf::from("/opt/homebrew/bin/claude")),
+                tmux: None,
+                exe: supervisor,
+            };
+            listener.serve_one(&tools).unwrap(); // hello
+            listener.serve_one(&tools).unwrap(); // start
+        });
+
+        // No reverse ssh is scripted, and none may be attempted: an empty
+        // FakeRunner panics on the first call it did not expect.
+        let caller = FakeRunner::new();
+        let tools = Tools {
+            config: colocated_config(),
+            runner: &caller,
+            state: dir.clone(),
+            control_dir: control(&dir),
+            claude: None,
+            tmux: None,
+            controller: socket,
+        };
+        let mut req = run_request("do the thing");
+        req.runtime_node = "agent".into(); // this node is also the project's
+        let rep = run(&req, &tools).unwrap();
+        served.join().unwrap();
+
+        assert!(rep.outcome.ok(), "{:?}", rep.outcome);
+        assert!(
+            caller.calls().is_empty(),
+            "a colocated session dials nothing: {:?}",
+            caller.calls().iter().map(Cmd::display).collect::<Vec<_>>()
+        );
+
+        let session_dir = crate::session::Dir::at(&rep.session_dir);
+        let spec = crate::session::load(&session_dir).unwrap();
+        assert_eq!(spec.runtime, None, "nothing to dial, so nothing recorded");
+        assert!(
+            !session_dir.mcp_config().exists(),
+            "an MCP config here would point a transport at this same machine"
+        );
+
+        let settings: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(session_dir.settings()).unwrap()).unwrap();
+        assert_eq!(
+            settings["permissions"].get("deny"),
+            None,
+            "denying the native tools would leave Claude nothing to work the project with"
+        );
+    }
+
     #[test]
     fn run_refuses_without_a_controller_and_creates_nothing() {
         let dir = temp("run-none");

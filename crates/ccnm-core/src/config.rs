@@ -687,6 +687,84 @@ mod tests {
         assert_eq!(alias(&two), None);
     }
 
+    /// The three shapes ccnm supports, told apart by what the config says
+    /// rather than by what the machine looks like.
+    #[test]
+    fn the_three_topologies_are_told_apart_by_this_and_the_two_roles() {
+        let topo = |text: &str| {
+            Config::parse(text)
+                .unwrap()
+                .workspace("x")
+                .unwrap()
+                .topology()
+        };
+
+        // runtime -> agent -> runtime: the projects are here, Claude is
+        // over there, and the tools come back.
+        assert_eq!(
+            topo(
+                "this = \"runtime\"\n[nodes.agent]\nssh = \"a\"\n[nodes.runtime]\n\
+                 [workspaces.x]\nagent_node = \"agent\"\nroot = \"/p\"\n"
+            ),
+            Topology::FromRuntime
+        );
+
+        // agent -> runtime: this machine runs Claude but does not define
+        // the workspace, so the launch is delegated and comes back.
+        assert_eq!(
+            topo(
+                "this = \"agent\"\n[nodes.agent]\n[nodes.runtime]\nssh = \"r\"\n\
+                 [workspaces.x]\nagent_node = \"agent\"\nroot = \"/p\"\n"
+            ),
+            Topology::FromAgent
+        );
+
+        // runtime -> agent: one machine has both Claude and the project,
+        // and this one is only launching. Nothing dials back.
+        let colocated = Config::parse(
+            "this = \"here\"\n[nodes.here]\n[nodes.box]\nssh = \"b\"\n\
+             [workspaces.x]\nagent_node = \"box\"\nruntime_node = \"box\"\nroot = \"/p\"\n",
+        )
+        .unwrap();
+        let r = colocated.workspace("x").unwrap();
+        assert_eq!(r.topology(), Topology::Colocated);
+        assert!(r.is_colocated());
+        assert_eq!(r.agent_ssh().unwrap(), "b");
+    }
+
+    /// A node only needs an alias when it is somewhere else. Both roles on
+    /// the machine reading the file is one alias fewer, not an error.
+    #[test]
+    fn a_workspace_whose_nodes_are_this_machine_needs_no_alias() {
+        let config = Config::parse(
+            "this = \"solo\"\n[nodes.solo]\n\
+             [workspaces.x]\nagent_node = \"solo\"\nruntime_node = \"solo\"\nroot = \"/p\"\n",
+        )
+        .unwrap();
+        let r = config.workspace("x").unwrap();
+        assert_eq!(r.topology(), Topology::Colocated);
+        // Nothing to dial, and the error says so rather than blaming the
+        // config for a missing field it must not have.
+        let err = r.agent_ssh().unwrap_err();
+        assert!(err.message().contains("this node"), "{err}");
+    }
+
+    /// `this` names the one node that does not get an alias, so an alias
+    /// on it means the file was written from somebody else's point of view.
+    #[test]
+    fn the_node_this_machine_is_must_not_carry_an_ssh_alias() {
+        let err = parse_err("this = \"a\"\n[nodes.a]\nssh = \"itself\"\n");
+        assert!(err.message().contains("does not ssh to itself"), "{err}");
+    }
+
+    /// Delegating to yourself is a request that leaves and comes straight
+    /// back. Caught in the file, not at 2 a.m. over ssh.
+    #[test]
+    fn delegating_to_this_node_is_a_config_error() {
+        let err = parse_err("this = \"a\"\nruntime_node = \"a\"\n[nodes.a]\n");
+        assert!(err.message().contains("is this node"), "{err}");
+    }
+
     /// The host comes back with the alias, because `ccnm_bin` is on it.
     /// A Agent Node whose home keeps ccnm somewhere other than the
     /// default is a supported, documented config; a caller handed only the

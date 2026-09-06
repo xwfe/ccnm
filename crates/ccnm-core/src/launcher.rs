@@ -4,7 +4,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use crate::config::Resolved;
+use crate::config::{Resolved, Topology};
 use crate::error::{Error, ErrorCode, Result};
 use crate::mcp;
 use crate::process::{Cmd, ProcessRunner};
@@ -31,16 +31,8 @@ pub fn run_print(
     prompt: &str,
     timeout: Duration,
 ) -> Result<RunReport> {
+    check_local_root(resolved)?;
     let root = &resolved.workspace.root;
-    if !root.is_dir() {
-        return Err(Error::new(
-            ErrorCode::WrongWorkspace,
-            format!(
-                "workspace root {} is not a directory on this machine, and this machine is the runtime host",
-                root.display()
-            ),
-        ));
-    }
     let ssh = Ssh::new(resolved.agent_ssh()?, &env.control_dir)?
         .with_ccnm_bin(resolved.agent.ccnm_bin());
     ssh.check_control_path()?;
@@ -297,18 +289,35 @@ pub fn status(resolved: &Resolved<'_>, env: &Env<'_>, all: bool) -> Result<Statu
     )
 }
 
-/// The ssh to the Agent Node, with the project checked here first.
-fn agent_ssh(resolved: &Resolved<'_>, env: &Env<'_>) -> Result<Ssh> {
+/// Refuse before the network when the project is not where this machine
+/// is supposed to be keeping it.
+///
+/// Only when this machine is the Runtime Node. In the other two
+/// topologies the project is on the far side -- the agent's own disk when
+/// the two roles are colocated, or another machine entirely when this one
+/// is only launching -- and checking a path here would reject a workspace
+/// that is perfectly fine, on evidence this machine does not have.
+fn check_local_root(resolved: &Resolved<'_>) -> Result<()> {
+    if resolved.topology() != Topology::FromRuntime {
+        return Ok(());
+    }
     let root = &resolved.workspace.root;
     if !root.is_dir() {
         return Err(Error::new(
             ErrorCode::WrongWorkspace,
             format!(
-                "workspace root {} is not a directory on this machine, and this machine is the runtime host",
-                root.display()
+                "workspace root {} is not a directory on this machine, which is the Runtime Node for '{}'",
+                root.display(),
+                resolved.name
             ),
         ));
     }
+    Ok(())
+}
+
+/// The ssh to the Agent Node, with the project checked here first.
+fn agent_ssh(resolved: &Resolved<'_>, env: &Env<'_>) -> Result<Ssh> {
+    check_local_root(resolved)?;
     let ssh = Ssh::new(resolved.agent_ssh()?, &env.control_dir)?
         .with_ccnm_bin(resolved.agent.ccnm_bin());
     ssh.check_control_path()?;

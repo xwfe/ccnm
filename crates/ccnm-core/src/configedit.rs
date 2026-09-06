@@ -93,7 +93,11 @@ impl Edit {
     /// Written before the `[nodes.*]` tables so it reads as the heading it
     /// is: every alias below is dialled from here.
     pub fn set_this(&mut self, node: &str, changes: &mut Changes) {
-        let before = self.doc.get("this").and_then(Item::as_str).map(str::to_string);
+        let before = self
+            .doc
+            .get("this")
+            .and_then(Item::as_str)
+            .map(str::to_string);
         match before {
             Some(current) if current == node => {}
             Some(current) => {
@@ -129,8 +133,9 @@ impl Edit {
             None => {
                 self.doc["runtime_node"] = value(node);
                 if let Some((mut key, _)) = self.doc.get_key_value_mut("runtime_node") {
-                    key.leaf_decor_mut()
-                        .set_prefix("# No workspace list here; ask this node about any workspace.\n");
+                    key.leaf_decor_mut().set_prefix(
+                        "# No workspace list here; ask this node about any workspace.\n",
+                    );
                 }
                 changes.note(format!("runtime_node = {node}"));
             }
@@ -430,10 +435,7 @@ mod tests {
         edit.set_this("runtime", &mut changes);
         edit.ensure_node("runtime", &mut changes);
         edit.set_node("agent", "ssh", "new-alias", &mut changes);
-        assert_eq!(
-            changes.lines(),
-            ["nodes.agent.ssh: old-alias -> new-alias"]
-        );
+        assert_eq!(changes.lines(), ["nodes.agent.ssh: old-alias -> new-alias"]);
     }
 
     #[test]

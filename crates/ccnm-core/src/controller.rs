@@ -661,9 +661,9 @@ fn not_listening(path: &Path, err: &std::io::Error) -> Error {
 
 #[cfg(test)]
 mod tests {
-    use crate::session::RuntimeLink;
     use super::*;
     use crate::process::{FakeRunner, Output};
+    use crate::session::RuntimeLink;
     use std::thread;
 
     /// Socket paths are length-limited, so tests stay under /tmp rather

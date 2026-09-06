@@ -1,6 +1,30 @@
 # ccnm — Terminal-native Claude Remote Workspace
 
-> **Terminology note (pre-release):** current public docs use **Node + Agent / Runtime / Controller roles**. Older sections below record experiments using the former “work/home machine” names; those names are historical, not the current config/API model. See `docs/architecture.md`.
+> **这份文档是设计记录，不是使用文档。** 它保留每个决定当时的原因和实测数据，
+> 用的是当时的名字。**要照着做，请看 `docs/`**，那边是唯一准确的：
+>
+> | 想知道什么 | 看哪儿 |
+> |---|---|
+> | 配置文件怎么写 | [`docs/configuration.md`](docs/configuration.md) |
+> | 三种拓扑、角色模型 | [`docs/architecture.md`](docs/architecture.md) |
+> | 从零跑起来 | [`docs/getting-started.md`](docs/getting-started.md) |
+> | 报错了怎么办 | [`docs/troubleshooting.md`](docs/troubleshooting.md) |
+>
+> 下面这些已经**过时**，照抄会被 strict 解析直接拒掉：
+>
+> ```text
+> 第 5 节的配置示例      [hosts.*] / work_host / ssh / ssh_from_work
+> 现在的写法             [nodes.*] / agent_node / this / 每个 node 一个 ssh
+>
+> work machine           现在叫 Agent Node
+> home machine           现在叫 Runtime Node
+> CCNM_E_WORK_UNREACHABLE / CCNM_E_HOME_UNREACHABLE
+>                        现在叫 CCNM_E_AGENT_UNREACHABLE / CCNM_E_RUNTIME_UNREACHABLE
+> ccnm internal work-run / work-start / ...
+>                        现在叫 agent-run / agent-start / ...
+> ```
+>
+> 代码注释里的 "design doc section N" 指的是本文档的章节号，那些编号仍然有效。
 
 
 ```text

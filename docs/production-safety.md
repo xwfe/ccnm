@@ -134,7 +134,7 @@ sudo chmod 600 /Users/ccrun/.ssh/authorized_keys
 
 不要在 `/Users/ccrun/.ssh/` 放任何私钥，也不要把个人 SSH agent 转发给它。
 
-在 Agent Node 的 `~/.ssh/config` 中，让 `nodes.runtime.ssh_from_agent` 对应的 alias 使用 `ccrun`：
+在 Agent Node 的 `~/.ssh/config` 中，让 `nodes.runtime.ssh` 对应的 alias 使用 `ccrun`：
 
 ```sshconfig
 Host runtime-ssh-alias
@@ -204,8 +204,14 @@ Runtime Node 的 ccnm 配置：
 
 ```toml
 [nodes.runtime]
-ssh_from_agent = "runtime-ssh-alias"
 runtime_user = "ccrun"
+```
+
+Agent Node 那份则是它自己怎么连过来：
+
+```toml
+[nodes.runtime]
+ssh = "runtime-ssh-alias"
 ```
 
 真实项目应移除 dogfood bypass：

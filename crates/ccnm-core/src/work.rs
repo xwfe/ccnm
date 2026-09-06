@@ -343,10 +343,7 @@ fn greet(ssh: &Ssh, workspace: &str, root: &Path, tools: &Tools<'_>) -> Result<(
 /// afterwards would mean somebody's Claude was ended and not replaced,
 /// for a reason -- a link that blinked, a version that does not match --
 /// that has nothing to do with the session they just lost.
-fn preflight(
-    req: &StartRequest,
-    tools: &Tools<'_>,
-) -> Result<(controller::Context, Option<Ssh>)> {
+fn preflight(req: &StartRequest, tools: &Tools<'_>) -> Result<(controller::Context, Option<Ssh>)> {
     let ctx = controller::context(&tools.controller)?;
     if !ctx.login_session() {
         return Err(Error::new(
@@ -733,13 +730,14 @@ pub fn probe(req: &ProbeRequest, tools: &Tools<'_>) -> ProbeReport {
             {
                 Err(e) => (
                     Some(Err(e.into())),
-                    Some(
-                        Err(Error::new(
-                            ErrorCode::RuntimeUnreachable,
-                            format!("not attempted: the alias for {} is invalid", req.runtime_node),
-                        )
-                        .into()),
-                    ),
+                    Some(Err(Error::new(
+                        ErrorCode::RuntimeUnreachable,
+                        format!(
+                            "not attempted: the alias for {} is invalid",
+                            req.runtime_node
+                        ),
+                    )
+                    .into())),
                     None,
                 ),
                 Ok(ssh) => {
@@ -957,7 +955,10 @@ mod tests {
         let rep = probe(&request(), &tools);
 
         assert_eq!(rep.hello.ccnm_version, crate::VERSION);
-        assert_eq!(rep.runtime_ssh.as_ref().unwrap().as_ref().unwrap().target(), "ccrun@home.ts");
+        assert_eq!(
+            rep.runtime_ssh.as_ref().unwrap().as_ref().unwrap().target(),
+            "ccrun@home.ts"
+        );
         let home = rep.runtime_hello.as_ref().unwrap().as_ref().unwrap();
         assert_eq!(home.user, "ccrun");
         assert!(home.root.unwrap().is_ok());

@@ -249,10 +249,7 @@ pub fn run(config_path: &Path, workspace: Option<&str>, env: &Env<'_>) -> Report
         }
         Some(name) => match config.workspace(name) {
             Ok(resolved) => {
-                checks.push(Check::ok(
-                    "Workspace config",
-                    describe_workspace(&resolved),
-                ));
+                checks.push(Check::ok("Workspace config", describe_workspace(&resolved)));
                 checks.extend(workspace_checks(&resolved, env));
             }
             Err(err) => checks.push(Check::fail("Workspace config", &err)),
@@ -310,10 +307,7 @@ fn workspace_checks(r: &Resolved<'_>, env: &Env<'_>) -> Vec<Check> {
         // unreachable.
         checks.extend(runtime_safety_rows(env, r));
     } else {
-        let why = format!(
-            "the project is on {}, not on this machine",
-            ws.runtime_node
-        );
+        let why = format!("the project is on {}, not on this machine", ws.runtime_node);
         for name in [
             "Runtime workspace",
             "Project instructions",

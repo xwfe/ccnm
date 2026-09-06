@@ -38,7 +38,7 @@ Runtime Node                              Agent Node
 └────────────────────────┘                └─────────────────────────┘
 ```
 
-更完整的单机、双机和未来多 Agent 拓扑见 [架构说明](docs/architecture.md)。
+三种支持的拓扑（含 Claude 与项目同机、不走 MCP 的那种）见 [架构说明](docs/architecture.md)。
 
 ## 快速开始
 
@@ -47,7 +47,7 @@ Runtime Node                              Agent Node
 在 **Runtime Node**：
 
 ```bash
-ccnm init --agent agent-ssh-alias --runtime runtime-ssh-alias
+ccnm init --agent agent-ssh-alias
 cd /path/to/project
 ccnm workspace add my-project
 ```

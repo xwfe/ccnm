@@ -87,9 +87,13 @@ Runtime Node                                  Agent Node
 - ccnm 只消费已有 OpenSSH alias，不接管 Tailscale/VPN/Tunnel；
 - 项目工具自然运行在真正拥有 toolchain 的机器上。
 
-## 当前一次启动的真实路径
+## 支持的三种拓扑
 
-从 Runtime Node 发起：
+拓扑由配置决定，不靠探测机器。判据只有两个：`this`（我是哪个 node）和 workspace 的 `agent_node` / `runtime_node`。
+
+### 1. `runtime -> agent -> runtime`
+
+项目在我这台，Claude 在那台，工具调用再回到我这台。这是主线。
 
 ```text
 Runtime Node
@@ -107,35 +111,37 @@ Runtime Node
     └─ 当前终端 attach 到 Agent session
 ```
 
-从 Agent Node 发起时，Agent-only config 故意不保存 workspace 列表，所以会先把用户级启动命令委托给 Runtime Node，再走同一条完整路径。
+### 2. `agent -> runtime`
 
-多这一跳的目的是避免出现第二份 workspace root 配置。
+坐在跑 Claude 的那台机器上发起。它不存 workspace 列表（顶层 `runtime_node` 就是这个意思），所以先把启动命令委托给 Runtime Node，再走上面那条完整路径，最后在本地 attach。
 
-## 一个 Node 可以承担多个角色
+多这一跳是为了避免出现第二份 workspace root 配置。两份列表就是两个"这个项目在哪"的答案，其中一份迟早过期，然后某个会话绑到一个已经搬走的目录上。
 
-角色模型不要求永远是“两台机器”。
+### 3. `runtime -> agent`
 
-### 单 Node
-
-```text
-[Agent + Runtime + Controller]
-```
-
-适合全部能力都在同一台机器的情况。
-
-### 当前双 Node
+**Claude 和项目在同一台机器上**，我只是从别处把会话拉起来、attach 上去。workspace 里 `agent_node` 和 `runtime_node` 是同一个 node 就是这种。
 
 ```text
-[Runtime] <────> [Agent + Controller]
+这台（只负责发起）──── SSH ────> devbox
+                                 ├─ Controller
+                                 ├─ Claude Code / tmux
+                                 └─ 项目就在本地磁盘
 ```
 
-适合项目和 AI 登录环境分离。
+这条路径**不建 MCP 通道**，Claude 直接用自己的原生工具（Read/Edit/Write/Grep/Glob/Bash）读写眼前的项目。
 
-### 家庭服务器作为 Runtime
+具体差别就两个文件：不写 `mcp.json`，`settings.json` 里也不 deny 原生工具。**这两条都不能搞错**——deny 列表存在的意义是"项目在另一台机器上时，别让模型碰到本机磁盘"；项目就在本机时它只会碍事，结果是一个能启动但读不了任何文件的会话。
 
-```text
-[NAS / Mac mini: Runtime] <────> [云端或远端 Agent + Controller]
-```
+### 为什么不是"单 Node"
+
+早先的文档写过一个"Agent + Runtime + Controller 全在一台机器"的单 Node 形态。**那个形态跑不起来**，而且不是实现没跟上，是自相矛盾：
+
+- Agent Node 必须持有 Claude 凭证，否则没法登录；
+- Runtime Node 绝不能持有 Claude 凭证（第 [生产安全](production-safety.md) 节），否则它就成了 Anthropic 出口。
+
+同一台机器同时被当成两个 node 来审计，doctor 会因为"它是它自己"给出 6 条无法修复的 FAIL。
+
+第 3 种拓扑解决的正是这个需求，做法是**不把那台机器当成 Runtime Node 来审计**：它只承担 agent 角色，项目恰好也在那儿，不启用 MCP runtime，也就没有"runtime 必须隔离"这套要求。想要"就在一台装了 Claude 的电脑上干活"，用这个。
 
 ### 未来多 Agent
 
@@ -145,7 +151,7 @@ Agent B ─┼── coordination ──> Runtime Node(s)
 Agent C ─┘
 ```
 
-多 Agent 编排目前还没有实现。现在只是保证底层概念不会再次被 `home/work` 这种物理位置命名限制住。
+多 Agent 编排还没有实现。现在只是保证底层概念不会再次被 `home/work` 这种物理位置命名限制住。
 
 ## 信任边界
 

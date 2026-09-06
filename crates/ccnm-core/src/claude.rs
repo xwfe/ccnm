@@ -271,7 +271,7 @@ pub fn launch_cmd(bin: &Path, spec: &Spec, dir: &Dir) -> Cmd {
 }
 
 /// Token counts as `claude -p --output-format json` reports them. Real
-/// numbers from the API, not an estimate (design doc section 36).
+/// numbers from the API, not an estimate.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Usage {
     #[serde(default)]
@@ -377,8 +377,8 @@ pub fn parse_auth(out: &Output) -> Result<AuthStatus> {
 
 #[cfg(test)]
 mod tests {
-    use crate::session::RuntimeLink;
     use super::*;
+    use crate::session::RuntimeLink;
 
     #[test]
     fn commands_carry_config_dir_only_when_set() {

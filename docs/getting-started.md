@@ -41,10 +41,25 @@ ssh runtime-ssh-alias true
 ## 2. 初始化 Runtime Node
 
 ```bash
-ccnm init --agent agent-ssh-alias --runtime runtime-ssh-alias
+ccnm init --agent agent-ssh-alias
 cd /path/to/project
 ccnm workspace add my-project
 ```
+
+**两台机器各初始化一次，每次只给一个 alias。** 给哪个 flag 同时说明了这台机器是谁：在放项目的机器上给 `--agent`，在跑 Claude 的机器上给 `--runtime`。两个一起给会被拒绝。
+
+写出来的文件长这样：
+
+```toml
+this = "runtime"          # 我是 runtime 这个 node
+
+[nodes.runtime]           # 我自己，不需要 ssh
+
+[nodes.agent]
+ssh = "agent-ssh-alias"   # 从我这里连 agent，用这个 alias
+```
+
+`ssh` 永远是"**从读这个文件的机器出发**连那个 node 的 alias"。两台机器各写各的，因为 alias 只在定义它的那台机器的 `~/.ssh/config` 里有意义——你家里管工作机叫 `work`，工作机管你家里叫 `home`，没有一个全局名字。
 
 Runtime Node 是 workspace root 的唯一事实来源。不要在 Agent Node 再维护一份 workspace 列表。
 
@@ -55,6 +70,20 @@ ccnm init --runtime runtime-ssh-alias
 ccnm controller install
 ccnm controller status
 ```
+
+这边写出来的多一行：
+
+```toml
+this = "agent"
+runtime_node = "runtime"  # 我不存 workspace 列表，问这个 node
+
+[nodes.agent]
+
+[nodes.runtime]
+ssh = "runtime-ssh-alias"
+```
+
+`runtime_node` 这行不能省。**没有它，一台刚 init 完、还没加过项目的 Runtime Node，和一台 Agent Node 的配置文件长得一模一样**——ccnm 分不出来，就会把请求转给对方，对方再转回来。
 
 Controller 在 macOS 上通过 LaunchAgent 跑在 GUI 登录会话里。这样即使请求最初来自 SSH，官方 Claude Code 进程仍然能使用正常登录会话中的 Keychain / OAuth 上下文。
 

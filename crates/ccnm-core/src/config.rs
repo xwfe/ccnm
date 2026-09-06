@@ -333,7 +333,7 @@ impl Config {
         let text = std::fs::read_to_string(path).map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
                 Error::config(format!(
-                    "config not found: {}\ncreate it by hand for now (design doc section 5)",
+                    "config not found: {}\nwrite it with one command, on the machine you are on:\n  ccnm init --agent <alias>      here are the projects, that is where Claude runs\n  ccnm init --runtime <alias>    here runs Claude, that is where the projects are",
                     path.display()
                 ))
             } else {
@@ -445,18 +445,21 @@ impl Config {
         // prevent.
         if let Some(name) = &self.runtime_node {
             if Some(name.as_str()) == self.this.as_deref() {
+                // One problem, not two: a node that is this machine is not
+                // also missing an alias, it must not have one.
                 problems.push(format!(
                     "runtime_node = \"{name}\" is this node, so it says to ask this machine about workspaces it does not have\nset it to the node that keeps the workspace list, or remove it and define the workspaces here"
                 ));
-            }
-            match self.nodes.get(name) {
-                None => problems.push(format!(
-                    "runtime_node = \"{name}\" does not match any [nodes.*] entry"
-                )),
-                Some(node) if node.ssh.is_none() => problems.push(format!(
-                    "runtime_node = \"{name}\" names a node without an `ssh` alias to reach it by"
-                )),
-                Some(_) => {}
+            } else {
+                match self.nodes.get(name) {
+                    None => problems.push(format!(
+                        "runtime_node = \"{name}\" does not match any [nodes.*] entry"
+                    )),
+                    Some(node) if node.ssh.is_none() => problems.push(format!(
+                        "runtime_node = \"{name}\" names a node without an `ssh` alias to reach it by"
+                    )),
+                    Some(_) => {}
+                }
             }
             if !self.workspaces.is_empty() {
                 problems.push(
@@ -657,8 +660,7 @@ mod tests {
 
     /// The file an Agent Node keeps: who it is, that the projects are
     /// listed elsewhere, and the one alias it dials them by.
-    const AGENT_SIDE: &str =
-        "this = \"agent\"\nruntime_node = \"runtime\"\n[nodes.agent]\n[nodes.runtime]\nssh = \"xdwmbp\"\n";
+    const AGENT_SIDE: &str = "this = \"agent\"\nruntime_node = \"runtime\"\n[nodes.agent]\n[nodes.runtime]\nssh = \"xdwmbp\"\n";
 
     /// A config with no workspace list is an Agent Node's, and a name it
     /// does not know is a question for the other side. A Runtime Node's
@@ -672,18 +674,18 @@ mod tests {
         let agent_side_cfg = Config::parse(AGENT_SIDE).unwrap();
         assert_eq!(alias(&agent_side_cfg).as_deref(), Some("xdwmbp"));
 
-        let runtime_side_cfg = Config::parse(
-            "this = \"runtime\"\n[nodes.agent]\nssh = \"fodelf\"\n[nodes.runtime]\n",
-        )
-        .unwrap();
+        let runtime_side_cfg =
+            Config::parse("this = \"runtime\"\n[nodes.agent]\nssh = \"fodelf\"\n[nodes.runtime]\n")
+                .unwrap();
         assert_eq!(alias(&runtime_side_cfg), None);
 
         // Nothing to pick.
         let empty = Config::parse("").unwrap();
         assert_eq!(alias(&empty), None);
-        let two =
-            Config::parse("this = \"me\"\n[nodes.me]\n[nodes.a]\nssh = \"x\"\n[nodes.b]\nssh = \"y\"\n")
-                .unwrap();
+        let two = Config::parse(
+            "this = \"me\"\n[nodes.me]\n[nodes.a]\nssh = \"x\"\n[nodes.b]\nssh = \"y\"\n",
+        )
+        .unwrap();
         assert_eq!(alias(&two), None);
     }
 
@@ -951,7 +953,10 @@ mod tests {
             "version = 1\nthis = \"runtime\"\n[nodes.agent]\n[nodes.runtime]\n[workspaces.x]\nagent_node = \"agent\"\nroot = \"/a\"\n",
         );
         let msg = err.message();
-        assert!(msg.contains("agent_node = \"agent\" is another machine"), "{msg}");
+        assert!(
+            msg.contains("agent_node = \"agent\" is another machine"),
+            "{msg}"
+        );
     }
 
     #[test]
@@ -996,10 +1001,7 @@ mod tests {
         );
         let msg = err.message();
         assert!(msg.contains("nodes.my host: name must be"), "{msg}");
-        assert!(
-            msg.contains("nodes.my host.ssh must match"),
-            "{msg}"
-        );
+        assert!(msg.contains("nodes.my host.ssh must match"), "{msg}");
         assert!(msg.contains("workspaces.-x: name must be"), "{msg}");
     }
 

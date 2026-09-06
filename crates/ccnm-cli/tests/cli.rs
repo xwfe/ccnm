@@ -10,9 +10,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use ccnm_core::protocol::hello::{HelloReport, HelloRequest};
-use ccnm_core::session::RuntimeLink;
 use ccnm_core::protocol::mcp::ProbeReport as McpProbeReport;
 use ccnm_core::protocol::payload;
+use ccnm_core::session::RuntimeLink;
 
 fn ccnm() -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_ccnm"));
@@ -1127,7 +1127,11 @@ fn sitting_at_the_agent_the_start_goes_to_the_runtime_and_the_attach_stays_here(
     // An empty prompt is indistinguishable from the bug this replaced:
     // Claude opens with nothing and nobody is told why.
     ssh.forget();
-    let out = pipe_in(&[workspace, "--prompt-stdin", "--detached"], &agent_side, "");
+    let out = pipe_in(
+        &[workspace, "--prompt-stdin", "--detached"],
+        &agent_side,
+        "",
+    );
     let err = stderr(&out);
     assert_eq!(out.status.code(), Some(34), "invalid arguments: {err}");
     assert!(

@@ -6,7 +6,7 @@
 //! - argv is a list, never a shell string, so there is no quoting to get wrong;
 //! - every call has a timeout and cannot hang a Claude hook forever;
 //! - the child's environment is explicit, which is how the runner strips
-//!   `ANTHROPIC_*` later (design doc section 32);
+//!   `ANTHROPIC_*` later (design doc section 13);
 //! - tests can swap in [`FakeRunner`] and assert exactly what would run.
 //!
 //! Interactive things (attaching a terminal to tmux, launching the Claude

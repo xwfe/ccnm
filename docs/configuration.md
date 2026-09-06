@@ -8,111 +8,125 @@ ccnm 默认读取：
 
 也可以通过全局 `--config` 或环境变量 `CCNM_CONFIG` 指定其他文件。
 
-配置描述的是 **Node** 和 **workspace**。Node 名只是用户自己选择的标识符；`ccnm init` 默认使用 `agent` 和 `runtime`。
+**每台机器有自己的一份，内容不一样。** 不要把同一份文件复制到两台机器上——里面的 `ssh` alias 是"从本机出发"的，复制过去就指错地方了。
 
-## Runtime Node 配置
+配置描述的是 **Node** 和 **workspace**。Node 名是你自己起的标识符；`ccnm init` 默认用 `agent` 和 `runtime`。
 
-Runtime Node 通常保存 workspace 列表，并知道两个 SSH 方向：
+## 最小的两份配置
+
+Runtime Node（项目所在的机器，存 workspace 列表）：
 
 ```toml
-## AI agent 所在机
-[nodes.agent]
-ssh_from_runtime = "agent-ssh-alias"
+this = "runtime"
 
-## 项目所在地
 [nodes.runtime]
-ssh_from_agent = "runtime-ssh-alias"
-runtime_user = "ccrun"
+
+[nodes.agent]
+ssh = "agent-ssh-alias"
 
 [workspaces.my-project]
 agent_node = "agent"
-runtime_node = "runtime" # 可省略，默认就是 runtime
 root = "/Users/me/code/my-project"
-claude_permission_mode = "acceptEdits"
 ```
 
-### `ssh_from_runtime`
+Agent Node（跑 Claude 的机器，不存 workspace 列表）：
 
-表示：**从 Runtime Node 出发**访问这个 Node 时使用的 OpenSSH alias。
+```toml
+this = "agent"
+runtime_node = "runtime"
 
-例如：
+[nodes.agent]
+
+[nodes.runtime]
+ssh = "runtime-ssh-alias"
+```
+
+两份都由 `ccnm init` 生成，不用手写：
+
+```bash
+# 在项目所在的机器上
+ccnm init --agent agent-ssh-alias
+
+# 在跑 Claude 的机器上
+ccnm init --runtime runtime-ssh-alias
+```
+
+## `this`
+
+**这台机器是哪个 node。** 必填。
+
+文件里每个 `ssh` 都是从这个 node 出发写的，不说清楚是谁，那些 alias 就没法解释。它同时决定了本机在一个 workspace 里扮演什么角色。
+
+漏写会报：
+
+```text
+CCNM_E_CONFIG: `this` is not set: every `ssh` alias in this file is
+written from one node's point of view, and without `this` there is no
+way to know whose
+```
+
+`this` 指向的那个 node **不能有 `ssh`**——自己不 ssh 自己。写了会报 `does not ssh to itself`，因为那说明这份文件是照着别人的视角写的。
+
+## `nodes.<name>.ssh`
+
+**从本机出发，连这个 node 用的 OpenSSH alias。**
 
 ```toml
 [nodes.agent]
-ssh_from_runtime = "agent-ssh-alias"
+ssh = "agent-ssh-alias"
 ```
 
-就是 Runtime Node 执行：
+意思就是本机执行 `ssh agent-ssh-alias ...` 能连上。
 
-```bash
-ssh agent-ssh-alias ...
+一个方向一个字段是刻意的：alias 只在定义它的那台机器的 `~/.ssh/config` 里有意义。对面那台机器有它自己的配置文件、自己的 alias，**不需要、也不应该由这份文件描述**。所以跨机器传的请求里只有 node 的**名字**，对面拿名字查自己的配置。
+
+漏写会报：
+
+```text
+CCNM_E_CONFIG: workspaces.x.agent_node = "agent" is another machine,
+所以 [nodes.agent] 需要一个 ssh alias
 ```
 
-### `ssh_from_agent`
+## `runtime_node`（顶层）
 
-表示反方向：**从 Agent Node 出发**访问这个 Node 时使用的 alias。
+**这台机器不存 workspace 列表，任何 workspace 都去问这个 node。** 只有 Agent Node 写。
 
 ```toml
-[nodes.runtime]
-ssh_from_agent = "runtime-ssh-alias"
+this = "agent"
+runtime_node = "runtime"
 ```
 
-就是 Agent Node 执行：
+不能省，也不能指向自己。它回答的不是"我是谁"（那是 `this`），而是"workspace 列表在谁那儿"：
 
-```bash
-ssh runtime-ssh-alias ...
-```
+**一台刚 `init` 完、还没 `workspace add` 过的 Runtime Node，和一台 Agent Node 的配置文件除了这一行完全一样。** 靠猜的话，猜错的那边会把请求 ssh 给对方，对方发现自己也不认识这个 workspace，再 ssh 回来。
 
-这些 alias 都来自已有 `~/.ssh/config`。ccnm 不保存 IP、SSH 私钥、Tailscale Node ID 或 Tunnel URL。
+顶层写了 `runtime_node`，就不能再有 `[workspaces.*]`——一个项目的 root 只在一台机器上定义，两份迟早对不上。
 
-## Agent-only Node 配置
-
-如果一个 Node 只承担 Agent/Controller 角色，不保存项目，就不应该复制 workspace 列表：
-
-```toml
-[nodes.runtime]
-ssh_from_agent = "runtime-ssh-alias"
-```
-
-当你在这里执行：
-
-```bash
-ccnm my-project
-```
-
-它会让 Runtime Node 解析 workspace 并执行完整启动路径，然后在 Agent Node 本地 attach 到 session。
-
-这样每个 workspace root 永远只有一个定义，不会出现双份配置漂移。
-
-## Node 字段
+## Node 的其他字段
 
 ```toml
 [nodes.some-node]
-ssh_from_runtime = "alias"       # Runtime -> 此 Node 时使用
-ssh_from_agent = "alias"         # Agent -> 此 Node 时使用
-ccnm_bin = "/absolute/path/ccnm" # 可选：此 Node 上 ccnm 的远端执行路径
-claude_config_dir = "/path"      # 可选：Agent 角色使用的 CLAUDE_CONFIG_DIR
-runtime_user = "ccrun"            # Runtime 角色期望的系统账号
+ssh = "alias"                    # 从本机连它用的 alias
+ccnm_bin = "/absolute/path/ccnm" # 可选：它上面 ccnm 的路径，默认 ~/.local/bin/ccnm
+claude_config_dir = "/path"      # 可选：Agent 角色用的 CLAUDE_CONFIG_DIR
+runtime_user = "ccrun"           # Runtime 角色期望的系统账号
 ```
 
-字段是否必需取决于 Node 承担的角色：
+哪些必填取决于这个 node 承担什么角色：
 
-- workspace 的 `agent_node` 必须有 `ssh_from_runtime`；
-- workspace 的 `runtime_node` 必须有 `ssh_from_agent`；
-- Agent Node 才需要 Claude 相关配置；
-- Runtime Node 才需要 `runtime_user`。
+- workspace 里除本机之外的每个 node 都要有 `ssh`；
+- 只有 Agent 角色用得上 Claude 相关配置；
+- 只有 Runtime 角色用得上 `runtime_user`。
 
-一个物理 Node 可以同时具备这些字段，也就是同时承担多个角色。
+一个 node 可以同时具备这些字段，也就是同时承担多个角色。
 
 ## Workspace 字段
 
-当前主路径 backend 是 `mcp-ssh`：
-
 ```toml
 [workspaces.my-project]
-backend = "mcp-ssh"
+backend = "mcp-ssh"          # 默认值，可省略
 agent_node = "agent"
-runtime_node = "runtime"
+runtime_node = "runtime"     # 可省略，默认就是 "runtime"
 root = "/absolute/project/root"
 claude_permission_mode = "acceptEdits"
 allow_unconfined_exec = false
@@ -120,15 +134,13 @@ allow_unconfined_exec = false
 
 ### `agent_node`
 
-运行 AI Coding Agent 的 Node。当前实现是运行 Claude Code 的 Node。
+跑 AI coding agent 的 node。当前实现是跑官方 Claude Code 的那台。
 
 ### `runtime_node`
 
-保存真实项目并执行 MCP tools 的 Node。省略时默认是：
+存真实项目、执行 MCP tools 的 node。**注意这是 workspace 里的字段，跟顶层那个同名字段不是一回事**：这里说的是"这个项目在哪台机器上"，顶层说的是"我不存列表，去问谁"。
 
-```toml
-runtime_node = "runtime"
-```
+把它写成和 `agent_node` 相同的值，就是第三种拓扑：Claude 和项目在同一台机器上，不建 MCP 通道，Claude 用自己的原生工具。见[架构说明](architecture.md)。
 
 ### `root`
 
@@ -136,7 +148,7 @@ Runtime Node 上真实项目的绝对路径。
 
 ### `claude_permission_mode`
 
-直接映射官方 Claude Code 的 `--permission-mode`。默认值为 `acceptEdits`。
+直接映射官方 Claude Code 的 `--permission-mode`。默认 `acceptEdits`。
 
 ### `allow_unconfined_exec`
 
@@ -146,28 +158,16 @@ Runtime Node 上真实项目的绝对路径。
 allow_unconfined_exec = true
 ```
 
-它允许 Runtime OS 账号没有通过 confinement 检查时仍执行 `exec_command`，但每次结果都会明确标记 runtime **未隔离**。
+它允许 Runtime OS 账号没通过 confinement 检查时仍然执行 `exec_command`，但每条命令结果都会标记 runtime **未隔离**。
 
-这不是生产安全配置。真实项目应创建 `ccrun` 或其他专用 Runtime Service Account，并把它改回 `false`。
+这不是生产安全配置。真实项目应该在 Runtime Node 建 `ccrun` 之类的专用低权限账号，然后把它改回 `false`。
 
-## CLI 修改配置
-
-Runtime Node：
+## CLI 改配置
 
 ```bash
-ccnm init --agent agent-ssh-alias --runtime runtime-ssh-alias
-ccnm workspace add my-project /absolute/project/root
-```
+ccnm init --agent <alias>       # 在项目所在的机器上
+ccnm init --runtime <alias>     # 在跑 Claude 的机器上
 
-Agent-only Node：
-
-```bash
-ccnm init --runtime runtime-ssh-alias
-```
-
-workspace 管理：
-
-```bash
 ccnm workspace list
 ccnm workspace add <name> [path]
 ccnm workspace remove <name>
@@ -175,26 +175,33 @@ ccnm workspace remove <name>
 
 `ws` 是 `workspace` 的别名。
 
+ccnm 用 `toml_edit` 增量修改这个文件，你写的注释不会被吃掉。写之前会整份 parse 一遍，不合法就一个字节都不写。
+
+## 校验是严格的
+
+未知字段直接报错，不静默忽略。把 `runtime_node` 打成 `runtime_hots`，如果被忽略就会悄悄用默认值，那正是 doctor 存在的意义所在的那种漂移。
+
+config 里不存任何 secret：
+
+```text
+Claude OAuth        由 Claude Code 自己管
+SSH private key     由 OpenSSH 管
+```
+
 ## 为什么不保留旧配置兼容层
 
-项目尚未发布，因此这次直接移除了旧的：
+项目尚未发布，所以直接移除了旧的：
 
 ```text
-[hosts.*]
-work_host
-runtime_host
-ssh
-ssh_from_work
+[hosts.*]        work_host        runtime_host
+ssh              ssh_from_work    ssh_from_runtime / ssh_from_agent
 ```
 
-当前统一使用：
+现在统一是：
 
 ```text
-[nodes.*]
-agent_node
-runtime_node
-ssh_from_runtime
-ssh_from_agent
+[nodes.*]        this             runtime_node（顶层）
+ssh              agent_node       runtime_node（workspace 内）
 ```
 
-现在 dogfood 阶段一次性完成破坏性迁移，比发布之后长期背兼容层成本更低。
+dogfood 阶段一次性做完破坏性迁移，比发布之后长期背兼容层便宜。

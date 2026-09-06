@@ -7,7 +7,7 @@
 
 use std::fmt;
 
-/// Every failure ccnm can report.
+/// Every failure ccnm can report. Mirrors design doc section 24.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ErrorCode {
     /// A bug or an unexpected OS failure. Not a user-facing category; if a

@@ -33,8 +33,8 @@ pub fn run_print(
 ) -> Result<RunReport> {
     check_local_root(resolved)?;
     let root = &resolved.workspace.root;
-    let ssh = Ssh::new(resolved.agent_ssh()?, &env.control_dir)?
-        .with_ccnm_bin(resolved.agent.ccnm_bin());
+    let ssh =
+        Ssh::new(resolved.agent_ssh()?, &env.control_dir)?.with_ccnm_bin(resolved.agent.ccnm_bin());
     ssh.check_control_path()?;
     let req = RunRequest {
         protocol: PROTOCOL,
@@ -318,8 +318,8 @@ fn check_local_root(resolved: &Resolved<'_>) -> Result<()> {
 /// The ssh to the Agent Node, with the project checked here first.
 fn agent_ssh(resolved: &Resolved<'_>, env: &Env<'_>) -> Result<Ssh> {
     check_local_root(resolved)?;
-    let ssh = Ssh::new(resolved.agent_ssh()?, &env.control_dir)?
-        .with_ccnm_bin(resolved.agent.ccnm_bin());
+    let ssh =
+        Ssh::new(resolved.agent_ssh()?, &env.control_dir)?.with_ccnm_bin(resolved.agent.ccnm_bin());
     ssh.check_control_path()?;
     Ok(ssh)
 }
@@ -345,8 +345,8 @@ pub fn mcp_probe_local(resolved: &Resolved<'_>, env: &Env<'_>, calls: u32) -> Re
 /// Ask the Agent Node to probe the Runtime Node over its own ssh: the
 /// path Claude Code will use. Returns the MCP part of the work probe.
 pub fn mcp_probe_remote(resolved: &Resolved<'_>, env: &Env<'_>, calls: u32) -> Result<ProbeReport> {
-    let ssh = Ssh::new(resolved.agent_ssh()?, &env.control_dir)?
-        .with_ccnm_bin(resolved.agent.ccnm_bin());
+    let ssh =
+        Ssh::new(resolved.agent_ssh()?, &env.control_dir)?.with_ccnm_bin(resolved.agent.ccnm_bin());
     ssh.check_control_path()?;
     let req = ProbeRequest {
         protocol: PROTOCOL,
@@ -625,8 +625,16 @@ mod tests {
             .iter()
             .position(|a| a == "--payload")
             .expect("the transport carries a payload");
-        assert_eq!(args[at - 4], "to-runtime", "the third hop dials the runtime");
-        assert_eq!(args[at - 3], "/opt/runtime/ccnm", "running the runtime's ccnm");
+        assert_eq!(
+            args[at - 4],
+            "to-runtime",
+            "the third hop dials the runtime"
+        );
+        assert_eq!(
+            args[at - 3],
+            "/opt/runtime/ccnm",
+            "running the runtime's ccnm"
+        );
         assert_eq!(args[at - 2..at], ["internal", "mcp-serve"]);
 
         let serve: ServePayload = payload::decode(&args[at + 1]).unwrap();
@@ -791,8 +799,16 @@ mod tests {
             .map(|a| a.as_str().unwrap().to_string())
             .collect();
         let at = args.iter().position(|a| a == "--payload").unwrap();
-        assert_eq!(args[at - 4], "to-runtime", "the third hop dials the runtime");
-        assert_eq!(args[at - 3], "/opt/runtime/ccnm", "running the runtime's ccnm");
+        assert_eq!(
+            args[at - 4],
+            "to-runtime",
+            "the third hop dials the runtime"
+        );
+        assert_eq!(
+            args[at - 3],
+            "/opt/runtime/ccnm",
+            "running the runtime's ccnm"
+        );
         let serve: ServePayload = payload::decode(&args[at + 1]).unwrap();
         assert_eq!(serve.root, root);
         assert_eq!(serve.workspace, "xshun");

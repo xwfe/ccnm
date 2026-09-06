@@ -47,7 +47,12 @@ enum Command {
     /// the node running Claude
     Init {
         /// This machine holds the projects; ALIAS is how it reaches the Agent Node
-        #[arg(long, value_name = "ALIAS", conflicts_with = "runtime", required_unless_present = "runtime")]
+        #[arg(
+            long,
+            value_name = "ALIAS",
+            conflicts_with = "runtime",
+            required_unless_present = "runtime"
+        )]
         agent: Option<String>,
         /// This machine runs the agent; ALIAS is how it reaches the Runtime Node
         #[arg(long, value_name = "ALIAS")]
@@ -370,7 +375,10 @@ fn run(cli: Cli) -> Result<i32> {
                     // the session was started or was already there.
                     return Ok(0);
                 }
-                return work::attach(&attach_request(workspace), &agent_tools(config_path().ok().as_deref())?);
+                return work::attach(
+                    &attach_request(workspace),
+                    &agent_tools(config_path().ok().as_deref())?,
+                );
             }
             let resolved = config.workspace(workspace)?;
             let env = launch_env()?;
@@ -397,7 +405,10 @@ fn run(cli: Cli) -> Result<i32> {
             // On the Agent Node the session is right here; attaching
             // needs the workspace name and nothing else.
             if agent_side(&config, workspace).is_some() {
-                return work::attach(&attach_request(workspace), &agent_tools(config_path().ok().as_deref())?);
+                return work::attach(
+                    &attach_request(workspace),
+                    &agent_tools(config_path().ok().as_deref())?,
+                );
             }
             let resolved = config.workspace(workspace)?;
             attach(&resolved, &launch_env()?, workspace)
@@ -411,7 +422,10 @@ fn run(cli: Cli) -> Result<i32> {
                     protocol: ccnm_core::protocol::payload::PROTOCOL,
                     workspace: (!*all).then(|| workspace.to_string()),
                 };
-                print!("{}", work::status(&req, &agent_tools(config_path().ok().as_deref())?).render());
+                print!(
+                    "{}",
+                    work::status(&req, &agent_tools(config_path().ok().as_deref())?).render()
+                );
                 return Ok(0);
             }
             let resolved = config.workspace(workspace)?;
@@ -525,15 +539,24 @@ fn run(cli: Cli) -> Result<i32> {
             }
             InternalCommand::Probe { payload } => {
                 let req: ProbeRequest = payload::decode(payload)?;
-                print_json(&work::probe(&req, &agent_tools(config_path().ok().as_deref())?))
+                print_json(&work::probe(
+                    &req,
+                    &agent_tools(config_path().ok().as_deref())?,
+                ))
             }
             InternalCommand::AgentRun { payload } => {
                 let req: RunRequest = payload::decode(payload)?;
-                print_json(&work::run(&req, &agent_tools(config_path().ok().as_deref())?)?)
+                print_json(&work::run(
+                    &req,
+                    &agent_tools(config_path().ok().as_deref())?,
+                )?)
             }
             InternalCommand::AgentStart { payload } => {
                 let req: StartRequest = payload::decode(payload)?;
-                print_json(&work::start(&req, &agent_tools(config_path().ok().as_deref())?)?)
+                print_json(&work::start(
+                    &req,
+                    &agent_tools(config_path().ok().as_deref())?,
+                )?)
             }
             InternalCommand::Attach { payload } => {
                 let req: AttachRequest = payload::decode(payload)?;
@@ -541,19 +564,31 @@ fn run(cli: Cli) -> Result<i32> {
             }
             InternalCommand::AgentStop { payload } => {
                 let req: StopRequest = payload::decode(payload)?;
-                print_json(&work::stop(&req, &agent_tools(config_path().ok().as_deref())?)?)
+                print_json(&work::stop(
+                    &req,
+                    &agent_tools(config_path().ok().as_deref())?,
+                )?)
             }
             InternalCommand::AgentStatus { payload } => {
                 let req: StatusRequest = payload::decode(payload)?;
-                print_json(&work::status(&req, &agent_tools(config_path().ok().as_deref())?))
+                print_json(&work::status(
+                    &req,
+                    &agent_tools(config_path().ok().as_deref())?,
+                ))
             }
             InternalCommand::AgentResult { payload } => {
                 let req: ResultRequest = payload::decode(payload)?;
-                print_json(&work::result(&req, &agent_tools(config_path().ok().as_deref())?)?)
+                print_json(&work::result(
+                    &req,
+                    &agent_tools(config_path().ok().as_deref())?,
+                )?)
             }
             InternalCommand::AgentPurge { payload } => {
                 let req: PurgeRequest = payload::decode(payload)?;
-                print_json(&work::purge(&req, &agent_tools(config_path().ok().as_deref())?))
+                print_json(&work::purge(
+                    &req,
+                    &agent_tools(config_path().ok().as_deref())?,
+                ))
             }
         },
     }

@@ -1,12 +1,13 @@
-# The example from design doc section 5: every optional field at its
-# default, so this is the smallest config that names a workspace.
+# The smallest config that names a workspace: one other node to reach, and
+# every optional field at its default.
 version = 1
 
+this = "runtime"
+
 [nodes.agent]
-ssh_from_runtime = "work"
+ssh = "agent-alias"
 
 [nodes.runtime]
-ssh_from_agent = "ccnm-home"
 
 [workspaces.xshun]
 agent_node = "agent"

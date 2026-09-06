@@ -1,15 +1,16 @@
 # Every optional field set: opt-in CLAUDE_CONFIG_DIR (design doc section
-# 21), explicit ccnm paths on both hosts (section 7), a runtime host under
-# a non-default name, and the backend spelled out.
+# 21), explicit ccnm paths on both nodes (section 7), and the backend
+# spelled out.
 version = 1
 
+this = "runtime"
+
 [nodes.agent]
-ssh_from_runtime = "work"
+ssh = "agent-alias"
 ccnm_bin = "/Users/me/bin/ccnm"
 claude_config_dir = "/Users/me/.ccnm/claude"
 
 [nodes.runtime]
-ssh_from_agent = "home"
 ccnm_bin = "/Users/ccrun/.local/bin/ccnm"
 
 [workspaces.xshun]

@@ -1,6 +1,11 @@
-# What `ccnm init --home <alias>` writes on the work machine: how to reach
+# What `ccnm init --runtime <alias>` writes on an Agent Node: how to reach
 # the projects, and deliberately nothing about them. The workspace list
-# lives on one machine, because two lists are two answers to "where is
-# this project".
+# lives on one node, because two lists are two answers to "where is this
+# project".
+this = "agent"
+runtime_node = "runtime"
+
+[nodes.agent]
+
 [nodes.runtime]
-ssh_from_agent = "no-such-host-for-tests"
+ssh = "no-such-host-for-tests"

@@ -936,8 +936,8 @@ mod tests {
 
     #[test]
     fn display_joins_program_and_args() {
-        let cmd = Cmd::new("ssh").args(["-T", "ccnm-home", "ccnm", "runner", "health"]);
-        assert_eq!(cmd.display(), "ssh -T ccnm-home ccnm runner health");
+        let cmd = Cmd::new("ssh").args(["-T", "ccnm-runtime", "ccnm", "runner", "health"]);
+        assert_eq!(cmd.display(), "ssh -T ccnm-runtime ccnm runner health");
     }
 
     #[test]

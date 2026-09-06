@@ -661,6 +661,7 @@ fn not_listening(path: &Path, err: &std::io::Error) -> Error {
 
 #[cfg(test)]
 mod tests {
+    use crate::session::RuntimeLink;
     use super::*;
     use crate::process::{FakeRunner, Output};
     use std::thread;
@@ -714,8 +715,10 @@ mod tests {
             id: "0b4c7a1e-2d3f-4a5b-8c6d-7e8f9a0b1c2d".into(),
             workspace: "xshun".into(),
             root: PathBuf::from("/Users/bing/xshun"),
-            home_alias: "xdwmbp".into(),
-            home_ccnm_bin: "~/.local/bin/ccnm".into(),
+            runtime: Some(RuntimeLink {
+                alias: "xdwmbp".into(),
+                ccnm_bin: "~/.local/bin/ccnm".into(),
+            }),
             claude_config_dir: None,
             permission_mode: crate::config::PermissionMode::default(),
             mode,

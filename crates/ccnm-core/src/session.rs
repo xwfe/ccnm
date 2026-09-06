@@ -4,7 +4,7 @@
 //! ```text
 //! ~/.local/state/ccnm/sessions/<uuid>/          (Agent Node)
 //! ├── session.json     the Spec: everything needed to start it
-//! ├── mcp.json         --mcp-config: the one ssh transport to the home runtime
+//! ├── mcp.json         --mcp-config: the one ssh transport to the Runtime Node
 //! ├── settings.json    --settings: permission to use exactly the ccnm tools
 //! ├── stdout           Claude's stdout (in print mode, the JSON result)
 //! ├── stderr           Claude's stderr
@@ -17,7 +17,7 @@
 //!
 //! # Who writes what
 //!
-//! The ssh-side `work-run` creates the directory and the three inputs: it
+//! The ssh-side `agent-run` creates the directory and the three inputs: it
 //! is the same account on the same disk, and none of that needs a login
 //! session. The controller does the one thing that does — spawn the
 //! supervisor — and nothing else. The supervisor runs Claude and writes
@@ -85,9 +85,15 @@ pub struct Spec {
     pub workspace: String,
     /// Project root on the Runtime Node. Never a path on this one.
     pub root: PathBuf,
-    /// Alias in this machine's `~/.ssh/config` for the home runtime.
-    pub home_alias: String,
-    pub home_ccnm_bin: String,
+    /// How this machine dials the Runtime Node: its own alias for it, and
+    /// where ccnm lives there.
+    ///
+    /// `None` when the project is on this machine too, which is the whole
+    /// difference between the two topologies the supervisor can be asked
+    /// for: with a link it writes an MCP config and denies Claude's native
+    /// tools, without one Claude works the project directly.
+    #[serde(default)]
+    pub runtime: Option<RuntimeLink>,
     #[serde(default)]
     pub claude_config_dir: Option<PathBuf>,
     pub permission_mode: PermissionMode,
@@ -107,6 +113,17 @@ impl Protocol for Spec {
     fn protocol(&self) -> u32 {
         self.protocol
     }
+}
+
+/// The Runtime Node as this machine dials it.
+///
+/// Resolved on the Agent Node from its own config, never sent by whoever
+/// asked for the session: an ssh alias means something only to the machine
+/// whose `~/.ssh/config` defines it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeLink {
+    pub alias: String,
+    pub ccnm_bin: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -244,10 +261,16 @@ pub fn read_context(dir: &Dir) -> Option<Context> {
     serde_json::from_slice(&bytes).ok()
 }
 
-/// Create the session directory with its three inputs. Refuses to reuse
-/// an existing directory: two sessions with one id would share an
-/// `output/` on the Runtime Node and overwrite each other's `exit` here.
-pub fn create(state: &Path, spec: &Spec, ssh: &Ssh) -> Result<Dir> {
+/// Create the session directory with its inputs. Refuses to reuse an
+/// existing directory: two sessions with one id would share an `output/`
+/// on the Runtime Node and overwrite each other's `exit` here.
+///
+/// `ssh` is `None` for a colocated workspace. That session gets no MCP
+/// config and no native-tool denial, because there is no remote runtime to
+/// route tools to -- Claude works the project in front of it. Writing an
+/// MCP config there would point a transport at this same machine and take
+/// away the tools that are the only ones able to do the job.
+pub fn create(state: &Path, spec: &Spec, ssh: Option<&Ssh>) -> Result<Dir> {
     let dir = Dir::at(paths::session_dir(state, &spec.id));
     if dir.path().exists() {
         return Err(Error::internal(format!(
@@ -259,8 +282,10 @@ pub fn create(state: &Path, spec: &Spec, ssh: &Ssh) -> Result<Dir> {
     // The settings file names what the model may do; keep it the owner's.
     fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700))?;
     fs::write(dir.meta(), pretty(spec)?)?;
-    fs::write(dir.mcp_config(), pretty(&mcp_config(spec, ssh)?)?)?;
-    fs::write(dir.settings(), pretty(&settings())?)?;
+    if let Some(ssh) = ssh {
+        fs::write(dir.mcp_config(), pretty(&mcp_config(spec, ssh)?)?)?;
+    }
+    fs::write(dir.settings(), pretty(&settings(ssh.is_some()))?)?;
     Ok(dir)
 }
 
@@ -312,7 +337,17 @@ pub fn mcp_config(spec: &Spec, ssh: &Ssh) -> Result<serde_json::Value> {
 /// prompt (there is nobody to answer one in print mode), and the native
 /// file and shell tools denied by name. Nothing else — the user's own
 /// settings still load underneath this (design doc section 24).
-pub fn settings() -> serde_json::Value {
+///
+/// `remote` is false for a colocated workspace, and then neither half
+/// applies: there are no ccnm tools to allow, and denying the native ones
+/// would leave Claude with no way to touch the project it is sitting on.
+/// The deny list exists to stop the model reaching *this* machine's disk
+/// when the project is on another one; when the project is this machine's
+/// disk, it would only be in the way.
+pub fn settings(remote: bool) -> serde_json::Value {
+    if !remote {
+        return serde_json::json!({ "permissions": {} });
+    }
     let allow: Vec<String> = MCP_TOOLS
         .iter()
         .map(|t| format!("mcp__{SERVER_NAME}__{t}"))
@@ -592,8 +627,10 @@ mod tests {
             id: "0b4c7a1e-2d3f-4a5b-8c6d-7e8f9a0b1c2d".into(),
             workspace: "fixture".into(),
             root: PathBuf::from("/Users/bing/ccnm-fixture"),
-            home_alias: "xdwmbp".into(),
-            home_ccnm_bin: "~/.local/bin/ccnm".into(),
+            runtime: Some(RuntimeLink {
+                alias: "xdwmbp".into(),
+                ccnm_bin: "~/.local/bin/ccnm".into(),
+            }),
             claude_config_dir: None,
             permission_mode: PermissionMode::AcceptEdits,
             mode: Mode::Print {
@@ -697,7 +734,7 @@ mod tests {
 
     #[test]
     fn settings_allow_exactly_the_ccnm_tools_and_deny_the_native_ones() {
-        let s = settings();
+        let s = settings(true);
         let allow: Vec<&str> = s["permissions"]["allow"]
             .as_array()
             .unwrap()
@@ -725,7 +762,7 @@ mod tests {
     #[test]
     fn create_writes_the_three_inputs_and_refuses_a_second_time() {
         let state = temp("create");
-        let dir = create(&state, &spec(), &ssh()).unwrap();
+        let dir = create(&state, &spec(), Some(&ssh())).unwrap();
         assert_eq!(
             dir.path(),
             state.join("sessions/0b4c7a1e-2d3f-4a5b-8c6d-7e8f9a0b1c2d")
@@ -737,7 +774,7 @@ mod tests {
         assert_eq!(load(&dir).unwrap(), spec());
         assert!(read_outcome(&dir).unwrap().is_none(), "nothing has run yet");
 
-        let err = create(&state, &spec(), &ssh()).unwrap_err();
+        let err = create(&state, &spec(), Some(&ssh())).unwrap_err();
         assert!(err.message().contains("already exists"), "{err}");
     }
 
@@ -811,7 +848,7 @@ mod tests {
     #[test]
     fn supervise_runs_claude_and_records_the_outcome() {
         let state = temp("supervise");
-        let dir = create(&state, &spec(), &ssh()).unwrap();
+        let dir = create(&state, &spec(), Some(&ssh())).unwrap();
         let fake = state.join("claude");
         fs::write(
             &fake,
@@ -846,7 +883,7 @@ mod tests {
     #[test]
     fn supervise_still_leaves_an_exit_record_when_claude_cannot_start() {
         let state = temp("supervise-missing");
-        let dir = create(&state, &spec(), &ssh()).unwrap();
+        let dir = create(&state, &spec(), Some(&ssh())).unwrap();
         let req = SuperviseRequest::new(dir.path().to_path_buf(), state.join("no-such-claude"));
         assert!(
             supervise(&req).is_ok(),

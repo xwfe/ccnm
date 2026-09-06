@@ -39,18 +39,19 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Write the config: which SSH alias reaches the Agent Node, and
-    /// which one reaches the Runtime Node. Safe to run again.
+    /// Write the config: who this machine is, and the SSH alias it
+    /// reaches the other node by. Safe to run again.
     ///
-    /// On an Agent-only node give only --runtime: it needs to know how to
-    /// reach the Runtime Node, and nothing about its workspace list
+    /// Exactly one of the two, because each also says which node this
+    /// machine is: --agent on the node holding the projects, --runtime on
+    /// the node running Claude
     Init {
-        /// This Runtime Node's SSH alias for the Agent Node. Omit on an Agent-only node
-        #[arg(long, value_name = "ALIAS")]
+        /// This machine holds the projects; ALIAS is how it reaches the Agent Node
+        #[arg(long, value_name = "ALIAS", conflicts_with = "runtime", required_unless_present = "runtime")]
         agent: Option<String>,
-        /// The Agent Node's SSH alias for the Runtime Node holding the projects
+        /// This machine runs the agent; ALIAS is how it reaches the Runtime Node
         #[arg(long, value_name = "ALIAS")]
-        runtime: String,
+        runtime: Option<String>,
     },
     /// Add, list and remove workspaces without editing the config by hand
     #[command(alias = "ws")]
@@ -219,13 +220,13 @@ enum InternalCommand {
     },
     /// Work-side run: create the session, have the controller start it,
     /// wait, report
-    WorkRun {
+    AgentRun {
         #[arg(long)]
         payload: String,
     },
     /// Work-side start of an interactive session; returns as soon as tmux
     /// has it
-    WorkStart {
+    AgentStart {
         #[arg(long)]
         payload: String,
     },
@@ -236,22 +237,22 @@ enum InternalCommand {
         payload: String,
     },
     /// Work-side stop of an interactive session
-    WorkStop {
+    AgentStop {
         #[arg(long)]
         payload: String,
     },
     /// Work-side list of live sessions
-    WorkStatus {
+    AgentStatus {
         #[arg(long)]
         payload: String,
     },
     /// Work-side read of what a session produced
-    WorkResult {
+    AgentResult {
         #[arg(long)]
         payload: String,
     },
     /// Work-side deletion of a workspace's session records
-    WorkPurge {
+    AgentPurge {
         #[arg(long)]
         payload: String,
     },
@@ -321,7 +322,9 @@ fn run(cli: Cli) -> Result<i32> {
     };
 
     match &cli.command {
-        Command::Init { agent, runtime } => init(&config_path()?, agent.as_deref(), runtime),
+        Command::Init { agent, runtime } => {
+            init(&config_path()?, agent.as_deref(), runtime.as_deref())
+        }
         Command::Workspace { command } => workspace_command(&config_path()?, command),
         Command::Doctor { workspace } => {
             let env = doctor::Env {
@@ -353,8 +356,8 @@ fn run(cli: Cli) -> Result<i32> {
                     ));
                 }
                 let opening = opening_prompt(prompt.as_deref(), *prompt_stdin)?;
-                let env = home_env()?;
-                launcher::start_from_work(
+                let env = launch_env()?;
+                launcher::start_from_agent(
                     home,
                     &host.ccnm_bin(),
                     workspace,
@@ -367,10 +370,10 @@ fn run(cli: Cli) -> Result<i32> {
                     // the session was started or was already there.
                     return Ok(0);
                 }
-                return work::attach(&attach_request(workspace), &work_tools()?);
+                return work::attach(&attach_request(workspace), &agent_tools(config_path().ok().as_deref())?);
             }
             let resolved = config.workspace(workspace)?;
-            let env = home_env()?;
+            let env = launch_env()?;
             if let Some(prompt) = print {
                 let rep = launcher::run_print(
                     &resolved,
@@ -394,10 +397,10 @@ fn run(cli: Cli) -> Result<i32> {
             // On the Agent Node the session is right here; attaching
             // needs the workspace name and nothing else.
             if agent_side(&config, workspace).is_some() {
-                return work::attach(&attach_request(workspace), &work_tools()?);
+                return work::attach(&attach_request(workspace), &agent_tools(config_path().ok().as_deref())?);
             }
             let resolved = config.workspace(workspace)?;
-            attach(&resolved, &home_env()?, workspace)
+            attach(&resolved, &launch_env()?, workspace)
         }
         Command::Status { workspace, all } => {
             let config = Config::load(&config_path()?)?;
@@ -408,11 +411,11 @@ fn run(cli: Cli) -> Result<i32> {
                     protocol: ccnm_core::protocol::payload::PROTOCOL,
                     workspace: (!*all).then(|| workspace.to_string()),
                 };
-                print!("{}", work::status(&req, &work_tools()?).render());
+                print!("{}", work::status(&req, &agent_tools(config_path().ok().as_deref())?).render());
                 return Ok(0);
             }
             let resolved = config.workspace(workspace)?;
-            let rep = launcher::status(&resolved, &home_env()?, *all)?;
+            let rep = launcher::status(&resolved, &launch_env()?, *all)?;
             print!("{}", rep.render());
             Ok(0)
         }
@@ -428,11 +431,11 @@ fn run(cli: Cli) -> Result<i32> {
                     workspace: workspace.to_string(),
                     session: session.clone(),
                 };
-                let rep = work::result(&req, &work_tools()?)?;
+                let rep = work::result(&req, &agent_tools(config_path().ok().as_deref())?)?;
                 return print_result_report(&rep);
             }
             let resolved = config.workspace(workspace)?;
-            let rep = launcher::result(&resolved, &home_env()?, session.as_deref())?;
+            let rep = launcher::result(&resolved, &launch_env()?, session.as_deref())?;
             print_result_report(&rep)
         }
         Command::Stop { workspace } => {
@@ -442,7 +445,7 @@ fn run(cli: Cli) -> Result<i32> {
                     protocol: ccnm_core::protocol::payload::PROTOCOL,
                     workspace: workspace.to_string(),
                 };
-                let rep = work::stop(&req, &work_tools()?)?;
+                let rep = work::stop(&req, &agent_tools(config_path().ok().as_deref())?)?;
                 println!(
                     "{}",
                     if rep.killed {
@@ -454,7 +457,7 @@ fn run(cli: Cli) -> Result<i32> {
                 return Ok(0);
             }
             let resolved = config.workspace(workspace)?;
-            let rep = launcher::stop(&resolved, &home_env()?)?;
+            let rep = launcher::stop(&resolved, &launch_env()?)?;
             if rep.killed {
                 println!("stopped {}", rep.tmux_session);
             } else {
@@ -472,7 +475,7 @@ fn run(cli: Cli) -> Result<i32> {
         } => {
             let config = Config::load(&config_path()?)?;
             let resolved = config.workspace(workspace)?;
-            let env = home_env()?;
+            let env = launch_env()?;
             let rep = if *local {
                 launcher::mcp_probe_local(&resolved, &env, *calls)?
             } else {
@@ -522,35 +525,35 @@ fn run(cli: Cli) -> Result<i32> {
             }
             InternalCommand::Probe { payload } => {
                 let req: ProbeRequest = payload::decode(payload)?;
-                print_json(&work::probe(&req, &work_tools()?))
+                print_json(&work::probe(&req, &agent_tools(config_path().ok().as_deref())?))
             }
-            InternalCommand::WorkRun { payload } => {
+            InternalCommand::AgentRun { payload } => {
                 let req: RunRequest = payload::decode(payload)?;
-                print_json(&work::run(&req, &work_tools()?)?)
+                print_json(&work::run(&req, &agent_tools(config_path().ok().as_deref())?)?)
             }
-            InternalCommand::WorkStart { payload } => {
+            InternalCommand::AgentStart { payload } => {
                 let req: StartRequest = payload::decode(payload)?;
-                print_json(&work::start(&req, &work_tools()?)?)
+                print_json(&work::start(&req, &agent_tools(config_path().ok().as_deref())?)?)
             }
             InternalCommand::Attach { payload } => {
                 let req: AttachRequest = payload::decode(payload)?;
-                work::attach(&req, &work_tools()?)
+                work::attach(&req, &agent_tools(config_path().ok().as_deref())?)
             }
-            InternalCommand::WorkStop { payload } => {
+            InternalCommand::AgentStop { payload } => {
                 let req: StopRequest = payload::decode(payload)?;
-                print_json(&work::stop(&req, &work_tools()?)?)
+                print_json(&work::stop(&req, &agent_tools(config_path().ok().as_deref())?)?)
             }
-            InternalCommand::WorkStatus { payload } => {
+            InternalCommand::AgentStatus { payload } => {
                 let req: StatusRequest = payload::decode(payload)?;
-                print_json(&work::status(&req, &work_tools()?))
+                print_json(&work::status(&req, &agent_tools(config_path().ok().as_deref())?))
             }
-            InternalCommand::WorkResult { payload } => {
+            InternalCommand::AgentResult { payload } => {
                 let req: ResultRequest = payload::decode(payload)?;
-                print_json(&work::result(&req, &work_tools()?)?)
+                print_json(&work::result(&req, &agent_tools(config_path().ok().as_deref())?)?)
             }
-            InternalCommand::WorkPurge { payload } => {
+            InternalCommand::AgentPurge { payload } => {
                 let req: PurgeRequest = payload::decode(payload)?;
-                print_json(&work::purge(&req, &work_tools()?))
+                print_json(&work::purge(&req, &agent_tools(config_path().ok().as_deref())?))
             }
         },
     }
@@ -561,18 +564,45 @@ fn run(cli: Cli) -> Result<i32> {
 /// Everything else has a default. Running it again is not an error and
 /// not a rewrite: it reports what it changed, or that there was nothing
 /// to change.
-fn init(path: &std::path::Path, agent: Option<&str>, runtime: &str) -> Result<i32> {
+fn init(path: &std::path::Path, agent: Option<&str>, runtime: Option<&str>) -> Result<i32> {
     let mut edit = configedit::Edit::open(path)?;
     let existed = edit.existed();
     let mut changes = configedit::Changes::default();
-    // Without --agent this is the Agent Node's own config: how to reach
-    // the projects, and deliberately nothing else. The workspace list
-    // lives on one machine, because two lists are two answers to "where
-    // is this project".
-    if let Some(agent) = agent {
-        edit.set_node("agent", "ssh_from_runtime", agent, &mut changes);
+    // One alias, and it names the *other* node: an ssh alias only means
+    // something on the machine that dials it, so this file only ever
+    // describes how this machine dials out. Which flag was given is also
+    // what this machine is, so `this` comes from the same answer and
+    // nobody has to state their own identity twice.
+    let (this, other, alias) = match (agent, runtime) {
+        (Some(alias), None) => ("runtime", "agent", alias),
+        (None, Some(alias)) => ("agent", "runtime", alias),
+        // clap's conflicts_with/required_unless_present make both of these
+        // unreachable from the CLI; the arms exist so the function is
+        // total for callers that are not clap.
+        (Some(_), Some(_)) => {
+            return Err(ccnm_core::Error::invalid_args(
+                "--agent and --runtime each say which node this machine is, so only one of them can be true here\n  on the machine holding the projects:  ccnm init --agent <alias>\n  on the machine running Claude:        ccnm init --runtime <alias>",
+            ));
+        }
+        (None, None) => {
+            return Err(ccnm_core::Error::invalid_args(
+                "give the alias for the other node:\n  on the machine holding the projects:  ccnm init --agent <alias>\n  on the machine running Claude:        ccnm init --runtime <alias>",
+            ));
+        }
+    };
+    edit.set_this(this, &mut changes);
+    // An Agent Node says outright that the workspace list is elsewhere.
+    // Without it a Runtime Node that has no projects yet is the same file,
+    // and whichever way that is guessed, one of the two bounces requests
+    // to a machine that bounces them back.
+    if this == "agent" {
+        edit.set_delegate(other, &mut changes);
     }
-    edit.set_node("runtime", "ssh_from_agent", runtime, &mut changes);
+    // The node this machine is gets a table of its own even with nothing
+    // in it: `this` has to name a [nodes.*] entry, and a config that
+    // fails its own validation the moment it is written is not a config.
+    edit.ensure_node(this, &mut changes);
+    edit.set_node(other, "ssh", alias, &mut changes);
     edit.save(&changes)?;
 
     if !existed {
@@ -583,10 +613,8 @@ fn init(path: &std::path::Path, agent: Option<&str>, runtime: &str) -> Result<i3
         println!();
     }
     let config = Config::load(path)?;
-    if agent.is_none() {
-        println!(
-            "this Agent Node will ask Runtime Node {runtime} for a workspace it does not know"
-        );
+    if this == "agent" {
+        println!("this Agent Node will ask Runtime Node {alias} for a workspace it does not know");
         println!("next, from here:");
         println!("  ccnm <workspace>       start it there, attach here");
     } else if config.workspaces.is_empty() {
@@ -596,16 +624,12 @@ fn init(path: &std::path::Path, agent: Option<&str>, runtime: &str) -> Result<i3
     // ssh has to work before anything else can; say so plainly rather than
     // testing it here, where a slow or absent network would turn `init`
     // into something that hangs.
-    match agent {
-        Some(agent) => {
-            println!("\nboth of these must work without a password:");
-            println!("  ssh {agent} true");
-            println!("  ssh {agent} 'ssh {runtime} true'");
-        }
-        None => {
-            println!("\nthis must work without a password:");
-            println!("  ssh {runtime} true");
-        }
+    println!("\nthis must work without a password:");
+    println!("  ssh {alias} true");
+    if this == "runtime" {
+        println!("\nand the Agent Node must be able to reach back, which is its own");
+        println!("config, written there:");
+        println!("  ssh {alias} ccnm init --runtime <this machine's alias>");
     }
     Ok(0)
 }
@@ -702,13 +726,13 @@ fn remove_workspace(path: &std::path::Path, name: &str, purge: bool) -> Result<i
     if let Ok(config) = Config::load(path)
         && let Ok(resolved) = config.workspace(name)
     {
-        match launcher::stop(&resolved, &home_env()?) {
+        match launcher::stop(&resolved, &launch_env()?) {
             Ok(rep) if rep.killed => println!("stopped {}", rep.tmux_session),
             Ok(_) => {}
             Err(e) => eprintln!("could not reach the Agent Node to stop it: {e}"),
         }
         if purge {
-            match launcher::purge(&resolved, &home_env()?) {
+            match launcher::purge(&resolved, &launch_env()?) {
                 Ok(rep) => {
                     for line in rep.removed {
                         println!("removed {line}");
@@ -843,16 +867,14 @@ fn report_changes(changes: &configedit::Changes, path: &std::path::Path) {
     }
 }
 
-/// The home alias to delegate to and that host's settings, when this
-/// machine is the Agent Node.
+/// The Runtime Node to delegate to and its settings, when this machine is
+/// an Agent Node that was asked for a workspace it does not define.
 ///
-/// The test is not "which machine am I" -- ccnm never tries to guess that
-/// -- but "does this config define the workspace being asked for". A home
-/// config does. A work config has no workspaces at all, only how to reach
-/// the Runtime Node, so a name it does not know plus a Runtime Node to ask
-/// is exactly the Agent-only case. A Runtime Node config with a typo'd
-/// workspace name still falls through to the normal error because it has
-/// `ssh_from_runtime` as well.
+/// The first test is "does this config define the workspace being asked
+/// for", because a Runtime Node config with a typo'd workspace name must
+/// fall through to the normal error rather than be shipped over ssh. Only
+/// a config with no workspace list at all -- which is what an Agent Node
+/// keeps, deliberately -- has anywhere to forward the question to.
 fn agent_side<'a>(
     config: &'a Config,
     workspace: &str,
@@ -899,9 +921,21 @@ fn attach_request(workspace: &str) -> AttachRequest {
     }
 }
 
-fn work_tools() -> Result<work::Tools<'static>> {
+/// The Agent Node's own view of the world.
+///
+/// A missing or broken config is not fatal here: `attach`, `status`,
+/// `stop` and `result` answer from this machine's own session files and
+/// never need one. The commands that do need it -- the ones that dial the
+/// Runtime Node -- fail in `runtime_link` with a sentence naming the node
+/// they could not find, which beats failing every command with a parse
+/// error about a file most of them never read.
+fn agent_tools(config_path: Option<&std::path::Path>) -> Result<work::Tools<'static>> {
     let state = paths::state_dir()?;
+    let config = config_path
+        .and_then(|p| Config::load(p).ok())
+        .unwrap_or_default();
     Ok(work::Tools {
+        config,
         runner: &SystemRunner,
         control_dir: state.join("ssh"),
         claude: claude::locate_from_env(),
@@ -911,7 +945,7 @@ fn work_tools() -> Result<work::Tools<'static>> {
     })
 }
 
-fn home_env() -> Result<launcher::Env<'static>> {
+fn launch_env() -> Result<launcher::Env<'static>> {
     Ok(launcher::Env {
         runner: &SystemRunner,
         control_dir: paths::state_dir()?.join("ssh"),

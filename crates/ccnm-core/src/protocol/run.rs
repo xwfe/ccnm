@@ -1,10 +1,14 @@
-//! Starting, attaching to, listing and ending Claude sessions on the work
-//! machine: `work-run` (print mode, waits and brings the result home) and
-//! `work-start` / `attach` / `status` / `stop` (interactive, which return
+//! Starting, attaching to, listing and ending Claude sessions on the Agent
+//! Node: `agent-run` (print mode, waits and returns the result) and
+//! `agent-start` / `attach` / `status` / `stop` (interactive, which return
 //! immediately because the session outlives the call).
 //!
-//! Like the probe, the Agent Node has no config file: everything it
-//! needs is in the request, and everything it learned is in the report.
+//! A request names the Runtime Node rather than describing how to dial it.
+//! An ssh alias only means something to the machine whose `~/.ssh/config`
+//! defines it, so the Agent Node looks the name up in its own config and
+//! uses its own alias. That also lets it recognise the case where the name
+//! is *itself*: agent and project on one machine, nothing to dial, Claude
+//! working with its native tools.
 
 use std::path::PathBuf;
 
@@ -22,8 +26,10 @@ pub struct RunRequest {
     pub workspace: String,
     /// Project root on the Runtime Node; passed through to the MCP payload.
     pub root: PathBuf,
-    pub home_alias: String,
-    pub home_ccnm_bin: String,
+    /// The node holding the project, by name. The Agent Node resolves it
+    /// against its own config; when it names the Agent Node itself there
+    /// is nothing to dial.
+    pub runtime_node: String,
     pub claude_config_dir: Option<PathBuf>,
     pub permission_mode: PermissionMode,
     /// The one prompt of a print-mode session.
@@ -82,7 +88,7 @@ impl RunReport {
     }
 }
 
-/// `ccnm internal work-start`: bring up an interactive session, or say that
+/// `ccnm internal agent-start`: bring up an interactive session, or say that
 /// one is already up. Carries no timeout — an interactive session ends when
 /// the person using it ends it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -90,8 +96,10 @@ pub struct StartRequest {
     pub protocol: u32,
     pub workspace: String,
     pub root: PathBuf,
-    pub home_alias: String,
-    pub home_ccnm_bin: String,
+    /// The node holding the project, by name. The Agent Node resolves it
+    /// against its own config; when it names the Agent Node itself there
+    /// is nothing to dial.
+    pub runtime_node: String,
     pub claude_config_dir: Option<PathBuf>,
     pub permission_mode: PermissionMode,
     /// What Claude opens with; `None` opens an empty prompt.
@@ -190,7 +198,7 @@ impl Protocol for AttachRequest {
     }
 }
 
-/// `ccnm internal work-stop`: end the workspace's session.
+/// `ccnm internal agent-stop`: end the workspace's session.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StopRequest {
     pub protocol: u32,
@@ -217,12 +225,12 @@ impl Protocol for StopReport {
     }
 }
 
-/// `ccnm internal work-result`: what a session that already ran produced.
+/// `ccnm internal agent-result`: what a session that already ran produced.
 ///
 /// This exists for the interruption `--print` cannot survive. The session
 /// itself does: it is the supervisor's child, not the ssh's, so it runs on
 /// and writes its result to the session directory. What breaks is the
-/// waiting — the ssh carrying `work-run` dies with the laptop lid, and the
+/// waiting — the ssh carrying `agent-run` dies with the laptop lid, and the
 /// answer is on the other machine with no way to ask for it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResultRequest {
@@ -278,7 +286,7 @@ impl ResultReport {
     }
 }
 
-/// `ccnm internal work-purge`: delete what ccnm kept for a workspace.
+/// `ccnm internal agent-purge`: delete what ccnm kept for a workspace.
 ///
 /// Only ccnm's own bookkeeping -- the session records and the directory
 /// Claude ran in. **Never the project**: that is the one thing on either
@@ -313,7 +321,7 @@ impl Protocol for PurgeReport {
     }
 }
 
-/// `ccnm internal work-status`: every live session on the Agent Node.
+/// `ccnm internal agent-status`: every live session on the Agent Node.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StatusRequest {
     pub protocol: u32,

@@ -15,7 +15,7 @@
 //!
 //! **Surprise anyone.** Every operation here reports what it changed, in
 //! the terms of the file: "added workspaces.x",
-//! "nodes.agent.ssh_from_runtime: a -> b",
+//! "nodes.agent.ssh: a -> b",
 //! or "nothing to change". Running one twice is not an error and does not
 //! do the work twice; the second run says the setting is already what was
 //! asked for.
@@ -86,6 +86,75 @@ impl Edit {
 
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// Set the top-level `this`, which names the node this machine is.
+    ///
+    /// Written before the `[nodes.*]` tables so it reads as the heading it
+    /// is: every alias below is dialled from here.
+    pub fn set_this(&mut self, node: &str, changes: &mut Changes) {
+        let before = self.doc.get("this").and_then(Item::as_str).map(str::to_string);
+        match before {
+            Some(current) if current == node => {}
+            Some(current) => {
+                self.doc["this"] = value(node);
+                changes.note(format!("this: {current} -> {node}"));
+            }
+            None => {
+                self.doc["this"] = value(node);
+                if let Some((mut key, _)) = self.doc.get_key_value_mut("this") {
+                    key.leaf_decor_mut().set_prefix(
+                        "# The node this machine is; every `ssh` below is dialled from here.\n",
+                    );
+                }
+                changes.note(format!("this = {node}"));
+            }
+        }
+    }
+
+    /// Set the top-level `runtime_node`: this machine keeps no workspace
+    /// list and asks that node instead.
+    pub fn set_delegate(&mut self, node: &str, changes: &mut Changes) {
+        let before = self
+            .doc
+            .get("runtime_node")
+            .and_then(Item::as_str)
+            .map(str::to_string);
+        match before {
+            Some(current) if current == node => {}
+            Some(current) => {
+                self.doc["runtime_node"] = value(node);
+                changes.note(format!("runtime_node: {current} -> {node}"));
+            }
+            None => {
+                self.doc["runtime_node"] = value(node);
+                if let Some((mut key, _)) = self.doc.get_key_value_mut("runtime_node") {
+                    key.leaf_decor_mut()
+                        .set_prefix("# No workspace list here; ask this node about any workspace.\n");
+                }
+                changes.note(format!("runtime_node = {node}"));
+            }
+        }
+    }
+
+    /// Make sure `nodes.<name>` exists, without giving it any fields.
+    ///
+    /// The node a config calls `this` usually has nothing to say -- no
+    /// alias, because it does not dial itself -- but it still has to be in
+    /// the table `this` points into.
+    pub fn ensure_node(&mut self, name: &str, changes: &mut Changes) {
+        let nodes = self.table("nodes");
+        if nodes.contains_key(name) {
+            return;
+        }
+        // Explicit, not implicit: this table is empty and stays empty, and
+        // an implicit one with nothing in it is not written out at all --
+        // which would leave `this` pointing at a node the file never
+        // mentions, the one shape validation rejects.
+        let mut table = toml_edit::Table::new();
+        table.set_implicit(false);
+        nodes.insert(name, Item::Table(table));
+        changes.note(format!("nodes.{name} (this machine)"));
     }
 
     /// Point `nodes.<name>.<field>` at `alias`, creating the table if this
@@ -264,8 +333,9 @@ mod tests {
         let mut edit = Edit::open(&path).unwrap();
         assert!(!edit.existed());
         let mut changes = Changes::default();
-        edit.set_node("agent", "ssh_from_runtime", "fodelf", &mut changes);
-        edit.set_node("runtime", "ssh_from_agent", "xdwmbp", &mut changes);
+        edit.set_this("runtime", &mut changes);
+        edit.ensure_node("runtime", &mut changes);
+        edit.set_node("agent", "ssh", "fodelf", &mut changes);
         edit.set_workspace(
             "xshun",
             Path::new("/Users/bing/code/xshun"),
@@ -279,8 +349,7 @@ mod tests {
         let config = Config::load(&path).unwrap();
         assert_eq!(config.version, None, "nothing writes a version any more");
         let resolved = config.workspace("xshun").unwrap();
-        assert_eq!(resolved.agent_ssh, "fodelf");
-        assert_eq!(resolved.runtime_alias, "xdwmbp");
+        assert_eq!(resolved.agent_ssh().unwrap(), "fodelf");
         assert_eq!(resolved.workspace.root, Path::new("/Users/bing/code/xshun"));
     }
 
@@ -292,9 +361,13 @@ mod tests {
         let path = temp("comments");
         std::fs::write(
             &path,
-            "# the Agent Node is the mac mini\n\
+            "this = \"runtime\"\n\
+             \n\
+             # the Agent Node is the mac mini\n\
              [nodes.agent]\n\
-             ssh_from_runtime = \"fodelf\"\n\
+             ssh = \"fodelf\"\n\
+             \n\
+             [nodes.runtime]\n\
              \n\
              [workspaces.old]\n\
              agent_node = \"agent\"\n\
@@ -306,7 +379,6 @@ mod tests {
 
         let mut edit = Edit::open(&path).unwrap();
         let mut changes = Changes::default();
-        edit.set_node("runtime", "ssh_from_agent", "xdwmbp", &mut changes);
         edit.set_workspace("new", Path::new("/b"), "agent", None, None, &mut changes);
         edit.save(&changes).unwrap();
 
@@ -324,8 +396,9 @@ mod tests {
         let path = temp("idempotent");
         let mut first = Edit::open(&path).unwrap();
         let mut changes = Changes::default();
-        first.set_node("agent", "ssh_from_runtime", "fodelf", &mut changes);
-        first.set_node("runtime", "ssh_from_agent", "xdwmbp", &mut changes);
+        first.set_this("runtime", &mut changes);
+        first.ensure_node("runtime", &mut changes);
+        first.set_node("agent", "ssh", "fodelf", &mut changes);
         first.set_workspace("x", Path::new("/a"), "agent", None, None, &mut changes);
         first.save(&changes).unwrap();
         let after_first = std::fs::read_to_string(&path).unwrap();
@@ -333,8 +406,9 @@ mod tests {
 
         let mut again = Edit::open(&path).unwrap();
         let mut changes = Changes::default();
-        again.set_node("agent", "ssh_from_runtime", "fodelf", &mut changes);
-        again.set_node("runtime", "ssh_from_agent", "xdwmbp", &mut changes);
+        again.set_this("runtime", &mut changes);
+        again.ensure_node("runtime", &mut changes);
+        again.set_node("agent", "ssh", "fodelf", &mut changes);
         again.set_workspace("x", Path::new("/a"), "agent", None, None, &mut changes);
         again.save(&changes).unwrap();
         assert!(changes.is_empty(), "{:?}", changes.lines());
@@ -346,15 +420,19 @@ mod tests {
         let path = temp("change");
         let mut edit = Edit::open(&path).unwrap();
         let mut changes = Changes::default();
-        edit.set_node("agent", "ssh_from_runtime", "old-alias", &mut changes);
+        edit.set_this("runtime", &mut changes);
+        edit.ensure_node("runtime", &mut changes);
+        edit.set_node("agent", "ssh", "old-alias", &mut changes);
         edit.save(&changes).unwrap();
 
         let mut edit = Edit::open(&path).unwrap();
         let mut changes = Changes::default();
-        edit.set_node("agent", "ssh_from_runtime", "new-alias", &mut changes);
+        edit.set_this("runtime", &mut changes);
+        edit.ensure_node("runtime", &mut changes);
+        edit.set_node("agent", "ssh", "new-alias", &mut changes);
         assert_eq!(
             changes.lines(),
-            ["nodes.agent.ssh_from_runtime: old-alias -> new-alias"]
+            ["nodes.agent.ssh: old-alias -> new-alias"]
         );
     }
 
@@ -363,8 +441,9 @@ mod tests {
         let path = temp("remove");
         let mut edit = Edit::open(&path).unwrap();
         let mut changes = Changes::default();
-        edit.set_node("agent", "ssh_from_runtime", "w", &mut changes);
-        edit.set_node("runtime", "ssh_from_agent", "h", &mut changes);
+        edit.set_this("runtime", &mut changes);
+        edit.ensure_node("runtime", &mut changes);
+        edit.set_node("agent", "ssh", "w", &mut changes);
         edit.set_workspace("x", Path::new("/a"), "agent", None, None, &mut changes);
         edit.save(&changes).unwrap();
 

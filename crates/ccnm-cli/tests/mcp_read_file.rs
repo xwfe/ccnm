@@ -219,8 +219,8 @@ fn config_for(root: &Path, unconfined: bool) -> PathBuf {
         &path,
         format!(
             "version = 1\n\
-             [nodes.agent]\nssh_from_runtime = \"ccnm-test-nowhere.invalid\"\n\
-             [nodes.runtime]\nssh_from_agent = \"ccnm-home\"\n\
+             this = \"runtime\"\n[nodes.agent]\nssh = \"ccnm-test-nowhere.invalid\"\n\
+             [nodes.runtime]\n\
              [workspaces.t]\nagent_node = \"agent\"\nroot = \"{}\"\n\
              allow_unconfined_exec = {unconfined}\n",
             root.display()

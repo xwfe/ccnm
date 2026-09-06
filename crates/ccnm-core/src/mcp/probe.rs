@@ -229,7 +229,7 @@ mod tests {
     #[test]
     fn unspawnable_transport_is_internal() {
         let cmd = Cmd::new("ccnm-definitely-not-installed");
-        let err = probe(&cmd, 1, Duration::from_secs(5), ErrorCode::HomeUnreachable).unwrap_err();
+        let err = probe(&cmd, 1, Duration::from_secs(5), ErrorCode::RuntimeUnreachable).unwrap_err();
         assert_eq!(err.code(), ErrorCode::Internal);
         assert!(
             err.message().contains("ccnm-definitely-not-installed"),
@@ -240,8 +240,8 @@ mod tests {
     #[test]
     fn a_process_that_is_not_an_mcp_server_is_unreachable_with_its_stderr() {
         let cmd = Cmd::new("sh").args(["-c", "echo nope >&2; exit 3"]);
-        let err = probe(&cmd, 1, Duration::from_secs(5), ErrorCode::HomeUnreachable).unwrap_err();
-        assert_eq!(err.code(), ErrorCode::HomeUnreachable);
+        let err = probe(&cmd, 1, Duration::from_secs(5), ErrorCode::RuntimeUnreachable).unwrap_err();
+        assert_eq!(err.code(), ErrorCode::RuntimeUnreachable);
         assert!(err.message().contains("stderr: nope"), "{err}");
     }
 
@@ -253,10 +253,10 @@ mod tests {
             &cmd,
             1,
             Duration::from_millis(300),
-            ErrorCode::WorkUnreachable,
+            ErrorCode::AgentUnreachable,
         )
         .unwrap_err();
-        assert_eq!(err.code(), ErrorCode::WorkUnreachable);
+        assert_eq!(err.code(), ErrorCode::AgentUnreachable);
         assert!(err.message().contains("timed out"), "{err}");
         assert!(started.elapsed() < Duration::from_secs(10));
     }

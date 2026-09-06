@@ -251,14 +251,7 @@ pub fn run(config_path: &Path, workspace: Option<&str>, env: &Env<'_>) -> Report
             Ok(resolved) => {
                 checks.push(Check::ok(
                     "Workspace config",
-                    format!(
-                        "backend={} agent_node={} (ssh_from_runtime {}), runtime_node={} (ssh_from_agent {})",
-                        resolved.workspace.backend.as_str(),
-                        resolved.workspace.agent_node,
-                        resolved.agent_ssh,
-                        resolved.workspace.runtime_node,
-                        resolved.runtime_alias
-                    ),
+                    describe_workspace(&resolved),
                 ));
                 checks.extend(workspace_checks(&resolved, env));
             }
@@ -267,6 +260,28 @@ pub fn run(config_path: &Path, workspace: Option<&str>, env: &Env<'_>) -> Report
     }
 
     Report { subject, checks }
+}
+
+/// The one line that says which machines a workspace spans, and how this
+/// one dials them. Colocated workspaces dial nothing, so saying "ssh"
+/// there would be a lie about the topology.
+fn describe_workspace(r: &Resolved<'_>) -> String {
+    let ws = r.workspace;
+    if r.is_colocated() {
+        return format!(
+            "backend={} agent and project both on {} (ssh {}), native tools",
+            ws.backend.as_str(),
+            ws.agent_node,
+            r.agent_ssh().unwrap_or("-"),
+        );
+    }
+    format!(
+        "backend={} agent_node={} (ssh {}), runtime_node={}",
+        ws.backend.as_str(),
+        ws.agent_node,
+        r.agent_ssh().unwrap_or("-"),
+        ws.runtime_node,
+    )
 }
 
 fn workspace_checks(r: &Resolved<'_>, env: &Env<'_>) -> Vec<Check> {
@@ -280,16 +295,17 @@ fn workspace_checks(r: &Resolved<'_>, env: &Env<'_>) -> Vec<Check> {
     }
 
     let mut checks = vec![
-        home_workspace(&ws.root),
+        runtime_workspace(&ws.root),
         project_instructions(r),
-        home_ccnm(r, env),
+        runtime_ccnm(r, env),
     ];
     // Before anything that needs the network: this is an audit of the
     // local account, and it is exactly as true when the Agent Node is
     // unreachable.
     checks.extend(runtime_safety_rows(env, r));
 
-    let ssh = match Ssh::new(r.agent_ssh, &env.control_dir).and_then(|ssh| {
+    let ssh = match r.agent_ssh().and_then(|alias| {
+        let ssh = Ssh::new(alias, &env.control_dir)?;
         ssh.check_control_path()?;
         Ok(ssh.with_ccnm_bin(r.agent.ccnm_bin()))
     }) {
@@ -306,7 +322,7 @@ fn workspace_checks(r: &Resolved<'_>, env: &Env<'_>) -> Vec<Check> {
         Err(e) => {
             checks.push(Check::fail_with(
                 "Agent SSH",
-                ErrorCode::WorkUnreachable,
+                ErrorCode::AgentUnreachable,
                 e.message(),
             ));
             checks.extend(skipped_after_agent_ssh());
@@ -319,8 +335,7 @@ fn workspace_checks(r: &Resolved<'_>, env: &Env<'_>) -> Vec<Check> {
         protocol: PROTOCOL,
         workspace: r.name.to_string(),
         root: ws.root.clone(),
-        home_alias: r.runtime_alias.to_string(),
-        home_ccnm_bin: r.runtime.ccnm_bin(),
+        runtime_node: r.workspace.runtime_node.clone(),
         claude_config_dir: r.agent.claude_config_dir.clone(),
         // One real MCP session, shut down before the probe returns.
         mcp_calls: 1,
@@ -331,7 +346,7 @@ fn workspace_checks(r: &Resolved<'_>, env: &Env<'_>) -> Vec<Check> {
         &["internal", "probe"],
         &req,
         Duration::from_secs(90),
-        ErrorCode::WorkUnreachable,
+        ErrorCode::AgentUnreachable,
     ) {
         Ok(rep) => {
             checks.push(Check::ok("Agent SSH", resolved.target()));
@@ -367,61 +382,89 @@ fn probe_rows(r: &Resolved<'_>, rep: &ProbeReport) -> Vec<Check> {
 
     checks.push(auth_row(r, rep));
 
-    match &rep.home_hello {
-        Ok(h) => {
-            checks.push(match version_row("Reverse SSH", h, "the runtime host") {
-                ok if ok.status == Status::Ok => Check::ok(
-                    "Reverse SSH",
-                    format!("{} as {}, ccnm {}", r.runtime_alias, h.user, h.ccnm_version),
-                ),
-                fail => fail,
-            });
-            checks.push(mcp_row(rep));
-            checks.push(match h.root {
-                Some(status) if status.is_ok() => Check::ok(
-                    "Workspace root",
-                    format!(
-                        "{} is a directory for {}",
-                        r.workspace.root.display(),
-                        h.user
-                    ),
-                ),
-                Some(status) => Check::fail_with(
-                    "Workspace root",
-                    ErrorCode::WrongWorkspace,
-                    format!(
-                        "{} is {} for {} on {}",
-                        r.workspace.root.display(),
-                        status.describe(),
-                        h.user,
-                        r.runtime_alias
-                    ),
-                ),
-                None => Check::warn(
-                    "Workspace root",
-                    "the runtime host's hello did not report the root",
-                ),
-            });
+    // A colocated workspace dials nothing back, so the two rows about the
+    // reverse link are not failures to report -- there is no reverse link
+    // by design. The project is on the Agent Node, so its own hello is
+    // what says whether the root is there.
+    match &rep.runtime_ssh {
+        None => {
+            let why = format!(
+                "agent and project are both on {}, so nothing dials back",
+                r.workspace.agent_node
+            );
+            checks.push(Check::skip("Reverse SSH", &why));
+            checks.push(Check::skip("Remote MCP handshake", &why));
+            checks.push(root_row(r, &rep.hello, &r.workspace.agent_node));
             checks.push(terminal_row(r, rep));
         }
-        Err(e) => {
-            checks.push(Check::fail_report("Reverse SSH", e));
-            checks.push(Check::skip(
-                "Remote MCP handshake",
-                "not checked: reverse SSH failed",
-            ));
-            checks.push(Check::skip(
-                "Workspace root",
-                "not checked: reverse SSH failed",
-            ));
-            checks.push(Check::skip(
-                "Terminal session",
-                "not checked: reverse SSH failed",
-            ));
-        }
+        Some(_) => match &rep.runtime_hello {
+            Some(Ok(h)) => {
+                checks.push(match version_row("Reverse SSH", h, "the Runtime Node") {
+                    ok if ok.status == Status::Ok => Check::ok(
+                        "Reverse SSH",
+                        format!(
+                            "{} as {}, ccnm {}",
+                            r.workspace.runtime_node, h.user, h.ccnm_version
+                        ),
+                    ),
+                    fail => fail,
+                });
+                checks.push(mcp_row(rep));
+                checks.push(root_row(r, h, &r.workspace.runtime_node));
+                checks.push(terminal_row(r, rep));
+            }
+            Some(Err(e)) => {
+                checks.push(Check::fail_report("Reverse SSH", e));
+                checks.extend(skipped_after_reverse_ssh());
+            }
+            None => {
+                checks.push(Check::warn(
+                    "Reverse SSH",
+                    "that ccnm build reported an alias but no hello",
+                ));
+                checks.extend(skipped_after_reverse_ssh());
+            }
+        },
     }
 
     checks
+}
+
+/// Whether the project is where the workspace says it is, as reported by
+/// whichever node is supposed to be holding it.
+fn root_row(r: &Resolved<'_>, h: &crate::protocol::hello::HelloReport, node: &str) -> Check {
+    match h.root {
+        Some(status) if status.is_ok() => Check::ok(
+            "Workspace root",
+            format!(
+                "{} is a directory for {}",
+                r.workspace.root.display(),
+                h.user
+            ),
+        ),
+        Some(status) => Check::fail_with(
+            "Workspace root",
+            ErrorCode::WrongWorkspace,
+            format!(
+                "{} is {} for {} on {}",
+                r.workspace.root.display(),
+                status.describe(),
+                h.user,
+                node
+            ),
+        ),
+        None => Check::warn(
+            "Workspace root",
+            format!("{node}'s hello did not report the root"),
+        ),
+    }
+}
+
+fn skipped_after_reverse_ssh() -> Vec<Check> {
+    ["Remote MCP handshake", "Workspace root", "Terminal session"]
+        .into_iter()
+        .map(|name| Check::skip(name, "not checked: reverse SSH failed"))
+        .collect()
 }
 
 /// tmux on the Agent Node, and whether this workspace has a session in
@@ -707,7 +750,7 @@ fn project_instructions(r: &Resolved<'_>) -> Check {
 }
 
 /// The project root must exist on this (home) machine.
-fn home_workspace(root: &Path) -> Check {
+fn runtime_workspace(root: &Path) -> Check {
     match std::fs::metadata(root) {
         Ok(meta) if meta.is_dir() => Check::ok("Runtime workspace", root.display().to_string()),
         Ok(_) => Check::fail_with(
@@ -731,7 +774,7 @@ fn home_workspace(root: &Path) -> Check {
 /// this machine. Look at that exact path now, as this user, so a missing
 /// or stale install is reported here instead of as a cryptic exit 127
 /// from the other side.
-fn home_ccnm(r: &Resolved<'_>, env: &Env<'_>) -> Check {
+fn runtime_ccnm(r: &Resolved<'_>, env: &Env<'_>) -> Check {
     const NAME: &str = "Runtime ccnm";
     let configured = r.runtime.ccnm_bin();
     let path = paths::expand_home(&configured, &env.home);
@@ -740,8 +783,7 @@ fn home_ccnm(r: &Resolved<'_>, env: &Env<'_>) -> Check {
             NAME,
             ErrorCode::Version,
             format!(
-                "{configured} is not an executable on this Runtime Node, but the Agent Node will invoke it over ssh {}\ninstall this build there: cp $(which ccnm) {}   (or set nodes.{}.ccnm_bin)",
-                r.runtime_alias,
+                "{configured} is not an executable on this Runtime Node, but the Agent Node will invoke it over ssh\ninstall this build there: cp $(which ccnm) {}   (or set nodes.{}.ccnm_bin)",
                 path.display(),
                 r.workspace.runtime_node
             ),
@@ -844,7 +886,7 @@ mod tests {
         std::fs::write(
             &config,
             format!(
-                "version = 1\n[nodes.agent]\nssh_from_runtime = \"work\"\n[nodes.runtime]\nssh_from_agent = \"ccnm-home\"\n[workspaces.xshun]\nagent_node = \"agent\"\nroot = \"{}\"\n",
+                "version = 1\nthis = \"runtime\"\n[nodes.agent]\nssh = \"work\"\n[nodes.runtime]\n[workspaces.xshun]\nagent_node = \"agent\"\nroot = \"{}\"\n",
                 root.display()
             ),
         )
@@ -937,14 +979,14 @@ mod tests {
                     subscription_type: Some("max".into()),
                 }),
             },
-            home_ssh: Ok(crate::ssh::ResolvedSsh {
-                hostname: "home.t.ts.net".into(),
+            runtime_ssh: Some(Ok(crate::ssh::ResolvedSsh {
+                hostname: "runtime.t.ts.net".into(),
                 user: "ccrun".into(),
                 port: 22,
                 identity_files: vec![],
                 proxy_jump: None,
-            }),
-            home_hello: Ok(hello("ccrun", crate::VERSION, Some(true))),
+            })),
+            runtime_hello: Some(Ok(hello("ccrun", crate::VERSION, Some(true)))),
             mcp: Some(Ok(crate::protocol::mcp::ProbeReport {
                 connect_us: 190_000,
                 server_name: "ccnm".into(),
@@ -1190,7 +1232,7 @@ mod tests {
         );
         assert_eq!(
             row(&report, "Reverse SSH").detail,
-            format!("ccnm-home as ccrun, ccnm {}", crate::VERSION)
+            format!("runtime as ccrun, ccnm {}", crate::VERSION)
         );
         assert_eq!(
             row(&report, "Terminal session").detail,
@@ -1232,8 +1274,7 @@ mod tests {
         let sent: ProbeRequest = crate::protocol::payload::decode(&wire).unwrap();
         assert_eq!(sent.workspace, "xshun");
         assert_eq!(sent.root, dir.join("root"));
-        assert_eq!(sent.home_alias, "ccnm-home");
-        assert_eq!(sent.home_ccnm_bin, "~/.local/bin/ccnm");
+        assert_eq!(sent.runtime_node, "runtime");
         assert_eq!(sent.mcp_calls, 1);
     }
 
@@ -1286,7 +1327,7 @@ mod tests {
     }
 
     #[test]
-    fn work_version_mismatch_logged_out_and_missing_root_are_named() {
+    fn agent_version_mismatch_logged_out_and_missing_root_are_named() {
         let (dir, config) = setup("mismatch", true, true);
         let mut probe = good_probe();
         probe.hello = hello("me", "0.0.1", None);
@@ -1296,7 +1337,7 @@ mod tests {
             email: None,
             subscription_type: None,
         });
-        probe.home_hello = Ok(hello("ccrun", crate::VERSION, Some(false)));
+        probe.runtime_hello = Some(Ok(hello("ccrun", crate::VERSION, Some(false))));
 
         let fake = FakeRunner::new();
         fake.push(Output::exited(0, format!("ccnm {}\n", crate::VERSION)));
@@ -1320,7 +1361,7 @@ mod tests {
         let root = row(&report, "Workspace root");
         assert_eq!(root.status, Status::Fail(ErrorCode::WrongWorkspace));
         assert!(
-            root.detail.contains("is missing for ccrun on ccnm-home"),
+            root.detail.contains("is missing for ccrun on runtime"),
             "{}",
             root.detail
         );
@@ -1452,10 +1493,10 @@ mod tests {
     fn reverse_ssh_failure_is_reported_from_the_probe() {
         let (dir, config) = setup("reverse", true, true);
         let mut probe = good_probe();
-        probe.home_hello = Err(ErrorReport::new(
-            ErrorCode::HomeUnreachable,
-            "ssh ccnm-home: Permission denied (publickey)",
-        ));
+        probe.runtime_hello = Some(Err(ErrorReport::new(
+            ErrorCode::RuntimeUnreachable,
+            "ssh runtime-alias: Permission denied (publickey)",
+        )));
         let fake = FakeRunner::new();
         fake.push(Output::exited(0, format!("ccnm {}\n", crate::VERSION)));
         fake.push(Output::exited(0, "hostname workmac\n"));
@@ -1463,7 +1504,7 @@ mod tests {
 
         let report = run(&config, Some("xshun"), &env(&fake, &dir));
         let reverse = row(&report, "Reverse SSH");
-        assert_eq!(reverse.status, Status::Fail(ErrorCode::HomeUnreachable));
+        assert_eq!(reverse.status, Status::Fail(ErrorCode::RuntimeUnreachable));
         assert!(
             reverse.detail.contains("Permission denied"),
             "{}",

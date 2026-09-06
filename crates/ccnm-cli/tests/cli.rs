@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use ccnm_core::protocol::hello::{HelloReport, HelloRequest};
+use ccnm_core::session::RuntimeLink;
 use ccnm_core::protocol::mcp::ProbeReport as McpProbeReport;
 use ccnm_core::protocol::payload;
 
@@ -49,7 +50,7 @@ fn setup(test: &str, home_bin: &str) -> (PathBuf, PathBuf) {
             // warnings here: these tests are about the transport, and a
             // machine without a ccrun account would otherwise fail every
             // one of them for the same unrelated reason.
-            "version = 1\n[nodes.agent]\nssh_from_runtime = \"ccnm-test-nowhere.invalid\"\n[nodes.runtime]\nssh_from_agent = \"ccnm-home\"\nccnm_bin = \"{home_bin}\"\n[workspaces.xshun]\nagent_node = \"agent\"\nroot = \"{}\"\nallow_unconfined_exec = true\n",
+            "version = 1\nthis = \"runtime\"\n[nodes.agent]\nssh = \"ccnm-test-nowhere.invalid\"\n[nodes.runtime]\nccnm_bin = \"{home_bin}\"\n[workspaces.xshun]\nagent_node = \"agent\"\nroot = \"{}\"\nallow_unconfined_exec = true\n",
             root.display()
         ),
     )
@@ -207,7 +208,7 @@ fn garbage_payload_is_a_version_error() {
 }
 
 #[test]
-fn doctor_against_unreachable_work_exits_work_unreachable() {
+fn doctor_against_an_unreachable_agent_exits_agent_unreachable() {
     // The real test binary stands in for ~/.local/bin/ccnm: same version.
     let (dir, config) = setup("unreachable", env!("CARGO_BIN_EXE_ccnm"));
     let out = ccnm()
@@ -226,7 +227,7 @@ fn doctor_against_unreachable_work_exits_work_unreachable() {
         "{text}"
     );
     assert!(
-        text.contains("Agent SSH               FAIL   CCNM_E_WORK_UNREACHABLE"),
+        text.contains("Agent SSH               FAIL   CCNM_E_AGENT_UNREACHABLE"),
         "{text}"
     );
     assert!(
@@ -391,14 +392,7 @@ fn init_and_workspace_add_write_a_config_that_loads() {
 
     let init = || {
         ccnm()
-            .args([
-                "init",
-                "--agent",
-                "work-alias",
-                "--runtime",
-                "home-alias",
-                "--config",
-            ])
+            .args(["init", "--agent", "work-alias", "--config"])
             .arg(&config)
             .output()
             .unwrap()
@@ -406,7 +400,7 @@ fn init_and_workspace_add_write_a_config_that_loads() {
     let out = init();
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
     assert!(
-        stdout(&out).contains("nodes.agent.ssh_from_runtime = work-alias"),
+        stdout(&out).contains("nodes.agent.ssh = work-alias"),
         "{}",
         stdout(&out)
     );
@@ -484,7 +478,7 @@ fn a_name_that_is_taken_is_refused_with_something_to_type() {
     };
 
     let out = ccnm()
-        .args(["init", "--agent", "w", "--runtime", "h", "--config"])
+        .args(["init", "--agent", "w", "--config"])
         .arg(&config)
         .output()
         .unwrap();
@@ -586,7 +580,7 @@ fn on_the_work_machine_an_unknown_workspace_is_asked_about_not_refused() {
 }
 
 /// The Agent Node starts a session by running this exact line on the
-/// Runtime Node. It is a string literal in `launcher::start_from_work`,
+/// Runtime Node. It is a string literal in `launcher::start_from_agent`,
 /// so nothing in the compiler ties the two together: rename the flag and
 /// the Agent-side entry keeps building and breaks at the far end, where
 /// the complaint is about an argument and the person is looking at a
@@ -618,7 +612,7 @@ fn the_line_the_work_machine_sends_home_is_one_home_accepts() {
 
 /// On the Agent Node the session is *on this machine*, so attach,
 /// status and stop are local: the workspace name is all they need. If any
-/// of them reached for the home alias, being let back into a running
+/// of them reached for the runtime alias, being let back into a running
 /// session -- or ending one -- would depend on the link being up, which
 /// is exactly when somebody needs to end one.
 #[test]
@@ -670,7 +664,7 @@ fn on_the_work_machine_attach_status_and_stop_stay_local() {
 /// command answered `workspace 'x' is not defined` here, which is true of
 /// the config and useless as an answer.
 #[test]
-fn on_the_work_machine_result_is_read_off_this_disk() {
+fn on_the_agent_node_result_is_read_off_this_disk() {
     let xdg = std::env::temp_dir().join(format!("ccnm-cli-{}-workresult", std::process::id()));
     let _ = std::fs::remove_dir_all(&xdg);
     let workspace = "ccnm-test-result";
@@ -680,7 +674,7 @@ fn on_the_work_machine_result_is_read_off_this_disk() {
     std::fs::write(
         dir.join("session.json"),
         format!(
-            r#"{{"protocol":{},"id":"{id}","workspace":"{workspace}","root":"/home/projects/x","home_alias":"home","home_ccnm_bin":"/opt/home/ccnm","permission_mode":"plan","mode":{{"mode":"print","prompt":"what broke"}},"timeout_secs":600,"cwd":"/tmp"}}"#,
+            r#"{{"protocol":{},"id":"{id}","workspace":"{workspace}","root":"/home/projects/x","runtime_alias":"home","runtime_ccnm_bin":"/opt/home/ccnm","permission_mode":"plan","mode":{{"mode":"print","prompt":"what broke"}},"timeout_secs":600,"cwd":"/tmp"}}"#,
             payload::PROTOCOL
         ),
     )
@@ -849,7 +843,7 @@ fn sitting_at_home_detached_starts_the_session_and_keeps_the_terminal_here() {
     std::fs::write(
         &config,
         format!(
-            "version = 1\n[nodes.agent]\nssh_from_runtime = \"ccnm-test-nowhere.invalid\"\nclaude_config_dir = \"/x/claude\"\n[nodes.runtime]\nssh_from_agent = \"ccnm-home\"\nccnm_bin = \"/opt/home/ccnm\"\n[workspaces.xshun]\nagent_node = \"agent\"\nroot = \"{}\"\nclaude_permission_mode = \"plan\"\nallow_unconfined_exec = true\n",
+            "version = 1\nthis = \"runtime\"\n[nodes.agent]\nssh = \"ccnm-test-nowhere.invalid\"\nclaude_config_dir = \"/x/claude\"\n[nodes.runtime]\nccnm_bin = \"/opt/home/ccnm\"\n[workspaces.xshun]\nagent_node = \"agent\"\nroot = \"{}\"\nclaude_permission_mode = \"plan\"\nallow_unconfined_exec = true\n",
             root.display()
         ),
     )
@@ -876,7 +870,7 @@ fn sitting_at_home_detached_starts_the_session_and_keeps_the_terminal_here() {
     let ssh = FakeSsh::install(
         &dir,
         &format!(
-            "  *'internal work-start'*) printf '%s\\n' '{started}' ;;\n  *'internal attach'*) exit 0 ;;\n  *'internal work-status'*) printf '%s\\n' '{nothing_running}' ;;"
+            "  *'internal agent-start'*) printf '%s\\n' '{started}' ;;\n  *'internal attach'*) exit 0 ;;\n  *'internal agent-status'*) printf '%s\\n' '{nothing_running}' ;;"
         ),
     );
     let state = short_state("home-loop");
@@ -909,7 +903,7 @@ fn sitting_at_home_detached_starts_the_session_and_keeps_the_terminal_here() {
             "ccnm-test-nowhere.invalid",
             "~/.local/bin/ccnm",
             "internal",
-            "work-start"
+            "agent-start"
         ],
         "hop 1 goes to the Agent Node, running the Agent Node's ccnm"
     );
@@ -919,8 +913,7 @@ fn sitting_at_home_detached_starts_the_session_and_keeps_the_terminal_here() {
     let req: StartRequest = payload::decode(&line[5]).unwrap();
     assert_eq!(req.workspace, "xshun");
     assert_eq!(req.root, root);
-    assert_eq!(req.home_alias, "ccnm-home");
-    assert_eq!(req.home_ccnm_bin, "/opt/home/ccnm");
+    assert_eq!(req.runtime_node, "runtime");
     assert_eq!(req.claude_config_dir, Some(PathBuf::from("/x/claude")));
     assert_eq!(req.permission_mode, ccnm_core::config::PermissionMode::Plan);
     assert_eq!(req.prompt.as_deref(), Some("fix the failing test"));
@@ -995,7 +988,7 @@ fn sitting_at_home_detached_starts_the_session_and_keeps_the_terminal_here() {
 /// ccnm is what gets run; and that an opening prompt is refused out loud
 /// rather than dropped, which is what used to happen.
 #[test]
-fn sitting_at_work_the_start_goes_home_and_the_attach_stays_here() {
+fn sitting_at_the_agent_the_start_goes_to_the_runtime_and_the_attach_stays_here() {
     let dir = std::env::temp_dir().join(format!("ccnm-cli-{}-work-loop", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -1018,10 +1011,10 @@ fn sitting_at_work_the_start_goes_home_and_the_attach_stays_here() {
     let run = |args: &[&str], config: &Path| prepared(args, config).output().unwrap();
     let pipe_in =
         |args: &[&str], config: &Path, input: &str| with_stdin(&mut prepared(args, config), input);
-    let work_side = fixture("config-agent-side.toml");
+    let agent_side = fixture("config-agent-side.toml");
 
     // ---- the plain command: home starts it, this machine attaches -----
-    let out = run(&[workspace], &work_side);
+    let out = run(&[workspace], &agent_side);
     let said = format!("{}{}", stdout(&out), stderr(&out));
     let calls = ssh.calls();
     assert_eq!(
@@ -1055,7 +1048,7 @@ fn sitting_at_work_the_start_goes_home_and_the_attach_stays_here() {
 
     // ---- --detached: the same hop, and no attach ----------------------
     ssh.forget();
-    let out = run(&[workspace, "--detached"], &work_side);
+    let out = run(&[workspace, "--detached"], &agent_side);
     let said = format!("{}{}", stdout(&out), stderr(&out));
     assert_eq!(out.status.code(), Some(0), "{said}");
     assert_eq!(ssh.calls().len(), 1);
@@ -1070,7 +1063,7 @@ fn sitting_at_work_the_start_goes_home_and_the_attach_stays_here() {
     let elsewhere = dir.join("elsewhere.toml");
     std::fs::write(
         &elsewhere,
-        "[nodes.runtime]\nssh_from_agent = \"no-such-host-for-tests\"\nccnm_bin = \"/opt/elsewhere/ccnm\"\n",
+        "this = \"agent\"\nruntime_node = \"runtime\"\n[nodes.agent]\n[nodes.runtime]\nssh = \"no-such-host-for-tests\"\nccnm_bin = \"/opt/elsewhere/ccnm\"\n",
     )
     .unwrap();
     let out = run(&[workspace, "--detached"], &elsewhere);
@@ -1090,7 +1083,7 @@ fn sitting_at_work_the_start_goes_home_and_the_attach_stays_here() {
     // it from stdin and the bytes go down the same connection.
     ssh.forget();
     let prompt = "fix the \"failing\" test, it's in mod tests";
-    let out = run(&[workspace, prompt, "--detached"], &work_side);
+    let out = run(&[workspace, prompt, "--detached"], &agent_side);
     let said = format!("{}{}", stdout(&out), stderr(&out));
     assert_eq!(out.status.code(), Some(0), "{said}");
     let calls = ssh.calls();
@@ -1118,7 +1111,7 @@ fn sitting_at_work_the_start_goes_home_and_the_attach_stays_here() {
     ssh.forget();
     let out = pipe_in(
         &[workspace, "--prompt-stdin", "--detached"],
-        &work_side,
+        &agent_side,
         "first line\nsecond line\n",
     );
     let said = format!("{}{}", stdout(&out), stderr(&out));
@@ -1134,7 +1127,7 @@ fn sitting_at_work_the_start_goes_home_and_the_attach_stays_here() {
     // An empty prompt is indistinguishable from the bug this replaced:
     // Claude opens with nothing and nobody is told why.
     ssh.forget();
-    let out = pipe_in(&[workspace, "--prompt-stdin", "--detached"], &work_side, "");
+    let out = pipe_in(&[workspace, "--prompt-stdin", "--detached"], &agent_side, "");
     let err = stderr(&out);
     assert_eq!(out.status.code(), Some(34), "invalid arguments: {err}");
     assert!(
@@ -1230,8 +1223,10 @@ fn supervise_runs_the_session_and_writes_its_exit_record() {
         id: session::new_id(),
         workspace: "xshun".into(),
         root: dir.join("root"),
-        home_alias: "ccnm-home".into(),
-        home_ccnm_bin: "~/.local/bin/ccnm".into(),
+        runtime: Some(RuntimeLink {
+            alias: "ccnm-home".into(),
+            ccnm_bin: "~/.local/bin/ccnm".into(),
+        }),
         claude_config_dir: None,
         permission_mode: Default::default(),
         mode: Mode::Print {
@@ -1241,7 +1236,7 @@ fn supervise_runs_the_session_and_writes_its_exit_record() {
         cwd: dir.clone(),
     };
     let ssh = ccnm_core::ssh::Ssh::new("ccnm-home", "/tmp/ccnm-t/cli-sup").unwrap();
-    let session_dir = session::create(&dir, &spec, &ssh).unwrap();
+    let session_dir = session::create(&dir, &spec, Some(&ssh)).unwrap();
 
     let wire = payload::encode(&SuperviseRequest::new(
         session_dir.path().to_path_buf(),

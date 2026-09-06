@@ -1,5 +1,5 @@
-//! What `ccnm` does on the Agent Node when the home launcher calls it
-//! over ssh: `probe` (read-only, for doctor) and `work-run` (create a
+//! What `ccnm` does on the Agent Node when another node calls it
+//! over ssh: `probe` (read-only, for doctor) and `agent-run` (create a
 //! session, have the controller start it, wait for the result).
 //!
 //! This code runs in an **ssh session**, which is not the login session.
@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::claude::{self, ClaudeReport};
+use crate::config::Config;
 use crate::controller;
 use crate::error::{Error, ErrorCode, ErrorReport, Reported, Result};
 use crate::mcp;
@@ -27,7 +28,7 @@ use crate::protocol::run::{
     StartReport, StartRequest, StatusReport, StatusRequest, StopReport, StopRequest,
 };
 use crate::protocol::{self};
-use crate::session::{self, Mode, Spec};
+use crate::session::{self, Mode, RuntimeLink, Spec};
 use crate::ssh::{Master, Ssh};
 use crate::tmux;
 
@@ -35,6 +36,14 @@ use crate::tmux;
 /// can script every external command and decide whether `claude` exists.
 pub struct Tools<'a> {
     pub runner: &'a dyn ProcessRunner,
+    /// This machine's own config, for turning the Runtime Node's *name*
+    /// into the alias this machine dials it by.
+    ///
+    /// The caller no longer sends an alias: one only means something to
+    /// the machine whose `~/.ssh/config` defines it. Looking it up here
+    /// also settles the colocated case, where the name is this node and
+    /// there is nothing to dial at all.
+    pub config: Config,
     /// This machine's state root; sessions and workspace dirs go under it.
     pub state: PathBuf,
     /// Where ControlPath sockets live on this machine.
@@ -58,6 +67,44 @@ impl Tools<'_> {
             .clone()
             .map(tmux::Tmux::new)
             .ok_or_else(tmux::missing)
+    }
+
+    /// How this machine reaches the node holding the project.
+    ///
+    /// `None` means the name is this machine: agent and project colocated,
+    /// nothing to dial, Claude working the project with its native tools.
+    fn runtime_link(&self, node: &str) -> Result<Option<RuntimeLink>> {
+        if self.config.this.as_deref() == Some(node) {
+            return Ok(None);
+        }
+        let Some(entry) = self.config.nodes.get(node) else {
+            return Err(Error::config(format!(
+                "the session names Runtime Node '{node}', which is not in this machine's config.toml\nadd it here, or correct runtime_node on the workspace where it is defined:\n  ccnm init --runtime <ssh alias>"
+            )));
+        };
+        let Some(alias) = entry.ssh.as_deref() else {
+            return Err(Error::config(format!(
+                "nodes.{node} in this machine's config.toml has no `ssh` alias, so there is no way to reach the project from here"
+            )));
+        };
+        Ok(Some(RuntimeLink {
+            alias: alias.to_string(),
+            ccnm_bin: entry.ccnm_bin(),
+        }))
+    }
+
+    /// The transport to the Runtime Node, and the version/root handshake
+    /// that has to succeed before a session is created against it.
+    ///
+    /// Colocated workspaces have neither: the project is right here, so
+    /// there is no far side to agree with.
+    fn dial_runtime(&self, node: &str, workspace: &str, root: &Path) -> Result<Option<Ssh>> {
+        let Some(link) = self.runtime_link(node)? else {
+            return Ok(None);
+        };
+        let ssh = Ssh::new(&link.alias, &self.control_dir)?.with_ccnm_bin(&link.ccnm_bin);
+        greet(&ssh, workspace, root, self)?;
+        Ok(Some(ssh))
     }
 }
 
@@ -84,8 +131,7 @@ pub fn run(req: &RunRequest, tools: &Tools<'_>) -> Result<RunReport> {
             ),
         ));
     }
-    let ssh = Ssh::new(&req.home_alias, &tools.control_dir)?.with_ccnm_bin(&req.home_ccnm_bin);
-    greet(&ssh, &req.workspace, &req.root, tools)?;
+    let ssh = tools.dial_runtime(&req.runtime_node, &req.workspace, &req.root)?;
     let cwd = paths::workspace_dir(&tools.state, &req.workspace);
     std::fs::create_dir_all(&cwd)?;
     let spec = Spec {
@@ -93,8 +139,7 @@ pub fn run(req: &RunRequest, tools: &Tools<'_>) -> Result<RunReport> {
         id: session::new_id(),
         workspace: req.workspace.clone(),
         root: req.root.clone(),
-        home_alias: req.home_alias.clone(),
-        home_ccnm_bin: req.home_ccnm_bin.clone(),
+        runtime: tools.runtime_link(&req.runtime_node)?,
         claude_config_dir: req.claude_config_dir.clone(),
         permission_mode: req.permission_mode,
         mode: Mode::Print {
@@ -103,7 +148,7 @@ pub fn run(req: &RunRequest, tools: &Tools<'_>) -> Result<RunReport> {
         timeout_secs: req.timeout_secs,
         cwd,
     };
-    let dir = session::create(&tools.state, &spec, &ssh)?;
+    let dir = session::create(&tools.state, &spec, ssh.as_ref())?;
     let pid = controller::start(&tools.controller, dir.path())?;
     let outcome =
         session::wait_for_outcome(&dir, Duration::from_secs(req.timeout_secs) + EXIT_GRACE)?;
@@ -249,7 +294,7 @@ fn greet(ssh: &Ssh, workspace: &str, root: &Path, tools: &Tools<'_>) -> Result<(
         &["internal", "hello"],
         &HelloRequest::new(Some(root.to_path_buf())),
         Duration::from_secs(30),
-        ErrorCode::HomeUnreachable,
+        ErrorCode::RuntimeUnreachable,
     )?;
     if hello.ccnm_version != crate::VERSION {
         return Err(Error::new(
@@ -298,7 +343,10 @@ fn greet(ssh: &Ssh, workspace: &str, root: &Path, tools: &Tools<'_>) -> Result<(
 /// afterwards would mean somebody's Claude was ended and not replaced,
 /// for a reason -- a link that blinked, a version that does not match --
 /// that has nothing to do with the session they just lost.
-fn preflight(req: &StartRequest, tools: &Tools<'_>) -> Result<(controller::Context, Ssh)> {
+fn preflight(
+    req: &StartRequest,
+    tools: &Tools<'_>,
+) -> Result<(controller::Context, Option<Ssh>)> {
     let ctx = controller::context(&tools.controller)?;
     if !ctx.login_session() {
         return Err(Error::new(
@@ -309,8 +357,7 @@ fn preflight(req: &StartRequest, tools: &Tools<'_>) -> Result<(controller::Conte
             ),
         ));
     }
-    let ssh = Ssh::new(&req.home_alias, &tools.control_dir)?.with_ccnm_bin(&req.home_ccnm_bin);
-    greet(&ssh, &req.workspace, &req.root, tools)?;
+    let ssh = tools.dial_runtime(&req.runtime_node, &req.workspace, &req.root)?;
     Ok((ctx, ssh))
 }
 
@@ -322,7 +369,7 @@ fn start_fresh(
     _tmux: &tmux::Tmux,
     name: String,
     ctx: controller::Context,
-    ssh: Ssh,
+    ssh: Option<Ssh>,
     replaced: Option<PathBuf>,
 ) -> Result<StartReport> {
     let cwd = paths::workspace_dir(&tools.state, &req.workspace);
@@ -332,8 +379,7 @@ fn start_fresh(
         id: session::new_id(),
         workspace: req.workspace.clone(),
         root: req.root.clone(),
-        home_alias: req.home_alias.clone(),
-        home_ccnm_bin: req.home_ccnm_bin.clone(),
+        runtime: tools.runtime_link(&req.runtime_node)?,
         claude_config_dir: req.claude_config_dir.clone(),
         permission_mode: req.permission_mode,
         mode: Mode::Interactive {
@@ -343,7 +389,7 @@ fn start_fresh(
         timeout_secs: 0,
         cwd,
     };
-    let dir = session::create(&tools.state, &spec, &ssh)?;
+    let dir = session::create(&tools.state, &spec, ssh.as_ref())?;
     let server_pid = controller::start(&tools.controller, dir.path())?;
     Ok(StartReport {
         protocol: PROTOCOL,
@@ -672,51 +718,66 @@ fn tail(bytes: &[u8]) -> String {
 
 /// Everything doctor wants to know about this machine, in one round trip.
 /// Read-only: no master connection, no file written. The MCP handshake
-/// starts a server on the home runtime and shuts it down again before
+/// starts a server on the Runtime Node and shuts it down again before
 /// returning (design doc section 4).
 pub fn probe(req: &ProbeRequest, tools: &Tools<'_>) -> ProbeReport {
-    let (home_ssh, home_hello, mcp) = match Ssh::new(&req.home_alias, &tools.control_dir)
-        .map(|ssh| ssh.with_ccnm_bin(&req.home_ccnm_bin))
-    {
-        Err(e) => (
-            Err(e.into()),
-            Err(Error::new(
-                ErrorCode::HomeUnreachable,
-                "not attempted: home alias is invalid",
-            )
-            .into()),
-            None,
-        ),
-        Ok(ssh) => {
-            let home_ssh = ssh.resolve(tools.runner).map_err(Into::into);
-            let home_hello = ssh
-                .check_control_path()
-                .and_then(|()| {
-                    ssh.call_ccnm::<_, HelloReport>(
-                        tools.runner,
-                        Master::Reuse,
-                        &["internal", "hello"],
-                        &HelloRequest::new(Some(req.root.clone())),
-                        Duration::from_secs(30),
-                        ErrorCode::HomeUnreachable,
-                    )
-                })
-                .map_err(Into::into);
-            // Only worth the round trips if the plain reverse ssh worked.
-            let mcp = (req.mcp_calls > 0 && home_hello.is_ok())
-                .then(|| mcp_handshake(req, &ssh).map_err(Into::into));
-            (home_ssh, home_hello, mcp)
+    // A colocated workspace has no reverse link at all, and says so with
+    // `None` rather than with an error: there is nothing broken about a
+    // machine that is already holding the project.
+    let (runtime_ssh, runtime_hello, mcp) = match tools.runtime_link(&req.runtime_node) {
+        Ok(None) => (None, None, None),
+        Err(e) => (Some(Err(e.into())), None, None),
+        Ok(Some(link)) => {
+            match Ssh::new(&link.alias, &tools.control_dir)
+                .map(|ssh| ssh.with_ccnm_bin(&link.ccnm_bin))
+            {
+                Err(e) => (
+                    Some(Err(e.into())),
+                    Some(
+                        Err(Error::new(
+                            ErrorCode::RuntimeUnreachable,
+                            format!("not attempted: the alias for {} is invalid", req.runtime_node),
+                        )
+                        .into()),
+                    ),
+                    None,
+                ),
+                Ok(ssh) => {
+                    let runtime_ssh = ssh.resolve(tools.runner).map_err(Into::into);
+                    let runtime_hello = ssh
+                        .check_control_path()
+                        .and_then(|()| {
+                            ssh.call_ccnm::<_, HelloReport>(
+                                tools.runner,
+                                Master::Reuse,
+                                &["internal", "hello"],
+                                &HelloRequest::new(Some(req.root.clone())),
+                                Duration::from_secs(30),
+                                ErrorCode::RuntimeUnreachable,
+                            )
+                        })
+                        .map_err(Into::into);
+                    // Only worth the round trips if the plain reverse ssh worked.
+                    let mcp = (req.mcp_calls > 0 && runtime_hello.is_ok())
+                        .then(|| mcp_handshake(req, &ssh).map_err(Into::into));
+                    (Some(runtime_ssh), Some(runtime_hello), mcp)
+                }
+            }
         }
     };
 
     let (controller, claude) = ask_about_claude(tools, req.claude_config_dir.as_deref());
     ProbeReport {
         protocol: PROTOCOL,
-        hello: hello::answer(&HelloRequest::new(None)),
+        // Colocated: the project is on this machine, so this hello is
+        // the one that can say whether the root is really there.
+        hello: hello::answer(&HelloRequest::new(
+            runtime_ssh.is_none().then(|| req.root.clone()),
+        )),
         controller: Some(controller),
         claude,
-        home_ssh,
-        home_hello,
+        runtime_ssh,
+        runtime_hello,
         mcp,
         // Read-only, like everything else here: tmux is asked its version
         // and which sessions exist, and nothing is started or stopped.
@@ -795,7 +856,7 @@ fn mcp_handshake(req: &ProbeRequest, ssh: &Ssh) -> Result<McpProbeReport> {
         &cmd,
         req.mcp_calls,
         Duration::from_secs(30) + Duration::from_millis(500) * req.mcp_calls,
-        ErrorCode::HomeUnreachable,
+        ErrorCode::RuntimeUnreachable,
     )
 }
 
@@ -806,6 +867,23 @@ mod tests {
     use super::*;
     use crate::process::{Cmd, FakeRunner, Output};
     use crate::protocol::hello::PathStatus;
+
+    /// What an Agent Node has on disk: which node it is, and the one alias
+    /// it dials the projects by. Every value is non-default, so a code
+    /// path that fell back to a default would fail a test rather than pass
+    /// one.
+    fn agent_config() -> Config {
+        Config::parse(
+            "this = \"agent\"\n[nodes.agent]\n[nodes.runtime]\nssh = \"to-runtime\"\nccnm_bin = \"/opt/runtime/ccnm\"\n",
+        )
+        .unwrap()
+    }
+
+    /// The same machine, but the workspace's project is on it: `runtime`
+    /// resolves to this node, so nothing is dialled.
+    fn colocated_config() -> Config {
+        Config::parse("this = \"agent\"\n[nodes.agent]\n").unwrap()
+    }
 
     fn temp(test: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("ccnm-work-{}-{test}", std::process::id()));
@@ -841,8 +919,7 @@ mod tests {
             protocol: PROTOCOL,
             workspace: "xshun".into(),
             root: PathBuf::from("/Users/ccrun/Projects/xshun"),
-            home_alias: "ccnm-home".into(),
-            home_ccnm_bin: "~/.local/bin/ccnm".into(),
+            runtime_node: "runtime".into(),
             claude_config_dir: Some(PathBuf::from("/x/claude")),
             mcp_calls: 0,
         }
@@ -869,6 +946,7 @@ mod tests {
         fake.push(Output::exited(0, "2.1.259 (Claude Code)\n"));
 
         let tools = Tools {
+            config: agent_config(),
             runner: &fake,
             state: dir.clone(),
             control_dir: control(&dir),
@@ -879,8 +957,8 @@ mod tests {
         let rep = probe(&request(), &tools);
 
         assert_eq!(rep.hello.ccnm_version, crate::VERSION);
-        assert_eq!(rep.home_ssh.as_ref().unwrap().target(), "ccrun@home.ts");
-        let home = rep.home_hello.as_ref().unwrap();
+        assert_eq!(rep.runtime_ssh.as_ref().unwrap().as_ref().unwrap().target(), "ccrun@home.ts");
+        let home = rep.runtime_hello.as_ref().unwrap().as_ref().unwrap();
         assert_eq!(home.user, "ccrun");
         assert!(home.root.unwrap().is_ok());
         assert_eq!(rep.claude.version, Ok("2.1.259".into()));
@@ -907,14 +985,14 @@ mod tests {
             "{:?}",
             calls.iter().map(Cmd::display).collect::<Vec<_>>()
         );
-        assert_eq!(calls[0].display(), "ssh -G ccnm-home");
+        assert_eq!(calls[0].display(), "ssh -G to-runtime");
         let reverse = calls[1].display();
         assert!(
             reverse.contains("ControlMaster=no"),
             "doctor path must not start a master: {reverse}"
         );
         assert!(
-            reverse.contains("-T ccnm-home ~/.local/bin/ccnm internal hello --payload"),
+            reverse.contains("-T to-runtime /opt/runtime/ccnm internal hello --payload"),
             "{reverse}"
         );
         // The hello asked the Runtime side to look at the workspace root.
@@ -953,6 +1031,7 @@ mod tests {
         fake.push(unreachable);
 
         let tools = Tools {
+            config: agent_config(),
             runner: &fake,
             state: dir.clone(),
             control_dir: control(&dir),
@@ -967,8 +1046,8 @@ mod tests {
             },
             &tools,
         );
-        let err = rep.home_hello.unwrap_err();
-        assert_eq!(err.code(), ErrorCode::HomeUnreachable);
+        let err = rep.runtime_hello.unwrap().unwrap_err();
+        assert_eq!(err.code(), ErrorCode::RuntimeUnreachable);
         assert!(err.message.contains("Operation timed out"));
         assert_eq!(rep.mcp, None, "no MCP attempt after a failed hello");
         assert_eq!(rep.claude.path, None);
@@ -977,12 +1056,13 @@ mod tests {
     }
 
     #[test]
-    fn missing_home_binary_is_a_version_error_naming_the_path() {
+    fn missing_runtime_binary_is_a_version_error_naming_the_path() {
         let dir = temp("probe-127");
         let fake = FakeRunner::new();
         fake.push(Output::exited(0, "hostname home.ts\n"));
         fake.push(Output::exited(127, ""));
         let tools = Tools {
+            config: agent_config(),
             runner: &fake,
             state: dir.clone(),
             control_dir: control(&dir),
@@ -991,9 +1071,9 @@ mod tests {
             controller: absent_socket("probe-127"),
         };
         let rep = probe(&request(), &tools);
-        let err = rep.home_hello.unwrap_err();
+        let err = rep.runtime_hello.unwrap().unwrap_err();
         assert_eq!(err.code(), ErrorCode::Version);
-        assert!(err.message.contains("~/.local/bin/ccnm"), "{}", err.message);
+        assert!(err.message.contains("/opt/runtime/ccnm"), "{}", err.message);
     }
 
     fn run_request(prompt: &str) -> RunRequest {
@@ -1001,8 +1081,7 @@ mod tests {
             protocol: PROTOCOL,
             workspace: "fixture".into(),
             root: PathBuf::from("/Users/bing/ccnm-fixture"),
-            home_alias: "xdwmbp".into(),
-            home_ccnm_bin: "~/.local/bin/ccnm".into(),
+            runtime_node: "runtime".into(),
             claude_config_dir: None,
             permission_mode: crate::config::PermissionMode::AcceptEdits,
             prompt: prompt.into(),
@@ -1033,6 +1112,7 @@ mod tests {
         other.ccnm_version = format!("{}-and-a-half", crate::VERSION);
         fake.push(Output::exited(0, serde_json::to_string(&other).unwrap()));
         let tools = Tools {
+            config: agent_config(),
             runner: &fake,
             state: dir.clone(),
             control_dir: control(&dir),
@@ -1069,8 +1149,10 @@ mod tests {
             id: id.into(),
             workspace: "xshun".into(),
             root: PathBuf::from("/Users/bing/somewhere-else"),
-            home_alias: "home".into(),
-            home_ccnm_bin: "ccnm".into(),
+            runtime: Some(RuntimeLink {
+                alias: "to-runtime".into(),
+                ccnm_bin: "/opt/runtime/ccnm".into(),
+            }),
             claude_config_dir: None,
             permission_mode: crate::config::PermissionMode::default(),
             mode: Mode::Interactive { prompt: None },
@@ -1105,7 +1187,7 @@ mod tests {
         served.join().unwrap();
         let _ = std::fs::remove_file(&socket);
 
-        assert_eq!(err.code(), ErrorCode::HomeUnreachable, "{err}");
+        assert_eq!(err.code(), ErrorCode::RuntimeUnreachable, "{err}");
         let ran: Vec<String> = fake.calls().iter().map(|cmd| cmd.display()).collect();
         assert!(
             !ran.iter().any(|line| line.contains("kill-session")),
@@ -1125,6 +1207,7 @@ mod tests {
         let fake = FakeRunner::new();
         fake.push(Output::exited(0, hello_json(true)));
         let tools = Tools {
+            config: agent_config(),
             runner: &fake,
             state: deep.clone(),
             control_dir: deep.join("control"),
@@ -1153,6 +1236,7 @@ mod tests {
         let fake = FakeRunner::new();
         fake.push(Output::exited(0, hello_json(false)));
         let tools = Tools {
+            config: agent_config(),
             runner: &fake,
             state: dir.clone(),
             control_dir: control(&dir),
@@ -1174,8 +1258,7 @@ mod tests {
             protocol: PROTOCOL,
             workspace: "xshun".into(),
             root: PathBuf::from("/Users/bing/xshun"),
-            home_alias: "ccnm-home".into(),
-            home_ccnm_bin: "~/.local/bin/ccnm".into(),
+            runtime_node: "runtime".into(),
             claude_config_dir: None,
             permission_mode: crate::config::PermissionMode::default(),
             prompt: None,
@@ -1184,6 +1267,7 @@ mod tests {
 
     fn tmux_tools<'a>(fake: &'a FakeRunner, dir: &Path, test: &str) -> Tools<'a> {
         Tools {
+            config: agent_config(),
             runner: fake,
             state: dir.to_path_buf(),
             control_dir: control(dir),
@@ -1263,8 +1347,10 @@ mod tests {
             workspace: "xshun".into(),
             // Where it was when it started.
             root: PathBuf::from("/Users/bing/xshun"),
-            home_alias: "home".into(),
-            home_ccnm_bin: "ccnm".into(),
+            runtime: Some(RuntimeLink {
+                alias: "to-runtime".into(),
+                ccnm_bin: "/opt/runtime/ccnm".into(),
+            }),
             claude_config_dir: None,
             permission_mode: crate::config::PermissionMode::default(),
             mode: Mode::Interactive { prompt: None },
@@ -1415,7 +1501,7 @@ mod tests {
         // ps: the transport for that payload is running.
         fake.push(Output::exited(
             0,
-            "/usr/bin/ssh -T home ccnm internal mcp-serve --payload eyJwIjoxfQ\nlogin -pf me\n",
+            "/usr/bin/ssh -T to-runtime ccnm internal mcp-serve --payload eyJwIjoxfQ\nlogin -pf me\n",
         ));
         // The other session is tagged, but its directory has no mcp.json,
         // so the transport question cannot be put at all.
@@ -1470,8 +1556,10 @@ mod tests {
                 id: id.to_string(),
                 workspace: "fixture".into(),
                 root: PathBuf::from("/Users/bing/ccnm-fixture"),
-                home_alias: "home".into(),
-                home_ccnm_bin: "ccnm".into(),
+                runtime: Some(RuntimeLink {
+                    alias: "home".into(),
+                    ccnm_bin: "ccnm".into(),
+                }),
                 claude_config_dir: None,
                 permission_mode: crate::config::PermissionMode::default(),
                 mode,
@@ -1654,6 +1742,7 @@ mod tests {
     fn run_refuses_without_a_controller_and_creates_nothing() {
         let dir = temp("run-none");
         let tools = Tools {
+            config: agent_config(),
             runner: &FakeRunner::new(),
             state: dir.clone(),
             control_dir: control(&dir),
@@ -1684,6 +1773,7 @@ mod tests {
             listener.serve_one(&tools).unwrap();
         });
         let tools = Tools {
+            config: agent_config(),
             runner: &FakeRunner::new(),
             state: dir.clone(),
             control_dir: control(&dir),
@@ -1746,6 +1836,7 @@ mod tests {
         let caller = FakeRunner::new();
         caller.push(Output::exited(0, hello_json(true)));
         let tools = Tools {
+            config: agent_config(),
             runner: &caller,
             state: dir.clone(),
             control_dir: control(&dir),
@@ -1839,6 +1930,7 @@ mod tests {
         fake.push(Output::exited(0, "hostname home.ts\nuser ccrun\n"));
         fake.push(Output::exited(0, hello_json(true)));
         let tools = Tools {
+            config: agent_config(),
             runner: &fake,
             state: dir.clone(),
             control_dir: control(&dir),

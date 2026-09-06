@@ -15,9 +15,11 @@ ccnm 默认读取：
 Runtime Node 通常保存 workspace 列表，并知道两个 SSH 方向：
 
 ```toml
+## AI agent 所在机
 [nodes.agent]
 ssh_from_runtime = "agent-ssh-alias"
 
+## 项目所在地
 [nodes.runtime]
 ssh_from_agent = "runtime-ssh-alias"
 runtime_user = "ccrun"

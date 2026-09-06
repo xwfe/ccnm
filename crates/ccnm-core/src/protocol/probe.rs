@@ -1,9 +1,12 @@
-//! `ccnm internal probe`: everything doctor wants to know about the work
-//! machine and, through it, the home runtime, in one round trip.
+//! `ccnm internal probe`: everything doctor wants to know about the Agent
+//! Node and, through it, the Runtime Node, in one round trip.
 //!
-//! The Agent Node has no config file. Everything it needs arrives in
-//! the request; everything it learned goes back in the report, errors
-//! included, so doctor can render one row per fact.
+//! The request names the Runtime Node; the Agent Node resolves that name
+//! in its own config, because an ssh alias only means something on the
+//! machine that dials it. Everything it learned goes back in the report,
+//! errors included, so doctor can render one row per fact -- including
+//! which alias it ended up using, which is the fact doctor wants and the
+//! runtime side cannot know.
 
 use std::path::PathBuf;
 
@@ -21,10 +24,9 @@ pub struct ProbeRequest {
     pub workspace: String,
     /// Project root on the runtime host; the Agent side only passes it on.
     pub root: PathBuf,
-    /// Alias in the Agent Node's `~/.ssh/config` for the home runtime.
-    pub home_alias: String,
-    /// ccnm path to invoke on the home runtime (design doc section 7).
-    pub home_ccnm_bin: String,
+    /// The node holding the project, by name. The Agent Node resolves it
+    /// against its own config.
+    pub runtime_node: String,
     pub claude_config_dir: Option<PathBuf>,
     /// How many `workspace_info` calls the MCP handshake should make over
     /// the reverse ssh; 0 skips the handshake.
@@ -56,10 +58,15 @@ pub struct ProbeReport {
     /// comes from this session — it needs no credential — and `auth` is a
     /// `CCNM_E_NOT_READY` error rather than a guess.
     pub claude: ClaudeReport,
-    /// What `ssh -G <home_alias>` resolves to on the Agent Node.
-    pub home_ssh: Reported<ResolvedSsh>,
-    /// The home runtime's hello, fetched over the reverse ssh.
-    pub home_hello: Reported<HelloReport>,
+    /// What the Agent Node's own alias for the Runtime Node resolves to,
+    /// via `ssh -G`. `None` when agent and project are the same machine,
+    /// which dials nothing.
+    #[serde(default)]
+    pub runtime_ssh: Option<Reported<ResolvedSsh>>,
+    /// The Runtime Node's hello, fetched over the reverse ssh. `None` when
+    /// agent and project are the same machine.
+    #[serde(default)]
+    pub runtime_hello: Option<Reported<HelloReport>>,
     /// One MCP session over the reverse ssh (`None` when not requested or
     /// when the hello already failed).
     #[serde(default)]

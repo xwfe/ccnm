@@ -377,6 +377,7 @@ pub fn parse_auth(out: &Output) -> Result<AuthStatus> {
 
 #[cfg(test)]
 mod tests {
+    use crate::session::RuntimeLink;
     use super::*;
 
     #[test]
@@ -448,8 +449,10 @@ mod tests {
             id: "0b4c7a1e-2d3f-4a5b-8c6d-7e8f9a0b1c2d".into(),
             workspace: "fixture".into(),
             root: PathBuf::from("/Users/bing/ccnm-fixture"),
-            home_alias: "xdwmbp".into(),
-            home_ccnm_bin: "~/.local/bin/ccnm".into(),
+            runtime: Some(RuntimeLink {
+                alias: "xdwmbp".into(),
+                ccnm_bin: "~/.local/bin/ccnm".into(),
+            }),
             claude_config_dir: None,
             permission_mode: crate::config::PermissionMode::AcceptEdits,
             mode: Mode::Print {

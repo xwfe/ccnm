@@ -7,7 +7,7 @@
 
 use std::fmt;
 
-/// Every failure ccnm can report. Mirrors design doc section 36.
+/// Every failure ccnm can report.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ErrorCode {
     /// A bug or an unexpected OS failure. Not a user-facing category; if a
@@ -25,10 +25,10 @@ pub enum ErrorCode {
     Version,
     /// Claude Code on the Agent Node is not logged in.
     Auth,
-    /// Home machine cannot reach the Agent Node over SSH.
-    WorkUnreachable,
-    /// Work machine cannot reach the home runner over SSH.
-    HomeUnreachable,
+    /// This machine cannot reach the Agent Node over SSH.
+    AgentUnreachable,
+    /// The Agent Node cannot reach the Runtime Node over SSH.
+    RuntimeUnreachable,
     /// SMB share or mount is missing or unusable.
     Mount,
     /// `.ccnm-workspace-id` differs between the mounted view and the home
@@ -68,8 +68,8 @@ impl ErrorCode {
         ErrorCode::Config,
         ErrorCode::Version,
         ErrorCode::Auth,
-        ErrorCode::WorkUnreachable,
-        ErrorCode::HomeUnreachable,
+        ErrorCode::AgentUnreachable,
+        ErrorCode::RuntimeUnreachable,
         ErrorCode::Mount,
         ErrorCode::WrongWorkspace,
         ErrorCode::Coherence,
@@ -87,8 +87,8 @@ impl ErrorCode {
             ErrorCode::Config => "CCNM_E_CONFIG",
             ErrorCode::Version => "CCNM_E_VERSION",
             ErrorCode::Auth => "CCNM_E_AUTH",
-            ErrorCode::WorkUnreachable => "CCNM_E_WORK_UNREACHABLE",
-            ErrorCode::HomeUnreachable => "CCNM_E_HOME_UNREACHABLE",
+            ErrorCode::AgentUnreachable => "CCNM_E_AGENT_UNREACHABLE",
+            ErrorCode::RuntimeUnreachable => "CCNM_E_RUNTIME_UNREACHABLE",
             ErrorCode::Mount => "CCNM_E_MOUNT",
             ErrorCode::WrongWorkspace => "CCNM_E_WRONG_WORKSPACE",
             ErrorCode::Coherence => "CCNM_E_COHERENCE",
@@ -117,8 +117,8 @@ impl ErrorCode {
             ErrorCode::Config => 10,
             ErrorCode::Version => 11,
             ErrorCode::Auth => 12,
-            ErrorCode::WorkUnreachable => 20,
-            ErrorCode::HomeUnreachable => 21,
+            ErrorCode::AgentUnreachable => 20,
+            ErrorCode::RuntimeUnreachable => 21,
             ErrorCode::Mount => 22,
             ErrorCode::WrongWorkspace => 30,
             ErrorCode::Coherence => 31,
@@ -195,7 +195,7 @@ impl Error {
 
     /// Re-tag an error with a more specific code. Used when a low-level
     /// failure (spawn, I/O) is understood better by the caller: a failed
-    /// `ssh` spawn is `WorkUnreachable`, not `Internal`.
+    /// `ssh` spawn is `AgentUnreachable`, not `Internal`.
     pub fn with_code(mut self, code: ErrorCode) -> Self {
         self.code = code;
         self
@@ -380,8 +380,8 @@ mod tests {
 
     #[test]
     fn with_code_retags() {
-        let err = Error::internal("spawn failed").with_code(ErrorCode::WorkUnreachable);
-        assert_eq!(err.code(), ErrorCode::WorkUnreachable);
+        let err = Error::internal("spawn failed").with_code(ErrorCode::AgentUnreachable);
+        assert_eq!(err.code(), ErrorCode::AgentUnreachable);
         assert_eq!(err.exit_code(), 20);
     }
 

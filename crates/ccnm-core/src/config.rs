@@ -40,12 +40,32 @@ pub const DEFAULT_RUNTIME_NODE: &str = "runtime";
 /// PATH of a non-interactive shell (design doc section 7).
 pub const DEFAULT_CCNM_BIN: &str = "~/.local/bin/ccnm";
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     /// Absent in anything ccnm writes now; see [`SUPPORTED_VERSION`].
     #[serde(default)]
     pub version: Option<u32>,
+    /// Which entry of `nodes` is the machine reading this file.
+    ///
+    /// Every `ssh` alias in the file is written from this node's point of
+    /// view, so without it not one of them can be resolved. It also
+    /// settles which role this machine plays in a workspace, which used to
+    /// be inferred from which alias fields happened to be present -- an
+    /// inference that once made a mistyped workspace name at the runtime
+    /// look like an agent-only config and sent the request over ssh.
+    #[serde(default)]
+    pub this: Option<String>,
+    /// This machine keeps no workspace list, and asks the named node about
+    /// any workspace it is given.
+    ///
+    /// Set on an Agent Node and nowhere else. It is not the same question
+    /// as "which node am I": a Runtime Node that has been set up but has
+    /// no workspaces yet looks exactly like an Agent Node otherwise, and
+    /// guessing wrong there sends the request over ssh to a machine that
+    /// will send it straight back.
+    #[serde(default)]
+    pub runtime_node: Option<String>,
     #[serde(default)]
     pub nodes: BTreeMap<String, Node>,
     #[serde(default)]
@@ -53,18 +73,23 @@ pub struct Config {
 }
 
 /// One physical or virtual machine. A node may carry one or more roles.
-/// Which fields are required depends on how a workspace refers to it:
-/// an `agent_node` needs `ssh_from_runtime`, while a `runtime_node` needs
-/// `ssh_from_agent`.
+///
+/// Every node a workspace names, other than [`Config::this`] itself, needs
+/// an `ssh` alias: that is the one this machine dials to reach it.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Node {
-    /// Alias in the Runtime Node's `~/.ssh/config` that reaches this node.
+    /// Alias in *this* machine's `~/.ssh/config` that reaches this node.
+    ///
+    /// One field, not one per direction: an alias only ever means
+    /// something to the machine whose `~/.ssh/config` defines it, and that
+    /// machine is the one reading this file. The far side has its own
+    /// config with its own aliases, so nothing here has to describe how
+    /// somebody else dials.
+    ///
+    /// Unset on [`Config::this`], which does not ssh to itself.
     #[serde(default)]
-    pub ssh_from_runtime: Option<String>,
-    /// Alias in the Agent Node's `~/.ssh/config` that reaches this node.
-    #[serde(default)]
-    pub ssh_from_agent: Option<String>,
+    pub ssh: Option<String>,
     /// Absolute path of the ccnm binary on this node, for the machine that
     /// sshes in. Unset means [`DEFAULT_CCNM_BIN`].
     #[serde(default)]
@@ -207,10 +232,63 @@ pub struct Resolved<'a> {
     pub workspace: &'a Workspace,
     pub agent: &'a Node,
     pub runtime: &'a Node,
-    /// `nodes.<agent_node>.ssh_from_runtime`: Runtime -> Agent.
-    pub agent_ssh: &'a str,
-    /// `nodes.<runtime_node>.ssh_from_agent`: Agent -> Runtime.
-    pub runtime_alias: &'a str,
+    /// The node this config belongs to, for deciding which role this
+    /// machine plays in this workspace.
+    pub this: &'a str,
+}
+
+impl<'a> Resolved<'a> {
+    /// True when the agent and the project are the same machine, so no
+    /// MCP transport is dialled back and Claude works with its own native
+    /// tools. See [`Topology`].
+    pub fn is_colocated(&self) -> bool {
+        self.workspace.agent_node == self.workspace.runtime_node
+    }
+
+    /// Which machine this one is in this workspace.
+    pub fn topology(&self) -> Topology {
+        if self.is_colocated() {
+            Topology::Colocated
+        } else if self.this == self.workspace.runtime_node {
+            Topology::FromRuntime
+        } else if self.this == self.workspace.agent_node {
+            Topology::FromAgent
+        } else {
+            Topology::Bystander
+        }
+    }
+
+    /// The alias this machine dials to reach the Agent Node.
+    ///
+    /// An error only when this machine *is* the Agent Node, which the
+    /// caller should have handled by delegating instead of dialling.
+    pub fn agent_ssh(&self) -> Result<&'a str> {
+        self.agent.ssh.as_deref().ok_or_else(|| {
+            Error::config(format!(
+                "workspace '{}' runs the agent on '{}', which is this node, so there is nothing to ssh to",
+                self.name, self.workspace.agent_node
+            ))
+        })
+    }
+}
+
+/// Where this machine sits relative to a workspace's two roles.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Topology {
+    /// `runtime -> agent -> runtime`: this machine holds the project and
+    /// dials the agent, which dials an MCP transport back here.
+    FromRuntime,
+    /// `agent -> runtime`: this machine runs the agent but the workspace
+    /// list lives on the runtime, so the whole launch is delegated there
+    /// and comes back as [`Topology::FromRuntime`].
+    FromAgent,
+    /// `runtime -> agent`: agent and project are the same machine. Claude
+    /// uses its own native tools, nothing dials back, and ccnm is only
+    /// managing the session.
+    Colocated,
+    /// This machine is neither role: it launches a session on machines
+    /// that are, and attaches to it.
+    Bystander,
 }
 
 impl Config {
@@ -232,32 +310,21 @@ impl Config {
     /// config no longer names is the failure this project has already
     /// spent an afternoon on.
     ///
-    /// `None` unless this really is an Agent-only config.
+    /// `None` unless this really is an agent-only config.
     ///
-    /// The test is the absence of any `ssh_from_runtime`, not the presence
-    /// of `ssh_from_agent`: a Runtime Node config can contain both
-    /// directions, so keying on `ssh_from_agent` alone would make every
-    /// mistyped workspace name on the Runtime Node look like an Agent-only
-    /// config and send
-    /// it over ssh. That is not hypothetical; it is what the first
-    /// version did, and a test that asks for a workspace which does not
-    /// exist is what caught it.
+    /// The whole test is the top-level [`Config::runtime_node`], which the
+    /// file states outright. Every version that inferred it instead got it
+    /// wrong somewhere: on the presence of the reverse alias field, which
+    /// made a mistyped workspace name on the runtime look like an agent
+    /// and sent the request over ssh; then on the *absence* of the forward
+    /// one, which stopped meaning anything once both directions were
+    /// spelled `ssh`; then on having no workspaces, which is also true of
+    /// a Runtime Node nobody has added a project to yet -- and that one
+    /// bounces the request to a machine that bounces it straight back.
     pub fn runtime_from_agent(&self) -> Option<(&str, &Node)> {
-        if self
-            .nodes
-            .values()
-            .any(|node| node.ssh_from_runtime.is_some())
-        {
-            return None;
-        }
-        let mut named = self
-            .nodes
-            .values()
-            .filter_map(|node| Some((node.ssh_from_agent.as_deref()?, node)));
-        match (named.next(), named.next()) {
-            (Some(only), None) => Some(only),
-            _ => None,
-        }
+        let name = self.runtime_node.as_deref()?;
+        let node = self.nodes.get(name)?;
+        Some((node.ssh.as_deref()?, node))
     }
 
     /// Read, parse and validate the file at `path`.
@@ -333,14 +400,7 @@ impl Config {
             workspace,
             agent,
             runtime,
-            agent_ssh: agent
-                .ssh_from_runtime
-                .as_deref()
-                .ok_or_else(|| bug("Agent Node ssh_from_runtime"))?,
-            runtime_alias: runtime
-                .ssh_from_agent
-                .as_deref()
-                .ok_or_else(|| bug("Runtime Node ssh_from_agent"))?,
+            this: self.this.as_deref().ok_or_else(|| bug("`this`"))?,
         })
     }
 
@@ -355,14 +415,61 @@ impl Config {
             ));
         }
 
+        match &self.this {
+            None if self.nodes.is_empty() && self.workspaces.is_empty() => {}
+            None => problems.push(
+                "`this` is not set: every `ssh` alias in this file is written from one node's point of view, and without `this` there is no way to know whose\nadd the line `this = \"<node>\"` naming the entry of [nodes.*] that is this machine".to_string(),
+            ),
+            Some(this) if !self.nodes.contains_key(this) => problems.push(format!(
+                "this = \"{this}\" does not match any [nodes.*] entry{}",
+                match self.nodes.keys().next() {
+                    Some(_) => format!(
+                        "; defined: {}",
+                        self.nodes.keys().cloned().collect::<Vec<_>>().join(", ")
+                    ),
+                    None => ", and there are no nodes at all".to_string(),
+                }
+            )),
+            Some(this) => {
+                if self.nodes[this].ssh.is_some() {
+                    problems.push(format!(
+                        "nodes.{this}.ssh is set, but this = \"{this}\" says that node is this machine, which does not ssh to itself\nremove the line, or point `this` at the node this machine really is"
+                    ));
+                }
+            }
+        }
+
+        // The node an agent delegates to has to be reachable from here,
+        // and must not be this machine: a config that asks itself about a
+        // workspace it does not have is the loop this field exists to
+        // prevent.
+        if let Some(name) = &self.runtime_node {
+            if Some(name.as_str()) == self.this.as_deref() {
+                problems.push(format!(
+                    "runtime_node = \"{name}\" is this node, so it says to ask this machine about workspaces it does not have\nset it to the node that keeps the workspace list, or remove it and define the workspaces here"
+                ));
+            }
+            match self.nodes.get(name) {
+                None => problems.push(format!(
+                    "runtime_node = \"{name}\" does not match any [nodes.*] entry"
+                )),
+                Some(node) if node.ssh.is_none() => problems.push(format!(
+                    "runtime_node = \"{name}\" names a node without an `ssh` alias to reach it by"
+                )),
+                Some(_) => {}
+            }
+            if !self.workspaces.is_empty() {
+                problems.push(
+                    "runtime_node says this machine keeps no workspace list, but [workspaces.*] is not empty\na project's root is defined on exactly one machine; keep the list or keep the delegation, not both"
+                        .to_string(),
+                );
+            }
+        }
+
         for (name, node) in &self.nodes {
             let at = format!("nodes.{name}");
             check_name(&at, name, &mut problems);
-            for (field, value) in [
-                ("ssh_from_runtime", &node.ssh_from_runtime),
-                ("ssh_from_agent", &node.ssh_from_agent),
-                ("smb_user", &node.smb_user),
-            ] {
+            for (field, value) in [("ssh", &node.ssh), ("smb_user", &node.smb_user)] {
                 if let Some(value) = value {
                     check_token(&format!("{at}.{field}"), value, &mut problems);
                 }
@@ -384,29 +491,35 @@ impl Config {
         for (name, ws) in &self.workspaces {
             let at = format!("workspaces.{name}");
             check_name(&at, name, &mut problems);
-            match self.nodes.get(&ws.agent_node) {
-                None => problems.push(format!(
-                    "{at}.agent_node = \"{}\" does not match any [nodes.*] entry",
-                    ws.agent_node
-                )),
-                Some(node) if node.ssh_from_runtime.is_none() => problems.push(format!(
-                    "{at}.agent_node = \"{}\" names a node without `ssh_from_runtime` (the alias the Runtime Node uses to reach it)",
-                    ws.agent_node
-                )),
-                Some(_) => {}
+            // Every node a workspace names, except the one this machine
+            // is, has to be dialable from here. When both roles land on
+            // the same node it is one machine and one alias, so it is
+            // checked once rather than reported twice.
+            let roles: &[(&str, &String)] = if ws.agent_node == ws.runtime_node {
+                &[("agent_node", &ws.agent_node)]
+            } else {
+                &[
+                    ("agent_node", &ws.agent_node),
+                    ("runtime_node", &ws.runtime_node),
+                ]
+            };
+            for (role, node_name) in roles {
+                match self.nodes.get(*node_name) {
+                    None => problems.push(format!(
+                        "{at}.{role} = \"{node_name}\" does not match any [nodes.*] entry"
+                    )),
+                    Some(node)
+                        if node.ssh.is_none()
+                            && Some(node_name.as_str()) != self.this.as_deref() =>
+                    {
+                        problems.push(format!(
+                            "{at}.{role} = \"{node_name}\" is another machine, so [nodes.{node_name}] needs an `ssh` alias this one can dial it with"
+                        ));
+                    }
+                    Some(_) => {}
+                }
             }
             let runtime = self.nodes.get(&ws.runtime_node);
-            match runtime {
-                None => problems.push(format!(
-                    "{at}.runtime_node = \"{}\" does not match any [nodes.*] entry",
-                    ws.runtime_node
-                )),
-                Some(node) if node.ssh_from_agent.is_none() => problems.push(format!(
-                    "{at}.runtime_node = \"{}\" names a node without `ssh_from_agent` (the alias the Agent Node uses to reach it)",
-                    ws.runtime_node
-                )),
-                Some(_) => {}
-            }
             let root_ok = check_absolute(&format!("{at}.root"), &ws.root, &mut problems);
 
             match ws.backend {
@@ -542,29 +655,34 @@ fn overlaps(a: &Path, b: &Path) -> bool {
 mod tests {
     use super::*;
 
-    /// A config with only a way home is the Agent Node's, and a name it
-    /// does not know is a question for the other side. A *home* config has
-    /// `ssh_from_agent` too -- that is how the Agent Node reaches back --
-    /// so keying on that alone would send every mistyped workspace name at
-    /// home over ssh to be asked about.
+    /// The file an Agent Node keeps: who it is, that the projects are
+    /// listed elsewhere, and the one alias it dials them by.
+    const AGENT_SIDE: &str =
+        "this = \"agent\"\nruntime_node = \"runtime\"\n[nodes.agent]\n[nodes.runtime]\nssh = \"xdwmbp\"\n";
+
+    /// A config with no workspace list is an Agent Node's, and a name it
+    /// does not know is a question for the other side. A Runtime Node's
+    /// config also names another node to dial, so keying on that alone
+    /// would send every mistyped workspace name over ssh to be asked
+    /// about.
     #[test]
-    fn only_a_config_with_no_way_to_reach_work_is_the_work_machines() {
+    fn only_a_config_with_no_workspaces_delegates() {
         let alias = |c: &Config| c.runtime_from_agent().map(|(alias, _)| alias.to_string());
 
-        let work_side = Config::parse("[nodes.runtime]\nssh_from_agent = \"xdwmbp\"\n").unwrap();
-        assert_eq!(alias(&work_side).as_deref(), Some("xdwmbp"));
+        let agent_side_cfg = Config::parse(AGENT_SIDE).unwrap();
+        assert_eq!(alias(&agent_side_cfg).as_deref(), Some("xdwmbp"));
 
-        let home_side = Config::parse(
-            "[nodes.agent]\nssh_from_runtime = \"fodelf\"\n[nodes.runtime]\nssh_from_agent = \"xdwmbp\"\n",
+        let runtime_side_cfg = Config::parse(
+            "this = \"runtime\"\n[nodes.agent]\nssh = \"fodelf\"\n[nodes.runtime]\n",
         )
         .unwrap();
-        assert_eq!(alias(&home_side), None);
+        assert_eq!(alias(&runtime_side_cfg), None);
 
         // Nothing to pick.
         let empty = Config::parse("").unwrap();
         assert_eq!(alias(&empty), None);
         let two =
-            Config::parse("[nodes.a]\nssh_from_agent = \"x\"\n[nodes.b]\nssh_from_agent = \"y\"\n")
+            Config::parse("this = \"me\"\n[nodes.me]\n[nodes.a]\nssh = \"x\"\n[nodes.b]\nssh = \"y\"\n")
                 .unwrap();
         assert_eq!(alias(&two), None);
     }
@@ -576,9 +694,9 @@ mod tests {
     /// "command not found" on the one machine that was configured
     /// correctly.
     #[test]
-    fn the_work_side_lookup_carries_where_ccnm_lives_over_there() {
+    fn the_agent_side_lookup_carries_where_ccnm_lives_over_there() {
         let config = Config::parse(
-            "[nodes.runtime]\nssh_from_agent = \"xdwmbp\"\nccnm_bin = \"/opt/homebrew/bin/ccnm\"\n",
+            "this = \"agent\"\nruntime_node = \"runtime\"\n[nodes.agent]\n[nodes.runtime]\nssh = \"xdwmbp\"\nccnm_bin = \"/opt/homebrew/bin/ccnm\"\n",
         )
         .unwrap();
         let (alias, host) = config.runtime_from_agent().unwrap();
@@ -586,7 +704,7 @@ mod tests {
         assert_eq!(host.ccnm_bin(), "/opt/homebrew/bin/ccnm");
 
         // Unset still means the default, as everywhere else.
-        let plain = Config::parse("[nodes.runtime]\nssh_from_agent = \"xdwmbp\"\n").unwrap();
+        let plain = Config::parse(AGENT_SIDE).unwrap();
         assert_eq!(
             plain.runtime_from_agent().unwrap().1.ccnm_bin(),
             DEFAULT_CCNM_BIN
@@ -600,9 +718,9 @@ mod tests {
     /// keep the list. Only `doctor <ws>` and `mcp probe` can reach it;
     /// everything else on the Agent Node answers locally.
     #[test]
-    fn on_the_work_machine_an_unknown_name_says_where_the_list_is() {
-        let work_side = Config::parse("[nodes.runtime]\nssh_from_agent = \"xdwmbp\"\n").unwrap();
-        let err = work_side.workspace("xshun").unwrap_err();
+    fn on_the_agent_node_an_unknown_name_says_where_the_list_is() {
+        let agent_side_cfg = Config::parse(AGENT_SIDE).unwrap();
+        let err = agent_side_cfg.workspace("xshun").unwrap_err();
         assert!(err.message().contains("xdwmbp"), "{err}");
         assert!(
             err.message().contains("ssh xdwmbp ccnm doctor xshun"),
@@ -631,7 +749,7 @@ mod tests {
     /// Minimal valid config with the given workspace body appended.
     fn with_workspace(body: &str) -> String {
         format!(
-            "version = 1\n[nodes.agent]\nssh_from_runtime = \"work\"\n[nodes.runtime]\nssh_from_agent = \"ccnm-home\"\n[workspaces.x]\n{body}\n"
+            "version = 1\nthis = \"runtime\"\n[nodes.agent]\nssh = \"work\"\n[nodes.runtime]\n[workspaces.x]\n{body}\n"
         )
     }
 
@@ -642,8 +760,7 @@ mod tests {
         let config = Config::load(&fixture("config-valid.toml")).unwrap();
         assert_eq!(config.version, Some(1));
         let r = config.workspace("xshun").unwrap();
-        assert_eq!(r.agent_ssh, "work");
-        assert_eq!(r.runtime_alias, "ccnm-home");
+        assert_eq!(r.agent_ssh().unwrap(), "agent-alias");
         assert_eq!(r.agent.claude_config_dir, None);
         assert_eq!(r.agent.ccnm_bin(), "~/.local/bin/ccnm");
         assert_eq!(r.runtime.ccnm_bin(), "~/.local/bin/ccnm");
@@ -672,7 +789,6 @@ mod tests {
         assert_eq!(r.agent.ccnm_bin(), "/Users/me/bin/ccnm");
         assert_eq!(r.runtime.ccnm_bin(), "/Users/ccrun/.local/bin/ccnm");
         assert_eq!(r.workspace.runtime_node, "runtime");
-        assert_eq!(r.runtime_alias, "home");
     }
 
     #[test]
@@ -688,7 +804,7 @@ mod tests {
         );
 
         let err = parse_err(
-            "version = 1\n[nodes.agent]\nssh_from_runtime = \"work\"\n[nodes.runtime]\nssh_from_agent = \"h\"\n[workspaces.x]\nbackend = \"hybrid-smb\"\nagent_node = \"agent\"\nroot = \"/a\"\n",
+            "version = 1\nthis = \"runtime\"\n[nodes.agent]\nssh = \"work\"\n[nodes.runtime]\n[workspaces.x]\nbackend = \"hybrid-smb\"\nagent_node = \"agent\"\nroot = \"/a\"\n",
         );
         let msg = err.message();
         assert!(msg.contains("share is required"), "{msg}");
@@ -754,17 +870,16 @@ mod tests {
     #[test]
     fn role_specific_fields_are_required() {
         let err = parse_err(
-            "version = 1\n[nodes.agent]\nssh_from_agent = \"x\"\n[nodes.runtime]\nssh_from_runtime = \"y\"\n[workspaces.x]\nagent_node = \"agent\"\nroot = \"/a\"\n",
+            "version = 1\nthis = \"runtime\"\n[nodes.agent]\n[nodes.runtime]\n[workspaces.x]\nagent_node = \"agent\"\nroot = \"/a\"\n",
         );
         let msg = err.message();
-        assert!(msg.contains("node without `ssh_from_runtime`"), "{msg}");
-        assert!(msg.contains("node without `ssh_from_agent`"), "{msg}");
+        assert!(msg.contains("agent_node = \"agent\" is another machine"), "{msg}");
     }
 
     #[test]
     fn relative_and_dotty_paths_are_rejected() {
         let err = parse_err(
-            "version = 1\n[nodes.agent]\nssh_from_runtime = \"work\"\nclaude_config_dir = \"relative/dir\"\nccnm_bin = \"bin/ccnm\"\n[nodes.runtime]\nssh_from_agent = \"h\"\n[workspaces.x]\nagent_node = \"agent\"\nroot = \"/tmp/../x\"\n",
+            "version = 1\nthis = \"runtime\"\n[nodes.agent]\nssh = \"work\"\nclaude_config_dir = \"relative/dir\"\nccnm_bin = \"bin/ccnm\"\n[nodes.runtime]\n[workspaces.x]\nagent_node = \"agent\"\nroot = \"/tmp/../x\"\n",
         );
         let msg = err.message();
         assert!(
@@ -778,11 +893,11 @@ mod tests {
     #[test]
     fn ccnm_bin_must_be_a_remote_safe_path() {
         let err = parse_err(
-            "version = 1\n[nodes.agent]\nssh_from_runtime = \"work\"\nccnm_bin = \"/Users/me/my tools/ccnm\"\n[nodes.runtime]\nssh_from_agent = \"h\"\n",
+            "version = 1\nthis = \"runtime\"\n[nodes.agent]\nssh = \"work\"\nccnm_bin = \"/Users/me/my tools/ccnm\"\n[nodes.runtime]\n",
         );
         assert!(err.message().contains("never has to quote"), "{err}");
         let ok = Config::parse(
-            "version = 1\n[nodes.agent]\nssh_from_runtime = \"work\"\nccnm_bin = \"/opt/ccnm-0.1/bin/ccnm\"\n",
+            "version = 1\nthis = \"runtime\"\n[nodes.agent]\nssh = \"work\"\nccnm_bin = \"/opt/ccnm-0.1/bin/ccnm\"\n[nodes.runtime]\n",
         )
         .unwrap();
         assert_eq!(ok.nodes["agent"].ccnm_bin(), "/opt/ccnm-0.1/bin/ccnm");
@@ -791,7 +906,7 @@ mod tests {
     #[test]
     fn hybrid_runtime_root_inside_root_is_rejected() {
         let err = parse_err(
-            "version = 1\n[nodes.agent]\nssh_from_runtime = \"work\"\n[nodes.runtime]\nssh_from_agent = \"h\"\nsmb_user = \"u\"\n[workspaces.x]\nbackend = \"hybrid-smb\"\nagent_node = \"agent\"\nroot = \"/Users/Shared/cc-workspaces/x\"\nruntime_root = \"/Users/Shared/cc-workspaces/x/target\"\nshare = \"x\"\n",
+            "version = 1\nthis = \"runtime\"\n[nodes.agent]\nssh = \"work\"\n[nodes.runtime]\nsmb_user = \"u\"\n[workspaces.x]\nbackend = \"hybrid-smb\"\nagent_node = \"agent\"\nroot = \"/Users/Shared/cc-workspaces/x\"\nruntime_root = \"/Users/Shared/cc-workspaces/x/target\"\nshare = \"x\"\n",
         );
         assert!(err.message().contains("must not overlap root"), "{err}");
     }
@@ -799,12 +914,12 @@ mod tests {
     #[test]
     fn bad_names_and_tokens_are_rejected() {
         let err = parse_err(
-            "version = 1\n[nodes.\"my host\"]\nssh_from_runtime = \"-oProxyCommand=x\"\n[nodes.runtime]\nssh_from_agent = \"h\"\n[workspaces.\"-x\"]\nagent_node = \"my host\"\nroot = \"/a\"\n",
+            "version = 1\n[nodes.\"my host\"]\nssh = \"-oProxyCommand=x\"\n[nodes.runtime]\n[workspaces.\"-x\"]\nagent_node = \"my host\"\nroot = \"/a\"\n",
         );
         let msg = err.message();
         assert!(msg.contains("nodes.my host: name must be"), "{msg}");
         assert!(
-            msg.contains("nodes.my host.ssh_from_runtime must match"),
+            msg.contains("nodes.my host.ssh must match"),
             "{msg}"
         );
         assert!(msg.contains("workspaces.-x: name must be"), "{msg}");

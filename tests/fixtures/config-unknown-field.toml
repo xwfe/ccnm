@@ -2,13 +2,14 @@
 # ignored: with the default it would silently point at [nodes.runtime].
 version = 1
 
+this = "runtime"
+
 [nodes.agent]
-ssh_from_runtime = "work"
+ssh = "agent-alias"
 
 [nodes.runtime]
-ssh_from_agent = "ccnm-home"
 
 [workspaces.xshun]
 agent_node = "agent"
-runtime_hots = "home"
+runtime_hots = "runtime"
 root = "/Users/fodelf/Projects/xshun"

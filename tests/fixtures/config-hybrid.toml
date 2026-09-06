@@ -2,11 +2,12 @@
 # implement the backend; doctor says so instead of pretending.
 version = 1
 
+this = "runtime"
+
 [nodes.agent]
-ssh_from_runtime = "work"
+ssh = "agent-alias"
 
 [nodes.runtime]
-ssh_from_agent = "ccnm-home"
 smb_user = "fodelf"
 
 [workspaces.legacy]

@@ -804,7 +804,7 @@ mod tests {
                 &["internal", "probe"],
                 &Ping { protocol: 1, n: 0 },
                 Duration::from_secs(1),
-                ErrorCode::WorkUnreachable,
+                ErrorCode::AgentUnreachable,
             )
             .unwrap_err();
         assert_eq!(e.code(), ErrorCode::Policy);
@@ -838,7 +838,7 @@ mod tests {
                 &["internal", "hello"],
                 &Ping { protocol: 1, n: 1 },
                 Duration::from_secs(1),
-                ErrorCode::HomeUnreachable,
+                ErrorCode::RuntimeUnreachable,
             )
             .unwrap();
         assert_eq!(reply.n, 7);
@@ -878,11 +878,11 @@ mod tests {
                     &["internal", "probe"],
                     &Ping { protocol: 1, n: 0 },
                     Duration::from_secs(1),
-                    ErrorCode::WorkUnreachable,
+                    ErrorCode::AgentUnreachable,
                 )
         };
         let e = call().unwrap_err();
-        assert_eq!(e.code(), ErrorCode::WorkUnreachable);
+        assert_eq!(e.code(), ErrorCode::AgentUnreachable);
         assert!(e.message().contains("Connection timed out"), "{e}");
 
         let e = call().unwrap_err();

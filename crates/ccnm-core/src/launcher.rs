@@ -41,15 +41,14 @@ pub fn run_print(
             ),
         ));
     }
-    let ssh =
-        Ssh::new(resolved.agent_ssh, &env.control_dir)?.with_ccnm_bin(resolved.agent.ccnm_bin());
+    let ssh = Ssh::new(resolved.agent_ssh()?, &env.control_dir)?
+        .with_ccnm_bin(resolved.agent.ccnm_bin());
     ssh.check_control_path()?;
     let req = RunRequest {
         protocol: PROTOCOL,
         workspace: resolved.name.to_string(),
         root: root.clone(),
-        home_alias: resolved.runtime_alias.to_string(),
-        home_ccnm_bin: resolved.runtime.ccnm_bin(),
+        runtime_node: resolved.workspace.runtime_node.clone(),
         claude_config_dir: resolved.agent.claude_config_dir.clone(),
         permission_mode: resolved.workspace.claude_permission_mode,
         prompt: prompt.to_string(),
@@ -60,10 +59,10 @@ pub fn run_print(
     ssh.call_ccnm(
         env.runner,
         Master::Reuse,
-        &["internal", "work-run"],
+        &["internal", "agent-run"],
         &req,
         timeout + Duration::from_secs(120),
-        ErrorCode::WorkUnreachable,
+        ErrorCode::AgentUnreachable,
     )
 }
 
@@ -91,8 +90,7 @@ pub fn start_interactive(
         protocol: PROTOCOL,
         workspace: resolved.name.to_string(),
         root: resolved.workspace.root.clone(),
-        home_alias: resolved.runtime_alias.to_string(),
-        home_ccnm_bin: resolved.runtime.ccnm_bin(),
+        runtime_node: resolved.workspace.runtime_node.clone(),
         claude_config_dir: resolved.agent.claude_config_dir.clone(),
         permission_mode: resolved.workspace.claude_permission_mode,
         prompt: prompt.map(str::to_string),
@@ -100,10 +98,10 @@ pub fn start_interactive(
     ssh.call_ccnm(
         env.runner,
         Master::Reuse,
-        &["internal", "work-start"],
+        &["internal", "agent-start"],
         &req,
         Duration::from_secs(120),
-        ErrorCode::WorkUnreachable,
+        ErrorCode::AgentUnreachable,
     )
 }
 
@@ -138,14 +136,14 @@ pub fn start_interactive(
 /// [`crate::ssh::is_remote_safe`]). It rides the connection's stdin
 /// instead, which is bytes and needs no quoting, so `--prompt-stdin`
 /// tells the far side to read it there. Newlines and quotes survive.
-pub fn start_from_work(
-    home_alias: &str,
-    home_ccnm_bin: &str,
+pub fn start_from_agent(
+    runtime_alias: &str,
+    runtime_ccnm_bin: &str,
     workspace: &str,
     prompt: Option<&str>,
     env: &Env<'_>,
 ) -> Result<()> {
-    let ssh = Ssh::new(home_alias, env.control_dir.clone())?.with_ccnm_bin(home_ccnm_bin);
+    let ssh = Ssh::new(runtime_alias, env.control_dir.clone())?.with_ccnm_bin(runtime_ccnm_bin);
     let mut argv: Vec<&str> = vec![ssh.ccnm_bin(), "run", workspace, "--detached"];
     if prompt.is_some() {
         argv.push("--prompt-stdin");
@@ -162,19 +160,19 @@ pub fn start_from_work(
     // not start the session" with nothing under it.
     match crate::ssh::classify(out) {
         RemoteOutcome::Unreachable(why) => Err(Error::new(
-            ErrorCode::HomeUnreachable,
-            format!("ssh {home_alias}: {why}"),
+            ErrorCode::RuntimeUnreachable,
+            format!("ssh {runtime_alias}: {why}"),
         )),
         RemoteOutcome::CommandNotFound => Err(Error::new(
             ErrorCode::Version,
             format!(
-                "{home_ccnm_bin} not found on {home_alias} (the login shell exited 127)\ninstall the same ccnm build there, or set ccnm_bin under [nodes.runtime] in this machine's config.toml"
+                "{runtime_ccnm_bin} not found on {runtime_alias} (the login shell exited 127)\ninstall the same ccnm build there, or set ccnm_bin under [nodes.runtime] in this machine's config.toml"
             ),
         )),
         RemoteOutcome::NotExecutable => Err(Error::new(
             ErrorCode::Version,
             format!(
-                "{home_ccnm_bin} on {home_alias} is there but not executable (exit 126)\nssh {home_alias} 'chmod +x {home_ccnm_bin}'"
+                "{runtime_ccnm_bin} on {runtime_alias} is there but not executable (exit 126)\nssh {runtime_alias} 'chmod +x {runtime_ccnm_bin}'"
             ),
         )),
         RemoteOutcome::Completed(out) => {
@@ -188,9 +186,9 @@ pub fn start_from_work(
             }
             if !out.success() {
                 return Err(Error::new(
-                    ErrorCode::HomeUnreachable,
+                    ErrorCode::RuntimeUnreachable,
                     format!(
-                        "{home_alias} could not start `{workspace}`{}",
+                        "{runtime_alias} could not start `{workspace}`{}",
                         match out.exit_code {
                             Some(code) => format!(" (ccnm there exited {code})"),
                             None => " (ccnm there was killed)".to_string(),
@@ -221,10 +219,10 @@ pub fn stop(resolved: &Resolved<'_>, env: &Env<'_>) -> Result<StopReport> {
     ssh.call_ccnm(
         env.runner,
         Master::Reuse,
-        &["internal", "work-stop"],
+        &["internal", "agent-stop"],
         &req,
         Duration::from_secs(60),
-        ErrorCode::WorkUnreachable,
+        ErrorCode::AgentUnreachable,
     )
 }
 
@@ -244,10 +242,10 @@ pub fn result(
     ssh.call_ccnm(
         env.runner,
         Master::Reuse,
-        &["internal", "work-result"],
+        &["internal", "agent-result"],
         &req,
         Duration::from_secs(60),
-        ErrorCode::WorkUnreachable,
+        ErrorCode::AgentUnreachable,
     )
 }
 
@@ -265,10 +263,10 @@ pub fn purge(resolved: &Resolved<'_>, env: &Env<'_>) -> Result<PurgeReport> {
     let mut report: PurgeReport = ssh.call_ccnm(
         env.runner,
         Master::Reuse,
-        &["internal", "work-purge"],
+        &["internal", "agent-purge"],
         &req,
         Duration::from_secs(60),
-        ErrorCode::WorkUnreachable,
+        ErrorCode::AgentUnreachable,
     )?;
 
     // This machine's half: the retained output of those same sessions.
@@ -292,10 +290,10 @@ pub fn status(resolved: &Resolved<'_>, env: &Env<'_>, all: bool) -> Result<Statu
     ssh.call_ccnm(
         env.runner,
         Master::Reuse,
-        &["internal", "work-status"],
+        &["internal", "agent-status"],
         &req,
         Duration::from_secs(60),
-        ErrorCode::WorkUnreachable,
+        ErrorCode::AgentUnreachable,
     )
 }
 
@@ -311,8 +309,8 @@ fn agent_ssh(resolved: &Resolved<'_>, env: &Env<'_>) -> Result<Ssh> {
             ),
         ));
     }
-    let ssh =
-        Ssh::new(resolved.agent_ssh, &env.control_dir)?.with_ccnm_bin(resolved.agent.ccnm_bin());
+    let ssh = Ssh::new(resolved.agent_ssh()?, &env.control_dir)?
+        .with_ccnm_bin(resolved.agent.ccnm_bin());
     ssh.check_control_path()?;
     Ok(ssh)
 }
@@ -335,18 +333,17 @@ pub fn mcp_probe_local(resolved: &Resolved<'_>, env: &Env<'_>, calls: u32) -> Re
     mcp::probe::probe(&cmd, calls, probe_timeout(calls), ErrorCode::Internal)
 }
 
-/// Ask the Agent Node to probe the home runtime over its own ssh: the
+/// Ask the Agent Node to probe the Runtime Node over its own ssh: the
 /// path Claude Code will use. Returns the MCP part of the work probe.
 pub fn mcp_probe_remote(resolved: &Resolved<'_>, env: &Env<'_>, calls: u32) -> Result<ProbeReport> {
-    let ssh =
-        Ssh::new(resolved.agent_ssh, &env.control_dir)?.with_ccnm_bin(resolved.agent.ccnm_bin());
+    let ssh = Ssh::new(resolved.agent_ssh()?, &env.control_dir)?
+        .with_ccnm_bin(resolved.agent.ccnm_bin());
     ssh.check_control_path()?;
     let req = ProbeRequest {
         protocol: PROTOCOL,
         workspace: resolved.name.to_string(),
         root: resolved.workspace.root.clone(),
-        home_alias: resolved.runtime_alias.to_string(),
-        home_ccnm_bin: resolved.runtime.ccnm_bin(),
+        runtime_node: resolved.workspace.runtime_node.clone(),
         claude_config_dir: resolved.agent.claude_config_dir.clone(),
         mcp_calls: calls,
     };
@@ -356,17 +353,24 @@ pub fn mcp_probe_remote(resolved: &Resolved<'_>, env: &Env<'_>, calls: u32) -> R
         &["internal", "probe"],
         &req,
         probe_timeout(calls) + Duration::from_secs(60),
-        ErrorCode::WorkUnreachable,
+        ErrorCode::AgentUnreachable,
     )?;
     match rep.mcp {
         Some(Ok(mcp)) => Ok(mcp),
         Some(Err(e)) => Err(e.into()),
-        None => Err(match rep.home_hello {
-            Err(e) => Error::new(
-                ErrorCode::HomeUnreachable,
+        None => Err(match rep.runtime_hello {
+            Some(Err(e)) => Error::new(
+                ErrorCode::RuntimeUnreachable,
                 format!("reverse ssh failed before the MCP probe: {}", e.message),
             ),
-            Ok(_) => Error::internal("work did not run the MCP probe"),
+            None => Error::new(
+                ErrorCode::Config,
+                format!(
+                    "workspace '{}' runs the agent and the project on the same node, so there is no MCP transport to probe",
+                    resolved.name
+                ),
+            ),
+            Some(Ok(_)) => Error::internal("the Agent Node did not run the MCP probe"),
         }),
     }
 }
@@ -397,6 +401,16 @@ mod tests {
     //! them passing and bring up a session pointed at the wrong machine.
     //! Only running one end's output into the other end's input can see
     //! it.
+
+    /// The config an Agent Node keeps: who it is, and the one alias it
+    /// dials the projects by. `ccnm_bin` is non-default so a test that
+    /// silently used the default path would fail instead of passing.
+    fn agent_config() -> crate::config::Config {
+        crate::config::Config::parse(
+            "this = \"agent\"\n[nodes.agent]\n[nodes.runtime]\nssh = \"to-runtime\"\nccnm_bin = \"/opt/runtime/ccnm\"\n",
+        )
+        .unwrap()
+    }
 
     use super::*;
     use crate::config::{Config, PermissionMode};
@@ -468,7 +482,7 @@ mod tests {
     /// something other than its default, because "the default arrived"
     /// and "the config's value arrived" have to be told apart.
     #[test]
-    fn the_alias_home_sends_is_the_one_the_session_comes_back_on() {
+    fn the_alias_the_agent_dials_is_the_one_the_session_comes_back_on() {
         let dir = temp("loop");
         let root = dir.join("project");
         std::fs::create_dir_all(&root).unwrap();
@@ -476,8 +490,8 @@ mod tests {
         // ---- hop 1: home asks work ---------------------------------
         let config = Config::parse(&format!(
             "version = 1\n\
-             [nodes.agent]\nssh_from_runtime = \"to-work\"\nccnm_bin = \"/opt/work/ccnm\"\nclaude_config_dir = \"/x/claude\"\n\
-             [nodes.runtime]\nssh_from_agent = \"to-home\"\nccnm_bin = \"/opt/home/ccnm\"\n\
+             this = \"runtime\"\n[nodes.agent]\nssh = \"to-work\"\nccnm_bin = \"/opt/work/ccnm\"\nclaude_config_dir = \"/x/claude\"\n\
+             [nodes.runtime]\nccnm_bin = \"/opt/home/ccnm\"\n\
              [workspaces.xshun]\nagent_node = \"agent\"\nroot = \"{}\"\nclaude_permission_mode = \"plan\"\n",
             root.display()
         ))
@@ -498,7 +512,7 @@ mod tests {
         assert_eq!(calls.len(), 1, "one ssh, to one machine");
         let line = calls[0].display();
         assert!(
-            line.contains("-T to-work /opt/work/ccnm internal work-start"),
+            line.contains("-T to-work /opt/work/ccnm internal agent-start"),
             "hop 1 goes to the Agent Node, running the Agent Node's ccnm: {line}"
         );
 
@@ -506,10 +520,9 @@ mod tests {
         let wire = calls[0].args.last().unwrap().to_string_lossy().into_owned();
         let req: StartRequest = payload::decode(&wire).unwrap();
         assert_eq!(
-            req.home_alias, "to-home",
+            req.runtime_node, "runtime",
             "work is told the alias to come back on, not the one home came in on"
         );
-        assert_eq!(req.home_ccnm_bin, "/opt/home/ccnm");
         assert_eq!(req.root, root);
         assert_eq!(req.workspace, "xshun");
         // What the supervisor will hand Claude: `--permission-mode`,
@@ -557,11 +570,12 @@ mod tests {
             }
         });
 
-        let work_runner = FakeRunner::new();
-        work_runner.push(Output::exited(1, "")); // has-session: nothing up yet
-        work_runner.push(Output::exited(0, hello_json())); // the handshake home
+        let agent_runner = FakeRunner::new();
+        agent_runner.push(Output::exited(1, "")); // has-session: nothing up yet
+        agent_runner.push(Output::exited(0, hello_json())); // the handshake home
         let tools = work::Tools {
-            runner: &work_runner,
+            config: agent_config(),
+            runner: &agent_runner,
             state: state.clone(),
             control_dir: control("loop-work"),
             claude: None,
@@ -577,10 +591,10 @@ mod tests {
         assert_eq!(rep.server_pid, 4242);
 
         // The version-and-root handshake went to the alias *home* named.
-        let greeting = work_runner.calls()[1].display();
+        let greeting = agent_runner.calls()[1].display();
         assert!(
-            greeting.contains("-T to-home /opt/home/ccnm internal hello"),
-            "hop 2's check goes home, running home's ccnm: {greeting}"
+            greeting.contains("-T to-runtime /opt/runtime/ccnm internal hello"),
+            "hop 2 dials the runtime by the agent's own alias, running its ccnm: {greeting}"
         );
 
         // ---- hop 3: the session reaches back ------------------------
@@ -602,8 +616,8 @@ mod tests {
             .iter()
             .position(|a| a == "--payload")
             .expect("the transport carries a payload");
-        assert_eq!(args[at - 4], "to-home", "the third hop goes home");
-        assert_eq!(args[at - 3], "/opt/home/ccnm", "running home's ccnm");
+        assert_eq!(args[at - 4], "to-runtime", "the third hop dials the runtime");
+        assert_eq!(args[at - 3], "/opt/runtime/ccnm", "running the runtime's ccnm");
         assert_eq!(args[at - 2..at], ["internal", "mcp-serve"]);
 
         let serve: ServePayload = payload::decode(&args[at + 1]).unwrap();
@@ -622,7 +636,7 @@ mod tests {
         // is the id of the directory holding it.
         let spec = session::load(&session_dir).unwrap();
         assert_eq!(spec.id, serve.session);
-        assert_eq!(spec.home_alias, "to-home");
+        assert_eq!(spec.runtime.as_ref().unwrap().alias, "to-runtime");
         assert_eq!(spec.root, root);
         // The spec is what the supervisor reads to start Claude, so this
         // is where the three values from hop 1 have to have landed.
@@ -649,14 +663,14 @@ mod tests {
     /// so the last hop is home decoding what work really wrote -- not a
     /// document the test made up.
     #[test]
-    fn a_print_run_comes_back_on_the_alias_home_sent_and_asks_nobody() {
+    fn a_print_run_comes_back_on_the_alias_the_agent_dialled_and_asks_nobody() {
         let dir = temp("print-loop");
         let root = dir.join("project");
         std::fs::create_dir_all(&root).unwrap();
         let config = Config::parse(&format!(
             "version = 1\n\
-             [nodes.agent]\nssh_from_runtime = \"to-work\"\nccnm_bin = \"/opt/work/ccnm\"\nclaude_config_dir = \"/x/claude\"\n\
-             [nodes.runtime]\nssh_from_agent = \"to-home\"\nccnm_bin = \"/opt/home/ccnm\"\n\
+             this = \"runtime\"\n[nodes.agent]\nssh = \"to-work\"\nccnm_bin = \"/opt/work/ccnm\"\nclaude_config_dir = \"/x/claude\"\n\
+             [nodes.runtime]\nccnm_bin = \"/opt/home/ccnm\"\n\
              [workspaces.xshun]\nagent_node = \"agent\"\nroot = \"{}\"\nclaude_permission_mode = \"plan\"\n",
             root.display()
         ))
@@ -680,16 +694,12 @@ mod tests {
         assert_eq!(calls.len(), 1, "one ssh, to one machine");
         let line = calls[0].display();
         assert!(
-            line.contains("-T to-work /opt/work/ccnm internal work-run"),
+            line.contains("-T to-work /opt/work/ccnm internal agent-run"),
             "{line}"
         );
         let wire = calls[0].args.last().unwrap().to_string_lossy().into_owned();
         let req: RunRequest = payload::decode(&wire).unwrap();
-        assert_eq!(req.home_alias, "to-home");
-        assert_eq!(
-            req.home_ccnm_bin, "/opt/home/ccnm",
-            "print mode names home's ccnm for the way back, like interactive does"
-        );
+        assert_eq!(req.runtime_node, "runtime");
         assert_eq!(req.root, root);
         assert_eq!(req.workspace, "xshun");
         assert_eq!(req.prompt, "say hi");
@@ -735,10 +745,11 @@ mod tests {
             }
         });
 
-        let work_runner = FakeRunner::new();
-        work_runner.push(Output::exited(0, hello_json())); // the handshake home
+        let agent_runner = FakeRunner::new();
+        agent_runner.push(Output::exited(0, hello_json())); // the handshake home
         let tools = work::Tools {
-            runner: &work_runner,
+            config: agent_config(),
+            runner: &agent_runner,
             state: state.clone(),
             control_dir: control("print-loop-work"),
             claude: None,
@@ -754,10 +765,10 @@ mod tests {
             rep.result.as_ref().and_then(|r| r.result.as_deref()),
             Some("hi from claude")
         );
-        let greeting = work_runner.calls()[0].display();
+        let greeting = agent_runner.calls()[0].display();
         assert!(
-            greeting.contains("-T to-home /opt/home/ccnm internal hello"),
-            "hop 2's check goes home, running home's ccnm: {greeting}"
+            greeting.contains("-T to-runtime /opt/runtime/ccnm internal hello"),
+            "hop 2 dials the runtime by the agent's own alias, running its ccnm: {greeting}"
         );
 
         // ---- hop 3: the session reaches back ------------------------
@@ -771,8 +782,8 @@ mod tests {
             .map(|a| a.as_str().unwrap().to_string())
             .collect();
         let at = args.iter().position(|a| a == "--payload").unwrap();
-        assert_eq!(args[at - 4], "to-home", "the third hop goes home");
-        assert_eq!(args[at - 3], "/opt/home/ccnm", "running home's ccnm");
+        assert_eq!(args[at - 4], "to-runtime", "the third hop dials the runtime");
+        assert_eq!(args[at - 3], "/opt/runtime/ccnm", "running the runtime's ccnm");
         let serve: ServePayload = payload::decode(&args[at + 1]).unwrap();
         assert_eq!(serve.root, root);
         assert_eq!(serve.workspace, "xshun");
@@ -784,7 +795,7 @@ mod tests {
 
         let spec = session::load(&session_dir).unwrap();
         assert_eq!(spec.id, rep.session);
-        assert_eq!(spec.home_alias, "to-home");
+        assert_eq!(spec.runtime.as_ref().unwrap().alias, "to-runtime");
         assert_eq!(spec.permission_mode, PermissionMode::Plan);
         assert_eq!(spec.claude_config_dir, Some(PathBuf::from("/x/claude")));
         assert_eq!(
@@ -813,14 +824,14 @@ mod tests {
     /// there. That is the whole design: one definition of every
     /// workspace, and no second copy of the launching code.
     #[test]
-    fn from_the_work_machine_the_entire_start_is_delegated_home() {
+    fn from_the_agent_node_the_entire_start_is_delegated_to_the_runtime() {
         let config = Config::parse(
-            "[nodes.runtime]\nssh_from_agent = \"to-home\"\nccnm_bin = \"/opt/home/ccnm\"\n",
+            "this = \"agent\"\nruntime_node = \"runtime\"\n[nodes.agent]\n[nodes.runtime]\nssh = \"to-runtime\"\nccnm_bin = \"/opt/runtime/ccnm\"\n",
         )
         .unwrap();
         let (alias, host) = config
             .runtime_from_agent()
-            .expect("a config with only a way home is the Agent Node's");
+            .expect("a config with no workspace list is the Agent Node's");
 
         let fake = FakeRunner::new();
         let mut started = Output::exited(0, "");
@@ -831,13 +842,13 @@ mod tests {
             control_dir: control("delegate"),
             current_exe: PathBuf::from("/opt/work/ccnm"),
         };
-        start_from_work(alias, &host.ccnm_bin(), "xshun", None, &env).unwrap();
+        start_from_agent(alias, &host.ccnm_bin(), "xshun", None, &env).unwrap();
 
         let calls = fake.calls();
         assert_eq!(calls.len(), 1, "one hop, and nothing decided on this side");
         let line = calls[0].display();
         assert!(
-            line.contains("-T to-home /opt/home/ccnm run xshun --detached"),
+            line.contains("-T to-runtime /opt/runtime/ccnm run xshun --detached"),
             "{line}"
         );
         // --detached is not decoration. Without it the far side would sit
@@ -866,7 +877,7 @@ mod tests {
             current_exe: PathBuf::from("/opt/work/ccnm"),
         };
         let prompt = "fix the \"failing\" test\nit's in `mod tests`";
-        start_from_work("to-home", "/opt/home/ccnm", "xshun", Some(prompt), &env).unwrap();
+        start_from_agent("to-home", "/opt/home/ccnm", "xshun", Some(prompt), &env).unwrap();
 
         let call = fake.calls().remove(0);
         let line = call.display();
@@ -912,7 +923,7 @@ mod tests {
             current_exe: PathBuf::from("/opt/work/ccnm"),
         };
         let err =
-            start_from_work("to-home", "/opt/homebrew/bin/ccnm", "xshun", None, &env).unwrap_err();
+            start_from_agent("to-home", "/opt/homebrew/bin/ccnm", "xshun", None, &env).unwrap_err();
 
         assert!(
             fake.calls()[0]
@@ -945,9 +956,9 @@ mod tests {
         let mut timeout = Output::exited(255, "");
         timeout.stderr = b"ssh: connect to host to-home port 22: Operation timed out\n".to_vec();
         down.push(timeout);
-        let err = start_from_work("to-home", "/opt/home/ccnm", "xshun", None, &env_for(&down))
+        let err = start_from_agent("to-home", "/opt/home/ccnm", "xshun", None, &env_for(&down))
             .unwrap_err();
-        assert_eq!(err.code(), ErrorCode::HomeUnreachable);
+        assert_eq!(err.code(), ErrorCode::RuntimeUnreachable);
         assert!(err.message().contains("Operation timed out"), "{err}");
 
         // Home was reached, looked, and said no. Its own words are
@@ -957,7 +968,7 @@ mod tests {
         no.stderr =
             b"CCNM_E_CONFIG:\nworkspace 'xshun' is not defined; defined: fixture\n".to_vec();
         refused.push(no);
-        let err = start_from_work(
+        let err = start_from_agent(
             "to-home",
             "/opt/home/ccnm",
             "xshun",
@@ -965,7 +976,7 @@ mod tests {
             &env_for(&refused),
         )
         .unwrap_err();
-        assert_eq!(err.code(), ErrorCode::HomeUnreachable);
+        assert_eq!(err.code(), ErrorCode::RuntimeUnreachable);
         assert!(err.message().contains("exited 10"), "{err}");
         assert!(err.message().contains("xshun"), "{err}");
     }
@@ -979,8 +990,8 @@ mod tests {
         let dir = temp("no-root");
         let config = Config::parse(&format!(
             "version = 1\n\
-             [nodes.agent]\nssh_from_runtime = \"to-work\"\n\
-             [nodes.runtime]\nssh_from_agent = \"to-home\"\n\
+             this = \"runtime\"\n[nodes.agent]\nssh = \"to-work\"\n\
+             [nodes.runtime]\n\
              [workspaces.xshun]\nagent_node = \"agent\"\nroot = \"{}\"\n",
             dir.join("gone").display()
         ))
@@ -1023,8 +1034,8 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let config = Config::parse(&format!(
             "version = 1\n\
-             [nodes.agent]\nssh_from_runtime = \"to-work\"\n\
-             [nodes.runtime]\nssh_from_agent = \"to-home\"\n\
+             this = \"runtime\"\n[nodes.agent]\nssh = \"to-work\"\n\
+             [nodes.runtime]\n\
              [workspaces.xshun]\nagent_node = \"agent\"\nroot = \"{}\"\n",
             root.display()
         ))
@@ -1050,7 +1061,7 @@ mod tests {
         let req: RunRequest = payload::decode(&wire).unwrap();
         assert_eq!(req.timeout_secs, session.as_secs());
         assert_eq!(req.prompt, "hello");
-        assert_eq!(req.home_alias, "to-home");
+        assert_eq!(req.runtime_node, "runtime");
     }
 
     /// Nothing here should need to know what a path looks like on the

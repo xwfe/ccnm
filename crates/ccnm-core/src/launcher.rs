@@ -16,6 +16,7 @@ use crate::protocol::run::{
     AttachRequest, PurgeReport, PurgeRequest, ResultReport, ResultRequest, RunReport, RunRequest,
     StartReport, StartRequest, StatusReport, StatusRequest, StopReport, StopRequest,
 };
+use crate::provider::AgentProvider;
 use crate::ssh::{Master, RemoteOutcome, Ssh};
 
 /// `ccnm run <workspace> --print <prompt>`: one Claude session on the
@@ -41,8 +42,10 @@ pub fn run_print(
         workspace: resolved.name.to_string(),
         root: root.clone(),
         runtime_node: resolved.workspace.runtime_node.clone(),
-        claude_config_dir: resolved.agent.claude_config_dir.clone(),
-        permission_mode: resolved.workspace.claude_permission_mode,
+        provider_config_dir: AgentProvider::current()
+            .config_dir(resolved.agent)
+            .map(|dir| dir.to_path_buf()),
+        permission_mode: AgentProvider::current().permission_mode(resolved.workspace),
         prompt: prompt.to_string(),
         timeout_secs: timeout.as_secs(),
     };
@@ -83,8 +86,10 @@ pub fn start_interactive(
         workspace: resolved.name.to_string(),
         root: resolved.workspace.root.clone(),
         runtime_node: resolved.workspace.runtime_node.clone(),
-        claude_config_dir: resolved.agent.claude_config_dir.clone(),
-        permission_mode: resolved.workspace.claude_permission_mode,
+        provider_config_dir: AgentProvider::current()
+            .config_dir(resolved.agent)
+            .map(|dir| dir.to_path_buf()),
+        permission_mode: AgentProvider::current().permission_mode(resolved.workspace),
         prompt: prompt.map(str::to_string),
     };
     ssh.call_ccnm(
@@ -353,7 +358,9 @@ pub fn mcp_probe_remote(resolved: &Resolved<'_>, env: &Env<'_>, calls: u32) -> R
         workspace: resolved.name.to_string(),
         root: resolved.workspace.root.clone(),
         runtime_node: resolved.workspace.runtime_node.clone(),
-        claude_config_dir: resolved.agent.claude_config_dir.clone(),
+        provider_config_dir: AgentProvider::current()
+            .config_dir(resolved.agent)
+            .map(|dir| dir.to_path_buf()),
         mcp_calls: calls,
     };
     let rep: WorkProbeReport = ssh.call_ccnm(
@@ -540,7 +547,7 @@ mod tests {
         // permission than the person wrote down, and nothing on the work
         // machine can tell.
         assert_eq!(req.permission_mode, PermissionMode::Plan);
-        assert_eq!(req.claude_config_dir, Some(PathBuf::from("/x/claude")));
+        assert_eq!(req.provider_config_dir, Some(PathBuf::from("/x/claude")));
         assert_eq!(req.prompt.as_deref(), Some("fix the failing test"));
 
         // ---- hop 2: work builds the session -------------------------
@@ -561,7 +568,7 @@ mod tests {
             inner.push(Output::exited(0, "")); // the status bar itself
             let tools = crate::controller::Tools {
                 runner: &inner,
-                claude: Some(PathBuf::from("/opt/homebrew/bin/claude")),
+                agent: Some(PathBuf::from("/opt/homebrew/bin/claude")),
                 tmux: Some(PathBuf::from("/opt/homebrew/bin/tmux")),
                 exe: PathBuf::from("/opt/work/ccnm"),
             };
@@ -587,7 +594,7 @@ mod tests {
             runner: &agent_runner,
             state: state.clone(),
             control_dir: control("loop-work"),
-            claude: None,
+            agent: None,
             tmux: Some(PathBuf::from("/opt/homebrew/bin/tmux")),
             controller: socket.clone(),
         };
@@ -658,7 +665,7 @@ mod tests {
         // The spec is what the supervisor reads to start Claude, so this
         // is where the three values from hop 1 have to have landed.
         assert_eq!(spec.permission_mode, PermissionMode::Plan);
-        assert_eq!(spec.claude_config_dir, Some(PathBuf::from("/x/claude")));
+        assert_eq!(spec.provider_config_dir, Some(PathBuf::from("/x/claude")));
         assert_eq!(
             spec.mode,
             Mode::Interactive {
@@ -722,7 +729,7 @@ mod tests {
         assert_eq!(req.prompt, "say hi");
         assert_eq!(req.timeout_secs, 60);
         assert_eq!(req.permission_mode, PermissionMode::Plan);
-        assert_eq!(req.claude_config_dir, Some(PathBuf::from("/x/claude")));
+        assert_eq!(req.provider_config_dir, Some(PathBuf::from("/x/claude")));
 
         // ---- hop 2: work runs it ------------------------------------
         // A controller on a socket, and a script standing in for the
@@ -753,7 +760,7 @@ mod tests {
                 inner.push(Output::exited(0, "Aqua\n")); // hello: the login session
                 let tools = crate::controller::Tools {
                     runner: &inner,
-                    claude: Some(PathBuf::from("/opt/homebrew/bin/claude")),
+                    agent: Some(PathBuf::from("/opt/homebrew/bin/claude")),
                     tmux: None,
                     exe: supervisor,
                 };
@@ -769,7 +776,7 @@ mod tests {
             runner: &agent_runner,
             state: state.clone(),
             control_dir: control("print-loop-work"),
-            claude: None,
+            agent: None,
             tmux: None,
             controller: socket.clone(),
         };
@@ -822,7 +829,7 @@ mod tests {
         assert_eq!(spec.id, rep.session);
         assert_eq!(spec.runtime.as_ref().unwrap().alias, "to-runtime");
         assert_eq!(spec.permission_mode, PermissionMode::Plan);
-        assert_eq!(spec.claude_config_dir, Some(PathBuf::from("/x/claude")));
+        assert_eq!(spec.provider_config_dir, Some(PathBuf::from("/x/claude")));
         assert_eq!(
             spec.mode,
             Mode::Print {

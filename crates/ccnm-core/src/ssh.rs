@@ -167,10 +167,15 @@ impl Ssh {
             "ServerAliveCountMax=3".to_string(),
             // Design doc section 32: clear any SendEnv the user's config
             // added, so Anthropic credentials never ride along.
-            "SendEnv=-ANTHROPIC_*".to_string(),
-            "SendEnv=-CLAUDE_*".to_string(),
         ]
         .into_iter()
+        .chain(
+            crate::provider::AgentProvider::current()
+                .credentials()
+                .env_prefixes
+                .iter()
+                .map(|prefix| format!("SendEnv=-{prefix}*")),
+        )
         .flat_map(|opt| ["-o".to_string(), opt])
         .collect()
     }
@@ -197,11 +202,17 @@ impl Ssh {
             // survives all of those and so should the session.
             "ServerAliveInterval=15",
             "ServerAliveCountMax=20",
-            "SendEnv=-ANTHROPIC_*",
-            "SendEnv=-CLAUDE_*",
         ]
         .into_iter()
-        .flat_map(|opt| ["-o".to_string(), opt.to_string()])
+        .map(str::to_string)
+        .chain(
+            crate::provider::AgentProvider::current()
+                .credentials()
+                .env_prefixes
+                .iter()
+                .map(|prefix| format!("SendEnv=-{prefix}*")),
+        )
+        .flat_map(|opt| ["-o".to_string(), opt])
         .collect()
     }
 

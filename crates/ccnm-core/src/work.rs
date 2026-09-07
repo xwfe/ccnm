@@ -11,7 +11,6 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use crate::claude::{self, ClaudeReport};
 use crate::config::Config;
 use crate::controller;
 use crate::error::{Error, ErrorCode, ErrorReport, Reported, Result};
@@ -28,6 +27,7 @@ use crate::protocol::run::{
     StartReport, StartRequest, StatusReport, StatusRequest, StopReport, StopRequest,
 };
 use crate::protocol::{self};
+use crate::provider::{AgentProvider, AgentReport, Ask};
 use crate::session::{self, Mode, RuntimeLink, Spec};
 use crate::ssh::{Master, Ssh};
 use crate::tmux;
@@ -48,10 +48,10 @@ pub struct Tools<'a> {
     pub state: PathBuf,
     /// Where ControlPath sockets live on this machine.
     pub control_dir: PathBuf,
-    /// The `claude` binary, if [`claude::locate`] found one. Only used as
+    /// The `claude` binary, if [`AgentProvider::locate`] found one. Only used as
     /// a fallback for the version when no controller is running; the
     /// controller finds its own, in launchd's environment.
-    pub claude: Option<PathBuf>,
+    pub agent: Option<PathBuf>,
     /// The controller's socket on this machine.
     pub controller: PathBuf,
     /// tmux, for interactive sessions. Found in *this* (ssh) environment,
@@ -140,7 +140,7 @@ pub fn run(req: &RunRequest, tools: &Tools<'_>) -> Result<RunReport> {
         workspace: req.workspace.clone(),
         root: req.root.clone(),
         runtime: tools.runtime_link(&req.runtime_node)?,
-        claude_config_dir: req.claude_config_dir.clone(),
+        provider_config_dir: req.provider_config_dir.clone(),
         permission_mode: req.permission_mode,
         mode: Mode::Print {
             prompt: req.prompt.clone(),
@@ -154,7 +154,7 @@ pub fn run(req: &RunRequest, tools: &Tools<'_>) -> Result<RunReport> {
         session::wait_for_outcome(&dir, Duration::from_secs(req.timeout_secs) + EXIT_GRACE)?;
 
     let stdout = std::fs::read(dir.stdout()).unwrap_or_default();
-    let result = claude::parse_print(&stdout).ok();
+    let result = spec.provider().parse_result(&stdout).ok();
     let stdout_tail = if result.is_some() {
         String::new()
     } else {
@@ -377,7 +377,7 @@ fn start_fresh(
         workspace: req.workspace.clone(),
         root: req.root.clone(),
         runtime: tools.runtime_link(&req.runtime_node)?,
-        claude_config_dir: req.claude_config_dir.clone(),
+        provider_config_dir: req.provider_config_dir.clone(),
         permission_mode: req.permission_mode,
         mode: Mode::Interactive {
             prompt: req.prompt.clone(),
@@ -580,7 +580,7 @@ pub fn result(req: &ResultRequest, tools: &Tools<'_>) -> Result<ResultReport> {
     };
     let spec = session::load(&dir)?;
     let stdout = std::fs::read(dir.stdout()).unwrap_or_default();
-    let result = claude::parse_print(&stdout).ok();
+    let result = spec.provider().parse_result(&stdout).ok();
     Ok(ResultReport {
         protocol: PROTOCOL,
         session: id,
@@ -671,18 +671,7 @@ fn transport_alive(dir: &session::Dir, tools: &Tools<'_>) -> Option<bool> {
 
 /// The `--payload` argument out of a session's `mcp.json`.
 fn transport_payload(dir: &session::Dir) -> Option<String> {
-    let text = std::fs::read_to_string(dir.mcp_config()).ok()?;
-    let config: serde_json::Value = serde_json::from_str(&text).ok()?;
-    let args = config
-        .pointer(&format!("/mcpServers/{}/args", mcp::server::SERVER_NAME))?
-        .as_array()?;
-    let mut it = args.iter();
-    while let Some(arg) = it.next() {
-        if arg.as_str() == Some("--payload") {
-            return it.next()?.as_str().map(str::to_string);
-        }
-    }
-    None
+    AgentProvider::current().transport_payload(dir)
 }
 
 /// The ccnm session id a live tmux session was tagged with.
@@ -764,7 +753,7 @@ pub fn probe(req: &ProbeRequest, tools: &Tools<'_>) -> ProbeReport {
         }
     };
 
-    let (controller, claude) = ask_about_claude(tools, req.claude_config_dir.as_deref());
+    let (controller, agent) = ask_about_agent(tools, req.provider_config_dir.as_deref());
     ProbeReport {
         protocol: PROTOCOL,
         // Colocated: the project is on this machine, so this hello is
@@ -773,7 +762,7 @@ pub fn probe(req: &ProbeRequest, tools: &Tools<'_>) -> ProbeReport {
             runtime_ssh.is_none().then(|| req.root.clone()),
         )),
         controller: Some(controller),
-        claude,
+        agent,
         runtime_ssh,
         runtime_hello,
         mcp,
@@ -801,10 +790,10 @@ pub fn probe(req: &ProbeRequest, tools: &Tools<'_>) -> ProbeReport {
 /// *can* run `claude auth status`; the point is that its answer would be
 /// wrong, and a wrong row sends the user to log in on a machine that is
 /// already logged in.
-fn ask_about_claude(
+fn ask_about_agent(
     tools: &Tools<'_>,
     config_dir: Option<&Path>,
-) -> (Reported<controller::Context>, ClaudeReport) {
+) -> (Reported<controller::Context>, AgentReport) {
     match controller::context(&tools.controller) {
         Ok(ctx) => {
             // A controller that is not in a login session is asked only
@@ -812,33 +801,35 @@ fn ask_about_claude(
             // better than this session's, and the rule holds everywhere:
             // do not run a command whose result has to be thrown away.
             let ask = if ctx.login_session() {
-                claude::Ask::Everything
+                Ask::Everything
             } else {
-                claude::Ask::VersionOnly
+                Ask::VersionOnly
             };
-            let claude = controller::claude_auth(&tools.controller, config_dir, ask)
-                .unwrap_or_else(|e| ClaudeReport {
-                    path: None,
-                    version: Err((&e).into()),
-                    auth: Err(e.into()),
+            let agent =
+                controller::agent_auth(&tools.controller, config_dir, ask).unwrap_or_else(|e| {
+                    AgentReport {
+                        path: None,
+                        version: Err((&e).into()),
+                        auth: Err(e.into()),
+                    }
                 });
-            (Ok(ctx), claude)
+            (Ok(ctx), agent)
         }
         Err(missing) => {
-            let mut claude = claude::report(
-                tools.claude.as_deref(),
+            let mut agent = AgentProvider::current().report(
+                tools.agent.as_deref(),
                 config_dir,
                 tools.runner,
-                claude::Ask::VersionOnly,
+                Ask::VersionOnly,
             );
-            claude.auth = Err(ErrorReport::new(
+            agent.auth = Err(ErrorReport::new(
                 ErrorCode::NotReady,
                 format!(
                     "not checked: no controller to ask, and this ssh session's answer would be wrong\n{}",
                     missing.message()
                 ),
             ));
-            (Err(missing.into()), claude)
+            (Err(missing.into()), agent)
         }
     }
 }
@@ -918,7 +909,7 @@ mod tests {
             workspace: "xshun".into(),
             root: PathBuf::from("/Users/ccrun/Projects/xshun"),
             runtime_node: "runtime".into(),
-            claude_config_dir: Some(PathBuf::from("/x/claude")),
+            provider_config_dir: Some(PathBuf::from("/x/claude")),
             mcp_calls: 0,
         }
     }
@@ -948,7 +939,7 @@ mod tests {
             runner: &fake,
             state: dir.clone(),
             control_dir: control(&dir),
-            claude: Some(PathBuf::from("/usr/local/bin/claude")),
+            agent: Some(PathBuf::from("/usr/local/bin/claude")),
             tmux: None,
             controller: absent_socket("probe"),
         };
@@ -962,9 +953,9 @@ mod tests {
         let home = rep.runtime_hello.as_ref().unwrap().as_ref().unwrap();
         assert_eq!(home.user, "ccrun");
         assert!(home.root.unwrap().is_ok());
-        assert_eq!(rep.claude.version, Ok("2.1.259".into()));
+        assert_eq!(rep.agent.version, Ok("2.1.259".into()));
         assert_eq!(
-            rep.claude.auth.as_ref().unwrap_err().code(),
+            rep.agent.auth.as_ref().unwrap_err().code(),
             ErrorCode::NotReady,
             "an unaskable login must not be reported as logged out"
         );
@@ -1036,7 +1027,7 @@ mod tests {
             runner: &fake,
             state: dir.clone(),
             control_dir: control(&dir),
-            claude: None,
+            agent: None,
             tmux: None,
             controller: absent_socket("probe-fail"),
         };
@@ -1051,8 +1042,8 @@ mod tests {
         assert_eq!(err.code(), ErrorCode::RuntimeUnreachable);
         assert!(err.message.contains("Operation timed out"));
         assert_eq!(rep.mcp, None, "no MCP attempt after a failed hello");
-        assert_eq!(rep.claude.path, None);
-        assert_eq!(rep.claude.version.unwrap_err().code(), ErrorCode::Version);
+        assert_eq!(rep.agent.path, None);
+        assert_eq!(rep.agent.version.unwrap_err().code(), ErrorCode::Version);
         assert_eq!(fake.calls().len(), 2, "no claude calls without a binary");
     }
 
@@ -1067,7 +1058,7 @@ mod tests {
             runner: &fake,
             state: dir.clone(),
             control_dir: control(&dir),
-            claude: None,
+            agent: None,
             tmux: None,
             controller: absent_socket("probe-127"),
         };
@@ -1083,7 +1074,7 @@ mod tests {
             workspace: "fixture".into(),
             root: PathBuf::from("/Users/bing/ccnm-fixture"),
             runtime_node: "runtime".into(),
-            claude_config_dir: None,
+            provider_config_dir: None,
             permission_mode: crate::config::PermissionMode::AcceptEdits,
             prompt: prompt.into(),
             timeout_secs: 5,
@@ -1117,7 +1108,7 @@ mod tests {
             runner: &fake,
             state: dir.clone(),
             control_dir: control(&dir),
-            claude: None,
+            agent: None,
             tmux: None,
             controller: dir.join("nope.sock"),
         };
@@ -1154,7 +1145,7 @@ mod tests {
                 alias: "to-runtime".into(),
                 ccnm_bin: "/opt/runtime/ccnm".into(),
             }),
-            claude_config_dir: None,
+            provider_config_dir: None,
             permission_mode: crate::config::PermissionMode::default(),
             mode: Mode::Interactive { prompt: None },
             timeout_secs: 0,
@@ -1170,7 +1161,7 @@ mod tests {
             inner.push(Output::exited(0, "Aqua\n"));
             let tools = crate::controller::Tools {
                 runner: &inner,
-                claude: None,
+                agent: None,
                 tmux: None,
                 exe: PathBuf::from("/nonexistent"),
             };
@@ -1212,7 +1203,7 @@ mod tests {
             runner: &fake,
             state: deep.clone(),
             control_dir: deep.join("control"),
-            claude: None,
+            agent: None,
             tmux: None,
             controller: deep.join("nope.sock"),
         };
@@ -1241,7 +1232,7 @@ mod tests {
             runner: &fake,
             state: dir.clone(),
             control_dir: control(&dir),
-            claude: None,
+            agent: None,
             tmux: None,
             controller: dir.join("nope.sock"),
         };
@@ -1260,7 +1251,7 @@ mod tests {
             workspace: "xshun".into(),
             root: PathBuf::from("/Users/bing/xshun"),
             runtime_node: "runtime".into(),
-            claude_config_dir: None,
+            provider_config_dir: None,
             permission_mode: crate::config::PermissionMode::default(),
             prompt: None,
         }
@@ -1272,7 +1263,7 @@ mod tests {
             runner: fake,
             state: dir.to_path_buf(),
             control_dir: control(dir),
-            claude: None,
+            agent: None,
             tmux: Some(PathBuf::from("/opt/homebrew/bin/tmux")),
             controller: absent_socket(test),
         }
@@ -1352,7 +1343,7 @@ mod tests {
                 alias: "to-runtime".into(),
                 ccnm_bin: "/opt/runtime/ccnm".into(),
             }),
-            claude_config_dir: None,
+            provider_config_dir: None,
             permission_mode: crate::config::PermissionMode::default(),
             mode: Mode::Interactive { prompt: None },
             timeout_secs: 0,
@@ -1395,7 +1386,7 @@ mod tests {
             inner.push(Output::exited(0, "Background\n"));
             let tools = crate::controller::Tools {
                 runner: &inner,
-                claude: Some(PathBuf::from("/opt/homebrew/bin/claude")),
+                agent: Some(PathBuf::from("/opt/homebrew/bin/claude")),
                 tmux: Some(PathBuf::from("/opt/homebrew/bin/tmux")),
                 exe: PathBuf::from("/x/ccnm"),
             };
@@ -1561,7 +1552,7 @@ mod tests {
                     alias: "home".into(),
                     ccnm_bin: "ccnm".into(),
                 }),
-                claude_config_dir: None,
+                provider_config_dir: None,
                 permission_mode: crate::config::PermissionMode::default(),
                 mode,
                 timeout_secs: 600,
@@ -1774,7 +1765,7 @@ mod tests {
             inner.push(Output::exited(0, "Aqua\n"));
             let tools = crate::controller::Tools {
                 runner: &inner,
-                claude: Some(PathBuf::from("/opt/homebrew/bin/claude")),
+                agent: Some(PathBuf::from("/opt/homebrew/bin/claude")),
                 tmux: None,
                 exe: supervisor,
             };
@@ -1790,7 +1781,7 @@ mod tests {
             runner: &caller,
             state: dir.clone(),
             control_dir: control(&dir),
-            claude: None,
+            agent: None,
             tmux: None,
             controller: socket,
         };
@@ -1831,7 +1822,7 @@ mod tests {
             runner: &FakeRunner::new(),
             state: dir.clone(),
             control_dir: control(&dir),
-            claude: None,
+            agent: None,
             tmux: None,
             controller: absent_socket("run-none"),
         };
@@ -1851,7 +1842,7 @@ mod tests {
             inner.push(Output::exited(0, "Background\n"));
             let tools = crate::controller::Tools {
                 runner: &inner,
-                claude: Some(PathBuf::from("/opt/homebrew/bin/claude")),
+                agent: Some(PathBuf::from("/opt/homebrew/bin/claude")),
                 tmux: None,
                 exe: PathBuf::from("/x/ccnm"),
             };
@@ -1862,7 +1853,7 @@ mod tests {
             runner: &FakeRunner::new(),
             state: dir.clone(),
             control_dir: control(&dir),
-            claude: None,
+            agent: None,
             tmux: None,
             controller: socket,
         };
@@ -1907,7 +1898,7 @@ mod tests {
                 inner.push(Output::exited(0, "Aqua\n"));
                 let tools = crate::controller::Tools {
                     runner: &inner,
-                    claude: Some(PathBuf::from("/opt/homebrew/bin/claude")),
+                    agent: Some(PathBuf::from("/opt/homebrew/bin/claude")),
                     tmux: None,
                     exe: supervisor,
                 };
@@ -1925,7 +1916,7 @@ mod tests {
             runner: &caller,
             state: dir.clone(),
             control_dir: control(&dir),
-            claude: None,
+            agent: None,
             tmux: None,
             controller: socket,
         };
@@ -1965,7 +1956,7 @@ mod tests {
         let req: crate::session::SuperviseRequest =
             crate::protocol::payload::decode(lines.next().unwrap()).unwrap();
         assert_eq!(req.session_dir, rep.session_dir);
-        assert_eq!(req.claude_bin, PathBuf::from("/opt/homebrew/bin/claude"));
+        assert_eq!(req.agent_bin, PathBuf::from("/opt/homebrew/bin/claude"));
         assert_eq!(lines.next(), None);
     }
 
@@ -2002,7 +1993,7 @@ mod tests {
             ));
             let tools = crate::controller::Tools {
                 runner: &inner,
-                claude: Some(PathBuf::from("/opt/homebrew/bin/claude")),
+                agent: Some(PathBuf::from("/opt/homebrew/bin/claude")),
                 tmux: None,
                 exe: PathBuf::from("/x/ccnm"),
             };
@@ -2019,7 +2010,7 @@ mod tests {
             runner: &fake,
             state: dir.clone(),
             control_dir: control(&dir),
-            claude: Some(PathBuf::from("/usr/local/bin/claude")),
+            agent: Some(PathBuf::from("/usr/local/bin/claude")),
             tmux: None,
             controller: socket.clone(),
         };
@@ -2027,10 +2018,10 @@ mod tests {
 
         let ctx = rep.controller.as_ref().unwrap().as_ref().unwrap();
         assert!(ctx.login_session(), "{ctx:?}");
-        assert!(rep.claude.auth.as_ref().unwrap().logged_in);
-        assert_eq!(rep.claude.version, Ok("2.1.259".into()));
+        assert!(rep.agent.auth.as_ref().unwrap().logged_in);
+        assert_eq!(rep.agent.version, Ok("2.1.259".into()));
         assert_eq!(
-            rep.claude.path,
+            rep.agent.path,
             Some(PathBuf::from("/opt/homebrew/bin/claude")),
             "the binary reported must be the controller's, not this session's"
         );

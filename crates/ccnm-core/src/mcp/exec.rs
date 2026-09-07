@@ -212,7 +212,7 @@ pub fn exec_command(
         .args(&args.cmd[1..])
         .cwd(&cwd_abs)
         .timeout(Duration::from_millis(timeout_ms));
-    for key in anthropic_and_claude_vars() {
+    for key in agent_environment_vars() {
         cmd = cmd.env_remove(key);
     }
 
@@ -297,7 +297,7 @@ impl Write for Sink {
 /// (section 6). It also must not hand one to a command it runs: the ssh
 /// session that started this server could have carried one in, and a
 /// child that inherited it could use it or log it.
-fn anthropic_and_claude_vars() -> Vec<std::ffi::OsString> {
+fn agent_environment_vars() -> Vec<std::ffi::OsString> {
     strip_names(std::env::vars_os().map(|(key, _)| key))
 }
 
@@ -312,8 +312,9 @@ where
 {
     names
         .filter(|key| {
-            let name = key.to_string_lossy();
-            name.starts_with("ANTHROPIC_") || name.starts_with("CLAUDE_")
+            crate::provider::AgentProvider::current()
+                .credentials()
+                .is_environment_name(key)
         })
         .collect()
 }

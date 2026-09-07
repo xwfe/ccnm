@@ -64,11 +64,11 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-use crate::claude::{self, ClaudeReport};
 use crate::error::{Error, ErrorCode, ErrorReport, Reported, Result};
 use crate::process::{Cmd, Output, ProcessRunner};
 use crate::protocol::hello::{self, HelloReport, HelloRequest};
 use crate::protocol::payload::{self, PROTOCOL, Protocol};
+use crate::provider::{AgentProvider, AgentReport, Ask};
 use crate::session::{self, SuperviseRequest};
 use crate::tmux;
 
@@ -193,7 +193,8 @@ pub enum RequestBody {
     Hello,
     /// `claude --version` and, unless the caller says otherwise,
     /// `claude auth status --json`, run here.
-    ClaudeAuth {
+    #[serde(rename = "claude-auth")]
+    AgentAuth {
         /// `CLAUDE_CONFIG_DIR` for the call, from the Runtime Node's
         /// config. `None` means Claude's own default (design doc
         /// section 21).
@@ -201,10 +202,10 @@ pub enum RequestBody {
         config_dir: Option<PathBuf>,
         /// How much to ask. A caller that has already seen this
         /// controller is *not* in a login session sends
-        /// [`claude::Ask::VersionOnly`], because the login answer from
+        /// [`Ask::VersionOnly`], because the login answer from
         /// here would be as worthless as the ssh session's.
         #[serde(default)]
-        ask: claude::Ask,
+        ask: Ask,
     },
     /// Start the session whose directory this is. The one request that
     /// exists because of the login session: the process started here is
@@ -241,7 +242,8 @@ impl Protocol for Response {
 #[serde(tag = "reply", rename_all = "kebab-case")]
 pub enum ReplyBody {
     Hello(Context),
-    Claude(ClaudeReport),
+    #[serde(rename = "claude")]
+    Agent(AgentReport),
     /// The supervisor's pid. Claude is its child; the session directory's
     /// `exit` file says when it is done.
     Started {
@@ -259,7 +261,7 @@ pub struct Tools<'a> {
     /// The `claude` binary as found in *this* process's environment. The
     /// controller's `PATH` comes from launchd, so the lookup happens here
     /// rather than on the ssh side.
-    pub claude: Option<PathBuf>,
+    pub agent: Option<PathBuf>,
     /// tmux, found the same way and for the same reason. Only interactive
     /// sessions need it; `None` is not an error until one is asked for.
     pub tmux: Option<PathBuf>,
@@ -272,9 +274,9 @@ pub struct Tools<'a> {
 pub fn answer(req: &Request, tools: &Tools<'_>) -> Response {
     match &req.body {
         RequestBody::Hello => Response::new(ReplyBody::Hello(Context::of(tools.runner))),
-        RequestBody::ClaudeAuth { config_dir, ask } => {
-            Response::new(ReplyBody::Claude(claude::report(
-                tools.claude.as_deref(),
+        RequestBody::AgentAuth { config_dir, ask } => {
+            Response::new(ReplyBody::Agent(AgentProvider::current().report(
+                tools.agent.as_deref(),
                 config_dir.as_deref(),
                 tools.runner,
                 *ask,
@@ -299,15 +301,13 @@ pub fn answer(req: &Request, tools: &Tools<'_>) -> Response {
 /// credentials in, and a server someone forked from an ssh session is not
 /// (see [`crate::tmux`]).
 fn start_session(session_dir: &Path, tools: &Tools<'_>) -> Result<u32> {
-    let Some(claude_bin) = &tools.claude else {
-        return Err(Error::new(
-            ErrorCode::Version,
-            "claude not found in the controller's environment; it looked in launchd's PATH, ~/.local/bin, ~/.claude/local, /usr/local/bin, /opt/homebrew/bin",
-        ));
-    };
+    let agent_bin = tools
+        .agent
+        .as_ref()
+        .ok_or_else(|| AgentProvider::current().missing_controller_cli())?;
     let dir = session::Dir::at(session_dir);
     let spec = session::load(&dir)?;
-    let req = SuperviseRequest::new(session_dir.to_path_buf(), claude_bin.clone());
+    let req = SuperviseRequest::new(session_dir.to_path_buf(), agent_bin.clone());
     let supervisor = supervisor_cmd(&tools.exe, &req)?;
     if !spec.mode.is_interactive() {
         let pid = spawn_detached(&supervisor, &dir.supervisor_log())?;
@@ -572,7 +572,7 @@ fn write_message<T: Serialize>(mut stream: &UnixStream, value: &T) -> Result<()>
 /// Ask the controller one question.
 ///
 /// `timeout` covers each read and write, not the whole exchange; a
-/// `ClaudeAuth` runs two 20 second commands on the other side, so it needs
+/// `AgentAuth` runs two 20 second commands on the other side, so it needs
 /// more than the default.
 pub fn call(path: &Path, body: RequestBody, timeout: Duration) -> Result<ReplyBody> {
     let stream = UnixStream::connect(path).map_err(|e| not_listening(path, &e))?;
@@ -594,22 +594,21 @@ pub fn context(path: &Path) -> Result<Context> {
     }
 }
 
-/// [`RequestBody::ClaudeAuth`], typed. Up to two `claude` invocations
+/// [`RequestBody::AgentAuth`], typed. Up to two `claude` invocations
 /// happen on the other side, each with its own 20 second timeout.
-pub fn claude_auth(
-    path: &Path,
-    config_dir: Option<&Path>,
-    ask: claude::Ask,
-) -> Result<ClaudeReport> {
-    let body = RequestBody::ClaudeAuth {
+pub fn agent_auth(path: &Path, config_dir: Option<&Path>, ask: Ask) -> Result<AgentReport> {
+    let body = RequestBody::AgentAuth {
         config_dir: config_dir.map(Path::to_path_buf),
         ask,
     };
     match call(path, body, Duration::from_secs(60))? {
-        ReplyBody::Claude(rep) => Ok(rep),
+        ReplyBody::Agent(rep) => Ok(rep),
         other => Err(unexpected(&other)),
     }
 }
+
+// Keep the former Rust entrypoint as a compatibility alias.
+pub use agent_auth as claude_auth;
 
 /// [`RequestBody::Start`], typed: the supervisor's pid.
 pub fn start(path: &Path, session_dir: &Path) -> Result<u32> {
@@ -623,9 +622,13 @@ pub fn start(path: &Path, session_dir: &Path) -> Result<u32> {
 }
 
 fn unexpected(body: &ReplyBody) -> Error {
+    let detail = match body {
+        ReplyBody::Agent(report) => AgentProvider::current().unexpected_probe_reply(report),
+        _ => format!("{body:?}"),
+    };
     Error::new(
         ErrorCode::Version,
-        format!("the controller answered a different request than the one asked: {body:?}"),
+        format!("the controller answered a different request than the one asked: {detail}"),
     )
 }
 
@@ -676,10 +679,28 @@ mod tests {
         path
     }
 
-    fn tools<'a>(fake: &'a FakeRunner, claude: bool) -> Tools<'a> {
+    #[test]
+    fn unexpected_agent_reply_keeps_the_legacy_diagnostic() {
+        let body = ReplyBody::Agent(AgentReport {
+            path: None,
+            version: Ok("2.1.260".into()),
+            auth: Ok(crate::provider::AuthStatus {
+                logged_in: false,
+                auth_method: None,
+                email: None,
+                subscription_type: None,
+            }),
+        });
+        assert_eq!(
+            unexpected(&body).message(),
+            "the controller answered a different request than the one asked: Claude(ClaudeReport { path: None, version: Ok(\"2.1.260\"), auth: Ok(AuthStatus { logged_in: false, auth_method: None, email: None, subscription_type: None }) })"
+        );
+    }
+
+    fn tools<'a>(fake: &'a FakeRunner, agent: bool) -> Tools<'a> {
         Tools {
             runner: fake,
-            claude: claude.then(|| PathBuf::from("/opt/homebrew/bin/claude")),
+            agent: agent.then(|| PathBuf::from("/opt/homebrew/bin/claude")),
             tmux: Some(PathBuf::from("/opt/homebrew/bin/tmux")),
             exe: PathBuf::from("/Users/me/.local/bin/ccnm"),
         }
@@ -719,7 +740,7 @@ mod tests {
                 alias: "xdwmbp".into(),
                 ccnm_bin: "~/.local/bin/ccnm".into(),
             }),
-            claude_config_dir: None,
+            provider_config_dir: None,
             permission_mode: crate::config::PermissionMode::default(),
             mode,
             timeout_secs: 0,
@@ -921,12 +942,12 @@ mod tests {
         let fake = FakeRunner::new();
         fake.push(Output::exited(0, "2.1.259 (Claude Code)\n"));
         fake.push(Output::exited(0, r#"{"loggedIn":true,"email":"me@x"}"#));
-        let req = Request::new(RequestBody::ClaudeAuth {
+        let req = Request::new(RequestBody::AgentAuth {
             config_dir: Some(PathBuf::from("/x/claude")),
-            ask: claude::Ask::Everything,
+            ask: Ask::Everything,
         });
         let rep = answer(&req, &tools(&fake, true));
-        let ReplyBody::Claude(claude) = rep.body else {
+        let ReplyBody::Agent(claude) = rep.body else {
             panic!("wrong reply")
         };
         assert_eq!(claude.version, Ok("2.1.259".into()));
@@ -950,12 +971,12 @@ mod tests {
     fn version_only_does_not_run_the_auth_command() {
         let fake = FakeRunner::new();
         fake.push(Output::exited(0, "2.1.259 (Claude Code)\n"));
-        let req = Request::new(RequestBody::ClaudeAuth {
+        let req = Request::new(RequestBody::AgentAuth {
             config_dir: None,
-            ask: claude::Ask::VersionOnly,
+            ask: Ask::VersionOnly,
         });
         let rep = answer(&req, &tools(&fake, true));
-        let ReplyBody::Claude(claude) = rep.body else {
+        let ReplyBody::Agent(claude) = rep.body else {
             panic!("wrong reply")
         };
         assert_eq!(claude.version, Ok("2.1.259".into()));
@@ -980,9 +1001,9 @@ mod tests {
         .unwrap();
         assert_eq!(
             req.body,
-            RequestBody::ClaudeAuth {
+            RequestBody::AgentAuth {
                 config_dir: None,
-                ask: claude::Ask::Everything
+                ask: Ask::Everything
             }
         );
     }

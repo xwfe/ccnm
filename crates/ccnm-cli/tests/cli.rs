@@ -914,7 +914,7 @@ fn sitting_at_home_detached_starts_the_session_and_keeps_the_terminal_here() {
     assert_eq!(req.workspace, "xshun");
     assert_eq!(req.root, root);
     assert_eq!(req.runtime_node, "runtime");
-    assert_eq!(req.claude_config_dir, Some(PathBuf::from("/x/claude")));
+    assert_eq!(req.provider_config_dir, Some(PathBuf::from("/x/claude")));
     assert_eq!(req.permission_mode, ccnm_core::config::PermissionMode::Plan);
     assert_eq!(req.prompt.as_deref(), Some("fix the failing test"));
     assert!(
@@ -1231,7 +1231,7 @@ fn supervise_runs_the_session_and_writes_its_exit_record() {
             alias: "ccnm-home".into(),
             ccnm_bin: "~/.local/bin/ccnm".into(),
         }),
-        claude_config_dir: None,
+        provider_config_dir: None,
         permission_mode: Default::default(),
         mode: Mode::Print {
             prompt: "say ok".into(),

@@ -188,3 +188,22 @@ work machine ≈ Agent Node
 ```
 
 这些名称只代表当时的实验拓扑，不再是当前公开 API/config 模型。
+
+## Agent Provider 内部边界（第一阶段）
+
+`crates/ccnm-core/src/provider/` 通过明确的 `AgentProvider::Claude` enum 分发，当前只有 Claude；没有插件注册、动态加载或 provider 配置选择器。
+
+- `provider/claude/`：CLI 定位、version/auth 探测、配置目录环境变量、启动参数、交互/print 输入、MCP 配置和工具权限、结果解析，以及项目 instruction/context 规则。
+- `provider/types.rs`：Controller、work 和报告消费者使用的 Agent 观测/结果；保留 v1 字段形状。
+- `provider` 的凭据元数据：现有环境变量前缀、配置目录、凭据文件名和 egress 检查目标。`safety`、SSH 和 `exec_command` 继续执行原安全规则，不读取或传递凭据内容。
+- session/Controller 仍负责进程、tmux 和生命周期；launcher/work 仍负责 topology、OpenSSH alias 与 Runtime Node 握手。Runtime MCP 的 7 个工具和执行边界未变。
+
+公开配置仍是 `claude_config_dir`、`claude_permission_mode`。Rust 内部使用通用字段名，通过 serde 显式保留旧 session/协议的 `claude_config_dir`、`claude_bin`、`claude-auth`、`claude`。旧 `claude` 和 `mcp::context` 模块只是兼容出口，不再承载实现。
+
+### 行为等价的验证边界
+
+`tests/fixtures/claude-provider-baseline.json` 是从抽取前的代码生成的合成行为快照，**不是新的真机测量**。它固定启动参数/环境/stdin、两种会话模式、remote/colocated 输入、策略文件、上下文、结果及旧协议形状。已有 `claude-print-2.1.260.json` 真机 fixture 原样保留。
+
+有一个已存在的差异刻意未修复：colocated session 不写 `mcp.json`、settings 不 deny 原生工具，但启动函数仍无条件传 `--tools ""`、`--mcp-config` 等 remote 参数。现有 colocated 测试使用假 supervisor，不能证明真实 Claude 接受这组输入；本轮快照保留该现状，避免把功能修复夹进内部解耦。
+
+第二阶段才允许接入 Codex：必须先实测当时安装版本的 flag/auth/MCP/tool policy/输出，并保存 fixture；本阶段不据此预先增加抽象或多 Agent 模型。

@@ -36,7 +36,6 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use crate::claude;
 use crate::config::{Backend, Config, Resolved, Topology};
 use crate::error::{Error, ErrorCode, ErrorReport};
 use crate::mcp::context;
@@ -45,6 +44,7 @@ use crate::process::{Cmd, ProcessRunner};
 use crate::protocol::PROTOCOL;
 use crate::protocol::hello::HelloReport;
 use crate::protocol::probe::{ProbeReport, ProbeRequest};
+use crate::provider::AgentProvider;
 use crate::safety;
 use crate::ssh::{Master, Ssh};
 
@@ -350,7 +350,9 @@ fn workspace_checks(r: &Resolved<'_>, env: &Env<'_>) -> Vec<Check> {
         workspace: r.name.to_string(),
         root: ws.root.clone(),
         runtime_node: r.workspace.runtime_node.clone(),
-        claude_config_dir: r.agent.claude_config_dir.clone(),
+        provider_config_dir: AgentProvider::current()
+            .config_dir(r.agent)
+            .map(|dir| dir.to_path_buf()),
         // One real MCP session, shut down before the probe returns.
         mcp_calls: 1,
     };
@@ -381,17 +383,20 @@ fn probe_rows(r: &Resolved<'_>, rep: &ProbeReport) -> Vec<Check> {
 
     checks.push(controller_row(rep));
 
-    checks.push(match &rep.claude.version {
+    checks.push(match &rep.agent.version {
         Ok(v) => {
             let path = rep
-                .claude
+                .agent
                 .path
                 .as_ref()
                 .map(|p| p.display().to_string())
                 .unwrap_or_default();
-            Check::ok("Claude Code", format!("{v} ({path})"))
+            Check::ok(
+                AgentProvider::current().display_name(),
+                format!("{v} ({path})"),
+            )
         }
-        Err(e) => Check::fail_report("Claude Code", e),
+        Err(e) => Check::fail_report(AgentProvider::current().display_name(), e),
     });
 
     checks.push(auth_row(r, rep));
@@ -663,9 +668,9 @@ fn controller_row(rep: &ProbeReport) -> Check {
 /// reach the credentials could not have found a login to report. The
 /// error runs one way only.
 fn auth_row(r: &Resolved<'_>, rep: &ProbeReport) -> Check {
-    const NAME: &str = "Claude authentication";
+    const NAME: &str = AgentProvider::current().authentication_check();
     let from_login_session = matches!(&rep.controller, Some(Ok(ctx)) if ctx.login_session());
-    match &rep.claude.auth {
+    match &rep.agent.auth {
         Ok(a) if a.logged_in => Check::ok(NAME, a.describe()),
         Ok(_) if !from_login_session => Check::skip(
             NAME,
@@ -686,16 +691,8 @@ fn auth_row(r: &Resolved<'_>, rep: &ProbeReport) -> Check {
 /// unambiguous. There is no "…or maybe the Keychain was unreadable" left
 /// in it, which was the whole point of the controller.
 fn auth_hint(r: &Resolved<'_>) -> String {
-    const WHERE: &str = "asked from the Agent Node's login session, so this is Claude's real answer, not an artefact of ssh";
-    match &r.agent.claude_config_dir {
-        Some(dir) => format!(
-            "Claude is not authenticated in the configured CLAUDE_CONFIG_DIR ({WHERE})\nrun on the Agent Node, on its own screen: CLAUDE_CONFIG_DIR={} claude auth login",
-            dir.display()
-        ),
-        None => format!(
-            "Claude is not authenticated on the Agent Node ({WHERE})\nrun on the Agent Node, on its own screen: claude auth login\nan expired OAuth session looks the same as never having logged in; either way the fix is that command"
-        ),
-    }
+    let provider = AgentProvider::current();
+    provider.auth_hint(provider.config_dir(r.agent))
 }
 
 /// Rows that depend on the probe, when the probe never happened.
@@ -792,7 +789,7 @@ fn runtime_ccnm(r: &Resolved<'_>, env: &Env<'_>) -> Check {
     const NAME: &str = "Runtime ccnm";
     let configured = r.runtime.ccnm_bin();
     let path = paths::expand_home(&configured, &env.home);
-    if !claude::is_executable(&path) {
+    if !crate::process::is_executable(&path) {
         return Check::fail_with(
             NAME,
             ErrorCode::Version,
@@ -977,13 +974,13 @@ mod tests {
     }
 
     fn good_probe() -> ProbeReport {
-        use crate::claude::AuthStatus;
-        use crate::claude::ClaudeReport;
+        use crate::provider::AgentReport;
+        use crate::provider::AuthStatus;
         ProbeReport {
             protocol: PROTOCOL,
             hello: hello("me", crate::VERSION, None),
             controller: Some(Ok(controller("Aqua"))),
-            claude: ClaudeReport {
+            agent: AgentReport {
                 path: Some(PathBuf::from("/opt/homebrew/bin/claude")),
                 version: Ok("2.1.259".into()),
                 auth: Ok(AuthStatus {
@@ -1345,7 +1342,7 @@ mod tests {
         let (dir, config) = setup("mismatch", true, true);
         let mut probe = good_probe();
         probe.hello = hello("me", "0.0.1", None);
-        probe.claude.auth = Ok(crate::claude::AuthStatus {
+        probe.agent.auth = Ok(crate::provider::AuthStatus {
             logged_in: false,
             auth_method: None,
             email: None,
@@ -1394,7 +1391,7 @@ mod tests {
             ErrorCode::NotReady,
             "no socket at /Users/me/.local/state/ccnm/controller.sock\ninstall it on the Agent Node: ccnm controller install",
         )));
-        probe.claude.auth = Err(ErrorReport::new(
+        probe.agent.auth = Err(ErrorReport::new(
             ErrorCode::NotReady,
             "not checked: no controller to ask, and this ssh session's answer would be wrong",
         ));
@@ -1457,7 +1454,7 @@ mod tests {
         let (dir, config) = setup("bg-auth", true, true);
         let mut probe = good_probe();
         probe.controller = Some(Ok(controller("Background")));
-        probe.claude.auth = Ok(crate::claude::AuthStatus {
+        probe.agent.auth = Ok(crate::provider::AuthStatus {
             logged_in: false,
             auth_method: None,
             email: None,

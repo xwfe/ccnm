@@ -27,7 +27,7 @@
 //! asks for, and it is worth having; it is not a sandbox, and section 18
 //! is explicit that no command parser can be one.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -177,7 +177,7 @@ pub fn audit(expected_user: Option<&str>, home: &Path, runner: &dyn ProcessRunne
     findings.push(sudo_finding(runner));
     findings.push(group_finding(&identity));
     findings.push(ssh_key_finding(home));
-    findings.push(claude_credential_finding(home));
+    findings.push(agent_credential_finding(home));
     findings.push(docker_finding(&identity));
 
     Audit {
@@ -290,31 +290,40 @@ fn looks_like_private_key(path: &Path) -> bool {
 /// credential. A credential here would make this machine an Anthropic
 /// egress point, which is the whole thing the architecture exists to
 /// avoid.
-fn claude_credential_finding(home: &Path) -> Finding {
-    const NAME: &str = "No Claude credential";
+fn agent_credential_finding(home: &Path) -> Finding {
+    let metadata = crate::provider::AgentProvider::current().credentials();
+    let name = format!("No {} credential", metadata.agent_name);
     let mut found = Vec::new();
-    let mut dirs = vec![home.join(".claude")];
-    if let Some(custom) = std::env::var_os("CLAUDE_CONFIG_DIR") {
-        dirs.push(PathBuf::from(custom));
-    }
-    for dir in dirs {
-        for name in [".credentials.json", "credentials.json"] {
-            let path = dir.join(name);
+    let custom = std::env::var_os(metadata.config_env);
+    for dir in metadata.config_directories(home, custom.as_deref()) {
+        for filename in metadata.files {
+            let path = dir.join(filename);
             if path.exists() {
                 found.push(path.display().to_string());
             }
         }
     }
     if found.is_empty() {
-        Finding::ok(NAME, "no Claude credentials file on this machine")
+        Finding::ok(
+            &name,
+            format!(
+                "no {} credentials file on this machine",
+                metadata.agent_name
+            ),
+        )
     } else {
         Finding::fail(
-            NAME,
+            &name,
             format!(
-                "this machine holds a Claude credential ({}); the Runtime Node must never be an Anthropic egress point",
-                found.join(", ")
+                "this machine holds a {} credential ({}); the Runtime Node must never be an {} egress point",
+                metadata.agent_name,
+                found.join(", "),
+                metadata.vendor_name
             ),
-            "remove it, and never run `claude auth login` on the Runtime Node",
+            format!(
+                "remove it, and never run `{}` on the Runtime Node",
+                metadata.login_command
+            ),
         )
     }
 }
@@ -394,21 +403,24 @@ impl Identity {
 /// for a network boundary. So this reports, and leaves the judgement to
 /// the person reading.
 pub fn egress_finding(timeout: Duration) -> Finding {
-    const NAME: &str = "Anthropic egress";
-    const TARGET: &str = "api.anthropic.com:443";
+    let metadata = crate::provider::AgentProvider::current().credentials();
+    let name = format!("{} egress", metadata.vendor_name);
+    let host = metadata.egress_host;
     use std::net::ToSocketAddrs;
-    let Ok(mut addrs) = TARGET.to_socket_addrs() else {
-        return Finding::ok(NAME, "api.anthropic.com does not resolve from here");
+    let Ok(mut addrs) = (host, 443).to_socket_addrs() else {
+        return Finding::ok(&name, format!("{host} does not resolve from here"));
     };
     let Some(addr) = addrs.next() else {
-        return Finding::ok(NAME, "api.anthropic.com does not resolve from here");
+        return Finding::ok(&name, format!("{host} does not resolve from here"));
     };
     match std::net::TcpStream::connect_timeout(&addr, timeout) {
         Ok(_) => Finding::warn(
-            NAME,
-            "this machine can reach api.anthropic.com; if that is your compliance boundary, block it at the OS or network level rather than trusting a command deny list",
+            &name,
+            format!(
+                "this machine can reach {host}; if that is your compliance boundary, block it at the OS or network level rather than trusting a command deny list"
+            ),
         ),
-        Err(_) => Finding::ok(NAME, "api.anthropic.com is not reachable from here"),
+        Err(_) => Finding::ok(&name, format!("{host} is not reachable from here")),
     }
 }
 
@@ -416,6 +428,7 @@ pub fn egress_finding(timeout: Duration) -> Finding {
 mod tests {
     use super::*;
     use crate::process::{FakeRunner, Output};
+    use std::path::PathBuf;
 
     /// `id` answers four times per audit, in this order.
     fn identity(runner: &FakeRunner, user: &str, uid: &str, gids: &str, groups: &str) {

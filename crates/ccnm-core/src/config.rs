@@ -18,7 +18,7 @@
 use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 use crate::error::{Error, Result};
 
@@ -195,34 +195,8 @@ pub enum MountMode {
     Coherence,
 }
 
-/// Values accepted by `claude --permission-mode`, checked against Claude
-/// Code 2.1.260 `--help`. Serialized in Claude's own camelCase so the config
-/// file, the session spec and the CLI flag all read the same.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum PermissionMode {
-    #[default]
-    AcceptEdits,
-    Auto,
-    BypassPermissions,
-    Manual,
-    DontAsk,
-    Plan,
-}
-
-impl PermissionMode {
-    /// The exact string to pass after `--permission-mode`.
-    pub fn as_cli_value(self) -> &'static str {
-        match self {
-            PermissionMode::AcceptEdits => "acceptEdits",
-            PermissionMode::Auto => "auto",
-            PermissionMode::BypassPermissions => "bypassPermissions",
-            PermissionMode::Manual => "manual",
-            PermissionMode::DontAsk => "dontAsk",
-            PermissionMode::Plan => "plan",
-        }
-    }
-}
+// The public config spelling remains Claude-compatible in phase one.
+pub use crate::provider::PermissionMode;
 
 /// A workspace together with both nodes it spans and the role-specific
 /// fields validation has already proven present.

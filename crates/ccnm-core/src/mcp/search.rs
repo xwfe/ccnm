@@ -564,7 +564,7 @@ fn locate_rg() -> Option<PathBuf> {
     candidates.push(PathBuf::from("/usr/local/bin/rg"));
     candidates
         .into_iter()
-        .find(|p| crate::claude::is_executable(p))
+        .find(|p| crate::process::is_executable(p))
 }
 
 #[cfg(test)]

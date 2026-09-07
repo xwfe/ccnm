@@ -93,7 +93,7 @@ pub fn locate(path_var: Option<&OsStr>) -> Option<PathBuf> {
     candidates.push(PathBuf::from("/usr/bin/tmux"));
     candidates
         .into_iter()
-        .find(|p| crate::claude::is_executable(p))
+        .find(|p| crate::process::is_executable(p))
 }
 
 pub fn locate_from_env() -> Option<PathBuf> {

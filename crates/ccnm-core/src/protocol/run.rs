@@ -15,9 +15,9 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use super::payload::Protocol;
-use crate::claude::PrintResult;
 use crate::config::PermissionMode;
 use crate::controller::Context;
+use crate::provider::RunResult;
 use crate::session::Outcome;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -30,7 +30,8 @@ pub struct RunRequest {
     /// against its own config; when it names the Agent Node itself there
     /// is nothing to dial.
     pub runtime_node: String,
-    pub claude_config_dir: Option<PathBuf>,
+    #[serde(rename = "claude_config_dir")]
+    pub provider_config_dir: Option<PathBuf>,
     pub permission_mode: PermissionMode,
     /// The one prompt of a print-mode session.
     pub prompt: String,
@@ -58,7 +59,7 @@ pub struct RunReport {
     pub pid: u32,
     pub outcome: Outcome,
     /// Claude's `--output-format json` document, when stdout held one.
-    pub result: Option<PrintResult>,
+    pub result: Option<RunResult>,
     /// The end of stdout when it was not a result document, and the end of
     /// stderr always: enough to see why, never the whole thing.
     pub stdout_tail: String,
@@ -100,7 +101,8 @@ pub struct StartRequest {
     /// against its own config; when it names the Agent Node itself there
     /// is nothing to dial.
     pub runtime_node: String,
-    pub claude_config_dir: Option<PathBuf>,
+    #[serde(rename = "claude_config_dir")]
+    pub provider_config_dir: Option<PathBuf>,
     pub permission_mode: PermissionMode,
     /// What Claude opens with; `None` opens an empty prompt.
     #[serde(default)]
@@ -258,7 +260,7 @@ pub struct ResultReport {
     pub started: u64,
     /// `None` while it is still running.
     pub outcome: Option<Outcome>,
-    pub result: Option<PrintResult>,
+    pub result: Option<RunResult>,
     pub stdout_tail: String,
     pub stderr_tail: String,
 }

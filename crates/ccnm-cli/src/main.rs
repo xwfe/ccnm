@@ -16,9 +16,10 @@ use ccnm_core::protocol::run::{
     AttachRequest, PurgeRequest, ResultRequest, RunReport, RunRequest, StartRequest, StatusRequest,
     StopRequest,
 };
+use ccnm_core::provider::AgentProvider;
 use ccnm_core::{
-    Config, Error, Result, claude, configedit, controller, doctor, launchagent, launcher, mcp,
-    paths, safety, session, tmux, work,
+    Config, Error, Result, configedit, controller, doctor, launchagent, launcher, mcp, paths,
+    safety, session, tmux, work,
 };
 
 /// Terminal-native remote workspace runtime for Claude Code.
@@ -522,8 +523,8 @@ fn run(cli: Cli) -> Result<i32> {
                     // Resolved here, in launchd's environment, because
                     // that is the PATH Claude will actually be started
                     // with.
-                    claude: claude::locate_from_env(),
-                    // Same reason as claude: launchd's PATH is not a login
+                    agent: AgentProvider::current().locate_from_env(),
+                    // Same reason as agent: launchd's PATH is not a login
                     // shell's, and the tmux server has to be started from
                     // here to be in the login session.
                     tmux: tmux::locate_from_env(),
@@ -876,20 +877,7 @@ fn suggested_name(name: &str, root: &std::path::Path) -> String {
 }
 
 fn parse_permission_mode(raw: &str) -> Result<ccnm_core::config::PermissionMode> {
-    use ccnm_core::config::PermissionMode as M;
-    // Spelled the way Claude Code spells them, and the way they appear in
-    // the config file, so there is one spelling to remember.
-    match raw {
-        "acceptEdits" => Ok(M::AcceptEdits),
-        "auto" => Ok(M::Auto),
-        "bypassPermissions" => Ok(M::BypassPermissions),
-        "manual" => Ok(M::Manual),
-        "dontAsk" => Ok(M::DontAsk),
-        "plan" => Ok(M::Plan),
-        _ => Err(ccnm_core::Error::invalid_args(format!(
-            "unknown permission mode {raw}; one of acceptEdits, auto, bypassPermissions, manual, dontAsk, plan"
-        ))),
-    }
+    AgentProvider::current().parse_permission_mode(raw)
 }
 
 fn report_changes(changes: &configedit::Changes, path: &std::path::Path) {
@@ -973,7 +961,7 @@ fn agent_tools(config_path: Option<&std::path::Path>) -> Result<work::Tools<'sta
         config,
         runner: &SystemRunner,
         control_dir: state.join("ssh"),
-        claude: claude::locate_from_env(),
+        agent: AgentProvider::current().locate_from_env(),
         tmux: tmux::locate_from_env(),
         controller: paths::controller_socket(&state),
         state,

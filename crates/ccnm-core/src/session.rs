@@ -41,14 +41,13 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-use crate::claude;
 use crate::config::PermissionMode;
 use crate::error::{Error, Result};
-use crate::mcp::server::SERVER_NAME;
 use crate::paths;
 use crate::process;
 use crate::protocol::mcp::ServePayload;
 use crate::protocol::payload::{self, PROTOCOL, Protocol};
+use crate::provider::AgentProvider;
 use crate::ssh::Ssh;
 
 /// The seven tools `ccnm internal mcp-serve` offers, as the settings
@@ -64,11 +63,8 @@ pub const MCP_TOOLS: [&str; 7] = [
     "read_output",
 ];
 
-/// Built-in tools that must never be available in a ccnm session (design
-/// doc section 13). `--tools ""` already removes every built-in tool; this
-/// deny list is the second lock, so that a future Claude that reads
-/// `--tools` differently still cannot hand the model this machine's disk.
-pub const NATIVE_TOOLS_DENIED: [&str; 6] = ["Read", "Edit", "Write", "Grep", "Glob", "Bash"];
+// Compatibility export; native tool names belong to the provider.
+pub use crate::provider::claude::NATIVE_TOOLS_DENIED;
 
 /// The transport program, absolute. Claude starts it from launchd's
 /// environment, whose `PATH` is not a login shell's.
@@ -95,7 +91,8 @@ pub struct Spec {
     #[serde(default)]
     pub runtime: Option<RuntimeLink>,
     #[serde(default)]
-    pub claude_config_dir: Option<PathBuf>,
+    #[serde(rename = "claude_config_dir")]
+    pub provider_config_dir: Option<PathBuf>,
     pub permission_mode: PermissionMode,
     pub mode: Mode,
     /// Claude is killed after this many seconds. The supervisor's hard
@@ -107,6 +104,14 @@ pub struct Spec {
     /// `~/.claude/projects/` collects in one place instead of one
     /// directory per run.
     pub cwd: PathBuf,
+}
+
+impl Spec {
+    /// v1 sessions have no provider selector. Preserve old records and default
+    /// behavior until a real second provider establishes the next contract.
+    pub fn provider(&self) -> AgentProvider {
+        AgentProvider::current()
+    }
 }
 
 impl Protocol for Spec {
@@ -282,10 +287,9 @@ pub fn create(state: &Path, spec: &Spec, ssh: Option<&Ssh>) -> Result<Dir> {
     // The settings file names what the model may do; keep it the owner's.
     fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700))?;
     fs::write(dir.meta(), pretty(spec)?)?;
-    if let Some(ssh) = ssh {
-        fs::write(dir.mcp_config(), pretty(&mcp_config(spec, ssh)?)?)?;
-    }
-    fs::write(dir.settings(), pretty(&settings(ssh.is_some()))?)?;
+    let transport = ssh.map(|ssh| mcp_transport(spec, ssh)).transpose()?;
+    spec.provider()
+        .write_session_files(&dir, transport.as_ref())?;
     Ok(dir)
 }
 
@@ -296,7 +300,7 @@ pub fn load(dir: &Dir) -> Result<Spec> {
     payload::decode_json(&bytes)
 }
 
-fn pretty<T: Serialize>(value: &T) -> Result<String> {
+pub(crate) fn pretty<T: Serialize>(value: &T) -> Result<String> {
     serde_json::to_string_pretty(value)
         .map(|mut s| {
             s.push('\n');
@@ -310,54 +314,22 @@ fn pretty<T: Serialize>(value: &T) -> Result<String> {
 /// probe that passes and a session that fails cannot differ in how they
 /// reached the Runtime Node.
 pub fn mcp_config(spec: &Spec, ssh: &Ssh) -> Result<serde_json::Value> {
+    Ok(spec.provider().mcp_config(&mcp_transport(spec, ssh)?))
+}
+
+fn mcp_transport(spec: &Spec, ssh: &Ssh) -> Result<process::Cmd> {
     let wire = payload::encode(
         &ServePayload::new(&spec.workspace, spec.root.clone(), &spec.id)
             // Only an interactive session has somebody who can answer a
             // permission prompt; `--print` runs with prompting off.
             .with_interactive(matches!(spec.mode, Mode::Interactive { .. })),
     )?;
-    let cmd = ssh.mcp_transport_cmd(&wire)?;
-    let args: Vec<String> = cmd
-        .args
-        .iter()
-        .map(|a| a.to_string_lossy().into_owned())
-        .collect();
-    Ok(serde_json::json!({
-        "mcpServers": {
-            SERVER_NAME: {
-                "type": "stdio",
-                "command": SSH_BIN,
-                "args": args,
-            }
-        }
-    }))
+    ssh.mcp_transport_cmd(&wire)
 }
 
-/// The `--settings` file: permission to call each ccnm tool without a
-/// prompt (there is nobody to answer one in print mode), and the native
-/// file and shell tools denied by name. Nothing else — the user's own
-/// settings still load underneath this (design doc section 24).
-///
-/// `remote` is false for a colocated workspace, and then neither half
-/// applies: there are no ccnm tools to allow, and denying the native ones
-/// would leave Claude with no way to touch the project it is sitting on.
-/// The deny list exists to stop the model reaching *this* machine's disk
-/// when the project is on another one; when the project is this machine's
-/// disk, it would only be in the way.
+/// Compatibility helper for the current provider's session policy.
 pub fn settings(remote: bool) -> serde_json::Value {
-    if !remote {
-        return serde_json::json!({ "permissions": {} });
-    }
-    let allow: Vec<String> = MCP_TOOLS
-        .iter()
-        .map(|t| format!("mcp__{SERVER_NAME}__{t}"))
-        .collect();
-    serde_json::json!({
-        "permissions": {
-            "allow": allow,
-            "deny": NATIVE_TOOLS_DENIED,
-        }
-    })
+    AgentProvider::current().settings(remote)
 }
 
 /// How a session ended. Written by the supervisor as the last thing it
@@ -463,15 +435,16 @@ pub struct SuperviseRequest {
     pub session_dir: PathBuf,
     /// The `claude` the controller found in launchd's environment — the
     /// one Claude would be started with anyway.
-    pub claude_bin: PathBuf,
+    #[serde(rename = "claude_bin")]
+    pub agent_bin: PathBuf,
 }
 
 impl SuperviseRequest {
-    pub fn new(session_dir: PathBuf, claude_bin: PathBuf) -> Self {
+    pub fn new(session_dir: PathBuf, agent_bin: PathBuf) -> Self {
         SuperviseRequest {
             protocol: PROTOCOL,
             session_dir,
-            claude_bin,
+            agent_bin,
         }
     }
 }
@@ -491,7 +464,7 @@ impl Protocol for SuperviseRequest {
 pub fn supervise(req: &SuperviseRequest) -> Result<Outcome> {
     let dir = Dir::at(&req.session_dir);
     let spec = load(&dir)?;
-    let cmd = claude::launch_cmd(&req.claude_bin, &spec, &dir);
+    let cmd = spec.provider().launch_cmd(&req.agent_bin, &spec, &dir);
     // Measured here rather than assumed, because here is the one place
     // that is inside whatever context Claude will run in: under tmux, that
     // is the tmux server's, which is not necessarily the controller's.
@@ -631,7 +604,7 @@ mod tests {
                 alias: "xdwmbp".into(),
                 ccnm_bin: "~/.local/bin/ccnm".into(),
             }),
-            claude_config_dir: None,
+            provider_config_dir: None,
             permission_mode: PermissionMode::AcceptEdits,
             mode: Mode::Print {
                 prompt: "fix the failing test".into(),

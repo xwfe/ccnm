@@ -12,10 +12,18 @@
 ### 本地跑测试
 
 ```bash
-cargo test --workspace        # 411 个测试，15 秒，不需要第二台机器，不碰网络
+cargo test --workspace        # 422 个测试，不需要第二台机器，不启动真实 Agent
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 ```
+
+Agent Provider 第一阶段的兼容回归可单独跑：
+
+```bash
+cargo test -p ccnm-core --test provider_compat
+```
+
+该测试只比对已冻结的 fixture，不更新快照；不要为了让重构通过而重新生成期望值。原始 Claude CLI 测试已移动到 `provider::claude`，项目上下文测试位于 `provider::claude::context`。
 
 这三条就是 CI 的全部内容。测试里所有外部命令（ssh、tmux、launchctl、claude）都是注进去的
 假 runner，**除了**几个故意用真东西的：`git`（list_files 的 git 模式）、`rg`（search_text）、

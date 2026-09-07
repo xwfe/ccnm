@@ -14,8 +14,8 @@ use serde::{Deserialize, Serialize};
 
 use super::hello::HelloReport;
 use super::payload::Protocol;
-use crate::claude::ClaudeReport;
 use crate::error::Reported;
+use crate::provider::AgentReport;
 use crate::ssh::ResolvedSsh;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -27,7 +27,8 @@ pub struct ProbeRequest {
     /// The node holding the project, by name. The Agent Node resolves it
     /// against its own config.
     pub runtime_node: String,
-    pub claude_config_dir: Option<PathBuf>,
+    #[serde(rename = "claude_config_dir")]
+    pub provider_config_dir: Option<PathBuf>,
     /// How many `workspace_info` calls the MCP handshake should make over
     /// the reverse ssh; 0 skips the handshake.
     #[serde(default)]
@@ -57,7 +58,8 @@ pub struct ProbeReport {
     /// (see [`crate::controller`]). With no controller, `version` still
     /// comes from this session — it needs no credential — and `auth` is a
     /// `CCNM_E_NOT_READY` error rather than a guess.
-    pub claude: ClaudeReport,
+    #[serde(rename = "claude")]
+    pub agent: AgentReport,
     /// What the Agent Node's own alias for the Runtime Node resolves to,
     /// via `ssh -G`. `None` when agent and project are the same machine,
     /// which dials nothing.

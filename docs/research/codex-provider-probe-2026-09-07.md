@@ -2,6 +2,8 @@
 
 **状态：第二阶段的测量子阶段；尚未开放 Codex provider。** 不修改现有 Claude 使用方式，不部署两端二进制，不更改个人 Codex 配置，不复制订阅/OAuth 凭据。
 
+后续用户选择了反向拓扑，专用登录和真实交互/tmux/SSH MCP 测量见 [反向 interactive 记录](codex-interactive-reverse-2026-09-07.md)。本页保留第一轮和最初预检的历史事实。
+
 ## 测量对象与边界
 
 - Codex CLI `0.153.4`，macOS arm64；二进制 SHA-256 记在 `tests/fixtures/codex-0.153.4/manifest.json`。

@@ -13,3 +13,5 @@
 - `exec-logged-out`：重试后 turn.failed；`exec-no-tools`：warning 后成功。
 
 CLI help 文本只清除了行末空格；个人路径、UUID、请求标识、账号名及 key 展示已脱敏；工具 version/output_ref 为临时 fixture 标识。不要用当前期望覆盖此前 fixture。
+
+`reverse-interactive/` 是后续本机 Agent → 远端 Runtime 的真实 TUI/tmux/SSH MCP 测量；仍不代表产品 Codex provider 已开放。

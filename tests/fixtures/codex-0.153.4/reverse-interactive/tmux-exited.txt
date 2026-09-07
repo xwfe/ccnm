@@ -1,0 +1,6 @@
+Token usage: total=751 input=649 (+ 32,640 cached) output=102
+To continue this session, run:
+  codex resume 00000000-0000-4000-8000-000000000001
+Or run codex resume and select Use only ccnm MCP. Call workspace_in.
+
+Pane is dead (status 0, Mon Sep  7 20:53:19 2026)

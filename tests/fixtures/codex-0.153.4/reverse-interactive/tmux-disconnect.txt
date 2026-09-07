@@ -1,0 +1,24 @@
+› Controlled connection-failure test. Call ccnm workspace_info exactly once;
+  report the actual error or result and finish with CCNM_DISCONNECT_OBSERVED.
+  Do not retry, modify files, use native tools, or spawn agents.
+
+
+• I’ll call CCNM workspace_info once and report its result without retrying.
+
+• Called ccnm.workspace_info({})
+  └ Error: tool call error: tool call failed for `ccnm/workspace_info`
+        Caused by:
+            Transport closed
+
+────────────────────────────────────────────────────────────────────────────────
+
+• ccnm/workspace_info failed: Transport closed.
+
+  CCNM_DISCONNECT_OBSERVED
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+› Ask Codex to do anything
+
+  gpt-6-astra default · /private/var/folders/2d/<temp-id>/…

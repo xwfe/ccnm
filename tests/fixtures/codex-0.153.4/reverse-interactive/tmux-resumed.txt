@@ -1,0 +1,36 @@
+› After a controlled MCP transport failure, verify this official resumed
+  session. Use only ccnm MCP: call workspace_info, read_file probe.txt, and
+  report the exact marker. Do not change files, use native tools, or spawn
+  agents. End with CCNM_RESUME_RECONNECTED.
+
+
+⚠ Under-development features enabled: code_mode_only. Under-development features
+  are incomplete and may behave unpredictably. To suppress this warning, set
+  `suppress_unstable_features_warning = true` in <agent-only-config>/config.toml.
+
+
+• I’ll check the CCNM workspace and read the marker from probe.txt.
+
+• Called ccnm.workspace_info({})
+  └ workspace fixture (not a git repository, macos/aarch64); all paths are
+        relative to its root
+    [server pid 73770, call 1]
+
+• Called ccnm.read_file({"path":"probe.txt"})
+  └ 1→CCNM_TMUX_RUNTIME_7319
+    [end of file, 1 line; version 23-18d30741a44af4ca]
+
+────────────────────────────────────────────────────────────────────────────────
+
+• CCNM reconnected successfully. Exact marker in probe.txt:
+
+  CCNM_TMUX_RUNTIME_7319
+
+  CCNM_RESUME_RECONNECTED
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+› Ask Codex to do anything
+
+  gpt-6-astra default · /private/var/folders/2d/<temp-id>/…

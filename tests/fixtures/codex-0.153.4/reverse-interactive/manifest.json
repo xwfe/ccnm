@@ -1,0 +1,37 @@
+{
+  "date": "2026-09-07",
+  "agent": "local macOS arm64",
+  "runtime": "separate macOS arm64 via an OpenSSH alias",
+  "codex_version": "0.153.4",
+  "tmux_version": "3.7c",
+  "runtime_ccnm_version": "0.2.0",
+  "runtime_binary_sha256": "ac41b71a5fffe8ba26359e24b8ff6a5092b63a0b03cfa95c49778436ba8b8302",
+  "dedicated_home_scope": "Agent Node only; user independently logged in with official CLI",
+  "auth_file_mode": "0600",
+  "auth_file_is_symlink": false,
+  "direct_pty": {
+    "seven_tools_observed": [
+      "workspace_info",
+      "list_files",
+      "search_text",
+      "read_file",
+      "apply_patch",
+      "exec_command",
+      "read_output"
+    ],
+    "completion_and_shutdown_seen": true,
+    "exit_code": null,
+    "driver_issue": "EOF cleanup raced with an exited child; killpg raised PermissionError. Not treated as an exit-code pass."
+  },
+  "resumed_official_session": "00000000-0000-4000-8000-000000000001",
+  "safety_scope": "Temporary scratch Runtime with allow_unconfined_exec. Transport/environment isolation verified; not a production ccrun/ACL/sudo/network audit.",
+  "provider_enabled": false,
+  "controller_integration": "Not yet connected to ccnm production provider/controller dispatch; used an Agent-local measurement supervisor and isolated tmux server.",
+  "redactions": [
+    "Agent and Runtime paths",
+    "Official session UUID",
+    "Runtime username",
+    "Unrelated account usage-reset notices",
+    "Screens excerpted at the measured turn or shutdown footer"
+  ]
+}

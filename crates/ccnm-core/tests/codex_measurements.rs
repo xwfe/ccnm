@@ -166,3 +166,114 @@ fn native_tool_filtering_is_recorded_separately_from_the_sandbox() {
             .any(|name| name == "apply_patch")
     );
 }
+
+#[test]
+fn reverse_interactive_uses_independent_agent_login_without_opening_provider() {
+    let auth: Value = serde_json::from_str(include_str!(
+        "../../../tests/fixtures/codex-0.153.4/reverse-interactive/auth-status.json"
+    ))
+    .unwrap();
+    assert_eq!(auth["exit_code"], 0);
+    assert_eq!(auth["logged_in_using_chatgpt"], true);
+    assert_eq!(auth["mode"], "0o700");
+    let manifest: Value = serde_json::from_str(include_str!(
+        "../../../tests/fixtures/codex-0.153.4/reverse-interactive/manifest.json"
+    ))
+    .unwrap();
+    assert_eq!(manifest["auth_file_mode"], "0600");
+    assert_eq!(manifest["auth_file_is_symlink"], false);
+    assert_eq!(manifest["provider_enabled"], false);
+    assert_eq!(
+        ccnm_core::provider::AgentProvider::current(),
+        ccnm_core::provider::AgentProvider::Claude
+    );
+}
+
+#[test]
+fn detach_and_reattach_preserved_the_same_codex_and_mcp_processes() {
+    let rows = events(include_str!(
+        "../../../tests/fixtures/codex-0.153.4/reverse-interactive/tmux-observations.jsonl"
+    ));
+    let phases: Vec<_> = ["attached", "detached", "reattached"]
+        .iter()
+        .map(|phase| rows.iter().find(|row| row["phase"] == *phase).unwrap())
+        .collect();
+    for (index, expected) in [1, 0, 1].iter().enumerate() {
+        assert_eq!(phases[index]["attached"], *expected);
+        assert_eq!(phases[index]["pane_dead"], false);
+        for key in ["server_pid", "supervisor_pid", "child_pids", "mcp_pids"] {
+            assert_eq!(phases[index][key], phases[0][key]);
+        }
+    }
+    let context: Value = serde_json::from_str(include_str!(
+        "../../../tests/fixtures/codex-0.153.4/reverse-interactive/tmux-context.json"
+    ))
+    .unwrap();
+    // managername alone cannot tell whether the official login is usable.
+    assert_eq!(context["manager"], "Background");
+    assert_eq!(context["login_confirmed"], true);
+}
+
+#[test]
+fn closed_transport_was_observed_before_resume_created_a_new_connection() {
+    let failure = include_str!(
+        "../../../tests/fixtures/codex-0.153.4/reverse-interactive/tmux-disconnect.txt"
+    );
+    assert!(failure.contains("Transport closed"));
+    let recovered =
+        include_str!("../../../tests/fixtures/codex-0.153.4/reverse-interactive/tmux-resumed.txt");
+    assert!(recovered.contains("1→CCNM_TMUX_RUNTIME_7319"));
+    assert!(recovered.contains("CCNM_RESUME_RECONNECTED"));
+    let rows = events(include_str!(
+        "../../../tests/fixtures/codex-0.153.4/reverse-interactive/tmux-observations.jsonl"
+    ));
+    let before = rows.iter().find(|row| row["phase"] == "attached").unwrap();
+    let after = rows.iter().find(|row| row["phase"] == "resumed").unwrap();
+    assert_eq!(before["server_pid"], after["server_pid"]);
+    assert_ne!(before["child_pids"], after["child_pids"]);
+    assert!(
+        after["mcp_pids"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|pid| !before["mcp_pids"].as_array().unwrap().contains(pid))
+    );
+}
+
+#[test]
+fn runtime_environment_and_completed_session_receipts_keep_the_boundary() {
+    let runtime: Value = serde_json::from_str(include_str!(
+        "../../../tests/fixtures/codex-0.153.4/reverse-interactive/runtime-probe-result.json"
+    ))
+    .unwrap();
+    assert_eq!(runtime["single_process"], true);
+    assert_eq!(runtime["tools"].as_array().unwrap().len(), 7);
+    assert_eq!(runtime["agent_home_in_transport"], false);
+    let output: Value = serde_json::from_str(
+        runtime["retained_output"]
+            .as_str()
+            .unwrap()
+            .lines()
+            .next()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(output["sensitive_environment_keys"], serde_json::json!([]));
+    assert_eq!(output["cwd"], "/runtime-fixture/project");
+    for receipt in [
+        include_str!(
+            "../../../tests/fixtures/codex-0.153.4/reverse-interactive/tmux-first-exit.json"
+        ),
+        include_str!("../../../tests/fixtures/codex-0.153.4/reverse-interactive/tmux-exit.json"),
+    ] {
+        let exit: Value = serde_json::from_str(receipt).unwrap();
+        assert_eq!(exit["exit_code"], 0);
+        assert_eq!(exit["agent_file"], "WRONG_LOCAL_AGENT_9520\n");
+    }
+    let cleanup: Value = serde_json::from_str(include_str!(
+        "../../../tests/fixtures/codex-0.153.4/reverse-interactive/cleanup.json"
+    ))
+    .unwrap();
+    assert_eq!(cleanup["orphaned_observed_mcp_pids"], serde_json::json!([]));
+    assert_eq!(cleanup["dedicated_agent_home_preserved"], true);
+}

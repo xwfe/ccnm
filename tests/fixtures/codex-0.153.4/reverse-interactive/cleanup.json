@@ -1,0 +1,6 @@
+{
+  "isolated_tmux_server_removed": true,
+  "orphaned_observed_mcp_pids": [],
+  "dedicated_agent_home_preserved": true,
+  "runtime_scratch_preserved_for_replay": true
+}

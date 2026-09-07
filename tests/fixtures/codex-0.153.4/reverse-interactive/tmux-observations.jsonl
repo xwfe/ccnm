@@ -1,0 +1,8 @@
+{"phase": "attached", "server_pid": 1405, "supervisor_pid": 1409, "attached": 1, "pane_dead": false, "child_pids": ["1495"], "mcp_pids": ["71022"]}
+{"phase": "detached", "server_pid": 1405, "supervisor_pid": 1409, "attached": 0, "pane_dead": false, "child_pids": ["1495"], "mcp_pids": ["71022"]}
+{"phase": "reattached", "server_pid": 1405, "supervisor_pid": 1409, "attached": 1, "pane_dead": false, "child_pids": ["1495"], "mcp_pids": ["71022"]}
+{"phase": "followup", "server_pid": 1405, "supervisor_pid": 1409, "attached": 1, "pane_dead": false, "child_pids": ["1495"], "mcp_pids": ["71022"]}
+{"phase": "mcp-menu", "server_pid": 1405, "supervisor_pid": 1409, "attached": 1, "pane_dead": false, "child_pids": ["1495"], "mcp_pids": ["71022"]}
+{"phase": "disconnect", "server_pid": 1405, "supervisor_pid": 1409, "attached": 1, "pane_dead": false, "child_pids": ["1495"], "mcp_pids": ["71022"]}
+{"phase": "resumed", "server_pid": 1405, "supervisor_pid": 14561, "attached": 1, "pane_dead": false, "child_pids": ["14639"], "mcp_pids": ["71022", "73770"]}
+{"phase": "exited", "server_pid": 1405, "supervisor_pid": 14561, "attached": 1, "pane_dead": true, "child_pids": [], "mcp_pids": ["71022", "73770"]}

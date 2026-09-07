@@ -1,0 +1,48 @@
+
+╭──────────────────────────────────────────────────────────╮
+│ >_ OpenAI Codex (v0.153.4)                               │
+│                                                          │
+│ model:     gpt-6-astra   /model to change                │
+│ directory: …00gn/T/agent-fixture │
+╰──────────────────────────────────────────────────────────╯
+
+  Tip: This is GPT-6, a new generation of intelligence. Astra is state-of-the-
+  art in coding, computer use, science, and professional work. Give it a hard
+  problem, a half-formed idea, or anything you've been meaning to build. See
+  where it takes you.
+
+
+› Use only ccnm MCP. Call workspace_info and read_file probe.txt. Report its
+  exact content and finish with CCNM_TMUX_READY. Do not edit files, use native
+  tools, or spawn agents.
+
+
+⚠ Under-development features enabled: code_mode_only. Under-development features
+  are incomplete and may behave unpredictably. To suppress this warning, set
+  `suppress_unstable_features_warning = true` in <agent-only-config>/config.toml.
+
+• I’ll use only CCNM MCP to inspect the workspace and read probe.txt.
+
+• Called ccnm.workspace_info({})
+  └ workspace fixture (not a git repository, macos/aarch64); all paths are
+        relative to its root
+    [server pid 71022, call 1]
+
+• Called ccnm.read_file({"path":"probe.txt"})
+  └ 1→CCNM_INTERACTIVE_RUNTIME_7319
+    [end of file, 1 line; version 30-18d306f5518721ec]
+
+────────────────────────────────────────────────────────────────────────────────
+
+• probe.txt contains:
+
+  CCNM_INTERACTIVE_RUNTIME_7319
+
+  CCNM_TMUX_READY
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+› Ask Codex to do anything
+
+  gpt-6-astra default · /private/var/folders/2d/<temp-id>/…

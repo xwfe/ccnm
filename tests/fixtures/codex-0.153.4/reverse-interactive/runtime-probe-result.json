@@ -1,0 +1,20 @@
+{
+  "single_process": true,
+  "tools": [
+    "apply_patch",
+    "exec_command",
+    "list_files",
+    "read_file",
+    "read_output",
+    "search_text",
+    "workspace_info"
+  ],
+  "runtime_environment_clean": true,
+  "retained_output": "{\"sensitive_environment_keys\": [], \"cwd\": \"/runtime-fixture/project\"}\n[end of stdout at 94 bytes]",
+  "server_info": {
+    "name": "ccnm",
+    "version": "0.2.0"
+  },
+  "exit_code": 0,
+  "agent_home_in_transport": false
+}

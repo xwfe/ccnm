@@ -9,7 +9,8 @@
     "Thread/turn UUIDs normalized",
     "API-key display redacted (synthetic sentinel only)",
     "Backend request IDs and cf-ray IDs",
-    "Runtime account name"
+    "Runtime account name",
+    "Trailing spaces stripped from CLI help text only"
   ],
   "observed_seven_tools": {
     "exit_code": 0,

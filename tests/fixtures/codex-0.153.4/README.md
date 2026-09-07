@@ -12,4 +12,4 @@
 - `exec-registry-*`：运行时注册表经模型抄回的观察；不可替代完整权限验收。
 - `exec-logged-out`：重试后 turn.failed；`exec-no-tools`：warning 后成功。
 
-个人路径、UUID、请求标识、账号名及 key 展示已脱敏；工具 version/output_ref 为临时 fixture 标识。不要用当前期望覆盖此前 fixture。
+CLI help 文本只清除了行末空格；个人路径、UUID、请求标识、账号名及 key 展示已脱敏；工具 version/output_ref 为临时 fixture 标识。不要用当前期望覆盖此前 fixture。

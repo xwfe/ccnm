@@ -3,6 +3,8 @@
 从 README 搬过来的：**给要改 ccnm 的人看**，不是给用它的人看。用的人只需要
 [README](../README.md)。
 
+后续实施先读 [计划与接续](plan/README.md)、[路线图](plan/ROADMAP.md) 和 [当前状态](plan/status.json)。当前进度以 Git 中的状态文件为准，不以聊天或本机工具缓存为准；模型工作约定见根目录 [AGENTS.md](../AGENTS.md)。
+
 ### 需要 Rust 1.89
 
 `File::try_lock` —— `apply_patch` 靠它分辨"上一次提交被打断了"和"另一个提交正在跑"。

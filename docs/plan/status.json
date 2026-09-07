@@ -1,0 +1,169 @@
+{
+  "schema_version": 1,
+  "plan_id": "ccnm-execution-v1",
+  "last_updated": "2026-09-07T23:28:56+09:00",
+  "current_task": "P1",
+  "baseline": {
+    "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
+    "source": "docs/research/codex-internal-wiring-2026-09-07.md",
+    "rust_tests": 448,
+    "python_tests": 7,
+    "verification_kind": "historical",
+    "note": "引用内部接线阶段已提交的实测和门禁记录，本轮规划没有重跑 Rust 或真实 Agent。数字是历史基线，不是当前全仓库测试总数。"
+  },
+  "tasks": [
+    {
+      "id": "P0",
+      "title": "内部验证基线",
+      "status": "completed",
+      "depends_on": [],
+      "owner": null,
+      "started_at": null,
+      "last_updated": "2026-09-07T23:22:36+09:00",
+      "completed_criteria": ["P0.1", "P0.2", "P0.3"],
+      "evidence": [
+        {
+          "kind": "historical",
+          "criteria": ["P0.1"],
+          "ref": "tests/fixtures/claude-provider-baseline.json",
+          "commit": "a2550f9",
+          "result": "Claude 内部 Provider 等价抽取及合成 golden 已提交；并非新真机验收，colocated 已知参数缺陷仍存在。"
+        },
+        {
+          "kind": "historical",
+          "criteria": ["P0.2", "P0.3"],
+          "ref": "docs/research/codex-internal-wiring-2026-09-07.md",
+          "commit": "4f8e678",
+          "result": "Codex 0.153.4 通过产品 Controller/supervisor/tmux/SSH MCP 的 print、interactive 和七工具；历史 Rust 448 passed、Python 7 passed。仅 scratch 双机，非生产 ccrun/ACL/egress 通过；公开入口未开放。"
+        }
+      ],
+      "blockers": []
+    },
+    {
+      "id": "P1",
+      "title": "Provider 安全契约收敛",
+      "status": "pending",
+      "depends_on": ["P0"],
+      "owner": null,
+      "started_at": null,
+      "last_updated": "2026-09-07T23:22:36+09:00",
+      "completed_criteria": [],
+      "evidence": [],
+      "blockers": []
+    },
+    {
+      "id": "P2",
+      "title": "Agent Instance 公共配置模型",
+      "status": "pending",
+      "depends_on": ["P1"],
+      "owner": null,
+      "started_at": null,
+      "last_updated": "2026-09-07T23:22:36+09:00",
+      "completed_criteria": [],
+      "evidence": [],
+      "blockers": []
+    },
+    {
+      "id": "P3",
+      "title": "公共入口与单 Agent 执行闭环",
+      "status": "pending",
+      "depends_on": ["P2"],
+      "owner": null,
+      "started_at": null,
+      "last_updated": "2026-09-07T23:22:36+09:00",
+      "completed_criteria": [],
+      "evidence": [],
+      "blockers": []
+    },
+    {
+      "id": "P4",
+      "title": "Machine Protocol v1 草案与契约评审",
+      "status": "pending",
+      "depends_on": ["P3"],
+      "owner": null,
+      "started_at": null,
+      "last_updated": "2026-09-07T23:22:36+09:00",
+      "completed_criteria": [],
+      "evidence": [],
+      "blockers": []
+    },
+    {
+      "id": "P5",
+      "title": "本地 stdio Machine API",
+      "status": "pending",
+      "depends_on": ["P4"],
+      "owner": null,
+      "started_at": null,
+      "last_updated": "2026-09-07T23:22:36+09:00",
+      "completed_criteria": [],
+      "evidence": [],
+      "blockers": []
+    },
+    {
+      "id": "P6",
+      "title": "黑盒消费者与 v1 兼容承诺",
+      "status": "pending",
+      "depends_on": ["P5"],
+      "owner": null,
+      "started_at": null,
+      "last_updated": "2026-09-07T23:22:36+09:00",
+      "completed_criteria": [],
+      "evidence": [],
+      "blockers": []
+    },
+    {
+      "id": "P7",
+      "title": "发布前收口",
+      "status": "pending",
+      "depends_on": ["P6"],
+      "owner": null,
+      "started_at": null,
+      "last_updated": "2026-09-07T23:22:36+09:00",
+      "completed_criteria": [],
+      "evidence": [],
+      "blockers": []
+    },
+    {
+      "id": "P8",
+      "title": "独立 Orchestrator 交接",
+      "status": "pending",
+      "depends_on": ["P7"],
+      "owner": null,
+      "started_at": null,
+      "last_updated": "2026-09-07T23:22:36+09:00",
+      "completed_criteria": [],
+      "evidence": [],
+      "blockers": []
+    }
+  ],
+  "observed_gaps": [
+    "Claude colocated 的启动参数与文档不一致；已有假 supervisor 测试不能证明可用，P3 定点修复或明确拒绝。",
+    "Codex 目前只有内部入口，限定实测版本 0.153.4；colocated 未开放。",
+    "现有双机 Codex 证据使用 scratch Runtime，不是生产 ccrun/ACL/sudo/egress 验收。",
+    "旧 Runtime 拒绝 v2 时可能以退出码 0 结束；协议错误不能被退出码掩盖。",
+    "Agent Instance、公共 Machine API、Runtime 跨入口写入互斥和独立 Orchestrator 均未在本轮实施。"
+  ],
+  "handoff": {
+    "next_action": "认领 P1；读取 ROADMAP.md 的 P1 和 provider/safety/ssh/mcp/exec 现状，先写 Agent 与 Runtime 环境来源及凭据可访问性契约，再补失败用例后收敛实现。只执行 P1，验收后停止。",
+    "scope": "本轮只落地计划、状态、接续入口和检查工具；下一轮产品实现从 P1 开始。",
+    "planning_validation": {
+      "at": "2026-09-07T23:28:56+09:00",
+      "commands": [
+        "python3 -B scripts/check_plan.py：通过，P0 完成，current_task=P1",
+        "python3 -B -m unittest discover -s tests -p 'test_*.py' -v：19 passed，含新增计划校验 12 项与原 Codex helper 7 项",
+        "git diff --check：通过"
+      ],
+      "limits": "仅计划与 Python helper 回归；未重跑 Rust 门禁、真实 Agent 或生产权限验收。原有 README/脚本内容 hash、执行位及两份文档删除已核对保持不变。"
+    },
+    "inherited_changes": [
+      "README.md：用户原有文字修改",
+      "SSH stdio Remote Coding MCP.md：用户原有删除，不恢复",
+      "Terminal-native_Claude_Remote_Workspace.md：用户原有删除，不恢复",
+      "scripts/deploy.sh：用户原有 executable bit 改动",
+      "scripts/dist.sh：用户原有 executable bit 改动",
+      "scripts/mutate.sh：用户原有 executable bit 改动"
+    ],
+    "authorization": "本轮规划不授权真实 Agent 调用、创建账号、ACL/防火墙变更、登录、部署或新建 Orchestrator 仓库；后续对应动作逐项确认已有授权。",
+    "gld_sync": "Git 文件是事实来源；通过 planning_manage 镜像 P1…P8，旧混合多 Agent 计划保持暂停。工具 execution=completed 不代表产品阶段完成。"
+  }
+}

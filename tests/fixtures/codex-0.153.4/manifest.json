@@ -1,0 +1,34 @@
+{
+  "cli_version": "0.153.4",
+  "date": "2026-09-07",
+  "platform": "macos/aarch64",
+  "ccnm_commit": "a2550f9",
+  "binary_sha256": "b973d440acac501fd2594a43e7ca9ce41e0a65b9dfb28d0d7a7837c99e1261e3",
+  "redactions": [
+    "User home and temporary paths",
+    "Thread/turn UUIDs normalized",
+    "API-key display redacted (synthetic sentinel only)",
+    "Backend request IDs and cf-ray IDs",
+    "Runtime account name"
+  ],
+  "observed_seven_tools": {
+    "exit_code": 0,
+    "tools": [
+      "workspace_info",
+      "list_files",
+      "search_text",
+      "read_file",
+      "apply_patch",
+      "exec_command",
+      "read_output"
+    ],
+    "runtime_file": "CCNM_RUNTIME_PATCHED_7319\n",
+    "agent_file": "WRONG_AGENT_NODE_9520\n"
+  },
+  "observed_native_patch": {
+    "native_file_created": false,
+    "rejected_by": "read-only sandbox"
+  },
+  "scope": "Real installed Codex CLI and real local stdio ccnm MCP; temporary scratch runtime via env -i, no SSH/Controller/tmux or authenticated interactive validation. No credential contents read or copied.",
+  "replay": "python3 scripts/measure_codex.py NEW_OUTPUT_DIRECTORY seven-tools"
+}

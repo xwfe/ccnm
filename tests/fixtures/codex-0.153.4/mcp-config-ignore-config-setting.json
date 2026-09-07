@@ -1,0 +1,13 @@
+{
+  "argv": [
+    "codex",
+    "-c",
+    "ignore_user_config=true",
+    "mcp",
+    "list",
+    "--json"
+  ],
+  "exit_code": 0,
+  "stdout": "[\n  {\n    \"name\": \"unrelated_fixture\",\n    \"enabled\": true,\n    \"disabled_reason\": null,\n    \"transport\": {\n      \"type\": \"stdio\",\n      \"command\": \"/usr/bin/false\",\n      \"args\": [],\n      \"env\": null,\n      \"env_vars\": [],\n      \"cwd\": null\n    },\n    \"startup_timeout_sec\": null,\n    \"tool_timeout_sec\": null,\n    \"auth_status\": \"unsupported\"\n  }\n]\n",
+  "stderr": ""
+}

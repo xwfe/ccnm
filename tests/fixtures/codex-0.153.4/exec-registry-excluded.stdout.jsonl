@@ -1,0 +1,6 @@
+{"type":"thread.started","thread_id":"00000000-0000-4000-8000-000000000001"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"error","message":"Skill descriptions were shortened to fit the skills context budget. Codex can still see every skill, but some descriptions are shorter. Disable unused skills or plugins to leave more room for the rest."}}
+{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"我会仅执行指定的工具注册表测量，并原样返回 JSON。"}}
+{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"{\"nativePatch\":\"undefined\",\"tools\":[\"clock__curr_time\",\"mcp__ccnm__apply_patch\",\"mcp__ccnm__exec_command\",\"mcp__ccnm__list_files\",\"mcp__ccnm__read_file\",\"mcp__ccnm__read_output\",\"mcp__ccnm__search_text\",\"mcp__ccnm__workspace_info\"]}"}}
+{"type":"turn.completed","usage":{"input_tokens":31716,"cached_input_tokens":15616,"cache_write_input_tokens":0,"output_tokens":137,"reasoning_output_tokens":0}}

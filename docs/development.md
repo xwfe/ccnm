@@ -12,7 +12,7 @@
 ### 本地跑测试
 
 ```bash
-cargo test --workspace        # 422 个测试，不需要第二台机器，不启动真实 Agent
+cargo test --workspace        # 428 个测试，不需要第二台机器，不启动真实 Agent
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 ```
@@ -24,6 +24,8 @@ cargo test -p ccnm-core --test provider_compat
 ```
 
 该测试只比对已冻结的 fixture，不更新快照；不要为了让重构通过而重新生成期望值。原始 Claude CLI 测试已移动到 `provider::claude`，项目上下文测试位于 `provider::claude::context`。
+
+第二阶段先保存了 [Codex 0.153.4 真机测量](research/codex-provider-probe-2026-09-07.md)，尚未开放 provider。`cargo test -p ccnm-core --test codex_measurements` 只检查 fixture，不启动模型；重放脚本的 3 个离线测试另用 `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p 'test_measure_codex.py' -v` 运行。
 
 这三条就是 CI 的全部内容。测试里所有外部命令（ssh、tmux、launchctl、claude）都是注进去的
 假 runner，**除了**几个故意用真东西的：`git`（list_files 的 git 模式）、`rg`（search_text）、

@@ -1,0 +1,10 @@
+{
+  "note": "Synthetic invalid key, only in a temporary CODEX_HOME. No model request. Credential content was never opened.",
+  "login_exit_code": 0,
+  "login_stdout": "",
+  "login_stderr": "Reading API key from stdin...\nSuccessfully logged in\n",
+  "status_exit_code": 0,
+  "status_stdout": "",
+  "status_stderr": "Logged in using an API key - <redacted>\n",
+  "auth_json_exists": true
+}

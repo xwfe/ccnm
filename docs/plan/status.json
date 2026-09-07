@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-09-07T23:28:56+09:00",
+  "last_updated": "2026-09-07T23:55:46+09:00",
   "current_task": "P1",
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
@@ -164,6 +164,6 @@
       "scripts/mutate.sh：用户原有 executable bit 改动"
     ],
     "authorization": "本轮规划不授权真实 Agent 调用、创建账号、ACL/防火墙变更、登录、部署或新建 Orchestrator 仓库；后续对应动作逐项确认已有授权。",
-    "gld_sync": "Git 文件是事实来源；通过 planning_manage 镜像 P1…P8，旧混合多 Agent 计划保持暂停。工具 execution=completed 不代表产品阶段完成。"
+    "portability": "接续不依赖任何特定 MCP、任务管理器或 IDE 插件。任何模型只需 Git、仓库文件和项目命令即可按 current_task 继续；外部工具状态不作为产品阶段事实。"
   }
 }

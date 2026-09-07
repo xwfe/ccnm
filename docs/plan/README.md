@@ -10,15 +10,15 @@
 | [status.json](status.json) | 当前阶段、完成项、阻塞、证据与下一动作，唯一进度来源 |
 | [../research/](../research/) | 脱敏的实测记录；回归 fixture 放在 `tests/fixtures/` |
 
-`AGENTS.md` 是模型入口，`CLAUDE.md` 只指向它。开发命令见 [开发文档](../development.md)。`.gld/planning/state.json` 被忽略，不随 Git 分发；可镜像上述计划，但不能成为第二份事实来源。旧的“在 ccnm 内做多 Agent”计划已被本路线替代，不要恢复执行。
+`AGENTS.md` 是模型入口，`CLAUDE.md` 只指向它。开发命令见 [开发文档](../development.md)。整个接续流程只依赖 Git、仓库文件和项目自身命令，不要求任何特定 MCP、IDE 插件、Agent harness 或私有任务系统。旧的“在 ccnm 内做多 Agent”计划已被本路线替代，不要恢复执行。
 
 ## 每轮执行
 
-1. **读现状。** 核对 Git HEAD、未提交/已暂存修改、`status.json`、当前阶段和证据。HEAD 前进不代表阶段完成；状态与代码冲突时先核对并修正状态，不重做已有实现。没有 `@gld` 的环境也按同一文件接续。
+1. **读现状。** 核对 Git HEAD、未提交/已暂存修改、`status.json`、当前阶段和证据。HEAD 前进不代表阶段完成；状态与代码冲突时先核对并修正状态，不重做已有实现。任何能读写仓库并执行 Git/项目命令的环境都应按同一文件接续。
 2. **认领一个阶段。** 只在依赖完成后将其置为 `in_progress`，记录 `owner`（模型/任务标识）、`started_at`、`last_updated` 和 `handoff.next_action`。原 owner 已中断时记录交接后再接管，不默认为它已退出。默认不并发执行多个阶段。
 3. **按验收编号实施。** 阶段内每个逻辑提交保持可审查。只有对应证据出现后，才把编号加入 `completed_criteria`；把实际命令、环境、结果、commit、限制写入 `evidence`。代码完成但真机验收缺失时不能标记 `completed`。
 4. **遇到阻塞就记录。** 写明哪条验收、原因、缺少的环境/授权、解锁动作及本轮已完成内容。能做的离线工作可以继续，但不能用放宽安全检查、复用私人凭据或假数据把门禁变绿。
-5. **结束时可接续。** 更新状态、运行计划检查、同步 `@gld` 镜像，提交本轮文件。`current_task` 指向下一项未完成的 ccnm 阶段；`handoff.next_action` 写具体动作，不能只写“继续开发”。阶段结束后默认停止，下一轮才开始后续阶段。
+5. **结束时可接续。** 更新状态、运行计划检查，提交本轮文件。`current_task` 指向下一项未完成的 ccnm 阶段；`handoff.next_action` 写具体动作，不能只写“继续开发”。阶段结束后默认停止，下一轮才开始后续阶段。
 
 ## 状态规则
 
@@ -59,10 +59,8 @@ git diff --check
 
 `status.json` 的 `baseline` 是一次带来源的历史基线，不是永远正确的测试数。后续实测写到所属阶段的 evidence，不能把基线数量固定成永不变化的门槛。
 
-## 与 @gld 同步
+## 工具无关
 
-通过 `planning_manage` 的公开 action 更新 goal/plan，不能手工修改 `.gld` 内部 JSON。阶段用稳定的 `P1…P8` 名称匹配本机 step，不把本机 UUID 当成公共协议。新环境没有记录时，从路线图重建镜像；冲突时先对齐 Git 状态，再同步镜像。
+计划协议不能依赖某个模型供应商或某种开发工具。Claude Code、Codex、ChatGPT、普通 shell、IDE Agent 或其他客户端只要能访问 Git 仓库，都读取同一套 `AGENTS.md`、`ROADMAP.md` 和 `status.json`。
 
-工具写入后必须读回核对；只返回 `ok` 不算同步成功。旧记录字段无法通过公开更新动作对齐时，将旧记录暂停并新建正确镜像，不直接修改工具内部存储。
-
-`task_manage` 只管理当前执行任务的工作区变更。工具返回“写计划成功”或 execution=`completed` 不等于路线图的产品阶段完成。历史计划保留为 paused/cancelled，并注明由本文件替代。
+客户端自带的 todo、task、memory、MCP planning、issue scratchpad 等只能作为临时辅助。它们可以从 `status.json` 重建，也可以完全不存在；不得要求下一个模型拥有同一种工具，更不得用工具里的“completed”替代 `status.json` 的阶段验收。发生冲突时，以已提交的 Git 文件和可复验的 evidence 为准。

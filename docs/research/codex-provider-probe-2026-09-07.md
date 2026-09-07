@@ -58,9 +58,35 @@
 
 当前 interactive CLI 不接受 `--ignore-user-config`。实测 `-c 'mcp_servers={}'` 不清空已有服务器，profile 也是叠加；`ignore_user_config=true` 配置键并没有隔离效果。因此不能复用 exec 的启动逻辑，也不能枚举一次服务器后就声称排除了个人 MCP。
 
-候选方案是 Agent Node 上专用 `CODEX_HOME`，由用户直接通过官方 CLI 单独登录，不复制原凭据。[官方环境变量文档](https://learn.chatgpt.com/docs/config-file/environment-variables)说明该目录同时关联配置和认证等状态。**此方案已向用户询问，尚未确认或执行**；确认之后还须实测交互 UI、MCP 权限、项目上下文和 Controller/tmux 链路。
+用户已批准 Agent Node 上专用 `CODEX_HOME`，目录为 `~/.config/ccnm/agents/codex/`，由用户在 Agent Node 的桌面登录会话中通过官方 CLI 独立登录，不复制原凭据。[官方环境变量文档](https://learn.chatgpt.com/docs/config-file/environment-variables)说明该目录同时关联配置和认证等状态。目录只在 Agent Node 解析和使用，不加入 Runtime 配置、请求 payload 或转发环境。
 
 本轮没有新增 `AgentProvider::Codex`、public provider 配置、Agent Instance 或多 Agent 编排。Claude 行为快照与原配置不动。
+
+### Agent Node 预检与专用目录（2026-09-07）
+
+实际 OpenSSH alias 已通过现有配置确认；不引入网络产品依赖。远端是 Darwin arm64，tmux `3.7c`，当前账号有桌面登录会话，SSH 进程本身仍是 `Background`。
+
+预检在 PATH、`~/.local/bin`、`/opt/homebrew/bin`、`/usr/local/bin`、`~/.cargo/bin` 和常见 Codex.app 路径均未找到 Codex。现有 ccnm 报 `0.2.0`，但 `controller status` 因其配置文件不存在而失败，标准 Controller plist 也不存在，**尚不能确认现有 Controller 可用**。没有迁移旧配置、安装/重启 Controller、升级 ccnm 或碰已有 Claude 会话。
+
+已按用户授权在 Agent Node 建立专用目录：
+
+- 逐层拒绝 symlink 和非目录，不覆盖已有内容；新目录使用 `umask 077`。
+- 叶目录 owner 是当前 Agent 账号，mode 为 `0700`。
+- 检查时没有 `auth.json` 和 `config.toml`，未打开任何凭据文件。
+- 管理 SSH 调用使用 `SendEnv=-*`；没有给 Runtime 创建 CODEX_HOME，没有复制或链接原登录文件。
+
+**下一步仍有前置条件**：用户授权后，才可把已测 `0.153.4` 的官方 `codex` 和 `codex-code-mode-host` 两个二进制放到 Agent Node 的 ccnm 独立、版本化工具目录（不修改全局 PATH；约 270 MiB）。随后由用户在 Agent Node 的桌面 Terminal 独立登录。当前只批准了专用 HOME，尚未安装这两个工具或代用户登录。
+
+安装后的操作顺序：
+
+1. 验证两个二进制的 SHA-256 和目标机 `--version`；不能仅按文件名认定版本一致。
+2. 用户在 Agent Node 的桌面 Terminal 中对该专用目录执行官方 `codex login`；不要把 token、登录回调或 auth.json 发回聊天、Runtime 或仓库。
+3. 只通过官方 `login status` 获取登录状态；不解析 auth.json，不从其他 CODEX_HOME 复制或 symlink 凭据。
+4. 用独立的 tmux socket/session 验证真实交互与退出/重连，再验证 MCP 实际动作和 Runtime 环境中没有 CODEX_HOME/认证变量；不借此重启已有 Claude Controller。
+5. 完成交互、tmux/session、MCP、credential isolation 的实际验证前，Codex provider 继续关闭。
+
+若用户放弃且该目录仍为空，可在 Agent Node 用 `rmdir "$HOME/.config/ccnm/agents/codex"` 撤销目录创建；目录已有登录状态时不能用这个流程清理凭据。
+
 
 ## 重放与回归
 

@@ -1,0 +1,612 @@
+{
+  "auth": {
+    "authMethod": "claude.ai",
+    "email": "fixture@example.invalid",
+    "loggedIn": true,
+    "subscriptionType": "max"
+  },
+  "auth_summary": "fixture@example.invalid via claude.ai (max)",
+  "controller_reply": {
+    "auth": {
+      "Ok": {
+        "authMethod": "claude.ai",
+        "email": "fixture@example.invalid",
+        "loggedIn": true,
+        "subscriptionType": "max"
+      }
+    },
+    "path": "/agent/claude",
+    "reply": "claude",
+    "version": {
+      "Ok": "2.1.260"
+    }
+  },
+  "controller_request": {
+    "body": {
+      "ask": "everything",
+      "config_dir": "/agent/config with space",
+      "request": "claude-auth"
+    },
+    "protocol": 1
+  },
+  "instructions": "CCNM remote workspace \"fixture\". The project lives on another machine and is reachable only through the ccnm tools; there is no local copy. Whatever your own environment says about the current directory, its git status or its files describes the machine you run on, not the project: for the project, workspace_info is the truth. Every path you pass or receive is relative to the workspace root.\n\n--- CLAUDE.md from the workspace root. These are the project's own instructions, written for this project; they are not about the machine you run on. Follow them. ---\nproject rules\n--- end of CLAUDE.md ---\n\nThis project has further instructions in these files. They are not included here; read the ones that apply to what you are doing, with read_file:\n  .claude/rules/style.md (42 bytes)\n\n[project instructions: CLAUDE.md, 20 bytes, first 14 shown; read_file CLAUDE.md for the rest]",
+  "launches": [
+    {
+      "command": {
+        "args": [
+          "--tools",
+          "",
+          "--mcp-config",
+          "/state/session/mcp.json",
+          "--strict-mcp-config",
+          "--settings",
+          "/state/session/settings.json",
+          "--setting-sources",
+          "user,project,local",
+          "--permission-mode",
+          "plan",
+          "--session-id",
+          "0b4c7a1e-2d3f-4a5b-8c6d-7e8f9a0b1c2d",
+          "--print",
+          "--output-format",
+          "json",
+          "--permission-prompts",
+          "none",
+          "--no-session-persistence"
+        ],
+        "cwd": "/agent/workspace",
+        "env": [
+          [
+            "CLAUDE_CONFIG_DIR",
+            "/agent/config with space"
+          ]
+        ],
+        "program": "/agent/claude",
+        "stdin": "-a 'quoted'\n中文",
+        "timeout_secs": 73
+      },
+      "mcp": {
+        "mcpServers": {
+          "ccnm": {
+            "args": [
+              "-o",
+              "BatchMode=yes",
+              "-o",
+              "ConnectTimeout=10",
+              "-o",
+              "ClearAllForwardings=yes",
+              "-o",
+              "ControlMaster=no",
+              "-o",
+              "ControlPath=none",
+              "-o",
+              "ServerAliveInterval=15",
+              "-o",
+              "ServerAliveCountMax=20",
+              "-o",
+              "SendEnv=-ANTHROPIC_*",
+              "-o",
+              "SendEnv=-CLAUDE_*",
+              "-T",
+              "runtime-alias",
+              "~/.local/bin/ccnm",
+              "internal",
+              "mcp-serve",
+              "--payload",
+              "eyJwcm90b2NvbCI6MSwid29ya3NwYWNlIjoiZml4dHVyZSIsInJvb3QiOiIvcHJvamVjdCIsInNlc3Npb24iOiIwYjRjN2ExZS0yZDNmLTRhNWItOGM2ZC03ZThmOWEwYjFjMmQiLCJwb2xpY3kiOiJjb2RpbmciLCJpbnRlcmFjdGl2ZSI6ZmFsc2V9"
+            ],
+            "command": "/usr/bin/ssh",
+            "type": "stdio"
+          }
+        }
+      },
+      "settings": {
+        "permissions": {
+          "allow": [
+            "mcp__ccnm__workspace_info",
+            "mcp__ccnm__read_file",
+            "mcp__ccnm__list_files",
+            "mcp__ccnm__search_text",
+            "mcp__ccnm__apply_patch",
+            "mcp__ccnm__exec_command",
+            "mcp__ccnm__read_output"
+          ],
+          "deny": [
+            "Read",
+            "Edit",
+            "Write",
+            "Grep",
+            "Glob",
+            "Bash"
+          ]
+        }
+      },
+      "spec": {
+        "claude_config_dir": "/agent/config with space",
+        "cwd": "/agent/workspace",
+        "id": "0b4c7a1e-2d3f-4a5b-8c6d-7e8f9a0b1c2d",
+        "mode": {
+          "mode": "print",
+          "prompt": "-a 'quoted'\n中文"
+        },
+        "permission_mode": "plan",
+        "protocol": 1,
+        "root": "/project",
+        "runtime": {
+          "alias": "runtime-alias",
+          "ccnm_bin": "/runtime/ccnm"
+        },
+        "timeout_secs": 73,
+        "workspace": "fixture"
+      }
+    },
+    {
+      "command": {
+        "args": [
+          "--tools",
+          "",
+          "--mcp-config",
+          "/state/session/mcp.json",
+          "--strict-mcp-config",
+          "--settings",
+          "/state/session/settings.json",
+          "--setting-sources",
+          "user,project,local",
+          "--permission-mode",
+          "plan",
+          "--session-id",
+          "0b4c7a1e-2d3f-4a5b-8c6d-7e8f9a0b1c2d"
+        ],
+        "cwd": "/agent/workspace",
+        "env": [
+          [
+            "CLAUDE_CONFIG_DIR",
+            "/agent/config with space"
+          ]
+        ],
+        "program": "/agent/claude",
+        "stdin": null,
+        "timeout_secs": 73
+      },
+      "mcp": {
+        "mcpServers": {
+          "ccnm": {
+            "args": [
+              "-o",
+              "BatchMode=yes",
+              "-o",
+              "ConnectTimeout=10",
+              "-o",
+              "ClearAllForwardings=yes",
+              "-o",
+              "ControlMaster=no",
+              "-o",
+              "ControlPath=none",
+              "-o",
+              "ServerAliveInterval=15",
+              "-o",
+              "ServerAliveCountMax=20",
+              "-o",
+              "SendEnv=-ANTHROPIC_*",
+              "-o",
+              "SendEnv=-CLAUDE_*",
+              "-T",
+              "runtime-alias",
+              "~/.local/bin/ccnm",
+              "internal",
+              "mcp-serve",
+              "--payload",
+              "eyJwcm90b2NvbCI6MSwid29ya3NwYWNlIjoiZml4dHVyZSIsInJvb3QiOiIvcHJvamVjdCIsInNlc3Npb24iOiIwYjRjN2ExZS0yZDNmLTRhNWItOGM2ZC03ZThmOWEwYjFjMmQiLCJwb2xpY3kiOiJjb2RpbmciLCJpbnRlcmFjdGl2ZSI6dHJ1ZX0"
+            ],
+            "command": "/usr/bin/ssh",
+            "type": "stdio"
+          }
+        }
+      },
+      "settings": {
+        "permissions": {
+          "allow": [
+            "mcp__ccnm__workspace_info",
+            "mcp__ccnm__read_file",
+            "mcp__ccnm__list_files",
+            "mcp__ccnm__search_text",
+            "mcp__ccnm__apply_patch",
+            "mcp__ccnm__exec_command",
+            "mcp__ccnm__read_output"
+          ],
+          "deny": [
+            "Read",
+            "Edit",
+            "Write",
+            "Grep",
+            "Glob",
+            "Bash"
+          ]
+        }
+      },
+      "spec": {
+        "claude_config_dir": "/agent/config with space",
+        "cwd": "/agent/workspace",
+        "id": "0b4c7a1e-2d3f-4a5b-8c6d-7e8f9a0b1c2d",
+        "mode": {
+          "mode": "interactive",
+          "prompt": null
+        },
+        "permission_mode": "plan",
+        "protocol": 1,
+        "root": "/project",
+        "runtime": {
+          "alias": "runtime-alias",
+          "ccnm_bin": "/runtime/ccnm"
+        },
+        "timeout_secs": 73,
+        "workspace": "fixture"
+      }
+    },
+    {
+      "command": {
+        "args": [
+          "--tools",
+          "",
+          "--mcp-config",
+          "/state/session/mcp.json",
+          "--strict-mcp-config",
+          "--settings",
+          "/state/session/settings.json",
+          "--setting-sources",
+          "user,project,local",
+          "--permission-mode",
+          "plan",
+          "--session-id",
+          "0b4c7a1e-2d3f-4a5b-8c6d-7e8f9a0b1c2d",
+          "-a 'quoted'\n中文"
+        ],
+        "cwd": "/agent/workspace",
+        "env": [
+          [
+            "CLAUDE_CONFIG_DIR",
+            "/agent/config with space"
+          ]
+        ],
+        "program": "/agent/claude",
+        "stdin": null,
+        "timeout_secs": 73
+      },
+      "mcp": {
+        "mcpServers": {
+          "ccnm": {
+            "args": [
+              "-o",
+              "BatchMode=yes",
+              "-o",
+              "ConnectTimeout=10",
+              "-o",
+              "ClearAllForwardings=yes",
+              "-o",
+              "ControlMaster=no",
+              "-o",
+              "ControlPath=none",
+              "-o",
+              "ServerAliveInterval=15",
+              "-o",
+              "ServerAliveCountMax=20",
+              "-o",
+              "SendEnv=-ANTHROPIC_*",
+              "-o",
+              "SendEnv=-CLAUDE_*",
+              "-T",
+              "runtime-alias",
+              "~/.local/bin/ccnm",
+              "internal",
+              "mcp-serve",
+              "--payload",
+              "eyJwcm90b2NvbCI6MSwid29ya3NwYWNlIjoiZml4dHVyZSIsInJvb3QiOiIvcHJvamVjdCIsInNlc3Npb24iOiIwYjRjN2ExZS0yZDNmLTRhNWItOGM2ZC03ZThmOWEwYjFjMmQiLCJwb2xpY3kiOiJjb2RpbmciLCJpbnRlcmFjdGl2ZSI6dHJ1ZX0"
+            ],
+            "command": "/usr/bin/ssh",
+            "type": "stdio"
+          }
+        }
+      },
+      "settings": {
+        "permissions": {
+          "allow": [
+            "mcp__ccnm__workspace_info",
+            "mcp__ccnm__read_file",
+            "mcp__ccnm__list_files",
+            "mcp__ccnm__search_text",
+            "mcp__ccnm__apply_patch",
+            "mcp__ccnm__exec_command",
+            "mcp__ccnm__read_output"
+          ],
+          "deny": [
+            "Read",
+            "Edit",
+            "Write",
+            "Grep",
+            "Glob",
+            "Bash"
+          ]
+        }
+      },
+      "spec": {
+        "claude_config_dir": "/agent/config with space",
+        "cwd": "/agent/workspace",
+        "id": "0b4c7a1e-2d3f-4a5b-8c6d-7e8f9a0b1c2d",
+        "mode": {
+          "mode": "interactive",
+          "prompt": "-a 'quoted'\n中文"
+        },
+        "permission_mode": "plan",
+        "protocol": 1,
+        "root": "/project",
+        "runtime": {
+          "alias": "runtime-alias",
+          "ccnm_bin": "/runtime/ccnm"
+        },
+        "timeout_secs": 73,
+        "workspace": "fixture"
+      }
+    },
+    {
+      "command": {
+        "args": [
+          "--tools",
+          "",
+          "--mcp-config",
+          "/state/session/mcp.json",
+          "--strict-mcp-config",
+          "--settings",
+          "/state/session/settings.json",
+          "--setting-sources",
+          "user,project,local",
+          "--permission-mode",
+          "plan",
+          "--session-id",
+          "0b4c7a1e-2d3f-4a5b-8c6d-7e8f9a0b1c2d",
+          "--print",
+          "--output-format",
+          "json",
+          "--permission-prompts",
+          "none",
+          "--no-session-persistence"
+        ],
+        "cwd": "/project",
+        "env": [
+          [
+            "CLAUDE_CONFIG_DIR",
+            "/agent/config with space"
+          ]
+        ],
+        "program": "/agent/claude",
+        "stdin": "-a 'quoted'\n中文",
+        "timeout_secs": 73
+      },
+      "mcp": null,
+      "settings": {
+        "permissions": {}
+      },
+      "spec": {
+        "claude_config_dir": "/agent/config with space",
+        "cwd": "/project",
+        "id": "0b4c7a1e-2d3f-4a5b-8c6d-7e8f9a0b1c2d",
+        "mode": {
+          "mode": "print",
+          "prompt": "-a 'quoted'\n中文"
+        },
+        "permission_mode": "plan",
+        "protocol": 1,
+        "root": "/project",
+        "runtime": null,
+        "timeout_secs": 73,
+        "workspace": "fixture"
+      }
+    },
+    {
+      "command": {
+        "args": [
+          "--tools",
+          "",
+          "--mcp-config",
+          "/state/session/mcp.json",
+          "--strict-mcp-config",
+          "--settings",
+          "/state/session/settings.json",
+          "--setting-sources",
+          "user,project,local",
+          "--permission-mode",
+          "plan",
+          "--session-id",
+          "0b4c7a1e-2d3f-4a5b-8c6d-7e8f9a0b1c2d"
+        ],
+        "cwd": "/project",
+        "env": [
+          [
+            "CLAUDE_CONFIG_DIR",
+            "/agent/config with space"
+          ]
+        ],
+        "program": "/agent/claude",
+        "stdin": null,
+        "timeout_secs": 73
+      },
+      "mcp": null,
+      "settings": {
+        "permissions": {}
+      },
+      "spec": {
+        "claude_config_dir": "/agent/config with space",
+        "cwd": "/project",
+        "id": "0b4c7a1e-2d3f-4a5b-8c6d-7e8f9a0b1c2d",
+        "mode": {
+          "mode": "interactive",
+          "prompt": null
+        },
+        "permission_mode": "plan",
+        "protocol": 1,
+        "root": "/project",
+        "runtime": null,
+        "timeout_secs": 73,
+        "workspace": "fixture"
+      }
+    },
+    {
+      "command": {
+        "args": [
+          "--tools",
+          "",
+          "--mcp-config",
+          "/state/session/mcp.json",
+          "--strict-mcp-config",
+          "--settings",
+          "/state/session/settings.json",
+          "--setting-sources",
+          "user,project,local",
+          "--permission-mode",
+          "plan",
+          "--session-id",
+          "0b4c7a1e-2d3f-4a5b-8c6d-7e8f9a0b1c2d",
+          "-a 'quoted'\n中文"
+        ],
+        "cwd": "/project",
+        "env": [
+          [
+            "CLAUDE_CONFIG_DIR",
+            "/agent/config with space"
+          ]
+        ],
+        "program": "/agent/claude",
+        "stdin": null,
+        "timeout_secs": 73
+      },
+      "mcp": null,
+      "settings": {
+        "permissions": {}
+      },
+      "spec": {
+        "claude_config_dir": "/agent/config with space",
+        "cwd": "/project",
+        "id": "0b4c7a1e-2d3f-4a5b-8c6d-7e8f9a0b1c2d",
+        "mode": {
+          "mode": "interactive",
+          "prompt": "-a 'quoted'\n中文"
+        },
+        "permission_mode": "plan",
+        "protocol": 1,
+        "root": "/project",
+        "runtime": null,
+        "timeout_secs": 73,
+        "workspace": "fixture"
+      }
+    }
+  ],
+  "no_instructions": "CCNM remote workspace \"fixture\". The project lives on another machine and is reachable only through the ccnm tools; there is no local copy. Whatever your own environment says about the current directory, its git status or its files describes the machine you run on, not the project: for the project, workspace_info is the truth. Every path you pass or receive is relative to the workspace root.\n[project instructions: no CLAUDE.md at the workspace root]",
+  "parsed_result": {
+    "duration_api_ms": 11047,
+    "duration_ms": 7900,
+    "is_error": false,
+    "num_turns": 2,
+    "permission_denials": [],
+    "result": "[\"mcp__ccnm__apply_patch\",\"mcp__ccnm__exec_command\",\"mcp__ccnm__list_files\",\"mcp__ccnm__read_file\",\"mcp__ccnm__read_output\",\"mcp__ccnm__search_text\",\"mcp__ccnm__workspace_info\"]",
+    "session_id": "d46d50c3-1435-4140-9d96-028763c1f459",
+    "subtype": "success",
+    "total_cost_usd": 0.19454425000000003,
+    "usage": {
+      "cache_creation_input_tokens": 9205,
+      "cache_read_input_tokens": 9093,
+      "input_tokens": 34,
+      "output_tokens": 137
+    }
+  },
+  "permissions": [
+    {
+      "cli": "acceptEdits",
+      "mode": "acceptEdits"
+    },
+    {
+      "cli": "auto",
+      "mode": "auto"
+    },
+    {
+      "cli": "bypassPermissions",
+      "mode": "bypassPermissions"
+    },
+    {
+      "cli": "manual",
+      "mode": "manual"
+    },
+    {
+      "cli": "dontAsk",
+      "mode": "dontAsk"
+    },
+    {
+      "cli": "plan",
+      "mode": "plan"
+    }
+  ],
+  "probes": [
+    {
+      "auth": {
+        "args": [
+          "auth",
+          "status",
+          "--json"
+        ],
+        "cwd": null,
+        "env": [],
+        "program": "/agent/claude",
+        "stdin": null,
+        "timeout_secs": 20
+      },
+      "version": {
+        "args": [
+          "--version"
+        ],
+        "cwd": null,
+        "env": [],
+        "program": "/agent/claude",
+        "stdin": null,
+        "timeout_secs": 20
+      }
+    },
+    {
+      "auth": {
+        "args": [
+          "auth",
+          "status",
+          "--json"
+        ],
+        "cwd": null,
+        "env": [
+          [
+            "CLAUDE_CONFIG_DIR",
+            "/agent/config with space"
+          ]
+        ],
+        "program": "/agent/claude",
+        "stdin": null,
+        "timeout_secs": 20
+      },
+      "version": {
+        "args": [
+          "--version"
+        ],
+        "cwd": null,
+        "env": [
+          [
+            "CLAUDE_CONFIG_DIR",
+            "/agent/config with space"
+          ]
+        ],
+        "program": "/agent/claude",
+        "stdin": null,
+        "timeout_secs": 20
+      }
+    }
+  ],
+  "result_summary": "2 turns in 7.9 s (api 11.0 s); tokens in 34 out 137 cache-write 9205 cache-read 9093; $0.19; 0 permission denials",
+  "supervise": {
+    "claude_bin": "/agent/claude",
+    "protocol": 1,
+    "session_dir": "/state/session"
+  }
+}

@@ -17,12 +17,17 @@ use serde::{Deserialize, Serialize};
 use super::payload::Protocol;
 use crate::config::PermissionMode;
 use crate::controller::Context;
-use crate::provider::RunResult;
+use crate::provider::AgentResult;
 use crate::session::Outcome;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunRequest {
     pub protocol: u32,
+    #[serde(
+        default,
+        skip_serializing_if = "crate::provider::AgentProvider::is_claude"
+    )]
+    pub provider: crate::provider::AgentProvider,
     pub workspace: String,
     /// Project root on the Runtime Node; passed through to the MCP payload.
     pub root: PathBuf,
@@ -43,11 +48,19 @@ impl Protocol for RunRequest {
     fn protocol(&self) -> u32 {
         self.protocol
     }
+    fn expected_protocol(&self) -> u32 {
+        self.provider.control_protocol()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RunReport {
     pub protocol: u32,
+    #[serde(
+        default,
+        skip_serializing_if = "crate::provider::AgentProvider::is_claude"
+    )]
+    pub provider: crate::provider::AgentProvider,
     /// The session id, which is also the name of its directory on both
     /// machines and the id Claude was told to use.
     pub session: String,
@@ -59,7 +72,7 @@ pub struct RunReport {
     pub pid: u32,
     pub outcome: Outcome,
     /// Claude's `--output-format json` document, when stdout held one.
-    pub result: Option<RunResult>,
+    pub result: Option<AgentResult>,
     /// The end of stdout when it was not a result document, and the end of
     /// stderr always: enough to see why, never the whole thing.
     pub stdout_tail: String,
@@ -79,7 +92,11 @@ impl RunReport {
         let mut lines = vec![
             format!("session   {}", self.session),
             format!("started   by {}", self.controller.describe()),
-            format!("claude    {}", self.outcome.describe()),
+            format!(
+                "{:<10}{}",
+                self.provider.cli_name(),
+                self.outcome.describe()
+            ),
         ];
         match &self.result {
             Some(r) => lines.push(format!("run       {}", r.summary())),
@@ -95,6 +112,11 @@ impl RunReport {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StartRequest {
     pub protocol: u32,
+    #[serde(
+        default,
+        skip_serializing_if = "crate::provider::AgentProvider::is_claude"
+    )]
+    pub provider: crate::provider::AgentProvider,
     pub workspace: String,
     pub root: PathBuf,
     /// The node holding the project, by name. The Agent Node resolves it
@@ -113,11 +135,19 @@ impl Protocol for StartRequest {
     fn protocol(&self) -> u32 {
         self.protocol
     }
+    fn expected_protocol(&self) -> u32 {
+        self.provider.control_protocol()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StartReport {
     pub protocol: u32,
+    #[serde(
+        default,
+        skip_serializing_if = "crate::provider::AgentProvider::is_claude"
+    )]
+    pub provider: crate::provider::AgentProvider,
     /// The ccnm session id, when it is known. Not known for a session an
     /// older build started without recording it in the tmux environment.
     #[serde(default)]
@@ -179,7 +209,11 @@ impl StartReport {
             lines.push(format!("started   by {}", ctx.describe()));
         }
         if let Some(context) = &self.context {
-            lines.push(format!("claude in {}", context.describe()));
+            lines.push(format!(
+                "{} in {}",
+                self.provider.cli_name(),
+                context.describe()
+            ));
         }
         lines.join("\n")
     }
@@ -252,6 +286,11 @@ impl Protocol for ResultRequest {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ResultReport {
     pub protocol: u32,
+    #[serde(
+        default,
+        skip_serializing_if = "crate::provider::AgentProvider::is_claude"
+    )]
+    pub provider: crate::provider::AgentProvider,
     pub session: String,
     pub session_dir: PathBuf,
     /// `print` or `interactive`.
@@ -260,7 +299,7 @@ pub struct ResultReport {
     pub started: u64,
     /// `None` while it is still running.
     pub outcome: Option<Outcome>,
-    pub result: Option<RunResult>,
+    pub result: Option<AgentResult>,
     pub stdout_tail: String,
     pub stderr_tail: String,
 }
@@ -279,7 +318,7 @@ impl ResultReport {
         };
         let mut lines = vec![
             format!("session   {} ({})", self.session, self.mode),
-            format!("claude    {state}"),
+            format!("{:<10}{state}", self.provider.cli_name()),
         ];
         if let Some(r) = &self.result {
             lines.push(format!("run       {}", r.summary()));
@@ -355,6 +394,11 @@ impl Protocol for StatusReport {
 /// One live interactive session, as the Agent Node sees it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LiveSession {
+    #[serde(
+        default,
+        skip_serializing_if = "crate::provider::AgentProvider::is_claude"
+    )]
+    pub provider: crate::provider::AgentProvider,
     pub tmux_session: String,
     #[serde(default)]
     pub workspace: Option<String>,
@@ -386,7 +430,7 @@ impl LiveSession {
         };
         let tools = match self.tools {
             Some(true) => "tools connected",
-            Some(false) => "TOOLS DOWN (in Claude: /mcp -> ccnm -> Reconnect)",
+            Some(false) => self.provider.tools_down_hint(),
             None => "tools unknown",
         };
         format!(

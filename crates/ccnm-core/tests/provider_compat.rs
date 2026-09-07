@@ -8,6 +8,7 @@ use serde_json::{Value, json};
 
 fn spec(remote: bool, mode: session::Mode) -> session::Spec {
     session::Spec {
+        provider: Default::default(),
         protocol: protocol::PROTOCOL,
         id: "0b4c7a1e-2d3f-4a5b-8c6d-7e8f9a0b1c2d".into(),
         workspace: "fixture".into(),
@@ -58,7 +59,7 @@ fn snapshot() -> Value {
         .map(|s| {
             json!({
                 "spec": s,
-                "command": command(AgentProvider::current().launch_cmd(bin, &s, &dir)),
+                "command": command(AgentProvider::current().launch_cmd(bin, &s, &dir).unwrap()),
                 "settings": session::settings(s.runtime.is_some()),
                 "mcp": s.runtime.as_ref().map(|_| session::mcp_config(&s, &ssh).unwrap()),
             })
@@ -102,6 +103,7 @@ fn snapshot() -> Value {
         bytes: 42,
     }];
     let project = ccnm_core::mcp::context::Project {
+        source: "CLAUDE.md",
         bytes: 20,
         text: "project rules\n".into(),
     };
@@ -114,6 +116,7 @@ fn snapshot() -> Value {
         "auth": auth,
         "auth_summary": auth.describe(),
         "controller_request": controller::Request::new(controller::RequestBody::AgentAuth {
+            provider: Default::default(),
             config_dir: Some(PathBuf::from("/agent/config with space")), ask: Ask::Everything,
         }),
         "controller_reply": controller::ReplyBody::Agent(report),

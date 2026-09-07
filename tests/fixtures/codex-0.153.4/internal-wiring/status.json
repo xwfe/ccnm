@@ -1,0 +1,21 @@
+{
+  "protocol": 1,
+  "tmux": {
+    "Ok": "3.7c"
+  },
+  "sessions": [
+    {
+      "provider": "codex",
+      "tmux_session": "ccnm-fixture",
+      "workspace": "fixture",
+      "session": "00000000-0000-4000-8000-000000000003",
+      "created": 1788785988,
+      "attached": 0,
+      "context": {
+        "manager": "Background",
+        "keychain": true
+      },
+      "tools": true
+    }
+  ]
+}

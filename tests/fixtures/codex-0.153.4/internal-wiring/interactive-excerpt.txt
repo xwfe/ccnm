@@ -1,0 +1,39 @@
+• I’ll use the ccnm tools to inspect the Runtime fixture and read probe.txt, then report the markers from its project
+  instructions.
+
+• Called ccnm.workspace_info({})
+  └ workspace fixture (not a git repository, macos/aarch64); all paths are relative to its root
+    [server pid 95157, call 1]
+
+• Called ccnm.read_file({"path":"probe.txt"})
+  └ 1→CCNM_WIRING_PATCHED_7291
+    [end of file, 1 line; version 25-18d30b5519bf85f0]
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• Actual marker: CCNM_WIRING_PATCHED_7291
+
+  Project instruction marker: CCNM_AGENTS_FROM_RUNTIME_4317
+
+  Only ccnm workspace tools were used; no local files or credentials were read. Ready at the interactive prompt.
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+
+› Call ccnm workspace_info once to verify this same Runtime connection survived detach and reattach, then report its
+  server PID.
+
+
+• I’ll call ccnm workspace_info once and check its server PID.
+
+• Called ccnm.workspace_info({})
+  └ workspace fixture (not a git repository, macos/aarch64); all paths are relative to its root
+    [server pid 95157, call 3]
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• Server PID: 95157, matching the earlier connection after detach and reattach.
+
+  Project instruction marker: CCNM_AGENTS_FROM_RUNTIME_4317
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────

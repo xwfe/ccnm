@@ -1,0 +1,21 @@
+[
+  {
+    "argv": [
+      "/opt/homebrew/bin/codex",
+      "--help"
+    ],
+    "exit_code": 0,
+    "help_printed": true,
+    "stderr": ""
+  },
+  {
+    "argv": [
+      "/opt/homebrew/bin/codex",
+      "--",
+      "--help"
+    ],
+    "exit_code": 1,
+    "help_printed": false,
+    "stderr": "ERROR: TERM is set to \"dumb\". Refusing to start the interactive TUI because no terminal is available for a confirmation prompt (stdin/stderr is not a TTY). Run in a supported terminal or unset TERM.\n"
+  }
+]

@@ -1,0 +1,20 @@
+[
+  {
+    "case": "base",
+    "exit_code": 0,
+    "base_present": true,
+    "override_present": false
+  },
+  {
+    "case": "override",
+    "exit_code": 0,
+    "base_present": false,
+    "override_present": true
+  },
+  {
+    "case": "empty_override",
+    "exit_code": 0,
+    "base_present": false,
+    "override_present": false
+  }
+]

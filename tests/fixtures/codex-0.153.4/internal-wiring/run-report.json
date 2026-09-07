@@ -1,0 +1,47 @@
+{
+  "protocol": 1,
+  "provider": "codex",
+  "session": "00000000-0000-4000-8000-000000000001",
+  "session_dir": "<agent-state>/ccnm/sessions/00000000-0000-4000-8000-000000000001",
+  "controller": {
+    "hello": {
+      "protocol": 1,
+      "ccnm_version": "0.2.0",
+      "user": "<agent-user>",
+      "platform": "macos/aarch64",
+      "exe": "<agent-build>/ccnm",
+      "root": null
+    },
+    "pid": 49219,
+    "manager": {
+      "Ok": "Aqua"
+    }
+  },
+  "pid": 49248,
+  "outcome": {
+    "exit_code": 0,
+    "timed_out": false,
+    "duration_ms": 43410,
+    "error": null
+  },
+  "result": {
+    "provider": "codex",
+    "session_id": "00000000-0000-4000-8000-000000000002",
+    "result": "All seven ccnm tools completed in the requested order.\n\n- Original marker: `CCNM_WIRING_RUNTIME_7291`\n- Verified runtime output: `CCNM_WIRING_PATCHED_7291`\n- Environment key list: `[]`\n- Project instruction marker: `CCNM_AGENTS_FROM_RUNTIME_4317`",
+    "is_error": false,
+    "num_turns": 1,
+    "usage": {
+      "input_tokens": 74066,
+      "cached_input_tokens": 57472,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 434,
+      "reasoning_output_tokens": 0
+    },
+    "warnings": [
+      "Under-development features enabled: code_mode_only. Under-development features are incomplete and may behave unpredictably. To suppress this warning, set `suppress_unstable_features_warning = true` in <agent-private-config>/config.toml."
+    ],
+    "permission_denials": []
+  },
+  "stdout_tail": "",
+  "stderr_tail": ""
+}

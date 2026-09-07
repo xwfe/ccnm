@@ -1,0 +1,11 @@
+{
+  "protocol": 2,
+  "provider": "codex",
+  "workspace": "fixture",
+  "root": "<runtime-fixture>/project",
+  "runtime_node": "runtime",
+  "claude_config_dir": null,
+  "permission_mode": "acceptEdits",
+  "timeout_secs": 150,
+  "prompt": "Work only through the ccnm MCP tools on the Runtime fixture. Follow its project instructions, and include any report marker requested there. Call all seven tools in this order: workspace_info, list_files, search_text for CCNM_WIRING_RUNTIME_7291, read_file probe.txt, apply_patch using the returned version to replace CCNM_WIRING_RUNTIME_7291 with CCNM_WIRING_PATCHED_7291, exec_command, read_output. For exec_command use cmd [\"/opt/homebrew/bin/python3\",\"-c\",\"import os,pathlib,json; print(pathlib.Path('probe.txt').read_text().strip()); print(json.dumps({'sensitive_environment_keys':sorted(k for k in os.environ if k.startswith(('CODEX_','OPENAI_','CLAUDE_','ANTHROPIC_')) or k=='SSH_AUTH_SOCK')}))\"]. Use the returned output_ref for read_output. Do not read credentials or unrelated files. Final response reports observed runtime marker, environment key list and project instruction marker, not private Agent paths."
+}

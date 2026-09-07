@@ -174,7 +174,7 @@ pub struct Request {
 impl Request {
     pub fn new(body: RequestBody) -> Request {
         Request {
-            protocol: PROTOCOL,
+            protocol: body.provider().control_protocol(),
             body,
         }
     }
@@ -183,6 +183,9 @@ impl Request {
 impl Protocol for Request {
     fn protocol(&self) -> u32 {
         self.protocol
+    }
+    fn expected_protocol(&self) -> u32 {
+        self.body.provider().control_protocol()
     }
 }
 
@@ -195,6 +198,8 @@ pub enum RequestBody {
     /// `claude auth status --json`, run here.
     #[serde(rename = "claude-auth")]
     AgentAuth {
+        #[serde(default, skip_serializing_if = "AgentProvider::is_claude")]
+        provider: AgentProvider,
         /// `CLAUDE_CONFIG_DIR` for the call, from the Runtime Node's
         /// config. `None` means Claude's own default (design doc
         /// section 21).
@@ -210,7 +215,20 @@ pub enum RequestBody {
     /// Start the session whose directory this is. The one request that
     /// exists because of the login session: the process started here is
     /// Claude's ancestor, so Claude inherits it.
-    Start { session_dir: PathBuf },
+    Start {
+        session_dir: PathBuf,
+        #[serde(default, skip_serializing_if = "AgentProvider::is_claude")]
+        provider: AgentProvider,
+    },
+}
+
+impl RequestBody {
+    fn provider(&self) -> AgentProvider {
+        match self {
+            Self::Hello => AgentProvider::Claude,
+            Self::AgentAuth { provider, .. } | Self::Start { provider, .. } => *provider,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -261,7 +279,7 @@ pub struct Tools<'a> {
     /// The `claude` binary as found in *this* process's environment. The
     /// controller's `PATH` comes from launchd, so the lookup happens here
     /// rather than on the ssh side.
-    pub agent: Option<PathBuf>,
+    pub agents: crate::provider::AgentBinaries,
     /// tmux, found the same way and for the same reason. Only interactive
     /// sessions need it; `None` is not an error until one is asked for.
     pub tmux: Option<PathBuf>,
@@ -274,15 +292,25 @@ pub struct Tools<'a> {
 pub fn answer(req: &Request, tools: &Tools<'_>) -> Response {
     match &req.body {
         RequestBody::Hello => Response::new(ReplyBody::Hello(Context::of(tools.runner))),
-        RequestBody::AgentAuth { config_dir, ask } => {
-            Response::new(ReplyBody::Agent(AgentProvider::current().report(
-                tools.agent.as_deref(),
+        RequestBody::AgentAuth {
+            provider,
+            config_dir,
+            ask,
+        } => {
+            if *provider == AgentProvider::Codex && config_dir.is_some() {
+                return Response::error(&Error::invalid_args("Codex home is Agent-local"));
+            }
+            Response::new(ReplyBody::Agent(provider.report(
+                tools.agents.get(*provider),
                 config_dir.as_deref(),
                 tools.runner,
                 *ask,
             )))
         }
-        RequestBody::Start { session_dir } => match start_session(session_dir, tools) {
+        RequestBody::Start {
+            session_dir,
+            provider,
+        } => match start_session(session_dir, *provider, tools) {
             Ok(pid) => Response::new(ReplyBody::Started { pid }),
             Err(e) => Response::error(&e),
         },
@@ -300,14 +328,30 @@ pub fn answer(req: &Request, tools: &Tools<'_>) -> Response {
 /// everything it runs, so a server forked here is one Claude can read its
 /// credentials in, and a server someone forked from an ssh session is not
 /// (see [`crate::tmux`]).
-fn start_session(session_dir: &Path, tools: &Tools<'_>) -> Result<u32> {
+fn start_session(session_dir: &Path, provider: AgentProvider, tools: &Tools<'_>) -> Result<u32> {
     let agent_bin = tools
-        .agent
-        .as_ref()
-        .ok_or_else(|| AgentProvider::current().missing_controller_cli())?;
+        .agents
+        .get(provider)
+        .ok_or_else(|| provider.missing_controller_cli())?;
     let dir = session::Dir::at(session_dir);
     let spec = session::load(&dir)?;
-    let req = SuperviseRequest::new(session_dir.to_path_buf(), agent_bin.clone());
+    if provider != spec.provider() {
+        return Err(Error::invalid_args(
+            "controller provider does not match session",
+        ));
+    }
+    if provider == AgentProvider::Codex {
+        crate::provider::codex::validate_spec(&spec)?;
+        let report = provider.report(Some(agent_bin), None, tools.runner, Ask::Everything);
+        report.version.map_err(Error::from)?;
+        if !report.auth.map_err(Error::from)?.logged_in {
+            return Err(Error::new(ErrorCode::Auth, provider.auth_hint(None)));
+        }
+        crate::provider::codex::check_inventory(agent_bin, &spec, tools.runner)?;
+    }
+    let mut req = SuperviseRequest::new(session_dir.to_path_buf(), agent_bin.to_path_buf());
+    req.provider = provider;
+    req.protocol = provider.control_protocol();
     let supervisor = supervisor_cmd(&tools.exe, &req)?;
     if !spec.mode.is_interactive() {
         let pid = spawn_detached(&supervisor, &dir.supervisor_log())?;
@@ -597,7 +641,16 @@ pub fn context(path: &Path) -> Result<Context> {
 /// [`RequestBody::AgentAuth`], typed. Up to two `claude` invocations
 /// happen on the other side, each with its own 20 second timeout.
 pub fn agent_auth(path: &Path, config_dir: Option<&Path>, ask: Ask) -> Result<AgentReport> {
+    agent_auth_for(path, AgentProvider::Claude, config_dir, ask)
+}
+pub fn agent_auth_for(
+    path: &Path,
+    provider: AgentProvider,
+    config_dir: Option<&Path>,
+    ask: Ask,
+) -> Result<AgentReport> {
     let body = RequestBody::AgentAuth {
+        provider,
         config_dir: config_dir.map(Path::to_path_buf),
         ask,
     };
@@ -612,10 +665,20 @@ pub use agent_auth as claude_auth;
 
 /// [`RequestBody::Start`], typed: the supervisor's pid.
 pub fn start(path: &Path, session_dir: &Path) -> Result<u32> {
+    start_for(path, session_dir, AgentProvider::Claude)
+}
+pub fn start_for(path: &Path, session_dir: &Path, provider: AgentProvider) -> Result<u32> {
     let body = RequestBody::Start {
+        provider,
         session_dir: session_dir.to_path_buf(),
     };
-    match call(path, body, Duration::from_secs(20))? {
+    // Codex revalidates version, auth and MCP inventory before spawning; each
+    // probe has a 20-second bound. Keep the existing Claude timeout unchanged.
+    let timeout = match provider {
+        AgentProvider::Claude => 20,
+        AgentProvider::Codex => 75,
+    };
+    match call(path, body, Duration::from_secs(timeout))? {
         ReplyBody::Started { pid } => Ok(pid),
         other => Err(unexpected(&other)),
     }
@@ -700,7 +763,9 @@ mod tests {
     fn tools<'a>(fake: &'a FakeRunner, agent: bool) -> Tools<'a> {
         Tools {
             runner: fake,
-            agent: agent.then(|| PathBuf::from("/opt/homebrew/bin/claude")),
+            agents: crate::provider::AgentBinaries::with_claude(
+                agent.then(|| PathBuf::from("/opt/homebrew/bin/claude")),
+            ),
             tmux: Some(PathBuf::from("/opt/homebrew/bin/tmux")),
             exe: PathBuf::from("/Users/me/.local/bin/ccnm"),
         }
@@ -710,6 +775,7 @@ mod tests {
     fn start_refuses_without_claude_or_without_a_session() {
         let fake = FakeRunner::new();
         let req = Request::new(RequestBody::Start {
+            provider: Default::default(),
             session_dir: PathBuf::from("/nonexistent"),
         });
         let ReplyBody::Error(report) = answer(&req, &tools(&fake, false)).body else {
@@ -732,6 +798,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let spec = session::Spec {
+            provider: Default::default(),
             protocol: PROTOCOL,
             id: "0b4c7a1e-2d3f-4a5b-8c6d-7e8f9a0b1c2d".into(),
             workspace: "xshun".into(),
@@ -769,6 +836,7 @@ mod tests {
         fake.push(Output::exited(0, "")); // set-option: status-right
 
         let req = Request::new(RequestBody::Start {
+            provider: Default::default(),
             session_dir: dir.clone(),
         });
         let ReplyBody::Started { pid } = answer(&req, &tools(&fake, true)).body else {
@@ -810,7 +878,10 @@ mod tests {
         let dir = session_dir("second", session::Mode::Interactive { prompt: None });
         let fake = FakeRunner::new();
         fake.push(Output::exited(0, "")); // has-session: already there
-        let req = Request::new(RequestBody::Start { session_dir: dir });
+        let req = Request::new(RequestBody::Start {
+            session_dir: dir,
+            provider: Default::default(),
+        });
         let ReplyBody::Error(report) = answer(&req, &tools(&fake, true)).body else {
             panic!("expected an error reply")
         };
@@ -826,7 +897,10 @@ mod tests {
         let fake = FakeRunner::new();
         let mut tools = tools(&fake, true);
         tools.tmux = None;
-        let req = Request::new(RequestBody::Start { session_dir: dir });
+        let req = Request::new(RequestBody::Start {
+            session_dir: dir,
+            provider: Default::default(),
+        });
         let ReplyBody::Error(report) = answer(&req, &tools).body else {
             panic!("expected an error reply")
         };
@@ -943,6 +1017,7 @@ mod tests {
         fake.push(Output::exited(0, "2.1.259 (Claude Code)\n"));
         fake.push(Output::exited(0, r#"{"loggedIn":true,"email":"me@x"}"#));
         let req = Request::new(RequestBody::AgentAuth {
+            provider: Default::default(),
             config_dir: Some(PathBuf::from("/x/claude")),
             ask: Ask::Everything,
         });
@@ -972,6 +1047,7 @@ mod tests {
         let fake = FakeRunner::new();
         fake.push(Output::exited(0, "2.1.259 (Claude Code)\n"));
         let req = Request::new(RequestBody::AgentAuth {
+            provider: Default::default(),
             config_dir: None,
             ask: Ask::VersionOnly,
         });
@@ -1002,6 +1078,7 @@ mod tests {
         assert_eq!(
             req.body,
             RequestBody::AgentAuth {
+                provider: Default::default(),
                 config_dir: None,
                 ask: Ask::Everything
             }

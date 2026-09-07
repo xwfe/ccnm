@@ -1,0 +1,10 @@
+{
+  "protocol": 2,
+  "provider": "codex",
+  "workspace": "fixture",
+  "root": "<runtime-fixture>/project",
+  "runtime_node": "runtime",
+  "claude_config_dir": null,
+  "permission_mode": "acceptEdits",
+  "prompt": "Use ccnm workspace_info and read_file probe.txt on the Runtime fixture; follow its project instructions. Report the actual marker and the requested project instruction marker. Do not read local files or credentials. Stay at the interactive prompt afterwards."
+}

@@ -1,6 +1,6 @@
 # Codex interactive：本机 Agent → 远端 Runtime
 
-**结论：这一步的真实 CLI / tmux / SSH stdio MCP / 凭据传输隔离测量已跑通。Codex provider 仍未开放，尚未接入产品 Controller/session dispatch。**
+**结论：本文记录的真实 CLI / tmux / SSH stdio MCP / 凭据传输隔离测量已跑通。当时尚未接入产品 Controller/session dispatch；后续已完成[内部接线实测](codex-internal-wiring-2026-09-07.md)，公开 provider 入口仍未开放。**
 
 本轮只增加测量 helper、fixture 和回归，不更改 Claude 默认入口、现有配置、Runtime/MCP 实现或两端 ccnm 安装。
 

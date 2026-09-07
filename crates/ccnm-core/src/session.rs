@@ -76,6 +76,11 @@ pub const SSH_BIN: &str = "/usr/bin/ssh";
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Spec {
     pub protocol: u32,
+    #[serde(
+        default,
+        skip_serializing_if = "crate::provider::AgentProvider::is_claude"
+    )]
+    pub provider: crate::provider::AgentProvider,
     /// A UUID; also the session id Claude itself is told to use.
     pub id: String,
     pub workspace: String,
@@ -110,13 +115,16 @@ impl Spec {
     /// v1 sessions have no provider selector. Preserve old records and default
     /// behavior until a real second provider establishes the next contract.
     pub fn provider(&self) -> AgentProvider {
-        AgentProvider::current()
+        self.provider
     }
 }
 
 impl Protocol for Spec {
     fn protocol(&self) -> u32 {
         self.protocol
+    }
+    fn expected_protocol(&self) -> u32 {
+        self.provider.control_protocol()
     }
 }
 
@@ -276,7 +284,17 @@ pub fn read_context(dir: &Dir) -> Option<Context> {
 /// MCP config there would point a transport at this same machine and take
 /// away the tools that are the only ones able to do the job.
 pub fn create(state: &Path, spec: &Spec, ssh: Option<&Ssh>) -> Result<Dir> {
+    if spec.provider() == AgentProvider::Codex {
+        crate::provider::codex::validate_spec(spec)?;
+    }
     let dir = Dir::at(paths::session_dir(state, &spec.id));
+    if spec.provider() == AgentProvider::Codex
+        && dir.path().starts_with(crate::provider::codex::home()?)
+    {
+        return Err(Error::invalid_args(
+            "session state cannot live in Codex's private authentication directory",
+        ));
+    }
     if dir.path().exists() {
         return Err(Error::internal(format!(
             "session directory already exists: {}",
@@ -314,7 +332,14 @@ pub(crate) fn pretty<T: Serialize>(value: &T) -> Result<String> {
 /// probe that passes and a session that fails cannot differ in how they
 /// reached the Runtime Node.
 pub fn mcp_config(spec: &Spec, ssh: &Ssh) -> Result<serde_json::Value> {
-    Ok(spec.provider().mcp_config(&mcp_transport(spec, ssh)?))
+    if spec.provider() != AgentProvider::Claude {
+        return Err(Error::invalid_args(
+            "Codex injects MCP configuration through its CLI, not a Claude JSON file",
+        ));
+    }
+    Ok(crate::provider::claude::mcp_config(&mcp_transport(
+        spec, ssh,
+    )?))
 }
 
 fn mcp_transport(spec: &Spec, ssh: &Ssh) -> Result<process::Cmd> {
@@ -322,14 +347,15 @@ fn mcp_transport(spec: &Spec, ssh: &Ssh) -> Result<process::Cmd> {
         &ServePayload::new(&spec.workspace, spec.root.clone(), &spec.id)
             // Only an interactive session has somebody who can answer a
             // permission prompt; `--print` runs with prompting off.
-            .with_interactive(matches!(spec.mode, Mode::Interactive { .. })),
+            .with_interactive(matches!(spec.mode, Mode::Interactive { .. }))
+            .with_provider(spec.provider()),
     )?;
     ssh.mcp_transport_cmd(&wire)
 }
 
 /// Compatibility helper for the current provider's session policy.
 pub fn settings(remote: bool) -> serde_json::Value {
-    AgentProvider::current().settings(remote)
+    crate::provider::claude::settings(remote)
 }
 
 /// How a session ended. Written by the supervisor as the last thing it
@@ -432,6 +458,11 @@ fn write_outcome(dir: &Dir, outcome: &Outcome) -> Result<()> {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SuperviseRequest {
     pub protocol: u32,
+    #[serde(
+        default,
+        skip_serializing_if = "crate::provider::AgentProvider::is_claude"
+    )]
+    pub provider: crate::provider::AgentProvider,
     pub session_dir: PathBuf,
     /// The `claude` the controller found in launchd's environment — the
     /// one Claude would be started with anyway.
@@ -442,6 +473,7 @@ pub struct SuperviseRequest {
 impl SuperviseRequest {
     pub fn new(session_dir: PathBuf, agent_bin: PathBuf) -> Self {
         SuperviseRequest {
+            provider: Default::default(),
             protocol: PROTOCOL,
             session_dir,
             agent_bin,
@@ -452,6 +484,9 @@ impl SuperviseRequest {
 impl Protocol for SuperviseRequest {
     fn protocol(&self) -> u32 {
         self.protocol
+    }
+    fn expected_protocol(&self) -> u32 {
+        self.provider.control_protocol()
     }
 }
 
@@ -464,22 +499,29 @@ impl Protocol for SuperviseRequest {
 pub fn supervise(req: &SuperviseRequest) -> Result<Outcome> {
     let dir = Dir::at(&req.session_dir);
     let spec = load(&dir)?;
-    let cmd = spec.provider().launch_cmd(&req.agent_bin, &spec, &dir);
+    if req.provider != spec.provider() {
+        return Err(Error::invalid_args(
+            "supervisor provider does not match session",
+        ));
+    }
+    let launch = spec.provider().launch_cmd(&req.agent_bin, &spec, &dir);
     // Measured here rather than assumed, because here is the one place
     // that is inside whatever context Claude will run in: under tmux, that
     // is the tmux server's, which is not necessarily the controller's.
     write_context(&dir);
-    tracing::info!(session = %spec.id, cmd = %cmd.display(), "starting claude");
-    let ran = if spec.mode.is_interactive() {
-        // stdin/stdout/stderr are the tmux pane. Nothing is captured and
-        // nothing is killed on a clock: the person at the terminal decides
-        // when this session is over.
-        process::run_attached(&cmd)
-    } else {
-        let out = fs::File::create(dir.stdout())?;
-        let err = fs::File::create(dir.stderr())?;
-        process::run_captured(&cmd, out, err)
-    };
+    let ran = launch.and_then(|cmd| {
+        tracing::info!(session = %spec.id, cmd = %cmd.display(), "starting {}", spec.provider().cli_name());
+        if spec.mode.is_interactive() {
+            // stdin/stdout/stderr are the tmux pane. Nothing is captured and
+            // nothing is killed on a clock: the person at the terminal decides
+            // when this session is over.
+            process::run_attached(&cmd)
+        } else {
+            let out = fs::File::create(dir.stdout())?;
+            let err = fs::File::create(dir.stderr())?;
+            process::run_captured(&cmd, out, err)
+        }
+    });
     let outcome = match ran {
         Ok(captured) => Outcome {
             exit_code: captured.exit_code,
@@ -596,6 +638,7 @@ mod tests {
 
     fn spec() -> Spec {
         Spec {
+            provider: Default::default(),
             protocol: PROTOCOL,
             id: "0b4c7a1e-2d3f-4a5b-8c6d-7e8f9a0b1c2d".into(),
             workspace: "fixture".into(),

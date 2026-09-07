@@ -48,7 +48,7 @@ use crate::error::{Error, Result};
 pub const PROJECT_FILE: &str = "CLAUDE.md";
 
 /// Upper bound on `initialize.result.instructions`, everything included.
-pub const MAX_INSTRUCTIONS_BYTES: usize = 16 * 1024;
+pub const MAX_INSTRUCTIONS_BYTES: usize = crate::provider::context::MAX_INSTRUCTIONS_BYTES;
 
 /// How many further instruction files the handshake will name. Past this
 /// the list stops being an aid and becomes the noise it was meant to
@@ -93,7 +93,10 @@ pub use crate::provider::context::{Named, Project};
 /// is worth a doctor row, because it looks exactly like the file working
 /// from the outside and the model would never see the difference.
 pub fn find(root: &Path, budget: usize) -> Result<Option<Project>> {
-    let path = root.join(PROJECT_FILE);
+    find_file(root, PROJECT_FILE, budget)
+}
+pub(crate) fn find_file(root: &Path, file: &'static str, budget: usize) -> Result<Option<Project>> {
+    let path = root.join(file);
     let raw = match std::fs::read(&path) {
         Ok(raw) => raw,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -104,6 +107,7 @@ pub fn find(root: &Path, budget: usize) -> Result<Option<Project>> {
     let text = String::from_utf8_lossy(&raw).into_owned();
     let bytes = text.len();
     Ok(Some(Project {
+        source: file,
         bytes,
         text: keep(&text, budget),
     }))
@@ -130,6 +134,7 @@ fn keep(text: &str, budget: usize) -> String {
 /// actually gets sent when the wording here changes.
 pub fn budget(workspace: &str, named: &[Named]) -> usize {
     let worst = Project {
+        source: "CLAUDE.md",
         bytes: usize::MAX,
         text: String::new(),
     };
@@ -230,62 +235,18 @@ fn push(root: &Path, path: &Path, found: &mut Vec<Named>) {
     });
 }
 
-/// The lines that name the rest of the project's instructions.
-fn named_block(named: &[Named]) -> String {
-    if named.is_empty() {
-        return String::new();
-    }
-    let list: Vec<String> = named
-        .iter()
-        .map(|n| format!("  {} ({} bytes)", n.rel, n.bytes))
-        .collect();
-    format!(
-        "\n\nThis project has further instructions in these files. They are not included here; read the ones that apply to what you are doing, with read_file:\n{}\n",
-        list.join("\n")
-    )
-}
-
 /// The whole `initialize.result.instructions`: what ccnm has to say, then
 /// the project's own file when it has one.
 pub fn instructions(workspace: &str, project: Option<&Project>, named: &[Named]) -> String {
-    // The second sentence exists because of a real session: Claude's own
-    // environment block said its cwd was not a git repository (true --
-    // that is the Agent Node's state directory), while workspace_info
-    // said the project was one, and it refused to commit on the
-    // contradiction. Claude Code cannot be stopped from describing the
-    // directory it runs in, so the instructions say which one to believe.
-    let base = format!(
-        "CCNM remote workspace \"{workspace}\". The project lives on another machine and is reachable only through the ccnm tools; there is no local copy. Whatever your own environment says about the current directory, its git status or its files describes the machine you run on, not the project: for the project, workspace_info is the truth. Every path you pass or receive is relative to the workspace root."
-    );
-    let more = named_block(named);
-    let Some(project) = project else {
-        return format!("{base}{more}\n{}", marker(None));
-    };
-    format!(
-        "{base}\n\n--- {PROJECT_FILE} from the workspace root. These are the project's own instructions, written for this project; they are not about the machine you run on. Follow them. ---\n{}\n--- end of {PROJECT_FILE} ---{more}\n{}",
-        project.text.trim_end(),
-        marker(Some(project))
-    )
+    crate::provider::context::render(PROJECT_FILE, workspace, project, named)
 }
-
 /// The bracketed line that says what was projected. Same shape as the
 /// `[server pid ..]` line of `workspace_info`, and for the same reason:
 /// the text is the only channel the model is shown, so anything a probe
 /// needs to check has to be in the text the model reads.
 pub fn marker(project: Option<&Project>) -> String {
-    match project {
-        None => format!("[project instructions: no {PROJECT_FILE} at the workspace root]"),
-        Some(p) if !p.truncated() => {
-            format!("[project instructions: {PROJECT_FILE}, {} bytes]", p.bytes)
-        }
-        Some(p) => format!(
-            "[project instructions: {PROJECT_FILE}, {} bytes, first {} shown; read_file {PROJECT_FILE} for the rest]",
-            p.bytes,
-            p.included()
-        ),
-    }
+    crate::provider::context::marker_file(PROJECT_FILE, project)
 }
-
 /// What [`marker`] put in the brackets, out of a handshake's instructions.
 /// `None` from a server that sends no marker at all.
 pub fn parse_marker(instructions: &str) -> Option<String> {

@@ -262,6 +262,11 @@ enum InternalCommand {
         #[arg(long)]
         payload: String,
     },
+    /// Agent-side credential-stripping SSH stdio transport
+    AgentTransport {
+        #[arg(long)]
+        payload: String,
+    },
     /// Be Claude's parent for one session; started by the controller
     Supervise {
         #[arg(long)]
@@ -510,6 +515,11 @@ fn run(cli: Cli) -> Result<i32> {
                 let req: HelloRequest = payload::decode(payload)?;
                 print_json(&hello::answer(&req))
             }
+            InternalCommand::AgentTransport { payload } => {
+                let req: ccnm_core::provider::codex::transport::Request = payload::decode(payload)?;
+                ccnm_core::provider::codex::transport::exec(&req)?;
+                Ok(0)
+            }
             InternalCommand::McpServe { payload } => {
                 let req: ServePayload = payload::decode(payload)?;
                 mcp::server::serve(&req)?;
@@ -523,7 +533,7 @@ fn run(cli: Cli) -> Result<i32> {
                     // Resolved here, in launchd's environment, because
                     // that is the PATH Claude will actually be started
                     // with.
-                    agent: AgentProvider::current().locate_from_env(),
+                    agents: ccnm_core::provider::AgentBinaries::discover(),
                     // Same reason as agent: launchd's PATH is not a login
                     // shell's, and the tmux server has to be started from
                     // here to be in the login session.
@@ -961,7 +971,7 @@ fn agent_tools(config_path: Option<&std::path::Path>) -> Result<work::Tools<'sta
         config,
         runner: &SystemRunner,
         control_dir: state.join("ssh"),
-        agent: AgentProvider::current().locate_from_env(),
+        agents: ccnm_core::provider::AgentBinaries::discover(),
         tmux: tmux::locate_from_env(),
         controller: paths::controller_socket(&state),
         state,
@@ -1009,10 +1019,10 @@ fn print_run_report(rep: &RunReport) -> Result<i32> {
     match &rep.result {
         Some(r) => {
             println!("\n--- result ---");
-            println!("{}", r.result.as_deref().unwrap_or("").trim_end());
-            if !r.permission_denials.is_empty() {
+            println!("{}", r.text().unwrap_or("").trim_end());
+            if !r.permission_denials().is_empty() {
                 eprintln!("\npermission denials:");
-                for d in &r.permission_denials {
+                for d in r.permission_denials() {
                     eprintln!("  {d}");
                 }
             }
@@ -1026,7 +1036,7 @@ fn print_run_report(rep: &RunReport) -> Result<i32> {
         eprintln!("\n--- stderr (tail) ---\n{}", rep.stderr_tail.trim_end());
     }
     eprintln!("\nsession directory on work: {}", rep.session_dir.display());
-    let ok = rep.outcome.ok() && rep.result.as_ref().is_some_and(|r| !r.is_error);
+    let ok = rep.outcome.ok() && rep.result.as_ref().is_some_and(|r| !r.is_error());
     Ok(if ok { 0 } else { 1 })
 }
 
@@ -1045,7 +1055,7 @@ fn print_result_report(rep: &ccnm_core::protocol::run::ResultReport) -> Result<i
     match &rep.result {
         Some(r) => {
             println!("\n--- result ---");
-            println!("{}", r.result.as_deref().unwrap_or("").trim_end());
+            println!("{}", r.text().unwrap_or("").trim_end());
         }
         None if !rep.stdout_tail.is_empty() => {
             println!("\n--- stdout (tail) ---\n{}", rep.stdout_tail.trim_end());

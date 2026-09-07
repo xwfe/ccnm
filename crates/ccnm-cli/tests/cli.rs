@@ -850,6 +850,7 @@ fn sitting_at_home_detached_starts_the_session_and_keeps_the_terminal_here() {
     .unwrap();
 
     let started = serde_json::to_string(&StartReport {
+        provider: Default::default(),
         protocol: PROTOCOL,
         session: Some("2f1e2d3c-4b5a-6978-8a9b-0c1d2e3f4a5b".into()),
         session_dir: Some(PathBuf::from("/Users/bing/.local/state/ccnm/sessions/2f1e")),
@@ -1223,6 +1224,7 @@ fn supervise_runs_the_session_and_writes_its_exit_record() {
         std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
     let spec = Spec {
+        provider: Default::default(),
         protocol: ccnm_core::protocol::PROTOCOL,
         id: session::new_id(),
         workspace: "xshun".into(),
@@ -1274,4 +1276,54 @@ fn supervise_runs_the_session_and_writes_its_exit_record() {
         "claude must not have waited for a stdin that was never closed: {} ms",
         outcome.duration_ms
     );
+}
+
+#[test]
+fn codex_supervisor_records_launch_validation_failure_without_running_an_agent() {
+    use ccnm_core::{
+        provider::AgentProvider,
+        session::{Dir, Mode, Spec, SuperviseRequest},
+    };
+    let (root, _) = setup("codex-no-home", env!("CARGO_BIN_EXE_ccnm"));
+    let dir = Dir::at(root.join("session"));
+    std::fs::create_dir_all(dir.path()).unwrap();
+    let spec = Spec {
+        provider: AgentProvider::Codex,
+        protocol: 2,
+        id: "fixture".into(),
+        workspace: "fixture".into(),
+        root: root.join("root"),
+        runtime: Some(RuntimeLink {
+            alias: "never-connect.invalid".into(),
+            ccnm_bin: "/runtime/ccnm".into(),
+        }),
+        provider_config_dir: None,
+        permission_mode: Default::default(),
+        mode: Mode::Print {
+            prompt: "never sent".into(),
+        },
+        timeout_secs: 10,
+        cwd: root.clone(),
+    };
+    std::fs::write(dir.meta(), serde_json::to_vec(&spec).unwrap()).unwrap();
+    let req = SuperviseRequest {
+        provider: AgentProvider::Codex,
+        protocol: 2,
+        session_dir: dir.path().to_path_buf(),
+        agent_bin: "/no-agent-executable".into(),
+    };
+    let out = ccnm()
+        .args([
+            "internal",
+            "supervise",
+            "--payload",
+            &payload::encode(&req).unwrap(),
+        ])
+        .env("XDG_CONFIG_HOME", root.join("empty-config"))
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let outcome = ccnm_core::session::read_outcome(&dir).unwrap().unwrap();
+    assert!(!outcome.ok());
+    assert!(outcome.error.unwrap().contains("dedicated Codex home"));
 }

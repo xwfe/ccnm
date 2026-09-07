@@ -346,6 +346,7 @@ fn workspace_checks(r: &Resolved<'_>, env: &Env<'_>) -> Vec<Check> {
     };
 
     let req = ProbeRequest {
+        provider: Default::default(),
         protocol: PROTOCOL,
         workspace: r.name.to_string(),
         root: ws.root.clone(),
@@ -391,12 +392,9 @@ fn probe_rows(r: &Resolved<'_>, rep: &ProbeReport) -> Vec<Check> {
                 .as_ref()
                 .map(|p| p.display().to_string())
                 .unwrap_or_default();
-            Check::ok(
-                AgentProvider::current().display_name(),
-                format!("{v} ({path})"),
-            )
+            Check::ok(rep.provider.display_name(), format!("{v} ({path})"))
         }
-        Err(e) => Check::fail_report(AgentProvider::current().display_name(), e),
+        Err(e) => Check::fail_report(rep.provider.display_name(), e),
     });
 
     checks.push(auth_row(r, rep));
@@ -668,31 +666,25 @@ fn controller_row(rep: &ProbeReport) -> Check {
 /// reach the credentials could not have found a login to report. The
 /// error runs one way only.
 fn auth_row(r: &Resolved<'_>, rep: &ProbeReport) -> Check {
-    const NAME: &str = AgentProvider::current().authentication_check();
+    let name = rep.provider.authentication_check();
     let from_login_session = matches!(&rep.controller, Some(Ok(ctx)) if ctx.login_session());
     match &rep.agent.auth {
-        Ok(a) if a.logged_in => Check::ok(NAME, a.describe()),
+        Ok(a) if a.logged_in => Check::ok(name, a.describe()),
         Ok(_) if !from_login_session => Check::skip(
-            NAME,
+            name,
             "a controller answered, but not from a login session, so \"not logged in\" here means nothing\nfix the Controller row first",
         ),
-        Ok(_) => Check::fail_with(NAME, ErrorCode::Auth, auth_hint(r)),
+        Ok(_) => Check::fail_with(
+            name,
+            ErrorCode::Auth,
+            rep.provider.auth_hint(rep.provider.config_dir(r.agent)),
+        ),
         // "Nobody asked the right process" is not a diagnosis about
         // Claude. SKIP still blocks READY, so nothing runs on the strength
         // of an unchecked login.
-        Err(e) if e.code() == ErrorCode::NotReady => Check::skip(NAME, &e.message),
-        Err(e) => Check::fail_report(NAME, e),
+        Err(e) if e.code() == ErrorCode::NotReady => Check::skip(name, &e.message),
+        Err(e) => Check::fail_report(name, e),
     }
-}
-
-/// Design doc section 21: report, point at the manual login, never log in.
-///
-/// Only reached when a login session gave the answer, so the reading is
-/// unambiguous. There is no "…or maybe the Keychain was unreadable" left
-/// in it, which was the whole point of the controller.
-fn auth_hint(r: &Resolved<'_>) -> String {
-    let provider = AgentProvider::current();
-    provider.auth_hint(provider.config_dir(r.agent))
 }
 
 /// Rows that depend on the probe, when the probe never happened.
@@ -977,6 +969,7 @@ mod tests {
         use crate::provider::AgentReport;
         use crate::provider::AuthStatus;
         ProbeReport {
+            provider: Default::default(),
             protocol: PROTOCOL,
             hello: hello("me", crate::VERSION, None),
             controller: Some(Ok(controller("Aqua"))),
@@ -1017,6 +1010,7 @@ mod tests {
                 protocol: PROTOCOL,
                 tmux: Ok("3.7c".into()),
                 sessions: vec![crate::protocol::run::LiveSession {
+                    provider: Default::default(),
                     tmux_session: "ccnm-xshun".into(),
                     workspace: Some("xshun".into()),
                     session: Some("s-1".into()),

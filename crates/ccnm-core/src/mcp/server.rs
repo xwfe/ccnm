@@ -189,6 +189,7 @@ impl ExecGate {
 }
 
 struct Inner {
+    provider: crate::provider::AgentProvider,
     workspace: String,
     /// Names the directory `exec_command` retains output in.
     session: String,
@@ -240,8 +241,11 @@ impl Server {
         // handshake is sent once and cannot change afterwards, so
         // re-scanning mid-session would only produce a list that
         // disagrees with what the model was given.
-        let named = context::named(&root);
-        let project = match context::find(&root, context::budget(&payload.workspace, &named)) {
+        let named = payload.provider.project_named(&root);
+        let project = match payload
+            .provider
+            .project_find(&root, &payload.workspace, &named)
+        {
             Ok(project) => project,
             Err(e) => {
                 tracing::warn!(error = %e, "project instructions not readable");
@@ -261,6 +265,7 @@ impl Server {
         );
         Ok(Server {
             inner: Arc::new(Inner {
+                provider: payload.provider,
                 workspace: payload.workspace.clone(),
                 session: payload.session.clone(),
                 state: crate::paths::state_dir().ok(),
@@ -302,7 +307,7 @@ impl Server {
     /// paragraph, then the project's CLAUDE.md, within
     /// [`MAX_INSTRUCTIONS_BYTES`] (design doc section 20).
     pub fn instructions(&self) -> String {
-        let text = context::instructions(
+        let text = self.inner.provider.project_instructions(
             &self.inner.workspace,
             self.inner.project.as_ref(),
             &self.inner.named,
@@ -434,12 +439,12 @@ impl Server {
         };
         let root = self.inner.root.clone();
         let session = self.inner.session.clone();
-        let ran =
-            tokio::task::spawn_blocking(move || exec::exec_command(&root, &session, &state, &args))
-                .await
-                .map_err(|e| {
-                    ErrorData::internal_error(format!("exec_command task failed: {e}"), None)
-                })?;
+        let provider = self.inner.provider;
+        let ran = tokio::task::spawn_blocking(move || {
+            exec::exec_command_for(provider, &root, &session, &state, &args)
+        })
+        .await
+        .map_err(|e| ErrorData::internal_error(format!("exec_command task failed: {e}"), None))?;
         match ran {
             Ok(mut ran) => {
                 // Accepting the risk once should not make it invisible

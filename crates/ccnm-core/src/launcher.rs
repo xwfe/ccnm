@@ -38,6 +38,7 @@ pub fn run_print(
         Ssh::new(resolved.agent_ssh()?, &env.control_dir)?.with_ccnm_bin(resolved.agent.ccnm_bin());
     ssh.check_control_path()?;
     let req = RunRequest {
+        provider: Default::default(),
         protocol: PROTOCOL,
         workspace: resolved.name.to_string(),
         root: root.clone(),
@@ -82,6 +83,7 @@ pub fn start_interactive(
 ) -> Result<StartReport> {
     let ssh = agent_ssh(resolved, env)?;
     let req = StartRequest {
+        provider: Default::default(),
         protocol: PROTOCOL,
         workspace: resolved.name.to_string(),
         root: resolved.workspace.root.clone(),
@@ -354,6 +356,7 @@ pub fn mcp_probe_remote(resolved: &Resolved<'_>, env: &Env<'_>, calls: u32) -> R
         Ssh::new(resolved.agent_ssh()?, &env.control_dir)?.with_ccnm_bin(resolved.agent.ccnm_bin());
     ssh.check_control_path()?;
     let req = ProbeRequest {
+        provider: Default::default(),
         protocol: PROTOCOL,
         workspace: resolved.name.to_string(),
         root: resolved.workspace.root.clone(),
@@ -453,6 +456,7 @@ mod tests {
     /// What the Agent Node sends back when it has started a session.
     fn start_report_json() -> String {
         serde_json::to_string(&StartReport {
+            provider: Default::default(),
             protocol: PROTOCOL,
             session: Some("2f1e2d3c-4b5a-6978-8a9b-0c1d2e3f4a5b".into()),
             session_dir: Some(PathBuf::from("/Users/bing/.local/state/ccnm/sessions/2f1e")),
@@ -568,7 +572,9 @@ mod tests {
             inner.push(Output::exited(0, "")); // the status bar itself
             let tools = crate::controller::Tools {
                 runner: &inner,
-                agent: Some(PathBuf::from("/opt/homebrew/bin/claude")),
+                agents: crate::provider::AgentBinaries::with_claude(Some(PathBuf::from(
+                    "/opt/homebrew/bin/claude",
+                ))),
                 tmux: Some(PathBuf::from("/opt/homebrew/bin/tmux")),
                 exe: PathBuf::from("/opt/work/ccnm"),
             };
@@ -594,7 +600,7 @@ mod tests {
             runner: &agent_runner,
             state: state.clone(),
             control_dir: control("loop-work"),
-            agent: None,
+            agents: crate::provider::AgentBinaries::with_claude(None),
             tmux: Some(PathBuf::from("/opt/homebrew/bin/tmux")),
             controller: socket.clone(),
         };
@@ -760,7 +766,9 @@ mod tests {
                 inner.push(Output::exited(0, "Aqua\n")); // hello: the login session
                 let tools = crate::controller::Tools {
                     runner: &inner,
-                    agent: Some(PathBuf::from("/opt/homebrew/bin/claude")),
+                    agents: crate::provider::AgentBinaries::with_claude(Some(PathBuf::from(
+                        "/opt/homebrew/bin/claude",
+                    ))),
                     tmux: None,
                     exe: supervisor,
                 };
@@ -776,7 +784,7 @@ mod tests {
             runner: &agent_runner,
             state: state.clone(),
             control_dir: control("print-loop-work"),
-            agent: None,
+            agents: crate::provider::AgentBinaries::with_claude(None),
             tmux: None,
             controller: socket.clone(),
         };
@@ -786,7 +794,7 @@ mod tests {
 
         assert!(rep.outcome.ok(), "{:?}", rep.outcome);
         assert_eq!(
-            rep.result.as_ref().and_then(|r| r.result.as_deref()),
+            rep.result.as_ref().and_then(|r| r.text()),
             Some("hi from claude")
         );
         let greeting = agent_runner.calls()[0].display();
@@ -843,7 +851,7 @@ mod tests {
             .expect("home decodes the report work really produced");
         assert_eq!(back.session, rep.session);
         assert_eq!(
-            back.result.and_then(|r| r.result),
+            back.result.and_then(|r| r.into_text()),
             Some("hi from claude".to_string())
         );
     }

@@ -55,6 +55,7 @@ pub enum Master {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ssh {
+    agent_isolated: bool,
     alias: String,
     control_dir: PathBuf,
     /// Path of ccnm on the far side, as one word of the remote command.
@@ -105,10 +106,40 @@ impl Ssh {
             )));
         }
         Ok(Ssh {
+            agent_isolated: false,
             alias: alias.to_string(),
             control_dir: control_dir.into(),
             ccnm_bin: DEFAULT_CCNM_BIN.to_string(),
         })
+    }
+
+    /// Codex uses an isolated Agent home: clear its environment before *any*
+    /// SSH hop, including preflight, not only the long-lived MCP transport.
+    pub fn for_provider(mut self, provider: crate::provider::AgentProvider) -> Self {
+        self.agent_isolated = provider == crate::provider::AgentProvider::Codex;
+        self
+    }
+
+    fn command(&self) -> Cmd {
+        let cmd = Cmd::new(if self.agent_isolated {
+            "/usr/bin/ssh"
+        } else {
+            "ssh"
+        });
+        if self.agent_isolated {
+            crate::provider::codex::strip_environment(cmd.args([
+                "-o",
+                "SendEnv=-*",
+                "-o",
+                "ForwardAgent=no",
+                "-o",
+                "ControlMaster=no",
+                "-o",
+                "ControlPath=none",
+            ]))
+        } else {
+            cmd
+        }
     }
 
     /// Where ccnm lives on the far side (`hosts.<x>.ccnm_bin`, design doc
@@ -232,7 +263,8 @@ impl Ssh {
                 "refusing to send `{bad}` over ssh: it would need shell quoting"
             )));
         }
-        Ok(Cmd::new("ssh")
+        Ok(self
+            .command()
             .args(self.transport_options())
             .arg("-T")
             .arg(&self.alias)
@@ -241,7 +273,7 @@ impl Ssh {
 
     /// `ssh -G alias`: print the resolved configuration without connecting.
     pub fn resolve_cmd(&self) -> Cmd {
-        Cmd::new("ssh")
+        self.command()
             .arg("-G")
             .arg(&self.alias)
             .timeout(Duration::from_secs(10))
@@ -258,7 +290,7 @@ impl Ssh {
     }
 
     fn control_cmd(&self, ctl: &str) -> Cmd {
-        Cmd::new("ssh")
+        self.command()
             .arg("-o")
             .arg(format!("ControlPath={}", self.control_path().display()))
             .arg("-O")
@@ -275,7 +307,8 @@ impl Ssh {
                 "refusing to send `{bad}` over ssh: it would need shell quoting"
             )));
         }
-        Ok(Cmd::new("ssh")
+        Ok(self
+            .command()
             .args(self.options(master))
             .arg("-T")
             .arg(&self.alias)
@@ -301,7 +334,8 @@ impl Ssh {
                 "refusing to send `{bad}` over ssh: it would need shell quoting"
             )));
         }
-        Ok(Cmd::new("ssh")
+        Ok(self
+            .command()
             .args(self.options(Master::Reuse))
             .arg("-t")
             .arg(&self.alias)

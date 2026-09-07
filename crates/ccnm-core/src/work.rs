@@ -51,7 +51,7 @@ pub struct Tools<'a> {
     /// The `claude` binary, if [`AgentProvider::locate`] found one. Only used as
     /// a fallback for the version when no controller is running; the
     /// controller finds its own, in launchd's environment.
-    pub agent: Option<PathBuf>,
+    pub agents: crate::provider::AgentBinaries,
     /// The controller's socket on this machine.
     pub controller: PathBuf,
     /// tmux, for interactive sessions. Found in *this* (ssh) environment,
@@ -98,11 +98,19 @@ impl Tools<'_> {
     ///
     /// Colocated workspaces have neither: the project is right here, so
     /// there is no far side to agree with.
-    fn dial_runtime(&self, node: &str, workspace: &str, root: &Path) -> Result<Option<Ssh>> {
+    fn dial_runtime(
+        &self,
+        node: &str,
+        workspace: &str,
+        root: &Path,
+        provider: AgentProvider,
+    ) -> Result<Option<Ssh>> {
         let Some(link) = self.runtime_link(node)? else {
             return Ok(None);
         };
-        let ssh = Ssh::new(&link.alias, &self.control_dir)?.with_ccnm_bin(&link.ccnm_bin);
+        let ssh = Ssh::new(&link.alias, &self.control_dir)?
+            .with_ccnm_bin(&link.ccnm_bin)
+            .for_provider(provider);
         greet(&ssh, workspace, root, self)?;
         Ok(Some(ssh))
     }
@@ -121,21 +129,45 @@ const EXIT_GRACE: Duration = Duration::from_secs(30);
 /// cannot read its own credentials, and the failure it would produce
 /// ("not logged in") is a lie about the machine.
 pub fn run(req: &RunRequest, tools: &Tools<'_>) -> Result<RunReport> {
+    validate_provider_request(
+        req.provider,
+        req.provider_config_dir.as_deref(),
+        req.permission_mode,
+    )?;
     let ctx = controller::context(&tools.controller)?;
     if !ctx.login_session() {
         return Err(Error::new(
             ErrorCode::NotReady,
             format!(
-                "the controller answers from {}, not from a login session, so a Claude it started could not read its credentials\nrun on the Agent Node: ccnm controller install",
-                ctx.describe()
+                "the controller answers from {}, not from a login session, so a {} it started could not read its credentials\nrun on the Agent Node: ccnm controller install",
+                ctx.describe(),
+                if req.provider == AgentProvider::Claude {
+                    "Claude"
+                } else {
+                    "Codex"
+                }
             ),
         ));
     }
-    let ssh = tools.dial_runtime(&req.runtime_node, &req.workspace, &req.root)?;
+    if req.provider == AgentProvider::Codex {
+        codex_readiness(tools)?;
+    }
+    let ssh = tools.dial_runtime(&req.runtime_node, &req.workspace, &req.root, req.provider)?;
+    if req.provider == AgentProvider::Codex {
+        let ssh = ssh.as_ref().ok_or_else(|| {
+            Error::new(
+                ErrorCode::NotReady,
+                "Codex colocated mode has not been measured",
+            )
+        })?;
+        codex_runtime_preflight(req.provider, &req.workspace, &req.root, ssh)?;
+    }
+
     let cwd = paths::workspace_dir(&tools.state, &req.workspace);
     std::fs::create_dir_all(&cwd)?;
     let spec = Spec {
-        protocol: PROTOCOL,
+        provider: req.provider,
+        protocol: req.provider.control_protocol(),
         id: session::new_id(),
         workspace: req.workspace.clone(),
         root: req.root.clone(),
@@ -149,19 +181,24 @@ pub fn run(req: &RunRequest, tools: &Tools<'_>) -> Result<RunReport> {
         cwd,
     };
     let dir = session::create(&tools.state, &spec, ssh.as_ref())?;
-    let pid = controller::start(&tools.controller, dir.path())?;
-    let outcome =
-        session::wait_for_outcome(&dir, Duration::from_secs(req.timeout_secs) + EXIT_GRACE)?;
+    let pid = controller::start_for(&tools.controller, dir.path(), spec.provider())?;
+    let outcome = redact_outcome(
+        spec.provider(),
+        session::wait_for_outcome(&dir, Duration::from_secs(req.timeout_secs) + EXIT_GRACE)?,
+    );
 
     let stdout = std::fs::read(dir.stdout()).unwrap_or_default();
     let result = spec.provider().parse_result(&stdout).ok();
     let stdout_tail = if result.is_some() {
         String::new()
     } else {
-        tail(&stdout)
+        spec.provider().redact_output(tail(&stdout))
     };
-    let stderr_tail = tail(&std::fs::read(dir.stderr()).unwrap_or_default());
+    let stderr_tail = spec
+        .provider()
+        .redact_output(tail(&std::fs::read(dir.stderr()).unwrap_or_default()));
     Ok(RunReport {
+        provider: spec.provider(),
         protocol: PROTOCOL,
         session: spec.id,
         session_dir: dir.path().to_path_buf(),
@@ -181,6 +218,11 @@ pub fn run(req: &RunRequest, tools: &Tools<'_>) -> Result<RunReport> {
 /// it in tmux (design doc section 23). What comes back is what the home
 /// machine needs to attach.
 pub fn start(req: &StartRequest, tools: &Tools<'_>) -> Result<StartReport> {
+    validate_provider_request(
+        req.provider,
+        req.provider_config_dir.as_deref(),
+        req.permission_mode,
+    )?;
     let tmux = tools.tmux()?;
     let name = tmux::session_name(&req.workspace);
     tmux::check_name(&name)?;
@@ -194,6 +236,19 @@ pub fn start(req: &StartRequest, tools: &Tools<'_>) -> Result<StartReport> {
         let dir = session
             .as_ref()
             .map(|id| paths::session_dir(&tools.state, id));
+        let existing = dir
+            .as_ref()
+            .and_then(|dir| session::load(&session::Dir::at(dir)).ok());
+        if existing
+            .as_ref()
+            .is_some_and(|spec| spec.provider() != req.provider)
+            || (req.provider == AgentProvider::Codex && existing.is_none())
+        {
+            return Err(Error::new(
+                ErrorCode::NotReady,
+                "existing session provider differs or is unknown; stop it explicitly before selecting another Agent",
+            ));
+        }
         // A session's root is fixed when it starts: it is in the payload
         // the MCP transport was spawned with, and nothing can repoint it.
         // So a live session whose root is not the one being asked for is
@@ -241,6 +296,7 @@ pub fn start(req: &StartRequest, tools: &Tools<'_>) -> Result<StartReport> {
             .as_ref()
             .and_then(|path| session::read_context(&session::Dir::at(path)));
         return Ok(StartReport {
+            provider: req.provider,
             protocol: PROTOCOL,
             session,
             session_dir: dir,
@@ -349,12 +405,30 @@ fn preflight(req: &StartRequest, tools: &Tools<'_>) -> Result<(controller::Conte
         return Err(Error::new(
             ErrorCode::NotReady,
             format!(
-                "the controller answers from {}, not from a login session, so a Claude it started could not read its credentials\nrun on the Agent Node: ccnm controller install",
-                ctx.describe()
+                "the controller answers from {}, not from a login session, so a {} it started could not read its credentials\nrun on the Agent Node: ccnm controller install",
+                ctx.describe(),
+                if req.provider == AgentProvider::Claude {
+                    "Claude"
+                } else {
+                    "Codex"
+                }
             ),
         ));
     }
-    let ssh = tools.dial_runtime(&req.runtime_node, &req.workspace, &req.root)?;
+    if req.provider == AgentProvider::Codex {
+        codex_readiness(tools)?;
+    }
+    let ssh = tools.dial_runtime(&req.runtime_node, &req.workspace, &req.root, req.provider)?;
+    if req.provider == AgentProvider::Codex {
+        let ssh = ssh.as_ref().ok_or_else(|| {
+            Error::new(
+                ErrorCode::NotReady,
+                "Codex colocated mode has not been measured",
+            )
+        })?;
+        codex_runtime_preflight(req.provider, &req.workspace, &req.root, ssh)?;
+    }
+
     Ok((ctx, ssh))
 }
 
@@ -372,7 +446,8 @@ fn start_fresh(
     let cwd = paths::workspace_dir(&tools.state, &req.workspace);
     std::fs::create_dir_all(&cwd)?;
     let spec = Spec {
-        protocol: PROTOCOL,
+        provider: req.provider,
+        protocol: req.provider.control_protocol(),
         id: session::new_id(),
         workspace: req.workspace.clone(),
         root: req.root.clone(),
@@ -387,8 +462,9 @@ fn start_fresh(
         cwd,
     };
     let dir = session::create(&tools.state, &spec, ssh.as_ref())?;
-    let server_pid = controller::start(&tools.controller, dir.path())?;
+    let server_pid = controller::start_for(&tools.controller, dir.path(), spec.provider())?;
     Ok(StartReport {
+        provider: req.provider,
         protocol: PROTOCOL,
         session: Some(spec.id),
         session_dir: Some(dir.path().to_path_buf()),
@@ -510,6 +586,10 @@ fn live_sessions(
             let context = dir.as_ref().and_then(session::read_context);
             let tools_up = dir.as_ref().and_then(|dir| transport_alive(dir, tools));
             protocol::run::LiveSession {
+                provider: dir
+                    .as_ref()
+                    .and_then(|dir| session::load(dir).ok())
+                    .map_or(AgentProvider::Claude, |spec| spec.provider()),
                 workspace: live.workspace().map(str::to_string),
                 tmux_session: live.name,
                 session,
@@ -582,6 +662,7 @@ pub fn result(req: &ResultRequest, tools: &Tools<'_>) -> Result<ResultReport> {
     let stdout = std::fs::read(dir.stdout()).unwrap_or_default();
     let result = spec.provider().parse_result(&stdout).ok();
     Ok(ResultReport {
+        provider: spec.provider(),
         protocol: PROTOCOL,
         session: id,
         session_dir: dir.path().to_path_buf(),
@@ -591,10 +672,13 @@ pub fn result(req: &ResultRequest, tools: &Tools<'_>) -> Result<ResultReport> {
             "print".into()
         },
         started,
-        outcome: session::read_outcome(&dir)?,
+        outcome: session::read_outcome(&dir)?
+            .map(|outcome| redact_outcome(spec.provider(), outcome)),
         result,
-        stdout_tail: tail(&stdout),
-        stderr_tail: tail(&std::fs::read(dir.stderr()).unwrap_or_default()),
+        stdout_tail: spec.provider().redact_output(tail(&stdout)),
+        stderr_tail: spec
+            .provider()
+            .redact_output(tail(&std::fs::read(dir.stderr()).unwrap_or_default())),
     })
 }
 
@@ -671,7 +755,10 @@ fn transport_alive(dir: &session::Dir, tools: &Tools<'_>) -> Option<bool> {
 
 /// The `--payload` argument out of a session's `mcp.json`.
 fn transport_payload(dir: &session::Dir) -> Option<String> {
-    AgentProvider::current().transport_payload(dir)
+    session::load(dir)
+        .map(|spec| spec.provider())
+        .unwrap_or(AgentProvider::Claude)
+        .transport_payload(dir)
 }
 
 /// The ccnm session id a live tmux session was tagged with.
@@ -715,7 +802,7 @@ pub fn probe(req: &ProbeRequest, tools: &Tools<'_>) -> ProbeReport {
         Err(e) => (Some(Err(e.into())), None, None),
         Ok(Some(link)) => {
             match Ssh::new(&link.alias, &tools.control_dir)
-                .map(|ssh| ssh.with_ccnm_bin(&link.ccnm_bin))
+                .map(|ssh| ssh.with_ccnm_bin(&link.ccnm_bin).for_provider(req.provider))
             {
                 Err(e) => (
                     Some(Err(e.into())),
@@ -753,8 +840,10 @@ pub fn probe(req: &ProbeRequest, tools: &Tools<'_>) -> ProbeReport {
         }
     };
 
-    let (controller, agent) = ask_about_agent(tools, req.provider_config_dir.as_deref());
+    let (controller, agent) =
+        ask_about_agent(tools, req.provider, req.provider_config_dir.as_deref());
     ProbeReport {
+        provider: req.provider,
         protocol: PROTOCOL,
         // Colocated: the project is on this machine, so this hello is
         // the one that can say whether the root is really there.
@@ -792,6 +881,7 @@ pub fn probe(req: &ProbeRequest, tools: &Tools<'_>) -> ProbeReport {
 /// already logged in.
 fn ask_about_agent(
     tools: &Tools<'_>,
+    provider: AgentProvider,
     config_dir: Option<&Path>,
 ) -> (Reported<controller::Context>, AgentReport) {
     match controller::context(&tools.controller) {
@@ -805,19 +895,17 @@ fn ask_about_agent(
             } else {
                 Ask::VersionOnly
             };
-            let agent =
-                controller::agent_auth(&tools.controller, config_dir, ask).unwrap_or_else(|e| {
-                    AgentReport {
-                        path: None,
-                        version: Err((&e).into()),
-                        auth: Err(e.into()),
-                    }
+            let agent = controller::agent_auth_for(&tools.controller, provider, config_dir, ask)
+                .unwrap_or_else(|e| AgentReport {
+                    path: None,
+                    version: Err((&e).into()),
+                    auth: Err(e.into()),
                 });
             (Ok(ctx), agent)
         }
         Err(missing) => {
-            let mut agent = AgentProvider::current().report(
-                tools.agent.as_deref(),
+            let mut agent = provider.report(
+                tools.agents.get(provider),
                 config_dir,
                 tools.runner,
                 Ask::VersionOnly,
@@ -835,11 +923,14 @@ fn ask_about_agent(
 }
 
 fn mcp_handshake(req: &ProbeRequest, ssh: &Ssh) -> Result<McpProbeReport> {
-    let wire = payload::encode(&ServePayload::new(
-        &req.workspace,
-        req.root.clone(),
-        &format!("probe-{}", uuid::Uuid::new_v4().hyphenated()),
-    ))?;
+    let wire = payload::encode(
+        &ServePayload::new(
+            &req.workspace,
+            req.root.clone(),
+            &format!("probe-{}", uuid::Uuid::new_v4().hyphenated()),
+        )
+        .with_provider(req.provider),
+    )?;
     let cmd = ssh.mcp_transport_cmd(&wire)?;
     mcp::probe::probe(
         &cmd,
@@ -847,6 +938,60 @@ fn mcp_handshake(req: &ProbeRequest, ssh: &Ssh) -> Result<McpProbeReport> {
         Duration::from_secs(30) + Duration::from_millis(500) * req.mcp_calls,
         ErrorCode::RuntimeUnreachable,
     )
+}
+
+fn validate_provider_request(
+    provider: AgentProvider,
+    config_dir: Option<&Path>,
+    permission: crate::config::PermissionMode,
+) -> Result<()> {
+    if provider == AgentProvider::Codex
+        && (config_dir.is_some() || permission != crate::config::PermissionMode::default())
+    {
+        return Err(Error::invalid_args(
+            "Codex requests cannot supply an Agent home or Claude permission mode",
+        ));
+    }
+    Ok(())
+}
+fn codex_runtime_preflight(
+    provider: AgentProvider,
+    workspace: &str,
+    root: &Path,
+    ssh: &Ssh,
+) -> Result<()> {
+    let payload =
+        ServePayload::new(workspace, root.to_path_buf(), "codex-preflight").with_provider(provider);
+    let cmd = ssh.mcp_transport_cmd(&crate::protocol::payload::encode(&payload)?)?;
+    mcp::probe::probe(
+        &cmd,
+        1,
+        Duration::from_secs(30),
+        ErrorCode::RuntimeUnreachable,
+    )?;
+    Ok(())
+}
+
+fn codex_readiness(tools: &Tools<'_>) -> Result<()> {
+    let report = controller::agent_auth_for(
+        &tools.controller,
+        AgentProvider::Codex,
+        None,
+        Ask::Everything,
+    )?;
+    report.version.map_err(Error::from)?;
+    if !report.auth.map_err(Error::from)?.logged_in {
+        return Err(Error::new(
+            ErrorCode::Auth,
+            AgentProvider::Codex.auth_hint(None),
+        ));
+    }
+    Ok(())
+}
+
+fn redact_outcome(provider: AgentProvider, mut outcome: session::Outcome) -> session::Outcome {
+    outcome.error = outcome.error.map(|text| provider.redact_output(text));
+    outcome
 }
 
 #[cfg(test)]
@@ -905,6 +1050,7 @@ mod tests {
 
     fn request() -> ProbeRequest {
         ProbeRequest {
+            provider: Default::default(),
             protocol: PROTOCOL,
             workspace: "xshun".into(),
             root: PathBuf::from("/Users/ccrun/Projects/xshun"),
@@ -939,7 +1085,9 @@ mod tests {
             runner: &fake,
             state: dir.clone(),
             control_dir: control(&dir),
-            agent: Some(PathBuf::from("/usr/local/bin/claude")),
+            agents: crate::provider::AgentBinaries::with_claude(Some(PathBuf::from(
+                "/usr/local/bin/claude",
+            ))),
             tmux: None,
             controller: absent_socket("probe"),
         };
@@ -1027,7 +1175,7 @@ mod tests {
             runner: &fake,
             state: dir.clone(),
             control_dir: control(&dir),
-            agent: None,
+            agents: crate::provider::AgentBinaries::with_claude(None),
             tmux: None,
             controller: absent_socket("probe-fail"),
         };
@@ -1058,7 +1206,7 @@ mod tests {
             runner: &fake,
             state: dir.clone(),
             control_dir: control(&dir),
-            agent: None,
+            agents: crate::provider::AgentBinaries::with_claude(None),
             tmux: None,
             controller: absent_socket("probe-127"),
         };
@@ -1070,6 +1218,7 @@ mod tests {
 
     fn run_request(prompt: &str) -> RunRequest {
         RunRequest {
+            provider: Default::default(),
             protocol: PROTOCOL,
             workspace: "fixture".into(),
             root: PathBuf::from("/Users/bing/ccnm-fixture"),
@@ -1108,7 +1257,7 @@ mod tests {
             runner: &fake,
             state: dir.clone(),
             control_dir: control(&dir),
-            agent: None,
+            agents: crate::provider::AgentBinaries::with_claude(None),
             tmux: None,
             controller: dir.join("nope.sock"),
         };
@@ -1137,6 +1286,7 @@ mod tests {
         let sdir = session::Dir::at(paths::session_dir(&dir, id));
         std::fs::create_dir_all(sdir.path()).unwrap();
         let spec = Spec {
+            provider: Default::default(),
             protocol: PROTOCOL,
             id: id.into(),
             workspace: "xshun".into(),
@@ -1161,7 +1311,7 @@ mod tests {
             inner.push(Output::exited(0, "Aqua\n"));
             let tools = crate::controller::Tools {
                 runner: &inner,
-                agent: None,
+                agents: crate::provider::AgentBinaries::with_claude(None),
                 tmux: None,
                 exe: PathBuf::from("/nonexistent"),
             };
@@ -1203,7 +1353,7 @@ mod tests {
             runner: &fake,
             state: deep.clone(),
             control_dir: deep.join("control"),
-            agent: None,
+            agents: crate::provider::AgentBinaries::with_claude(None),
             tmux: None,
             controller: deep.join("nope.sock"),
         };
@@ -1232,7 +1382,7 @@ mod tests {
             runner: &fake,
             state: dir.clone(),
             control_dir: control(&dir),
-            agent: None,
+            agents: crate::provider::AgentBinaries::with_claude(None),
             tmux: None,
             controller: dir.join("nope.sock"),
         };
@@ -1247,6 +1397,7 @@ mod tests {
 
     fn start_request() -> StartRequest {
         StartRequest {
+            provider: Default::default(),
             protocol: PROTOCOL,
             workspace: "xshun".into(),
             root: PathBuf::from("/Users/bing/xshun"),
@@ -1263,7 +1414,7 @@ mod tests {
             runner: fake,
             state: dir.to_path_buf(),
             control_dir: control(dir),
-            agent: None,
+            agents: crate::provider::AgentBinaries::with_claude(None),
             tmux: Some(PathBuf::from("/opt/homebrew/bin/tmux")),
             controller: absent_socket(test),
         }
@@ -1334,6 +1485,7 @@ mod tests {
         let sdir = session::Dir::at(paths::session_dir(&dir, id));
         std::fs::create_dir_all(sdir.path()).unwrap();
         let spec = Spec {
+            provider: Default::default(),
             protocol: PROTOCOL,
             id: id.into(),
             workspace: "xshun".into(),
@@ -1386,7 +1538,9 @@ mod tests {
             inner.push(Output::exited(0, "Background\n"));
             let tools = crate::controller::Tools {
                 runner: &inner,
-                agent: Some(PathBuf::from("/opt/homebrew/bin/claude")),
+                agents: crate::provider::AgentBinaries::with_claude(Some(PathBuf::from(
+                    "/opt/homebrew/bin/claude",
+                ))),
                 tmux: Some(PathBuf::from("/opt/homebrew/bin/tmux")),
                 exe: PathBuf::from("/x/ccnm"),
             };
@@ -1544,6 +1698,7 @@ mod tests {
             let sdir = session::Dir::at(paths::session_dir(&dir, id));
             std::fs::create_dir_all(sdir.path()).unwrap();
             let spec = Spec {
+                provider: Default::default(),
                 protocol: PROTOCOL,
                 id: id.to_string(),
                 workspace: "fixture".into(),
@@ -1608,7 +1763,7 @@ mod tests {
         assert_eq!(rep.session, "22222222-2222-4222-8222-222222222222");
         assert_eq!(rep.mode, "print");
         assert_eq!(
-            rep.result.as_ref().unwrap().result.as_deref(),
+            rep.result.as_ref().unwrap().text(),
             Some("the answer nobody heard")
         );
         assert!(rep.outcome.as_ref().unwrap().ok());
@@ -1630,10 +1785,7 @@ mod tests {
             &tools,
         )
         .unwrap();
-        assert_eq!(
-            rep.result.unwrap().result.as_deref(),
-            Some("the older answer")
-        );
+        assert_eq!(rep.result.unwrap().text(), Some("the older answer"));
         assert_eq!(rep.session_dir, older.path());
 
         // "Most recent" is by time, not by whatever order the directory
@@ -1765,7 +1917,9 @@ mod tests {
             inner.push(Output::exited(0, "Aqua\n"));
             let tools = crate::controller::Tools {
                 runner: &inner,
-                agent: Some(PathBuf::from("/opt/homebrew/bin/claude")),
+                agents: crate::provider::AgentBinaries::with_claude(Some(PathBuf::from(
+                    "/opt/homebrew/bin/claude",
+                ))),
                 tmux: None,
                 exe: supervisor,
             };
@@ -1781,7 +1935,7 @@ mod tests {
             runner: &caller,
             state: dir.clone(),
             control_dir: control(&dir),
-            agent: None,
+            agents: crate::provider::AgentBinaries::with_claude(None),
             tmux: None,
             controller: socket,
         };
@@ -1822,7 +1976,7 @@ mod tests {
             runner: &FakeRunner::new(),
             state: dir.clone(),
             control_dir: control(&dir),
-            agent: None,
+            agents: crate::provider::AgentBinaries::with_claude(None),
             tmux: None,
             controller: absent_socket("run-none"),
         };
@@ -1842,7 +1996,9 @@ mod tests {
             inner.push(Output::exited(0, "Background\n"));
             let tools = crate::controller::Tools {
                 runner: &inner,
-                agent: Some(PathBuf::from("/opt/homebrew/bin/claude")),
+                agents: crate::provider::AgentBinaries::with_claude(Some(PathBuf::from(
+                    "/opt/homebrew/bin/claude",
+                ))),
                 tmux: None,
                 exe: PathBuf::from("/x/ccnm"),
             };
@@ -1853,7 +2009,7 @@ mod tests {
             runner: &FakeRunner::new(),
             state: dir.clone(),
             control_dir: control(&dir),
-            agent: None,
+            agents: crate::provider::AgentBinaries::with_claude(None),
             tmux: None,
             controller: socket,
         };
@@ -1898,7 +2054,9 @@ mod tests {
                 inner.push(Output::exited(0, "Aqua\n"));
                 let tools = crate::controller::Tools {
                     runner: &inner,
-                    agent: Some(PathBuf::from("/opt/homebrew/bin/claude")),
+                    agents: crate::provider::AgentBinaries::with_claude(Some(PathBuf::from(
+                        "/opt/homebrew/bin/claude",
+                    ))),
                     tmux: None,
                     exe: supervisor,
                 };
@@ -1916,7 +2074,7 @@ mod tests {
             runner: &caller,
             state: dir.clone(),
             control_dir: control(&dir),
-            agent: None,
+            agents: crate::provider::AgentBinaries::with_claude(None),
             tmux: None,
             controller: socket,
         };
@@ -1926,7 +2084,7 @@ mod tests {
         assert!(rep.outcome.ok(), "{:?}", rep.outcome);
         assert_eq!(rep.outcome.duration_ms, 42);
         let result = rep.result.expect("a parsed result");
-        assert_eq!(result.result.as_deref(), Some("hi from claude"));
+        assert_eq!(result.text(), Some("hi from claude"));
         assert!(rep.stdout_tail.is_empty(), "no tail when the result parsed");
         assert!(rep.pid > 0);
         assert!(rep.controller.login_session());
@@ -1993,7 +2151,9 @@ mod tests {
             ));
             let tools = crate::controller::Tools {
                 runner: &inner,
-                agent: Some(PathBuf::from("/opt/homebrew/bin/claude")),
+                agents: crate::provider::AgentBinaries::with_claude(Some(PathBuf::from(
+                    "/opt/homebrew/bin/claude",
+                ))),
                 tmux: None,
                 exe: PathBuf::from("/x/ccnm"),
             };
@@ -2010,7 +2170,9 @@ mod tests {
             runner: &fake,
             state: dir.clone(),
             control_dir: control(&dir),
-            agent: Some(PathBuf::from("/usr/local/bin/claude")),
+            agents: crate::provider::AgentBinaries::with_claude(Some(PathBuf::from(
+                "/usr/local/bin/claude",
+            ))),
             tmux: None,
             controller: socket.clone(),
         };

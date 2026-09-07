@@ -1,0 +1,28 @@
+{
+  "protocol": 1,
+  "provider": "codex",
+  "session": "00000000-0000-4000-8000-000000000003",
+  "session_dir": "<agent-state>/ccnm/sessions/00000000-0000-4000-8000-000000000003",
+  "tmux_session": "ccnm-fixture",
+  "server_pid": 50720,
+  "already_running": false,
+  "replaced": null,
+  "controller": {
+    "hello": {
+      "protocol": 1,
+      "ccnm_version": "0.2.0",
+      "user": "<agent-user>",
+      "platform": "macos/aarch64",
+      "exe": "<agent-build>/ccnm",
+      "root": null
+    },
+    "pid": 50529,
+    "manager": {
+      "Ok": "Aqua"
+    }
+  },
+  "context": {
+    "manager": "Background",
+    "keychain": true
+  }
+}

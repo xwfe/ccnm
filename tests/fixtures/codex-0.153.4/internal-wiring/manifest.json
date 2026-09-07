@@ -1,0 +1,40 @@
+{
+  "date": "2026-09-07",
+  "source": "Working-tree internal provider implementation based on f1e8ba9; final follow-up changes only adjust Agent hints/logging and relocate byte-identical shared context rendering.",
+  "agent": "local macOS arm64",
+  "runtime": {
+    "temporary_binary_sha256": "2fb32c21f6868d28ca29fb3ac5d15ef0807374a1744e89977134facdb1674b31",
+    "installed_binary_sha256": "ac41b71a5fffe8ba26359e24b8ff6a5092b63a0b03cfa95c49778436ba8b8302",
+    "mcp_pids_remaining": ""
+  },
+  "codex_version": "0.153.4",
+  "tmux_version": "3.7c",
+  "agent_binary_sha256": "66cb7eeed2b98e1b86bbf79a0267c08e6d728d060eaeb2b6794bf1c72c251579",
+  "print_exit_code": 0,
+  "print_tools": [
+    "workspace_info",
+    "list_files",
+    "search_text",
+    "read_file",
+    "apply_patch",
+    "exec_command",
+    "read_output"
+  ],
+  "agent_same_name_file_unchanged": true,
+  "interactive_exit_code": 0,
+  "interactive_same_mcp_pid_before_after_detach": 95157,
+  "public_provider_selector": false,
+  "safety_scope": "Temporary Runtime allows unconfined exec; this proves product dispatch, tools, context and environment isolation, not production ccrun/ACL/sudo/egress confinement.",
+  "redactions": [
+    "Agent/Runtime temporary paths",
+    "Official and ccnm session IDs",
+    "Agent username",
+    "Private home path",
+    "TUI excerpt omits startup notices, account usage notices and directory footer"
+  ],
+  "driver_notes": [
+    "Initial detached Controller inherited the short-lived test runner group; restarted in a dedicated long-lived terminal process before interactive measurement.",
+    "Initial PTY attach driver did not drain output and timed out during detach. Final lifecycle measurement drains the PTY continuously and both clients exited 0."
+  ],
+  "runtime_topology": "separate macOS arm64 via OpenSSH alias fodelf"
+}

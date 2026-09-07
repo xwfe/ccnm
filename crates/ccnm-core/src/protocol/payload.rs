@@ -22,6 +22,9 @@ pub const PROTOCOL: u32 = 1;
 /// Implemented by every message so the decoder can check its version.
 pub trait Protocol {
     fn protocol(&self) -> u32;
+    fn expected_protocol(&self) -> u32 {
+        PROTOCOL
+    }
 }
 
 /// JSON -> base64url, for argv.
@@ -60,13 +63,21 @@ pub fn decode_json<T: DeserializeOwned + Protocol>(bytes: &[u8]) -> Result<T> {
         )
         .with_source(e)
     })?;
-    if value.protocol() != PROTOCOL {
+    if value.protocol() != value.expected_protocol() {
         return Err(Error::new(
             ErrorCode::Version,
-            format!(
-                "remote ccnm speaks protocol {}, this one speaks {PROTOCOL}",
-                value.protocol()
-            ),
+            if value.expected_protocol() == PROTOCOL {
+                format!(
+                    "remote ccnm speaks protocol {}, this one speaks {PROTOCOL}",
+                    value.protocol()
+                )
+            } else {
+                format!(
+                    "remote ccnm speaks protocol {}, this message requires {}",
+                    value.protocol(),
+                    value.expected_protocol()
+                )
+            },
         ));
     }
     Ok(value)

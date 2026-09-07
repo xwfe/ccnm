@@ -1,0 +1,60 @@
+[
+  {
+    "stage": "before_attach",
+    "server_pid": 50720,
+    "supervisor_pid": 50721,
+    "attached": 0
+  },
+  {
+    "stage": "attached_1",
+    "server_pid": 50720,
+    "supervisor_pid": 50721,
+    "attached": 1
+  },
+  {
+    "stage": "detached_1",
+    "server_pid": 50720,
+    "supervisor_pid": 50721,
+    "attached": 0,
+    "attach_client_exit": 0
+  },
+  {
+    "stage": "attached_2",
+    "server_pid": 50720,
+    "supervisor_pid": 50721,
+    "attached": 1
+  },
+  {
+    "stage": "detached_2",
+    "server_pid": 50720,
+    "supervisor_pid": 50721,
+    "attached": 0,
+    "attach_client_exit": 0
+  },
+  {
+    "stage": "repeat_start_codex",
+    "exit_code": 0,
+    "stderr": "",
+    "response": {
+      "protocol": 1,
+      "provider": "codex",
+      "session": "00000000-0000-4000-8000-000000000003",
+      "session_dir": "<agent-state>/ccnm/sessions/00000000-0000-4000-8000-000000000003",
+      "tmux_session": "ccnm-fixture",
+      "server_pid": 50720,
+      "already_running": true,
+      "replaced": null,
+      "controller": null,
+      "context": {
+        "manager": "Background",
+        "keychain": true
+      }
+    }
+  },
+  {
+    "stage": "repeat_start_claude",
+    "exit_code": 3,
+    "stdout": "",
+    "stderr": "CCNM_E_NOT_READY:\nexisting session provider differs or is unknown; stop it explicitly before selecting another Agent\n"
+  }
+]

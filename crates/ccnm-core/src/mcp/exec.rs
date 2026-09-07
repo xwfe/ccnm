@@ -174,6 +174,22 @@ pub fn exec_command(
     state: &Path,
     args: &ExecCommandArgs,
 ) -> Result<ExecResult> {
+    exec_command_for(
+        crate::provider::AgentProvider::Claude,
+        root,
+        session,
+        state,
+        args,
+    )
+}
+
+pub(crate) fn exec_command_for(
+    provider: crate::provider::AgentProvider,
+    root: &Path,
+    session: &str,
+    state: &Path,
+    args: &ExecCommandArgs,
+) -> Result<ExecResult> {
     if args.cmd.is_empty() {
         return Err(Error::invalid_args(
             "cmd is empty; pass the program and its arguments, e.g. [\"cargo\", \"test\"]",
@@ -216,6 +232,9 @@ pub fn exec_command(
         cmd = cmd.env_remove(key);
     }
 
+    if provider == crate::provider::AgentProvider::Codex {
+        cmd = crate::provider::codex::strip_environment(cmd);
+    }
     let stdout = Sink::create(&retention.stdout())?;
     let stderr = Sink::create(&retention.stderr())?;
     let captured = run_captured(&cmd, stdout, stderr).map_err(|e| {

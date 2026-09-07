@@ -1,0 +1,46 @@
+[
+  {
+    "protocol": 1,
+    "body": {
+      "reply": "hello",
+      "hello": {
+        "protocol": 1,
+        "ccnm_version": "0.2.0",
+        "user": "<agent-user>",
+        "platform": "macos/aarch64",
+        "exe": "<agent-build>/ccnm",
+        "root": null
+      },
+      "pid": 1,
+      "manager": {
+        "Ok": "Aqua"
+      }
+    }
+  },
+  {
+    "protocol": 1,
+    "body": {
+      "reply": "claude",
+      "path": "/opt/homebrew/bin/codex",
+      "version": {
+        "Ok": "0.153.4"
+      },
+      "auth": {
+        "Ok": {
+          "loggedIn": true,
+          "authMethod": "ChatGPT",
+          "email": null,
+          "subscriptionType": null
+        }
+      }
+    }
+  },
+  {
+    "protocol": 1,
+    "body": {
+      "reply": "error",
+      "code": "CCNM_E_INVALID_ARGS",
+      "message": "Codex home is Agent-local"
+    }
+  }
+]

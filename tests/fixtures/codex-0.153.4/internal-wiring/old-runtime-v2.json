@@ -1,0 +1,14 @@
+{
+  "request": {
+    "protocol": 2,
+    "provider": "codex",
+    "workspace": "fixture",
+    "root": "<runtime-fixture>/project",
+    "session": "old-peer-negative",
+    "policy": "coding",
+    "interactive": false
+  },
+  "exit_code": 0,
+  "stdout": "",
+  "stderr": "CCNM_E_VERSION:\nremote ccnm speaks protocol 2, this one speaks 1\n"
+}

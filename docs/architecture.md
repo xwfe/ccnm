@@ -189,11 +189,12 @@ work machine ≈ Agent Node
 
 这些名称只代表当时的实验拓扑，不再是当前公开 API/config 模型。
 
-## Agent Provider 内部边界（第一阶段）
+## Agent Provider 内部边界
 
-`crates/ccnm-core/src/provider/` 通过明确的 `AgentProvider::Claude` enum 分发，当前只有 Claude；没有插件注册、动态加载或 provider 配置选择器。
+`crates/ccnm-core/src/provider/` 通过明确的 `AgentProvider::{Claude, Codex}` enum 分发；没有插件注册、动态加载或公开 provider 配置选择器。公开入口仍只选 Claude，Codex 限于版本化 internal 请求的验证。
 
 - `provider/claude/`：CLI 定位、version/auth 探测、配置目录环境变量、启动参数、交互/print 输入、MCP 配置和工具权限、结果解析，以及项目 instruction/context 规则。
+- `provider/codex/`：已实测的官方 CLI `0.153.4` 适配、Agent-local HOME、固定工具策略、JSONL 结果和 Runtime 根目录 AGENTS 上下文。未测版本和 colocated 模式拒绝启动。
 - `provider/types.rs`：Controller、work 和报告消费者使用的 Agent 观测/结果；保留 v1 字段形状。
 - `provider` 的凭据元数据：现有环境变量前缀、配置目录、凭据文件名和 egress 检查目标。`safety`、SSH 和 `exec_command` 继续执行原安全规则，不读取或传递凭据内容。
 - session/Controller 仍负责进程、tmux 和生命周期；launcher/work 仍负责 topology、OpenSSH alias 与 Runtime Node 握手。Runtime MCP 的 7 个工具和执行边界未变。
@@ -206,4 +207,12 @@ work machine ≈ Agent Node
 
 有一个已存在的差异刻意未修复：colocated session 不写 `mcp.json`、settings 不 deny 原生工具，但启动函数仍无条件传 `--tools ""`、`--mcp-config` 等 remote 参数。现有 colocated 测试使用假 supervisor，不能证明真实 Claude 接受这组输入；本轮快照保留该现状，避免把功能修复夹进内部解耦。
 
-第二阶段才允许接入 Codex：必须先实测当时安装版本的 flag/auth/MCP/tool policy/输出，并保存 fixture；本阶段不据此预先增加抽象或多 Agent 模型。
+### 第二 provider 的兼容与隔离
+
+Codex 的启动、探测、session 和 MCP 请求必须显式携带 `provider="codex"`、`protocol=2`。旧 peer 因版本不匹配拒绝请求，不能忽略 provider 后误启动 Claude。Claude 的 v1 序列化不增加 provider 字段，旧配置字段和响应标签不改名。只读响应保留 v1 外层格式，Codex 结果有独立 provider 标签；未报告的费用/API 耗时不填假零。
+
+专用 HOME 由 Agent 自己按 ccnm 配置目录解析，不接受 Runtime 传来的路径，不读取认证文件内容。用户必须在 Agent 登录会话中独立使用官方 CLI 登录；目录与认证文件要求仅属主可访问、非符号链接。启动前通过官方 CLI 检查版本、登录和空 MCP inventory。所有 Codex SSH 连接在 Agent 侧清除敏感环境、禁止 agent forwarding，不复用个人 ControlMaster；Runtime payload 只有 workspace、root、session 和 provider 等执行上下文。
+
+Codex 项目上下文仅投影 Runtime 根目录的 `AGENTS.override.md` 或 `AGENTS.md`，空 override 仍覆盖 base。它不是完整的 Codex 本机文件遍历：不读 Agent 私人配置，不自动枚举嵌套 instructions。Runtime/MCP 七工具及 ccrun/ACL/sudo/network policy 仍是原边界，固定 CLI tool policy 不等于 sandbox。
+
+实测依据与尚未开放的边界见 [Codex 内部接线](research/codex-internal-wiring-2026-09-07.md)。不扩展为 Agent Instance、多 Agent coordination 或并行 worktree 模型。

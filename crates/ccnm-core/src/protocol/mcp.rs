@@ -16,6 +16,11 @@ use super::payload::{PROTOCOL, Protocol};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ServePayload {
     pub protocol: u32,
+    #[serde(
+        default,
+        skip_serializing_if = "crate::provider::AgentProvider::is_claude"
+    )]
+    pub provider: crate::provider::AgentProvider,
     pub workspace: String,
     /// Project root on this (runtime) host. Canonicalized at startup; every
     /// tool path is relative to it (design doc section 17).
@@ -43,6 +48,7 @@ pub struct ServePayload {
 impl ServePayload {
     pub fn new(workspace: &str, root: PathBuf, session: &str) -> Self {
         ServePayload {
+            provider: Default::default(),
             protocol: PROTOCOL,
             workspace: workspace.to_string(),
             root,
@@ -50,6 +56,12 @@ impl ServePayload {
             policy: "coding".to_string(),
             interactive: false,
         }
+    }
+
+    pub fn with_provider(mut self, provider: crate::provider::AgentProvider) -> Self {
+        self.provider = provider;
+        self.protocol = provider.control_protocol();
+        self
     }
 
     /// Say a person is at a terminal for this session.
@@ -62,6 +74,9 @@ impl ServePayload {
 impl Protocol for ServePayload {
     fn protocol(&self) -> u32 {
         self.protocol
+    }
+    fn expected_protocol(&self) -> u32 {
+        self.provider.control_protocol()
     }
 }
 

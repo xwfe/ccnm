@@ -21,6 +21,11 @@ use crate::ssh::ResolvedSsh;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProbeRequest {
     pub protocol: u32,
+    #[serde(
+        default,
+        skip_serializing_if = "crate::provider::AgentProvider::is_claude"
+    )]
+    pub provider: crate::provider::AgentProvider,
     pub workspace: String,
     /// Project root on the runtime host; the Agent side only passes it on.
     pub root: PathBuf,
@@ -39,11 +44,19 @@ impl Protocol for ProbeRequest {
     fn protocol(&self) -> u32 {
         self.protocol
     }
+    fn expected_protocol(&self) -> u32 {
+        self.provider.control_protocol()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProbeReport {
     pub protocol: u32,
+    #[serde(
+        default,
+        skip_serializing_if = "crate::provider::AgentProvider::is_claude"
+    )]
+    pub provider: crate::provider::AgentProvider,
     /// The Agent Node's own hello.
     pub hello: HelloReport,
     /// The login-session controller, as reached from this ssh session.

@@ -1,0 +1,63 @@
+{
+  "provider": "codex",
+  "version": "0.153.4",
+  "source_commit": "08c23ac",
+  "runtime_uid": 550,
+  "runtime_gid": 550,
+  "runtime_unconfined": false,
+  "public_probe_calls": 3,
+  "public_probe_single_pid": 41991,
+  "print_session": "832ae1a4-c800-4c87-ad27-eb2c5704047b",
+  "print_completed_tools": [
+    {
+      "server": "ccnm",
+      "tool": "read_file",
+      "status": "completed",
+      "arguments": {
+        "path": "smoke.c"
+      }
+    },
+    {
+      "server": "ccnm",
+      "tool": "workspace_info",
+      "status": "completed",
+      "arguments": {}
+    },
+    {
+      "server": "ccnm",
+      "tool": "exec_command",
+      "status": "completed",
+      "arguments": {
+        "cmd": [
+          "./smoke"
+        ]
+      }
+    }
+  ],
+  "interactive_session": "49ce3c5e-9546-4084-8029-089a2292a297",
+  "interactive_provider_session": "01a0812f-49fc-7501-9d88-e4bfe88f648d",
+  "interactive_workspace_info_pid": 43752,
+  "interactive_reply": "P3_INTERACTIVE_READY",
+  "detach_reattach": true,
+  "controller_restart": {
+    "before_pid": 52008,
+    "after_pid": 57619,
+    "contexts": "Aqua",
+    "same_interactive_session_survived": true
+  },
+  "ctrl_d_exit": 0,
+  "ctrl_d_final_state": "Completed",
+  "ctrl_d_runtime_guard": "released",
+  "interrupted_session": "35ff6c28-7c28-4fc8-84de-feb03ffa1647",
+  "verified_transport_terminated_pid": 59006,
+  "after_transport_exit": "Agent Running, TOOLS DOWN",
+  "exact_stop": "stopped ccnm-p3check",
+  "stopped_final_state": "Failed",
+  "stopped_runtime_guard": "released",
+  "session_group_survivors_after_tests": [],
+  "limits": [
+    "Simulated verified SSH transport termination, not physical network interruption",
+    "Claude direction, broad egress and privilege escalation audit still pending",
+    "Official provider history retained; login credentials untouched"
+  ]
+}

@@ -1,0 +1,9 @@
+session   832ae1a4-c800-4c87-ad27-eb2c5704047b
+started   by ccnm 0.2.0 as bing, pid 52008, Aqua
+codex     exited 0 in 30.6 s
+run       1 turn; reported tokens in 55885 out 197 cached 40448 cache-write 0 reasoning 0; 0 permission denials; cost and API timing not reported
+
+--- result ---
+P3_PUBLIC_CODEX_OK
+
+session directory on work: /tmp/ccnm-p3-agent-m8wmi9ng/state/ccnm/sessions/832ae1a4-c800-4c87-ad27-eb2c5704047b

@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-09-08T22:10:11+09:00",
+  "last_updated": "2026-09-08T22:32:51+09:00",
   "current_task": "P3",
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
@@ -150,13 +150,13 @@
     {
       "id": "P3",
       "title": "公共入口与单 Agent 执行闭环",
-      "status": "in_progress",
+      "status": "blocked",
       "depends_on": [
         "P2"
       ],
       "owner": null,
       "started_at": "2026-09-08T12:44:30+09:00",
-      "last_updated": "2026-09-08T22:10:11+09:00",
+      "last_updated": "2026-09-08T22:32:51+09:00",
       "completed_criteria": [
         "P3.4",
         "P3.6"
@@ -250,9 +250,27 @@
           ],
           "ref": "docs/research/p3-isolated-runtime-2026-09-08.md",
           "result": "源码08c23ac release经101块和整包/二进制哈希验证部署；真实UID/GID550/HOME，unconfined=false，v3 MCP七工具、C编译运行及Git通过，EOF后server消失/guard released。探针文本解析错误修正后重跑；尚未调用官方Agent或完成公共控制链，非P3.5完成。"
+        },
+        {
+          "kind": "real_nodes",
+          "criteria": [
+            "P3.1",
+            "P3.2",
+            "P3.5"
+          ],
+          "ref": "docs/research/p3-public-codex-2026-09-08.md",
+          "result": "官方Codex0.153.4经公开probe/print/interactive与Aqua临时Controller验证，实际工具事件确认；detach/reattach、Controller重启、Ctrl-D、精确transport故障后stop及guard释放通过。局部进程清理完成，Claude与最终系统清理仍待验收，不标记P3完成。"
         }
       ],
-      "blockers": []
+      "blockers": [
+        {
+          "criteria": [
+            "P3.5"
+          ],
+          "reason": "Codex公共链路已取得实测；反向Claude需要在本机已有ccrun中追加已生成的本轮公钥，当前执行进程无管理员权限。",
+          "unblock": "用户在本机终端执行p3-authorize-local-runtime.sh --apply后，验证从fodelf到本机ccrun的实际SSH/凭据隔离，再继续Claude公共链路及最终清理。"
+        }
+      ]
     },
     {
       "id": "P4",
@@ -335,7 +353,7 @@
     "P3 额外 64 线程压力出现既有 exec timeout 单测 30.5s 失败；默认全量 511 通过，高并发问题尚未解决。"
   ],
   "handoff": {
-    "next_action": "仅 P3：当前构建已部署 /Users/Shared/ccnm-p3-runtime.R7Enw5，v3 MCP七工具/编译/Git通过；传输块已清理，产物和测试项目保留。下一步按既有Runtime用户CLI与低权限MCP分工接通公共控制链及临时Agent Controller，不假定临时账号继承xdwmbp身份，不复制现有私钥。详见p3-isolated-runtime记录；未启动模型，勿进入P4，最后必须清理系统资源。",
+    "next_action": "仅P3：Codex公共链路实测完成，临时Controller/session已结束。用户需在本机执行 sudo /bin/bash /Users/bing/xdw/ccnm/scripts/p3-authorize-local-runtime.sh --apply；然后从fodelf用本轮新key复核本机ccrun隔离，继续Claude方向。资源与回滚见系统准备文档末节，官方登录/历史保留，不进入P4。",
     "scope": "仅 P3；不进入 P4/Machine API，不引入多 Agent/worktree 调度，不主动部署、登录或修改账号/ACL/防火墙。",
     "planning_validation": {
       "at": "2026-09-08T21:22:43+09:00",

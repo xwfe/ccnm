@@ -90,3 +90,11 @@
 网络恢复后已完成有完整哈希校验的分块部署和真实 v3 MCP 七工具/编译/Git 验证，详见 `docs/research/p3-isolated-runtime-2026-09-08.md`。当前 Runtime 测试目录为 `/Users/Shared/ccnm-p3-runtime.R7Enw5`；与已清理旧目录 Iy21vY 区分。传输块和压缩包已删除，构建、wrapper、配置、project/state 保留；本机资源清单已同步。
 
 独立组和身份隔离保持，尚未启动模型。下一步接通公共控制链，不能假定临时用户拥有原用户的 xdwmbp alias/SSH身份；不复制已有私钥，不转发agent或绕过host key验证。全部账号/组/公钥/临时目录仍需要最终按清单清理。本轮辅助脚本 `/tmp/ccnm-p3-upload-parts.py`、`/tmp/ccnm-p3-runtime-smoke.py` 和探针日志属于本轮本机临时产物，清理时一并处理，不作为接续必须依赖。
+
+### 最新恢复点：Codex 公共链路通过，准备 Claude 反向入口
+
+详见 `docs/research/p3-public-codex-2026-09-08.md`。Codex公开print、interactive、detach/reattach、Controller重启、Ctrl-D及transport故障后stop已有实测；本轮Controller和已记录session进程组已清理，官方临时trust entry恢复。现有登录与官方会话历史保留。
+
+新增保留资源：本机 `/tmp/ccnm-p3-agent-m8wmi9ng`（独立config/state/tmux、SSH配置私有备份、收到的local-runtime.pub），本机SSH唯一alias block `ccnm-p3-r7enw5`；远端 setup 下的 runtime-control.toml、control-state、本轮新密钥 local-runtime-key 及.pub。私钥不出生成节点。
+
+本机待执行 `sudo /bin/bash /Users/bing/xdw/ccnm/scripts/p3-authorize-local-runtime.sh --apply`。仅给UID504已有ccrun追加本轮公钥，任何已有路径的symlink/owner/权限异常即拒绝；开始前生成 `/var/db/ccnm-p3-local-20260908`，备份已有公开authorized_keys并记录新增行/目录。该root清单目前尚未创建。清理时只删除记录的追加字节，保留并发修改；仅当本轮创建且为空时删除目录，始终保留原ccrun账号。不要盲目回滚整份authorized_keys或SSH config。

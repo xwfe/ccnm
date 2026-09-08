@@ -10,7 +10,7 @@ The current implementation runs the official Claude Code on an **Agent Node** an
 
 ---
 
-把 AI Coding Agent 和真实项目运行环境放在不同的 Node 上。
+把 AI Coding Agent 和真实项目运行环境放在不同的节点（node）上。
 
 当前实现是在 **Agent Node** 上运行官方 Claude Code，通过持久 **SSH stdio MCP** 在 **Runtime Node** 上执行项目工具。源码、Git、构建、测试和工具链都留在 Runtime Node；AI 登录凭证只留在 Agent Node。
 
@@ -20,7 +20,7 @@ The current implementation runs the official Claude Code on an **Agent Node** an
 
 ## 角色模型
 
-ccnm 不再用 `home/work` 表示机器，而是把机器抽象成 **Node**，再由角色描述它负责什么：
+ccnm 把机器抽象成 **Node**，再由角色描述它负责什么：
 
 - **Agent Node**：运行 AI Coding Agent，当前实现为 Claude Code，并持有对应登录/OAuth 凭证。
 - **Runtime Node**：保存真实 workspace 和项目 toolchain，执行 MCP 工具。

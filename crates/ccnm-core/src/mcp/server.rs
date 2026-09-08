@@ -144,13 +144,13 @@ impl WorkspaceInfo {
 /// being protected, and a caller must not be able to widen it.
 struct ExecGate {
     audit: crate::safety::Audit,
-    instance_selected: bool,
+    config: Option<crate::Config>,
     /// The workspace said it accepts an unconfined runtime.
     accepted: bool,
 }
 
 impl ExecGate {
-    fn decide(workspace: &str) -> ExecGate {
+    fn decide(payload: &ServePayload) -> CcnmResult<ExecGate> {
         // The runtime host's own config, found the same way every other
         // ccnm command finds it. A missing config is not an error here:
         // it just means nothing has been declared, and nothing declared
@@ -158,24 +158,48 @@ impl ExecGate {
         let config = crate::paths::effective_config_path()
             .and_then(|path| crate::Config::load(&path))
             .ok();
+        match (&payload.binding, &config) {
+            (Some(binding), Some(config)) => {
+                if binding.workspace != payload.workspace
+                    || binding.root != payload.root
+                    || binding.agent.provider != payload.provider
+                {
+                    return Err(Error::policy("MCP binding differs from its payload"));
+                }
+                config.verify_runtime_binding(binding)?;
+            }
+            (Some(_), None) => {
+                return Err(Error::config(
+                    "bound Agent execution requires the Runtime's authoritative config",
+                ));
+            }
+            (None, Some(config))
+                if config
+                    .workspaces
+                    .get(&payload.workspace)
+                    .is_some_and(|workspace| workspace.agent.is_some()) =>
+            {
+                return Err(Error::policy(
+                    "instance-selected workspace requires a verified Runtime binding",
+                ));
+            }
+            _ => {}
+        }
         let expected = config.as_ref().and_then(|config| {
-            let workspace = config.workspaces.get(workspace)?;
+            let workspace = config.workspaces.get(&payload.workspace)?;
             let host = config.nodes.get(&workspace.runtime_node)?;
             host.runtime_user.clone()
         });
         let accepted = config
             .as_ref()
-            .and_then(|config| config.workspaces.get(workspace))
+            .and_then(|config| config.workspaces.get(&payload.workspace))
             .is_some_and(|w| w.allow_unconfined_exec);
         let home = crate::paths::home_dir().unwrap_or_else(|_| PathBuf::from("/nonexistent"));
-        ExecGate {
+        Ok(ExecGate {
             audit: crate::safety::audit(expected.as_deref(), &home, &SystemRunner),
-            instance_selected: config
-                .as_ref()
-                .and_then(|c| c.workspaces.get(workspace))
-                .is_some_and(|ws| ws.agent.is_some()),
+            config,
             accepted,
-        }
+        })
     }
 
     fn allowed(&self) -> bool {
@@ -194,6 +218,8 @@ impl ExecGate {
 }
 
 struct Inner {
+    /// Held for this MCP process's complete lifetime.
+    _write_guard: Option<crate::mcp::write_guard::WriteGuard>,
     provider: crate::provider::AgentProvider,
     workspace: String,
     /// Names the directory `exec_command` retains output in.
@@ -236,19 +262,31 @@ impl Server {
     /// the launcher sees as a failed `initialize`.
     pub fn new(payload: &ServePayload) -> CcnmResult<Self> {
         let root = canonical_root(&payload.root)?;
-        let exec_gate = ExecGate::decide(&payload.workspace);
-        Self::with_gate(payload, root, exec_gate)
+        let exec_gate = ExecGate::decide(payload)?;
+        if !exec_gate.audit.agent_boundary_clear() {
+            return Err(Error::policy(exec_gate.audit.refusal()));
+        }
+        let state = crate::paths::state_dir()?;
+        let guard = crate::mcp::write_guard::WriteGuard::acquire(
+            &state,
+            &root,
+            &payload.workspace,
+            &payload.session,
+            exec_gate.config.as_ref(),
+            &SystemRunner,
+        )?;
+        Self::with_gate(payload, root, exec_gate, Some(guard))
     }
 
-    fn with_gate(payload: &ServePayload, root: PathBuf, exec_gate: ExecGate) -> CcnmResult<Self> {
-        // P2 has configuration bindings, not an executable bound MCP request.
-        // A legacy payload must not bypass the closed public instance entrypoint.
-        if exec_gate.instance_selected {
-            return Err(crate::instance::execution_not_open());
-        }
+    fn with_gate(
+        payload: &ServePayload,
+        root: PathBuf,
+        exec_gate: ExecGate,
+        write_guard: Option<crate::mcp::write_guard::WriteGuard>,
+    ) -> CcnmResult<Self> {
         // Before any workspace-dependent subprocess (including Git), not just
         // exec_command. An unconfined opt-in cannot grant Agent credentials.
-        if !exec_gate.audit.agent_boundary_clear() {
+        if write_guard.is_some() && !exec_gate.audit.agent_boundary_clear() {
             return Err(Error::policy(exec_gate.audit.refusal()));
         }
         let (git, git_subdir) = git_facts(&root, &SystemRunner);
@@ -284,6 +322,7 @@ impl Server {
         );
         Ok(Server {
             inner: Arc::new(Inner {
+                _write_guard: write_guard,
                 provider: payload.provider,
                 workspace: payload.workspace.clone(),
                 session: payload.session.clone(),
@@ -732,8 +771,9 @@ mod tests {
                     findings: vec![],
                 },
                 accepted: false,
-                instance_selected: false,
+                config: None,
             },
+            None,
         )
     }
 

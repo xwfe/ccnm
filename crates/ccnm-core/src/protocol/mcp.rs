@@ -22,6 +22,8 @@ pub struct ServePayload {
         skip_serializing_if = "crate::provider::AgentProvider::is_claude"
     )]
     pub provider: crate::provider::AgentProvider,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binding: Option<crate::instance::WorkspaceBinding>,
     pub workspace: String,
     /// Project root on this (runtime) host. Canonicalized at startup; every
     /// tool path is relative to it (design doc section 17).
@@ -50,6 +52,7 @@ impl ServePayload {
     pub fn new(workspace: &str, root: PathBuf, session: &str) -> Self {
         ServePayload {
             provider: Default::default(),
+            binding: None,
             protocol: PROTOCOL,
             workspace: workspace.to_string(),
             root,
@@ -65,6 +68,13 @@ impl ServePayload {
         self
     }
 
+    pub fn with_binding(mut self, binding: crate::instance::WorkspaceBinding) -> Self {
+        self.provider = binding.agent.provider;
+        self.protocol = crate::instance::INSTANCE_SESSION_PROTOCOL;
+        self.binding = Some(binding);
+        self
+    }
+
     /// Say a person is at a terminal for this session.
     pub fn with_interactive(mut self, interactive: bool) -> Self {
         self.interactive = interactive;
@@ -77,7 +87,11 @@ impl Protocol for ServePayload {
         self.protocol
     }
     fn expected_protocol(&self) -> u32 {
-        self.provider.control_protocol()
+        if self.binding.is_some() {
+            3
+        } else {
+            self.provider.control_protocol()
+        }
     }
 }
 

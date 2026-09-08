@@ -19,6 +19,7 @@ pub mod probe;
 pub mod read;
 pub mod search;
 pub mod server;
+pub mod write_guard;
 
 /// The longest prefix of `s` that fits in `max` bytes without splitting a
 /// character.

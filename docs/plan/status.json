@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-09-07T23:55:46+09:00",
+  "last_updated": "2026-09-08T10:42:37+09:00",
   "current_task": "P1",
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
@@ -20,18 +20,27 @@
       "owner": null,
       "started_at": null,
       "last_updated": "2026-09-07T23:22:36+09:00",
-      "completed_criteria": ["P0.1", "P0.2", "P0.3"],
+      "completed_criteria": [
+        "P0.1",
+        "P0.2",
+        "P0.3"
+      ],
       "evidence": [
         {
           "kind": "historical",
-          "criteria": ["P0.1"],
+          "criteria": [
+            "P0.1"
+          ],
           "ref": "tests/fixtures/claude-provider-baseline.json",
           "commit": "a2550f9",
           "result": "Claude 内部 Provider 等价抽取及合成 golden 已提交；并非新真机验收，colocated 已知参数缺陷仍存在。"
         },
         {
           "kind": "historical",
-          "criteria": ["P0.2", "P0.3"],
+          "criteria": [
+            "P0.2",
+            "P0.3"
+          ],
           "ref": "docs/research/codex-internal-wiring-2026-09-07.md",
           "commit": "4f8e678",
           "result": "Codex 0.153.4 通过产品 Controller/supervisor/tmux/SSH MCP 的 print、interactive 和七工具；历史 Rust 448 passed、Python 7 passed。仅 scratch 双机，非生产 ccrun/ACL/egress 通过；公开入口未开放。"
@@ -42,11 +51,13 @@
     {
       "id": "P1",
       "title": "Provider 安全契约收敛",
-      "status": "pending",
-      "depends_on": ["P0"],
-      "owner": null,
-      "started_at": null,
-      "last_updated": "2026-09-07T23:22:36+09:00",
+      "status": "in_progress",
+      "depends_on": [
+        "P0"
+      ],
+      "owner": "Codex / P1 provider safety",
+      "started_at": "2026-09-08T10:42:37+09:00",
+      "last_updated": "2026-09-08T10:42:37+09:00",
       "completed_criteria": [],
       "evidence": [],
       "blockers": []
@@ -55,7 +66,9 @@
       "id": "P2",
       "title": "Agent Instance 公共配置模型",
       "status": "pending",
-      "depends_on": ["P1"],
+      "depends_on": [
+        "P1"
+      ],
       "owner": null,
       "started_at": null,
       "last_updated": "2026-09-07T23:22:36+09:00",
@@ -67,7 +80,9 @@
       "id": "P3",
       "title": "公共入口与单 Agent 执行闭环",
       "status": "pending",
-      "depends_on": ["P2"],
+      "depends_on": [
+        "P2"
+      ],
       "owner": null,
       "started_at": null,
       "last_updated": "2026-09-07T23:22:36+09:00",
@@ -79,7 +94,9 @@
       "id": "P4",
       "title": "Machine Protocol v1 草案与契约评审",
       "status": "pending",
-      "depends_on": ["P3"],
+      "depends_on": [
+        "P3"
+      ],
       "owner": null,
       "started_at": null,
       "last_updated": "2026-09-07T23:22:36+09:00",
@@ -91,7 +108,9 @@
       "id": "P5",
       "title": "本地 stdio Machine API",
       "status": "pending",
-      "depends_on": ["P4"],
+      "depends_on": [
+        "P4"
+      ],
       "owner": null,
       "started_at": null,
       "last_updated": "2026-09-07T23:22:36+09:00",
@@ -103,7 +122,9 @@
       "id": "P6",
       "title": "黑盒消费者与 v1 兼容承诺",
       "status": "pending",
-      "depends_on": ["P5"],
+      "depends_on": [
+        "P5"
+      ],
       "owner": null,
       "started_at": null,
       "last_updated": "2026-09-07T23:22:36+09:00",
@@ -115,7 +136,9 @@
       "id": "P7",
       "title": "发布前收口",
       "status": "pending",
-      "depends_on": ["P6"],
+      "depends_on": [
+        "P6"
+      ],
       "owner": null,
       "started_at": null,
       "last_updated": "2026-09-07T23:22:36+09:00",
@@ -127,7 +150,9 @@
       "id": "P8",
       "title": "独立 Orchestrator 交接",
       "status": "pending",
-      "depends_on": ["P7"],
+      "depends_on": [
+        "P7"
+      ],
       "owner": null,
       "started_at": null,
       "last_updated": "2026-09-07T23:22:36+09:00",
@@ -144,8 +169,8 @@
     "Agent Instance、公共 Machine API、Runtime 跨入口写入互斥和独立 Orchestrator 均未在本轮实施。"
   ],
   "handoff": {
-    "next_action": "认领 P1；读取 ROADMAP.md 的 P1 和 provider/safety/ssh/mcp/exec 现状，先写 Agent 与 Runtime 环境来源及凭据可访问性契约，再补失败用例后收敛实现。只执行 P1，验收后停止。",
-    "scope": "本轮只落地计划、状态、接续入口和检查工具；下一轮产品实现从 P1 开始。",
+    "next_action": "P1 已认领：先提交 provider 安全契约，再补合成失败用例、集中安全执行和运行全量门禁；仅执行 P1。",
+    "scope": "P1 Provider 安全契约收敛；不改公开配置/拓扑，不执行系统账户、ACL、网络或部署动作。",
     "planning_validation": {
       "at": "2026-09-07T23:28:56+09:00",
       "commands": [

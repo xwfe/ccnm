@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-09-08T12:22:59+09:00",
+  "last_updated": "2026-09-08T12:44:30+09:00",
   "current_task": "P3",
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
@@ -150,13 +150,13 @@
     {
       "id": "P3",
       "title": "公共入口与单 Agent 执行闭环",
-      "status": "pending",
+      "status": "in_progress",
       "depends_on": [
         "P2"
       ],
-      "owner": null,
-      "started_at": null,
-      "last_updated": "2026-09-07T23:22:36+09:00",
+      "owner": "Codex / P3 single-agent execution",
+      "started_at": "2026-09-08T12:44:30+09:00",
+      "last_updated": "2026-09-08T12:44:30+09:00",
       "completed_criteria": [],
       "evidence": [],
       "blockers": []
@@ -244,8 +244,8 @@
     "P2 首轮全量中既有 journal 锁测试曾失败；定点与后续完整门禁通过，但未修改 patch 模块或证明该非稳定现象已修复。"
   ],
   "handoff": {
-    "next_action": "P2 已完成并停止。下一轮只认领 P3：读取 ROADMAP P3、实例契约及 P2 执行边界；先设计公共 --agent/default 选择与 Runtime 授权/binding，再把解析后的私有 profile 连接到 Agent-local auth/launch/redaction。必须补 Runtime 写互斥、身份精确寻址和生命周期后才解除关闭门禁；真实账号/ACL/网络/部署先核对具体授权。",
-    "scope": "仅完成 P2 配置模型、只读迁移与关闭门禁；未开始 P3，未开放 Codex/instance 公共执行，未操作真实登录或安装。",
+    "next_action": "P3 已认领：按 agent-execution-p3.md 实现 v3 公共选择/双端绑定、精确 session、Runtime 单写 guard 和 Claude colocated 定点修复；先离线门禁，真实系统/部署动作等待针对性授权。",
+    "scope": "仅 P3；不进入 P4/Machine API，不引入多 Agent/worktree 调度，不主动部署、登录或修改账号/ACL/防火墙。",
     "planning_validation": {
       "at": "2026-09-08T12:22:59+09:00",
       "commands": [

@@ -912,7 +912,9 @@ fn agent_side<'a>(
     config: &'a Config,
     workspace: &str,
 ) -> Option<(&'a str, &'a ccnm_core::config::Node)> {
-    if config.workspace(workspace).is_ok() {
+    // A known but not-yet-executable instance workspace is not a missing
+    // definition. Do not turn its refusal into delegation or legacy attach.
+    if config.workspaces.contains_key(workspace) {
         return None;
     }
     config.runtime_from_agent()

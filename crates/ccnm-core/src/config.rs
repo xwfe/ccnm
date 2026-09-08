@@ -18,7 +18,7 @@
 use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
 
@@ -40,7 +40,7 @@ pub const DEFAULT_RUNTIME_NODE: &str = "runtime";
 /// PATH of a non-interactive shell (design doc section 7).
 pub const DEFAULT_CCNM_BIN: &str = "~/.local/bin/ccnm";
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     /// Absent in anything ccnm writes now; see [`SUPPORTED_VERSION`].
@@ -70,13 +70,16 @@ pub struct Config {
     pub nodes: BTreeMap<String, Node>,
     #[serde(default)]
     pub workspaces: BTreeMap<String, Workspace>,
+    /// Definitions belong only to `this` node. Other nodes hold references.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub agents: BTreeMap<String, crate::instance::AgentInstance>,
 }
 
 /// One physical or virtual machine. A node may carry one or more roles.
 ///
 /// Every node a workspace names, other than [`Config::this`] itself, needs
 /// an `ssh` alias: that is the one this machine dials to reach it.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Node {
     /// Alias in *this* machine's `~/.ssh/config` that reaches this node.
@@ -124,13 +127,16 @@ impl Node {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Workspace {
     #[serde(default)]
     pub backend: Backend,
     /// Key into `nodes`: where the AI coding agent runs.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub agent_node: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<crate::instance::InstanceRef>,
     /// Key into `nodes`: where the project lives and every tool runs.
     #[serde(default = "default_runtime_node")]
     pub runtime_node: String,
@@ -164,7 +170,7 @@ fn default_runtime_node() -> String {
     DEFAULT_RUNTIME_NODE.to_string()
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Backend {
     /// One persistent SSH stdio transport carrying MCP to a ccnm runtime
@@ -186,7 +192,7 @@ impl Backend {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MountMode {
     /// Mount with `nodatacache,nomdatacache,nopassprompt,soft,nobrowse`
@@ -355,6 +361,11 @@ impl Config {
                 ))
             }
         })?;
+        // Existing callers start legacy sessions. Never let a new reference
+        // silently reach their hard-coded/default Claude launch requests.
+        if workspace.agent.is_some() {
+            return Err(crate::instance::execution_not_open());
+        }
         // validate() already guarantees all of these; a miss here is a bug.
         let bug = |what: &str| {
             Error::internal(format!(
@@ -390,7 +401,7 @@ impl Config {
         }
 
         match &self.this {
-            None if self.nodes.is_empty() && self.workspaces.is_empty() => {}
+            None if self.nodes.is_empty() && self.workspaces.is_empty() && self.agents.is_empty() => {}
             None => problems.push(
                 "`this` is not set: every `ssh` alias in this file is written from one node's point of view, and without `this` there is no way to know whose\nadd the line `this = \"<node>\"` naming the entry of [nodes.*] that is this machine".to_string(),
             ),
@@ -472,13 +483,19 @@ impl Config {
             // is, has to be dialable from here. When both roles land on
             // the same node it is one machine and one alias, so it is
             // checked once rather than reported twice.
-            let roles: &[(&str, &String)] = if ws.agent_node == ws.runtime_node {
-                &[("agent_node", &ws.agent_node)]
+            let agent_node = ws
+                .agent
+                .as_ref()
+                .map_or(&ws.agent_node, |reference| &reference.node);
+            let agent_role = if ws.agent.is_some() {
+                "agent.node"
             } else {
-                &[
-                    ("agent_node", &ws.agent_node),
-                    ("runtime_node", &ws.runtime_node),
-                ]
+                "agent_node"
+            };
+            let roles: &[(&str, &String)] = if *agent_node == ws.runtime_node {
+                &[(agent_role, agent_node)]
+            } else {
+                &[(agent_role, agent_node), ("runtime_node", &ws.runtime_node)]
             };
             for (role, node_name) in roles {
                 match self.nodes.get(*node_name) {
@@ -552,6 +569,7 @@ impl Config {
             }
         }
 
+        crate::instance::validate_config(self, &mut problems);
         if problems.is_empty() {
             Ok(())
         } else {

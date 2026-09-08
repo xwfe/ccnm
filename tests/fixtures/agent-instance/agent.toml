@@ -1,0 +1,11 @@
+this = "worker"
+runtime_node = "runtime"
+[nodes.worker]
+[nodes.runtime]
+ssh = "runtime-alias"
+[agents.claude-main]
+provider = "claude"
+profile_ref = "default"
+[agents.codex-main]
+provider = "codex"
+profile_ref = "default"

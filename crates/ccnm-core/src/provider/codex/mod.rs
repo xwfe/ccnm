@@ -66,10 +66,7 @@ pub fn locate(path: Option<&OsStr>, home: Option<&Path>) -> Option<PathBuf> {
 /// Deliberately not CCNM_CONFIG or inherited CODEX_HOME: those can identify a
 /// Runtime config or the user's personal Agent setup. Resolve only on Agent.
 pub fn home() -> Result<PathBuf> {
-    Ok(crate::paths::config_path()?
-        .parent()
-        .ok_or_else(|| Error::internal("missing config parent"))?
-        .join("agents/codex"))
+    crate::paths::codex_home()
 }
 
 pub fn validate_home(path: &Path) -> Result<()> {

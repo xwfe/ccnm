@@ -217,3 +217,9 @@ Codex 的启动、探测、session 和 MCP 请求必须显式携带 `provider="c
 Codex 项目上下文仅投影 Runtime 根目录的 `AGENTS.override.md` 或 `AGENTS.md`，空 override 仍覆盖 base。它不是完整的 Codex 本机文件遍历：不读 Agent 私人配置，不自动枚举嵌套 instructions。Runtime/MCP 七工具及 ccrun/ACL/sudo/network policy 仍是原边界，固定 CLI tool policy 不等于 sandbox。
 
 实测依据与尚未开放的边界见 [Codex 内部接线](research/codex-internal-wiring-2026-09-07.md)。不扩展为 Agent Instance、多 Agent coordination 或并行 worktree 模型。
+
+## Agent Instance 配置边界（P2）
+
+后续 P2 已增加 node-scoped instance 配置与公开身份 DTO，范围仅为模型：Runtime workspace 保存 node/instance 引用；Agent registry 保存 provider/profile_ref；私有目录在 Agent-local profiles.toml 中独立解析。不复制 root 或远端 profile 定义。`WorkspaceBinding` 分别由 Runtime 校验 root/引用、Agent 校验完整 registry identity；`ResolvedAgent`/`ResolvedProfile` 不实现 Serialize/Debug，私有目录不进入绑定消息。
+
+新 instance workspace、v3 identity session 及其旧 MCP 调用目前均不可执行，旧配置及无 identity 的 session 保持兼容。P3 需要真正连接 binding、profile、权限与公共执行入口，而不是仅解除开关。契约、冲突和迁移预览见 [实例配置](agent-instance-config.md)。本阶段没有协调器、lease 或 worktree 编排。

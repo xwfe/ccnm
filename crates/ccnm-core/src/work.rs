@@ -166,6 +166,7 @@ pub fn run(req: &RunRequest, tools: &Tools<'_>) -> Result<RunReport> {
     let cwd = paths::workspace_dir(&tools.state, &req.workspace);
     std::fs::create_dir_all(&cwd)?;
     let spec = Spec {
+        agent_identity: None,
         provider: req.provider,
         protocol: req.provider.control_protocol(),
         id: session::new_id(),
@@ -446,6 +447,7 @@ fn start_fresh(
     let cwd = paths::workspace_dir(&tools.state, &req.workspace);
     std::fs::create_dir_all(&cwd)?;
     let spec = Spec {
+        agent_identity: None,
         provider: req.provider,
         protocol: req.provider.control_protocol(),
         id: session::new_id(),
@@ -1289,6 +1291,7 @@ mod tests {
         let sdir = session::Dir::at(paths::session_dir(&dir, id));
         std::fs::create_dir_all(sdir.path()).unwrap();
         let spec = Spec {
+            agent_identity: None,
             provider: Default::default(),
             protocol: PROTOCOL,
             id: id.into(),
@@ -1488,6 +1491,7 @@ mod tests {
         let sdir = session::Dir::at(paths::session_dir(&dir, id));
         std::fs::create_dir_all(sdir.path()).unwrap();
         let spec = Spec {
+            agent_identity: None,
             provider: Default::default(),
             protocol: PROTOCOL,
             id: id.into(),
@@ -1701,6 +1705,7 @@ mod tests {
             let sdir = session::Dir::at(paths::session_dir(&dir, id));
             std::fs::create_dir_all(sdir.path()).unwrap();
             let spec = Spec {
+                agent_identity: None,
                 provider: Default::default(),
                 protocol: PROTOCOL,
                 id: id.to_string(),

@@ -1233,6 +1233,7 @@ fn supervise_runs_the_session_and_writes_its_exit_record() {
         std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
     let spec = Spec {
+        agent_identity: None,
         provider: Default::default(),
         protocol: ccnm_core::protocol::PROTOCOL,
         id: session::new_id(),
@@ -1297,6 +1298,7 @@ fn codex_supervisor_records_launch_validation_failure_without_running_an_agent()
     let dir = Dir::at(root.join("session"));
     std::fs::create_dir_all(dir.path()).unwrap();
     let spec = Spec {
+        agent_identity: None,
         provider: AgentProvider::Codex,
         protocol: 2,
         id: "fixture".into(),

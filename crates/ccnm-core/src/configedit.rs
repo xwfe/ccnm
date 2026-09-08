@@ -54,7 +54,94 @@ pub struct Edit {
     existed: bool,
 }
 
+/// Read-only candidate text. Deliberately not a wire DTO or a write request.
+pub struct InstancePreview {
+    text: String,
+    reference: crate::instance::InstanceRef,
+}
+
+impl InstancePreview {
+    pub fn as_toml(&self) -> &str {
+        &self.text
+    }
+    pub fn reference(&self) -> &crate::instance::InstanceRef {
+        &self.reference
+    }
+}
+
 impl Edit {
+    /// Does not mutate this editor or disk. Registry/profile preparation stays
+    /// on Agent; a preview is not proof that the remote instance exists.
+    pub fn preview_instance(
+        &self,
+        workspace: &str,
+        reference: &crate::instance::InstanceRef,
+    ) -> Result<InstancePreview> {
+        reference.validate()?;
+        let config = Config::parse(&self.doc.to_string())?;
+        let ws = config
+            .workspaces
+            .get(workspace)
+            .ok_or_else(|| Error::config("unknown workspace for instance migration"))?;
+        if config.this.as_deref() != Some(ws.runtime_node.as_str()) {
+            return Err(Error::config(
+                "instance migration must be previewed on the authoritative Runtime",
+            ));
+        }
+        if let Some(current) = &ws.agent {
+            if current != reference {
+                return Err(Error::config(
+                    "preview cannot silently replace an existing instance reference",
+                ));
+            }
+            return Ok(InstancePreview {
+                text: self.doc.to_string(),
+                reference: reference.clone(),
+            });
+        }
+        if ws.agent_node != reference.node
+            || ws.claude_permission_mode != PermissionMode::default()
+            || config
+                .nodes
+                .get(&ws.agent_node)
+                .is_some_and(|node| node.claude_config_dir.is_some())
+        {
+            return Err(Error::config(
+                "legacy node, custom profile or permission mode needs an explicit migration decision; no private directory is copied",
+            ));
+        }
+        let mut candidate = self.doc.clone();
+        let table = candidate["workspaces"][workspace]
+            .as_table_mut()
+            .ok_or_else(|| Error::config("workspace is not an editable table"))?;
+        let key_decor = table
+            .get_key_value("agent_node")
+            .map(|(key, _)| key.leaf_decor().clone());
+        let old = table.remove("agent_node");
+        let mut target = toml_edit::InlineTable::new();
+        target.insert("node", reference.node.as_str().into());
+        target.insert("instance", reference.instance.as_str().into());
+        let mut target = toml_edit::Value::InlineTable(target);
+        if let Some(decor) = old
+            .as_ref()
+            .and_then(Item::as_value)
+            .map(|v| v.decor().clone())
+        {
+            *target.decor_mut() = decor;
+        }
+        table["agent"] = Item::Value(target);
+        if let Some(decor) = key_decor
+            && let Some((mut key, _)) = table.get_key_value_mut("agent")
+        {
+            *key.leaf_decor_mut() = decor;
+        }
+        let text = candidate.to_string();
+        Config::parse(&text)?;
+        Ok(InstancePreview {
+            text,
+            reference: reference.clone(),
+        })
+    }
     pub fn open(path: &Path) -> Result<Edit> {
         let (doc, existed) = match std::fs::read_to_string(path) {
             Ok(text) => (

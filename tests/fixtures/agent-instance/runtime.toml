@@ -1,0 +1,7 @@
+this = "runtime"
+[nodes.runtime]
+[nodes.worker]
+ssh = "agent-alias"
+[workspaces.demo]
+root = "/runtime/project"
+agent = { node = "worker", instance = "claude-main" }

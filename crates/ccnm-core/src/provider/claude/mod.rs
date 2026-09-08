@@ -403,6 +403,7 @@ mod tests {
 
     fn spec() -> Spec {
         Spec {
+            agent_identity: None,
             provider: Default::default(),
             protocol: crate::protocol::PROTOCOL,
             id: "0b4c7a1e-2d3f-4a5b-8c6d-7e8f9a0b1c2d".into(),

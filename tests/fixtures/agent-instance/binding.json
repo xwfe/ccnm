@@ -1,0 +1,11 @@
+{
+  "workspace": "demo",
+  "runtime_node": "runtime",
+  "root": "/runtime/project",
+  "agent": {
+    "node": "worker",
+    "instance": "codex-main",
+    "provider": "codex",
+    "profile_ref": "default"
+  }
+}

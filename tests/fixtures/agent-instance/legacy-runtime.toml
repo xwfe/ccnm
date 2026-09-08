@@ -1,0 +1,12 @@
+# Keep the Runtime definition and comments in a preview.
+this = "runtime"
+[nodes.runtime]
+[nodes.worker]
+ssh = "agent-alias"
+[workspaces.demo]
+root = "/runtime/project"
+# Keep this selector's leading explanation too.
+agent_node = "worker" # retain selector explanation
+[workspaces.untouched]
+root = "/runtime/other"
+agent_node = "worker"

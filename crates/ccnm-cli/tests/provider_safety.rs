@@ -48,6 +48,7 @@ fn claude_mcp_launch_plan_and_shared_exec_environment_boundary() {
     let dir = session::Dir::at(root.join("session"));
     std::fs::create_dir(dir.path()).unwrap();
     let spec = session::Spec {
+        agent_identity: None,
         protocol: 1,
         provider: AgentProvider::Claude,
         id: "fixture".into(),

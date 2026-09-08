@@ -21,6 +21,7 @@ use crate::provider::AgentResult;
 use crate::session::Outcome;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RunRequest {
     pub protocol: u32,
     #[serde(
@@ -110,6 +111,7 @@ impl RunReport {
 /// one is already up. Carries no timeout — an interactive session ends when
 /// the person using it ends it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StartRequest {
     pub protocol: u32,
     #[serde(
@@ -223,6 +225,7 @@ impl StartReport {
 /// The only internal command that answers with a terminal instead of a
 /// JSON document.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AttachRequest {
     pub protocol: u32,
     pub workspace: String,
@@ -236,6 +239,7 @@ impl Protocol for AttachRequest {
 
 /// `ccnm internal agent-stop`: end the workspace's session.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StopRequest {
     pub protocol: u32,
     pub workspace: String,
@@ -269,6 +273,7 @@ impl Protocol for StopReport {
 /// waiting — the ssh carrying `agent-run` dies with the laptop lid, and the
 /// answer is on the other machine with no way to ask for it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ResultRequest {
     pub protocol: u32,
     pub workspace: String,
@@ -334,6 +339,7 @@ impl ResultReport {
 /// machine ccnm did not create, and a cleanup command that could delete
 /// someone's source tree is not a cleanup command.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PurgeRequest {
     pub protocol: u32,
     pub workspace: String,
@@ -364,6 +370,7 @@ impl Protocol for PurgeReport {
 
 /// `ccnm internal agent-status`: every live session on the Agent Node.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StatusRequest {
     pub protocol: u32,
     /// Only this workspace's session; `None` for all of ccnm's.

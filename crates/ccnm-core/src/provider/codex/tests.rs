@@ -5,6 +5,7 @@ use crate::session::{Mode, RuntimeLink};
 
 fn spec(mode: Mode) -> Spec {
     Spec {
+        agent_identity: None,
         protocol: 2,
         provider: AgentProvider::Codex,
         id: "fixture-session".into(),

@@ -166,6 +166,7 @@ pub fn parse_managername(out: &Output) -> Result<String> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Request {
     pub protocol: u32,
     pub body: RequestBody,
@@ -190,7 +191,7 @@ impl Protocol for Request {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "request", rename_all = "kebab-case")]
+#[serde(tag = "request", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum RequestBody {
     /// Who is listening, and in which security session.
     Hello,
@@ -335,6 +336,7 @@ fn start_session(session_dir: &Path, provider: AgentProvider, tools: &Tools<'_>)
         .ok_or_else(|| provider.missing_controller_cli())?;
     let dir = session::Dir::at(session_dir);
     let spec = session::load(&dir)?;
+    spec.require_legacy_execution()?;
     if provider != spec.provider() {
         return Err(Error::invalid_args(
             "controller provider does not match session",
@@ -798,6 +800,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let spec = session::Spec {
+            agent_identity: None,
             provider: Default::default(),
             protocol: PROTOCOL,
             id: "0b4c7a1e-2d3f-4a5b-8c6d-7e8f9a0b1c2d".into(),

@@ -14,6 +14,7 @@ use super::payload::{PROTOCOL, Protocol};
 
 /// What `ccnm internal mcp-serve --payload` needs to know.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ServePayload {
     pub protocol: u32,
     #[serde(

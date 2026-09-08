@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Request {
     pub protocol: u32,
     pub session_dir: PathBuf,
@@ -32,6 +33,7 @@ pub fn launcher(dir: &Dir, exe: &std::path::Path) -> Result<Cmd> {
 }
 
 pub fn command(spec: &Spec) -> Result<Cmd> {
+    spec.require_legacy_execution()?;
     let runtime = spec
         .runtime
         .as_ref()

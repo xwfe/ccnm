@@ -15,16 +15,20 @@
 
 ## 校验与兼容
 
-- 新配置/身份/引用拒绝未知字段、未知 provider、重复 TOML 定义和非法名字。instance/profile 名为最多 64 字节的 `[A-Za-z0-9][A-Za-z0-9_-]*`，不能用路径代替引用。
+- 新配置/身份/引用拒绝未知字段、未知 provider、重复 TOML 定义和非法名字。新引用的 node/instance/profile 及 instance workspace 名为最多 64 字节的 `[A-Za-z0-9][A-Za-z0-9_-]*`，不能用路径代替引用；不回改 legacy 名字规则。
 - workspace 必须且只能使用 `agent_node`（legacy）或 `agent`（instance）之一。新引用不能同时使用非默认 `claude_permission_mode`，也不能借 Node 的 `claude_config_dir` 偷换 profile；有旧自定义目录时先处理迁移冲突。
 - Agent registry 只定义本机 instance；profile 引用在 Agent 解析时校验，Runtime 不猜远端是否存在。普通配置 parse 不读取 profiles 文件、认证文件或目录。
+- 新 instance workspace 的 root 只能出现在它的 Runtime 配置中。Agent 接收 binding 时核对 Runtime 是否在本地 nodes 中可达；顶层 runtime_node 只是 CLI 默认委派目标，不是第二份 workspace 定义或唯一 Runtime 授权名单。
 - 已知内部支持是 SSH MCP + print/interactive，不是生产 READY。两 Provider 的新 instance colocated/native 均拒绝：Claude 有未修复缺陷，Codex 没有验收。hybrid 等未实现 backend 也拒绝。旧 Claude topology/参数行为不顺手修复。
 - 没有新字段的配置继续原样解析/执行。instance-selected workspace 在现有执行解析入口明确报未开放，不能误用默认 Claude；注册 instance 本身不改变旧 workspace 的选择。
 - session 增加可选的公开 `agent_identity`；旧记录不增加字段。含 identity 的记录要求内部版本 3，旧 peer 拒绝而非忽略身份后执行；P2 所有实际 session 创建/启动/supervise 入口仍拒绝这种记录。身份不一致、损坏或过期绑定拒绝。
+- 旧 run/start 请求拒绝夹带新身份字段；Runtime 的旧 MCP payload 也不能执行已选择 instance 的 workspace。P3 必须接入真实 binding 校验，不能只删除关闭开关。
 
 ## Profile 与迁移
 
 配置解析只返回计划，不表示目录存在、已登录或安全。执行前仍须 P1 的属主/权限/symlink 检查和官方 CLI 认证/版本探测；新 profile 必须由用户在 Agent 登录会话里独立官方登录。没有真实登录的 profile 不能自动借用 default。
+
+named profile 拒绝相同目录字面路径和覆盖内建 default；文件系统上的其他别名/ACL、实际登录与运行时目录注入仍需 P3 验证。profiles.toml 自身要求当前 UID 所有、仅属主可读写、非 symlink；文件缺失只提供内建 default，不让未知 named ref 回落。
 
 迁移预览是 `configedit` 的只读 API：在内存里的 TOML 副本中，把指定 legacy workspace 改成同一 node 的 instance 引用，保留其他 workspace 和注释；返回候选文本，不调用 save。非默认权限、自定义 legacy 目录或跨 node 替换拒绝自动转换，避免把安全含义不同的字段机械搬过去。Agent registry/profile 必须另在 Agent 本地准备并验证；预览不伪造它们，也不复制私有目录。
 

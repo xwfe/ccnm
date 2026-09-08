@@ -10,7 +10,53 @@ ccnm 默认读取：
 
 **每台机器有自己的一份，内容不一样。** 不要把同一份文件复制到两台机器上——里面的 `ssh` alias 是"从本机出发"的，复制过去就指错地方了。
 
-配置描述的是 **Node** 和 **workspace**。Node 名是你自己起的标识符；`ccnm init` 默认用 `agent` 和 `runtime`。
+配置描述的是 **Node** 和 **workspace**。Node 名是你自己起的标识符；`ccnm init` 默认用 `agent` 和 `runtime`。P2 另支持下文的 Agent Instance 配置模型，但实例执行入口尚未开放。
+
+## Agent Instance 模型（可解析，暂不可执行）
+
+Runtime 只持引用，不复制 Agent 的 provider/profile 定义：
+
+```toml
+this = "runtime"
+[nodes.runtime]
+[nodes.worker]
+ssh = "agent-ssh-alias"
+[workspaces.demo]
+root = "/runtime/project"
+agent = { node = "worker", instance = "codex-main" }
+```
+
+Agent 在自己的配置中定义 instance；node 由 this 给出，id 是表名：
+
+```toml
+this = "worker"
+runtime_node = "runtime"
+[nodes.worker]
+[nodes.runtime]
+ssh = "runtime-ssh-alias"
+[agents.claude-main]
+provider = "claude"
+profile_ref = "default"
+[agents.codex-main]
+provider = "codex"
+profile_ref = "default"
+```
+
+default 按 provider 区分：Claude 为 Agent 的 `~/.claude`；Codex 保持 `~/.config/ccnm/agents/codex/`（尊重 Agent 的 XDG_CONFIG_HOME），不复用个人 `~/.codex`，不继承 CODEX_HOME 来改变身份。两个 default 不需要创建 profiles.toml。
+
+named profile 的路径只定义在 **Agent-local** `~/.config/ccnm/profiles.toml`，不放到 Runtime 配置或 instance binding 中：
+
+```toml
+[profiles.claude-extra]
+provider = "claude"
+directory = "/absolute/agent/private/claude-extra"
+```
+
+这是路径 schema 示例，不代表目录已存在或已登录。文件必须归当前 Agent UID、不向组/其他用户授权（建议 0600）且非 symlink；通过 `profile_ref = "claude-extra"` 引用。profile 未定义、provider 不匹配、目录是相对路径/含 `..`、重复目录或覆盖 default 均不接受。新目录需要用户独立官方登录，ccnm 不创建、复制或链接 auth。
+
+迁移预览目前仅有库 API `configedit::Edit::preview_instance(workspace, &InstanceRef)`，返回候选 TOML，不修改 editor 或磁盘，没有自动迁移命令。已有自定义 `claude_config_dir`、非默认权限或跨 Node 迁移会拒绝机械转换，需先确定语义；其他 workspace 与注释保留。更多约束见 [实例契约](agent-instance-config.md)。
+
+**当前用新 agent 字段调用 run、旧内部 session/MCP 执行入口会被拒绝，不会退回 Claude。** 要继续现有工作，请保留下面的 legacy 配置；P3 才接入公共选择、真实 profile preflight 和执行闭环。
 
 ## 最小的两份配置
 

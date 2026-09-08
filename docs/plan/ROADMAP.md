@@ -52,7 +52,7 @@ ccnm 不需要安装 Orchestrator 也能独立使用。Orchestrator 核心不链
 
 ### P1 — Provider 安全契约收敛
 
-**依赖 P0。下一项。**先写明安全契约，再集中散落的 Claude/Codex 特判。不改公开配置，不新增第三 Provider，不开始 RPC。
+**依赖 P0。**先写明安全契约，再集中散落的 Claude/Codex 特判。不改公开配置，不新增第三 Provider，不开始 RPC。
 
 主要落点：`provider/`、`safety.rs`、`ssh.rs`、`mcp/exec.rs`、Controller/session 的 preflight。Provider 返回策略/需求，通用层执行；不要将所有 SSH/MCP 机制搬到 Codex 模块。
 
@@ -160,6 +160,6 @@ ccnm 不需要安装 Orchestrator 也能独立使用。Orchestrator 核心不链
 
 worktree **分配、调度、合并策略**在 Orchestrator；受管 workspace 的执行授权、写互斥和必要低层操作在执行 backend。确需新增 backend 操作时另提 ccnm capability，不让协调层绕过执行端边界。
 
-## 三、本轮不实施的内容
+## 三、首次规划提交的范围（历史说明）
 
-本次只落地计划、状态、模型入口与检查工具；不执行 P1…P8 的产品改动，不创建 Orchestrator 仓库，不部署，不登录，不更改 OS 用户/ACL/防火墙，不恢复用户已删除的历史设计文档。`status.json` 的 P1 必须保持 pending，不能把“规划已提交”当作“安全泛化已完成”。
+首次规划提交 `7c41f6f` 只落地计划、状态、模型入口与检查工具；当时不执行 P1…P8 的产品改动、不创建 Orchestrator、不部署/登录/更改 OS 策略，P1 保持 pending。之后按用户请求与 `status.json.current_task` 逐阶段执行，不能用这段历史说明覆盖当前状态，也不能把“规划已提交”当作“产品验收已完成”。系统与部署动作仍需逐项授权，不恢复用户已删除的历史文档。

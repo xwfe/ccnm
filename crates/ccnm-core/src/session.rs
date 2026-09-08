@@ -78,6 +78,8 @@ pub const SSH_BIN: &str = "/usr/bin/ssh";
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Spec {
     pub protocol: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_identity: Option<crate::instance::AgentIdentity>,
     #[serde(
         default,
         skip_serializing_if = "crate::provider::AgentProvider::is_claude"
@@ -114,6 +116,48 @@ pub struct Spec {
 }
 
 impl Spec {
+    pub fn validate_identity(&self) -> Result<()> {
+        if let Some(identity) = &self.agent_identity {
+            identity.validate()?;
+            crate::instance::identifier(&self.workspace)?;
+            if self.runtime.is_none() || !crate::instance::profiles::absolute(&self.root) {
+                return Err(Error::invalid_args(
+                    "instance session requires an absolute Runtime root and a remote link",
+                ));
+            }
+            if self.provider_config_dir.is_some()
+                || self.permission_mode != PermissionMode::default()
+            {
+                return Err(Error::invalid_args(
+                    "instance session cannot carry legacy profile or permission overrides",
+                ));
+            }
+            if identity.provider != self.provider {
+                return Err(Error::invalid_args(
+                    "session provider differs from its bound Agent identity",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    pub fn check_agent_binding(&self, identity: &crate::instance::AgentIdentity) -> Result<()> {
+        self.validate_identity()?;
+        if self.agent_identity.as_ref() != Some(identity) {
+            return Err(Error::invalid_args(
+                "session Agent identity does not match the resolved binding",
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn require_legacy_execution(&self) -> Result<()> {
+        self.validate_identity()?;
+        if self.agent_identity.is_some() {
+            return Err(crate::instance::execution_not_open());
+        }
+        Ok(())
+    }
     /// v1 sessions have no provider selector. Preserve old records and default
     /// behavior until a real second provider establishes the next contract.
     pub fn provider(&self) -> AgentProvider {
@@ -126,7 +170,11 @@ impl Protocol for Spec {
         self.protocol
     }
     fn expected_protocol(&self) -> u32 {
-        self.provider.control_protocol()
+        if self.agent_identity.is_some() {
+            crate::instance::INSTANCE_SESSION_PROTOCOL
+        } else {
+            self.provider.control_protocol()
+        }
     }
 }
 
@@ -286,6 +334,7 @@ pub fn read_context(dir: &Dir) -> Option<Context> {
 /// MCP config there would point a transport at this same machine and take
 /// away the tools that are the only ones able to do the job.
 pub fn create(state: &Path, spec: &Spec, ssh: Option<&Ssh>) -> Result<Dir> {
+    spec.require_legacy_execution()?;
     if spec.provider() == AgentProvider::Codex {
         crate::provider::codex::validate_spec(spec)?;
     }
@@ -321,7 +370,9 @@ pub fn load(dir: &Dir) -> Result<Spec> {
     let bytes = fs::read(dir.meta()).map_err(|e| {
         Error::internal(format!("cannot read {}", dir.meta().display())).with_source(e)
     })?;
-    payload::decode_json(&bytes)
+    let spec: Spec = payload::decode_json(&bytes)?;
+    spec.validate_identity()?;
+    Ok(spec)
 }
 
 pub(crate) fn pretty<T: Serialize>(value: &T) -> Result<String> {
@@ -460,6 +511,7 @@ fn write_outcome(dir: &Dir, outcome: &Outcome) -> Result<()> {
 
 /// What `ccnm internal supervise --payload` is told.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SuperviseRequest {
     pub protocol: u32,
     #[serde(
@@ -503,6 +555,7 @@ impl Protocol for SuperviseRequest {
 pub fn supervise(req: &SuperviseRequest) -> Result<Outcome> {
     let dir = Dir::at(&req.session_dir);
     let spec = load(&dir)?;
+    spec.require_legacy_execution()?;
     if req.provider != spec.provider() {
         return Err(Error::invalid_args(
             "supervisor provider does not match session",
@@ -642,6 +695,7 @@ mod tests {
 
     fn spec() -> Spec {
         Spec {
+            agent_identity: None,
             provider: Default::default(),
             protocol: PROTOCOL,
             id: "0b4c7a1e-2d3f-4a5b-8c6d-7e8f9a0b1c2d".into(),

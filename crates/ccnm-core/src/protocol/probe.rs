@@ -19,6 +19,7 @@ use crate::provider::AgentReport;
 use crate::ssh::ResolvedSsh;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProbeRequest {
     pub protocol: u32,
     #[serde(

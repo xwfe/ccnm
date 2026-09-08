@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-09-08T11:30:46+09:00",
-  "current_task": "P2",
+  "last_updated": "2026-09-08T12:22:59+09:00",
+  "current_task": "P3",
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
     "source": "docs/research/codex-internal-wiring-2026-09-07.md",
@@ -100,15 +100,51 @@
     {
       "id": "P2",
       "title": "Agent Instance 公共配置模型",
-      "status": "in_progress",
+      "status": "completed",
       "depends_on": [
         "P1"
       ],
-      "owner": "Codex / P2 instance configuration",
+      "owner": null,
       "started_at": "2026-09-08T11:30:46+09:00",
-      "last_updated": "2026-09-08T11:30:46+09:00",
-      "completed_criteria": [],
-      "evidence": [],
+      "last_updated": "2026-09-08T12:22:59+09:00",
+      "completed_criteria": [
+        "P2.1",
+        "P2.2",
+        "P2.3",
+        "P2.4"
+      ],
+      "evidence": [
+        {
+          "kind": "review",
+          "criteria": [
+            "P2.1"
+          ],
+          "ref": "docs/agent-instance-config.md",
+          "commit": "3e43220",
+          "result": "先提交 node-scoped instance、Runtime root 权威、Agent-local profiles 与 legacy 兼容契约；本轮按测试自审收敛，不代表外部评审或生产鉴权。"
+        },
+        {
+          "kind": "offline",
+          "criteria": [
+            "P2.1",
+            "P2.2",
+            "P2.3",
+            "P2.4"
+          ],
+          "ref": "docs/research/agent-instance-p2-2026-09-08.md",
+          "result": "macOS：fmt、严格 clippy 通过；cargo test --workspace 485 passed / 0 failed；Python 19 passed。P2 专项 19 个配置/绑定测试与 3 个 CLI 关闭门禁测试。保持原 Claude/Codex golden、旧 session 结果读取及 default Codex HOME；全部 profile/auth 数据为合成 fixture，不查询真实登录、不部署。"
+        },
+        {
+          "kind": "offline",
+          "criteria": [
+            "P2.1",
+            "P2.2",
+            "P2.4"
+          ],
+          "ref": "tests/fixtures/agent-instance/binding.json",
+          "result": "配对 Runtime/Agent/Agent-local profile fixture 验证完整身份与 root 双端绑定；公开数据无 profile 路径。未知/重复/冲突、provider/profile 替换、unsupported topology、版本 3 记录关闭与旧请求不静默忽略身份均有回归。"
+        }
+      ],
       "blockers": []
     },
     {
@@ -201,23 +237,25 @@
     "Codex 目前只有内部入口，限定实测版本 0.153.4；colocated 未开放。",
     "现有双机 Codex 证据使用 scratch Runtime，不是生产 ccrun/ACL/sudo/egress 验收。",
     "旧 Runtime 拒绝 v2 时可能以退出码 0 结束；协议错误不能被退出码掩盖。",
-    "Agent Instance、公共 Machine API、Runtime 跨入口写入互斥和独立 Orchestrator 均未在本轮实施。",
+    "Agent Instance 配置/绑定已在 P2 完成；公共 instance 执行、Machine API、Runtime 跨入口写入互斥和独立 Orchestrator 仍未实施。",
     "P1 安全检查已收敛但尚未部署；旧 Runtime 不因此获得新门禁，现有 0.2.0/v1/v2 握手不宣告 P1 安全能力，P3 真机部署须核对两端构建来源/指纹及服务端环境策略。",
-    "Claude v1 的 claude_config_dir 保留旧参数语义；P2 必须定义 Agent-local profile 引用与 legacy 冲突/迁移，不能把旧明文路径当新 profile 授权模型。"
+    "Claude v1 的 claude_config_dir 保留旧参数语义；P2 必须定义 Agent-local profile 引用与 legacy 冲突/迁移，不能把旧明文路径当新 profile 授权模型。",
+    "P2 不允许新 instance/v3 session 执行。P3 必须真正连接 binding、Agent-local profile 目录的认证/启动/脱敏与 Runtime 验证，不能只删 guard；当前 Codex 内部 adapter 仍使用原专用 default HOME。",
+    "P2 首轮全量中既有 journal 锁测试曾失败；定点与后续完整门禁通过，但未修改 patch 模块或证明该非稳定现象已修复。"
   ],
   "handoff": {
-    "next_action": "P2 已认领：先定义 node-scoped instance 引用、Agent-local profile 与 legacy 冲突契约，再实现只读解析/绑定、迁移预览及 session 身份字段；不开放 instance 执行。",
-    "scope": "仅 P2 配置模型；基线 dc5f7db 工作区干净，原有 6 项变更已由该用户提交收录。",
+    "next_action": "P2 已完成并停止。下一轮只认领 P3：读取 ROADMAP P3、实例契约及 P2 执行边界；先设计公共 --agent/default 选择与 Runtime 授权/binding，再把解析后的私有 profile 连接到 Agent-local auth/launch/redaction。必须补 Runtime 写互斥、身份精确寻址和生命周期后才解除关闭门禁；真实账号/ACL/网络/部署先核对具体授权。",
+    "scope": "仅完成 P2 配置模型、只读迁移与关闭门禁；未开始 P3，未开放 Codex/instance 公共执行，未操作真实登录或安装。",
     "planning_validation": {
-      "at": "2026-09-08T11:13:05+09:00",
+      "at": "2026-09-08T12:22:59+09:00",
       "commands": [
         "cargo fmt --all --check：通过",
         "cargo clippy --workspace --all-targets -- -D warnings：通过",
-        "cargo test --workspace：463 passed / 0 failed",
+        "cargo test --workspace：485 passed / 0 failed",
         "python3 -B -m unittest discover -s tests -p test_*.py -v：19 passed",
         "python3 scripts/check_plan.py 与 git diff --check：通过"
       ],
-      "limits": "仅离线 fixture、受控子进程及 OpenSSH 本机配置解析；不是重跑 P0 真机或 P3 生产权限。6 项用户既有修改的 binary diff 核对一致；原 Claude/Codex golden 未改。"
+      "limits": "本轮仅离线、合成 profile/目录/auth sentinel 与 marker 子进程；不是 P3 真机/生产权限验收。基线工作区干净，原用户变更已在 dc5f7db；原 Claude/Codex golden 未修改。"
     },
     "inherited_changes": [],
     "authorization": "本轮规划不授权真实 Agent 调用、创建账号、ACL/防火墙变更、登录、部署或新建 Orchestrator 仓库；后续对应动作逐项确认已有授权。",

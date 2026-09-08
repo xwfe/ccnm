@@ -144,6 +144,7 @@ impl WorkspaceInfo {
 /// being protected, and a caller must not be able to widen it.
 struct ExecGate {
     audit: crate::safety::Audit,
+    instance_selected: bool,
     /// The workspace said it accepts an unconfined runtime.
     accepted: bool,
 }
@@ -169,6 +170,10 @@ impl ExecGate {
         let home = crate::paths::home_dir().unwrap_or_else(|_| PathBuf::from("/nonexistent"));
         ExecGate {
             audit: crate::safety::audit(expected.as_deref(), &home, &SystemRunner),
+            instance_selected: config
+                .as_ref()
+                .and_then(|c| c.workspaces.get(workspace))
+                .is_some_and(|ws| ws.agent.is_some()),
             accepted,
         }
     }
@@ -236,6 +241,11 @@ impl Server {
     }
 
     fn with_gate(payload: &ServePayload, root: PathBuf, exec_gate: ExecGate) -> CcnmResult<Self> {
+        // P2 has configuration bindings, not an executable bound MCP request.
+        // A legacy payload must not bypass the closed public instance entrypoint.
+        if exec_gate.instance_selected {
+            return Err(crate::instance::execution_not_open());
+        }
         // Before any workspace-dependent subprocess (including Git), not just
         // exec_command. An unconfined opt-in cannot grant Agent credentials.
         if !exec_gate.audit.agent_boundary_clear() {
@@ -722,6 +732,7 @@ mod tests {
                     findings: vec![],
                 },
                 accepted: false,
+                instance_selected: false,
             },
         )
     }

@@ -53,8 +53,18 @@
 
 - fodelf：账号 `ccnmp3test`、home `/Users/ccnmp3test`、root 清单 `/var/db/ccnm-p3-account-20260908`；上传目录 `/tmp/ccnm-p3-setup.TnaRle`，含创建脚本、公钥 `runtime.pub` 与授权脚本。
 - 本机：`/Users/bing/.config/ccnm/p3-ssh-0a8i4v2q`，含一次性 SSH 密钥对及 `resources.json`。私钥仅在本机，未传输，未读取内容。
-- 待授权脚本创建：远端 `/Users/ccnmp3test/.ssh` 和 `authorized_keys`，以 root 清单 `ssh-resources.txt` 记录。现有 `.ssh` 一律拒绝覆盖。
+- 授权脚本已创建（用户报告成功且 SSH 实测通过）：远端 `/Users/ccnmp3test/.ssh` 和 `authorized_keys`，以 root 清单 `ssh-resources.txt` 记录。现有 `.ssh` 一律拒绝覆盖。
 
-`p3-authorize-runtime-key.sh` 只允许安装指纹 `SHA256:AlJxpK96ks8KDg0woK1tSluntPXRt9XV0ZA/Rp2HPZ4` 的单行 ed25519 公钥，禁止 agent/端口/X11 转发及 user rc；不改 SSH 服务策略。脚本已上传且 SHA-256 与仓库一致：`cf0f8ed8552512174ae27059acc2ccf8c79d3f600ccb00e53b30447d49547988`。下一步用户在 fodelf 终端执行 `sudo /bin/bash /tmp/ccnm-p3-setup.TnaRle/authorize-runtime-key.sh --apply`；返回结果后验证专用账号 SSH 与实际凭据隔离，不能用管理员身份或假 HOME 代替。
+`p3-authorize-runtime-key.sh` 只允许安装指纹 `SHA256:AlJxpK96ks8KDg0woK1tSluntPXRt9XV0ZA/Rp2HPZ4` 的单行 ed25519 公钥，禁止 agent/端口/X11 转发及 user rc；不改 SSH 服务策略。脚本已上传且 SHA-256 与仓库一致：`cf0f8ed8552512174ae27059acc2ccf8c79d3f600ccb00e53b30447d49547988`。此步骤用户已执行成功，后续实测与当前阻塞见下一节。
 
-5 个脚本无特权入口测试通过；本轮 Python 全量 24 通过。实际授权、SSH、凭据隔离和清理尚未验证；未改 ACL/防火墙、未启动模型。本机已有 ccrun 和两端 Agent 登录保持不变。
+上一轮 5 个脚本入口测试、Python 全量 24 通过；本轮增加独立组脚本入口检查，Python 全量 25 通过。清理尚未验证；未改 ACL/防火墙、未启动模型。本机已有 ccrun 和两端 Agent 登录保持不变。
+
+## SSH 实测后的主组修正
+
+公钥安装后，实际 SSH 登录已通过，UID 550，真实 HOME 为 `/Users/ccnmp3test`，无 CODEX_HOME/CLAUDE_CONFIG_DIR/SSH_AUTH_SOCK。已知 Claude 凭据、login Keychain 不可读，4 个非公开 SSH 候选条目均不可读，两个已知 Docker socket 不可写，`sudo -n true` 拒绝；没有读取任何凭据内容。结果见 `tests/fixtures/p3-runtime-identity/result.json`。这些不是完整提权审计或 egress 验收。
+
+隔离未接受：fodelf home 是 501:20、0750，临时账号继承 staff 主组，能读取 Agent 的 `.claude` 和 `.ssh` 目录。不能以凭据叶子文件不可读掩盖这个已知缺口。修正只改变临时账号，不向个人 HOME 添加 ACL。
+
+待执行 `scripts/p3-isolate-runtime-group.sh --apply`：核对账号、目录所有权、无活跃 UID550 进程、组名/GID550 未占用后，创建本轮 `ccnmp3test` 独立组并改临时账号及 home/.ssh/authorized_keys 主组；不递归修改其他路径。变更前登记 root 清单 `group-resources.txt`；碰撞/部分失败保留现场，不重试覆盖。用户执行路径是 `/tmp/ccnm-p3-setup.TnaRle/isolate-runtime-group.sh`，上传 SHA-256 与仓库一致：`bf5dacccee51538ba232052535c6d4169bb5ac5896ad25606be8111f16b46899`。
+
+清理新增组时，先完成前述账号/文件清理，确认没有其他账号使用 GID550、组标记及本轮清单匹配，再删除本轮组及清单；发现其他使用者或未知残留则停止，不自动恢复成 staff 继续验收。当前组修正尚未执行，未启动真实 Agent。

@@ -1,0 +1,23 @@
+{
+  "kind": "real_nodes",
+  "runtime_user": "ccnmp3test",
+  "uid": 550,
+  "primary_gid": 20,
+  "real_home": "/Users/ccnmp3test",
+  "ssh_login": true,
+  "known_claude_credential_readable": false,
+  "login_keychain_readable": false,
+  "ssh_nonpublic_candidates": 4,
+  "ssh_nonpublic_readable": 0,
+  "agent_claude_directory_readable": true,
+  "agent_ssh_directory_readable": true,
+  "docker_sockets_writable": false,
+  "sudo_noninteractive_allowed": false,
+  "environment_present": {
+    "CODEX_HOME": false,
+    "CLAUDE_CONFIG_DIR": false,
+    "SSH_AUTH_SOCK": false
+  },
+  "isolation_accepted": false,
+  "limits": "test -r/-w only; no credential contents read; sudo denial does not prove all privilege escalation paths absent; independent group fix pending user execution"
+}

@@ -16,13 +16,22 @@ class RuntimeUserScriptTests(unittest.TestCase):
         )
 
     def test_syntax(self):
-        for script in [SCRIPT, SCRIPT.with_name("p3-authorize-runtime-key.sh")]:
+        for script in [SCRIPT, SCRIPT.with_name("p3-authorize-runtime-key.sh"),
+                       SCRIPT.with_name("p3-isolate-runtime-group.sh")]:
             result = subprocess.run(["/bin/bash", "-n", str(script)], check=False)
             self.assertEqual(result.returncode, 0)
 
     def test_authorization_wrong_operator_refused(self):
         result = subprocess.run(
             ["/bin/bash", str(SCRIPT.with_name("p3-authorize-runtime-key.sh")), "--apply"],
+            env={**os.environ, "SUDO_USER": "not-authorized"},
+            capture_output=True, text=True, check=False,
+        )
+        self.assertNotEqual(result.returncode, 0)
+
+    def test_group_wrong_operator_refused(self):
+        result = subprocess.run(
+            ["/bin/bash", str(SCRIPT.with_name("p3-isolate-runtime-group.sh")), "--apply"],
             env={**os.environ, "SUDO_USER": "not-authorized"},
             capture_output=True, text=True, check=False,
         )

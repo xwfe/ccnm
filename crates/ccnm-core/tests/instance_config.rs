@@ -97,9 +97,9 @@ fn configuration_roundtrips_without_private_profile_definitions() {
         Config::parse(RUNTIME)
             .unwrap()
             .workspace("demo")
-            .unwrap_err()
-            .code(),
-        ccnm_core::ErrorCode::NotReady
+            .unwrap()
+            .agent_node(),
+        "worker"
     );
 }
 
@@ -319,7 +319,13 @@ fn substitutions_and_stale_registry_identity_fail_on_the_authoritative_side() {
     );
     let mut changed = binding.clone();
     changed.agent.instance = "claude-main".into();
-    assert!(runtime.verify_runtime_binding(&changed).is_err());
+    runtime.verify_runtime_binding(&changed).unwrap();
+    assert!(
+        agent
+            .resolve_bound_instance(&changed, &profiles, home, None)
+            .is_err(),
+        "same-node override is Runtime-authorized but still Agent-resolved"
+    );
     let mut changed = binding.clone();
     changed.runtime_node = "other".into();
     assert!(
@@ -475,7 +481,7 @@ fn root_authority_is_not_a_second_workspace_registry_on_the_agent() {
 }
 
 #[test]
-fn session_identity_requires_version_three_and_cannot_be_executed_in_p2() {
+fn session_identity_requires_version_three_and_a_verified_remote_transport() {
     use ccnm_core::{
         protocol::payload,
         session::{Dir, Mode, Spec},
@@ -483,6 +489,7 @@ fn session_identity_requires_version_three_and_cannot_be_executed_in_p2() {
     let (_, _, binding) = bound();
     let f = Fixture::new();
     let spec = Spec {
+        runtime_node: Some("runtime".into()),
         protocol: 3,
         agent_identity: Some(binding.agent.clone()),
         provider: AgentProvider::Codex,
@@ -513,7 +520,7 @@ fn session_identity_requires_version_three_and_cannot_be_executed_in_p2() {
     assert!(loaded.check_agent_binding(&wrong).is_err());
     assert!(ccnm_core::session::create(&f.0.join("state"), &spec, None).is_err());
     assert!(!f.0.join("state").exists());
-    assert!(ccnm_core::session::transport::command(&spec).is_err());
+    assert!(ccnm_core::session::transport::command(&spec).is_ok());
     let mut wrong = spec.clone();
     wrong.protocol = 2;
     assert!(payload::decode_json::<Spec>(&serde_json::to_vec(&wrong).unwrap()).is_err());

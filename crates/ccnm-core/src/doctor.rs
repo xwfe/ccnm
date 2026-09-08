@@ -18,9 +18,9 @@
 //! root, the ccnm binary the Agent Node will invoke back here, how the
 //! work alias resolves), then makes one `ccnm internal probe` call to the
 //! Agent Node and renders a row per fact it brings back: its ccnm,
-//! Claude and its login, and the reverse ssh's hello from this machine.
-//! The MCP handshake and everything after it stay SKIP until their phase
-//! lands, and a SKIP still blocks READY.
+//! the selected Agent and its login, and the reverse ssh's hello from this
+//! machine. Checks ccnm cannot prove without a live session or external OS
+//! policy stay SKIP, and a SKIP still blocks READY.
 //!
 //! # Invariant: doctor is read-only
 //!
@@ -223,6 +223,15 @@ impl Report {
 
 /// Run every check this build can perform.
 pub fn run(config_path: &Path, workspace: Option<&str>, env: &Env<'_>) -> Report {
+    run_selected(config_path, workspace, None, env)
+}
+
+pub fn run_selected(
+    config_path: &Path,
+    workspace: Option<&str>,
+    agent: Option<&str>,
+    env: &Env<'_>,
+) -> Report {
     let subject = workspace.unwrap_or("config").to_string();
     let mut checks = Vec::new();
 
@@ -250,7 +259,7 @@ pub fn run(config_path: &Path, workspace: Option<&str>, env: &Env<'_>) -> Report
         Some(name) => match config.workspace(name) {
             Ok(resolved) => {
                 checks.push(Check::ok("Workspace config", describe_workspace(&resolved)));
-                checks.extend(workspace_checks(&resolved, env));
+                checks.extend(workspace_checks(&resolved, agent, env));
             }
             Err(err) => checks.push(Check::fail("Workspace config", &err)),
         },
@@ -268,26 +277,47 @@ fn describe_workspace(r: &Resolved<'_>) -> String {
         return format!(
             "backend={} agent and project both on {} (ssh {}), native tools",
             ws.backend.as_str(),
-            ws.agent_node,
+            r.agent_node(),
             r.agent_ssh().unwrap_or("-"),
+        );
+    }
+    if let Some(agent) = &ws.agent {
+        return format!(
+            "backend={} agent={}/{} (ssh {}), runtime_node={}",
+            ws.backend.as_str(),
+            agent.node,
+            agent.instance,
+            r.agent_ssh().unwrap_or("-"),
+            ws.runtime_node,
         );
     }
     format!(
         "backend={} agent_node={} (ssh {}), runtime_node={}",
         ws.backend.as_str(),
-        ws.agent_node,
+        r.agent_node(),
         r.agent_ssh().unwrap_or("-"),
         ws.runtime_node,
     )
 }
 
-fn workspace_checks(r: &Resolved<'_>, env: &Env<'_>) -> Vec<Check> {
+fn workspace_checks(r: &Resolved<'_>, agent: Option<&str>, env: &Env<'_>) -> Vec<Check> {
     let ws = r.workspace;
     if ws.backend == Backend::HybridSmb {
         return vec![Check::fail_with(
             "Backend",
             ErrorCode::Config,
             "backend = \"hybrid-smb\" is parsed but not implemented by this build\nsee design doc appendix A; use backend = \"mcp-ssh\"",
+        )];
+    }
+    let selected = match r.agent_reference(agent) {
+        Ok(selected) => selected,
+        Err(error) => return vec![Check::fail("Agent selection", &error)],
+    };
+    if r.is_colocated() {
+        return vec![Check::fail_with(
+            "Agent topology",
+            ErrorCode::NotReady,
+            "colocated Agent execution is not enabled until its installed CLI path is verified",
         )];
     }
 
@@ -298,9 +328,18 @@ fn workspace_checks(r: &Resolved<'_>, env: &Env<'_>) -> Vec<Check> {
     // the probe reports them from there. Auditing this machine's account
     // instead would answer a question nobody asked, and answer it FAIL.
     let mut checks = Vec::new();
+    let mut instance_project_row = None;
     if r.topology() == Topology::FromRuntime {
         checks.push(runtime_workspace(&ws.root));
-        checks.push(project_instructions(r));
+        if ws.agent.is_some() {
+            instance_project_row = Some(checks.len());
+            checks.push(Check::skip(
+                "Project instructions",
+                "waiting for the selected provider's Runtime MCP handshake",
+            ));
+        } else {
+            checks.push(project_instructions(r));
+        }
         checks.push(runtime_ccnm(r, env));
         // Before anything that needs the network: this is an audit of the
         // local account, and it is exactly as true when the Agent Node is
@@ -346,14 +385,21 @@ fn workspace_checks(r: &Resolved<'_>, env: &Env<'_>) -> Vec<Check> {
     };
 
     let req = ProbeRequest {
+        agent: selected.clone(),
+
         provider: Default::default(),
-        protocol: PROTOCOL,
+        protocol: if selected.is_some() { 3 } else { PROTOCOL },
         workspace: r.name.to_string(),
         root: ws.root.clone(),
         runtime_node: r.workspace.runtime_node.clone(),
-        provider_config_dir: AgentProvider::current()
-            .config_dir(r.agent)
-            .map(|dir| dir.to_path_buf()),
+        provider_config_dir: selected
+            .is_none()
+            .then(|| {
+                AgentProvider::current()
+                    .config_dir(r.agent)
+                    .map(Path::to_path_buf)
+            })
+            .flatten(),
         // One real MCP session, shut down before the probe returns.
         mcp_calls: 1,
     };
@@ -366,6 +412,34 @@ fn workspace_checks(r: &Resolved<'_>, env: &Env<'_>) -> Vec<Check> {
         ErrorCode::AgentUnreachable,
     ) {
         Ok(rep) => {
+            let identity_matches = match (selected.as_ref(), rep.agent_identity.as_ref()) {
+                (None, None) => true,
+                (Some(reference), Some(identity)) => identity.reference() == *reference,
+                _ => false,
+            };
+            if !identity_matches {
+                checks.push(Check::fail_with(
+                    "Agent selection",
+                    ErrorCode::Version,
+                    "Agent probe identity differs from the Runtime selection",
+                ));
+                return checks;
+            }
+            if let Some(identity) = &rep.agent_identity {
+                checks.push(Check::ok(
+                    "Agent selection",
+                    format!(
+                        "{}/{} ({}; profile {})",
+                        identity.node,
+                        identity.instance,
+                        identity.provider.display_name(),
+                        identity.profile_ref
+                    ),
+                ));
+            }
+            if let Some(index) = instance_project_row {
+                checks[index] = selected_project_instructions(&rep);
+            }
             checks.push(Check::ok("Agent SSH", resolved.target()));
             checks.extend(probe_rows(r, &rep));
         }
@@ -377,6 +451,23 @@ fn workspace_checks(r: &Resolved<'_>, env: &Env<'_>) -> Vec<Check> {
 
     checks.extend(not_yet_implemented());
     checks
+}
+
+fn selected_project_instructions(rep: &ProbeReport) -> Check {
+    match &rep.mcp {
+        Some(Ok(report)) => match &report.project_instructions {
+            Some(detail) => Check::ok("Project instructions", detail),
+            None => Check::warn(
+                "Project instructions",
+                "selected provider's MCP handshake reported no context marker",
+            ),
+        },
+        Some(Err(error)) => Check::fail_report("Project instructions", error),
+        None => Check::skip(
+            "Project instructions",
+            "selected provider's MCP handshake was not completed",
+        ),
+    }
 }
 
 fn probe_rows(r: &Resolved<'_>, rep: &ProbeReport) -> Vec<Check> {
@@ -407,11 +498,11 @@ fn probe_rows(r: &Resolved<'_>, rep: &ProbeReport) -> Vec<Check> {
         None => {
             let why = format!(
                 "agent and project are both on {}, so nothing dials back",
-                r.workspace.agent_node
+                r.agent_node()
             );
             checks.push(Check::skip("Reverse SSH", &why));
             checks.push(Check::skip("Remote MCP handshake", &why));
-            checks.push(root_row(r, &rep.hello, &r.workspace.agent_node));
+            checks.push(root_row(r, &rep.hello, r.agent_node()));
             checks.push(terminal_row(r, rep));
         }
         Some(_) => match &rep.runtime_hello {
@@ -834,22 +925,17 @@ fn runtime_ccnm(r: &Resolved<'_>, env: &Env<'_>) -> Check {
     Check::ok(NAME, format!("{version} at {}", path.display()))
 }
 
-/// Still to come, with the phase that will make each one real (design doc
-/// section 26).
+/// Boundaries this read-only probe cannot prove by itself.
 fn not_yet_implemented() -> Vec<Check> {
     [
-        ("Workspace policy", "not implemented until phase 2"),
-        // Every session is launched with `--tools ""` and an allow-list
-        // (see `crate::session`), and that was verified by hand against
-        // Claude Code 2.1.260. What doctor cannot do is prove it about the
-        // Claude on the Agent Node without starting a session, so the
-        // row stays SKIP rather than claiming a check it did not make.
         (
-            "Native tools disabled",
-            "not checked: only a live session shows which tools Claude ended up with",
+            "Native tool policy",
+            "not checked: only a live selected Agent session proves its effective tool set",
         ),
-        ("Runtime identity", "not implemented until phase 5"),
-        ("Network isolation", "not implemented until phase 5"),
+        (
+            "Network isolation",
+            "not checked: enforced outside ccnm; verify the Runtime execution identity's egress policy",
+        ),
     ]
     .into_iter()
     .map(|(name, reason)| Check::skip(name, reason))
@@ -971,6 +1057,7 @@ mod tests {
         use crate::provider::AgentReport;
         use crate::provider::AuthStatus;
         ProbeReport {
+            agent_identity: None,
             provider: Default::default(),
             protocol: PROTOCOL,
             hello: hello("me", crate::VERSION, None),
@@ -1009,9 +1096,14 @@ mod tests {
                 single_process: true,
             })),
             terminal: Some(crate::protocol::run::StatusReport {
+                records: vec![],
+                agent_identity: None,
+
                 protocol: PROTOCOL,
                 tmux: Ok("3.7c".into()),
                 sessions: vec![crate::protocol::run::LiveSession {
+                    agent_identity: None,
+
                     provider: Default::default(),
                     tmux_session: "ccnm-xshun".into(),
                     workspace: Some("xshun".into()),
@@ -1183,7 +1275,7 @@ mod tests {
     }
 
     #[test]
-    fn everything_good_blocks_only_on_future_phases() {
+    fn everything_good_blocks_only_on_external_or_live_session_checks() {
         let (dir, config) = setup("good", true, true);
         let fake = FakeRunner::new();
         fake.push(Output::exited(0, format!("ccnm {}\n", crate::VERSION)));
@@ -1246,7 +1338,7 @@ mod tests {
             "tmux 3.7c, ccnm-xshun  xshun  detached  tools connected  (Background, keychain reachable)"
         );
         assert!(
-            text.ends_with("NOT READY (0 failed, 4 not checked)\n"),
+            text.ends_with("NOT READY (0 failed, 2 not checked)\n"),
             "{text}"
         );
         assert_eq!(report.blocking_code(), Some(ErrorCode::NotReady));
@@ -1331,7 +1423,7 @@ mod tests {
         assert_eq!(row(&report, "Workspace root").status, Status::Skip);
         let text = report.render();
         assert!(
-            text.ends_with("NOT READY (1 failed, 12 not checked)\n"),
+            text.ends_with("NOT READY (1 failed, 10 not checked)\n"),
             "{text}"
         );
     }

@@ -218,11 +218,38 @@ pub struct Resolved<'a> {
 }
 
 impl<'a> Resolved<'a> {
+    pub fn agent_reference(
+        &self,
+        override_id: Option<&str>,
+    ) -> Result<Option<crate::instance::InstanceRef>> {
+        match (&self.workspace.agent, override_id) {
+            (None, None) => Ok(None),
+            (None, Some(_)) => Err(Error::config(
+                "--agent requires an instance-selected workspace; legacy Claude workspaces keep their existing selection",
+            )),
+            (Some(reference), None) => Ok(Some(reference.clone())),
+            (Some(reference), Some(id)) => {
+                crate::instance::identifier(id)?;
+                Ok(Some(crate::instance::InstanceRef {
+                    node: reference.node.clone(),
+                    instance: id.to_string(),
+                }))
+            }
+        }
+    }
+
+    pub fn agent_node(&self) -> &str {
+        self.workspace
+            .agent
+            .as_ref()
+            .map_or(&self.workspace.agent_node, |reference| &reference.node)
+    }
+
     /// True when the agent and the project are the same machine, so no
     /// MCP transport is dialled back and Claude works with its own native
     /// tools. See [`Topology`].
     pub fn is_colocated(&self) -> bool {
-        self.workspace.agent_node == self.workspace.runtime_node
+        self.agent_node() == self.workspace.runtime_node
     }
 
     /// Which machine this one is in this workspace.
@@ -231,7 +258,7 @@ impl<'a> Resolved<'a> {
             Topology::Colocated
         } else if self.this == self.workspace.runtime_node {
             Topology::FromRuntime
-        } else if self.this == self.workspace.agent_node {
+        } else if self.this == self.agent_node() {
             Topology::FromAgent
         } else {
             Topology::Bystander
@@ -246,7 +273,7 @@ impl<'a> Resolved<'a> {
         self.agent.ssh.as_deref().ok_or_else(|| {
             Error::config(format!(
                 "workspace '{}' runs the agent on '{}', which is this node, so there is nothing to ssh to",
-                self.name, self.workspace.agent_node
+                self.name, self.agent_node()
             ))
         })
     }
@@ -361,20 +388,19 @@ impl Config {
                 ))
             }
         })?;
-        // Existing callers start legacy sessions. Never let a new reference
-        // silently reach their hard-coded/default Claude launch requests.
-        if workspace.agent.is_some() {
-            return Err(crate::instance::execution_not_open());
-        }
         // validate() already guarantees all of these; a miss here is a bug.
         let bug = |what: &str| {
             Error::internal(format!(
                 "workspace '{name}' passed validation but {what} is missing"
             ))
         };
+        let agent_node = workspace
+            .agent
+            .as_ref()
+            .map_or(&workspace.agent_node, |reference| &reference.node);
         let agent = self
             .nodes
-            .get(&workspace.agent_node)
+            .get(agent_node)
             .ok_or_else(|| bug("its Agent Node"))?;
         let runtime = self
             .nodes

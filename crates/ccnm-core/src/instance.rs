@@ -1,4 +1,4 @@
-//! P2 identity/configuration data. No executable public instance entrypoint.
+//! Public Agent Instance identity and Agent-local profile resolution.
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -108,6 +108,44 @@ pub struct ResolvedAgent {
     identity: AgentIdentity,
     profile: ResolvedProfile,
 }
+
+pub struct AgentLocal {
+    profiles: AgentProfiles,
+    home: PathBuf,
+    xdg: Option<PathBuf>,
+}
+
+impl AgentLocal {
+    pub fn new(profiles: AgentProfiles, home: PathBuf, xdg: Option<PathBuf>) -> Result<Self> {
+        if !profiles::absolute(&home)
+            || xdg
+                .as_deref()
+                .filter(|path| !path.as_os_str().is_empty())
+                .is_some_and(|path| !profiles::absolute(path))
+        {
+            return Err(Error::config(
+                "Agent-local HOME/XDG path is invalid (value withheld)",
+            ));
+        }
+        Ok(Self {
+            profiles,
+            home,
+            xdg,
+        })
+    }
+
+    pub fn load() -> Result<Self> {
+        let home = crate::paths::home_dir()?;
+        let xdg = std::env::var_os("XDG_CONFIG_HOME")
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from);
+        Self::new(AgentProfiles::load_local()?, home, xdg)
+    }
+
+    pub fn resolve(&self, config: &Config, reference: &InstanceRef) -> Result<ResolvedAgent> {
+        config.resolve_instance(reference, &self.profiles, &self.home, self.xdg.as_deref())
+    }
+}
 impl ResolvedAgent {
     pub fn identity(&self) -> &AgentIdentity {
         &self.identity
@@ -117,14 +155,9 @@ impl ResolvedAgent {
     }
 }
 
-pub fn execution_not_open() -> Error {
-    Error::new(
-        ErrorCode::NotReady,
-        "Agent Instance execution is not open in P2; the legacy Claude entrypoint cannot execute an instance selection",
-    )
-}
-
-pub(crate) fn identifier(value: &str) -> Result<()> {
+/// Validate a node, instance or profile reference before it crosses an argv
+/// or protocol boundary.
+pub fn identifier(value: &str) -> Result<()> {
     if value.len() > 64
         || value.is_empty()
         || !value.starts_with(|c: char| c.is_ascii_alphanumeric())
@@ -214,7 +247,7 @@ impl Config {
             .ok_or_else(|| Error::config("workspace uses legacy agent_node, not an instance"))
     }
 
-    fn local_identity(&self, reference: &InstanceRef) -> Result<AgentIdentity> {
+    pub fn resolve_identity(&self, reference: &InstanceRef) -> Result<AgentIdentity> {
         reference.validate()?;
         if self.this.as_deref() != Some(reference.node.as_str()) {
             return Err(Error::config("instance reference names another Agent Node"));
@@ -242,20 +275,14 @@ impl Config {
         home: &Path,
         xdg: Option<&Path>,
     ) -> Result<ResolvedAgent> {
-        let identity = self.local_identity(reference)?;
+        let identity = self.resolve_identity(reference)?;
         let profile = profiles.resolve(identity.provider, &identity.profile_ref, home, xdg)?;
         Ok(ResolvedAgent { identity, profile })
     }
 
     /// Check node authority before opening any Agent-private configuration.
     pub fn resolve_instance_local(&self, reference: &InstanceRef) -> Result<ResolvedAgent> {
-        self.local_identity(reference)?;
-        let profiles = AgentProfiles::load_local()?;
-        let home = crate::paths::home_dir()?;
-        let xdg = std::env::var_os("XDG_CONFIG_HOME")
-            .filter(|v| !v.is_empty())
-            .map(PathBuf::from);
-        self.resolve_instance(reference, &profiles, &home, xdg.as_deref())
+        AgentLocal::load()?.resolve(self, reference)
     }
 
     pub fn bind_workspace(
@@ -265,9 +292,9 @@ impl Config {
     ) -> Result<WorkspaceBinding> {
         identity.validate()?;
         let expected = self.instance_reference(workspace)?;
-        if expected != identity.reference() {
+        if expected.node != identity.node {
             return Err(Error::config(
-                "Agent identity does not match the Runtime workspace reference",
+                "Agent identity node does not match the Runtime workspace reference",
             ));
         }
         let ws = &self.workspaces[workspace];

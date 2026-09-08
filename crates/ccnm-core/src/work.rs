@@ -24,13 +24,146 @@ use crate::protocol::payload;
 use crate::protocol::probe::{ProbeReport, ProbeRequest};
 use crate::protocol::run::{
     AttachRequest, PurgeReport, PurgeRequest, ResultReport, ResultRequest, RunReport, RunRequest,
-    StartReport, StartRequest, StatusReport, StatusRequest, StopReport, StopRequest,
+    SessionRecord, SessionState, StartReport, StartRequest, StatusReport, StatusRequest,
+    StopReport, StopRequest,
 };
 use crate::protocol::{self};
-use crate::provider::{AgentProvider, AgentReport, Ask};
+use crate::provider::{AgentProvider, AgentReport, AgentResult, Ask};
 use crate::session::{self, Mode, RuntimeLink, Spec};
 use crate::ssh::{Master, Ssh};
 use crate::tmux;
+
+#[derive(Clone)]
+struct SelectedAgent {
+    provider: AgentProvider,
+    identity: Option<crate::instance::AgentIdentity>,
+    profile_dir: Option<PathBuf>,
+}
+
+impl SelectedAgent {
+    fn session_protocol(&self) -> u32 {
+        if self.identity.is_some() {
+            crate::instance::INSTANCE_SESSION_PROTOCOL
+        } else {
+            self.provider.control_protocol()
+        }
+    }
+
+    fn report_protocol(&self) -> u32 {
+        if self.identity.is_some() {
+            crate::instance::INSTANCE_SESSION_PROTOCOL
+        } else {
+            PROTOCOL
+        }
+    }
+
+    fn binding(
+        &self,
+        workspace: &str,
+        root: &Path,
+        runtime_node: &str,
+    ) -> Result<Option<crate::instance::WorkspaceBinding>> {
+        self.identity
+            .as_ref()
+            .map(|identity| {
+                let binding = crate::instance::WorkspaceBinding {
+                    workspace: workspace.to_string(),
+                    runtime_node: runtime_node.to_string(),
+                    root: root.to_path_buf(),
+                    agent: identity.clone(),
+                };
+                binding.validate()?;
+                Ok(binding)
+            })
+            .transpose()
+    }
+}
+
+fn select_agent(
+    reference: Option<&crate::instance::InstanceRef>,
+    provider: AgentProvider,
+    config_dir: Option<&Path>,
+    permission: crate::config::PermissionMode,
+    tools: &Tools<'_>,
+) -> Result<SelectedAgent> {
+    let Some(reference) = reference else {
+        validate_provider_request(provider, config_dir, permission)?;
+        return Ok(SelectedAgent {
+            provider,
+            identity: None,
+            profile_dir: config_dir.map(Path::to_path_buf),
+        });
+    };
+    if provider != AgentProvider::Claude
+        || config_dir.is_some()
+        || permission != crate::config::PermissionMode::default()
+    {
+        return Err(Error::invalid_args(
+            "instance requests select provider/profile on the Agent and cannot carry legacy provider, path or permission overrides",
+        ));
+    }
+    let resolved = tools
+        .local
+        .as_ref()
+        .ok_or_else(|| Error::config("Agent-local profile registry is unavailable"))?
+        .resolve(&tools.config, reference)?;
+    resolved.profile().validate_private_directory()?;
+    Ok(SelectedAgent {
+        provider: resolved.identity().provider,
+        identity: Some(resolved.identity().clone()),
+        profile_dir: Some(resolved.profile().directory().to_path_buf()),
+    })
+}
+
+fn requested_identity(
+    reference: Option<&crate::instance::InstanceRef>,
+    tools: &Tools<'_>,
+) -> Result<Option<crate::instance::AgentIdentity>> {
+    reference
+        .map(|reference| tools.config.resolve_identity(reference))
+        .transpose()
+}
+
+fn check_session_selection(
+    spec: &Spec,
+    workspace: &str,
+    reference: Option<&crate::instance::InstanceRef>,
+    tools: &Tools<'_>,
+) -> Result<()> {
+    if spec.workspace != workspace {
+        return Err(Error::invalid_args(format!(
+            "session {} belongs to workspace {}, not {workspace}",
+            spec.id, spec.workspace
+        )));
+    }
+    if let Some(expected) = requested_identity(reference, tools)?
+        && spec.agent_identity.as_ref() != Some(&expected)
+    {
+        return Err(Error::new(
+            ErrorCode::NotReady,
+            "running/session record Agent identity differs from the selected instance",
+        ));
+    }
+    Ok(())
+}
+
+fn profile_for_spec(spec: &Spec, tools: &Tools<'_>) -> Result<Option<PathBuf>> {
+    let Some(identity) = spec.agent_identity.as_ref() else {
+        return Ok(spec.provider_config_dir.clone());
+    };
+    let resolved = tools
+        .local
+        .as_ref()
+        .ok_or_else(|| Error::config("Agent-local profile registry is unavailable"))?
+        .resolve(&tools.config, &identity.reference())?;
+    if resolved.identity() != identity {
+        return Err(Error::new(
+            ErrorCode::NotReady,
+            "Agent registry identity changed since this session was bound",
+        ));
+    }
+    Ok(Some(resolved.profile().directory().to_path_buf()))
+}
 
 /// What the Agent-side code needs from its environment. Injected so tests
 /// can script every external command and decide whether `claude` exists.
@@ -44,6 +177,7 @@ pub struct Tools<'a> {
     /// also settles the colocated case, where the name is this node and
     /// there is nothing to dial at all.
     pub config: Config,
+    pub local: Option<crate::instance::AgentLocal>,
     /// This machine's state root; sessions and workspace dirs go under it.
     pub state: PathBuf,
     /// Where ControlPath sockets live on this machine.
@@ -129,11 +263,14 @@ const EXIT_GRACE: Duration = Duration::from_secs(30);
 /// cannot read its own credentials, and the failure it would produce
 /// ("not logged in") is a lie about the machine.
 pub fn run(req: &RunRequest, tools: &Tools<'_>) -> Result<RunReport> {
-    validate_provider_request(
+    let selected = select_agent(
+        req.agent.as_ref(),
         req.provider,
         req.provider_config_dir.as_deref(),
         req.permission_mode,
+        tools,
     )?;
+    require_remote_topology(&req.runtime_node, &selected, tools)?;
     let ctx = controller::context(&tools.controller)?;
     if !ctx.login_session() {
         return Err(Error::new(
@@ -141,7 +278,7 @@ pub fn run(req: &RunRequest, tools: &Tools<'_>) -> Result<RunReport> {
             format!(
                 "the controller answers from {}, not from a login session, so a {} it started could not read its credentials\nrun on the Agent Node: ccnm controller install",
                 ctx.describe(),
-                if req.provider == AgentProvider::Claude {
+                if selected.provider == AgentProvider::Claude {
                     "Claude"
                 } else {
                     "Codex"
@@ -149,31 +286,52 @@ pub fn run(req: &RunRequest, tools: &Tools<'_>) -> Result<RunReport> {
             ),
         ));
     }
-    if req.provider == AgentProvider::Codex {
-        codex_readiness(tools)?;
+    if selected.identity.is_some() || selected.provider == AgentProvider::Codex {
+        agent_readiness(&selected, tools)?;
     }
-    let ssh = tools.dial_runtime(&req.runtime_node, &req.workspace, &req.root, req.provider)?;
-    if req.provider == AgentProvider::Codex {
+    let ssh = tools.dial_runtime(
+        &req.runtime_node,
+        &req.workspace,
+        &req.root,
+        selected.provider,
+    )?;
+    if selected.identity.is_some() || selected.provider == AgentProvider::Codex {
         let ssh = ssh.as_ref().ok_or_else(|| {
             Error::new(
                 ErrorCode::NotReady,
-                "Codex colocated mode has not been measured",
+                "selected Agent topology requires the measured remote SSH MCP path",
             )
         })?;
-        codex_runtime_preflight(req.provider, &req.workspace, &req.root, ssh)?;
+        provider_runtime_preflight(&selected, &req.workspace, &req.root, &req.runtime_node, ssh)?;
     }
 
-    let cwd = paths::workspace_dir(&tools.state, &req.workspace);
+    let runtime = tools.runtime_link(&req.runtime_node)?;
+    let cwd = if runtime.is_none() {
+        if !req.root.is_dir() {
+            return Err(Error::new(
+                ErrorCode::WrongWorkspace,
+                "colocated workspace root is not a directory on the Agent Node",
+            ));
+        }
+        req.root.clone()
+    } else {
+        paths::workspace_dir(&tools.state, &req.workspace)
+    };
     std::fs::create_dir_all(&cwd)?;
     let spec = Spec {
-        agent_identity: None,
-        provider: req.provider,
-        protocol: req.provider.control_protocol(),
+        runtime_node: selected.identity.as_ref().map(|_| req.runtime_node.clone()),
+        agent_identity: selected.identity.clone(),
+        provider: selected.provider,
+        protocol: selected.session_protocol(),
         id: session::new_id(),
         workspace: req.workspace.clone(),
         root: req.root.clone(),
-        runtime: tools.runtime_link(&req.runtime_node)?,
-        provider_config_dir: req.provider_config_dir.clone(),
+        runtime,
+        provider_config_dir: selected
+            .identity
+            .is_none()
+            .then(|| req.provider_config_dir.clone())
+            .flatten(),
         permission_mode: req.permission_mode,
         mode: Mode::Print {
             prompt: req.prompt.clone(),
@@ -182,25 +340,48 @@ pub fn run(req: &RunRequest, tools: &Tools<'_>) -> Result<RunReport> {
         cwd,
     };
     let dir = session::create(&tools.state, &spec, ssh.as_ref())?;
-    let pid = controller::start_for(&tools.controller, dir.path(), spec.provider())?;
+    let pid = match controller::start_for_identity(
+        &tools.controller,
+        dir.path(),
+        spec.provider(),
+        spec.agent_identity.as_ref(),
+    ) {
+        Ok(pid) => pid,
+        Err(error) => {
+            let safe = selected
+                .provider
+                .redact_output_at(error.to_string(), selected.profile_dir.as_deref());
+            session::record_terminal_failure(&dir, &safe)?;
+            return Err(error);
+        }
+    };
+    session::write_supervisor_pid(&dir, pid)?;
     let outcome = redact_outcome(
         spec.provider(),
+        selected.profile_dir.as_deref(),
         session::wait_for_outcome(&dir, Duration::from_secs(req.timeout_secs) + EXIT_GRACE)?,
     );
 
     let stdout = std::fs::read(dir.stdout()).unwrap_or_default();
-    let result = spec.provider().parse_result(&stdout).ok();
+    let result = spec
+        .provider()
+        .parse_result_at(&stdout, selected.profile_dir.as_deref())
+        .ok();
     let stdout_tail = if result.is_some() {
         String::new()
     } else {
-        spec.provider().redact_output(tail(&stdout))
+        spec.provider()
+            .redact_output_at(tail(&stdout), selected.profile_dir.as_deref())
     };
-    let stderr_tail = spec
-        .provider()
-        .redact_output(tail(&std::fs::read(dir.stderr()).unwrap_or_default()));
+    let stderr_tail = spec.provider().redact_output_at(
+        tail(&std::fs::read(dir.stderr()).unwrap_or_default()),
+        selected.profile_dir.as_deref(),
+    );
     Ok(RunReport {
+        agent_identity: spec.agent_identity.clone(),
+
         provider: spec.provider(),
-        protocol: PROTOCOL,
+        protocol: selected.report_protocol(),
         session: spec.id,
         session_dir: dir.path().to_path_buf(),
         controller: ctx,
@@ -219,11 +400,14 @@ pub fn run(req: &RunRequest, tools: &Tools<'_>) -> Result<RunReport> {
 /// it in tmux (design doc section 23). What comes back is what the home
 /// machine needs to attach.
 pub fn start(req: &StartRequest, tools: &Tools<'_>) -> Result<StartReport> {
-    validate_provider_request(
+    let selected = select_agent(
+        req.agent.as_ref(),
         req.provider,
         req.provider_config_dir.as_deref(),
         req.permission_mode,
+        tools,
     )?;
+    require_remote_topology(&req.runtime_node, &selected, tools)?;
     let tmux = tools.tmux()?;
     let name = tmux::session_name(&req.workspace);
     tmux::check_name(&name)?;
@@ -240,10 +424,9 @@ pub fn start(req: &StartRequest, tools: &Tools<'_>) -> Result<StartReport> {
         let existing = dir
             .as_ref()
             .and_then(|dir| session::load(&session::Dir::at(dir)).ok());
-        if existing
-            .as_ref()
-            .is_some_and(|spec| spec.provider() != req.provider)
-            || (req.provider == AgentProvider::Codex && existing.is_none())
+        if existing.as_ref().is_some_and(|spec| {
+            spec.provider() != selected.provider || spec.agent_identity != selected.identity
+        }) || (selected.identity.is_some() && existing.is_none())
         {
             return Err(Error::new(
                 ErrorCode::NotReady,
@@ -257,11 +440,8 @@ pub fn start(req: &StartRequest, tools: &Tools<'_>) -> Result<StartReport> {
         // has since been moved away, one where every tool fails for
         // reasons that sound like something else.
         //
-        // The old session is not what was asked for, so it is ended and a
-        // new one started. Not refused: "your session is wrong, fix it
-        // yourself" is a worse answer than doing the obvious thing and
-        // saying so. What it must not do is silently hand back the stale
-        // one, which is how an afternoon disappears.
+        // P3 binds a running session immutably. A config edit must not end a
+        // live conversation as a side effect of the next `run` command.
         let stale_root = dir
             .as_ref()
             .map(session::Dir::at)
@@ -269,36 +449,24 @@ pub fn start(req: &StartRequest, tools: &Tools<'_>) -> Result<StartReport> {
             .map(|spec| spec.root)
             .filter(|root| root != &req.root);
         if let Some(old) = stale_root {
-            tracing::info!(
-                old = %old.display(),
-                new = %req.root.display(),
-                "replacing a session bound to a different root"
-            );
-            // Before the kill, not after. The handshake talks to the other
-            // machine, so it can fail for reasons that have nothing to do
-            // with this workspace -- a link that blinked, a version that
-            // does not match. Doing it afterwards means a blip ends a
-            // running Claude, fails to start its replacement, and hands
-            // back an error about version numbers to somebody who has
-            // just lost their conversation.
-            let (ctx, ssh) = preflight(req, tools)?;
-            let out = tools.runner.run(&tmux.kill_cmd(&name))?;
-            if !out.success() {
-                return Err(Error::internal(format!(
-                    "the running session for {} works in {}, which is not this workspace's root any more, and it could not be ended: {}",
-                    req.workspace,
+            return Err(Error::new(
+                ErrorCode::NotReady,
+                format!(
+                    "running session {} is bound to {}; the workspace now names {}\nstop that exact session before starting against a different root",
+                    session.as_deref().unwrap_or("<unknown>"),
                     old.display(),
-                    out.stderr_lossy().trim()
-                )));
-            }
-            return start_fresh(req, tools, &tmux, name, ctx, ssh, Some(old));
+                    req.root.display(),
+                ),
+            ));
         }
         let context = dir
             .as_ref()
             .and_then(|path| session::read_context(&session::Dir::at(path)));
         return Ok(StartReport {
-            provider: req.provider,
-            protocol: PROTOCOL,
+            agent_identity: selected.identity.clone(),
+
+            provider: selected.provider,
+            protocol: selected.report_protocol(),
             session,
             session_dir: dir,
             tmux_session: name,
@@ -310,8 +478,26 @@ pub fn start(req: &StartRequest, tools: &Tools<'_>) -> Result<StartReport> {
         });
     }
 
-    let (ctx, ssh) = preflight(req, tools)?;
-    start_fresh(req, tools, &tmux, name, ctx, ssh, None)
+    let (ctx, ssh) = preflight(req, &selected, tools)?;
+    start_fresh(req, &selected, tools, &tmux, name, ctx, ssh)
+}
+
+fn require_remote_topology(
+    runtime_node: &str,
+    selected: &SelectedAgent,
+    tools: &Tools<'_>,
+) -> Result<()> {
+    if tools.runtime_link(runtime_node)?.is_some() {
+        return Ok(());
+    }
+    let detail = if selected.identity.is_some() {
+        "instance colocated execution has not been measured and is not enabled"
+    } else if selected.provider == AgentProvider::Codex {
+        "Codex colocated execution has not been measured and is not enabled"
+    } else {
+        "Claude colocated execution is disabled until the corrected native-tool launch is verified with the installed CLI"
+    };
+    Err(Error::new(ErrorCode::NotReady, detail))
 }
 
 /// One round trip to the Runtime Node before a session is built, to
@@ -400,7 +586,11 @@ fn greet(ssh: &Ssh, workspace: &str, root: &Path, tools: &Tools<'_>) -> Result<(
 /// afterwards would mean somebody's Claude was ended and not replaced,
 /// for a reason -- a link that blinked, a version that does not match --
 /// that has nothing to do with the session they just lost.
-fn preflight(req: &StartRequest, tools: &Tools<'_>) -> Result<(controller::Context, Option<Ssh>)> {
+fn preflight(
+    req: &StartRequest,
+    selected: &SelectedAgent,
+    tools: &Tools<'_>,
+) -> Result<(controller::Context, Option<Ssh>)> {
     let ctx = controller::context(&tools.controller)?;
     if !ctx.login_session() {
         return Err(Error::new(
@@ -408,7 +598,7 @@ fn preflight(req: &StartRequest, tools: &Tools<'_>) -> Result<(controller::Conte
             format!(
                 "the controller answers from {}, not from a login session, so a {} it started could not read its credentials\nrun on the Agent Node: ccnm controller install",
                 ctx.describe(),
-                if req.provider == AgentProvider::Claude {
+                if selected.provider == AgentProvider::Claude {
                     "Claude"
                 } else {
                     "Codex"
@@ -416,45 +606,65 @@ fn preflight(req: &StartRequest, tools: &Tools<'_>) -> Result<(controller::Conte
             ),
         ));
     }
-    if req.provider == AgentProvider::Codex {
-        codex_readiness(tools)?;
+    if selected.identity.is_some() || selected.provider == AgentProvider::Codex {
+        agent_readiness(selected, tools)?;
     }
-    let ssh = tools.dial_runtime(&req.runtime_node, &req.workspace, &req.root, req.provider)?;
-    if req.provider == AgentProvider::Codex {
+    let ssh = tools.dial_runtime(
+        &req.runtime_node,
+        &req.workspace,
+        &req.root,
+        selected.provider,
+    )?;
+    if selected.identity.is_some() || selected.provider == AgentProvider::Codex {
         let ssh = ssh.as_ref().ok_or_else(|| {
             Error::new(
                 ErrorCode::NotReady,
-                "Codex colocated mode has not been measured",
+                "selected Agent topology requires the measured remote SSH MCP path",
             )
         })?;
-        codex_runtime_preflight(req.provider, &req.workspace, &req.root, ssh)?;
+        provider_runtime_preflight(selected, &req.workspace, &req.root, &req.runtime_node, ssh)?;
     }
 
     Ok((ctx, ssh))
 }
 
-/// Create the session and have the controller start it. `replaced` is the
-/// root of the session this one is taking over from, when there was one.
+/// Create the session and have the controller start it.
 fn start_fresh(
     req: &StartRequest,
+    selected: &SelectedAgent,
     tools: &Tools<'_>,
     _tmux: &tmux::Tmux,
     name: String,
     ctx: controller::Context,
     ssh: Option<Ssh>,
-    replaced: Option<PathBuf>,
 ) -> Result<StartReport> {
-    let cwd = paths::workspace_dir(&tools.state, &req.workspace);
+    let runtime = tools.runtime_link(&req.runtime_node)?;
+    let cwd = if runtime.is_none() {
+        if !req.root.is_dir() {
+            return Err(Error::new(
+                ErrorCode::WrongWorkspace,
+                "colocated workspace root is not a directory on the Agent Node",
+            ));
+        }
+        req.root.clone()
+    } else {
+        paths::workspace_dir(&tools.state, &req.workspace)
+    };
     std::fs::create_dir_all(&cwd)?;
     let spec = Spec {
-        agent_identity: None,
-        provider: req.provider,
-        protocol: req.provider.control_protocol(),
+        runtime_node: selected.identity.as_ref().map(|_| req.runtime_node.clone()),
+        agent_identity: selected.identity.clone(),
+        provider: selected.provider,
+        protocol: selected.session_protocol(),
         id: session::new_id(),
         workspace: req.workspace.clone(),
         root: req.root.clone(),
-        runtime: tools.runtime_link(&req.runtime_node)?,
-        provider_config_dir: req.provider_config_dir.clone(),
+        runtime,
+        provider_config_dir: selected
+            .identity
+            .is_none()
+            .then(|| req.provider_config_dir.clone())
+            .flatten(),
         permission_mode: req.permission_mode,
         mode: Mode::Interactive {
             prompt: req.prompt.clone(),
@@ -464,16 +674,32 @@ fn start_fresh(
         cwd,
     };
     let dir = session::create(&tools.state, &spec, ssh.as_ref())?;
-    let server_pid = controller::start_for(&tools.controller, dir.path(), spec.provider())?;
+    let server_pid = match controller::start_for_identity(
+        &tools.controller,
+        dir.path(),
+        spec.provider(),
+        spec.agent_identity.as_ref(),
+    ) {
+        Ok(pid) => pid,
+        Err(error) => {
+            let safe = selected
+                .provider
+                .redact_output_at(error.to_string(), selected.profile_dir.as_deref());
+            session::record_terminal_failure(&dir, &safe)?;
+            return Err(error);
+        }
+    };
     Ok(StartReport {
-        provider: req.provider,
-        protocol: PROTOCOL,
+        agent_identity: spec.agent_identity.clone(),
+
+        provider: selected.provider,
+        protocol: selected.report_protocol(),
         session: Some(spec.id),
         session_dir: Some(dir.path().to_path_buf()),
         tmux_session: name,
         server_pid,
         already_running: false,
-        replaced,
+        replaced: None,
         controller: Some(ctx),
         // The supervisor writes this from inside tmux a moment from now;
         // `ccnm status` is where it shows up.
@@ -511,6 +737,31 @@ pub fn attach(req: &AttachRequest, tools: &Tools<'_>) -> Result<i32> {
     if !tools.runner.run(&tmux.has_session_cmd(&name))?.success() {
         return Err(tmux::no_session(&name));
     }
+    let live_id = if req.agent.is_some() || req.session.is_some() {
+        live_session_id(&tmux, tools, &name)
+    } else {
+        None
+    };
+    if let Some(expected) = req.session.as_ref()
+        && live_id.as_deref() != Some(expected)
+    {
+        return Err(Error::new(
+            ErrorCode::NotReady,
+            format!(
+                "workspace {} is not running session {expected}",
+                req.workspace
+            ),
+        ));
+    }
+    if let Some(id) = live_id {
+        let spec = session::load(&session::Dir::at(paths::session_dir(&tools.state, &id)))?;
+        check_session_selection(&spec, &req.workspace, req.agent.as_ref(), tools)?;
+    } else if req.agent.is_some() || req.session.is_some() {
+        return Err(Error::new(
+            ErrorCode::NotReady,
+            "live tmux session has no verifiable ccnm identity",
+        ));
+    }
     let captured = crate::process::run_attached(&tmux.attach_cmd(&name))?;
     Ok(captured.exit_code.unwrap_or(1))
 }
@@ -518,8 +769,80 @@ pub fn attach(req: &AttachRequest, tools: &Tools<'_>) -> Result<i32> {
 /// End the workspace's session: tmux kills the supervisor, which kills
 /// Claude, which drops the ssh transport its MCP server was on.
 pub fn stop(req: &StopRequest, tools: &Tools<'_>) -> Result<StopReport> {
+    if let Some(id) = req.session.as_deref() {
+        if paths::safe_name(id, "") != id {
+            return Err(Error::invalid_args(
+                "session id is not a valid ccnm identifier",
+            ));
+        }
+        let dir = session::Dir::at(paths::session_dir(&tools.state, id));
+        let spec = session::load(&dir).map_err(|_| {
+            Error::new(
+                ErrorCode::NotReady,
+                format!("no session {id} on this machine"),
+            )
+        })?;
+        check_session_selection(&spec, &req.workspace, req.agent.as_ref(), tools)?;
+        if session::read_outcome(&dir)?.is_some() {
+            return Ok(StopReport {
+                protocol: if spec.agent_identity.is_some() {
+                    crate::instance::INSTANCE_SESSION_PROTOCOL
+                } else {
+                    PROTOCOL
+                },
+                tmux_session: tmux::session_name(&spec.workspace),
+                session: Some(spec.id.clone()),
+                agent_identity: spec.agent_identity,
+                killed: false,
+            });
+        }
+        if !spec.mode.is_interactive() {
+            return stop_print_session(&spec, &dir, tools);
+        }
+    }
     let tmux = tools.tmux()?;
     let name = tmux::session_name(&req.workspace);
+    let live_id = if req.agent.is_some() || req.session.is_some() {
+        if !tools.runner.run(&tmux.has_session_cmd(&name))?.success() {
+            return Err(Error::new(
+                ErrorCode::NotReady,
+                "no verifiable selected session is running",
+            ));
+        }
+        live_session_id(&tmux, tools, &name)
+    } else {
+        None
+    };
+    let mut identity = None;
+    if let Some(expected) = req.session.as_ref()
+        && live_id.as_deref() != Some(expected)
+    {
+        return Err(Error::new(
+            ErrorCode::NotReady,
+            format!(
+                "workspace {} is not running session {expected}",
+                req.workspace
+            ),
+        ));
+    }
+    if let Some(id) = live_id.as_ref() {
+        let spec = session::load(&session::Dir::at(paths::session_dir(&tools.state, id)))?;
+        check_session_selection(&spec, &req.workspace, req.agent.as_ref(), tools)?;
+        identity = spec.agent_identity;
+    } else if req.agent.is_some() || req.session.is_some() {
+        return Err(Error::new(
+            ErrorCode::NotReady,
+            "no verifiable selected session is running",
+        ));
+    }
+    let tracked_dir = live_id
+        .as_ref()
+        .map(|id| session::Dir::at(paths::session_dir(&tools.state, id)));
+    if (identity.is_some() || req.session.is_some())
+        && let Some(dir) = tracked_dir.as_ref()
+    {
+        std::fs::write(dir.stopping(), b"requested\n")?;
+    }
     let out = tools.runner.run(&tmux.kill_cmd(&name))?;
     let stderr = out.stderr_lossy();
     if !out.success() && !tmux::no_server(&stderr) && !stderr.contains("can't find session") {
@@ -529,15 +852,233 @@ pub fn stop(req: &StopRequest, tools: &Tools<'_>) -> Result<StopReport> {
             stderr.trim()
         )));
     }
+    if out.success() && (identity.is_some() || req.session.is_some()) {
+        if tools.runner.run(&tmux.has_session_cmd(&name))?.success() {
+            return Err(Error::internal(
+                "tmux accepted stop but the selected session is still running",
+            ));
+        }
+        if let Some(dir) = tracked_dir.as_ref() {
+            match transport_alive(dir, tools) {
+                Some(false) => {}
+                Some(true) => {
+                    return Err(Error::new(
+                        ErrorCode::NotReady,
+                        "terminal ended but its Runtime MCP transport is still alive; state remains stopping",
+                    ));
+                }
+                None => {
+                    return Err(Error::new(
+                        ErrorCode::NotReady,
+                        "terminal ended but Runtime MCP process state is unknown; stop is not confirmed",
+                    ));
+                }
+            }
+        }
+        if let Some(dir) = tracked_dir.as_ref()
+            && session::read_outcome(dir)?.is_none()
+        {
+            session::record_terminal_failure(
+                dir,
+                "stopped by ccnm after the managed terminal ended",
+            )?;
+        }
+    }
     Ok(StopReport {
-        protocol: PROTOCOL,
+        agent_identity: identity.clone(),
+        session: live_id,
+
+        protocol: if identity.is_some() { 3 } else { PROTOCOL },
         tmux_session: name,
         killed: out.success(),
     })
 }
 
+fn stop_print_session(spec: &Spec, dir: &session::Dir, tools: &Tools<'_>) -> Result<StopReport> {
+    if session::read_outcome(dir)?.is_some() {
+        return Ok(StopReport {
+            protocol: if spec.agent_identity.is_some() {
+                3
+            } else {
+                PROTOCOL
+            },
+            tmux_session: tmux::session_name(&spec.workspace),
+            session: Some(spec.id.clone()),
+            agent_identity: spec.agent_identity.clone(),
+            killed: false,
+        });
+    }
+    let pid = session::read_supervisor_pid(dir).ok_or_else(|| {
+        Error::new(
+            ErrorCode::NotReady,
+            "print session has no terminal outcome and no verified supervisor pid; state is unknown",
+        )
+    })?;
+    let ps = tools
+        .runner
+        .run(&crate::process::Cmd::new("/bin/ps").args([
+            "-ww",
+            "-p",
+            &pid.to_string(),
+            "-o",
+            "pgid=",
+            "-o",
+            "command=",
+        ]))?;
+    let supervisor = known_process(ps, "recorded supervisor")?
+        .ok_or_else(|| Error::new(ErrorCode::NotReady, "recorded supervisor is not running"))?;
+    let fields: Vec<_> = supervisor.split_whitespace().collect();
+    if fields.len() < 5
+        || fields[0].parse::<u32>().ok() != Some(pid)
+        || fields[fields.len() - 4..fields.len() - 1] != ["internal", "supervise", "--payload"]
+    {
+        return Err(Error::policy(
+            "recorded pid is not the owned ccnm supervisor process group",
+        ));
+    }
+    let wire = fields[fields.len() - 1].to_string();
+    let request: session::SuperviseRequest = payload::decode(&wire).map_err(|_| {
+        Error::policy(
+            "recorded pid is not the ccnm supervisor for this session; refusing to signal it",
+        )
+    })?;
+    if request.session_dir != dir.path()
+        || request.provider != spec.provider()
+        || request.identity != spec.agent_identity
+    {
+        return Err(Error::policy(
+            "recorded pid belongs to another supervisor identity; refusing to signal it",
+        ));
+    }
+    let agent_pid = session::read_agent_pid(dir).ok_or_else(|| {
+        Error::new(
+            ErrorCode::NotReady,
+            "print session has no verified Agent child pid; state is unknown",
+        )
+    })?;
+    std::fs::write(dir.stopping(), b"requested\n")?;
+    let agent = tools
+        .runner
+        .run(&crate::process::Cmd::new("/bin/ps").args([
+            "-p",
+            &agent_pid.to_string(),
+            "-o",
+            "pgid=",
+        ]))?;
+    if let Some(agent) = known_process(agent, "recorded Agent child")? {
+        let pgid = agent
+            .trim()
+            .parse::<u32>()
+            .map_err(|_| Error::policy("cannot verify the Agent child process group"))?;
+        if pgid != agent_pid {
+            return Err(Error::policy(
+                "recorded Agent child is not the owned process-group leader; refusing to signal it",
+            ));
+        }
+        let killed = tools.runner.run(
+            &crate::process::Cmd::new("/bin/kill").args(["-TERM", &format!("-{agent_pid}")]),
+        )?;
+        let remaining = tools
+            .runner
+            .run(&crate::process::Cmd::new("/bin/ps").args([
+                "-p",
+                &agent_pid.to_string(),
+                "-o",
+                "pid=",
+            ]))?;
+        match known_process(remaining, "Agent process group after stop")? {
+            None => {}
+            Some(_) if killed.success() => {
+                return Err(Error::new(
+                    ErrorCode::NotReady,
+                    "Agent process group has not ended; state remains stopping",
+                ));
+            }
+            Some(_) => {
+                return Err(Error::internal(
+                    "could not stop the selected Agent process group",
+                ));
+            }
+        }
+    }
+    let killed = tools
+        .runner
+        .run(&crate::process::Cmd::new("/bin/kill").args(["-TERM", &format!("-{pid}")]))?;
+    let remaining = tools
+        .runner
+        .run(&crate::process::Cmd::new("/bin/ps").args(["-p", &pid.to_string(), "-o", "pid="]))?;
+    match known_process(remaining, "supervisor process group after stop")? {
+        None => {}
+        Some(_) if killed.success() => {
+            return Err(Error::new(
+                ErrorCode::NotReady,
+                "stop was requested but the supervisor process group has not ended; state remains stopping",
+            ));
+        }
+        Some(_) => {
+            return Err(Error::internal(
+                "could not stop the selected supervisor process group",
+            ));
+        }
+    }
+    if session::read_outcome(dir)?.is_none() {
+        session::record_terminal_failure(
+            dir,
+            "stopped by ccnm after the managed print process group ended",
+        )?;
+    }
+    Ok(StopReport {
+        protocol: if spec.agent_identity.is_some() {
+            3
+        } else {
+            PROTOCOL
+        },
+        tmux_session: tmux::session_name(&spec.workspace),
+        session: Some(spec.id.clone()),
+        agent_identity: spec.agent_identity.clone(),
+        killed: true,
+    })
+}
+
+fn known_process(output: crate::process::Output, subject: &str) -> Result<Option<String>> {
+    let stdout = output.stdout_lossy();
+    if output.success() && !stdout.trim().is_empty() {
+        return Ok(Some(stdout));
+    }
+    if output.exit_code == Some(1) && stdout.trim().is_empty() && output.stderr.is_empty() {
+        return Ok(None);
+    }
+    Err(Error::new(
+        ErrorCode::NotReady,
+        format!("cannot verify {subject}; process state is unknown"),
+    ))
+}
+
 /// Every live ccnm session on this machine, with what is known about each.
 pub fn status(req: &StatusRequest, tools: &Tools<'_>) -> StatusReport {
+    status_checked(req, tools).unwrap_or_else(|error| StatusReport {
+        agent_identity: None,
+        protocol: PROTOCOL,
+        tmux: Err(error.into()),
+        sessions: Vec::new(),
+        records: Vec::new(),
+    })
+}
+
+pub fn status_checked(req: &StatusRequest, tools: &Tools<'_>) -> Result<StatusReport> {
+    if req.workspace.is_none() && (req.agent.is_some() || req.session.is_some()) {
+        return Err(Error::invalid_args(
+            "exact session or Agent status requires a workspace",
+        ));
+    }
+    let expected = requested_identity(req.agent.as_ref(), tools)?;
+    let records = req
+        .session
+        .as_ref()
+        .map(|id| session_record(id, req.workspace.as_deref(), req.agent.as_ref(), tools))
+        .transpose()?
+        .into_iter()
+        .collect();
     let (tmux_version, sessions) = match tools.tmux() {
         Err(e) => (Err(e.into()), Vec::new()),
         Ok(tmux) => {
@@ -555,17 +1096,108 @@ pub fn status(req: &StatusRequest, tools: &Tools<'_>) -> StatusReport {
                     }
                 })
                 .map_err(Into::into);
-            (
-                version,
-                live_sessions(&tmux, tools, req.workspace.as_deref()),
-            )
+            let sessions = live_sessions(&tmux, tools, req.workspace.as_deref())
+                .into_iter()
+                .filter(|session| {
+                    expected
+                        .as_ref()
+                        .is_none_or(|identity| session.agent_identity.as_ref() == Some(identity))
+                })
+                .collect();
+            (version, sessions)
         }
     };
-    StatusReport {
-        protocol: PROTOCOL,
+    Ok(StatusReport {
+        agent_identity: expected.clone(),
+        protocol: if expected.is_some() { 3 } else { PROTOCOL },
         tmux: tmux_version,
         sessions,
+        records,
+    })
+}
+
+fn session_record(
+    id: &str,
+    workspace: Option<&str>,
+    reference: Option<&crate::instance::InstanceRef>,
+    tools: &Tools<'_>,
+) -> Result<SessionRecord> {
+    if paths::safe_name(id, "") != id {
+        return Err(Error::invalid_args(
+            "session id is not a valid ccnm identifier",
+        ));
     }
+    let dir = session::Dir::at(paths::session_dir(&tools.state, id));
+    let spec = session::load(&dir).map_err(|_| {
+        Error::new(
+            ErrorCode::NotReady,
+            format!("no session {id} on this machine"),
+        )
+    })?;
+    if spec.id != id {
+        return Err(Error::new(
+            ErrorCode::NotReady,
+            "session record id does not match its directory",
+        ));
+    }
+    if let Some(workspace) = workspace {
+        check_session_selection(&spec, workspace, reference, tools)?;
+    }
+    let outcome = session::read_outcome(&dir)?;
+    let state = match &outcome {
+        Some(outcome) if outcome.ok() => SessionState::Completed,
+        Some(_) => SessionState::Failed,
+        None => {
+            let interactive_live = tools.tmux().ok().is_some_and(|tmux| {
+                let name = tmux::session_name(&spec.workspace);
+                tools
+                    .runner
+                    .run(&tmux.has_session_cmd(&name))
+                    .is_ok_and(|out| out.success())
+                    && live_session_id(&tmux, tools, &name).as_deref() == Some(id)
+            });
+            let supervisor_live = session::read_supervisor_pid(&dir).is_some_and(|pid| {
+                tools
+                    .runner
+                    .run(&crate::process::Cmd::new("/bin/ps").args([
+                        "-p",
+                        &pid.to_string(),
+                        "-o",
+                        "pid=",
+                    ]))
+                    .is_ok_and(|out| out.success() && !out.stdout_lossy().trim().is_empty())
+            });
+            if dir.stopping().exists() {
+                SessionState::Stopping
+            } else if interactive_live || supervisor_live {
+                SessionState::Running
+            } else if session::read_supervisor_pid(&dir).is_none() {
+                SessionState::Starting
+            } else {
+                SessionState::Unknown
+            }
+        }
+    };
+    let result = match profile_for_spec(&spec, tools) {
+        Ok(profile) => std::fs::read(dir.stdout()).ok().and_then(|stdout| {
+            spec.provider()
+                .parse_result_at(&stdout, profile.as_deref())
+                .ok()
+        }),
+        Err(_) => None,
+    };
+    Ok(SessionRecord {
+        session: id.to_string(),
+        workspace: spec.workspace.clone(),
+        provider: spec.provider(),
+        agent_identity: spec.agent_identity,
+        state,
+        provider_session_id: result
+            .as_ref()
+            .and_then(AgentResult::provider_session_id)
+            .map(str::to_string),
+        outcome,
+    })
 }
 
 fn live_sessions(
@@ -588,6 +1220,10 @@ fn live_sessions(
             let context = dir.as_ref().and_then(session::read_context);
             let tools_up = dir.as_ref().and_then(|dir| transport_alive(dir, tools));
             protocol::run::LiveSession {
+                agent_identity: dir
+                    .as_ref()
+                    .and_then(|dir| session::load(dir).ok())
+                    .and_then(|spec| spec.agent_identity),
                 provider: dir
                     .as_ref()
                     .and_then(|dir| session::load(dir).ok())
@@ -646,8 +1282,14 @@ pub fn purge(req: &PurgeRequest, tools: &Tools<'_>) -> PurgeReport {
 /// What a session produced, for a caller that was not there when it
 /// finished.
 pub fn result(req: &ResultRequest, tools: &Tools<'_>) -> Result<ResultReport> {
+    let expected_identity = requested_identity(req.agent.as_ref(), tools)?;
     let (id, dir, started) = match &req.session {
         Some(id) => {
+            if paths::safe_name(id, "") != *id {
+                return Err(Error::invalid_args(
+                    "session id is not a valid ccnm identifier",
+                ));
+            }
             let dir = session::Dir::at(paths::session_dir(&tools.state, id));
             if !dir.meta().is_file() {
                 return Err(Error::new(
@@ -658,14 +1300,31 @@ pub fn result(req: &ResultRequest, tools: &Tools<'_>) -> Result<ResultReport> {
             let started = started_at(&dir);
             (id.clone(), dir, started)
         }
-        None => newest_session(&tools.state, &req.workspace)?,
+        None => newest_session(&tools.state, &req.workspace, expected_identity.as_ref())?,
     };
     let spec = session::load(&dir)?;
+    if spec.id != id {
+        return Err(Error::new(
+            ErrorCode::NotReady,
+            "session record id does not match its directory",
+        ));
+    }
+    check_session_selection(&spec, &req.workspace, req.agent.as_ref(), tools)?;
+    let profile = profile_for_spec(&spec, tools)?;
     let stdout = std::fs::read(dir.stdout()).unwrap_or_default();
-    let result = spec.provider().parse_result(&stdout).ok();
+    let result = spec
+        .provider()
+        .parse_result_at(&stdout, profile.as_deref())
+        .ok();
     Ok(ResultReport {
+        agent_identity: spec.agent_identity.clone(),
+
         provider: spec.provider(),
-        protocol: PROTOCOL,
+        protocol: if spec.agent_identity.is_some() {
+            3
+        } else {
+            PROTOCOL
+        },
         session: id,
         session_dir: dir.path().to_path_buf(),
         mode: if spec.mode.is_interactive() {
@@ -675,12 +1334,15 @@ pub fn result(req: &ResultRequest, tools: &Tools<'_>) -> Result<ResultReport> {
         },
         started,
         outcome: session::read_outcome(&dir)?
-            .map(|outcome| redact_outcome(spec.provider(), outcome)),
+            .map(|outcome| redact_outcome(spec.provider(), profile.as_deref(), outcome)),
         result,
-        stdout_tail: spec.provider().redact_output(tail(&stdout)),
-        stderr_tail: spec
+        stdout_tail: spec
             .provider()
-            .redact_output(tail(&std::fs::read(dir.stderr()).unwrap_or_default())),
+            .redact_output_at(tail(&stdout), profile.as_deref()),
+        stderr_tail: spec.provider().redact_output_at(
+            tail(&std::fs::read(dir.stderr()).unwrap_or_default()),
+            profile.as_deref(),
+        ),
     })
 }
 
@@ -691,7 +1353,11 @@ pub fn result(req: &ResultRequest, tools: &Tools<'_>) -> Result<ResultReport> {
 /// session's output went to a terminal as it happened and there is nothing
 /// stored to hand back; naming one explicitly still works, and says
 /// "still running" or how it ended.
-fn newest_session(state: &Path, workspace: &str) -> Result<(String, session::Dir, u64)> {
+fn newest_session(
+    state: &Path,
+    workspace: &str,
+    identity: Option<&crate::instance::AgentIdentity>,
+) -> Result<(String, session::Dir, u64)> {
     let sessions = paths::sessions_dir(state);
     let mut best: Option<(String, session::Dir, u64)> = None;
     let entries = std::fs::read_dir(&sessions).map_err(|e| {
@@ -706,7 +1372,10 @@ fn newest_session(state: &Path, workspace: &str) -> Result<(String, session::Dir
         let Ok(spec) = session::load(&dir) else {
             continue;
         };
-        if spec.workspace != workspace || spec.mode.is_interactive() {
+        if spec.workspace != workspace
+            || spec.mode.is_interactive()
+            || identity.is_some_and(|identity| spec.agent_identity.as_ref() != Some(identity))
+        {
             continue;
         }
         let started = started_at(&dir);
@@ -752,6 +1421,9 @@ fn transport_alive(dir: &session::Dir, tools: &Tools<'_>) -> Option<bool> {
         .runner
         .run(&crate::process::Cmd::new("/bin/ps").args(["-Awwo", "command="]))
         .ok()?;
+    if !out.success() {
+        return None;
+    }
     Some(out.stdout_lossy().contains(&payload))
 }
 
@@ -796,6 +1468,16 @@ fn tail(bytes: &[u8]) -> String {
 /// starts a server on the Runtime Node and shuts it down again before
 /// returning (design doc section 4).
 pub fn probe(req: &ProbeRequest, tools: &Tools<'_>) -> ProbeReport {
+    let selected = match select_agent(
+        req.agent.as_ref(),
+        req.provider,
+        req.provider_config_dir.as_deref(),
+        crate::config::PermissionMode::default(),
+        tools,
+    ) {
+        Ok(selected) => selected,
+        Err(error) => return rejected_probe(req, tools, error),
+    };
     // A colocated workspace has no reverse link at all, and says so with
     // `None` rather than with an error: there is nothing broken about a
     // machine that is already holding the project.
@@ -803,9 +1485,10 @@ pub fn probe(req: &ProbeRequest, tools: &Tools<'_>) -> ProbeReport {
         Ok(None) => (None, None, None),
         Err(e) => (Some(Err(e.into())), None, None),
         Ok(Some(link)) => {
-            match Ssh::new(&link.alias, &tools.control_dir)
-                .map(|ssh| ssh.with_ccnm_bin(&link.ccnm_bin).for_provider(req.provider))
-            {
+            match Ssh::new(&link.alias, &tools.control_dir).map(|ssh| {
+                ssh.with_ccnm_bin(&link.ccnm_bin)
+                    .for_provider(selected.provider)
+            }) {
                 Err(e) => (
                     Some(Err(e.into())),
                     Some(Err(Error::new(
@@ -835,18 +1518,18 @@ pub fn probe(req: &ProbeRequest, tools: &Tools<'_>) -> ProbeReport {
                         .map_err(Into::into);
                     // Only worth the round trips if the plain reverse ssh worked.
                     let mcp = (req.mcp_calls > 0 && runtime_hello.is_ok())
-                        .then(|| mcp_handshake(req, &ssh).map_err(Into::into));
+                        .then(|| mcp_handshake(req, &selected, &ssh).map_err(Into::into));
                     (Some(runtime_ssh), Some(runtime_hello), mcp)
                 }
             }
         }
     };
 
-    let (controller, agent) =
-        ask_about_agent(tools, req.provider, req.provider_config_dir.as_deref());
+    let (controller, agent) = ask_about_agent(tools, &selected);
     ProbeReport {
-        provider: req.provider,
-        protocol: PROTOCOL,
+        agent_identity: selected.identity.clone(),
+        provider: selected.provider,
+        protocol: selected.report_protocol(),
         // Colocated: the project is on this machine, so this hello is
         // the one that can say whether the root is really there.
         hello: hello::answer(&HelloRequest::new(
@@ -861,6 +1544,37 @@ pub fn probe(req: &ProbeRequest, tools: &Tools<'_>) -> ProbeReport {
         // and which sessions exist, and nothing is started or stopped.
         terminal: Some(status(
             &StatusRequest {
+                agent: req.agent.clone(),
+                session: None,
+
+                protocol: selected.report_protocol(),
+                workspace: Some(req.workspace.clone()),
+            },
+            tools,
+        )),
+    }
+}
+
+fn rejected_probe(req: &ProbeRequest, tools: &Tools<'_>, error: Error) -> ProbeReport {
+    let report = ErrorReport::from(&error);
+    ProbeReport {
+        agent_identity: None,
+        provider: req.provider,
+        protocol: PROTOCOL,
+        hello: hello::answer(&HelloRequest::new(None)),
+        controller: Some(Err(report.clone())),
+        agent: AgentReport {
+            path: None,
+            version: Err(report.clone()),
+            auth: Err(report),
+        },
+        runtime_ssh: None,
+        runtime_hello: None,
+        mcp: None,
+        terminal: Some(status(
+            &StatusRequest {
+                agent: None,
+                session: None,
                 protocol: PROTOCOL,
                 workspace: Some(req.workspace.clone()),
             },
@@ -883,8 +1597,7 @@ pub fn probe(req: &ProbeRequest, tools: &Tools<'_>) -> ProbeReport {
 /// already logged in.
 fn ask_about_agent(
     tools: &Tools<'_>,
-    provider: AgentProvider,
-    config_dir: Option<&Path>,
+    selected: &SelectedAgent,
 ) -> (Reported<controller::Context>, AgentReport) {
     match controller::context(&tools.controller) {
         Ok(ctx) => {
@@ -897,20 +1610,36 @@ fn ask_about_agent(
             } else {
                 Ask::VersionOnly
             };
-            let agent = controller::agent_auth_for(&tools.controller, provider, config_dir, ask)
-                .unwrap_or_else(|e| AgentReport {
-                    path: None,
-                    version: Err((&e).into()),
-                    auth: Err(e.into()),
+            let asked = match selected.identity.as_ref() {
+                Some(identity) => controller::agent_auth_instance(&tools.controller, identity, ask),
+                None => controller::agent_auth_for(
+                    &tools.controller,
+                    selected.provider,
+                    selected.profile_dir.as_deref(),
+                    ask,
+                ),
+            };
+            let agent = asked
+                .map(|report| redact_agent_report(selected, report))
+                .unwrap_or_else(|error| {
+                    let error = redact_error(selected, error);
+                    AgentReport {
+                        path: None,
+                        version: Err((&error).into()),
+                        auth: Err(error.into()),
+                    }
                 });
             (Ok(ctx), agent)
         }
         Err(missing) => {
-            let mut agent = provider.report(
-                tools.agents.get(provider),
-                config_dir,
-                tools.runner,
-                Ask::VersionOnly,
+            let mut agent = redact_agent_report(
+                selected,
+                selected.provider.report_at(
+                    tools.agents.get(selected.provider),
+                    selected.profile_dir.as_deref(),
+                    tools.runner,
+                    Ask::VersionOnly,
+                ),
             );
             agent.auth = Err(ErrorReport::new(
                 ErrorCode::NotReady,
@@ -924,15 +1653,21 @@ fn ask_about_agent(
     }
 }
 
-fn mcp_handshake(req: &ProbeRequest, ssh: &Ssh) -> Result<McpProbeReport> {
-    let wire = payload::encode(
-        &ServePayload::new(
-            &req.workspace,
-            req.root.clone(),
-            &format!("probe-{}", uuid::Uuid::new_v4().hyphenated()),
-        )
-        .with_provider(req.provider),
-    )?;
+fn mcp_handshake(
+    req: &ProbeRequest,
+    selected: &SelectedAgent,
+    ssh: &Ssh,
+) -> Result<McpProbeReport> {
+    let mut serve = ServePayload::new(
+        &req.workspace,
+        req.root.clone(),
+        &format!("probe-{}", uuid::Uuid::new_v4().hyphenated()),
+    )
+    .with_provider(selected.provider);
+    if let Some(binding) = selected.binding(&req.workspace, &req.root, &req.runtime_node)? {
+        serve = serve.with_binding(binding);
+    }
+    let wire = payload::encode(&serve)?;
     let cmd = ssh.mcp_transport_cmd(&wire)?;
     mcp::probe::probe(
         &cmd,
@@ -956,14 +1691,18 @@ fn validate_provider_request(
     }
     Ok(())
 }
-fn codex_runtime_preflight(
-    provider: AgentProvider,
+fn provider_runtime_preflight(
+    selected: &SelectedAgent,
     workspace: &str,
     root: &Path,
+    runtime_node: &str,
     ssh: &Ssh,
 ) -> Result<()> {
-    let payload =
-        ServePayload::new(workspace, root.to_path_buf(), "codex-preflight").with_provider(provider);
+    let mut payload = ServePayload::new(workspace, root.to_path_buf(), "provider-preflight")
+        .with_provider(selected.provider);
+    if let Some(binding) = selected.binding(workspace, root, runtime_node)? {
+        payload = payload.with_binding(binding);
+    }
     let cmd = ssh.mcp_transport_cmd(&crate::protocol::payload::encode(&payload)?)?;
     mcp::probe::probe(
         &cmd,
@@ -974,25 +1713,60 @@ fn codex_runtime_preflight(
     Ok(())
 }
 
-fn codex_readiness(tools: &Tools<'_>) -> Result<()> {
-    let report = controller::agent_auth_for(
-        &tools.controller,
-        AgentProvider::Codex,
-        None,
-        Ask::Everything,
-    )?;
+fn agent_readiness(selected: &SelectedAgent, tools: &Tools<'_>) -> Result<()> {
+    let report = match selected.identity.as_ref() {
+        Some(identity) => {
+            controller::agent_auth_instance(&tools.controller, identity, Ask::Everything)
+                .map_err(|error| redact_error(selected, error))?
+        }
+        None => controller::agent_auth_for(
+            &tools.controller,
+            selected.provider,
+            selected.profile_dir.as_deref(),
+            Ask::Everything,
+        )
+        .map_err(|error| redact_error(selected, error))?,
+    };
+    let report = redact_agent_report(selected, report);
     report.version.map_err(Error::from)?;
     if !report.auth.map_err(Error::from)?.logged_in {
         return Err(Error::new(
             ErrorCode::Auth,
-            AgentProvider::Codex.auth_hint(None),
+            selected.provider.auth_hint(None),
         ));
     }
     Ok(())
 }
 
-fn redact_outcome(provider: AgentProvider, mut outcome: session::Outcome) -> session::Outcome {
-    outcome.error = outcome.error.map(|text| provider.redact_output(text));
+fn redact_error(selected: &SelectedAgent, error: Error) -> Error {
+    Error::new(
+        error.code(),
+        selected
+            .provider
+            .redact_output_at(error.message().to_string(), selected.profile_dir.as_deref()),
+    )
+}
+
+fn redact_agent_report(selected: &SelectedAgent, mut report: AgentReport) -> AgentReport {
+    let redact = |mut error: ErrorReport| {
+        error.message = selected
+            .provider
+            .redact_output_at(error.message, selected.profile_dir.as_deref());
+        error
+    };
+    report.version = report.version.map_err(&redact);
+    report.auth = report.auth.map_err(redact);
+    report
+}
+
+fn redact_outcome(
+    provider: AgentProvider,
+    profile_dir: Option<&Path>,
+    mut outcome: session::Outcome,
+) -> session::Outcome {
+    outcome.error = outcome
+        .error
+        .map(|text| provider.redact_output_at(text, profile_dir));
     outcome
 }
 
@@ -1052,6 +1826,7 @@ mod tests {
 
     fn request() -> ProbeRequest {
         ProbeRequest {
+            agent: None,
             provider: Default::default(),
             protocol: PROTOCOL,
             workspace: "xshun".into(),
@@ -1083,6 +1858,7 @@ mod tests {
         fake.push(Output::exited(0, "2.1.259 (Claude Code)\n"));
 
         let tools = Tools {
+            local: None,
             config: agent_config(),
             runner: &fake,
             state: dir.clone(),
@@ -1176,6 +1952,7 @@ mod tests {
         fake.push(unreachable);
 
         let tools = Tools {
+            local: None,
             config: agent_config(),
             runner: &fake,
             state: dir.clone(),
@@ -1186,6 +1963,8 @@ mod tests {
         };
         let rep = probe(
             &ProbeRequest {
+                agent: None,
+
                 mcp_calls: 5,
                 ..request()
             },
@@ -1207,6 +1986,7 @@ mod tests {
         fake.push(Output::exited(0, "hostname home.ts\n"));
         fake.push(Output::exited(127, ""));
         let tools = Tools {
+            local: None,
             config: agent_config(),
             runner: &fake,
             state: dir.clone(),
@@ -1223,6 +2003,7 @@ mod tests {
 
     fn run_request(prompt: &str) -> RunRequest {
         RunRequest {
+            agent: None,
             provider: Default::default(),
             protocol: PROTOCOL,
             workspace: "fixture".into(),
@@ -1258,6 +2039,7 @@ mod tests {
         other.ccnm_version = format!("{}-and-a-half", crate::VERSION);
         fake.push(Output::exited(0, serde_json::to_string(&other).unwrap()));
         let tools = Tools {
+            local: None,
             config: agent_config(),
             runner: &fake,
             state: dir.clone(),
@@ -1276,21 +2058,16 @@ mod tests {
         assert!(err.message().contains(crate::VERSION), "{err}");
     }
 
-    /// A running session must not be destroyed by a check that can fail
-    /// for reasons of its own. The handshake talks to the other machine;
-    /// if it ran after the kill, a link that blinked would end somebody's
-    /// Claude, fail to start its replacement, and hand back an error
-    /// about version numbers to a person who has just lost their
-    /// conversation.
+    /// P3 makes the binding immutable: a config change cannot silently stop
+    /// a running conversation, even when a replacement would be reachable.
     #[test]
-    fn a_stale_session_is_not_killed_until_the_handshake_has_passed() {
+    fn a_stale_session_is_refused_before_controller_network_or_kill() {
         let dir = temp("stale-greet");
-        let socket = PathBuf::from(format!("/tmp/ccnm-sg-{}.sock", std::process::id()));
-        let _ = std::fs::remove_file(&socket);
         let id = "5f1e2d3c-4b5a-6978-8a9b-0c1d2e3f4a5b";
         let sdir = session::Dir::at(paths::session_dir(&dir, id));
         std::fs::create_dir_all(sdir.path()).unwrap();
         let spec = Spec {
+            runtime_node: None,
             agent_identity: None,
             provider: Default::default(),
             protocol: PROTOCOL,
@@ -1309,38 +2086,21 @@ mod tests {
         };
         std::fs::write(sdir.meta(), serde_json::to_string(&spec).unwrap()).unwrap();
 
-        // A controller that answers, so the preflight gets past it and
-        // the failure under test really is the handshake.
-        let listener = crate::controller::Listener::bind(&socket).unwrap();
-        let served = std::thread::spawn(move || {
-            let inner = FakeRunner::new();
-            inner.push(Output::exited(0, "Aqua\n"));
-            let tools = crate::controller::Tools {
-                runner: &inner,
-                agents: crate::provider::AgentBinaries::with_claude(None),
-                tmux: None,
-                exe: PathBuf::from("/nonexistent"),
-            };
-            listener.serve_one(&tools).unwrap();
-        });
-
         let fake = FakeRunner::new();
         fake.push(Output::exited(0, "")); // has-session: live
         fake.push(Output::exited(0, format!("CCNM_SESSION={id}\n")));
-        fake.push(Output::exited(255, "")); // the handshake: link is down
 
-        let mut tools = tmux_tools(&fake, &dir, "stale-greet");
-        tools.controller = socket.clone();
-        let err = start(&start_request(), &tools).expect_err("the handshake failed");
-        served.join().unwrap();
-        let _ = std::fs::remove_file(&socket);
+        let tools = tmux_tools(&fake, &dir, "stale-greet");
+        let err = start(&start_request(), &tools).expect_err("the binding changed");
 
-        assert_eq!(err.code(), ErrorCode::RuntimeUnreachable, "{err}");
+        assert_eq!(err.code(), ErrorCode::NotReady, "{err}");
+        assert!(err.message().contains("stop that exact session"), "{err}");
         let ran: Vec<String> = fake.calls().iter().map(|cmd| cmd.display()).collect();
         assert!(
             !ran.iter().any(|line| line.contains("kill-session")),
-            "a failed handshake must not have ended the session: {ran:?}"
+            "a binding mismatch must not reach the controller/network/kill: {ran:?}"
         );
+        assert_eq!(ran.len(), 2);
     }
 
     /// A state directory too long for macOS's 104-byte `sun_path` could
@@ -1355,6 +2115,7 @@ mod tests {
         let fake = FakeRunner::new();
         fake.push(Output::exited(0, hello_json(true)));
         let tools = Tools {
+            local: None,
             config: agent_config(),
             runner: &fake,
             state: deep.clone(),
@@ -1384,6 +2145,7 @@ mod tests {
         let fake = FakeRunner::new();
         fake.push(Output::exited(0, hello_json(false)));
         let tools = Tools {
+            local: None,
             config: agent_config(),
             runner: &fake,
             state: dir.clone(),
@@ -1403,6 +2165,7 @@ mod tests {
 
     fn start_request() -> StartRequest {
         StartRequest {
+            agent: None,
             provider: Default::default(),
             protocol: PROTOCOL,
             workspace: "xshun".into(),
@@ -1416,6 +2179,7 @@ mod tests {
 
     fn tmux_tools<'a>(fake: &'a FakeRunner, dir: &Path, test: &str) -> Tools<'a> {
         Tools {
+            local: None,
             config: agent_config(),
             runner: fake,
             state: dir.to_path_buf(),
@@ -1482,15 +2246,15 @@ mod tests {
     /// A session's root is fixed when it starts. Being handed back into
     /// one that works somewhere else is how a moved project turns into an
     /// hour of tools failing for reasons that sound like something else --
-    /// so the stale one is ended and a new one started, and the report
-    /// says which root was left behind.
+    /// so the active one is never reused and must be explicitly stopped.
     #[test]
-    fn start_replaces_a_live_session_bound_to_a_different_root() {
+    fn start_never_replaces_a_live_session_bound_to_a_different_root() {
         let dir = temp("moved-root");
         let id = "0b4c7a1e-2d3f-4a5b-8c6d-7e8f9a0b1c2d";
         let sdir = session::Dir::at(paths::session_dir(&dir, id));
         std::fs::create_dir_all(sdir.path()).unwrap();
         let spec = Spec {
+            runtime_node: None,
             agent_identity: None,
             provider: Default::default(),
             protocol: PROTOCOL,
@@ -1544,6 +2308,9 @@ mod tests {
             let inner = FakeRunner::new();
             inner.push(Output::exited(0, "Background\n"));
             let tools = crate::controller::Tools {
+                local: None,
+                config: crate::Config::default(),
+                config_path: None,
                 runner: &inner,
                 agents: crate::provider::AgentBinaries::with_claude(Some(PathBuf::from(
                     "/opt/homebrew/bin/claude",
@@ -1577,6 +2344,9 @@ mod tests {
 
         let stop_err = stop(
             &StopRequest {
+                agent: None,
+                session: None,
+
                 protocol: PROTOCOL,
                 workspace: "xshun".into(),
             },
@@ -1589,6 +2359,9 @@ mod tests {
         // command, and "tmux is not installed" is the status.
         let rep = status(
             &StatusRequest {
+                agent: None,
+                session: None,
+
                 protocol: PROTOCOL,
                 workspace: None,
             },
@@ -1614,6 +2387,9 @@ mod tests {
         });
         let rep = stop(
             &StopRequest {
+                agent: None,
+                session: None,
+
                 protocol: PROTOCOL,
                 workspace: "xshun".into(),
             },
@@ -1662,6 +2438,9 @@ mod tests {
 
         let rep = status(
             &StatusRequest {
+                agent: None,
+                session: None,
+
                 protocol: PROTOCOL,
                 workspace: None,
             },
@@ -1705,6 +2484,7 @@ mod tests {
             let sdir = session::Dir::at(paths::session_dir(&dir, id));
             std::fs::create_dir_all(sdir.path()).unwrap();
             let spec = Spec {
+                runtime_node: None,
                 agent_identity: None,
                 provider: Default::default(),
                 protocol: PROTOCOL,
@@ -1761,6 +2541,8 @@ mod tests {
         let tools = tmux_tools(&fake, &dir, "result");
         let rep = result(
             &ResultRequest {
+                agent: None,
+
                 protocol: PROTOCOL,
                 workspace: "fixture".into(),
                 session: None,
@@ -1786,6 +2568,8 @@ mod tests {
         let older_id = "11111111-1111-4111-8111-111111111111";
         let rep = result(
             &ResultRequest {
+                agent: None,
+
                 protocol: PROTOCOL,
                 workspace: "fixture".into(),
                 session: Some(older_id.into()),
@@ -1802,6 +2586,8 @@ mod tests {
         std::fs::write(older.meta(), std::fs::read_to_string(older.meta()).unwrap()).unwrap();
         let rep = result(
             &ResultRequest {
+                agent: None,
+
                 protocol: PROTOCOL,
                 workspace: "fixture".into(),
                 session: None,
@@ -1813,6 +2599,8 @@ mod tests {
 
         let rep = result(
             &ResultRequest {
+                agent: None,
+
                 protocol: PROTOCOL,
                 workspace: "fixture".into(),
                 session: Some("33333333-3333-4333-8333-333333333333".into()),
@@ -1825,6 +2613,8 @@ mod tests {
 
         let missing = result(
             &ResultRequest {
+                agent: None,
+
                 protocol: PROTOCOL,
                 workspace: "fixture".into(),
                 session: Some("44444444-4444-4444-8444-444444444444".into()),
@@ -1844,6 +2634,8 @@ mod tests {
         let fake = FakeRunner::new();
         let err = result(
             &ResultRequest {
+                agent: None,
+
                 protocol: PROTOCOL,
                 workspace: "fixture".into(),
                 session: None,
@@ -1879,6 +2671,9 @@ mod tests {
 
         let rep = status(
             &StatusRequest {
+                agent: None,
+                session: None,
+
                 protocol: PROTOCOL,
                 workspace: None,
             },
@@ -1890,96 +2685,40 @@ mod tests {
         assert!(text.contains("/mcp -> ccnm -> Reconnect"), "{text}");
     }
 
-    /// `runtime -> agent`: the workspace names this machine as its own
-    /// Runtime Node, so there is nothing to dial and Claude works the
-    /// project in front of it.
-    ///
-    /// The two files are the whole difference. No mcp.json, because a
-    /// transport here would point at this same machine; and no deny list,
-    /// because the native tools are the only ones that can touch a project
-    /// no MCP server is serving. Getting either wrong gives a session that
-    /// starts fine and cannot read a file.
     #[test]
-    fn a_colocated_session_gets_no_transport_and_keeps_its_native_tools() {
+    fn unmeasured_colocated_execution_is_refused_before_controller_or_children() {
         let dir = temp("colocated");
-        let socket = PathBuf::from(format!("/tmp/ccnm-colo-{}.sock", std::process::id()));
-        let _ = std::fs::remove_file(&socket);
-        let sessions = dir.join("sessions");
-        let supervisor = dir.join("fake-supervisor");
-        std::fs::write(
-            &supervisor,
-            format!(
-                "#!/bin/sh\nfor s in {sessions}/*/; do\n  printf '{{\"is_error\":false,\"result\":\"done\",\"num_turns\":1}}' > \"$s/stdout\"\n  : > \"$s/stderr\"\n  printf '{{\"exit_code\":0,\"timed_out\":false,\"duration_ms\":7}}' > \"$s/exit.tmp\"\n  mv \"$s/exit.tmp\" \"$s/exit\"\ndone\n",
-                sessions = sessions.display(),
-            ),
-        )
-        .unwrap();
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&supervisor, std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
-
-        let listener = crate::controller::Listener::bind(&socket).unwrap();
-        let served = std::thread::spawn(move || {
-            let inner = FakeRunner::new();
-            inner.push(Output::exited(0, "Aqua\n"));
-            let tools = crate::controller::Tools {
-                runner: &inner,
-                agents: crate::provider::AgentBinaries::with_claude(Some(PathBuf::from(
-                    "/opt/homebrew/bin/claude",
-                ))),
-                tmux: None,
-                exe: supervisor,
-            };
-            listener.serve_one(&tools).unwrap(); // hello
-            listener.serve_one(&tools).unwrap(); // start
-        });
-
-        // No reverse ssh is scripted, and none may be attempted: an empty
-        // FakeRunner panics on the first call it did not expect.
         let caller = FakeRunner::new();
         let tools = Tools {
+            local: None,
             config: colocated_config(),
             runner: &caller,
             state: dir.clone(),
             control_dir: control(&dir),
             agents: crate::provider::AgentBinaries::with_claude(None),
             tmux: None,
-            controller: socket,
+            controller: absent_socket("colocated"),
         };
         let mut req = run_request("do the thing");
         req.runtime_node = "agent".into(); // this node is also the project's
-        let rep = run(&req, &tools).unwrap();
-        served.join().unwrap();
-
-        assert!(rep.outcome.ok(), "{:?}", rep.outcome);
+        req.root = dir.join("colocated-project");
+        std::fs::create_dir(&req.root).unwrap();
+        let error = run(&req, &tools).unwrap_err();
+        assert_eq!(error.code(), ErrorCode::NotReady);
+        assert!(error.message().contains("disabled until"), "{error}");
         assert!(
             caller.calls().is_empty(),
-            "a colocated session dials nothing: {:?}",
+            "unsupported topology must fail before any process: {:?}",
             caller.calls().iter().map(Cmd::display).collect::<Vec<_>>()
         );
-
-        let session_dir = crate::session::Dir::at(&rep.session_dir);
-        let spec = crate::session::load(&session_dir).unwrap();
-        assert_eq!(spec.runtime, None, "nothing to dial, so nothing recorded");
-        assert!(
-            !session_dir.mcp_config().exists(),
-            "an MCP config here would point a transport at this same machine"
-        );
-
-        let settings: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(session_dir.settings()).unwrap()).unwrap();
-        assert_eq!(
-            settings["permissions"].get("deny"),
-            None,
-            "denying the native tools would leave Claude nothing to work the project with"
-        );
+        assert!(!paths::sessions_dir(&dir).exists());
     }
 
     #[test]
     fn run_refuses_without_a_controller_and_creates_nothing() {
         let dir = temp("run-none");
         let tools = Tools {
+            local: None,
             config: agent_config(),
             runner: &FakeRunner::new(),
             state: dir.clone(),
@@ -2003,6 +2742,9 @@ mod tests {
             let inner = FakeRunner::new();
             inner.push(Output::exited(0, "Background\n"));
             let tools = crate::controller::Tools {
+                local: None,
+                config: crate::Config::default(),
+                config_path: None,
                 runner: &inner,
                 agents: crate::provider::AgentBinaries::with_claude(Some(PathBuf::from(
                     "/opt/homebrew/bin/claude",
@@ -2013,6 +2755,7 @@ mod tests {
             listener.serve_one(&tools).unwrap();
         });
         let tools = Tools {
+            local: None,
             config: agent_config(),
             runner: &FakeRunner::new(),
             state: dir.clone(),
@@ -2026,6 +2769,55 @@ mod tests {
         assert_eq!(err.code(), ErrorCode::NotReady);
         assert!(err.message().contains("Background"), "{err}");
         assert!(!dir.join("sessions").exists(), "no session may be created");
+    }
+
+    #[test]
+    fn start_failure_after_session_creation_leaves_a_terminal_record() {
+        let dir = temp("run-start-failure");
+        let socket = PathBuf::from(format!(
+            "/tmp/ccnm-wr-start-failure-{}.sock",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&socket);
+        let listener = crate::controller::Listener::bind(&socket).unwrap();
+        let served = std::thread::spawn(move || {
+            let runner = FakeRunner::new();
+            runner.push(Output::exited(0, "Aqua\n"));
+            let tools = crate::controller::Tools {
+                config: crate::Config::default(),
+                local: None,
+                config_path: None,
+                runner: &runner,
+                agents: crate::provider::AgentBinaries::with_claude(None),
+                tmux: None,
+                exe: PathBuf::from("/synthetic/ccnm"),
+            };
+            listener.serve_one(&tools).unwrap();
+            listener.serve_one(&tools).unwrap();
+        });
+        let runner = FakeRunner::new();
+        runner.push(Output::exited(0, hello_json(true)));
+        let tools = Tools {
+            config: agent_config(),
+            local: None,
+            runner: &runner,
+            state: dir.clone(),
+            control_dir: control(&dir),
+            agents: crate::provider::AgentBinaries::with_claude(None),
+            tmux: None,
+            controller: socket,
+        };
+        assert!(run(&run_request("fixture"), &tools).is_err());
+        served.join().unwrap();
+        let records: Vec<_> = std::fs::read_dir(paths::sessions_dir(&dir))
+            .unwrap()
+            .flatten()
+            .collect();
+        assert_eq!(records.len(), 1);
+        let session = session::Dir::at(records[0].path());
+        let outcome = session::read_outcome(&session).unwrap().unwrap();
+        assert!(!outcome.ok());
+        assert!(outcome.error.unwrap().contains("not found"));
     }
 
     /// The whole print-mode path with everything real except Claude: a
@@ -2061,6 +2853,9 @@ mod tests {
                 let inner = FakeRunner::new();
                 inner.push(Output::exited(0, "Aqua\n"));
                 let tools = crate::controller::Tools {
+                    local: None,
+                    config: crate::Config::default(),
+                    config_path: None,
                     runner: &inner,
                     agents: crate::provider::AgentBinaries::with_claude(Some(PathBuf::from(
                         "/opt/homebrew/bin/claude",
@@ -2078,6 +2873,7 @@ mod tests {
         let caller = FakeRunner::new();
         caller.push(Output::exited(0, hello_json(true)));
         let tools = Tools {
+            local: None,
             config: agent_config(),
             runner: &caller,
             state: dir.clone(),
@@ -2136,6 +2932,30 @@ mod tests {
         assert!(t.len() <= 2048 + 3 + 3, "{}", t.len());
     }
 
+    #[test]
+    fn provider_probe_errors_never_expose_the_agent_private_profile() {
+        let selected = SelectedAgent {
+            provider: AgentProvider::Claude,
+            identity: None,
+            profile_dir: Some("/agent/private/claude".into()),
+        };
+        let error = ErrorReport::new(
+            ErrorCode::Auth,
+            "unexpected output from /agent/private/claude/.credentials.json",
+        );
+        let report = redact_agent_report(
+            &selected,
+            AgentReport {
+                path: Some("/agent/claude".into()),
+                version: Err(error.clone()),
+                auth: Err(error),
+            },
+        );
+        let text = serde_json::to_string(&report).unwrap();
+        assert!(!text.contains("/agent/private/claude"));
+        assert!(text.contains("<agent-private-config>"));
+    }
+
     /// The point of the whole phase: when a controller is listening, every
     /// question about Claude goes to it, and this ssh session runs no
     /// `claude` at all -- not even the version, because the controller's
@@ -2158,6 +2978,9 @@ mod tests {
                 r#"{"loggedIn":true,"email":"me@x","authMethod":"claude.ai"}"#,
             ));
             let tools = crate::controller::Tools {
+                local: None,
+                config: crate::Config::default(),
+                config_path: None,
                 runner: &inner,
                 agents: crate::provider::AgentBinaries::with_claude(Some(PathBuf::from(
                     "/opt/homebrew/bin/claude",
@@ -2174,6 +2997,7 @@ mod tests {
         fake.push(Output::exited(0, "hostname home.ts\nuser ccrun\n"));
         fake.push(Output::exited(0, hello_json(true)));
         let tools = Tools {
+            local: None,
             config: agent_config(),
             runner: &fake,
             state: dir.clone(),

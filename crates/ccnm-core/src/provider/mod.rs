@@ -1,5 +1,5 @@
-//! Internal Agent Provider boundary. Public commands still default to Claude;
-//! measured Codex integration is selected only by versioned internal requests.
+//! Internal Agent Provider boundary. Legacy workspaces still default to Claude;
+//! instance workspaces select a measured provider through Agent-local config.
 //!
 //! Providers own official CLI syntax, observations, policy and project context.
 //! They do not own topology, SSH aliases, process supervision or runtime tools.
@@ -148,33 +148,80 @@ impl AgentProvider {
         runner: &dyn ProcessRunner,
         ask: Ask,
     ) -> AgentReport {
+        self.report_at(bin, config_dir, runner, ask)
+    }
+
+    pub fn report_at(
+        self,
+        bin: Option<&Path>,
+        profile_dir: Option<&Path>,
+        runner: &dyn ProcessRunner,
+        ask: Ask,
+    ) -> AgentReport {
         match self {
-            Self::Claude => claude::report(bin, config_dir, runner, ask),
-            Self::Codex => codex::report(bin, runner, ask),
+            Self::Claude => claude::report(bin, profile_dir, runner, ask),
+            Self::Codex => codex::report_at(bin, profile_dir, runner, ask),
         }
     }
 
     pub fn launch_cmd(self, bin: &Path, spec: &Spec, dir: &Dir) -> Result<Cmd> {
+        self.launch_cmd_at(bin, spec, dir, spec.provider_config_dir.as_deref())
+    }
+
+    pub fn launch_cmd_at(
+        self,
+        bin: &Path,
+        spec: &Spec,
+        dir: &Dir,
+        profile_dir: Option<&Path>,
+    ) -> Result<Cmd> {
         match self {
-            Self::Claude => Ok(claude::launch_cmd(bin, spec, dir)),
-            Self::Codex => codex::launch_cmd(bin, spec, dir),
+            Self::Claude => {
+                let mut local = spec.clone();
+                local.provider_config_dir = profile_dir.map(Path::to_path_buf);
+                Ok(claude::launch_cmd(bin, &local, dir))
+            }
+            Self::Codex => codex::launch_cmd_at(bin, spec, dir, profile_dir),
         }
     }
 
     pub fn parse_result(self, stdout: &[u8]) -> Result<AgentResult> {
+        self.parse_result_at(stdout, None)
+    }
+
+    pub fn parse_result_at(self, stdout: &[u8], profile_dir: Option<&Path>) -> Result<AgentResult> {
         match self {
-            Self::Claude => claude::parse_print(stdout).map(AgentResult::Claude),
+            Self::Claude => {
+                let mut result = claude::parse_print(stdout)?;
+                if let Some(dir) = profile_dir {
+                    result.redact(&dir.to_string_lossy());
+                }
+                Ok(AgentResult::Claude(result))
+            }
             Self::Codex => {
                 let mut result = codex::result::parse(stdout)?;
-                result.redact(&codex::home()?.to_string_lossy());
+                let home = profile_dir
+                    .map(Path::to_path_buf)
+                    .map_or_else(codex::home, Ok)?;
+                result.redact(&home.to_string_lossy());
                 Ok(AgentResult::Codex(result))
             }
         }
     }
 
     pub fn redact_output(self, text: String) -> String {
+        self.redact_output_at(text, None)
+    }
+
+    pub fn redact_output_at(self, text: String, profile_dir: Option<&Path>) -> String {
+        let text = if let Some(dir) = profile_dir {
+            text.replace(dir.to_string_lossy().as_ref(), "<agent-private-config>")
+        } else {
+            text
+        };
         match self {
             Self::Claude => text,
+            Self::Codex if profile_dir.is_some() => text,
             Self::Codex => codex::home().map_or_else(
                 |_| "Codex output withheld: Agent home unavailable".into(),
                 |home| text.replace(home.to_string_lossy().as_ref(), "<agent-private-config>"),

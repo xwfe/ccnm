@@ -107,6 +107,37 @@ pub struct RunResult {
 }
 
 impl RunResult {
+    pub(crate) fn redact(&mut self, private_dir: &str) {
+        fn scrub(value: &mut serde_json::Value, private_dir: &str) {
+            match value {
+                serde_json::Value::String(text) => {
+                    *text = text.replace(private_dir, "<agent-private-config>");
+                }
+                serde_json::Value::Array(values) => {
+                    for value in values {
+                        scrub(value, private_dir);
+                    }
+                }
+                serde_json::Value::Object(values) => {
+                    for value in values.values_mut() {
+                        scrub(value, private_dir);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        for text in [&mut self.subtype, &mut self.result, &mut self.session_id]
+            .into_iter()
+            .flatten()
+        {
+            *text = text.replace(private_dir, "<agent-private-config>");
+        }
+        for denial in &mut self.permission_denials {
+            scrub(denial, private_dir);
+        }
+    }
+
     pub fn summary(&self) -> String {
         format!(
             "{} turn{} in {:.1} s (api {:.1} s); tokens in {} out {} cache-write {} cache-read {}; ${:.2}; {} permission denial{}",
@@ -126,5 +157,31 @@ impl RunResult {
                 "s"
             },
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn claude_result_redaction_covers_text_ids_and_nested_denials() {
+        let private = "/agent/private/claude";
+        let mut result = RunResult {
+            is_error: true,
+            subtype: Some(format!("failed at {private}")),
+            result: Some(format!("read {private}/settings.json")),
+            session_id: Some(format!("unexpected-{private}")),
+            num_turns: 0,
+            duration_ms: 0,
+            duration_api_ms: 0,
+            total_cost_usd: 0.0,
+            usage: Usage::default(),
+            permission_denials: vec![serde_json::json!({"path": format!("{private}/auth")})],
+        };
+        result.redact(private);
+        let text = serde_json::to_string(&result).unwrap();
+        assert!(!text.contains(private));
+        assert!(text.contains("<agent-private-config>"));
     }
 }

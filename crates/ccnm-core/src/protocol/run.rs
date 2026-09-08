@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use super::payload::Protocol;
 use crate::config::PermissionMode;
 use crate::controller::Context;
+use crate::instance::{AgentIdentity, InstanceRef};
 use crate::provider::AgentResult;
 use crate::session::Outcome;
 
@@ -29,6 +30,8 @@ pub struct RunRequest {
         skip_serializing_if = "crate::provider::AgentProvider::is_claude"
     )]
     pub provider: crate::provider::AgentProvider,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<InstanceRef>,
     pub workspace: String,
     /// Project root on the Runtime Node; passed through to the MCP payload.
     pub root: PathBuf,
@@ -50,7 +53,11 @@ impl Protocol for RunRequest {
         self.protocol
     }
     fn expected_protocol(&self) -> u32 {
-        self.provider.control_protocol()
+        if self.agent.is_some() {
+            3
+        } else {
+            self.provider.control_protocol()
+        }
     }
 }
 
@@ -62,8 +69,10 @@ pub struct RunReport {
         skip_serializing_if = "crate::provider::AgentProvider::is_claude"
     )]
     pub provider: crate::provider::AgentProvider,
-    /// The session id, which is also the name of its directory on both
-    /// machines and the id Claude was told to use.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_identity: Option<AgentIdentity>,
+    /// The ccnm session id, which is also the name of its directory on both
+    /// machines. A provider thread/resume id is separate result metadata.
     pub session: String,
     pub session_dir: PathBuf,
     /// The controller that started it, for the record of which session it
@@ -83,6 +92,9 @@ pub struct RunReport {
 impl Protocol for RunReport {
     fn protocol(&self) -> u32 {
         self.protocol
+    }
+    fn expected_protocol(&self) -> u32 {
+        if self.agent_identity.is_some() { 3 } else { 1 }
     }
 }
 
@@ -119,6 +131,8 @@ pub struct StartRequest {
         skip_serializing_if = "crate::provider::AgentProvider::is_claude"
     )]
     pub provider: crate::provider::AgentProvider,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<InstanceRef>,
     pub workspace: String,
     pub root: PathBuf,
     /// The node holding the project, by name. The Agent Node resolves it
@@ -138,7 +152,11 @@ impl Protocol for StartRequest {
         self.protocol
     }
     fn expected_protocol(&self) -> u32 {
-        self.provider.control_protocol()
+        if self.agent.is_some() {
+            3
+        } else {
+            self.provider.control_protocol()
+        }
     }
 }
 
@@ -150,6 +168,8 @@ pub struct StartReport {
         skip_serializing_if = "crate::provider::AgentProvider::is_claude"
     )]
     pub provider: crate::provider::AgentProvider,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_identity: Option<AgentIdentity>,
     /// The ccnm session id, when it is known. Not known for a session an
     /// older build started without recording it in the tmux environment.
     #[serde(default)]
@@ -184,6 +204,9 @@ pub struct StartReport {
 impl Protocol for StartReport {
     fn protocol(&self) -> u32 {
         self.protocol
+    }
+    fn expected_protocol(&self) -> u32 {
+        if self.agent_identity.is_some() { 3 } else { 1 }
     }
 }
 
@@ -229,11 +252,18 @@ impl StartReport {
 pub struct AttachRequest {
     pub protocol: u32,
     pub workspace: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<InstanceRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
 }
 
 impl Protocol for AttachRequest {
     fn protocol(&self) -> u32 {
         self.protocol
+    }
+    fn expected_protocol(&self) -> u32 {
+        if self.agent.is_some() { 3 } else { 1 }
     }
 }
 
@@ -243,11 +273,18 @@ impl Protocol for AttachRequest {
 pub struct StopRequest {
     pub protocol: u32,
     pub workspace: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<InstanceRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
 }
 
 impl Protocol for StopRequest {
     fn protocol(&self) -> u32 {
         self.protocol
+    }
+    fn expected_protocol(&self) -> u32 {
+        if self.agent.is_some() { 3 } else { 1 }
     }
 }
 
@@ -255,6 +292,10 @@ impl Protocol for StopRequest {
 pub struct StopReport {
     pub protocol: u32,
     pub tmux_session: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_identity: Option<AgentIdentity>,
     /// False when there was nothing to stop, which is not an error.
     pub killed: bool,
 }
@@ -262,6 +303,9 @@ pub struct StopReport {
 impl Protocol for StopReport {
     fn protocol(&self) -> u32 {
         self.protocol
+    }
+    fn expected_protocol(&self) -> u32 {
+        if self.agent_identity.is_some() { 3 } else { 1 }
     }
 }
 
@@ -277,6 +321,8 @@ impl Protocol for StopReport {
 pub struct ResultRequest {
     pub protocol: u32,
     pub workspace: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<InstanceRef>,
     /// A session id; without one, the workspace's most recent session.
     #[serde(default)]
     pub session: Option<String>,
@@ -285,6 +331,9 @@ pub struct ResultRequest {
 impl Protocol for ResultRequest {
     fn protocol(&self) -> u32 {
         self.protocol
+    }
+    fn expected_protocol(&self) -> u32 {
+        if self.agent.is_some() { 3 } else { 1 }
     }
 }
 
@@ -296,6 +345,8 @@ pub struct ResultReport {
         skip_serializing_if = "crate::provider::AgentProvider::is_claude"
     )]
     pub provider: crate::provider::AgentProvider,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_identity: Option<AgentIdentity>,
     pub session: String,
     pub session_dir: PathBuf,
     /// `print` or `interactive`.
@@ -312,6 +363,9 @@ pub struct ResultReport {
 impl Protocol for ResultReport {
     fn protocol(&self) -> u32 {
         self.protocol
+    }
+    fn expected_protocol(&self) -> u32 {
+        if self.agent_identity.is_some() { 3 } else { 1 }
     }
 }
 
@@ -376,25 +430,64 @@ pub struct StatusRequest {
     /// Only this workspace's session; `None` for all of ccnm's.
     #[serde(default)]
     pub workspace: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<InstanceRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
 }
 
 impl Protocol for StatusRequest {
     fn protocol(&self) -> u32 {
         self.protocol
     }
+    fn expected_protocol(&self) -> u32 {
+        if self.agent.is_some() { 3 } else { 1 }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StatusReport {
     pub protocol: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_identity: Option<AgentIdentity>,
     /// `tmux -V`, or why it could not be asked.
     pub tmux: crate::error::Reported<String>,
     pub sessions: Vec<LiveSession>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub records: Vec<SessionRecord>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionState {
+    Starting,
+    Running,
+    Completed,
+    Failed,
+    Stopping,
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionRecord {
+    pub session: String,
+    pub workspace: String,
+    pub provider: crate::provider::AgentProvider,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_identity: Option<AgentIdentity>,
+    pub state: SessionState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<Outcome>,
 }
 
 impl Protocol for StatusReport {
     fn protocol(&self) -> u32 {
         self.protocol
+    }
+    fn expected_protocol(&self) -> u32 {
+        if self.agent_identity.is_some() { 3 } else { 1 }
     }
 }
 
@@ -406,6 +499,8 @@ pub struct LiveSession {
         skip_serializing_if = "crate::provider::AgentProvider::is_claude"
     )]
     pub provider: crate::provider::AgentProvider,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_identity: Option<AgentIdentity>,
     pub tmux_session: String,
     #[serde(default)]
     pub workspace: Option<String>,
@@ -460,11 +555,22 @@ impl StatusReport {
         };
         if self.sessions.is_empty() {
             out.push_str("no live sessions\n");
-            return out;
         }
         for s in &self.sessions {
             out.push_str(&s.describe());
             out.push('\n');
+        }
+        for record in &self.records {
+            out.push_str(&format!(
+                "{}  {}  {:?}  {}\n",
+                record.session,
+                record.workspace,
+                record.state,
+                record
+                    .agent_identity
+                    .as_ref()
+                    .map_or("legacy".to_string(), |id| id.instance.clone()),
+            ));
         }
         out
     }

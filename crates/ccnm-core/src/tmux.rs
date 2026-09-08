@@ -148,13 +148,19 @@ impl Tmux {
     /// later — status, a second `ccnm run` — can get from a live tmux
     /// session back to its session directory without scanning for it.
     pub fn new_session_cmd(&self, name: &str, cwd: &Path, ccnm_session: &str, inner: &Cmd) -> Cmd {
-        self.base()
+        let mut cmd = self
+            .base()
             .args(["new-session", "-d", "-s", name])
             .arg("-c")
             .arg(cwd)
-            .args(["-e", &format!("{SESSION_VAR}={ccnm_session}")])
-            .arg(&inner.program)
-            .args(&inner.args)
+            .args(["-e", &format!("{SESSION_VAR}={ccnm_session}")]);
+        for (key, value) in &inner.env {
+            cmd = cmd.args([
+                "-e",
+                &format!("{}={}", key.to_string_lossy(), value.to_string_lossy()),
+            ]);
+        }
+        cmd.arg(&inner.program).args(&inner.args)
     }
 
     /// `tmux show-environment -t <name> CCNM_SESSION`.
@@ -312,18 +318,19 @@ mod tests {
     #[test]
     fn the_command_line_targets_ccnms_own_socket() {
         let tmux = Tmux::new("/opt/homebrew/bin/tmux");
-        let inner = Cmd::new("/Users/me/.local/bin/ccnm").args([
-            "internal",
-            "supervise",
-            "--payload",
-            "eyJ4IjoxfQ",
-        ]);
+        let inner = Cmd::new("/Users/me/.local/bin/ccnm")
+            .args(["internal", "supervise", "--payload", "eyJ4IjoxfQ"])
+            .env("CCNM_CONFIG", "/Users/me/.config/ccnm/config.toml");
         let cmd = tmux.new_session_cmd("ccnm-xshun", Path::new("/tmp/ws"), "abc-123", &inner);
         let line = cmd.display();
         assert!(line.contains("-L ccnm"), "{line}");
         assert!(line.contains("new-session -d -s ccnm-xshun"), "{line}");
         assert!(line.contains("-c /tmp/ws"), "{line}");
         assert!(line.contains("-e CCNM_SESSION=abc-123"), "{line}");
+        assert!(
+            line.contains("-e CCNM_CONFIG=/Users/me/.config/ccnm/config.toml"),
+            "{line}"
+        );
         // The inner command survives whole, argument by argument.
         assert!(
             line.ends_with("/Users/me/.local/bin/ccnm internal supervise --payload eyJ4IjoxfQ"),

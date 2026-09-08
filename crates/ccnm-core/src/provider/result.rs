@@ -9,6 +9,12 @@ pub enum AgentResult {
     Codex(CodexResult),
 }
 impl AgentResult {
+    pub fn provider_session_id(&self) -> Option<&str> {
+        match self {
+            Self::Claude(r) => r.session_id.as_deref(),
+            Self::Codex(r) => Some(&r.session_id),
+        }
+    }
     pub fn text(&self) -> Option<&str> {
         match self {
             Self::Claude(r) => r.result.as_deref(),

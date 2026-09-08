@@ -1,10 +1,12 @@
 use super::*;
+use crate::process::FakeRunner;
 use crate::protocol::payload;
 use crate::provider::{AgentProvider, AgentResult, PermissionMode};
 use crate::session::{Mode, RuntimeLink};
 
 fn spec(mode: Mode) -> Spec {
     Spec {
+        runtime_node: None,
         agent_identity: None,
         protocol: 2,
         provider: AgentProvider::Codex,
@@ -100,7 +102,7 @@ fn parses_real_rust_controller_to_runtime_round_trip() {
     let text = parsed.result.as_deref().unwrap();
     assert!(text.contains("CCNM_WIRING_PATCHED_7291"));
     assert!(text.contains("CCNM_AGENTS_FROM_RUNTIME_4317"));
-    let report: crate::protocol::run::RunReport = serde_json::from_str(include_str!(
+    let report: crate::protocol::run::RunReport = payload::decode_json(include_bytes!(
         "../../../../../tests/fixtures/codex-0.153.4/internal-wiring/run-report.json"
     ))
     .unwrap();
@@ -222,6 +224,81 @@ fn home_metadata_rejects_shared_permissions_and_symlinks() {
 }
 
 #[test]
+fn bound_named_profile_drives_auth_launch_and_redaction_without_runtime_egress() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = std::env::temp_dir()
+        .canonicalize()
+        .unwrap()
+        .join(format!("ccnm-codex-instance-{}", crate::session::new_id()));
+    let home = root.join("private-codex");
+    let cwd = root.join("cwd");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::create_dir(&cwd).unwrap();
+    std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let mut spec = spec(Mode::Print {
+        prompt: "fixture".into(),
+    });
+    spec.protocol = 3;
+    spec.runtime_node = Some("runtime".into());
+    spec.agent_identity = Some(crate::instance::AgentIdentity {
+        node: "worker".into(),
+        instance: "codex-extra".into(),
+        provider: AgentProvider::Codex,
+        profile_ref: "extra".into(),
+    });
+    spec.cwd = cwd;
+    let cmd = launch_cmd_at(
+        Path::new("/agent/codex"),
+        &spec,
+        &Dir::at(root.join("session")),
+        Some(&home),
+    )
+    .unwrap();
+    assert!(
+        cmd.env
+            .iter()
+            .any(|(key, value)| key == "CODEX_HOME" && value == home.as_os_str())
+    );
+    assert!(
+        !cmd.args
+            .iter()
+            .any(|arg| arg.to_string_lossy().contains(home.to_str().unwrap()))
+    );
+
+    let runner = FakeRunner::new();
+    runner.push(Output::exited(0, "codex-cli 0.153.4\n"));
+    let mut auth = Output::exited(0, "");
+    auth.stderr = b"Logged in using ChatGPT\n".to_vec();
+    runner.push(auth);
+    let report = report_at(
+        Some(Path::new("/agent/codex")),
+        Some(&home),
+        &runner,
+        Ask::Everything,
+    );
+    assert_eq!(report.version, Ok(VERSION.into()));
+    assert!(report.auth.unwrap().logged_in);
+    assert!(
+        runner.calls()[1]
+            .env
+            .iter()
+            .any(|(key, value)| key == "CODEX_HOME" && value == home.as_os_str())
+    );
+
+    let jsonl = format!(
+        "{{\"type\":\"thread.started\",\"thread_id\":\"thread\"}}\n{{\"type\":\"turn.started\"}}\n{{\"type\":\"item.completed\",\"item\":{{\"type\":\"error\",\"message\":\"warning at {}/config.toml\"}}}}\n{{\"type\":\"turn.completed\",\"usage\":{{\"input_tokens\":1,\"cached_input_tokens\":0,\"cache_write_input_tokens\":0,\"output_tokens\":1,\"reasoning_output_tokens\":0}}}}\n",
+        home.display()
+    );
+    let parsed = AgentProvider::Codex
+        .parse_result_at(jsonl.as_bytes(), Some(&home))
+        .unwrap();
+    let serialized = serde_json::to_string(&parsed).unwrap();
+    assert!(serialized.contains("<agent-private-config>"));
+    assert!(!serialized.contains(home.to_str().unwrap()));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn codex_messages_cannot_be_sent_as_legacy_claude_protocol() {
     let mut s = spec(Mode::Print {
         prompt: "hi".into(),
@@ -291,12 +368,16 @@ fn controller_rejects_network_supplied_home_before_probing() {
     use crate::process::FakeRunner;
     let runner = FakeRunner::new();
     let tools = Tools {
+        local: None,
+        config: crate::Config::default(),
+        config_path: None,
         runner: &runner,
         agents: crate::provider::AgentBinaries::default(),
         tmux: None,
         exe: "/agent/ccnm".into(),
     };
     let req = Request::new(RequestBody::AgentAuth {
+        identity: None,
         provider: AgentProvider::Codex,
         config_dir: Some("/do-not-read".into()),
         ask: Ask::Everything,

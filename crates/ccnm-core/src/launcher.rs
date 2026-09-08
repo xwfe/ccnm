@@ -32,14 +32,27 @@ pub fn run_print(
     prompt: &str,
     timeout: Duration,
 ) -> Result<RunReport> {
+    run_print_with_agent(resolved, env, prompt, timeout, None)
+}
+
+pub fn run_print_with_agent(
+    resolved: &Resolved<'_>,
+    env: &Env<'_>,
+    prompt: &str,
+    timeout: Duration,
+    agent: Option<&str>,
+) -> Result<RunReport> {
     check_local_root(resolved)?;
     let root = &resolved.workspace.root;
     let ssh =
         Ssh::new(resolved.agent_ssh()?, &env.control_dir)?.with_ccnm_bin(resolved.agent.ccnm_bin());
     ssh.check_control_path()?;
+    let selected = resolved.agent_reference(agent)?;
     let req = RunRequest {
+        agent: selected.clone(),
+
         provider: Default::default(),
-        protocol: PROTOCOL,
+        protocol: if selected.is_some() { 3 } else { PROTOCOL },
         workspace: resolved.name.to_string(),
         root: root.clone(),
         runtime_node: resolved.workspace.runtime_node.clone(),
@@ -52,14 +65,16 @@ pub fn run_print(
     };
     // The Agent side waits the session timeout plus its grace; this call
     // has to outlive both, plus the ssh itself.
-    ssh.call_ccnm(
+    let report: RunReport = ssh.call_ccnm(
         env.runner,
         Master::Reuse,
         &["internal", "agent-run"],
         &req,
         timeout + Duration::from_secs(120),
         ErrorCode::AgentUnreachable,
-    )
+    )?;
+    verify_identity(selected.as_ref(), report.agent_identity.as_ref())?;
+    Ok(report)
 }
 
 pub struct Env<'a> {
@@ -81,10 +96,22 @@ pub fn start_interactive(
     env: &Env<'_>,
     prompt: Option<&str>,
 ) -> Result<StartReport> {
+    start_interactive_with_agent(resolved, env, prompt, None)
+}
+
+pub fn start_interactive_with_agent(
+    resolved: &Resolved<'_>,
+    env: &Env<'_>,
+    prompt: Option<&str>,
+    agent: Option<&str>,
+) -> Result<StartReport> {
     let ssh = agent_ssh(resolved, env)?;
+    let selected = resolved.agent_reference(agent)?;
     let req = StartRequest {
+        agent: selected.clone(),
+
         provider: Default::default(),
-        protocol: PROTOCOL,
+        protocol: if selected.is_some() { 3 } else { PROTOCOL },
         workspace: resolved.name.to_string(),
         root: resolved.workspace.root.clone(),
         runtime_node: resolved.workspace.runtime_node.clone(),
@@ -94,14 +121,16 @@ pub fn start_interactive(
         permission_mode: AgentProvider::current().permission_mode(resolved.workspace),
         prompt: prompt.map(str::to_string),
     };
-    ssh.call_ccnm(
+    let report: StartReport = ssh.call_ccnm(
         env.runner,
         Master::Reuse,
         &["internal", "agent-start"],
         &req,
         Duration::from_secs(120),
         ErrorCode::AgentUnreachable,
-    )
+    )?;
+    verify_identity(selected.as_ref(), report.agent_identity.as_ref())?;
+    Ok(report)
 }
 
 /// The command that hands this terminal to the Agent Node's tmux.
@@ -122,8 +151,9 @@ pub fn start_interactive(
 /// root handshake, the controller -- to exactly the code path that runs
 /// when somebody types the command at home. The session is created on
 /// this machine either way, because that is where Claude runs; all that
-/// changes is who asked for it. Attaching afterwards needs no config at
-/// all, only the workspace name, so it happens locally.
+/// changes is who asked for it. Later workspace-authority checks use the
+/// same route; attach/status/result/stop stay local to the Agent session so
+/// an existing terminal remains manageable while the Runtime link is down.
 ///
 /// The cost is one extra hop, work -> home -> work. That buys a single
 /// definition of every workspace and not one line of duplicated
@@ -142,8 +172,29 @@ pub fn start_from_agent(
     prompt: Option<&str>,
     env: &Env<'_>,
 ) -> Result<()> {
+    start_from_agent_with_instance(
+        runtime_alias,
+        runtime_ccnm_bin,
+        workspace,
+        prompt,
+        env,
+        None,
+    )
+}
+
+pub fn start_from_agent_with_instance(
+    runtime_alias: &str,
+    runtime_ccnm_bin: &str,
+    workspace: &str,
+    prompt: Option<&str>,
+    env: &Env<'_>,
+    agent: Option<&str>,
+) -> Result<()> {
     let ssh = Ssh::new(runtime_alias, env.control_dir.clone())?.with_ccnm_bin(runtime_ccnm_bin);
     let mut argv: Vec<&str> = vec![ssh.ccnm_bin(), "run", workspace, "--detached"];
+    if let Some(agent) = agent {
+        argv.extend(["--agent", agent]);
+    }
     if prompt.is_some() {
         argv.push("--prompt-stdin");
     }
@@ -200,29 +251,71 @@ pub fn start_from_agent(
     }
 }
 
+/// Send a non-interactive workspace-authority command from an Agent-only
+/// config to the Runtime that owns the workspace and default selection.
+pub fn public_cmd_from_agent(
+    runtime_alias: &str,
+    runtime_ccnm_bin: &str,
+    subcommand: &[&str],
+    env: &Env<'_>,
+) -> Result<Cmd> {
+    let ssh = Ssh::new(runtime_alias, env.control_dir.clone())?.with_ccnm_bin(runtime_ccnm_bin);
+    let mut argv = vec![ssh.ccnm_bin()];
+    argv.extend_from_slice(subcommand);
+    ssh.remote_cmd(Master::Reuse, &argv, Duration::from_secs(180))
+}
+
 pub fn attach_cmd(resolved: &Resolved<'_>, env: &Env<'_>) -> Result<Cmd> {
+    attach_cmd_selected(resolved, env, None, None)
+}
+
+pub fn attach_cmd_selected(
+    resolved: &Resolved<'_>,
+    env: &Env<'_>,
+    agent: Option<&str>,
+    session: Option<&str>,
+) -> Result<Cmd> {
     let ssh = agent_ssh(resolved, env)?;
+    let selected = resolved.agent_reference(agent)?;
     let wire = payload::encode(&AttachRequest {
-        protocol: PROTOCOL,
+        agent: selected.clone(),
+        session: session.map(str::to_string),
+
+        protocol: if selected.is_some() { 3 } else { PROTOCOL },
         workspace: resolved.name.to_string(),
     })?;
     ssh.interactive_ccnm_cmd(&["internal", "attach", "--payload", &wire])
 }
 
 pub fn stop(resolved: &Resolved<'_>, env: &Env<'_>) -> Result<StopReport> {
+    stop_selected(resolved, env, None, None)
+}
+
+pub fn stop_selected(
+    resolved: &Resolved<'_>,
+    env: &Env<'_>,
+    agent: Option<&str>,
+    session: Option<&str>,
+) -> Result<StopReport> {
     let ssh = agent_ssh(resolved, env)?;
+    let selected = resolved.agent_reference(agent)?;
     let req = StopRequest {
-        protocol: PROTOCOL,
+        agent: selected.clone(),
+        session: session.map(str::to_string),
+
+        protocol: if selected.is_some() { 3 } else { PROTOCOL },
         workspace: resolved.name.to_string(),
     };
-    ssh.call_ccnm(
+    let report: StopReport = ssh.call_ccnm(
         env.runner,
         Master::Reuse,
         &["internal", "agent-stop"],
         &req,
         Duration::from_secs(60),
         ErrorCode::AgentUnreachable,
-    )
+    )?;
+    verify_identity(selected.as_ref(), report.agent_identity.as_ref())?;
+    Ok(report)
 }
 
 /// What a session produced, for a `--print` run whose ssh did not survive
@@ -232,20 +325,34 @@ pub fn result(
     env: &Env<'_>,
     session: Option<&str>,
 ) -> Result<ResultReport> {
+    result_selected(resolved, env, session, None)
+}
+
+pub fn result_selected(
+    resolved: &Resolved<'_>,
+    env: &Env<'_>,
+    session: Option<&str>,
+    agent: Option<&str>,
+) -> Result<ResultReport> {
     let ssh = agent_ssh(resolved, env)?;
+    let selected = resolved.agent_reference(agent)?;
     let req = ResultRequest {
-        protocol: PROTOCOL,
+        agent: selected.clone(),
+
+        protocol: if selected.is_some() { 3 } else { PROTOCOL },
         workspace: resolved.name.to_string(),
         session: session.map(str::to_string),
     };
-    ssh.call_ccnm(
+    let report: ResultReport = ssh.call_ccnm(
         env.runner,
         Master::Reuse,
         &["internal", "agent-result"],
         &req,
         Duration::from_secs(60),
         ErrorCode::AgentUnreachable,
-    )
+    )?;
+    verify_identity(selected.as_ref(), report.agent_identity.as_ref())?;
+    Ok(report)
 }
 
 /// Delete what ccnm kept for a workspace, on both machines.
@@ -281,19 +388,58 @@ pub fn purge(resolved: &Resolved<'_>, env: &Env<'_>) -> Result<PurgeReport> {
 }
 
 pub fn status(resolved: &Resolved<'_>, env: &Env<'_>, all: bool) -> Result<StatusReport> {
+    status_selected(resolved, env, all, None, None)
+}
+
+pub fn status_selected(
+    resolved: &Resolved<'_>,
+    env: &Env<'_>,
+    all: bool,
+    agent: Option<&str>,
+    session: Option<&str>,
+) -> Result<StatusReport> {
     let ssh = agent_ssh(resolved, env)?;
+    let selected = if all {
+        if agent.is_some() || session.is_some() {
+            return Err(Error::invalid_args(
+                "--all cannot be combined with an Agent or exact session selection",
+            ));
+        }
+        None
+    } else {
+        resolved.agent_reference(agent)?
+    };
     let req = StatusRequest {
-        protocol: PROTOCOL,
+        agent: selected.clone(),
+        session: session.map(str::to_string),
+
+        protocol: if selected.is_some() { 3 } else { PROTOCOL },
         workspace: (!all).then(|| resolved.name.to_string()),
     };
-    ssh.call_ccnm(
+    let report: StatusReport = ssh.call_ccnm(
         env.runner,
         Master::Reuse,
         &["internal", "agent-status"],
         &req,
         Duration::from_secs(60),
         ErrorCode::AgentUnreachable,
-    )
+    )?;
+    verify_identity(selected.as_ref(), report.agent_identity.as_ref())?;
+    Ok(report)
+}
+
+fn verify_identity(
+    requested: Option<&crate::instance::InstanceRef>,
+    returned: Option<&crate::instance::AgentIdentity>,
+) -> Result<()> {
+    match (requested, returned) {
+        (None, None) => Ok(()),
+        (Some(requested), Some(returned)) if returned.reference() == *requested => Ok(()),
+        _ => Err(Error::new(
+            ErrorCode::Version,
+            "Agent response identity differs from the Runtime selection",
+        )),
+    }
 }
 
 /// Refuse before the network when the project is not where this machine
@@ -352,12 +498,24 @@ pub fn mcp_probe_local(resolved: &Resolved<'_>, env: &Env<'_>, calls: u32) -> Re
 /// Ask the Agent Node to probe the Runtime Node over its own ssh: the
 /// path Claude Code will use. Returns the MCP part of the work probe.
 pub fn mcp_probe_remote(resolved: &Resolved<'_>, env: &Env<'_>, calls: u32) -> Result<ProbeReport> {
+    mcp_probe_remote_selected(resolved, env, calls, None)
+}
+
+pub fn mcp_probe_remote_selected(
+    resolved: &Resolved<'_>,
+    env: &Env<'_>,
+    calls: u32,
+    agent: Option<&str>,
+) -> Result<ProbeReport> {
     let ssh =
         Ssh::new(resolved.agent_ssh()?, &env.control_dir)?.with_ccnm_bin(resolved.agent.ccnm_bin());
     ssh.check_control_path()?;
+    let selected = resolved.agent_reference(agent)?;
     let req = ProbeRequest {
+        agent: selected.clone(),
+
         provider: Default::default(),
-        protocol: PROTOCOL,
+        protocol: if selected.is_some() { 3 } else { PROTOCOL },
         workspace: resolved.name.to_string(),
         root: resolved.workspace.root.clone(),
         runtime_node: resolved.workspace.runtime_node.clone(),
@@ -374,6 +532,7 @@ pub fn mcp_probe_remote(resolved: &Resolved<'_>, env: &Env<'_>, calls: u32) -> R
         probe_timeout(calls) + Duration::from_secs(60),
         ErrorCode::AgentUnreachable,
     )?;
+    verify_identity(selected.as_ref(), rep.agent_identity.as_ref())?;
     match rep.mcp {
         Some(Ok(mcp)) => Ok(mcp),
         Some(Err(e)) => Err(e.into()),
@@ -456,6 +615,8 @@ mod tests {
     /// What the Agent Node sends back when it has started a session.
     fn start_report_json() -> String {
         serde_json::to_string(&StartReport {
+            agent_identity: None,
+
             provider: Default::default(),
             protocol: PROTOCOL,
             session: Some("2f1e2d3c-4b5a-6978-8a9b-0c1d2e3f4a5b".into()),
@@ -571,6 +732,9 @@ mod tests {
             inner.push(Output::exited(0, "C-b\n")); // prefix, for the status bar
             inner.push(Output::exited(0, "")); // the status bar itself
             let tools = crate::controller::Tools {
+                local: None,
+                config: crate::Config::default(),
+                config_path: None,
                 runner: &inner,
                 agents: crate::provider::AgentBinaries::with_claude(Some(PathBuf::from(
                     "/opt/homebrew/bin/claude",
@@ -596,6 +760,7 @@ mod tests {
         agent_runner.push(Output::exited(1, "")); // has-session: nothing up yet
         agent_runner.push(Output::exited(0, hello_json())); // the handshake home
         let tools = work::Tools {
+            local: None,
             config: agent_config(),
             runner: &agent_runner,
             state: state.clone(),
@@ -777,6 +942,9 @@ mod tests {
                 let inner = FakeRunner::new();
                 inner.push(Output::exited(0, "Aqua\n")); // hello: the login session
                 let tools = crate::controller::Tools {
+                    local: None,
+                    config: crate::Config::default(),
+                    config_path: None,
                     runner: &inner,
                     agents: crate::provider::AgentBinaries::with_claude(Some(PathBuf::from(
                         "/opt/homebrew/bin/claude",
@@ -792,6 +960,7 @@ mod tests {
         let agent_runner = FakeRunner::new();
         agent_runner.push(Output::exited(0, hello_json())); // the handshake home
         let tools = work::Tools {
+            local: None,
             config: agent_config(),
             runner: &agent_runner,
             state: state.clone(),
@@ -915,6 +1084,37 @@ mod tests {
         // --detached is not decoration. Without it the far side would sit
         // there waiting to attach a terminal that is on this machine.
         assert!(line.ends_with("--detached"), "{line}");
+    }
+
+    #[test]
+    fn agent_side_workspace_authority_commands_return_to_runtime_for_selection() {
+        let fake = FakeRunner::new();
+        let env = Env {
+            runner: &fake,
+            control_dir: control("lifecycle-delegate"),
+            current_exe: PathBuf::from("/opt/agent/ccnm"),
+        };
+        let status = public_cmd_from_agent(
+            "to-runtime",
+            "/opt/runtime/ccnm",
+            &[
+                "status",
+                "demo",
+                "--agent",
+                "codex-main",
+                "--session",
+                "00000000-0000-4000-8000-000000000001",
+            ],
+            &env,
+        )
+        .unwrap();
+        assert!(
+            status.display().contains(
+                "-T to-runtime /opt/runtime/ccnm status demo --agent codex-main --session 00000000-0000-4000-8000-000000000001"
+            ),
+            "{}",
+            status.display()
+        );
     }
 
     /// The opening line makes the trip, and it makes it on stdin.

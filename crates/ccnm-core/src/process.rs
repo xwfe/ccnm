@@ -356,6 +356,19 @@ where
     O: Write + Send + 'static,
     E: Write + Send + 'static,
 {
+    run_captured_observed(cmd, out, err, |_| Ok(()))
+}
+
+pub fn run_captured_observed<O, E>(
+    cmd: &Cmd,
+    out: O,
+    err: E,
+    observe: impl FnOnce(u32) -> Result<()>,
+) -> Result<Captured>
+where
+    O: Write + Send + 'static,
+    E: Write + Send + 'static,
+{
     let started = Instant::now();
     let mut command = Command::new(&cmd.program);
     command
@@ -382,6 +395,11 @@ where
     let mut child = command.spawn().map_err(|e| {
         Error::internal(format!("cannot spawn {}", cmd.program.to_string_lossy())).with_source(e)
     })?;
+    if let Err(error) = observe(child.id()) {
+        kill_group(&mut child);
+        let _ = child.wait();
+        return Err(error);
+    }
     // Same contract as [`SystemRunner::run`]: the bytes go in on their own
     // thread, and a child that exits without reading them is not an error.
     let stdin_writer = child
@@ -456,6 +474,13 @@ where
 /// are ignored here; a caller that needs either wants
 /// [`run_captured`] instead.
 pub fn run_attached(cmd: &Cmd) -> Result<Captured> {
+    run_attached_observed(cmd, |_| Ok(()))
+}
+
+pub fn run_attached_observed(
+    cmd: &Cmd,
+    observe: impl FnOnce(u32) -> Result<()>,
+) -> Result<Captured> {
     let started = Instant::now();
     let mut command = Command::new(&cmd.program);
     command
@@ -476,13 +501,15 @@ pub fn run_attached(cmd: &Cmd) -> Result<Captured> {
     // Deliberately *not* its own process group: it shares this terminal, so
     // it must stay in the foreground group that receives ctrl-c and the
     // window-size signals.
-    let status = command
-        .spawn()
-        .map_err(|e| {
-            Error::internal(format!("cannot spawn {}", cmd.program.to_string_lossy()))
-                .with_source(e)
-        })?
-        .wait()?;
+    let mut child = command.spawn().map_err(|e| {
+        Error::internal(format!("cannot spawn {}", cmd.program.to_string_lossy())).with_source(e)
+    })?;
+    if let Err(error) = observe(child.id()) {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(error);
+    }
+    let status = child.wait()?;
     Ok(Captured {
         exit_code: status.code(),
         timed_out: false,
@@ -791,6 +818,35 @@ mod tests {
         assert_eq!(captured.stderr_bytes, 3);
         assert_eq!(&*out.lock().unwrap(), b"out");
         assert_eq!(&*err.lock().unwrap(), b"err");
+    }
+
+    #[test]
+    fn a_failed_pid_observer_cleans_up_the_child_process_group() {
+        let seen = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let observer = std::sync::Arc::clone(&seen);
+        let error = run_captured_observed(
+            &Cmd::new("sleep").arg("30"),
+            std::io::sink(),
+            std::io::sink(),
+            move |pid| {
+                observer.store(pid, std::sync::atomic::Ordering::SeqCst);
+                Err(Error::internal("fixture pid record failed"))
+            },
+        )
+        .unwrap_err();
+        assert!(error.message().contains("pid record failed"));
+        let pid = seen.load(std::sync::atomic::Ordering::SeqCst);
+        assert_ne!(pid, 0);
+        assert!(
+            !std::process::Command::new("/bin/kill")
+                .args(["-0", &pid.to_string()])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .unwrap()
+                .success(),
+            "observer failure left child {pid} running"
+        );
     }
 
     #[test]

@@ -252,7 +252,9 @@ fn doctor_against_an_unreachable_agent_exits_agent_unreachable() {
         "{text}"
     );
     assert!(
-        text.contains("Workspace policy        SKIP   not implemented until phase 2"),
+        text.contains(
+            "Native tool policy      SKIP   not checked: only a live selected Agent session"
+        ),
         "{text}"
     );
     // The project has no CLAUDE.md, which is fine and says so.
@@ -261,7 +263,7 @@ fn doctor_against_an_unreachable_agent_exits_agent_unreachable() {
         "{text}"
     );
     assert!(
-        text.contains("NOT READY (1 failed, 12 not checked)"),
+        text.contains("NOT READY (1 failed, 10 not checked)"),
         "{text}"
     );
     // Read-only: nothing appeared in the root.
@@ -859,6 +861,8 @@ fn sitting_at_home_detached_starts_the_session_and_keeps_the_terminal_here() {
     .unwrap();
 
     let started = serde_json::to_string(&StartReport {
+        agent_identity: None,
+
         provider: Default::default(),
         protocol: PROTOCOL,
         session: Some("2f1e2d3c-4b5a-6978-8a9b-0c1d2e3f4a5b".into()),
@@ -872,6 +876,9 @@ fn sitting_at_home_detached_starts_the_session_and_keeps_the_terminal_here() {
     })
     .unwrap();
     let nothing_running = serde_json::to_string(&StatusReport {
+        records: vec![],
+        agent_identity: None,
+
         protocol: PROTOCOL,
         tmux: Ok("3.7c".into()),
         sessions: Vec::new(),
@@ -1233,6 +1240,7 @@ fn supervise_runs_the_session_and_writes_its_exit_record() {
         std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
     let spec = Spec {
+        runtime_node: None,
         agent_identity: None,
         provider: Default::default(),
         protocol: ccnm_core::protocol::PROTOCOL,
@@ -1298,6 +1306,7 @@ fn codex_supervisor_records_launch_validation_failure_without_running_an_agent()
     let dir = Dir::at(root.join("session"));
     std::fs::create_dir_all(dir.path()).unwrap();
     let spec = Spec {
+        runtime_node: None,
         agent_identity: None,
         provider: AgentProvider::Codex,
         protocol: 2,
@@ -1327,6 +1336,7 @@ fn codex_supervisor_records_launch_validation_failure_without_running_an_agent()
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(&fake_agent, std::fs::Permissions::from_mode(0o700)).unwrap();
     let req = SuperviseRequest {
+        identity: None,
         provider: AgentProvider::Codex,
         protocol: 2,
         session_dir: dir.path().to_path_buf(),

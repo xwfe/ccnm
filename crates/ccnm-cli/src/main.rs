@@ -2,12 +2,13 @@
 //! controller, home MCP runtime) is decided by the subcommand; all logic
 //! lives in ccnm-core.
 
+use std::io::Write as _;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 
-use ccnm_core::process::SystemRunner;
+use ccnm_core::process::{ProcessRunner, SystemRunner};
 use ccnm_core::protocol::hello::{self, HelloRequest};
 use ccnm_core::protocol::mcp::ServePayload;
 use ccnm_core::protocol::payload;
@@ -22,7 +23,7 @@ use ccnm_core::{
     safety, session, tmux, work,
 };
 
-/// Terminal-native remote workspace runtime for Claude Code.
+/// Terminal-native remote workspace runtime for configured CLI agents.
 #[derive(Parser)]
 #[command(name = "ccnm", version = ccnm_core::VERSION)]
 struct Cli {
@@ -70,13 +71,19 @@ enum Command {
     Doctor {
         /// Workspace name from config.toml; omit to check only the config
         workspace: Option<String>,
+        /// Use another configured instance on the workspace's Agent Node
+        #[arg(long, value_name = "INSTANCE", requires = "workspace")]
+        agent: Option<String>,
     },
-    /// Start a Claude session for a workspace on the Agent Node, and
+    /// Start the configured Agent session for a workspace on the Agent Node, and
     /// attach this terminal to it
     Run {
         /// Workspace name from config.toml
         workspace: String,
-        /// What Claude opens with; without it the prompt starts empty
+        /// Override the workspace's default Agent Instance on the same node
+        #[arg(long, value_name = "INSTANCE")]
+        agent: Option<String>,
+        /// What the Agent opens with; without it the prompt starts empty
         prompt: Option<String>,
         /// Read what Claude opens with from stdin, to the end of input.
         /// Takes quotes and newlines, which a command line here would not
@@ -86,7 +93,7 @@ enum Command {
         /// attaching a terminal
         #[arg(long, value_name = "PROMPT", conflicts_with = "prompt")]
         print: Option<String>,
-        /// Kill Claude after this many seconds (--print only)
+        /// Kill the Agent after this many seconds (--print only)
         #[arg(long, default_value_t = 600, value_name = "SECONDS")]
         timeout: u64,
         /// Start the session but do not attach to it
@@ -97,13 +104,21 @@ enum Command {
     Attach {
         /// Workspace name from config.toml
         workspace: String,
+        #[arg(long, value_name = "INSTANCE")]
+        agent: Option<String>,
+        #[arg(long, value_name = "ID")]
+        session: Option<String>,
     },
     /// What is running on the Agent Node
     Status {
         /// Workspace name from config.toml
         workspace: String,
+        #[arg(long, value_name = "INSTANCE")]
+        agent: Option<String>,
+        #[arg(long, value_name = "ID", conflicts_with = "all")]
+        session: Option<String>,
         /// Every ccnm session on that machine, not just this workspace's
-        #[arg(long)]
+        #[arg(long, conflicts_with = "agent")]
         all: bool,
     },
     /// What a session produced, for a `--print` run this terminal did not
@@ -111,15 +126,21 @@ enum Command {
     Result {
         /// Workspace name from config.toml
         workspace: String,
+        #[arg(long, value_name = "INSTANCE")]
+        agent: Option<String>,
         /// A session id; without one, the workspace's most recent session
         #[arg(long, value_name = "ID")]
         session: Option<String>,
     },
-    /// End a workspace's session: Claude, its terminal and its MCP
+    /// End a workspace's session: Agent, terminal and MCP transport
     /// transport all go away
     Stop {
         /// Workspace name from config.toml
         workspace: String,
+        #[arg(long, value_name = "INSTANCE")]
+        agent: Option<String>,
+        #[arg(long, value_name = "ID")]
+        session: Option<String>,
     },
     /// MCP transport diagnostics
     Mcp {
@@ -180,6 +201,8 @@ enum McpCommand {
     Probe {
         /// Workspace name from config.toml
         workspace: String,
+        #[arg(long, value_name = "INSTANCE")]
+        agent: Option<String>,
         /// How many workspace_info calls to time
         #[arg(long, default_value_t = 100)]
         calls: u32,
@@ -337,19 +360,29 @@ fn run(cli: Cli) -> Result<i32> {
             init(&config_path()?, agent.as_deref(), runtime.as_deref())
         }
         Command::Workspace { command } => workspace_command(&config_path()?, command),
-        Command::Doctor { workspace } => {
+        Command::Doctor { workspace, agent } => {
+            let path = config_path()?;
+            if let Some(workspace) = workspace {
+                let config = Config::load(&path)?;
+                let mut args = vec!["doctor".to_string(), workspace.clone()];
+                append_agent(&mut args, agent.as_deref())?;
+                if let Some(code) = delegate_public_from_agent(&config, workspace, &args)? {
+                    return Ok(code);
+                }
+            }
             let env = doctor::Env {
                 runner: &SystemRunner,
                 control_dir: paths::state_dir()?.join("ssh"),
                 home: paths::home_dir()?,
-                audit: runtime_audit(&config_path()?, workspace.as_deref()),
+                audit: runtime_audit(&path, workspace.as_deref()),
             };
-            let report = doctor::run(&config_path()?, workspace.as_deref(), &env);
+            let report = doctor::run_selected(&path, workspace.as_deref(), agent.as_deref(), &env);
             print!("{}", report.render());
             Ok(report.exit_code())
         }
         Command::Run {
             workspace,
+            agent,
             prompt,
             prompt_stdin,
             print,
@@ -367,13 +400,17 @@ fn run(cli: Cli) -> Result<i32> {
                     ));
                 }
                 let opening = opening_prompt(prompt.as_deref(), *prompt_stdin)?;
+                let selected = local_instance_ref(&config, agent.as_deref())?;
                 let env = launch_env()?;
-                launcher::start_from_agent(
+                launcher::start_from_agent_with_instance(
                     home,
                     &host.ccnm_bin(),
                     workspace,
                     opening.as_deref(),
                     &env,
+                    selected
+                        .as_ref()
+                        .map(|reference| reference.instance.as_str()),
                 )?;
                 if *detached {
                     // The far side already said how to attach, and its
@@ -382,88 +419,147 @@ fn run(cli: Cli) -> Result<i32> {
                     return Ok(0);
                 }
                 return work::attach(
-                    &attach_request(workspace),
+                    &attach_request(workspace, selected, None),
                     &agent_tools(config_path().ok().as_deref())?,
                 );
             }
             let resolved = config.workspace(workspace)?;
             let env = launch_env()?;
             if let Some(prompt) = print {
-                let rep = launcher::run_print(
+                let rep = launcher::run_print_with_agent(
                     &resolved,
                     &env,
                     prompt,
                     std::time::Duration::from_secs(*timeout),
+                    agent.as_deref(),
                 )?;
                 return print_run_report(&rep);
             }
             let opening = opening_prompt(prompt.as_deref(), *prompt_stdin)?;
-            let rep = launcher::start_interactive(&resolved, &env, opening.as_deref())?;
+            let rep = launcher::start_interactive_with_agent(
+                &resolved,
+                &env,
+                opening.as_deref(),
+                agent.as_deref(),
+            )?;
             eprintln!("{}", rep.summary());
             if *detached {
                 eprintln!("\nattach when you want it: ccnm attach {workspace}");
                 return Ok(0);
             }
-            attach(&resolved, &env, workspace)
+            attach_selected(&resolved, &env, workspace, agent.as_deref(), None)
         }
-        Command::Attach { workspace } => {
+        Command::Attach {
+            workspace,
+            agent,
+            session,
+        } => {
             let config = Config::load(&config_path()?)?;
-            // On the Agent Node the session is right here; attaching
-            // needs the workspace name and nothing else.
             if agent_side(&config, workspace).is_some() {
                 return work::attach(
-                    &attach_request(workspace),
+                    &attach_request(
+                        workspace,
+                        local_instance_ref(&config, agent.as_deref())?,
+                        session.clone(),
+                    ),
                     &agent_tools(config_path().ok().as_deref())?,
                 );
             }
             let resolved = config.workspace(workspace)?;
-            attach(&resolved, &launch_env()?, workspace)
+            attach_selected(
+                &resolved,
+                &launch_env()?,
+                workspace,
+                agent.as_deref(),
+                session.as_deref(),
+            )
         }
-        Command::Status { workspace, all } => {
+        Command::Status {
+            workspace,
+            agent,
+            session,
+            all,
+        } => {
             let config = Config::load(&config_path()?)?;
-            // Same as attach: the sessions are on this machine, so
-            // reporting on them needs the name and nothing else.
             if agent_side(&config, workspace).is_some() {
+                let selected = local_instance_ref(&config, agent.as_deref())?;
                 let req = StatusRequest {
-                    protocol: ccnm_core::protocol::payload::PROTOCOL,
+                    protocol: if selected.is_some() {
+                        ccnm_core::instance::INSTANCE_SESSION_PROTOCOL
+                    } else {
+                        ccnm_core::protocol::payload::PROTOCOL
+                    },
                     workspace: (!*all).then(|| workspace.to_string()),
+                    agent: selected,
+                    session: session.clone(),
                 };
                 print!(
                     "{}",
-                    work::status(&req, &agent_tools(config_path().ok().as_deref())?).render()
+                    work::status_checked(&req, &agent_tools(config_path().ok().as_deref())?)?
+                        .render()
                 );
                 return Ok(0);
             }
             let resolved = config.workspace(workspace)?;
-            let rep = launcher::status(&resolved, &launch_env()?, *all)?;
+            let rep = launcher::status_selected(
+                &resolved,
+                &launch_env()?,
+                *all,
+                agent.as_deref(),
+                session.as_deref(),
+            )?;
             print!("{}", rep.render());
             Ok(0)
         }
-        Command::Result { workspace, session } => {
+        Command::Result {
+            workspace,
+            agent,
+            session,
+        } => {
             let config = Config::load(&config_path()?)?;
-            // On the Agent Node the session's files are right here --
-            // stdout, stderr and the outcome were written by this
-            // machine's own supervisor. Asking home for them would mean
-            // ssh'ing there so it could ssh back to read local files.
             if agent_side(&config, workspace).is_some() {
+                let selected = local_instance_ref(&config, agent.as_deref())?;
                 let req = ResultRequest {
-                    protocol: ccnm_core::protocol::payload::PROTOCOL,
+                    protocol: if selected.is_some() {
+                        ccnm_core::instance::INSTANCE_SESSION_PROTOCOL
+                    } else {
+                        ccnm_core::protocol::payload::PROTOCOL
+                    },
                     workspace: workspace.to_string(),
+                    agent: selected,
                     session: session.clone(),
                 };
-                let rep = work::result(&req, &agent_tools(config_path().ok().as_deref())?)?;
-                return print_result_report(&rep);
+                return print_result_report(&work::result(
+                    &req,
+                    &agent_tools(config_path().ok().as_deref())?,
+                )?);
             }
             let resolved = config.workspace(workspace)?;
-            let rep = launcher::result(&resolved, &launch_env()?, session.as_deref())?;
+            let rep = launcher::result_selected(
+                &resolved,
+                &launch_env()?,
+                session.as_deref(),
+                agent.as_deref(),
+            )?;
             print_result_report(&rep)
         }
-        Command::Stop { workspace } => {
+        Command::Stop {
+            workspace,
+            agent,
+            session,
+        } => {
             let config = Config::load(&config_path()?)?;
             if agent_side(&config, workspace).is_some() {
+                let selected = local_instance_ref(&config, agent.as_deref())?;
                 let req = StopRequest {
-                    protocol: ccnm_core::protocol::payload::PROTOCOL,
+                    protocol: if selected.is_some() {
+                        ccnm_core::instance::INSTANCE_SESSION_PROTOCOL
+                    } else {
+                        ccnm_core::protocol::payload::PROTOCOL
+                    },
                     workspace: workspace.to_string(),
+                    agent: selected,
+                    session: session.clone(),
                 };
                 let rep = work::stop(&req, &agent_tools(config_path().ok().as_deref())?)?;
                 println!(
@@ -477,7 +573,12 @@ fn run(cli: Cli) -> Result<i32> {
                 return Ok(0);
             }
             let resolved = config.workspace(workspace)?;
-            let rep = launcher::stop(&resolved, &launch_env()?)?;
+            let rep = launcher::stop_selected(
+                &resolved,
+                &launch_env()?,
+                agent.as_deref(),
+                session.as_deref(),
+            )?;
             if rep.killed {
                 println!("stopped {}", rep.tmux_session);
             } else {
@@ -489,17 +590,33 @@ fn run(cli: Cli) -> Result<i32> {
             command:
                 McpCommand::Probe {
                     workspace,
+                    agent,
                     calls,
                     local,
                 },
         } => {
             let config = Config::load(&config_path()?)?;
+            let mut args = vec!["mcp".to_string(), "probe".to_string(), workspace.clone()];
+            append_agent(&mut args, agent.as_deref())?;
+            args.extend(["--calls".into(), calls.to_string()]);
+            if *local {
+                args.push("--local".into());
+            }
+            if let Some(code) = delegate_public_from_agent(&config, workspace, &args)? {
+                return Ok(code);
+            }
             let resolved = config.workspace(workspace)?;
             let env = launch_env()?;
             let rep = if *local {
+                if resolved.agent_reference(agent.as_deref())?.is_some() {
+                    return Err(Error::new(
+                        ccnm_core::ErrorCode::NotReady,
+                        "local MCP probe cannot resolve an Agent-private instance identity; use the remote probe",
+                    ));
+                }
                 launcher::mcp_probe_local(&resolved, &env, *calls)?
             } else {
-                launcher::mcp_probe_remote(&resolved, &env, *calls)?
+                launcher::mcp_probe_remote_selected(&resolved, &env, *calls, agent.as_deref())?
             };
             println!("{}", rep.summary());
             println!("{}", payload::to_json(&rep)?);
@@ -528,12 +645,16 @@ fn run(cli: Cli) -> Result<i32> {
             InternalCommand::Controller => {
                 let socket = paths::controller_socket(&paths::state_dir()?);
                 let listener = controller::Listener::bind(&socket)?;
+                let controller_config_path = config_path()?;
                 let tools = controller::Tools {
                     runner: &SystemRunner,
                     // Resolved here, in launchd's environment, because
                     // that is the PATH Claude will actually be started
                     // with.
                     agents: ccnm_core::provider::AgentBinaries::discover(),
+                    config: Config::load(&controller_config_path).unwrap_or_default(),
+                    local: ccnm_core::instance::AgentLocal::load().ok(),
+                    config_path: Some(controller_config_path),
                     // Same reason as agent: launchd's PATH is not a login
                     // shell's, and the tmux server has to be started from
                     // here to be in the login session.
@@ -582,10 +703,10 @@ fn run(cli: Cli) -> Result<i32> {
             }
             InternalCommand::AgentStatus { payload } => {
                 let req: StatusRequest = payload::decode(payload)?;
-                print_json(&work::status(
+                print_json(&work::status_checked(
                     &req,
                     &agent_tools(config_path().ok().as_deref())?,
-                ))
+                )?)
             }
             InternalCommand::AgentResult { payload } => {
                 let req: ResultRequest = payload::decode(payload)?;
@@ -949,11 +1070,72 @@ fn opening_prompt(prompt: Option<&str>, from_stdin: bool) -> Result<Option<Strin
     Ok(Some(text.trim_end().to_string()))
 }
 
-fn attach_request(workspace: &str) -> AttachRequest {
+fn attach_request(
+    workspace: &str,
+    agent: Option<ccnm_core::instance::InstanceRef>,
+    session: Option<String>,
+) -> AttachRequest {
+    let protocol = if agent.is_some() {
+        ccnm_core::instance::INSTANCE_SESSION_PROTOCOL
+    } else {
+        ccnm_core::protocol::payload::PROTOCOL
+    };
     AttachRequest {
-        protocol: ccnm_core::protocol::payload::PROTOCOL,
+        protocol,
         workspace: workspace.to_string(),
+        agent,
+        session,
     }
+}
+
+fn local_instance_ref(
+    config: &Config,
+    agent: Option<&str>,
+) -> Result<Option<ccnm_core::instance::InstanceRef>> {
+    let Some(instance) = agent else {
+        return Ok(None);
+    };
+    let node = config
+        .this
+        .as_ref()
+        .ok_or_else(|| Error::config("--agent on the Agent Node requires `this`"))?;
+    let reference = ccnm_core::instance::InstanceRef {
+        node: node.clone(),
+        instance: instance.to_string(),
+    };
+    reference.validate()?;
+    Ok(Some(reference))
+}
+
+fn append_agent(args: &mut Vec<String>, agent: Option<&str>) -> Result<()> {
+    if let Some(agent) = agent {
+        ccnm_core::instance::identifier(agent)?;
+        args.extend(["--agent".into(), agent.into()]);
+    }
+    Ok(())
+}
+
+fn delegate_public_from_agent(
+    config: &Config,
+    workspace: &str,
+    args: &[String],
+) -> Result<Option<i32>> {
+    let Some((runtime, node)) = agent_side(config, workspace) else {
+        return Ok(None);
+    };
+    let env = launch_env()?;
+    let refs: Vec<_> = args.iter().map(String::as_str).collect();
+    let cmd = launcher::public_cmd_from_agent(runtime, &node.ccnm_bin(), &refs, &env)?;
+    let output = SystemRunner.run(&cmd)?;
+    std::io::stdout().write_all(&output.stdout)?;
+    std::io::stderr().write_all(&output.stderr)?;
+    if output.timed_out {
+        return Err(Error::new(
+            ccnm_core::ErrorCode::RuntimeUnreachable,
+            "Runtime command timed out",
+        ));
+    }
+    Ok(Some(output.exit_code.unwrap_or(1)))
 }
 
 /// The Agent Node's own view of the world.
@@ -971,6 +1153,7 @@ fn agent_tools(config_path: Option<&std::path::Path>) -> Result<work::Tools<'sta
         .unwrap_or_default();
     Ok(work::Tools {
         config,
+        local: ccnm_core::instance::AgentLocal::load().ok(),
         runner: &SystemRunner,
         control_dir: state.join("ssh"),
         agents: ccnm_core::provider::AgentBinaries::discover(),
@@ -994,15 +1177,17 @@ fn launch_env() -> Result<launcher::Env<'static>> {
 /// Not `exec`: when the person detaches or Claude ends, there is one more
 /// useful thing to say — whether the session is still running — and a
 /// process that replaced itself with ssh cannot say it.
-fn attach(
+fn attach_selected(
     resolved: &ccnm_core::config::Resolved<'_>,
     env: &launcher::Env<'_>,
     workspace: &str,
+    agent: Option<&str>,
+    session: Option<&str>,
 ) -> Result<i32> {
-    let cmd = launcher::attach_cmd(resolved, env)?;
+    let cmd = launcher::attach_cmd_selected(resolved, env, agent, session)?;
     let captured = ccnm_core::process::run_attached(&cmd)?;
     let code = captured.exit_code.unwrap_or(1);
-    match launcher::status(resolved, env, false) {
+    match launcher::status_selected(resolved, env, false, agent, session) {
         Ok(rep) if !rep.sessions.is_empty() => {
             eprintln!("\nstill running on the Agent Node; back in with: ccnm attach {workspace}");
         }

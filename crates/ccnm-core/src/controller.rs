@@ -175,7 +175,7 @@ pub struct Request {
 impl Request {
     pub fn new(body: RequestBody) -> Request {
         Request {
-            protocol: body.provider().control_protocol(),
+            protocol: body.protocol(),
             body,
         }
     }
@@ -186,7 +186,7 @@ impl Protocol for Request {
         self.protocol
     }
     fn expected_protocol(&self) -> u32 {
-        self.body.provider().control_protocol()
+        self.body.protocol()
     }
 }
 
@@ -201,6 +201,8 @@ pub enum RequestBody {
     AgentAuth {
         #[serde(default, skip_serializing_if = "AgentProvider::is_claude")]
         provider: AgentProvider,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        identity: Option<crate::instance::AgentIdentity>,
         /// `CLAUDE_CONFIG_DIR` for the call, from the Runtime Node's
         /// config. `None` means Claude's own default (design doc
         /// section 21).
@@ -220,6 +222,8 @@ pub enum RequestBody {
         session_dir: PathBuf,
         #[serde(default, skip_serializing_if = "AgentProvider::is_claude")]
         provider: AgentProvider,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        identity: Option<crate::instance::AgentIdentity>,
     },
 }
 
@@ -228,6 +232,21 @@ impl RequestBody {
         match self {
             Self::Hello => AgentProvider::Claude,
             Self::AgentAuth { provider, .. } | Self::Start { provider, .. } => *provider,
+        }
+    }
+
+    fn identity(&self) -> Option<&crate::instance::AgentIdentity> {
+        match self {
+            Self::Hello => None,
+            Self::AgentAuth { identity, .. } | Self::Start { identity, .. } => identity.as_ref(),
+        }
+    }
+
+    fn protocol(&self) -> u32 {
+        if self.identity().is_some() {
+            crate::instance::INSTANCE_SESSION_PROTOCOL
+        } else {
+            self.provider().control_protocol()
         }
     }
 }
@@ -281,6 +300,11 @@ pub struct Tools<'a> {
     /// controller's `PATH` comes from launchd, so the lookup happens here
     /// rather than on the ssh side.
     pub agents: crate::provider::AgentBinaries,
+    /// Agent-local authority for instance identity, never the Runtime copy.
+    pub config: crate::Config,
+    pub local: Option<crate::instance::AgentLocal>,
+    /// Propagated to the supervisor without embedding a profile directory.
+    pub config_path: Option<PathBuf>,
     /// tmux, found the same way and for the same reason. Only interactive
     /// sessions need it; `None` is not an error until one is asked for.
     pub tmux: Option<PathBuf>,
@@ -295,15 +319,25 @@ pub fn answer(req: &Request, tools: &Tools<'_>) -> Response {
         RequestBody::Hello => Response::new(ReplyBody::Hello(Context::of(tools.runner))),
         RequestBody::AgentAuth {
             provider,
+            identity,
             config_dir,
             ask,
         } => {
-            if *provider == AgentProvider::Codex && config_dir.is_some() {
+            let profile = match resolve_profile(tools, *provider, identity.as_ref()) {
+                Ok(profile) => profile,
+                Err(error) => return Response::error(&error),
+            };
+            if identity.is_some() && config_dir.is_some() {
+                return Response::error(&Error::invalid_args(
+                    "bound Agent auth cannot accept a caller-supplied profile directory",
+                ));
+            }
+            if identity.is_none() && *provider == AgentProvider::Codex && config_dir.is_some() {
                 return Response::error(&Error::invalid_args("Codex home is Agent-local"));
             }
-            Response::new(ReplyBody::Agent(provider.report(
+            Response::new(ReplyBody::Agent(provider.report_at(
                 tools.agents.get(*provider),
-                config_dir.as_deref(),
+                profile.as_deref().or(config_dir.as_deref()),
                 tools.runner,
                 *ask,
             )))
@@ -311,7 +345,8 @@ pub fn answer(req: &Request, tools: &Tools<'_>) -> Response {
         RequestBody::Start {
             session_dir,
             provider,
-        } => match start_session(session_dir, *provider, tools) {
+            identity,
+        } => match start_session(session_dir, *provider, identity.as_ref(), tools) {
             Ok(pid) => Response::new(ReplyBody::Started { pid }),
             Err(e) => Response::error(&e),
         },
@@ -329,32 +364,68 @@ pub fn answer(req: &Request, tools: &Tools<'_>) -> Response {
 /// everything it runs, so a server forked here is one Claude can read its
 /// credentials in, and a server someone forked from an ssh session is not
 /// (see [`crate::tmux`]).
-fn start_session(session_dir: &Path, provider: AgentProvider, tools: &Tools<'_>) -> Result<u32> {
+fn start_session(
+    session_dir: &Path,
+    provider: AgentProvider,
+    identity: Option<&crate::instance::AgentIdentity>,
+    tools: &Tools<'_>,
+) -> Result<u32> {
     let agent_bin = tools
         .agents
         .get(provider)
         .ok_or_else(|| provider.missing_controller_cli())?;
     let dir = session::Dir::at(session_dir);
     let spec = session::load(&dir)?;
-    spec.require_legacy_execution()?;
+    spec.validate_identity()?;
+    if spec.agent_identity.as_ref() != identity {
+        return Err(Error::invalid_args(
+            "controller Agent identity does not match session",
+        ));
+    }
     if provider != spec.provider() {
         return Err(Error::invalid_args(
             "controller provider does not match session",
         ));
     }
+    let profile = resolve_profile(tools, provider, identity)?;
     if provider == AgentProvider::Codex {
         crate::provider::codex::validate_spec(&spec)?;
-        let report = provider.report(Some(agent_bin), None, tools.runner, Ask::Everything);
+    }
+    if identity.is_some() || provider == AgentProvider::Codex {
+        let report = provider.report_at(
+            Some(agent_bin),
+            profile.as_deref().or(spec.provider_config_dir.as_deref()),
+            tools.runner,
+            Ask::Everything,
+        );
         report.version.map_err(Error::from)?;
         if !report.auth.map_err(Error::from)?.logged_in {
             return Err(Error::new(ErrorCode::Auth, provider.auth_hint(None)));
         }
-        crate::provider::codex::check_inventory(agent_bin, &spec, tools.runner)?;
+        if provider == AgentProvider::Codex {
+            crate::provider::codex::check_inventory_at(
+                agent_bin,
+                &spec,
+                profile.as_deref(),
+                tools.runner,
+            )?;
+        }
     }
     let mut req = SuperviseRequest::new(session_dir.to_path_buf(), agent_bin.to_path_buf());
     req.provider = provider;
-    req.protocol = provider.control_protocol();
-    let supervisor = supervisor_cmd(&tools.exe, &req)?;
+    req.identity = identity.cloned();
+    req.protocol = if identity.is_some() {
+        3
+    } else {
+        provider.control_protocol()
+    };
+    let mut supervisor = supervisor_cmd(&tools.exe, &req)?;
+    if identity.is_some() {
+        let config_path = tools.config_path.as_ref().ok_or_else(|| {
+            Error::config("bound Agent launch requires the authoritative config path")
+        })?;
+        supervisor = supervisor.env("CCNM_CONFIG", config_path);
+    }
     if !spec.mode.is_interactive() {
         let pid = spawn_detached(&supervisor, &dir.supervisor_log())?;
         tracing::info!(session = %spec.id, pid, "started supervisor");
@@ -390,6 +461,42 @@ fn start_session(session_dir: &Path, provider: AgentProvider, tools: &Tools<'_>)
     label_status_bar(&tmux, tools, &name);
     tracing::info!(session = %spec.id, %name, server_pid = pid, "started tmux session");
     Ok(pid)
+}
+
+fn resolve_profile(
+    tools: &Tools<'_>,
+    provider: AgentProvider,
+    identity: Option<&crate::instance::AgentIdentity>,
+) -> Result<Option<PathBuf>> {
+    let Some(identity) = identity else {
+        return Ok(None);
+    };
+    if identity.provider != provider {
+        return Err(Error::invalid_args(
+            "controller provider differs from Agent identity",
+        ));
+    }
+    let current;
+    let config = if let Some(path) = tools.config_path.as_ref() {
+        current = crate::Config::load(path).map_err(|_| {
+            Error::config("cannot reload Agent-local instance registry (path withheld)")
+        })?;
+        &current
+    } else {
+        &tools.config
+    };
+    let resolved = tools
+        .local
+        .as_ref()
+        .ok_or_else(|| Error::config("Agent-local profile registry is unavailable"))?
+        .resolve(config, &identity.reference())?;
+    if resolved.identity() != identity {
+        return Err(Error::invalid_args(
+            "Agent registry identity changed after binding",
+        ));
+    }
+    resolved.profile().validate_private_directory()?;
+    Ok(Some(resolved.profile().directory().to_path_buf()))
 }
 
 /// Tell the status bar how to leave without killing Claude.
@@ -439,13 +546,12 @@ pub fn supervisor_cmd(exe: &Path, req: &SuperviseRequest) -> Result<Cmd> {
 /// finished supervisors do not pile up as zombies; the wait is all it does.
 fn spawn_detached(cmd: &Cmd, log: &Path) -> Result<u32> {
     use std::os::unix::process::CommandExt as _;
-    use std::process::{Command, Stdio};
+    use std::process::Stdio;
 
     let out = std::fs::File::create(log)?;
     let err = out.try_clone()?;
-    let mut command = Command::new(&cmd.program);
+    let mut command = cmd.process();
     command
-        .args(&cmd.args)
         .stdin(Stdio::null())
         .stdout(Stdio::from(out))
         .stderr(Stdio::from(err))
@@ -653,7 +759,25 @@ pub fn agent_auth_for(
 ) -> Result<AgentReport> {
     let body = RequestBody::AgentAuth {
         provider,
+        identity: None,
         config_dir: config_dir.map(Path::to_path_buf),
+        ask,
+    };
+    match call(path, body, Duration::from_secs(60))? {
+        ReplyBody::Agent(rep) => Ok(rep),
+        other => Err(unexpected(&other)),
+    }
+}
+
+pub fn agent_auth_instance(
+    path: &Path,
+    identity: &crate::instance::AgentIdentity,
+    ask: Ask,
+) -> Result<AgentReport> {
+    let body = RequestBody::AgentAuth {
+        provider: identity.provider,
+        identity: Some(identity.clone()),
+        config_dir: None,
         ask,
     };
     match call(path, body, Duration::from_secs(60))? {
@@ -670,15 +794,26 @@ pub fn start(path: &Path, session_dir: &Path) -> Result<u32> {
     start_for(path, session_dir, AgentProvider::Claude)
 }
 pub fn start_for(path: &Path, session_dir: &Path, provider: AgentProvider) -> Result<u32> {
+    start_for_identity(path, session_dir, provider, None)
+}
+
+pub fn start_for_identity(
+    path: &Path,
+    session_dir: &Path,
+    provider: AgentProvider,
+    identity: Option<&crate::instance::AgentIdentity>,
+) -> Result<u32> {
     let body = RequestBody::Start {
         provider,
+        identity: identity.cloned(),
         session_dir: session_dir.to_path_buf(),
     };
     // Codex revalidates version, auth and MCP inventory before spawning; each
     // probe has a 20-second bound. Keep the existing Claude timeout unchanged.
-    let timeout = match provider {
-        AgentProvider::Claude => 20,
-        AgentProvider::Codex => 75,
+    let timeout = if identity.is_some() || provider == AgentProvider::Codex {
+        75
+    } else {
+        20
     };
     match call(path, body, Duration::from_secs(timeout))? {
         ReplyBody::Started { pid } => Ok(pid),
@@ -764,6 +899,9 @@ mod tests {
 
     fn tools<'a>(fake: &'a FakeRunner, agent: bool) -> Tools<'a> {
         Tools {
+            local: None,
+            config: crate::Config::default(),
+            config_path: None,
             runner: fake,
             agents: crate::provider::AgentBinaries::with_claude(
                 agent.then(|| PathBuf::from("/opt/homebrew/bin/claude")),
@@ -774,9 +912,65 @@ mod tests {
     }
 
     #[test]
+    fn bound_requests_reload_the_agent_registry_instead_of_using_controller_startup_state() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = std::env::temp_dir().join(format!(
+            "ccnm-controller-registry-{}",
+            crate::session::new_id()
+        ));
+        let home = root.join("home");
+        std::fs::create_dir_all(home.join(".claude")).unwrap();
+        std::fs::set_permissions(home.join(".claude"), std::fs::Permissions::from_mode(0o700))
+            .unwrap();
+        let original = "this='worker'\n[nodes.worker]\n[agents.main]\nprovider='claude'\nprofile_ref='default'\n";
+        let stale = crate::Config::parse(original).unwrap();
+        let path = root.join("config.toml");
+        std::fs::write(&path, original.replace("default", "changed")).unwrap();
+        let runner = FakeRunner::new();
+        let tools = Tools {
+            runner: &runner,
+            agents: crate::provider::AgentBinaries::with_claude(Some("/agent/claude".into())),
+            config: stale,
+            local: Some(
+                crate::instance::AgentLocal::new(
+                    crate::instance::AgentProfiles::default(),
+                    home,
+                    None,
+                )
+                .unwrap(),
+            ),
+            config_path: Some(path),
+            tmux: None,
+            exe: "/agent/ccnm".into(),
+        };
+        let request = Request::new(RequestBody::AgentAuth {
+            provider: AgentProvider::Claude,
+            identity: Some(crate::instance::AgentIdentity {
+                node: "worker".into(),
+                instance: "main".into(),
+                provider: AgentProvider::Claude,
+                profile_ref: "default".into(),
+            }),
+            config_dir: None,
+            ask: Ask::Everything,
+        });
+        let ReplyBody::Error(error) = answer(&request, &tools).body else {
+            panic!("changed registry must reject the stale bound identity")
+        };
+        assert_eq!(error.code(), ErrorCode::Config);
+        assert!(
+            runner.calls().is_empty(),
+            "no provider probe after mismatch"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn start_refuses_without_claude_or_without_a_session() {
         let fake = FakeRunner::new();
         let req = Request::new(RequestBody::Start {
+            identity: None,
             provider: Default::default(),
             session_dir: PathBuf::from("/nonexistent"),
         });
@@ -800,6 +994,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let spec = session::Spec {
+            runtime_node: None,
             agent_identity: None,
             provider: Default::default(),
             protocol: PROTOCOL,
@@ -839,6 +1034,7 @@ mod tests {
         fake.push(Output::exited(0, "")); // set-option: status-right
 
         let req = Request::new(RequestBody::Start {
+            identity: None,
             provider: Default::default(),
             session_dir: dir.clone(),
         });
@@ -882,6 +1078,7 @@ mod tests {
         let fake = FakeRunner::new();
         fake.push(Output::exited(0, "")); // has-session: already there
         let req = Request::new(RequestBody::Start {
+            identity: None,
             session_dir: dir,
             provider: Default::default(),
         });
@@ -901,6 +1098,7 @@ mod tests {
         let mut tools = tools(&fake, true);
         tools.tmux = None;
         let req = Request::new(RequestBody::Start {
+            identity: None,
             session_dir: dir,
             provider: Default::default(),
         });
@@ -1020,6 +1218,7 @@ mod tests {
         fake.push(Output::exited(0, "2.1.259 (Claude Code)\n"));
         fake.push(Output::exited(0, r#"{"loggedIn":true,"email":"me@x"}"#));
         let req = Request::new(RequestBody::AgentAuth {
+            identity: None,
             provider: Default::default(),
             config_dir: Some(PathBuf::from("/x/claude")),
             ask: Ask::Everything,
@@ -1050,6 +1249,7 @@ mod tests {
         let fake = FakeRunner::new();
         fake.push(Output::exited(0, "2.1.259 (Claude Code)\n"));
         let req = Request::new(RequestBody::AgentAuth {
+            identity: None,
             provider: Default::default(),
             config_dir: None,
             ask: Ask::VersionOnly,
@@ -1081,6 +1281,7 @@ mod tests {
         assert_eq!(
             req.body,
             RequestBody::AgentAuth {
+                identity: None,
                 provider: Default::default(),
                 config_dir: None,
                 ask: Ask::Everything

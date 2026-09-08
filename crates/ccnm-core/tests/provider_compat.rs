@@ -8,6 +8,7 @@ use serde_json::{Value, json};
 
 fn spec(remote: bool, mode: session::Mode) -> session::Spec {
     session::Spec {
+        runtime_node: None,
         agent_identity: None,
         provider: Default::default(),
         protocol: protocol::PROTOCOL,
@@ -117,6 +118,7 @@ fn snapshot() -> Value {
         "auth": auth,
         "auth_summary": auth.describe(),
         "controller_request": controller::Request::new(controller::RequestBody::AgentAuth {
+            identity: None,
             provider: Default::default(),
             config_dir: Some(PathBuf::from("/agent/config with space")), ask: Ask::Everything,
         }),
@@ -128,7 +130,7 @@ fn snapshot() -> Value {
 }
 
 #[test]
-fn claude_behavior_matches_pre_provider_snapshot_except_documented_ssh_hardening() {
+fn claude_behavior_matches_snapshot_except_documented_safety_and_colocated_fixes() {
     let actual = snapshot();
     let mut expected: Value = serde_json::from_slice(include_bytes!(
         "../../../tests/fixtures/claude-provider-baseline.json"
@@ -156,6 +158,12 @@ fn claude_behavior_matches_pre_provider_snapshot_except_documented_ssh_hardening
                 .into_iter()
                 .map(Value::from),
             );
+        }
+        if launch.pointer("/spec/runtime").is_none_or(Value::is_null) {
+            launch["command"]["args"]
+                .as_array_mut()
+                .unwrap()
+                .drain(0..5);
         }
     }
     assert_eq!(actual, expected);

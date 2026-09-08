@@ -258,17 +258,20 @@ pub fn report(
 /// misread as a flag, and Claude stops waiting for stdin the moment it
 /// arrives instead of after a three-second timeout.
 pub fn launch_cmd(bin: &Path, spec: &Spec, dir: &Dir) -> Cmd {
-    let cmd = with_config_dir(Cmd::new(bin), spec.provider_config_dir.as_deref())
+    let mut cmd = with_config_dir(Cmd::new(bin), spec.provider_config_dir.as_deref())
         .cwd(spec.cwd.clone())
-        .timeout(Duration::from_secs(spec.timeout_secs))
-        .args(["--tools", ""])
-        // Interactive sessions differ from print only in the last block
-        // below: same tool policy, same MCP config, same settings file.
-        // That is the point -- what the model can do must not depend on
-        // whether a person is watching.
-        .arg("--mcp-config")
-        .arg(dir.mcp_config())
-        .arg("--strict-mcp-config")
+        .timeout(Duration::from_secs(spec.timeout_secs));
+    if spec.runtime.is_some() {
+        // Remote sessions expose only ccnm. A colocated session needs Claude's
+        // native tools and has no mcp.json; passing these flags made it start
+        // in the state directory with no usable tools.
+        cmd = cmd
+            .args(["--tools", ""])
+            .arg("--mcp-config")
+            .arg(dir.mcp_config())
+            .arg("--strict-mcp-config");
+    }
+    let cmd = cmd
         .arg("--settings")
         .arg(dir.settings())
         .args(["--setting-sources", "user,project,local"])
@@ -403,6 +406,7 @@ mod tests {
 
     fn spec() -> Spec {
         Spec {
+            runtime_node: None,
             agent_identity: None,
             provider: Default::default(),
             protocol: crate::protocol::PROTOCOL,

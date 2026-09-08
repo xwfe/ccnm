@@ -27,6 +27,8 @@ pub struct ProbeRequest {
         skip_serializing_if = "crate::provider::AgentProvider::is_claude"
     )]
     pub provider: crate::provider::AgentProvider,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<crate::instance::InstanceRef>,
     pub workspace: String,
     /// Project root on the runtime host; the Agent side only passes it on.
     pub root: PathBuf,
@@ -46,7 +48,11 @@ impl Protocol for ProbeRequest {
         self.protocol
     }
     fn expected_protocol(&self) -> u32 {
-        self.provider.control_protocol()
+        if self.agent.is_some() {
+            3
+        } else {
+            self.provider.control_protocol()
+        }
     }
 }
 
@@ -58,6 +64,8 @@ pub struct ProbeReport {
         skip_serializing_if = "crate::provider::AgentProvider::is_claude"
     )]
     pub provider: crate::provider::AgentProvider,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_identity: Option<crate::instance::AgentIdentity>,
     /// The Agent Node's own hello.
     pub hello: HelloReport,
     /// The login-session controller, as reached from this ssh session.
@@ -96,5 +104,8 @@ pub struct ProbeReport {
 impl Protocol for ProbeReport {
     fn protocol(&self) -> u32 {
         self.protocol
+    }
+    fn expected_protocol(&self) -> u32 {
+        if self.agent_identity.is_some() { 3 } else { 1 }
     }
 }

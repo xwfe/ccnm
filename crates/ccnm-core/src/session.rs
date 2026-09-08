@@ -1,4 +1,4 @@
-//! One Claude session on the Agent Node: what it is, where its files
+//! One Agent session on the Agent Node: what it is, where its files
 //! live, and the supervisor that runs it.
 //!
 //! ```text
@@ -85,11 +85,13 @@ pub struct Spec {
         skip_serializing_if = "crate::provider::AgentProvider::is_claude"
     )]
     pub provider: crate::provider::AgentProvider,
-    /// A UUID; also the session id Claude itself is told to use.
+    /// The ccnm lifecycle UUID. Provider thread/resume ids stay in results.
     pub id: String,
     pub workspace: String,
     /// Project root on the Runtime Node. Never a path on this one.
     pub root: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_node: Option<String>,
     /// How this machine dials the Runtime Node: its own alias for it, and
     /// where ccnm lives there.
     ///
@@ -125,6 +127,15 @@ impl Spec {
                     "instance session requires an absolute Runtime root and a remote link",
                 ));
             }
+            let runtime_node = self.runtime_node.as_deref().ok_or_else(|| {
+                Error::invalid_args("instance session has no Runtime Node binding")
+            })?;
+            crate::instance::identifier(runtime_node)?;
+            if runtime_node == identity.node {
+                return Err(Error::invalid_args(
+                    "instance session cannot claim colocated execution",
+                ));
+            }
             if self.provider_config_dir.is_some()
                 || self.permission_mode != PermissionMode::default()
             {
@@ -151,12 +162,21 @@ impl Spec {
         Ok(())
     }
 
-    pub fn require_legacy_execution(&self) -> Result<()> {
+    pub fn workspace_binding(&self) -> Result<Option<crate::instance::WorkspaceBinding>> {
         self.validate_identity()?;
-        if self.agent_identity.is_some() {
-            return Err(crate::instance::execution_not_open());
-        }
-        Ok(())
+        self.agent_identity
+            .as_ref()
+            .map(|identity| {
+                let binding = crate::instance::WorkspaceBinding {
+                    workspace: self.workspace.clone(),
+                    runtime_node: self.runtime_node.clone().expect("validated above"),
+                    root: self.root.clone(),
+                    agent: identity.clone(),
+                };
+                binding.validate()?;
+                Ok(binding)
+            })
+            .transpose()
     }
     /// v1 sessions have no provider selector. Preserve old records and default
     /// behavior until a real second provider establishes the next contract.
@@ -253,6 +273,18 @@ impl Dir {
         self.0.join("supervisor.log")
     }
 
+    pub fn supervisor_pid(&self) -> PathBuf {
+        self.0.join("supervisor.pid")
+    }
+
+    pub fn agent_pid(&self) -> PathBuf {
+        self.0.join("agent.pid")
+    }
+
+    pub fn stopping(&self) -> PathBuf {
+        self.0.join("stopping")
+    }
+
     pub fn exit(&self) -> PathBuf {
         self.0.join("exit")
     }
@@ -334,7 +366,12 @@ pub fn read_context(dir: &Dir) -> Option<Context> {
 /// MCP config there would point a transport at this same machine and take
 /// away the tools that are the only ones able to do the job.
 pub fn create(state: &Path, spec: &Spec, ssh: Option<&Ssh>) -> Result<Dir> {
-    spec.require_legacy_execution()?;
+    spec.validate_identity()?;
+    if spec.agent_identity.is_some() && ssh.is_none() {
+        return Err(Error::invalid_args(
+            "bound Agent session requires its verified remote SSH transport",
+        ));
+    }
     if spec.provider() == AgentProvider::Codex {
         crate::provider::codex::validate_spec(spec)?;
     }
@@ -359,7 +396,13 @@ pub fn create(state: &Path, spec: &Spec, ssh: Option<&Ssh>) -> Result<Dir> {
     // MCP JSON cannot express env_remove. Both official CLIs launch this
     // Agent-local boundary, which strips credentials immediately before SSH.
     let transport = ssh
-        .map(|_| transport::launcher(&dir, &std::env::current_exe()?))
+        .map(|_| {
+            transport::launcher_for(
+                &dir,
+                &std::env::current_exe()?,
+                spec.agent_identity.as_ref(),
+            )
+        })
         .transpose()?;
     spec.provider()
         .write_session_files(&dir, transport.as_ref())?;
@@ -509,6 +552,48 @@ fn write_outcome(dir: &Dir, outcome: &Outcome) -> Result<()> {
     Ok(())
 }
 
+pub fn record_terminal_failure(dir: &Dir, message: &str) -> Result<()> {
+    write_outcome(
+        dir,
+        &Outcome {
+            exit_code: None,
+            timed_out: false,
+            duration_ms: 0,
+            error: Some(message.to_string()),
+        },
+    )
+}
+
+pub fn write_supervisor_pid(dir: &Dir, pid: u32) -> Result<()> {
+    let tmp = dir.path().join("supervisor.pid.tmp");
+    fs::write(&tmp, format!("{pid}\n"))?;
+    fs::rename(tmp, dir.supervisor_pid())?;
+    Ok(())
+}
+
+pub fn read_supervisor_pid(dir: &Dir) -> Option<u32> {
+    fs::read_to_string(dir.supervisor_pid())
+        .ok()?
+        .trim()
+        .parse()
+        .ok()
+}
+
+pub fn write_agent_pid(dir: &Dir, pid: u32) -> Result<()> {
+    let tmp = dir.path().join("agent.pid.tmp");
+    fs::write(&tmp, format!("{pid}\n"))?;
+    fs::rename(tmp, dir.agent_pid())?;
+    Ok(())
+}
+
+pub fn read_agent_pid(dir: &Dir) -> Option<u32> {
+    fs::read_to_string(dir.agent_pid())
+        .ok()?
+        .trim()
+        .parse()
+        .ok()
+}
+
 /// What `ccnm internal supervise --payload` is told.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -519,6 +604,8 @@ pub struct SuperviseRequest {
         skip_serializing_if = "crate::provider::AgentProvider::is_claude"
     )]
     pub provider: crate::provider::AgentProvider,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity: Option<crate::instance::AgentIdentity>,
     pub session_dir: PathBuf,
     /// The `claude` the controller found in launchd's environment — the
     /// one Claude would be started with anyway.
@@ -529,6 +616,7 @@ pub struct SuperviseRequest {
 impl SuperviseRequest {
     pub fn new(session_dir: PathBuf, agent_bin: PathBuf) -> Self {
         SuperviseRequest {
+            identity: None,
             provider: Default::default(),
             protocol: PROTOCOL,
             session_dir,
@@ -542,7 +630,11 @@ impl Protocol for SuperviseRequest {
         self.protocol
     }
     fn expected_protocol(&self) -> u32 {
-        self.provider.control_protocol()
+        if self.identity.is_some() {
+            3
+        } else {
+            self.provider.control_protocol()
+        }
     }
 }
 
@@ -555,13 +647,36 @@ impl Protocol for SuperviseRequest {
 pub fn supervise(req: &SuperviseRequest) -> Result<Outcome> {
     let dir = Dir::at(&req.session_dir);
     let spec = load(&dir)?;
-    spec.require_legacy_execution()?;
-    if req.provider != spec.provider() {
-        return Err(Error::invalid_args(
-            "supervisor provider does not match session",
-        ));
-    }
-    let launch = spec.provider().launch_cmd(&req.agent_bin, &spec, &dir);
+    let launch = (|| {
+        spec.validate_identity()?;
+        if spec.agent_identity != req.identity {
+            return Err(Error::invalid_args(
+                "supervisor Agent identity does not match session",
+            ));
+        }
+        if req.provider != spec.provider() {
+            return Err(Error::invalid_args(
+                "supervisor provider does not match session",
+            ));
+        }
+        let profile = req
+            .identity
+            .as_ref()
+            .map(|identity| {
+                let config = crate::Config::load(&crate::paths::effective_config_path()?)?;
+                let resolved = config.resolve_instance_local(&identity.reference())?;
+                if resolved.identity() != identity {
+                    return Err(Error::invalid_args(
+                        "Agent registry identity changed before supervisor launch",
+                    ));
+                }
+                resolved.profile().validate_private_directory()?;
+                Ok(resolved.profile().directory().to_path_buf())
+            })
+            .transpose()?;
+        spec.provider()
+            .launch_cmd_at(&req.agent_bin, &spec, &dir, profile.as_deref())
+    })();
     // Measured here rather than assumed, because here is the one place
     // that is inside whatever context Claude will run in: under tmux, that
     // is the tmux server's, which is not necessarily the controller's.
@@ -572,11 +687,11 @@ pub fn supervise(req: &SuperviseRequest) -> Result<Outcome> {
             // stdin/stdout/stderr are the tmux pane. Nothing is captured and
             // nothing is killed on a clock: the person at the terminal decides
             // when this session is over.
-            process::run_attached(&cmd)
+            process::run_attached_observed(&cmd, |pid| write_agent_pid(&dir, pid))
         } else {
             let out = fs::File::create(dir.stdout())?;
             let err = fs::File::create(dir.stderr())?;
-            process::run_captured(&cmd, out, err)
+            process::run_captured_observed(&cmd, out, err, |pid| write_agent_pid(&dir, pid))
         }
     });
     let outcome = match ran {
@@ -590,10 +705,17 @@ pub fn supervise(req: &SuperviseRequest) -> Result<Outcome> {
             exit_code: None,
             timed_out: false,
             duration_ms: 0,
-            error: Some(e.to_string()),
+            error: Some(if spec.agent_identity.is_some() {
+                format!(
+                    "{}: bound Agent launch validation failed; private details withheld",
+                    e.code()
+                )
+            } else {
+                e.to_string()
+            }),
         },
     };
-    tracing::info!(session = %spec.id, outcome = %outcome.describe(), "claude ended");
+    tracing::info!(session = %spec.id, provider = %spec.provider().cli_name(), outcome = %outcome.describe(), "Agent ended");
     write_outcome(&dir, &outcome)?;
     Ok(outcome)
 }
@@ -695,6 +817,7 @@ mod tests {
 
     fn spec() -> Spec {
         Spec {
+            runtime_node: None,
             agent_identity: None,
             provider: Default::default(),
             protocol: PROTOCOL,

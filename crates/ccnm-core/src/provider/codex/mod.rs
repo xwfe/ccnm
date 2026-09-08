@@ -123,6 +123,15 @@ pub fn parse_auth(out: &Output) -> Result<AuthStatus> {
 }
 
 pub fn report(bin: Option<&Path>, runner: &dyn ProcessRunner, ask: Ask) -> AgentReport {
+    report_at(bin, None, runner, ask)
+}
+
+pub fn report_at(
+    bin: Option<&Path>,
+    profile_dir: Option<&Path>,
+    runner: &dyn ProcessRunner,
+    ask: Ask,
+) -> AgentReport {
     let Some(bin) = bin else {
         let err = Error::new(
             ErrorCode::Version,
@@ -147,17 +156,20 @@ pub fn report(bin: Option<&Path>, runner: &dyn ProcessRunner, ask: Ask) -> Agent
             ErrorCode::NotReady,
             "Codex login not checked outside the controller login session",
         )),
-        Ask::Everything => home().and_then(|home| {
-            validate_home(&home)?;
-            runner
-                .run(&isolated(
-                    Cmd::new(bin)
-                        .args(["login", "status"])
-                        .timeout(Duration::from_secs(20)),
-                    &home,
-                ))
-                .and_then(|out| parse_auth(&out))
-        }),
+        Ask::Everything => profile_dir
+            .map(Path::to_path_buf)
+            .map_or_else(home, Ok)
+            .and_then(|home| {
+                validate_home(&home)?;
+                runner
+                    .run(&isolated(
+                        Cmd::new(bin)
+                            .args(["login", "status"])
+                            .timeout(Duration::from_secs(20)),
+                        &home,
+                    ))
+                    .and_then(|out| parse_auth(&out))
+            }),
     }
     .map_err(Into::into);
     AgentReport {
@@ -168,10 +180,16 @@ pub fn report(bin: Option<&Path>, runner: &dyn ProcessRunner, ask: Ask) -> Agent
 }
 
 pub fn validate_spec(spec: &Spec) -> Result<()> {
-    if spec.provider() != super::AgentProvider::Codex || spec.protocol != 2 {
+    if spec.provider() != super::AgentProvider::Codex
+        || !matches!(
+            spec.protocol,
+            2 | crate::instance::INSTANCE_SESSION_PROTOCOL
+        )
+        || (spec.protocol == 2) != spec.agent_identity.is_none()
+    {
         return Err(Error::new(
             ErrorCode::Version,
-            "Codex sessions require protocol 2",
+            "Codex legacy sessions require protocol 2; bound instance sessions require protocol 3",
         ));
     }
     if spec.provider_config_dir.is_some() {
@@ -190,18 +208,28 @@ pub fn validate_spec(spec: &Spec) -> Result<()> {
             "Codex colocated mode has not been measured; use the SSH MCP topology",
         ));
     }
-    let home = home()?;
+    Ok(())
+}
+
+pub fn launch_cmd(bin: &Path, spec: &Spec, dir: &Dir) -> Result<Cmd> {
+    launch_cmd_at(bin, spec, dir, None)
+}
+
+pub fn launch_cmd_at(
+    bin: &Path,
+    spec: &Spec,
+    dir: &Dir,
+    profile_dir: Option<&Path>,
+) -> Result<Cmd> {
+    validate_spec(spec)?;
+    let home = profile_dir.map(Path::to_path_buf).map_or_else(home, Ok)?;
+    validate_home(&home)?;
     if spec.cwd.starts_with(&home) {
         return Err(Error::invalid_args(
             "Codex workspace state cannot live in its private authentication directory",
         ));
     }
-    validate_home(&home)
-}
-
-pub fn launch_cmd(bin: &Path, spec: &Spec, dir: &Dir) -> Result<Cmd> {
-    validate_spec(spec)?;
-    build_launch_cmd(bin, spec, dir, &home()?, &std::env::current_exe()?)
+    build_launch_cmd(bin, spec, dir, &home, &std::env::current_exe()?)
 }
 
 pub(crate) fn build_launch_cmd(
@@ -249,7 +277,7 @@ pub(crate) fn build_launch_cmd(
     for feature in DISABLED {
         cmd = cmd.args(["--disable", feature]);
     }
-    let transport = transport::launcher(dir, exe)?;
+    let transport = transport::launcher_for(dir, exe, spec.agent_identity.as_ref())?;
     let args: Vec<_> = transport
         .args
         .iter()
@@ -286,12 +314,23 @@ pub(crate) fn build_launch_cmd(
 }
 
 pub fn check_inventory(bin: &Path, spec: &Spec, runner: &dyn ProcessRunner) -> Result<()> {
+    check_inventory_at(bin, spec, None, runner)
+}
+
+pub fn check_inventory_at(
+    bin: &Path,
+    spec: &Spec,
+    profile_dir: Option<&Path>,
+    runner: &dyn ProcessRunner,
+) -> Result<()> {
+    let home = profile_dir.map(Path::to_path_buf).map_or_else(home, Ok)?;
+    validate_home(&home)?;
     let out = runner.run(&isolated(
         Cmd::new(bin)
             .args(["mcp", "list", "--json"])
             .cwd(&spec.cwd)
             .timeout(Duration::from_secs(20)),
-        &home()?,
+        &home,
     ))?;
     let empty = serde_json::from_slice::<serde_json::Value>(&out.stdout)
         .ok()

@@ -1,0 +1,52 @@
+{
+  "measured_at": "2026-09-08T19:25:14+09:00",
+  "source_commit": "f519c6f",
+  "kind": "real_nodes_preflight_not_dogfood",
+  "local": {
+    "platform": "Darwin arm64",
+    "codex_version": "0.153.4",
+    "dedicated_codex_login": "ChatGPT",
+    "controller_context": "Aqua",
+    "current_user_admin": true,
+    "ccrun_exists": true,
+    "noninteractive_switch_to_ccrun": false,
+    "mcp_probe": {
+      "first_attempt": "invalid payload missing policy; exit 11; no MCP",
+      "corrected_exit_code": 33,
+      "stdout_empty": true,
+      "known_agent_credential_refusal": true,
+      "real_home_preserved": true,
+      "unconfined_opt_in": true,
+      "project_unchanged": true
+    }
+  },
+  "fodelf": {
+    "platform": "Darwin arm64",
+    "claude_version": "2.1.263",
+    "claude_location": "~/.local/bin/claude",
+    "official_auth_logged_in": true,
+    "ssh_context": "Background",
+    "current_user_admin": true,
+    "ccrun_exists": false,
+    "known_claude_file_readable": true,
+    "login_keychain_readable": true,
+    "docker_socket_writable": true,
+    "sudo_noninteractive_list_available": false,
+    "reverse_alias": "xdwmbp",
+    "reverse_alias_uses_runtime_service_account": false
+  },
+  "cleanup": {
+    "local_temporary_directories_removed": true,
+    "remote_temporary_resources_created": false,
+    "installed_binary_or_controller_replaced": false,
+    "login_directories_preserved": true,
+    "credential_files_read_or_copied": false
+  },
+  "not_verified": [
+    "public Claude/Codex model turns",
+    "interactive lifecycle",
+    "two-node link failure and recovery",
+    "dedicated Runtime ACL isolation",
+    "enforced egress policy"
+  ]
+}

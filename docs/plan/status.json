@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-09-08T19:16:49+09:00",
+  "last_updated": "2026-09-08T19:25:14+09:00",
   "current_task": "P3",
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
@@ -156,7 +156,7 @@
       ],
       "owner": null,
       "started_at": "2026-09-08T12:44:30+09:00",
-      "last_updated": "2026-09-08T19:16:49+09:00",
+      "last_updated": "2026-09-08T19:25:14+09:00",
       "completed_criteria": [
         "P3.4",
         "P3.6"
@@ -183,6 +183,15 @@
           ],
           "ref": "docs/research/single-agent-p3-2026-09-08.md",
           "result": "print stop 增加 Agent 父进程核验与完整进程组存活检查；残留、失败/损坏 ps 不补写终态。fmt、严格 clippy、Rust 512 passed / 0 failed，Python 19 passed。离线回归，不消除 PID 竞态或替代真机。"
+        },
+        {
+          "kind": "real_nodes",
+          "criteria": [
+            "P3.5"
+          ],
+          "ref": "docs/research/p3-node-preflight-2026-09-08.md",
+          "commit": "f519c6f",
+          "result": "授权实机预检：两 CLI 登录有效；两端当前执行账号 admin，fodelf 可读 Claude 凭据/Keychain、可写 Docker socket且无 ccrun；本机 ccrun 无可用非交互入口。当前本机构建真实 HOME 下 MCP 初始化 exit33/空 stdout。未启动模型，临时资源已清理，不是 P3.5 通过。"
         }
       ],
       "blockers": [
@@ -190,8 +199,8 @@
           "criteria": [
             "P3.5"
           ],
-          "reason": "缺少当前 P3 build 的针对性双机部署/真实 Agent 调用授权，以及专用 Runtime 身份与 ACL/sudo/socket/egress 验收证据；历史 scratch 不能替代。",
-          "unblock": "确认目标 SSH alias 和临时隔离部署/测试范围，不替换正在使用的 binary/Controller；授权真实 Claude/Codex 公共链路 dogfood。系统账号/ACL/防火墙变更另外确认。"
+          "reason": "实机预检证实当前 Runtime 入口不隔离：fodelf 无专用账号且当前用户可读 Agent 凭据/写 Docker socket；本机 ccrun 不可非交互访问，反向 alias 仍使用管理员。",
+          "unblock": "另行批准两端专用 Runtime 身份、workspace ACL 和 OpenSSH alias 的最小系统准备，先列出变更及恢复方案；建立入口后按已有授权继续双 Provider 公共链路及 egress 验收。"
         }
       ]
     },
@@ -276,7 +285,7 @@
     "P3 额外 64 线程压力出现既有 exec timeout 单测 30.5s 失败；默认全量 511 通过，高并发问题尚未解决。"
   ],
   "handoff": {
-    "next_action": "仅 P3：print stop 的组长消失/残留组成员与父进程核验已补离线回归（Rust 512/Python 19）。继续复核已有 outcome 快路径、interactive stop 和脱组子进程的终态一致性；针对性双机部署/真实 Agent 调用与生产身份验收仍待授权，不进入 P4。",
+    "next_action": "仍仅 P3。验证授权已获，实机预检证实缺少安全 Runtime 身份入口；见 p3-node-preflight-2026-09-08.md。先提出两端专用身份/ACL/OpenSSH alias 的最小系统准备与恢复方案，获得系统变更授权后继续已有授权的真实验证；并保留 outcome/interactive 生命周期待复核。勿进入 P4。",
     "scope": "仅 P3；不进入 P4/Machine API，不引入多 Agent/worktree 调度，不主动部署、登录或修改账号/ACL/防火墙。",
     "planning_validation": {
       "at": "2026-09-08T19:16:49+09:00",
@@ -289,7 +298,7 @@
       "limits": "本次只在本机离线回归；未部署、登录或调用真实 Agent。64 线程额外压力曾出现既有 exec timeout 测试失败，未声称修复。"
     },
     "inherited_changes": [],
-    "authorization": "本轮规划不授权真实 Agent 调用、创建账号、ACL/防火墙变更、登录、部署或新建 Orchestrator 仓库；后续对应动作逐项确认已有授权。",
+    "authorization": "用户已明确批准本机/fodelf 角色互换、独立临时部署、真实 Claude/Codex 调用和只读权限/网络审计，测试后清理本轮资源；不替换现有 binary/Controller、不复制凭据、不修改账号/ACL/防火墙。同范围验证无需再次询问。",
     "portability": "接续不依赖任何特定 MCP、任务管理器或 IDE 插件。任何模型只需 Git、仓库文件和项目命令即可按 current_task 继续；外部工具状态不作为产品阶段事实。"
   }
 }

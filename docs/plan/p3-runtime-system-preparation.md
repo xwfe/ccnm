@@ -74,3 +74,13 @@
 用户执行组修正得到 `Runtime processes still active`。通过 fodelf 管理员身份只读 `ps`（未重新登录临时 Runtime）复核，UID550 仅有 PID9447、PPID1、PGID9447 的 `/usr/sbin/distnoted`；没有测试 shell/Agent。账号主组仍为20，脚本在写清单/创建组之前退出。不得放宽进程检查，也不能把系统进程忽略后宣称完整清理。
 
 下一步由用户执行 `sudo launchctl bootout user/550`，仅注销本轮临时账号的用户服务域；不触及 fodelf UID501 或本机服务。随后重跑原组修正脚本，它仍要求 UID550 无进程才修改。任一命令报错则保留输出，不自动 kill、不循环重试。当前无权限读取该 launchd 域（返回 Operation not permitted），域是否成功注销及残留是否归零须以管理员执行结果复核；不得预先宣称修复成功。
+
+### 独立组复验与构建传输阻塞
+
+用户注销临时用户服务域后成功执行组修正。本轮使用全新 SSH（禁用复用/agent 转发、明确临时 key）验证 UID/GID550、无 staff/admin、真实 HOME `/Users/ccnmp3test`。fodelf home、已知两 Provider 目录、SSH 目录与 login Keychain 均不可读，两个已知 Docker socket 不可写，sudo 非交互拒绝。证据见 `tests/fixtures/p3-runtime-identity/isolated.json`；这不是完整提权或 egress 审计。
+
+`cargo build -p ccnm-cli` 通过，尝试向 Runtime 自建 0700 目录 `/Users/Shared/ccnm-p3-runtime.Iy21vY` 上传独立当前构建（原文件 41,824,312 bytes，gzip 8,554,304 bytes）。未覆盖现有安装。原始流上传中止、压缩上传 180 秒超时，续传又发生 SSH server not responding；128 KiB 小块耗时22.12秒且文件增量163,840 bytes，与本次发送量不符。不能将拼接结果视作完整构建，不再盲目重试。没有执行该二进制，没有启动 MCP/模型，也没有创建测试 config/project/state。
+
+后续只读发现 UID550 的残留 cat PID16103；以 lsof 的 stdout 路径精确核对为本轮 `ccnm.gz.part` 后发送 TERM，确认 PID 消失，再删除两个不完整文件，并以 rmdir 成功移除空部署目录。没有终止其他账号进程或改网络配置。客户端 SSH 退出不代表远端上传进程立即结束，本次是实际反例；网络根因尚未定位，不能以小连接成功宣称大流传输已修复。
+
+当前：独立组已建立；账号/组、SSH 公钥、本机测试密钥、两端清单与上传准备脚本继续保留用于接续，尚未完成最终清理。部署目录已清理。P3.5 保持 blocked，下一步先解决有校验和及远端结束确认的构建传输，再进行当前 build MCP 与公共 Agent 链路验收；不得借此更换网络产品或放宽安全门禁。本轮计划检查和 Python 全量25通过，未修改 Rust，不重报历史 Rust 全量为本轮测试。

@@ -1,0 +1,14 @@
+{
+  "kind": "real_nodes",
+  "runtime_user": "ccnmp3test",
+  "uid": 550,
+  "primary_gid": 550,
+  "real_home": "/Users/ccnmp3test",
+  "fresh_ssh_login": true,
+  "staff_or_admin_membership": false,
+  "known_agent_home_and_directories_readable": false,
+  "known_credential_paths_readable": false,
+  "known_docker_sockets_writable": false,
+  "sudo_noninteractive_allowed": false,
+  "limits": "Metadata/access checks only, no credential contents read. This is not a full privilege escalation or egress audit; public Agent flow is not yet validated."
+}

@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-09-08T20:57:23+09:00",
+  "last_updated": "2026-09-08T21:13:04+09:00",
   "current_task": "P3",
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
@@ -156,7 +156,7 @@
       ],
       "owner": null,
       "started_at": "2026-09-08T12:44:30+09:00",
-      "last_updated": "2026-09-08T20:57:23+09:00",
+      "last_updated": "2026-09-08T21:13:04+09:00",
       "completed_criteria": [
         "P3.4",
         "P3.6"
@@ -224,6 +224,14 @@
           ],
           "ref": "tests/fixtures/p3-runtime-identity/result.json",
           "result": "真实专用账号 SSH 成功；不读取内容的权限检查发现 staff 主组穿透 Agent home，隔离未接受。凭据叶子/4 个 SSH 非公开候选不可读，Docker 不可写；独立组修正待管理员执行，不宣称完整提权/egress 安全。"
+        },
+        {
+          "kind": "real_nodes",
+          "criteria": [
+            "P3.5"
+          ],
+          "ref": "tests/fixtures/p3-runtime-identity/isolated.json",
+          "result": "全新 SSH 复验 UID/GID550 无 staff/admin，已知 Agent home/凭据目录不可读、Docker 不可写。当前 build 上传失败，残留写入者按 stdout 路径核验后终止，不完整文件和空部署目录清理成功；尚未启动 MCP/模型。"
         }
       ],
       "blockers": [
@@ -231,8 +239,8 @@
           "criteria": [
             "P3.5"
           ],
-          "reason": "组修正脚本安全拒绝：UID550 尚有 macOS distnoted（只读复核 PID9447/PPID1），主组仍为staff。尚未创建独立组；需要管理员注销仅临时账号的用户服务域，再重跑无进程门禁。",
-          "unblock": "用户 sudo launchctl bootout user/550 成功后重跑 isolate-runtime-group.sh --apply；失败保留输出，不放宽进程检查。随后新 SSH 复验隔离。"
+          "reason": "专用账号/独立组 SSH 与已知路径隔离复验通过，但当前构建上传多次超时且远端 cat 在客户端退出后残留；不完整部署已清理，未启动当前 build MCP 或模型，P3.5 公共链路缺证据。",
+          "unblock": "先建立有完整校验及远端进程结束确认的构建传输；核对构建 SHA-256 后继续真实 MCP 与双 Provider 公共入口验收。不得无新增证据重复整流上传，不改网络或放宽身份检查。"
         }
       ]
     },
@@ -317,7 +325,7 @@
     "P3 额外 64 线程压力出现既有 exec timeout 单测 30.5s 失败；默认全量 511 通过，高并发问题尚未解决。"
   ],
   "handoff": {
-    "next_action": "仅 P3：UID550 distnoted 阻止组修正，详见系统准备文档末节；用户在 fodelf sudo launchctl bootout user/550 后重跑原组脚本。未修改组，未启动模型；不要通过 Runtime SSH 预检再次创建用户后台进程，先由 fodelf 身份 ps 复核。",
+    "next_action": "仅 P3：UID/GID550 隔离复验成功。当前 build 原始/压缩/续传多次超时，发现残留 cat 精确清理后已移除 /Users/Shared/ccnm-p3-runtime.Iy21vY。保留账号/组/SSH 准备资源用于接续，见系统准备文档末节；下一步先处理可靠构建交付与进程结束校验，再验收 MCP 和公共链路；未运行模型，勿进入 P4。",
     "scope": "仅 P3；不进入 P4/Machine API，不引入多 Agent/worktree 调度，不主动部署、登录或修改账号/ACL/防火墙。",
     "planning_validation": {
       "at": "2026-09-08T19:16:49+09:00",

@@ -43,6 +43,22 @@ pub struct Cmd {
 }
 
 impl Cmd {
+    /// Apply the same argv/cwd/environment plan for spawn and exec boundaries.
+    /// Stdio, process groups and timeouts remain the caller's responsibility.
+    pub fn process(&self) -> Command {
+        let mut command = Command::new(&self.program);
+        command.args(&self.args);
+        if let Some(dir) = &self.cwd {
+            command.current_dir(dir);
+        }
+        for key in &self.env_remove {
+            command.env_remove(key);
+        }
+        for (key, value) in &self.env {
+            command.env(key, value);
+        }
+        command
+    }
     /// Generous enough for `cargo test`, short enough that a wedged SSH does
     /// not look like a hung Claude.
     pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
@@ -548,9 +564,8 @@ const POLL_MAX: Duration = Duration::from_millis(5);
 impl ProcessRunner for SystemRunner {
     fn run(&self, cmd: &Cmd) -> Result<Output> {
         let started = Instant::now();
-        let mut command = Command::new(&cmd.program);
+        let mut command = cmd.process();
         command
-            .args(&cmd.args)
             .stdin(if cmd.stdin.is_some() {
                 Stdio::piped()
             } else {
@@ -558,16 +573,6 @@ impl ProcessRunner for SystemRunner {
             })
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        if let Some(dir) = &cmd.cwd {
-            command.current_dir(dir);
-        }
-        for key in &cmd.env_remove {
-            command.env_remove(key);
-        }
-        for (key, value) in &cmd.env {
-            command.env(key, value);
-        }
-
         tracing::debug!(cmd = %cmd.display(), "spawn");
         let mut child = command.spawn().map_err(|e| {
             Error::internal(format!("cannot spawn {}", cmd.program.to_string_lossy()))

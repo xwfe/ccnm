@@ -44,13 +44,33 @@ impl Session {
     /// Without one it has nothing declared, which is not confined, and
     /// exec_command is refused -- which is what the default has to be.
     fn start_with(root: &Path, config: Option<&Path>) -> Session {
-        let wire = payload::encode(&ServePayload::new("t", root.to_path_buf(), "s1")).unwrap();
+        Self::start_with_environment(
+            root,
+            config,
+            &[],
+            ccnm_core::provider::AgentProvider::Claude,
+        )
+    }
+
+    fn start_with_environment(
+        root: &Path,
+        config: Option<&Path>,
+        environment: &[(&str, &str)],
+        provider: ccnm_core::provider::AgentProvider,
+    ) -> Session {
+        let wire = payload::encode(
+            &ServePayload::new("t", root.to_path_buf(), "s1").with_provider(provider),
+        )
+        .unwrap();
+        let home = root.parent().unwrap().join("runtime-home");
+        std::fs::create_dir_all(&home).unwrap();
         let mut child = Command::new(env!("CARGO_BIN_EXE_ccnm"))
             .args(["internal", "mcp-serve", "--payload", &wire])
-            // What an ssh session could carry in. The runtime must not
-            // pass any of it to a command it runs, and must pass the rest.
-            .env("ANTHROPIC_API_KEY", "sk-ant-must-not-leak")
-            .env("CLAUDE_CODE_OAUTH_TOKEN", "oauth-must-not-leak")
+            // An isolated Runtime fixture, never the developer's HOME or auth.
+            .env_clear()
+            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+            .env("HOME", home.canonicalize().unwrap())
+            .envs(environment.iter().copied())
             .env("CCNM_E2E_KEPT", "yes")
             .env(
                 "CCNM_CONFIG",
@@ -467,11 +487,8 @@ fn read_file_serves_a_whole_session_over_one_process() {
         text(&escape)
     );
 
-    // exec_command runs where the files are, and never hands a child an
-    // ANTHROPIC_* or CLAUDE_* variable. The server process was started
-    // with both set (see Session::start), so this is the real path: a
-    // unit test cannot reach it, because setting an environment variable
-    // is unsafe in this edition and ccnm-core forbids unsafe.
+    // exec_command runs on the Runtime and keeps ordinary project variables.
+    // P1's dedicated tests below inject auth and verify fail-before-spawn.
     let ran = s.call("exec_command", json!({"cmd": ["env"]}));
     assert!(!is_error(&ran), "{}", text(&ran));
     // Accepting an unconfined runtime does not make it quiet: every
@@ -479,8 +496,6 @@ fn read_file_serves_a_whole_session_over_one_process() {
     assert!(text(&ran).contains("NOT confined"), "{}", text(&ran));
     assert!(text(&ran).contains("\nok in "), "{}", text(&ran));
     let dumped = text(&ran);
-    assert!(!dumped.contains("sk-ant-must-not-leak"), "{dumped}");
-    assert!(!dumped.contains("oauth-must-not-leak"), "{dumped}");
     assert!(!dumped.contains("ANTHROPIC_"), "{dumped}");
     assert!(!dumped.contains("CLAUDE_"), "{dumped}");
     // Not a clean room: everything else is still inherited.
@@ -655,4 +670,111 @@ fn exec_command_is_refused_until_the_runtime_is_confined() {
     assert!(!is_error(&listed), "{}", text(&listed));
 
     s.shutdown();
+}
+
+#[test]
+fn provider_authentication_environment_cannot_be_waived_or_leak() {
+    use ccnm_core::provider::AgentProvider;
+    for provider in AgentProvider::ALL {
+        for key in [
+            "ANTHROPIC_API_KEY",
+            "OPENAI_API_KEY",
+            "UNKNOWN_TOKEN",
+            "SSH_AUTH_SOCK",
+        ] {
+            let root = workspace(&format!("p1-auth-{}-{key}", provider.cli_name()));
+            let config = config_for(&root, true);
+            let home = root.parent().unwrap().join("runtime-home");
+            std::fs::create_dir_all(&home).unwrap();
+            let bin = root.parent().unwrap().join("bin");
+            std::fs::create_dir(&bin).unwrap();
+            let marker = root.join("must-not-exist");
+            std::fs::write(
+                bin.join("git"),
+                format!("#!/bin/sh\ntouch '{}'\n", marker.display()),
+            )
+            .unwrap();
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(bin.join("git"), std::fs::Permissions::from_mode(0o700))
+                .unwrap();
+            let wire = payload::encode(
+                &ServePayload::new("t", root.clone(), "s1").with_provider(provider),
+            )
+            .unwrap();
+            let result = Command::new(env!("CARGO_BIN_EXE_ccnm"))
+                .args(["internal", "mcp-serve", "--payload", &wire])
+                .env_clear()
+                .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+                .env("HOME", &home)
+                .env("CCNM_CONFIG", &config)
+                .env(key, "SYNTHETIC_MUST_NOT_LEAK")
+                .output()
+                .unwrap();
+            assert!(!result.status.success());
+            assert!(result.stdout.is_empty());
+            assert!(String::from_utf8_lossy(&result.stderr).contains("CCNM_E_POLICY"));
+            assert!(
+                !marker.exists(),
+                "policy failure must precede even Git discovery"
+            );
+            assert!(!String::from_utf8_lossy(&result.stderr).contains("SYNTHETIC_MUST_NOT_LEAK"));
+        }
+    }
+}
+
+#[test]
+fn credential_added_after_handshake_still_refuses_child_before_spawn() {
+    use ccnm_core::provider::AgentProvider;
+    for (provider, symlink_case) in AgentProvider::ALL
+        .into_iter()
+        .flat_map(|p| [(p, false), (p, true)])
+    {
+        let root = workspace(&format!(
+            "p1-changed-{}-{symlink_case}",
+            provider.cli_name()
+        ));
+        let config = config_for(&root, true);
+        let mut s = Session::start_with_environment(&root, Some(&config), &[], provider);
+        let home = root.parent().unwrap().join("runtime-home");
+        std::fs::create_dir(home.join(".codex")).unwrap();
+        if symlink_case {
+            std::os::unix::fs::symlink("absent", home.join(".codex/auth.json")).unwrap();
+        } else {
+            std::fs::write(home.join(".codex/auth.json"), "SYNTHETIC_MUST_NOT_READ").unwrap();
+        }
+        let result = s.call("exec_command", json!({"cmd":["touch", "must-not-exist"]}));
+        assert!(is_error(&result), "{result}");
+        assert!(!root.join("must-not-exist").exists());
+        assert!(!result.to_string().contains(home.to_str().unwrap()));
+        assert!(!result.to_string().contains("SYNTHETIC_MUST_NOT_READ"));
+        s.shutdown();
+    }
+}
+
+#[test]
+fn runtime_child_keeps_project_environment_but_not_provider_private_metadata() {
+    use ccnm_core::provider::AgentProvider;
+    for provider in AgentProvider::ALL {
+        let root = workspace(&format!("p1-project-{}", provider.cli_name()));
+        let config = config_for(&root, true);
+        let mut s = Session::start_with_environment(
+            &root,
+            Some(&config),
+            &[
+                ("CODEX_TEST_METADATA", "SYNTHETIC_PRIVATE"),
+                ("CLAUDE_TEST_METADATA", "SYNTHETIC_PRIVATE"),
+                ("GOOGLE_CLOUD_PROJECT", "fixture-project"),
+            ],
+            provider,
+        );
+        let result = s.call("exec_command", json!({"cmd":["env"]}));
+        assert!(!is_error(&result), "{result}");
+        let text = result.to_string();
+        assert!(text.contains("GOOGLE_CLOUD_PROJECT=fixture-project"));
+        assert!(text.contains("CCNM_E2E_KEPT=yes"));
+        assert!(!text.contains("SYNTHETIC_PRIVATE"));
+        assert!(!text.contains("CODEX_TEST_METADATA"));
+        assert!(!text.contains("CLAUDE_TEST_METADATA"));
+        s.shutdown();
+    }
 }

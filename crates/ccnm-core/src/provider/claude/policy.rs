@@ -16,11 +16,16 @@ pub fn mcp_config(cmd: &Cmd) -> serde_json::Value {
         .iter()
         .map(|a| a.to_string_lossy().into_owned())
         .collect();
+    let program = if cmd.program == "ssh" {
+        SSH_BIN.into()
+    } else {
+        cmd.program.to_string_lossy()
+    };
     serde_json::json!({
         "mcpServers": {
             SERVER_NAME: {
                 "type": "stdio",
-                "command": SSH_BIN,
+                "command": program,
                 "args": args,
             }
         }

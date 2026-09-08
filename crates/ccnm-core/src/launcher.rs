@@ -627,12 +627,24 @@ mod tests {
         let mcp: serde_json::Value =
             serde_json::from_slice(&std::fs::read(session_dir.mcp_config()).unwrap()).unwrap();
         let server = &mcp["mcpServers"][crate::mcp::server::SERVER_NAME];
-        assert_eq!(server["command"], session::SSH_BIN);
+        assert_eq!(
+            server["command"],
+            std::env::current_exe().unwrap().to_string_lossy().as_ref()
+        );
         let args: Vec<String> = server["args"]
             .as_array()
             .unwrap()
             .iter()
             .map(|a| a.as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(&args[..3], ["internal", "agent-transport", "--payload"]);
+        let local: session::transport::Request = payload::decode(&args[3]).unwrap();
+        assert_eq!(local.session_dir, session_dir.path());
+        let transport = session::transport::command(&session::load(&session_dir).unwrap()).unwrap();
+        let args: Vec<String> = transport
+            .args
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
             .collect();
         let at = args
             .iter()
@@ -812,6 +824,15 @@ mod tests {
             .unwrap()
             .iter()
             .map(|a| a.as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(&args[..3], ["internal", "agent-transport", "--payload"]);
+        let local: session::transport::Request = payload::decode(&args[3]).unwrap();
+        assert_eq!(local.session_dir, session_dir.path());
+        let transport = session::transport::command(&session::load(&session_dir).unwrap()).unwrap();
+        let args: Vec<String> = transport
+            .args
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
             .collect();
         let at = args.iter().position(|a| a == "--payload").unwrap();
         assert_eq!(

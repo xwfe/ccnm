@@ -36,6 +36,11 @@ pub struct CredentialMetadata {
     pub env_prefixes: &'static [&'static str],
     pub config_env: &'static str,
     pub default_directory: &'static str,
+    pub additional_directories: &'static [&'static str],
+    /// Relative to Agent/Runtime-local XDG_CONFIG_HOME, never a wire value.
+    pub xdg_config_directory: Option<&'static str>,
+    /// Known OS credential containers; access is a conservative risk signal.
+    pub containers: &'static [&'static str],
     pub files: &'static [&'static str],
     pub agent_name: &'static str,
     pub vendor_name: &'static str,
@@ -61,6 +66,15 @@ impl CredentialMetadata {
 }
 
 impl AgentProvider {
+    pub const ALL: [Self; 2] = [Self::Claude, Self::Codex];
+
+    /// Preserve the measured executable selection; safety options are shared.
+    pub const fn transport_program(self) -> &'static str {
+        match self {
+            Self::Claude => "ssh",
+            Self::Codex => crate::session::SSH_BIN,
+        }
+    }
     pub const fn cli_name(self) -> &'static str {
         match self {
             Self::Claude => "claude",
@@ -169,19 +183,22 @@ impl AgentProvider {
     }
 
     pub fn transport_payload(self, dir: &Dir) -> Option<String> {
-        match self {
-            Self::Claude => claude::transport_payload(dir),
-            Self::Codex => crate::session::load(dir)
-                .ok()
-                .and_then(|spec| codex::transport::command(&spec).ok())
-                .and_then(|cmd| {
-                    cmd.args
-                        .last()
-                        .and_then(|arg| arg.to_str())
-                        .and_then(|text| text.split_whitespace().last())
-                        .map(str::to_owned)
-                }),
-        }
+        let wire = crate::session::load(dir)
+            .ok()
+            .and_then(|spec| crate::session::transport::command(&spec).ok())
+            .and_then(|cmd| {
+                cmd.args
+                    .last()
+                    .and_then(|arg| arg.to_str())
+                    .map(str::to_owned)
+            });
+        wire.or_else(|| {
+            if self == Self::Claude {
+                claude::transport_payload(dir)
+            } else {
+                None
+            }
+        })
     }
 
     pub(crate) fn write_session_files(self, dir: &Dir, transport: Option<&Cmd>) -> Result<()> {

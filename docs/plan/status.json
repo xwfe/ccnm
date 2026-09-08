@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-09-08T10:42:37+09:00",
-  "current_task": "P1",
+  "last_updated": "2026-09-08T11:13:05+09:00",
+  "current_task": "P2",
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
     "source": "docs/research/codex-internal-wiring-2026-09-07.md",
@@ -51,15 +51,50 @@
     {
       "id": "P1",
       "title": "Provider 安全契约收敛",
-      "status": "in_progress",
+      "status": "completed",
       "depends_on": [
         "P0"
       ],
-      "owner": "Codex / P1 provider safety",
+      "owner": null,
       "started_at": "2026-09-08T10:42:37+09:00",
-      "last_updated": "2026-09-08T10:42:37+09:00",
-      "completed_criteria": [],
-      "evidence": [],
+      "last_updated": "2026-09-08T11:13:05+09:00",
+      "completed_criteria": [
+        "P1.1",
+        "P1.2",
+        "P1.3",
+        "P1.4"
+      ],
+      "evidence": [
+        {
+          "kind": "review",
+          "criteria": [
+            "P1.1"
+          ],
+          "ref": "docs/provider-safety.md",
+          "commit": "471c28f",
+          "result": "契约先于实现提交；本轮按现有代码与失败用例自审后补充 SetEnv/SendEnv 实测边界。自审不是独立外部评审签字。"
+        },
+        {
+          "kind": "offline",
+          "criteria": [
+            "P1.2",
+            "P1.3",
+            "P1.4"
+          ],
+          "ref": "docs/research/provider-safety-p1-2026-09-08.md",
+          "result": "macOS：cargo fmt --all --check、严格 clippy 通过；cargo test --workspace 463 passed / 0 failed；Python 全量 19 passed。两 Provider 路径/环境、错误 UID/权限/symlink/未知、初始化及 exec 前拒绝、无 marker 子进程、普通项目变量、Claude golden 差异与 Codex fixture 均覆盖。不调用真实 Agent，不做网络连接、生产身份/ACL/egress 验收。"
+        },
+        {
+          "kind": "offline",
+          "criteria": [
+            "P1.2",
+            "P1.3",
+            "P1.4"
+          ],
+          "ref": "tests/fixtures/provider-safety/ssh-options.json",
+          "result": "当前系统 OpenSSH 使用 -G -F 合成配置：SetEnv=none 实际无效；常量 SetEnv 覆盖配置字面值；SendEnv 可能保留条目，另以共用 spawn/exec 环境子进程测试证明值已移除，不拿选项文本或 Runtime env-i 当作上游证据。"
+        }
+      ],
       "blockers": []
     },
     {
@@ -166,19 +201,23 @@
     "Codex 目前只有内部入口，限定实测版本 0.153.4；colocated 未开放。",
     "现有双机 Codex 证据使用 scratch Runtime，不是生产 ccrun/ACL/sudo/egress 验收。",
     "旧 Runtime 拒绝 v2 时可能以退出码 0 结束；协议错误不能被退出码掩盖。",
-    "Agent Instance、公共 Machine API、Runtime 跨入口写入互斥和独立 Orchestrator 均未在本轮实施。"
+    "Agent Instance、公共 Machine API、Runtime 跨入口写入互斥和独立 Orchestrator 均未在本轮实施。",
+    "P1 安全检查已收敛但尚未部署；旧 Runtime 不因此获得新门禁，现有 0.2.0/v1/v2 握手不宣告 P1 安全能力，P3 真机部署须核对两端构建来源/指纹及服务端环境策略。",
+    "Claude v1 的 claude_config_dir 保留旧参数语义；P2 必须定义 Agent-local profile 引用与 legacy 冲突/迁移，不能把旧明文路径当新 profile 授权模型。"
   ],
   "handoff": {
-    "next_action": "P1 已认领：先提交 provider 安全契约，再补合成失败用例、集中安全执行和运行全量门禁；仅执行 P1。",
-    "scope": "P1 Provider 安全契约收敛；不改公开配置/拓扑，不执行系统账户、ACL、网络或部署动作。",
+    "next_action": "P1 已完成并停止。下一轮认领 P2；先阅读 ROADMAP.md P2、config/configedit/paths/provider/session 及 P1 安全契约，定义 workspace/instance/node/profile 的权威解析与 legacy 冲突策略，再实现 Agent Instance 配置模型。保留现有专用 Codex HOME，不开放运行选择器，不进入 P3。",
+    "scope": "本轮仅完成 P1 Provider 安全契约收敛；未开始 P2，未改变公开配置或拓扑，未部署/登录/创建账号/修改 ACL/网络。",
     "planning_validation": {
-      "at": "2026-09-07T23:28:56+09:00",
+      "at": "2026-09-08T11:13:05+09:00",
       "commands": [
-        "python3 -B scripts/check_plan.py：通过，P0 完成，current_task=P1",
-        "python3 -B -m unittest discover -s tests -p 'test_*.py' -v：19 passed，含新增计划校验 12 项与原 Codex helper 7 项",
-        "git diff --check：通过"
+        "cargo fmt --all --check：通过",
+        "cargo clippy --workspace --all-targets -- -D warnings：通过",
+        "cargo test --workspace：463 passed / 0 failed",
+        "python3 -B -m unittest discover -s tests -p test_*.py -v：19 passed",
+        "python3 scripts/check_plan.py 与 git diff --check：通过"
       ],
-      "limits": "仅计划与 Python helper 回归；未重跑 Rust 门禁、真实 Agent 或生产权限验收。原有 README/脚本内容 hash、执行位及两份文档删除已核对保持不变。"
+      "limits": "仅离线 fixture、受控子进程及 OpenSSH 本机配置解析；不是重跑 P0 真机或 P3 生产权限。6 项用户既有修改的 binary diff 核对一致；原 Claude/Codex golden 未改。"
     },
     "inherited_changes": [
       "README.md：用户原有文字修改",

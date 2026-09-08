@@ -14,7 +14,7 @@
 ### 本地跑测试
 
 ```bash
-cargo test --workspace        # 448 个测试，不需要第二台机器，不启动真实 Agent
+cargo test --workspace        # 463 个测试，不需要第二台机器，不启动真实 Agent
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 ```
@@ -26,6 +26,8 @@ cargo test -p ccnm-core --test provider_compat
 ```
 
 该测试只比对已冻结的 fixture，不更新快照；不要为了让重构通过而重新生成期望值。原始 Claude CLI 测试已移动到 `provider::claude`，项目上下文测试位于 `provider::claude::context`。
+
+P1 的安全收紧有显式差异断言：Claude CLI/策略/旧 wire 仍对照原 golden，新增 SSH 安全选项不重录 golden；实际 MCP JSON 改走共用 Agent-side wrapper。分层合成用例见 `cargo test -p ccnm-core safety`、`cargo test -p ccnm-cli --test provider_safety` 和 `cargo test -p ccnm-cli --test mcp_read_file`；当前 OpenSSH 的 `-G -F` 验证只读临时配置，不连接网络。执行证据及限制见 [P1 记录](research/provider-safety-p1-2026-09-08.md)。
 
 第二阶段先保存了 [Codex 0.153.4 真机测量](research/codex-provider-probe-2026-09-07.md)，尚未开放 provider。`cargo test -p ccnm-core --test codex_measurements` 只检查 fixture，不启动模型；重放/SSH transport 脚本的 7 个离线测试另用 `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p 'test_*codex*.py' -v` 运行。反向真实交互和 tmux 生命周期的证据见 [interactive 测量](research/codex-interactive-reverse-2026-09-07.md)。
 

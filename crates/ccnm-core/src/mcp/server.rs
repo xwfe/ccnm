@@ -174,7 +174,7 @@ impl ExecGate {
     }
 
     fn allowed(&self) -> bool {
-        self.audit.confined() || self.accepted
+        self.audit.exec_allowed(self.accepted)
     }
 
     /// The line every result of an unconfined session carries.
@@ -231,8 +231,17 @@ impl Server {
     /// the launcher sees as a failed `initialize`.
     pub fn new(payload: &ServePayload) -> CcnmResult<Self> {
         let root = canonical_root(&payload.root)?;
-        let (git, git_subdir) = git_facts(&root, &SystemRunner);
         let exec_gate = ExecGate::decide(&payload.workspace);
+        Self::with_gate(payload, root, exec_gate)
+    }
+
+    fn with_gate(payload: &ServePayload, root: PathBuf, exec_gate: ExecGate) -> CcnmResult<Self> {
+        // Before any workspace-dependent subprocess (including Git), not just
+        // exec_command. An unconfined opt-in cannot grant Agent credentials.
+        if !exec_gate.audit.agent_boundary_clear() {
+            return Err(Error::policy(exec_gate.audit.refusal()));
+        }
+        let (git, git_subdir) = git_facts(&root, &SystemRunner);
         // A CLAUDE.md that cannot be read does not stop the session: the
         // model can still work, just without the project's rules. It is
         // logged here and reported by doctor's "Project instructions" row,
@@ -430,6 +439,17 @@ impl Server {
             return Ok(tool_error(&Error::policy(
                 self.inner.exec_gate.audit.refusal(),
             )));
+        }
+        // Credentials are non-waivable and may change after the handshake.
+        // Keep diagnostic/file work off the async IO thread.
+        let checked = tokio::task::spawn_blocking(|| {
+            let home = crate::paths::home_dir()?;
+            crate::safety::credentials::runtime_gate(&home, &SystemRunner)
+        })
+        .await
+        .map_err(|_| ErrorData::internal_error("Runtime credential check failed", None))?;
+        if let Err(error) = checked {
+            return Ok(tool_error(&error));
         }
         let Some(state) = self.inner.state.clone() else {
             return Ok(tool_error(&Error::new(
@@ -692,6 +712,20 @@ fn git_facts(root: &Path, runner: &dyn ProcessRunner) -> (bool, Option<String>) 
 mod tests {
     use super::*;
 
+    fn fixture_server(payload: &ServePayload) -> CcnmResult<Server> {
+        Server::with_gate(
+            payload,
+            canonical_root(&payload.root)?,
+            ExecGate {
+                audit: crate::safety::Audit {
+                    user: "fixture".into(),
+                    findings: vec![],
+                },
+                accepted: false,
+            },
+        )
+    }
+
     fn temp(test: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("ccnm-mcp-{}-{test}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -702,7 +736,7 @@ mod tests {
     #[test]
     fn missing_root_is_wrong_workspace() {
         let payload = ServePayload::new("x", PathBuf::from("/nonexistent/ccnm-root"), "s");
-        let err = match Server::new(&payload) {
+        let err = match fixture_server(&payload) {
             Err(e) => e,
             Ok(_) => panic!("a missing root must be refused"),
         };
@@ -716,7 +750,7 @@ mod tests {
     #[test]
     fn tools_list_matches_the_sessions_allow_list() {
         let dir = temp("tools");
-        let server = Server::new(&ServePayload::new("xshun", dir, "s")).unwrap();
+        let server = fixture_server(&ServePayload::new("xshun", dir, "s")).unwrap();
         let mut served: Vec<String> = server
             .tool_router
             .list_all()
@@ -751,7 +785,7 @@ mod tests {
     fn only_exec_command_makes_the_client_ask_every_time() {
         let dir = temp("meta");
         let payload = ServePayload::new("xshun", dir, "s").with_interactive(true);
-        let server = Server::new(&payload).unwrap();
+        let server = fixture_server(&payload).unwrap();
         let tools = server.tools();
         assert_eq!(tools.len(), crate::session::MCP_TOOLS.len());
         for tool in &tools {
@@ -776,7 +810,7 @@ mod tests {
     fn a_session_with_nobody_at_the_terminal_does_not_ask() {
         let dir = temp("meta-print");
         // `new` alone: not interactive, which is also what a probe sends.
-        let server = Server::new(&ServePayload::new("xshun", dir, "s")).unwrap();
+        let server = fixture_server(&ServePayload::new("xshun", dir, "s")).unwrap();
         assert!(!server.tools().iter().any(asks_the_user));
         assert!(!asks_the_user(&server.get_tool("exec_command").unwrap()));
     }
@@ -788,7 +822,7 @@ mod tests {
         let link = dir.join("link");
         std::os::unix::fs::symlink(&dir, &link).unwrap();
         let payload = ServePayload::new("xshun", link, "s");
-        let server = Server::new(&payload).unwrap();
+        let server = fixture_server(&payload).unwrap();
         assert_eq!(server.root(), std::fs::canonicalize(&dir).unwrap());
 
         let first = server.info();
@@ -812,7 +846,7 @@ mod tests {
     fn the_projects_claude_md_reaches_the_instructions() {
         let dir = temp("project");
         std::fs::write(dir.join("CLAUDE.md"), "# 规则\n\n- 提交要小\n").unwrap();
-        let server = Server::new(&ServePayload::new("xshun", dir.clone(), "s")).unwrap();
+        let server = fixture_server(&ServePayload::new("xshun", dir.clone(), "s")).unwrap();
         let text = server.instructions();
         assert!(text.contains("- 提交要小"), "{text}");
         assert_eq!(
@@ -832,7 +866,7 @@ mod tests {
         let dir = temp("bigproject");
         let big = "- 一条规则，写得很长很长。\n".repeat(2000);
         std::fs::write(dir.join("CLAUDE.md"), &big).unwrap();
-        let server = Server::new(&ServePayload::new("xshun", dir, "s")).unwrap();
+        let server = fixture_server(&ServePayload::new("xshun", dir, "s")).unwrap();
         let text = server.instructions();
         assert!(text.len() <= MAX_INSTRUCTIONS_BYTES, "{}", text.len());
         let marker = crate::mcp::context::parse_marker(&text).unwrap();
@@ -849,7 +883,7 @@ mod tests {
     fn an_unreadable_claude_md_still_serves() {
         let dir = temp("badproject");
         std::fs::create_dir(dir.join("CLAUDE.md")).unwrap();
-        let server = Server::new(&ServePayload::new("xshun", dir, "s")).unwrap();
+        let server = fixture_server(&ServePayload::new("xshun", dir, "s")).unwrap();
         assert_eq!(
             crate::mcp::context::parse_marker(&server.instructions()).as_deref(),
             Some("no CLAUDE.md at the workspace root")
@@ -864,7 +898,7 @@ mod tests {
     #[test]
     fn workspace_info_says_when_the_root_has_gone() {
         let dir = temp("vanish");
-        let server = Server::new(&ServePayload::new("xshun", dir.clone(), "s")).unwrap();
+        let server = fixture_server(&ServePayload::new("xshun", dir.clone(), "s")).unwrap();
         let before = server.info();
         assert!(before.root_present);
         assert!(

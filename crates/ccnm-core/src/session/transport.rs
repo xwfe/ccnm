@@ -21,11 +21,21 @@ impl Protocol for Request {
     }
 }
 
+pub fn launcher(dir: &Dir, exe: &std::path::Path) -> Result<Cmd> {
+    let request = Request {
+        protocol: 2,
+        session_dir: dir.path().to_path_buf(),
+    };
+    Ok(Cmd::new(exe)
+        .args(["internal", "agent-transport", "--payload"])
+        .arg(payload::encode(&request)?))
+}
+
 pub fn command(spec: &Spec) -> Result<Cmd> {
     let runtime = spec
         .runtime
         .as_ref()
-        .ok_or_else(|| Error::invalid_args("Codex transport needs a remote Runtime"))?;
+        .ok_or_else(|| Error::invalid_args("Agent transport needs a remote Runtime"))?;
     let ssh = Ssh::new(&runtime.alias, "/unused")?
         .with_ccnm_bin(&runtime.ccnm_bin)
         .for_provider(spec.provider());
@@ -33,20 +43,17 @@ pub fn command(spec: &Spec) -> Result<Cmd> {
         crate::protocol::mcp::ServePayload::new(&spec.workspace, spec.root.clone(), &spec.id)
             .with_interactive(spec.mode.is_interactive())
             .with_provider(spec.provider());
-    ssh.mcp_transport_cmd(&payload::encode(&serve)?)
+    let mut cmd = ssh.mcp_transport_cmd(&payload::encode(&serve)?)?;
+    // Claude's previous MCP JSON and measured Codex transport both pinned the
+    // system OpenSSH; do not accidentally replace that with a PATH lookup.
+    cmd.program = session::SSH_BIN.into();
+    Ok(cmd)
 }
 
 pub fn exec(request: &Request) -> Result<()> {
     use std::os::unix::process::CommandExt;
     let spec = session::load(&Dir::at(&request.session_dir))?;
-    if spec.provider() != super::super::AgentProvider::Codex {
-        return Err(Error::invalid_args("not a Codex session"));
-    }
     let cmd = command(&spec)?;
-    let mut process = std::process::Command::new(&cmd.program);
-    process.args(&cmd.args);
-    for key in &cmd.env_remove {
-        process.env_remove(key);
-    }
+    let mut process = cmd.process();
     Err(Error::internal("cannot exec Agent-side SSH transport").with_source(process.exec()))
 }

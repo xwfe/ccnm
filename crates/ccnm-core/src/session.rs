@@ -34,6 +34,8 @@
 //! controller nothing once started. Design doc section 23: the session's
 //! lifetime is Claude's, not any outer process's.
 
+pub mod transport;
+
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -305,7 +307,11 @@ pub fn create(state: &Path, spec: &Spec, ssh: Option<&Ssh>) -> Result<Dir> {
     // The settings file names what the model may do; keep it the owner's.
     fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700))?;
     fs::write(dir.meta(), pretty(spec)?)?;
-    let transport = ssh.map(|ssh| mcp_transport(spec, ssh)).transpose()?;
+    // MCP JSON cannot express env_remove. Both official CLIs launch this
+    // Agent-local boundary, which strips credentials immediately before SSH.
+    let transport = ssh
+        .map(|_| transport::launcher(&dir, &std::env::current_exe()?))
+        .transpose()?;
     spec.provider()
         .write_session_files(&dir, transport.as_ref())?;
     Ok(dir)
@@ -327,10 +333,8 @@ pub(crate) fn pretty<T: Serialize>(value: &T) -> Result<String> {
         .map_err(|e| Error::internal("cannot serialize session file").with_source(e))
 }
 
-/// The `--mcp-config` file (design doc section 11): one stdio server,
-/// whose command is the same ssh transport doctor's probe uses, so a
-/// probe that passes and a session that fails cannot differ in how they
-/// reached the Runtime Node.
+/// Compatibility encoder for a direct SSH MCP command. Product sessions use
+/// the Agent-local transport launcher; a JSON document cannot carry env_remove.
 pub fn mcp_config(spec: &Spec, ssh: &Ssh) -> Result<serde_json::Value> {
     if spec.provider() != AgentProvider::Claude {
         return Err(Error::invalid_args(

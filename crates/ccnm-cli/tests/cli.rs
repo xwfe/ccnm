@@ -17,7 +17,16 @@ use ccnm_core::session::RuntimeLink;
 fn ccnm() -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_ccnm"));
     // Never let the developer's own config leak into a test.
-    cmd.env_remove("CCNM_CONFIG");
+    let home = Path::new("/tmp")
+        .canonicalize()
+        .unwrap()
+        .join(format!("ccnm-cli-home-{}", std::process::id()));
+    std::fs::create_dir_all(&home).unwrap();
+    cmd.env_clear()
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .env("USER", std::env::var_os("USER").unwrap_or_default())
+        .env("HOME", &home)
+        .env("XDG_CONFIG_HOME", home.join("config"));
     cmd
 }
 
@@ -1306,11 +1315,20 @@ fn codex_supervisor_records_launch_validation_failure_without_running_an_agent()
         cwd: root.clone(),
     };
     std::fs::write(dir.meta(), serde_json::to_vec(&spec).unwrap()).unwrap();
+    let fake_agent = root.join("must-not-run");
+    let marker = root.join("agent-was-started");
+    std::fs::write(
+        &fake_agent,
+        format!("#!/bin/sh\ntouch '{}'\n", marker.display()),
+    )
+    .unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&fake_agent, std::fs::Permissions::from_mode(0o700)).unwrap();
     let req = SuperviseRequest {
         provider: AgentProvider::Codex,
         protocol: 2,
         session_dir: dir.path().to_path_buf(),
-        agent_bin: "/no-agent-executable".into(),
+        agent_bin: fake_agent,
     };
     let out = ccnm()
         .args([
@@ -1325,5 +1343,6 @@ fn codex_supervisor_records_launch_validation_failure_without_running_an_agent()
     assert!(!out.status.success());
     let outcome = ccnm_core::session::read_outcome(&dir).unwrap().unwrap();
     assert!(!outcome.ok());
-    assert!(outcome.error.unwrap().contains("dedicated Codex home"));
+    assert!(outcome.error.unwrap().contains("dedicated Agent home"));
+    assert!(!marker.exists());
 }

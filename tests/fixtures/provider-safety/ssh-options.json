@@ -1,0 +1,25 @@
+{
+  "date": "2026-09-08",
+  "scope": "local ssh -G -F synthetic config; no network connection, real profiles or credentials",
+  "openssh_version": "OpenSSH_10.3p1, LibreSSL 3.3.6",
+  "observations": [
+    {
+      "setenv_option": "none",
+      "exit_code": 255,
+      "effective": [],
+      "stderr": "command-line line 0: Invalid SetEnv.\n"
+    },
+    {
+      "setenv_option": "CCNM_TRANSPORT=1",
+      "exit_code": 0,
+      "effective": [
+        "controlmaster false",
+        "sendenv OPENAI_API_KEY",
+        "setenv CCNM_TRANSPORT=1",
+        "forwardagent no"
+      ],
+      "stderr": "Pseudo-terminal will not be allocated because stdin is not a terminal.\n"
+    }
+  ],
+  "conclusion": "SendEnv can retain user configuration entries. Actual environment removal is required. A constant command-line SetEnv replaces literal configured values; none is invalid."
+}

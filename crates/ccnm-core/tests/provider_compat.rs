@@ -127,12 +127,36 @@ fn snapshot() -> Value {
 }
 
 #[test]
-fn claude_behavior_matches_pre_provider_snapshot() {
+fn claude_behavior_matches_pre_provider_snapshot_except_documented_ssh_hardening() {
     let actual = snapshot();
-    let expected: Value = serde_json::from_slice(include_bytes!(
+    let mut expected: Value = serde_json::from_slice(include_bytes!(
         "../../../tests/fixtures/claude-provider-baseline.json"
     ))
     .unwrap();
+    // P1 intentionally closes forwarding and strips Agent environment on SSH.
+    // All official CLI flags, policies, results and v1 records stay frozen.
+    for launch in expected["launches"].as_array_mut().unwrap() {
+        if let Some(args) = launch
+            .pointer_mut("/mcp/mcpServers/ccnm/args")
+            .and_then(Value::as_array_mut)
+        {
+            args.splice(
+                0..0,
+                [
+                    "-o",
+                    "SendEnv=-*",
+                    "-o",
+                    "SetEnv=CCNM_TRANSPORT=1",
+                    "-o",
+                    "ForwardAgent=no",
+                    "-o",
+                    "ClearAllForwardings=yes",
+                ]
+                .into_iter()
+                .map(Value::from),
+            );
+        }
+    }
     assert_eq!(actual, expected);
 }
 

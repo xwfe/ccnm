@@ -570,7 +570,9 @@ fn runtime_safety_rows(env: &Env<'_>, r: &Resolved<'_>) -> Vec<Check> {
             match finding.severity {
                 safety::Severity::Ok => Check::ok(name, detail),
                 safety::Severity::Warn => Check::warn(name, detail),
-                safety::Severity::Fail if accepted => Check::warn(name, detail),
+                safety::Severity::Fail if accepted && !finding.non_waivable() => {
+                    Check::warn(name, detail)
+                }
                 safety::Severity::Fail => Check::fail_with(name, ErrorCode::Policy, detail),
             }
         })
@@ -579,7 +581,7 @@ fn runtime_safety_rows(env: &Env<'_>, r: &Resolved<'_>) -> Vec<Check> {
     // session cannot disagree about whether commands will run.
     rows.push(if audit.confined() {
         Check::ok("exec_command", "the runtime account is confined")
-    } else if accepted {
+    } else if audit.exec_allowed(accepted) {
         Check::warn(
             "exec_command",
             "allowed, but the runtime is NOT confined: this workspace sets allow_unconfined_exec",
@@ -1268,7 +1270,10 @@ mod tests {
             calls[0].display(),
             format!("{} --version", dir.join("home/.local/bin/ccnm").display())
         );
-        assert_eq!(calls[1].display(), "ssh -G work");
+        assert_eq!(
+            calls[1].display(),
+            "ssh -o SendEnv=-* -o SetEnv=CCNM_TRANSPORT=1 -o ForwardAgent=no -o ClearAllForwardings=yes -G work"
+        );
         let probe = calls[2].display();
         assert!(probe.contains("ControlMaster=no"), "{probe}");
         assert!(
@@ -1542,7 +1547,11 @@ mod tests {
         assert_eq!(report.exit_code(), 11);
         let calls = fake.calls();
         assert_eq!(calls.len(), 2, "no --version for a missing file");
-        assert!(calls[0].display().starts_with("ssh -G"));
+        assert!(
+            calls[0]
+                .display()
+                .starts_with("ssh -o SendEnv=-* -o SetEnv=CCNM_TRANSPORT=1 -o ForwardAgent=no -o ClearAllForwardings=yes -G")
+        );
     }
 
     #[test]

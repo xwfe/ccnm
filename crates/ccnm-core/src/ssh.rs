@@ -55,7 +55,7 @@ pub enum Master {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ssh {
-    agent_isolated: bool,
+    program: &'static str,
     alias: String,
     control_dir: PathBuf,
     /// Path of ccnm on the far side, as one word of the remote command.
@@ -106,40 +106,34 @@ impl Ssh {
             )));
         }
         Ok(Ssh {
-            agent_isolated: false,
+            program: crate::provider::AgentProvider::Claude.transport_program(),
             alias: alias.to_string(),
             control_dir: control_dir.into(),
             ccnm_bin: DEFAULT_CCNM_BIN.to_string(),
         })
     }
 
-    /// Codex uses an isolated Agent home: clear its environment before *any*
-    /// SSH hop, including preflight, not only the long-lived MCP transport.
+    /// Provider selection changes only the measured executable choice.
+    /// Authentication isolation applies equally to every SSH command.
     pub fn for_provider(mut self, provider: crate::provider::AgentProvider) -> Self {
-        self.agent_isolated = provider == crate::provider::AgentProvider::Codex;
+        self.program = provider.transport_program();
         self
     }
 
     fn command(&self) -> Cmd {
-        let cmd = Cmd::new(if self.agent_isolated {
-            "/usr/bin/ssh"
-        } else {
-            "ssh"
-        });
-        if self.agent_isolated {
-            crate::provider::codex::strip_environment(cmd.args([
-                "-o",
-                "SendEnv=-*",
-                "-o",
-                "ForwardAgent=no",
-                "-o",
-                "ControlMaster=no",
-                "-o",
-                "ControlPath=none",
-            ]))
-        } else {
-            cmd
-        }
+        crate::safety::environment::without_agent_auth(Cmd::new(self.program).args([
+            "-o",
+            "SendEnv=-*",
+            "-o",
+            // SetEnv from user config can reintroduce literal credentials.
+            // Measured with ssh -G: a command-line value replaces that list;
+            // `SetEnv=none` is invalid. This marker contains no private state.
+            "SetEnv=CCNM_TRANSPORT=1",
+            "-o",
+            "ForwardAgent=no",
+            "-o",
+            "ClearAllForwardings=yes",
+        ]))
     }
 
     /// Where ccnm lives on the far side (`hosts.<x>.ccnm_bin`, design doc
@@ -177,17 +171,11 @@ impl Ssh {
 
     /// The `-o` pairs ccnm adds to every connection.
     pub fn options(&self, control: Master) -> Vec<String> {
-        let master = match control {
-            Master::Reuse | Master::Off => "no",
-            Master::Auto => "auto",
-        };
-        let control_path = match control {
-            // No socket at all, so no 104-byte `sun_path` limit to fit
-            // inside. For a one-shot call that would never have created a
-            // master anyway, the only thing a ControlPath can do is fail.
-            Master::Off => "none".to_string(),
-            _ => self.control_path().display().to_string(),
-        };
+        // Existing sockets may predate the isolation policy. Do not inherit
+        // their forwarding/environment state, even inside ccnm's namespace.
+        let _ = control;
+        let master = "no";
+        let control_path = "none";
         [
             "BatchMode=yes".to_string(),
             format!("ConnectTimeout={CONNECT_TIMEOUT}"),
@@ -605,7 +593,7 @@ mod tests {
                 "-o",
                 "ControlMaster=no",
                 "-o",
-                "ControlPath=/Users/me/.local/state/ccnm/ssh/%C",
+                "ControlPath=none",
                 "-o",
                 "ControlPersist=10m",
                 "-o",
@@ -621,7 +609,7 @@ mod tests {
         assert!(
             ssh()
                 .options(Master::Auto)
-                .contains(&"ControlMaster=auto".to_string())
+                .contains(&"ControlMaster=no".to_string())
         );
         // Identity is the user's business: never an -i, never a HostName.
         assert!(
@@ -665,7 +653,12 @@ mod tests {
             )
             .unwrap();
         let text = cmd.display();
-        assert!(text.starts_with("ssh -o BatchMode=yes"), "{text}");
+        assert!(
+            text.starts_with(
+                "ssh -o SendEnv=-* -o SetEnv=CCNM_TRANSPORT=1 -o ForwardAgent=no -o ClearAllForwardings=yes -o BatchMode=yes"
+            ),
+            "{text}"
+        );
         assert!(
             text.ends_with("-T work ~/.local/bin/ccnm internal probe --payload abc_-9"),
             "{text}"
@@ -695,7 +688,7 @@ mod tests {
         let text = cmd.display();
         assert_eq!(
             text,
-            "ssh -o BatchMode=yes -o ConnectTimeout=10 -o ClearAllForwardings=yes -o ControlMaster=no -o ControlPath=none -o ServerAliveInterval=15 -o ServerAliveCountMax=20 -o SendEnv=-ANTHROPIC_* -o SendEnv=-CLAUDE_* -T work /Users/ccrun/.local/bin/ccnm internal mcp-serve --payload eyJwIjoxfQ"
+            "ssh -o SendEnv=-* -o SetEnv=CCNM_TRANSPORT=1 -o ForwardAgent=no -o ClearAllForwardings=yes -o BatchMode=yes -o ConnectTimeout=10 -o ClearAllForwardings=yes -o ControlMaster=no -o ControlPath=none -o ServerAliveInterval=15 -o ServerAliveCountMax=20 -o SendEnv=-ANTHROPIC_* -o SendEnv=-CLAUDE_* -T work /Users/ccrun/.local/bin/ccnm internal mcp-serve --payload eyJwIjoxfQ"
         );
         assert!(cmd.stdin.is_none(), "the MCP client owns stdin, not Cmd");
         assert!(ssh().mcp_transport_cmd("has space").is_err());
@@ -704,6 +697,22 @@ mod tests {
         // seconds. Losing it costs the person a /mcp reconnect.
         let control = ssh().options(Master::Reuse).join(" ");
         assert!(control.contains("ServerAliveCountMax=3"), "{control}");
+    }
+
+    #[test]
+    fn preflight_and_transport_isolate_both_providers() {
+        for provider in [
+            crate::provider::AgentProvider::Claude,
+            crate::provider::AgentProvider::Codex,
+        ] {
+            let ssh = ssh().for_provider(provider);
+            for cmd in [ssh.resolve_cmd(), ssh.mcp_transport_cmd("abc").unwrap()] {
+                assert!(cmd.args.iter().any(|v| v == "ForwardAgent=no"));
+                assert!(cmd.args.iter().any(|v| v == "SendEnv=-*"));
+                assert!(cmd.env_remove.iter().any(|v| v == "CODEX_HOME"));
+                assert!(cmd.env_remove.iter().any(|v| v == "CLAUDE_CONFIG_DIR"));
+            }
+        }
     }
 
     #[test]
@@ -730,13 +739,16 @@ mod tests {
     fn control_cmds() {
         assert_eq!(
             ssh().check_master_cmd().display(),
-            "ssh -o ControlPath=/Users/me/.local/state/ccnm/ssh/%C -O check work"
+            "ssh -o SendEnv=-* -o SetEnv=CCNM_TRANSPORT=1 -o ForwardAgent=no -o ClearAllForwardings=yes -o ControlPath=/Users/me/.local/state/ccnm/ssh/%C -O check work"
         );
         assert_eq!(
             ssh().exit_master_cmd().display(),
-            "ssh -o ControlPath=/Users/me/.local/state/ccnm/ssh/%C -O exit work"
+            "ssh -o SendEnv=-* -o SetEnv=CCNM_TRANSPORT=1 -o ForwardAgent=no -o ClearAllForwardings=yes -o ControlPath=/Users/me/.local/state/ccnm/ssh/%C -O exit work"
         );
-        assert_eq!(ssh().resolve_cmd().display(), "ssh -G work");
+        assert_eq!(
+            ssh().resolve_cmd().display(),
+            "ssh -o SendEnv=-* -o SetEnv=CCNM_TRANSPORT=1 -o ForwardAgent=no -o ClearAllForwardings=yes -G work"
+        );
     }
 
     #[test]

@@ -228,13 +228,8 @@ pub(crate) fn exec_command_for(
         .args(&args.cmd[1..])
         .cwd(&cwd_abs)
         .timeout(Duration::from_millis(timeout_ms));
-    for key in agent_environment_vars() {
-        cmd = cmd.env_remove(key);
-    }
-
-    if provider == crate::provider::AgentProvider::Codex {
-        cmd = crate::provider::codex::strip_environment(cmd);
-    }
+    let _ = provider; // Runtime protection covers all known Agents, not this selection.
+    cmd = crate::safety::environment::runtime_child(cmd);
     let stdout = Sink::create(&retention.stdout())?;
     let stderr = Sink::create(&retention.stderr())?;
     let captured = run_captured(&cmd, stdout, stderr).map_err(|e| {
@@ -316,26 +311,12 @@ impl Write for Sink {
 /// (section 6). It also must not hand one to a command it runs: the ssh
 /// session that started this server could have carried one in, and a
 /// child that inherited it could use it or log it.
-fn agent_environment_vars() -> Vec<std::ffi::OsString> {
-    strip_names(std::env::vars_os().map(|(key, _)| key))
-}
-
-/// Split out from the environment lookup so the rule can be tested. The
-/// end of it — that a child really does not see them — is asserted in the
-/// CLI integration test, where the server process can be given the
-/// variables to begin with; this crate forbids `unsafe`, and setting an
-/// environment variable is `unsafe` in this edition.
+#[cfg(test)]
 fn strip_names<I>(names: I) -> Vec<std::ffi::OsString>
 where
     I: Iterator<Item = std::ffi::OsString>,
 {
-    names
-        .filter(|key| {
-            crate::provider::AgentProvider::current()
-                .credentials()
-                .is_environment_name(key)
-        })
-        .collect()
+    crate::safety::environment::strip_names(names)
 }
 
 /// Where this session's runs are kept. `read_output` resolves references

@@ -1125,7 +1125,10 @@ mod tests {
             "{:?}",
             calls.iter().map(Cmd::display).collect::<Vec<_>>()
         );
-        assert_eq!(calls[0].display(), "ssh -G to-runtime");
+        assert_eq!(
+            calls[0].display(),
+            "ssh -o SendEnv=-* -o SetEnv=CCNM_TRANSPORT=1 -o ForwardAgent=no -o ClearAllForwardings=yes -G to-runtime"
+        );
         let reverse = calls[1].display();
         assert!(
             reverse.contains("ControlMaster=no"),

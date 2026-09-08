@@ -516,8 +516,8 @@ fn run(cli: Cli) -> Result<i32> {
                 print_json(&hello::answer(&req))
             }
             InternalCommand::AgentTransport { payload } => {
-                let req: ccnm_core::provider::codex::transport::Request = payload::decode(payload)?;
-                ccnm_core::provider::codex::transport::exec(&req)?;
+                let req: session::transport::Request = payload::decode(payload)?;
+                session::transport::exec(&req)?;
                 Ok(0)
             }
             InternalCommand::McpServe { payload } => {

@@ -34,6 +34,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::process::{Cmd, ProcessRunner};
 
+pub mod credentials;
+pub mod environment;
+
 /// Long enough for `id` and `sudo -n`, short enough that a wedged audit
 /// cannot make a Claude session look hung.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -65,6 +68,13 @@ pub struct Finding {
 }
 
 impl Finding {
+    pub fn non_waivable(&self) -> bool {
+        self.check == "No authentication environment"
+            || self.check == "Runtime identity known"
+            || crate::provider::AgentProvider::ALL
+                .iter()
+                .any(|p| self.check == format!("No {} credential", p.credentials().agent_name))
+    }
     fn ok(check: &str, detail: impl Into<String>) -> Finding {
         Finding {
             check: check.to_string(),
@@ -102,6 +112,15 @@ pub struct Audit {
 }
 
 impl Audit {
+    pub fn agent_boundary_clear(&self) -> bool {
+        !self
+            .findings
+            .iter()
+            .any(|f| f.severity == Severity::Fail && f.non_waivable())
+    }
+    pub fn exec_allowed(&self, accepted: bool) -> bool {
+        self.agent_boundary_clear() && (self.confined() || accepted)
+    }
     /// Is there anything that should stop a real project being run here?
     pub fn confined(&self) -> bool {
         !self.findings.iter().any(|f| f.severity == Severity::Fail)
@@ -126,6 +145,9 @@ impl Audit {
                 text.push_str(&format!("\n    fix: {fix}"));
             }
         }
+        if !self.agent_boundary_clear() {
+            text.push_str("\nRuntime initialization is also refused: allow_unconfined_exec cannot waive unknown identity or Agent credential isolation.");
+        }
         text.push_str(
             "\nSee docs/production-safety.md. To accept an unconfined runtime for one workspace anyway, set allow_unconfined_exec = true on it in config.toml.",
         );
@@ -138,8 +160,32 @@ impl Audit {
 /// `expected_user` is the account the config says the runtime should be,
 /// and `home` is this process's home directory.
 pub fn audit(expected_user: Option<&str>, home: &Path, runner: &dyn ProcessRunner) -> Audit {
+    audit_with_environment(
+        expected_user,
+        home,
+        runner,
+        &credentials::local_references(),
+        &std::env::vars_os().map(|(k, _)| k).collect::<Vec<_>>(),
+    )
+}
+
+fn audit_with_environment(
+    expected_user: Option<&str>,
+    home: &Path,
+    runner: &dyn ProcessRunner,
+    references: &[(String, Option<std::ffi::OsString>)],
+    names: &[std::ffi::OsString],
+) -> Audit {
     let identity = Identity::read(runner);
     let mut findings = Vec::new();
+
+    if identity.uid.is_none() {
+        findings.push(Finding::fail(
+            "Runtime identity known",
+            "the execution identity is unknown",
+            "restore the local identity probe before allowing Runtime execution",
+        ));
+    }
 
     findings.push(match (&identity.uid, expected_user) {
         (Some(0), _) => Finding::fail(
@@ -176,8 +222,13 @@ pub fn audit(expected_user: Option<&str>, home: &Path, runner: &dyn ProcessRunne
 
     findings.push(sudo_finding(runner));
     findings.push(group_finding(&identity));
-    findings.push(ssh_key_finding(home));
-    findings.push(agent_credential_finding(home));
+    findings.push(ssh_key_finding(home, runner));
+    findings.extend(credentials::findings_with(home, references, runner));
+    findings.push(if environment::validate_runtime_names(names.iter().cloned()).is_ok() {
+        Finding::ok("No authentication environment", "no unapproved authentication-shaped environment names observed")
+    } else {
+        Finding::fail("No authentication environment", "authentication environment has no Runtime project authorization (names and values withheld)", "remove inherited authentication from the Runtime service environment; do not copy Agent credentials")
+    });
     findings.push(docker_finding(&identity));
 
     Audit {
@@ -191,15 +242,28 @@ pub fn audit(expected_user: Option<&str>, home: &Path, runner: &dyn ProcessRunne
 /// there is to run if it turns out the answer is yes.
 fn sudo_finding(runner: &dyn ProcessRunner) -> Finding {
     const NAME: &str = "No sudo";
-    let cmd = Cmd::new("sudo").args(["-n", "true"]).timeout(PROBE_TIMEOUT);
+    let cmd = Cmd::new("/usr/bin/sudo")
+        .args(["-n", "true"])
+        .timeout(PROBE_TIMEOUT);
     match runner.run(&cmd) {
-        Err(_) => Finding::ok(NAME, "sudo is not installed"),
+        Err(_) => Finding::fail(
+            NAME,
+            "sudo availability or result is unknown",
+            "verify the Runtime privilege policy; a failed diagnostic is not a denial",
+        ),
         Ok(out) if out.success() => Finding::fail(
             NAME,
             "this account has passwordless sudo, so any command it runs can become root",
             "remove it from the sudoers file and from the admin group",
         ),
-        Ok(_) => Finding::ok(NAME, "cannot become root without a password"),
+        Ok(out) if !out.timed_out && out.exit_code == Some(1) => {
+            Finding::ok(NAME, "cannot become root without a password")
+        }
+        Ok(_) => Finding::fail(
+            NAME,
+            "sudo probe did not establish a denial",
+            "verify the Runtime privilege policy",
+        ),
     }
 }
 
@@ -243,89 +307,61 @@ fn group_finding(identity: &Identity) -> Finding {
 
 /// A private key the runtime can read is a key the runtime can use, and
 /// `exec_command` is a shell.
-fn ssh_key_finding(home: &Path) -> Finding {
+fn ssh_key_finding(home: &Path, runner: &dyn ProcessRunner) -> Finding {
     const NAME: &str = "No SSH keys";
     let dir = home.join(".ssh");
-    let Ok(entries) = std::fs::read_dir(&dir) else {
-        return Finding::ok(NAME, "no readable ~/.ssh");
+    if std::fs::symlink_metadata(&dir).is_ok_and(|m| m.file_type().is_symlink()) {
+        return Finding::fail(
+            NAME,
+            "SSH credential directory is a symlink; accessibility is unknown",
+            "use a separate Runtime home and verify its permissions",
+        );
+    }
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Finding::ok(NAME, "no ~/.ssh directory at the inspected home");
+        }
+        Err(_) => {
+            return Finding::fail(
+                NAME,
+                "SSH credential directory accessibility is unknown",
+                "verify permissions for the Runtime execution identity",
+            );
+        }
     };
-    let mut keys: Vec<String> = Vec::new();
-    for entry in entries.flatten() {
+    for entry in entries {
+        let Ok(entry) = entry else {
+            return Finding::fail(
+                NAME,
+                "SSH credential inventory is unknown",
+                "verify permissions for the Runtime execution identity",
+            );
+        };
         let name = entry.file_name().to_string_lossy().into_owned();
-        if name.ends_with(".pub") || name == "known_hosts" || name == "config" {
+        if name.ends_with(".pub")
+            || matches!(
+                name.as_str(),
+                "known_hosts" | "config" | "authorized_keys" | "authorized_keys2"
+            )
+        {
             continue;
         }
-        // A private key is readable and starts with a PEM header. Reading
-        // the first line rather than guessing from the name catches a key
-        // called anything at all.
-        if looks_like_private_key(&entry.path()) {
-            keys.push(name);
+        if matches!(
+            credentials::access(&entry.path(), runner),
+            credentials::Access::Accessible | credentials::Access::Unknown
+        ) {
+            return Finding::fail(
+                NAME,
+                "a possible private SSH key is accessible or unknown (names and contents withheld)",
+                "use a Runtime identity without access to SSH private state",
+            );
         }
     }
-    if keys.is_empty() {
-        Finding::ok(NAME, "no readable private key in ~/.ssh")
-    } else {
-        keys.sort();
-        Finding::fail(
-            NAME,
-            format!(
-                "this account can read {} in ~/.ssh; a command it runs can use them",
-                keys.join(", ")
-            ),
-            "the runtime account must have its own home with no SSH keys in it",
-        )
-    }
-}
-
-fn looks_like_private_key(path: &Path) -> bool {
-    let Ok(bytes) = std::fs::read(path) else {
-        return false;
-    };
-    let head = &bytes[..bytes.len().min(64)];
-    let text = String::from_utf8_lossy(head);
-    text.contains("PRIVATE KEY")
-}
-
-/// The core invariant of section 6: the Runtime Node holds no Claude
-/// credential. A credential here would make this machine an Anthropic
-/// egress point, which is the whole thing the architecture exists to
-/// avoid.
-fn agent_credential_finding(home: &Path) -> Finding {
-    let metadata = crate::provider::AgentProvider::current().credentials();
-    let name = format!("No {} credential", metadata.agent_name);
-    let mut found = Vec::new();
-    let custom = std::env::var_os(metadata.config_env);
-    for dir in metadata.config_directories(home, custom.as_deref()) {
-        for filename in metadata.files {
-            let path = dir.join(filename);
-            if path.exists() {
-                found.push(path.display().to_string());
-            }
-        }
-    }
-    if found.is_empty() {
-        Finding::ok(
-            &name,
-            format!(
-                "no {} credentials file on this machine",
-                metadata.agent_name
-            ),
-        )
-    } else {
-        Finding::fail(
-            &name,
-            format!(
-                "this machine holds a {} credential ({}); the Runtime Node must never be an {} egress point",
-                metadata.agent_name,
-                found.join(", "),
-                metadata.vendor_name
-            ),
-            format!(
-                "remove it, and never run `{}` on the Runtime Node",
-                metadata.login_command
-            ),
-        )
-    }
+    Finding::ok(
+        NAME,
+        "no accessible private SSH key candidate in the inspected home; contents were not read",
+    )
 }
 
 /// Write access to the Docker socket is root, one `docker run -v /:/host`
@@ -366,7 +402,7 @@ impl Identity {
     fn read(runner: &dyn ProcessRunner) -> Identity {
         let field = |args: [&str; 1]| -> Option<String> {
             let out = runner
-                .run(&Cmd::new("id").args(args).timeout(PROBE_TIMEOUT))
+                .run(&Cmd::new("/usr/bin/id").args(args).timeout(PROBE_TIMEOUT))
                 .ok()?;
             out.success().then(|| out.stdout_lossy().trim().to_string())
         };
@@ -403,15 +439,25 @@ impl Identity {
 /// for a network boundary. So this reports, and leaves the judgement to
 /// the person reading.
 pub fn egress_finding(timeout: Duration) -> Finding {
-    let metadata = crate::provider::AgentProvider::current().credentials();
+    egress_finding_for(crate::provider::AgentProvider::current(), timeout)
+}
+
+pub fn egress_finding_for(provider: crate::provider::AgentProvider, timeout: Duration) -> Finding {
+    let metadata = provider.credentials();
     let name = format!("{} egress", metadata.vendor_name);
     let host = metadata.egress_host;
     use std::net::ToSocketAddrs;
     let Ok(mut addrs) = (host, 443).to_socket_addrs() else {
-        return Finding::ok(&name, format!("{host} does not resolve from here"));
+        return Finding::warn(
+            &name,
+            format!("{host} DNS result is unknown; this does not prove an egress policy"),
+        );
     };
     let Some(addr) = addrs.next() else {
-        return Finding::ok(&name, format!("{host} does not resolve from here"));
+        return Finding::warn(
+            &name,
+            format!("{host} resolved no addresses; this does not prove an egress policy"),
+        );
     };
     match std::net::TcpStream::connect_timeout(&addr, timeout) {
         Ok(_) => Finding::warn(
@@ -420,15 +466,25 @@ pub fn egress_finding(timeout: Duration) -> Finding {
                 "this machine can reach {host}; if that is your compliance boundary, block it at the OS or network level rather than trusting a command deny list"
             ),
         ),
-        Err(_) => Finding::ok(&name, format!("{host} is not reachable from here")),
+        Err(_) => Finding::warn(
+            &name,
+            format!("{host} was not reachable in this probe; this does not prove an egress policy"),
+        ),
     }
 }
+
+#[cfg(test)]
+mod provider_tests;
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::process::{FakeRunner, Output};
     use std::path::PathBuf;
+
+    fn audit(expected: Option<&str>, home: &Path, runner: &dyn ProcessRunner) -> Audit {
+        audit_with_environment(expected, home, runner, &[], &[])
+    }
 
     /// `id` answers four times per audit, in this order.
     fn identity(runner: &FakeRunner, user: &str, uid: &str, gids: &str, groups: &str) {
@@ -439,7 +495,10 @@ mod tests {
     }
 
     fn empty_home(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("ccnm-safety-{}-{name}", std::process::id()));
+        let dir = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("ccnm-safety-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join(".ssh")).unwrap();
         dir
@@ -456,6 +515,12 @@ mod tests {
     #[test]
     fn a_dedicated_account_with_nothing_in_reach_is_confined() {
         let home = empty_home("clean");
+        // Public incoming keys are required for an ordinary SSH Runtime.
+        std::fs::write(
+            home.join(".ssh/authorized_keys"),
+            "ssh-ed25519 SYNTHETIC_PUBLIC_KEY\n",
+        )
+        .unwrap();
         let runner = FakeRunner::new();
         identity(&runner, "ccrun", "502", "20", "staff");
         runner.push(Output::exited(1, "")); // sudo -n true refused
@@ -545,12 +610,34 @@ mod tests {
         let finding = find(&audit, "No SSH keys");
         assert_eq!(finding.severity, Severity::Fail);
         assert!(
-            finding.detail.contains("not_named_like_a_key"),
+            finding.detail.contains("possible private SSH key"),
             "{finding:?}"
         );
         // A public key and known_hosts are not credentials.
         assert!(!finding.detail.contains(".pub"), "{finding:?}");
         assert!(!finding.detail.contains("known_hosts"), "{finding:?}");
+    }
+
+    #[test]
+    fn codex_credentials_are_checked_even_when_claude_is_the_default() {
+        let home = empty_home("codex-cross-provider");
+        std::fs::create_dir_all(home.join(".codex")).unwrap();
+        std::fs::write(home.join(".codex/auth.json"), "synthetic-do-not-read").unwrap();
+        let runner = FakeRunner::new();
+        identity(&runner, "ccrun", "502", "20", "staff");
+        runner.push(Output::exited(1, ""));
+        runner.push(Output::exited(0, "")); // access check, not secret content
+        let report = audit(Some("ccrun"), &home, &runner);
+        assert!(!report.confined());
+        assert_eq!(
+            find(&report, "No Codex credential").severity,
+            Severity::Fail
+        );
+        assert!(
+            !serde_json::to_string(&report)
+                .unwrap()
+                .contains("synthetic-do-not-read")
+        );
     }
 
     #[test]
@@ -565,10 +652,7 @@ mod tests {
         assert!(!audit.confined());
         let finding = find(&audit, "No Claude credential");
         assert_eq!(finding.severity, Severity::Fail);
-        assert!(
-            finding.detail.contains("Anthropic egress point"),
-            "{finding:?}"
-        );
+        assert!(finding.detail.contains("credential"), "{finding:?}");
     }
 
     #[test]
@@ -600,6 +684,10 @@ mod tests {
         assert_eq!(audit.user, "unknown");
         // Not knowing must never read as confined.
         assert!(!audit.confined(), "{:?}", audit.findings);
+        assert!(
+            !audit.exec_allowed(true),
+            "unknown identity cannot be waived"
+        );
         assert_eq!(find(&audit, "Runs as root").severity, Severity::Fail);
         assert_eq!(find(&audit, "Not an admin").severity, Severity::Fail);
     }

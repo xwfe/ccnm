@@ -196,7 +196,8 @@ work machine ≈ Agent Node
 - `provider/claude/`：CLI 定位、version/auth 探测、配置目录环境变量、启动参数、交互/print 输入、MCP 配置和工具权限、结果解析，以及项目 instruction/context 规则。
 - `provider/codex/`：已实测的官方 CLI `0.153.4` 适配、Agent-local HOME、固定工具策略、JSONL 结果和 Runtime 根目录 AGENTS 上下文。未测版本和 colocated 模式拒绝启动。
 - `provider/types.rs`：Controller、work 和报告消费者使用的 Agent 观测/结果；保留 v1 字段形状。
-- `provider` 的凭据元数据：现有环境变量前缀、配置目录、凭据文件名和 egress 检查目标。`safety`、SSH 和 `exec_command` 继续执行原安全规则，不读取或传递凭据内容。
+- `provider` 的凭据元数据声明环境前缀、已知目录/容器、文件名和 egress 检查目标。P1 由 `safety/` 统一执行所有已知 Provider 的可访问性检查和分来源环境策略，未知/认证失败不可由 unconfined 开关跳过；不读取或传递凭据内容。
+- `session/transport.rs` 是两 Provider 共用的 Agent-side stdio wrapper；Claude MCP JSON 和 Codex 会话参数均指向它，再由它清理环境并执行 OpenSSH。SSH 与 Runtime child 的机制不放在 Codex 模块里；详情见 [安全契约](provider-safety.md)。
 - session/Controller 仍负责进程、tmux 和生命周期；launcher/work 仍负责 topology、OpenSSH alias 与 Runtime Node 握手。Runtime MCP 的 7 个工具和执行边界未变。
 
 公开配置仍是 `claude_config_dir`、`claude_permission_mode`。Rust 内部使用通用字段名，通过 serde 显式保留旧 session/协议的 `claude_config_dir`、`claude_bin`、`claude-auth`、`claude`。旧 `claude` 和 `mcp::context` 模块只是兼容出口，不再承载实现。

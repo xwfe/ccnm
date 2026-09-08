@@ -9,12 +9,15 @@ use std::time::Duration;
 
 pub mod context;
 pub mod result;
-pub mod transport;
+pub use crate::session::transport;
 
 pub const CREDENTIALS: super::CredentialMetadata = super::CredentialMetadata {
     env_prefixes: &["CODEX_", "OPENAI_"],
     config_env: "CODEX_HOME",
     default_directory: ".config/ccnm/agents/codex",
+    additional_directories: &[".codex"],
+    xdg_config_directory: Some("ccnm/agents/codex"),
+    containers: &[],
     files: &["auth.json"],
     agent_name: "Codex",
     vendor_name: "OpenAI",
@@ -41,7 +44,6 @@ const DISABLED: &[&str] = &[
     "goals",
     "tool_suggest",
 ];
-pub const ENV_PREFIXES: &[&str] = &["CODEX_", "OPENAI_", "CLAUDE_", "ANTHROPIC_"];
 
 pub fn locate(path: Option<&OsStr>, home: Option<&Path>) -> Option<PathBuf> {
     let mut candidates = Vec::new();
@@ -71,68 +73,11 @@ pub fn home() -> Result<PathBuf> {
 }
 
 pub fn validate_home(path: &Path) -> Result<()> {
-    use std::os::unix::fs::MetadataExt;
-    let owner = std::fs::metadata(crate::paths::home_dir()?)?.uid();
-    for ancestor in path.ancestors() {
-        let meta = std::fs::symlink_metadata(ancestor).map_err(|_| Error::new(ErrorCode::Auth,
-            "dedicated Codex home is not ready; create it and independently run official codex login on the Agent Node"))?;
-        if meta.file_type().is_symlink() {
-            return Err(Error::new(
-                ErrorCode::Auth,
-                "dedicated Codex home must not use symlinks",
-            ));
-        }
-    }
-    let meta = std::fs::metadata(path)?;
-    if !meta.is_dir() || meta.uid() != owner || meta.mode() & 0o077 != 0 {
-        return Err(Error::new(
-            ErrorCode::Auth,
-            "dedicated Codex home must be an owner-only directory",
-        ));
-    }
-    match std::fs::symlink_metadata(path.join("auth.json")) {
-        Ok(meta)
-            if !meta.is_file()
-                || meta.file_type().is_symlink()
-                || meta.uid() != owner
-                || meta.mode() & 0o077 != 0 =>
-        {
-            return Err(Error::new(
-                ErrorCode::Auth,
-                "Codex authentication file must be private and not a symlink",
-            ));
-        }
-        Ok(_) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => {
-            return Err(Error::new(
-                ErrorCode::Auth,
-                "cannot inspect Codex authentication file metadata",
-            )
-            .with_source(e));
-        }
-    }
-    Ok(())
+    crate::safety::credentials::private_home(path, CREDENTIALS.files)
 }
 
-pub(crate) fn strip_environment(mut cmd: Cmd) -> Cmd {
-    let mut names: std::collections::BTreeSet<std::ffi::OsString> =
-        ["CODEX_HOME", "OPENAI_API_KEY", "CODEX_ACCESS_TOKEN"]
-            .into_iter()
-            .map(Into::into)
-            .collect();
-    names.extend(std::env::vars_os().map(|(k, _)| k).filter(|key| {
-        ENV_PREFIXES
-            .iter()
-            .any(|prefix| key.to_string_lossy().starts_with(prefix))
-    }));
-    for name in names {
-        cmd = cmd.env_remove(name);
-    }
-    cmd
-}
 fn isolated(cmd: Cmd, home: &Path) -> Cmd {
-    strip_environment(cmd).env("CODEX_HOME", home)
+    crate::safety::environment::without_agent_auth(cmd).env("CODEX_HOME", home)
 }
 
 pub fn parse_version(out: &Output) -> Result<String> {
@@ -307,16 +252,12 @@ pub(crate) fn build_launch_cmd(
     for feature in DISABLED {
         cmd = cmd.args(["--disable", feature]);
     }
-    let request = transport::Request {
-        protocol: 2,
-        session_dir: dir.path().to_path_buf(),
-    };
-    let args = vec![
-        "internal".to_string(),
-        "agent-transport".into(),
-        "--payload".into(),
-        crate::protocol::payload::encode(&request)?,
-    ];
+    let transport = transport::launcher(dir, exe)?;
+    let args: Vec<_> = transport
+        .args
+        .iter()
+        .map(|s| s.to_string_lossy().into_owned())
+        .collect();
     // TOML quoted strings/arrays are JSON-compatible for these argv values.
     cmd = cmd
         .arg("-c")

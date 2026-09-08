@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-09-08T19:53:47+09:00",
+  "last_updated": "2026-09-08T20:13:18+09:00",
   "current_task": "P3",
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
@@ -156,7 +156,7 @@
       ],
       "owner": null,
       "started_at": "2026-09-08T12:44:30+09:00",
-      "last_updated": "2026-09-08T19:53:47+09:00",
+      "last_updated": "2026-09-08T20:13:18+09:00",
       "completed_criteria": [
         "P3.4",
         "P3.6"
@@ -207,8 +207,8 @@
           "criteria": [
             "P3.5"
           ],
-          "reason": "两端 Runtime 安全入口尚未建立；本机和 fodelf 的现有会话均无可用非交互管理员权限。系统准备范围已明确，但不能由当前会话执行特权动作。",
-          "unblock": "在两端可输入管理员密码的本机登录终端执行 p3-runtime-system-preparation.md 的最小准备；验证专用账号 OpenSSH 入口后继续已授权双 Provider 验收。不向 Agent 提供密码、不放宽 sudoers。"
+          "reason": "用户要求 fodelf 不新建用户；本轮只读 SSH 复核现有 fodelf UID 501 属于 admin，且可读自己的 Claude 凭据，ccrun 不存在，不能作为隔离 Runtime。用户终端可用不等于执行进程已获得 sudo 权限。",
+          "unblock": "先验证 fodelf Claude Agent → 本机已有 ccrun Runtime 的专用 SSH 入口；Codex → fodelf 的隔离验收等待符合安全要求的 Runtime 身份或其他 Runtime 环境，不绕过凭据门禁。"
         }
       ]
     },
@@ -293,7 +293,7 @@
     "P3 额外 64 线程压力出现既有 exec timeout 单测 30.5s 失败；默认全量 511 通过，高并发问题尚未解决。"
   ],
   "handoff": {
-    "next_action": "仅 P3：系统准备操作单已收敛，两端 sudo -n true 均需管理员密码；需要两端本机登录终端协助执行特权准备，禁止让用户发送密码。尚未创建系统/SSH资源。专用 Runtime alias 建立后继续真实验收及 outcome/interactive 生命周期复核，勿进入 P4。",
+    "next_action": "仅 P3：遵守用户最新要求，不在 fodelf 新建用户。先准备并验证 fodelf Claude Agent → 本机已有 ccrun Runtime；需要特权的命令由用户登录终端执行。现有 fodelf 管理员身份不满足反向 Codex Runtime 隔离门禁，双 Provider 验收保持 blocked。",
     "scope": "仅 P3；不进入 P4/Machine API，不引入多 Agent/worktree 调度，不主动部署、登录或修改账号/ACL/防火墙。",
     "planning_validation": {
       "at": "2026-09-08T19:16:49+09:00",
@@ -306,7 +306,7 @@
       "limits": "本次只在本机离线回归；未部署、登录或调用真实 Agent。64 线程额外压力曾出现既有 exec timeout 测试失败，未声称修复。"
     },
     "inherited_changes": [],
-    "authorization": "双机临时部署、角色互换、真实 Claude/Codex 验证、清理与只读安全审计已获授权；用户随后同意 Runtime 系统准备，范围见 p3-runtime-system-preparation.md。无防火墙变更、现有 Controller 替换或凭据复制授权；同范围操作无需再次询问。",
+    "authorization": "双机临时部署、角色互换、真实 Claude/Codex 验证、清理与只读安全审计已获授权；用户随后同意 Runtime 系统准备，范围见 p3-runtime-system-preparation.md。无防火墙变更、现有 Controller 替换或凭据复制授权；同范围操作无需再次询问。 最新范围收窄：用户明确要求 fodelf 不新建用户；此前创建远端专用账号的准备不再执行。",
     "portability": "接续不依赖任何特定 MCP、任务管理器或 IDE 插件。任何模型只需 Git、仓库文件和项目命令即可按 current_task 继续；外部工具状态不作为产品阶段事实。"
   }
 }

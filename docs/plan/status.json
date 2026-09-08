@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-09-08T19:25:14+09:00",
+  "last_updated": "2026-09-08T19:53:47+09:00",
   "current_task": "P3",
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
@@ -156,7 +156,7 @@
       ],
       "owner": null,
       "started_at": "2026-09-08T12:44:30+09:00",
-      "last_updated": "2026-09-08T19:25:14+09:00",
+      "last_updated": "2026-09-08T19:53:47+09:00",
       "completed_criteria": [
         "P3.4",
         "P3.6"
@@ -192,6 +192,14 @@
           "ref": "docs/research/p3-node-preflight-2026-09-08.md",
           "commit": "f519c6f",
           "result": "授权实机预检：两 CLI 登录有效；两端当前执行账号 admin，fodelf 可读 Claude 凭据/Keychain、可写 Docker socket且无 ccrun；本机 ccrun 无可用非交互入口。当前本机构建真实 HOME 下 MCP 初始化 exit33/空 stdout。未启动模型，临时资源已清理，不是 P3.5 通过。"
+        },
+        {
+          "kind": "review",
+          "criteria": [
+            "P3.5"
+          ],
+          "ref": "docs/plan/p3-runtime-system-preparation.md",
+          "result": "系统准备限定到专用 Runtime 身份、独立测试目录、公钥和新 OpenSSH alias，明确逐项清理与既有账号保护。实测两端 sudo -n true 均需密码，尚无系统变更；不等于完成环境准备。"
         }
       ],
       "blockers": [
@@ -199,8 +207,8 @@
           "criteria": [
             "P3.5"
           ],
-          "reason": "实机预检证实当前 Runtime 入口不隔离：fodelf 无专用账号且当前用户可读 Agent 凭据/写 Docker socket；本机 ccrun 不可非交互访问，反向 alias 仍使用管理员。",
-          "unblock": "另行批准两端专用 Runtime 身份、workspace ACL 和 OpenSSH alias 的最小系统准备，先列出变更及恢复方案；建立入口后按已有授权继续双 Provider 公共链路及 egress 验收。"
+          "reason": "两端 Runtime 安全入口尚未建立；本机和 fodelf 的现有会话均无可用非交互管理员权限。系统准备范围已明确，但不能由当前会话执行特权动作。",
+          "unblock": "在两端可输入管理员密码的本机登录终端执行 p3-runtime-system-preparation.md 的最小准备；验证专用账号 OpenSSH 入口后继续已授权双 Provider 验收。不向 Agent 提供密码、不放宽 sudoers。"
         }
       ]
     },
@@ -285,7 +293,7 @@
     "P3 额外 64 线程压力出现既有 exec timeout 单测 30.5s 失败；默认全量 511 通过，高并发问题尚未解决。"
   ],
   "handoff": {
-    "next_action": "仍仅 P3。验证授权已获，实机预检证实缺少安全 Runtime 身份入口；见 p3-node-preflight-2026-09-08.md。先提出两端专用身份/ACL/OpenSSH alias 的最小系统准备与恢复方案，获得系统变更授权后继续已有授权的真实验证；并保留 outcome/interactive 生命周期待复核。勿进入 P4。",
+    "next_action": "仅 P3：系统准备操作单已收敛，两端 sudo -n true 均需管理员密码；需要两端本机登录终端协助执行特权准备，禁止让用户发送密码。尚未创建系统/SSH资源。专用 Runtime alias 建立后继续真实验收及 outcome/interactive 生命周期复核，勿进入 P4。",
     "scope": "仅 P3；不进入 P4/Machine API，不引入多 Agent/worktree 调度，不主动部署、登录或修改账号/ACL/防火墙。",
     "planning_validation": {
       "at": "2026-09-08T19:16:49+09:00",
@@ -298,7 +306,7 @@
       "limits": "本次只在本机离线回归；未部署、登录或调用真实 Agent。64 线程额外压力曾出现既有 exec timeout 测试失败，未声称修复。"
     },
     "inherited_changes": [],
-    "authorization": "用户已明确批准本机/fodelf 角色互换、独立临时部署、真实 Claude/Codex 调用和只读权限/网络审计，测试后清理本轮资源；不替换现有 binary/Controller、不复制凭据、不修改账号/ACL/防火墙。同范围验证无需再次询问。",
+    "authorization": "双机临时部署、角色互换、真实 Claude/Codex 验证、清理与只读安全审计已获授权；用户随后同意 Runtime 系统准备，范围见 p3-runtime-system-preparation.md。无防火墙变更、现有 Controller 替换或凭据复制授权；同范围操作无需再次询问。",
     "portability": "接续不依赖任何特定 MCP、任务管理器或 IDE 插件。任何模型只需 Git、仓库文件和项目命令即可按 current_task 继续；外部工具状态不作为产品阶段事实。"
   }
 }

@@ -3295,11 +3295,13 @@ mod tests {
         assert!(path.is_file(), "the active writer's journal must remain");
 
         // Released, and the same journal now reads as abandoned.
+        holder.unlock().unwrap();
         drop(holder);
         let probe = fs::File::open(&path).unwrap();
         probe
             .try_lock()
-            .expect("the kernel must release the journal lock with its owner");
+            .expect("the released writer must no longer own the journal lock");
+        probe.unlock().unwrap();
         drop(probe);
         let err = apply_patch(
             &root,

@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-09-08T11:13:05+09:00",
+  "last_updated": "2026-09-08T11:30:46+09:00",
   "current_task": "P2",
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
@@ -100,13 +100,13 @@
     {
       "id": "P2",
       "title": "Agent Instance 公共配置模型",
-      "status": "pending",
+      "status": "in_progress",
       "depends_on": [
         "P1"
       ],
-      "owner": null,
-      "started_at": null,
-      "last_updated": "2026-09-07T23:22:36+09:00",
+      "owner": "Codex / P2 instance configuration",
+      "started_at": "2026-09-08T11:30:46+09:00",
+      "last_updated": "2026-09-08T11:30:46+09:00",
       "completed_criteria": [],
       "evidence": [],
       "blockers": []
@@ -206,8 +206,8 @@
     "Claude v1 的 claude_config_dir 保留旧参数语义；P2 必须定义 Agent-local profile 引用与 legacy 冲突/迁移，不能把旧明文路径当新 profile 授权模型。"
   ],
   "handoff": {
-    "next_action": "P1 已完成并停止。下一轮认领 P2；先阅读 ROADMAP.md P2、config/configedit/paths/provider/session 及 P1 安全契约，定义 workspace/instance/node/profile 的权威解析与 legacy 冲突策略，再实现 Agent Instance 配置模型。保留现有专用 Codex HOME，不开放运行选择器，不进入 P3。",
-    "scope": "本轮仅完成 P1 Provider 安全契约收敛；未开始 P2，未改变公开配置或拓扑，未部署/登录/创建账号/修改 ACL/网络。",
+    "next_action": "P2 已认领：先定义 node-scoped instance 引用、Agent-local profile 与 legacy 冲突契约，再实现只读解析/绑定、迁移预览及 session 身份字段；不开放 instance 执行。",
+    "scope": "仅 P2 配置模型；基线 dc5f7db 工作区干净，原有 6 项变更已由该用户提交收录。",
     "planning_validation": {
       "at": "2026-09-08T11:13:05+09:00",
       "commands": [
@@ -219,14 +219,7 @@
       ],
       "limits": "仅离线 fixture、受控子进程及 OpenSSH 本机配置解析；不是重跑 P0 真机或 P3 生产权限。6 项用户既有修改的 binary diff 核对一致；原 Claude/Codex golden 未改。"
     },
-    "inherited_changes": [
-      "README.md：用户原有文字修改",
-      "SSH stdio Remote Coding MCP.md：用户原有删除，不恢复",
-      "Terminal-native_Claude_Remote_Workspace.md：用户原有删除，不恢复",
-      "scripts/deploy.sh：用户原有 executable bit 改动",
-      "scripts/dist.sh：用户原有 executable bit 改动",
-      "scripts/mutate.sh：用户原有 executable bit 改动"
-    ],
+    "inherited_changes": [],
     "authorization": "本轮规划不授权真实 Agent 调用、创建账号、ACL/防火墙变更、登录、部署或新建 Orchestrator 仓库；后续对应动作逐项确认已有授权。",
     "portability": "接续不依赖任何特定 MCP、任务管理器或 IDE 插件。任何模型只需 Git、仓库文件和项目命令即可按 current_task 继续；外部工具状态不作为产品阶段事实。"
   }

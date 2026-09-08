@@ -1,0 +1,752 @@
+{
+  "binary_sha256": "8bf2efe21ec4281d1ff0b95b00cee64625cb5e351c28280a4489fdd372462bcc",
+  "config": "this=\"runtime\"\n[nodes.runtime]\nruntime_user=\"ccnmp3test\"\n[nodes.agent]\nssh=\"xdwmbp\"\n[workspaces.p3check]\nroot=\"/Users/Shared/ccnm-p3-runtime.R7Enw5/project\"\nagent={ node=\"agent\", instance=\"codex-main\" }\nallow_unconfined_exec=false\n",
+  "payload": {
+    "protocol": 3,
+    "provider": "codex",
+    "workspace": "p3check",
+    "root": "/Users/Shared/ccnm-p3-runtime.R7Enw5/project",
+    "session": "p3-runtime-smoke2",
+    "policy": "coding",
+    "binding": {
+      "workspace": "p3check",
+      "root": "/Users/Shared/ccnm-p3-runtime.R7Enw5/project",
+      "runtime_node": "runtime",
+      "agent": {
+        "node": "agent",
+        "instance": "codex-main",
+        "provider": "codex",
+        "profile_ref": "default"
+      }
+    }
+  },
+  "trace": [
+    {
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+          "protocolVersion": "2025-06-18",
+          "capabilities": {},
+          "clientInfo": {
+            "name": "p3-isolated-runtime-check",
+            "version": "1"
+          }
+        }
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {
+          "protocolVersion": "2025-06-18",
+          "capabilities": {
+            "tools": {}
+          },
+          "serverInfo": {
+            "name": "ccnm",
+            "version": "0.2.0"
+          },
+          "instructions": "CCNM remote workspace \"p3check\". The project lives on another machine and is reachable only through the ccnm tools; there is no local copy. Whatever your own environment says about the current directory, its git status or its files describes the machine you run on, not the project: for the project, workspace_info is the truth. Every path you pass or receive is relative to the workspace root.\n[project instructions: no AGENTS.md at the workspace root]"
+        }
+      }
+    },
+    {
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/list",
+        "params": {}
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "result": {
+          "tools": [
+            {
+              "name": "apply_patch",
+              "description": "Change files in the remote workspace: add, update, delete or move. This is the only way to write. An update replaces exact strings and must carry the version read_file returned, so an edit built on content that has since changed is refused. Either every file in the patch is applied or none is.",
+              "inputSchema": {
+                "$defs": {
+                  "Edit": {
+                    "description": "One exact replacement inside a file.",
+                    "properties": {
+                      "new": {
+                        "description": "Text to put in its place. Empty deletes the old text.",
+                        "type": "string"
+                      },
+                      "old": {
+                        "description": "Text to find. Must appear exactly once unless `replace_all` is set.",
+                        "type": "string"
+                      },
+                      "replace_all": {
+                        "default": null,
+                        "description": "Replace every occurrence instead of requiring exactly one.",
+                        "type": [
+                          "boolean",
+                          "null"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "old",
+                      "new"
+                    ],
+                    "type": "object"
+                  },
+                  "FilePatch": {
+                    "description": "One file's worth of the patch.",
+                    "properties": {
+                      "content": {
+                        "default": null,
+                        "description": "Whole content, for `add`.",
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "edits": {
+                        "description": "Replacements, for `update`. Order does not matter when each one\nmatches the file you read; it does when one edit's `new` text is\nwhat a later edit's `old` looks for.",
+                        "items": {
+                          "$ref": "#/$defs/Edit"
+                        },
+                        "type": [
+                          "array",
+                          "null"
+                        ]
+                      },
+                      "op": {
+                        "anyOf": [
+                          {
+                            "$ref": "#/$defs/Op"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "path": {
+                        "description": "Path relative to the workspace root.",
+                        "type": "string"
+                      },
+                      "to": {
+                        "default": null,
+                        "description": "Destination, for `move`.",
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "version": {
+                        "default": null,
+                        "description": "The `version` `read_file` returned. Required for update, delete and\nmove; the patch is refused if the file has changed since.",
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "path"
+                    ],
+                    "type": "object"
+                  },
+                  "Op": {
+                    "description": "What to do with one file.",
+                    "oneOf": [
+                      {
+                        "enum": [
+                          "delete"
+                        ],
+                        "type": "string"
+                      },
+                      {
+                        "const": "add",
+                        "description": "Create a file that does not exist. Missing parent directories are\ncreated with it.",
+                        "type": "string"
+                      },
+                      {
+                        "const": "update",
+                        "description": "Replace exact strings inside an existing file.",
+                        "type": "string"
+                      },
+                      {
+                        "const": "move",
+                        "description": "Rename. The content is untouched.",
+                        "type": "string"
+                      }
+                    ]
+                  }
+                },
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "properties": {
+                  "dry_run": {
+                    "default": null,
+                    "description": "Check everything and report what would happen, writing nothing.",
+                    "type": [
+                      "boolean",
+                      "null"
+                    ]
+                  },
+                  "files": {
+                    "description": "The files to change. Either all of them are applied or none are.",
+                    "items": {
+                      "$ref": "#/$defs/FilePatch"
+                    },
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "files"
+                ],
+                "type": "object"
+              }
+            },
+            {
+              "name": "exec_command",
+              "description": "Run a command in the remote workspace. cmd is a program and its arguments, not a shell line: there are no pipes, redirection or globs. Long output stays on that machine; what comes back is the head and tail plus an output_ref. This runs with the full access of the account the runtime uses.",
+              "inputSchema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "properties": {
+                  "cmd": {
+                    "description": "Program and arguments, e.g. `[\"cargo\", \"test\", \"--lib\"]`. Not a\nshell line: no pipes, redirection or globs.",
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "cwd": {
+                    "default": null,
+                    "description": "Directory to run in, relative to the workspace root. Default: the root.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "preview_bytes": {
+                    "default": null,
+                    "description": "Bytes of output to return inline. Default 4096, max 16384. The rest\nstays on the Runtime Node; use read_output to page through it.",
+                    "format": "uint32",
+                    "maximum": 16384,
+                    "minimum": 0,
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "timeout_ms": {
+                    "default": null,
+                    "description": "Kill the command after this long. Default 120000, max 600000.",
+                    "format": "uint64",
+                    "maximum": 600000,
+                    "minimum": 1,
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "cmd"
+                ],
+                "type": "object"
+              }
+            },
+            {
+              "name": "list_files",
+              "description": "List a directory of the remote workspace, or search it with a glob. Without a glob you get the immediate children of one directory; with one you get every match under it, at any depth. In a git workspace, files that .gitignore rules out are never listed.",
+              "inputSchema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "properties": {
+                  "glob": {
+                    "default": null,
+                    "description": "Match recursively under `path` instead of listing its children.\nSupports `*`, `**`, `?` and `{a,b}`, e.g. `**/*.{rs,toml}`.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "include_hidden": {
+                    "default": null,
+                    "description": "Include names starting with a dot. Default false.",
+                    "type": [
+                      "boolean",
+                      "null"
+                    ]
+                  },
+                  "max_entries": {
+                    "default": null,
+                    "description": "Maximum entries to return. Default 200, capped at 1000.",
+                    "format": "uint32",
+                    "maximum": 1000,
+                    "minimum": 1,
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "path": {
+                    "default": null,
+                    "description": "Directory to list, relative to the workspace root. Default: the root.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "type": "object"
+              }
+            },
+            {
+              "name": "read_file",
+              "description": "Read a text file from the remote workspace, as numbered lines. Paths are relative to the workspace root. Long files come back truncated with the line to resume from; there is no way to read a file whole in one call.",
+              "inputSchema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "properties": {
+                  "end_line": {
+                    "default": null,
+                    "description": "Last line to return, inclusive. Default: end of file.",
+                    "format": "uint32",
+                    "minimum": 1,
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "max_bytes": {
+                    "default": null,
+                    "description": "Maximum bytes of file content to return. Default 32768, capped at 65536.",
+                    "format": "uint32",
+                    "maximum": 65536,
+                    "minimum": 1,
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "max_lines": {
+                    "default": null,
+                    "description": "Maximum lines to return. Default 200, capped at 2000.",
+                    "format": "uint32",
+                    "maximum": 2000,
+                    "minimum": 1,
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "path": {
+                    "description": "Path relative to the workspace root, e.g. `src/main.rs`.",
+                    "type": "string"
+                  },
+                  "start_line": {
+                    "default": null,
+                    "description": "First line to return, 1-based. Default 1.",
+                    "format": "uint32",
+                    "minimum": 1,
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "path"
+                ],
+                "type": "object"
+              }
+            },
+            {
+              "name": "read_output",
+              "description": "Page through what a command wrote, using the output_ref exec_command returned. Offsets are byte offsets and stable: a finished command's output does not change.",
+              "inputSchema": {
+                "$defs": {
+                  "Stream": {
+                    "enum": [
+                      "stdout",
+                      "stderr"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "properties": {
+                  "limit": {
+                    "default": null,
+                    "description": "Bytes to return at most. Default 16384, max 32768.",
+                    "format": "uint32",
+                    "maximum": 32768,
+                    "minimum": 1,
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "offset": {
+                    "default": null,
+                    "description": "Byte offset to start at. Default 0. Offsets are stable: a finished\ncommand's output never changes.",
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "output_ref": {
+                    "description": "The `output_ref` exec_command returned.",
+                    "type": "string"
+                  },
+                  "stream": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/Stream"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "description": "Which stream. Default \"stdout\"."
+                  }
+                },
+                "required": [
+                  "output_ref"
+                ],
+                "type": "object"
+              }
+            },
+            {
+              "name": "search_text",
+              "description": "Search the remote workspace for a string, or a regex if you ask for one. The search runs where the files are and only the matching lines come back. Files that .gitignore rules out, dotfiles and .git are never searched.",
+              "inputSchema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "properties": {
+                  "case_sensitive": {
+                    "default": null,
+                    "description": "Match case. Default true.",
+                    "type": [
+                      "boolean",
+                      "null"
+                    ]
+                  },
+                  "context_lines": {
+                    "default": null,
+                    "description": "Lines of context each side of a match. Default 2, capped at 10.",
+                    "format": "uint32",
+                    "maximum": 10,
+                    "minimum": 0,
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "glob": {
+                    "default": null,
+                    "description": "Only search files matching this glob, e.g. `**/*.rs`.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "max_results": {
+                    "default": null,
+                    "description": "Maximum matches to return. Default 50, capped at 200.",
+                    "format": "uint32",
+                    "maximum": 200,
+                    "minimum": 1,
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "path": {
+                    "default": null,
+                    "description": "Directory to search, relative to the workspace root. Default: the root.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "query": {
+                    "description": "What to look for. A literal string unless `regex` is true.",
+                    "type": "string"
+                  },
+                  "regex": {
+                    "default": null,
+                    "description": "Treat `query` as a regular expression. Default false.",
+                    "type": [
+                      "boolean",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "query"
+                ],
+                "type": "object"
+              }
+            },
+            {
+              "name": "workspace_info",
+              "description": "Name, git status and platform of the remote workspace. Call once to orient; all other tool paths are relative to this workspace.",
+              "inputSchema": {
+                "properties": {},
+                "type": "object"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "tools/call",
+        "params": {
+          "name": "workspace_info",
+          "arguments": {}
+        }
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "result": {
+          "content": [
+            {
+              "type": "text",
+              "text": "workspace p3check (git repository root, macos/aarch64); all paths are relative to its root\n[server pid 37511, call 1]"
+            }
+          ],
+          "isError": false
+        }
+      }
+    },
+    {
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 4,
+        "method": "tools/call",
+        "params": {
+          "name": "apply_patch",
+          "arguments": {
+            "files": [
+              {
+                "op": "add",
+                "path": "smoke.c",
+                "content": "#include <stdio.h>\nint main(void) { puts(\"P3_RUNTIME_OK\"); return 0; }\n"
+              }
+            ]
+          }
+        }
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": 4,
+        "result": {
+          "content": [
+            {
+              "type": "text",
+              "text": "add    smoke.c (71 bytes) version 71-18d35a36fd5b5aa2\n[1 file changed]"
+            }
+          ],
+          "isError": false
+        }
+      }
+    },
+    {
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 5,
+        "method": "tools/call",
+        "params": {
+          "name": "read_file",
+          "arguments": {
+            "path": "smoke.c"
+          }
+        }
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": 5,
+        "result": {
+          "content": [
+            {
+              "type": "text",
+              "text": "1→#include <stdio.h>\n2→int main(void) { puts(\"P3_RUNTIME_OK\"); return 0; }\n[end of file, 2 lines; version 71-18d35a36fd5b5aa2]"
+            }
+          ],
+          "isError": false
+        }
+      }
+    },
+    {
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 6,
+        "method": "tools/call",
+        "params": {
+          "name": "list_files",
+          "arguments": {}
+        }
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": 6,
+        "result": {
+          "content": [
+            {
+              "type": "text",
+              "text": "smoke.c\n[1 entry in ., 0 directories]"
+            }
+          ],
+          "isError": false
+        }
+      }
+    },
+    {
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 7,
+        "method": "tools/call",
+        "params": {
+          "name": "search_text",
+          "arguments": {
+            "query": "P3_RUNTIME_OK"
+          }
+        }
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": 7,
+        "result": {
+          "content": [
+            {
+              "type": "text",
+              "text": "smoke.c\n1-#include <stdio.h>\n2:int main(void) { puts(\"P3_RUNTIME_OK\"); return 0; }\n[1 match in 1 file]"
+            }
+          ],
+          "isError": false
+        }
+      }
+    },
+    {
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 8,
+        "method": "tools/call",
+        "params": {
+          "name": "exec_command",
+          "arguments": {
+            "cmd": [
+              "/usr/bin/cc",
+              "smoke.c",
+              "-o",
+              "smoke"
+            ],
+            "timeout_ms": 30000
+          }
+        }
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": 8,
+        "result": {
+          "content": [
+            {
+              "type": "text",
+              "text": "$ /usr/bin/cc smoke.c -o smoke\nok in 332 ms, 0 B stdout, 0 B stderr\n[output_ref r-6b37314a76fb4aa5]"
+            }
+          ],
+          "isError": false
+        }
+      }
+    },
+    {
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 9,
+        "method": "tools/call",
+        "params": {
+          "name": "exec_command",
+          "arguments": {
+            "cmd": [
+              "./smoke"
+            ],
+            "timeout_ms": 5000
+          }
+        }
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": 9,
+        "result": {
+          "content": [
+            {
+              "type": "text",
+              "text": "$ ./smoke\nok in 1727 ms, 14 B stdout, 0 B stderr\n--- stdout\nP3_RUNTIME_OK\n[output_ref r-7d59733abfb24e6b]"
+            }
+          ],
+          "isError": false
+        }
+      }
+    },
+    {
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 10,
+        "method": "tools/call",
+        "params": {
+          "name": "read_output",
+          "arguments": {
+            "output_ref": "r-7d59733abfb24e6b"
+          }
+        }
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": 10,
+        "result": {
+          "content": [
+            {
+              "type": "text",
+              "text": "P3_RUNTIME_OK\n[end of stdout at 14 bytes]"
+            }
+          ],
+          "isError": false
+        }
+      }
+    },
+    {
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 11,
+        "method": "tools/call",
+        "params": {
+          "name": "exec_command",
+          "arguments": {
+            "cmd": [
+              "/usr/bin/git",
+              "status",
+              "--porcelain"
+            ]
+          }
+        }
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": 11,
+        "result": {
+          "content": [
+            {
+              "type": "text",
+              "text": "$ /usr/bin/git status --porcelain\nok in 75 ms, 20 B stdout, 0 B stderr\n--- stdout\n?? smoke\n?? smoke.c\n[output_ref r-74f1fc54b6474013]"
+            }
+          ],
+          "isError": false
+        }
+      }
+    }
+  ],
+  "verification_limits": "Direct v3 MCP probe, not an official Codex/Claude model session or public lifecycle acceptance. Runtime uses real HOME, configured UID550 and allow_unconfined_exec=false."
+}

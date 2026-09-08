@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-09-08T21:22:43+09:00",
+  "last_updated": "2026-09-08T22:10:11+09:00",
   "current_task": "P3",
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
@@ -150,13 +150,13 @@
     {
       "id": "P3",
       "title": "公共入口与单 Agent 执行闭环",
-      "status": "blocked",
+      "status": "in_progress",
       "depends_on": [
         "P2"
       ],
       "owner": null,
       "started_at": "2026-09-08T12:44:30+09:00",
-      "last_updated": "2026-09-08T21:22:43+09:00",
+      "last_updated": "2026-09-08T22:10:11+09:00",
       "completed_criteria": [
         "P3.4",
         "P3.6"
@@ -241,17 +241,18 @@
           ],
           "ref": "docs/research/single-agent-p3-2026-09-08.md",
           "result": "已有 outcome 的精确 print stop 仍核验记录进程组，残留/损坏/未知不确认停止，不对历史 PID 发信号，不改结果。新回归先红后绿；fmt、严格 clippy、Rust514/0、Python25通过。interactive/status/缺失PID/脱组进程仍有限制，非真机验收。"
-        }
-      ],
-      "blockers": [
+        },
         {
+          "kind": "real_nodes",
           "criteria": [
+            "P3.3",
             "P3.5"
           ],
-          "reason": "fodelf 本轮已在 SSH 建连阶段 ConnectTimeout，未创建新远端目录或开始小块上传；P3.5 真实当前构建 MCP/Agent 验收无法推进。独立离线 print outcome 残留检查已修复并通过门禁。",
-          "unblock": "恢复既有 fodelf OpenSSH alias 可达性后，重新构建包含当前修复的二进制，先验证独立分块的校验与进程结束，再继续公共链路。保留账号/组/测试密钥清理清单，不改网络产品配置。"
+          "ref": "docs/research/p3-isolated-runtime-2026-09-08.md",
+          "result": "源码08c23ac release经101块和整包/二进制哈希验证部署；真实UID/GID550/HOME，unconfined=false，v3 MCP七工具、C编译运行及Git通过，EOF后server消失/guard released。探针文本解析错误修正后重跑；尚未调用官方Agent或完成公共控制链，非P3.5完成。"
         }
-      ]
+      ],
+      "blockers": []
     },
     {
       "id": "P4",
@@ -334,7 +335,7 @@
     "P3 额外 64 线程压力出现既有 exec timeout 单测 30.5s 失败；默认全量 511 通过，高并发问题尚未解决。"
   ],
   "handoff": {
-    "next_action": "仅 P3：本轮 fodelf SSH 建连超时；print 已有 outcome 的残留进程组快路径已定点修复并通过 Rust514/Python25。网络恢复后重新构建（此前 release 未含修复），独立校验分块传输，再继续当前 build MCP/公共 Agent 真实验收；interactive outcome/status 残留仍待复核。系统资源及最终清理要求见系统准备文档，勿进入 P4。",
+    "next_action": "仅 P3：当前构建已部署 /Users/Shared/ccnm-p3-runtime.R7Enw5，v3 MCP七工具/编译/Git通过；传输块已清理，产物和测试项目保留。下一步按既有Runtime用户CLI与低权限MCP分工接通公共控制链及临时Agent Controller，不假定临时账号继承xdwmbp身份，不复制现有私钥。详见p3-isolated-runtime记录；未启动模型，勿进入P4，最后必须清理系统资源。",
     "scope": "仅 P3；不进入 P4/Machine API，不引入多 Agent/worktree 调度，不主动部署、登录或修改账号/ACL/防火墙。",
     "planning_validation": {
       "at": "2026-09-08T21:22:43+09:00",

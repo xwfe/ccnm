@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-09-08T14:25:54+09:00",
+  "last_updated": "2026-09-08T19:16:49+09:00",
   "current_task": "P3",
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
@@ -156,7 +156,7 @@
       ],
       "owner": null,
       "started_at": "2026-09-08T12:44:30+09:00",
-      "last_updated": "2026-09-08T14:25:54+09:00",
+      "last_updated": "2026-09-08T19:16:49+09:00",
       "completed_criteria": [
         "P3.4",
         "P3.6"
@@ -174,6 +174,15 @@
           "ref": "docs/research/single-agent-p3-2026-09-08.md",
           "commit": "94eb7bf",
           "result": "当前 macOS 代码 fmt、严格 clippy、Rust 511 passed / 0 failed，Python 19 passed。公共 instance/v3/session/Runtime guard 离线验证；colocated 明确拒绝。P3.1-3 仍需真实生命周期复核，不以测试数替代真机与生产安全。"
+        },
+        {
+          "kind": "offline",
+          "criteria": [
+            "P3.2",
+            "P3.6"
+          ],
+          "ref": "docs/research/single-agent-p3-2026-09-08.md",
+          "result": "print stop 增加 Agent 父进程核验与完整进程组存活检查；残留、失败/损坏 ps 不补写终态。fmt、严格 clippy、Rust 512 passed / 0 failed，Python 19 passed。离线回归，不消除 PID 竞态或替代真机。"
         }
       ],
       "blockers": [
@@ -267,14 +276,14 @@
     "P3 额外 64 线程压力出现既有 exec timeout 单测 30.5s 失败；默认全量 511 通过，高并发问题尚未解决。"
   ],
   "handoff": {
-    "next_action": "P3 blocked，勿进入 P4。代码 94eb7bf、Runtime guard 3903801；离线门禁 Rust 511/Python 19。先复核精确 stop 的残留进程/PID 与链路失败状态，再确认当前 build 的临时双机部署和真实两 Provider 调用授权，按 P3.5 保存公共链路及生产身份证据。",
+    "next_action": "仅 P3：print stop 的组长消失/残留组成员与父进程核验已补离线回归（Rust 512/Python 19）。继续复核已有 outcome 快路径、interactive stop 和脱组子进程的终态一致性；针对性双机部署/真实 Agent 调用与生产身份验收仍待授权，不进入 P4。",
     "scope": "仅 P3；不进入 P4/Machine API，不引入多 Agent/worktree 调度，不主动部署、登录或修改账号/ACL/防火墙。",
     "planning_validation": {
-      "at": "2026-09-08T14:25:54+09:00",
+      "at": "2026-09-08T19:16:49+09:00",
       "commands": [
         "cargo fmt --all --check：通过",
         "cargo clippy --workspace --all-targets -- -D warnings：通过",
-        "cargo test --workspace：511 passed / 0 failed",
+        "cargo test --workspace：512 passed / 0 failed",
         "python3 -B -m unittest discover -s tests -p test_*.py -v：19 passed"
       ],
       "limits": "本次只在本机离线回归；未部署、登录或调用真实 Agent。64 线程额外压力曾出现既有 exec timeout 测试失败，未声称修复。"

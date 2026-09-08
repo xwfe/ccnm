@@ -956,70 +956,53 @@ fn stop_print_session(spec: &Spec, dir: &session::Dir, tools: &Tools<'_>) -> Res
             "print session has no verified Agent child pid; state is unknown",
         )
     })?;
-    std::fs::write(dir.stopping(), b"requested\n")?;
     let agent = tools
         .runner
         .run(&crate::process::Cmd::new("/bin/ps").args([
             "-p",
             &agent_pid.to_string(),
             "-o",
-            "pgid=",
+            "pgid=,ppid=",
         ]))?;
     if let Some(agent) = known_process(agent, "recorded Agent child")? {
-        let pgid = agent
-            .trim()
-            .parse::<u32>()
-            .map_err(|_| Error::policy("cannot verify the Agent child process group"))?;
-        if pgid != agent_pid {
+        let ids: Vec<_> = agent.split_whitespace().collect();
+        if ids.len() != 2
+            || ids[0].parse::<u32>().ok() != Some(agent_pid)
+            || ids[1].parse::<u32>().ok() != Some(pid)
+        {
             return Err(Error::policy(
-                "recorded Agent child is not the owned process-group leader; refusing to signal it",
+                "recorded Agent child is not the supervisor's owned process-group leader; refusing to signal it",
             ));
         }
+        std::fs::write(dir.stopping(), b"requested\n")?;
         let killed = tools.runner.run(
             &crate::process::Cmd::new("/bin/kill").args(["-TERM", &format!("-{agent_pid}")]),
         )?;
-        let remaining = tools
-            .runner
-            .run(&crate::process::Cmd::new("/bin/ps").args([
-                "-p",
-                &agent_pid.to_string(),
-                "-o",
-                "pid=",
-            ]))?;
-        match known_process(remaining, "Agent process group after stop")? {
-            None => {}
-            Some(_) if killed.success() => {
-                return Err(Error::new(
-                    ErrorCode::NotReady,
-                    "Agent process group has not ended; state remains stopping",
-                ));
-            }
-            Some(_) => {
-                return Err(Error::internal(
-                    "could not stop the selected Agent process group",
-                ));
-            }
-        }
-    }
-    let killed = tools
-        .runner
-        .run(&crate::process::Cmd::new("/bin/kill").args(["-TERM", &format!("-{pid}")]))?;
-    let remaining = tools
-        .runner
-        .run(&crate::process::Cmd::new("/bin/ps").args(["-p", &pid.to_string(), "-o", "pid="]))?;
-    match known_process(remaining, "supervisor process group after stop")? {
-        None => {}
-        Some(_) if killed.success() => {
+        if process_group_alive(agent_pid, tools)? {
             return Err(Error::new(
                 ErrorCode::NotReady,
-                "stop was requested but the supervisor process group has not ended; state remains stopping",
+                if killed.success() {
+                    "Agent process group has not ended; state remains stopping"
+                } else {
+                    "could not stop the selected Agent process group; state remains stopping"
+                },
             ));
         }
-        Some(_) => {
-            return Err(Error::internal(
-                "could not stop the selected supervisor process group",
-            ));
-        }
+    } else if process_group_alive(agent_pid, tools)? {
+        return Err(Error::new(
+            ErrorCode::NotReady,
+            "Agent leader ended but its process group still exists; refusing unverified group signalling",
+        ));
+    }
+    std::fs::write(dir.stopping(), b"requested\n")?;
+    let _ = tools
+        .runner
+        .run(&crate::process::Cmd::new("/bin/kill").args(["-TERM", &format!("-{pid}")]))?;
+    if process_group_alive(pid, tools)? {
+        return Err(Error::new(
+            ErrorCode::NotReady,
+            "supervisor process group has not ended; state remains stopping",
+        ));
     }
     if session::read_outcome(dir)?.is_none() {
         session::record_terminal_failure(
@@ -1038,6 +1021,34 @@ fn stop_print_session(spec: &Spec, dir: &session::Dir, tools: &Tools<'_>) -> Res
         agent_identity: spec.agent_identity.clone(),
         killed: true,
     })
+}
+
+fn process_group_alive(pgid: u32, tools: &Tools<'_>) -> Result<bool> {
+    let output = tools
+        .runner
+        .run(&crate::process::Cmd::new("/bin/ps").args(["-axo", "pid=,pgid="]))?;
+    if !output.success() || output.stdout.iter().all(u8::is_ascii_whitespace) {
+        return Err(Error::new(
+            ErrorCode::NotReady,
+            "cannot verify process groups; state is unknown",
+        ));
+    }
+    let mut found = false;
+    for line in output
+        .stdout_lossy()
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+    {
+        let fields: Vec<_> = line.split_whitespace().collect();
+        if fields.len() != 2 || fields.iter().any(|field| field.parse::<u32>().is_err()) {
+            return Err(Error::new(
+                ErrorCode::NotReady,
+                "invalid process-group observation; state is unknown",
+            ));
+        }
+        found |= fields[1].parse::<u32>().ok() == Some(pgid);
+    }
+    Ok(found)
 }
 
 fn known_process(output: crate::process::Output, subject: &str) -> Result<Option<String>> {

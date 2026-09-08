@@ -385,11 +385,11 @@ fn exact_print_stop_verifies_the_supervisor_before_signalling_its_process_group(
         0,
         format!("4242 /ccnm internal supervise --payload {wire}\n"),
     ));
-    runner.push(Output::exited(0, "4343\n"));
+    runner.push(Output::exited(0, "4343 4242\n"));
     runner.push(Output::exited(0, ""));
-    runner.push(Output::exited(1, ""));
+    runner.push(Output::exited(0, "1 1\n"));
     runner.push(Output::exited(0, ""));
-    runner.push(Output::exited(1, ""));
+    runner.push(Output::exited(0, "1 1\n"));
     let report = work::stop(&request, &f.tools(&runner)).unwrap();
     assert!(report.killed);
     assert!(
@@ -439,4 +439,115 @@ fn exact_print_stop_verifies_the_supervisor_before_signalling_its_process_group(
     .unwrap_err();
     assert_eq!(error.code(), ErrorCode::NotReady);
     assert_eq!(uncertain.calls().len(), 1, "unknown state must not signal");
+}
+
+#[test]
+fn print_stop_checks_the_whole_group_and_rejects_reparented_agent() {
+    let f = Fixture::new();
+    let id = "00000000-0000-4000-8000-000000000017";
+    let identity = f.identity("claude-main", AgentProvider::Claude);
+    let dir = f.record(
+        id,
+        "demo",
+        Some(identity.clone()),
+        Mode::Print {
+            prompt: "fixture".into(),
+        },
+    );
+    session::write_supervisor_pid(&dir, 4242).unwrap();
+    session::write_agent_pid(&dir, 4343).unwrap();
+    let req = StopRequest {
+        protocol: 3,
+        workspace: "demo".into(),
+        agent: Some(reference("claude-main")),
+        session: Some(id.into()),
+    };
+    let mut supervise =
+        session::SuperviseRequest::new(dir.path().to_path_buf(), "/agent/claude".into());
+    supervise.protocol = 3;
+    supervise.identity = Some(identity);
+    let wire = ccnm_core::protocol::payload::encode(&supervise).unwrap();
+    let supervisor = format!("4242 /ccnm internal supervise --payload {wire}\n");
+
+    let wrong_parent = FakeRunner::new();
+    wrong_parent.push(Output::exited(0, supervisor.as_str()));
+    wrong_parent.push(Output::exited(0, "4343 9999\n"));
+    assert_eq!(
+        work::stop(&req, &f.tools(&wrong_parent))
+            .unwrap_err()
+            .code(),
+        ErrorCode::Policy
+    );
+    assert!(
+        !wrong_parent
+            .calls()
+            .iter()
+            .any(|cmd| cmd.program == "/bin/kill")
+    );
+
+    let residual = FakeRunner::new();
+    residual.push(Output::exited(0, supervisor.as_str()));
+    residual.push(Output::exited(0, "4343 4242\n"));
+    residual.push(Output::exited(0, ""));
+    residual.push(Output::exited(0, "8888 4343\n"));
+    assert_eq!(
+        work::stop(&req, &f.tools(&residual)).unwrap_err().code(),
+        ErrorCode::NotReady
+    );
+    assert!(residual.calls()[3].display().contains("-axo pid=,pgid="));
+    assert!(session::read_outcome(&dir).unwrap().is_none());
+    assert!(dir.stopping().exists());
+
+    let leader_gone = FakeRunner::new();
+    leader_gone.push(Output::exited(0, supervisor.as_str()));
+    leader_gone.push(Output::exited(1, ""));
+    leader_gone.push(Output::exited(0, "8888 4343\n"));
+    assert_eq!(
+        work::stop(&req, &f.tools(&leader_gone)).unwrap_err().code(),
+        ErrorCode::NotReady
+    );
+    assert!(
+        !leader_gone
+            .calls()
+            .iter()
+            .any(|cmd| cmd.program == "/bin/kill")
+    );
+    assert!(session::read_outcome(&dir).unwrap().is_none());
+
+    let supervisor_child = FakeRunner::new();
+    supervisor_child.push(Output::exited(0, supervisor.as_str()));
+    supervisor_child.push(Output::exited(0, "4343 4242\n"));
+    supervisor_child.push(Output::exited(0, ""));
+    supervisor_child.push(Output::exited(0, "1 1\n"));
+    supervisor_child.push(Output::exited(0, ""));
+    supervisor_child.push(Output::exited(0, "9999 4242\n"));
+    assert_eq!(
+        work::stop(&req, &f.tools(&supervisor_child))
+            .unwrap_err()
+            .code(),
+        ErrorCode::NotReady
+    );
+    assert!(session::read_outcome(&dir).unwrap().is_none());
+
+    for observation in [
+        Output::exited(2, ""),
+        Output::exited(0, " \n"),
+        Output::exited(0, "malformed\n"),
+    ] {
+        let unknown = FakeRunner::new();
+        unknown.push(Output::exited(0, supervisor.as_str()));
+        unknown.push(Output::exited(0, "4343 4242\n"));
+        unknown.push(Output::exited(0, ""));
+        unknown.push(observation);
+        assert_eq!(
+            work::stop(&req, &f.tools(&unknown)).unwrap_err().code(),
+            ErrorCode::NotReady
+        );
+        assert!(session::read_outcome(&dir).unwrap().is_none());
+        assert_eq!(
+            unknown.calls().len(),
+            4,
+            "unknown group state must not stop supervisor"
+        );
+    }
 }

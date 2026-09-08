@@ -39,3 +39,13 @@
 P3 尚未完成，不能因离线通过进入 P4。P3.1/P3.2/P3.3 的代码与离线证据已具备，但完整验收仍需复查真实生命周期和安全边界，尤其是进程组残留、PID 复用、Controller 重启与链路失败后的状态一致性。
 
 P3.5 缺少当前 build 的针对性双机部署/真实 Agent 调用授权及专用 Runtime 执行身份的生产验证。历史 scratch/internal 记录不作为这次公共入口验收。下一轮先确认目标 alias、临时部署位置和不替换现有 Controller 的方案；获授权后再运行真实两 Provider 公共链路并保存脱敏 fixture。账号、ACL、sudo 或防火墙变更须另外确认，不因 dogfood 授权一并执行。
+
+## P3.2 接续：print stop 的进程组确认
+
+本轮工作区起点 `13fd3f5` 干净，范围仅为计划指定的残留进程/PID 复核。
+
+原 stop 在发送组信号后使用 `ps -p <leader> -o pid=`：组长消失不代表同组子进程结束。修复前新回归失败；修复后改用 `ps -axo pid=,pgid=` 核对完整组成员，Agent 与 supervisor 两个组都确认无成员后，才由 stop 补写结束记录。发送 Agent 组信号前同时验证 `pgid == agent_pid` 和 `ppid == supervisor_pid`；已重新挂到其他父进程的 PID 不接受。
+
+定点覆盖：错误父进程无 signal、组长消失但子进程残留、Agent 组和 supervisor 组分别残留、ps 失败/空白/损坏输出不报告结束、既有正常停止与重复停止。状态不明时不结束 supervisor，也不清理 Runtime held marker。当前 macOS 的 ps 数字列格式已本机验证，不采集命令参数或环境。
+
+本轮最终 fmt、严格 clippy、全仓 Rust **512 passed / 0 failed**，Python **19 passed**。新增场景为离线 FakeRunner 回归，不冒充真实跨节点信号验收。父进程核验缩小 PID 误用范围，但不消除观察到发送信号之间的竞态，也不能发现主动脱离进程组的子进程；已有 outcome 快路径与 interactive stop 仍需后续定点复核。P3.2/P3.5 不因此标记完成。

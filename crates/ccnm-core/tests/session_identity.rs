@@ -338,6 +338,100 @@ fn active_session_with_another_identity_is_never_reused_or_replaced() {
 }
 
 #[test]
+fn completed_print_stop_still_checks_recorded_groups_without_signalling() {
+    let f = Fixture::new();
+    let id = "00000000-0000-4000-8000-000000000019";
+    let dir = f.record(
+        id,
+        "demo",
+        Some(f.identity("claude-main", AgentProvider::Claude)),
+        Mode::Print {
+            prompt: "fixture".into(),
+        },
+    );
+    session::write_supervisor_pid(&dir, 4242).unwrap();
+    session::write_agent_pid(&dir, 4343).unwrap();
+    session::record_terminal_failure(&dir, "already finished").unwrap();
+    let original = session::read_outcome(&dir).unwrap();
+    let request = StopRequest {
+        protocol: 3,
+        workspace: "demo".into(),
+        agent: Some(reference("claude-main")),
+        session: Some(id.into()),
+    };
+    for observations in [
+        vec![Output::exited(0, "9000 4242\n")],
+        vec![Output::exited(0, "1 1\n"), Output::exited(0, "9000 4343\n")],
+        vec![Output::exited(1, "")],
+        vec![Output::exited(0, "1 1\n"), Output::exited(0, "invalid\n")],
+    ] {
+        let runner = FakeRunner::new();
+        for output in observations {
+            runner.push(output);
+        }
+        assert_eq!(
+            work::stop(&request, &f.tools(&runner)).unwrap_err().code(),
+            ErrorCode::NotReady
+        );
+        assert!(
+            runner
+                .calls()
+                .iter()
+                .all(|cmd| !cmd.display().contains("/bin/kill"))
+        );
+        assert_eq!(session::read_outcome(&dir).unwrap(), original);
+    }
+    let ended = FakeRunner::new();
+    ended.push(Output::exited(0, "1 1\n"));
+    ended.push(Output::exited(0, "1 1\n"));
+    assert!(!work::stop(&request, &f.tools(&ended)).unwrap().killed);
+}
+
+#[test]
+fn completed_print_stop_distinguishes_missing_and_invalid_pid_records() {
+    let f = Fixture::new();
+    let id = "00000000-0000-4000-8000-000000000020";
+    let dir = f.record(
+        id,
+        "demo",
+        Some(f.identity("codex-main", AgentProvider::Codex)),
+        Mode::Print {
+            prompt: "fixture".into(),
+        },
+    );
+    session::record_terminal_failure(&dir, "failed before spawn").unwrap();
+    let request = StopRequest {
+        protocol: 3,
+        workspace: "demo".into(),
+        agent: Some(reference("codex-main")),
+        session: Some(id.into()),
+    };
+    let runner = FakeRunner::new();
+    assert!(!work::stop(&request, &f.tools(&runner)).unwrap().killed);
+    assert!(
+        runner.calls().is_empty(),
+        "pre-spawn failure has no recorded processes"
+    );
+    for raw in ["", "0", "1", "2147483648", "bad", "42\n43"] {
+        std::fs::write(dir.agent_pid(), raw).unwrap();
+        assert_eq!(
+            work::stop(&request, &f.tools(&runner)).unwrap_err().code(),
+            ErrorCode::NotReady
+        );
+        assert!(
+            runner.calls().is_empty(),
+            "invalid PID must not trigger signalling or ps"
+        );
+    }
+    std::fs::remove_file(dir.agent_pid()).unwrap();
+    std::fs::create_dir(dir.agent_pid()).unwrap();
+    assert_eq!(
+        work::stop(&request, &f.tools(&runner)).unwrap_err().code(),
+        ErrorCode::NotReady
+    );
+}
+
+#[test]
 fn exact_print_stop_verifies_the_supervisor_before_signalling_its_process_group() {
     let f = Fixture::new();
     let id = "00000000-0000-4000-8000-000000000015";
@@ -412,9 +506,11 @@ fn exact_print_stop_verifies_the_supervisor_before_signalling_its_process_group(
     );
 
     let done = FakeRunner::new();
+    done.push(Output::exited(0, "1 1\n"));
+    done.push(Output::exited(0, "1 1\n"));
     let report = work::stop(&request, &f.tools(&done)).unwrap();
     assert!(!report.killed, "terminal stop is idempotent");
-    assert!(done.calls().is_empty());
+    assert_eq!(done.calls().len(), 2, "still verify both recorded groups");
 
     let unknown_id = "00000000-0000-4000-8000-000000000016";
     let unknown = f.record(

@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-09-08T21:13:04+09:00",
+  "last_updated": "2026-09-08T21:22:43+09:00",
   "current_task": "P3",
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
@@ -156,7 +156,7 @@
       ],
       "owner": null,
       "started_at": "2026-09-08T12:44:30+09:00",
-      "last_updated": "2026-09-08T21:13:04+09:00",
+      "last_updated": "2026-09-08T21:22:43+09:00",
       "completed_criteria": [
         "P3.4",
         "P3.6"
@@ -232,6 +232,15 @@
           ],
           "ref": "tests/fixtures/p3-runtime-identity/isolated.json",
           "result": "全新 SSH 复验 UID/GID550 无 staff/admin，已知 Agent home/凭据目录不可读、Docker 不可写。当前 build 上传失败，残留写入者按 stdout 路径核验后终止，不完整文件和空部署目录清理成功；尚未启动 MCP/模型。"
+        },
+        {
+          "kind": "offline",
+          "criteria": [
+            "P3.2",
+            "P3.6"
+          ],
+          "ref": "docs/research/single-agent-p3-2026-09-08.md",
+          "result": "已有 outcome 的精确 print stop 仍核验记录进程组，残留/损坏/未知不确认停止，不对历史 PID 发信号，不改结果。新回归先红后绿；fmt、严格 clippy、Rust514/0、Python25通过。interactive/status/缺失PID/脱组进程仍有限制，非真机验收。"
         }
       ],
       "blockers": [
@@ -239,8 +248,8 @@
           "criteria": [
             "P3.5"
           ],
-          "reason": "专用账号/独立组 SSH 与已知路径隔离复验通过，但当前构建上传多次超时且远端 cat 在客户端退出后残留；不完整部署已清理，未启动当前 build MCP 或模型，P3.5 公共链路缺证据。",
-          "unblock": "先建立有完整校验及远端进程结束确认的构建传输；核对构建 SHA-256 后继续真实 MCP 与双 Provider 公共入口验收。不得无新增证据重复整流上传，不改网络或放宽身份检查。"
+          "reason": "fodelf 本轮已在 SSH 建连阶段 ConnectTimeout，未创建新远端目录或开始小块上传；P3.5 真实当前构建 MCP/Agent 验收无法推进。独立离线 print outcome 残留检查已修复并通过门禁。",
+          "unblock": "恢复既有 fodelf OpenSSH alias 可达性后，重新构建包含当前修复的二进制，先验证独立分块的校验与进程结束，再继续公共链路。保留账号/组/测试密钥清理清单，不改网络产品配置。"
         }
       ]
     },
@@ -325,17 +334,17 @@
     "P3 额外 64 线程压力出现既有 exec timeout 单测 30.5s 失败；默认全量 511 通过，高并发问题尚未解决。"
   ],
   "handoff": {
-    "next_action": "仅 P3：UID/GID550 隔离复验成功。当前 build 原始/压缩/续传多次超时，发现残留 cat 精确清理后已移除 /Users/Shared/ccnm-p3-runtime.Iy21vY。保留账号/组/SSH 准备资源用于接续，见系统准备文档末节；下一步先处理可靠构建交付与进程结束校验，再验收 MCP 和公共链路；未运行模型，勿进入 P4。",
+    "next_action": "仅 P3：本轮 fodelf SSH 建连超时；print 已有 outcome 的残留进程组快路径已定点修复并通过 Rust514/Python25。网络恢复后重新构建（此前 release 未含修复），独立校验分块传输，再继续当前 build MCP/公共 Agent 真实验收；interactive outcome/status 残留仍待复核。系统资源及最终清理要求见系统准备文档，勿进入 P4。",
     "scope": "仅 P3；不进入 P4/Machine API，不引入多 Agent/worktree 调度，不主动部署、登录或修改账号/ACL/防火墙。",
     "planning_validation": {
-      "at": "2026-09-08T19:16:49+09:00",
+      "at": "2026-09-08T21:22:43+09:00",
       "commands": [
         "cargo fmt --all --check：通过",
         "cargo clippy --workspace --all-targets -- -D warnings：通过",
-        "cargo test --workspace：512 passed / 0 failed",
-        "python3 -B -m unittest discover -s tests -p test_*.py -v：19 passed"
+        "cargo test --workspace：514 passed / 0 failed",
+        "python3 -B -m unittest discover -s tests -p test_*.py -q：25 passed"
       ],
-      "limits": "本次只在本机离线回归；未部署、登录或调用真实 Agent。64 线程额外压力曾出现既有 exec timeout 测试失败，未声称修复。"
+      "limits": "本轮离线门禁；fodelf SSH 建连失败，没有新增远端资源或运行真实模型，不替代 P3.5。"
     },
     "inherited_changes": [],
     "authorization": "双机临时部署、角色互换、真实 Claude/Codex 验证及清理已授权；用户明确澄清允许 fodelf 临时新建普通 Runtime 用户，验证后清理该账号、home、公钥及测试目录，本机已有 ccrun 保留。范围见 p3-runtime-system-preparation.md；不改防火墙、不替换现有 Controller、不复制凭据；同范围无需重复询问。",

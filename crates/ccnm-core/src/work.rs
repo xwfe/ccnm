@@ -783,6 +783,9 @@ pub fn stop(req: &StopRequest, tools: &Tools<'_>) -> Result<StopReport> {
             )
         })?;
         check_session_selection(&spec, &req.workspace, req.agent.as_ref(), tools)?;
+        if !spec.mode.is_interactive() {
+            return stop_print_session(&spec, &dir, tools);
+        }
         if session::read_outcome(&dir)?.is_some() {
             return Ok(StopReport {
                 protocol: if spec.agent_identity.is_some() {
@@ -795,9 +798,6 @@ pub fn stop(req: &StopRequest, tools: &Tools<'_>) -> Result<StopReport> {
                 agent_identity: spec.agent_identity,
                 killed: false,
             });
-        }
-        if !spec.mode.is_interactive() {
-            return stop_print_session(&spec, &dir, tools);
         }
     }
     let tmux = tools.tmux()?;
@@ -896,6 +896,7 @@ pub fn stop(req: &StopRequest, tools: &Tools<'_>) -> Result<StopReport> {
 
 fn stop_print_session(spec: &Spec, dir: &session::Dir, tools: &Tools<'_>) -> Result<StopReport> {
     if session::read_outcome(dir)?.is_some() {
+        confirm_recorded_print_groups_ended(dir, tools)?;
         return Ok(StopReport {
             protocol: if spec.agent_identity.is_some() {
                 3
@@ -1021,6 +1022,42 @@ fn stop_print_session(spec: &Spec, dir: &session::Dir, tools: &Tools<'_>) -> Res
         agent_identity: spec.agent_identity.clone(),
         killed: true,
     })
+}
+
+fn confirm_recorded_print_groups_ended(dir: &session::Dir, tools: &Tools<'_>) -> Result<()> {
+    // An outcome describes the leader, not surviving children. Never signal
+    // these historical PIDs: they may already belong to unrelated processes.
+    for path in [dir.supervisor_pid(), dir.agent_pid()] {
+        let raw = match std::fs::read_to_string(path) {
+            Ok(raw) => raw,
+            // Old records and failures before spawn may have no PID files.
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(_) => {
+                return Err(Error::new(
+                    ErrorCode::NotReady,
+                    "cannot read recorded print pid; stop is not confirmed",
+                ));
+            }
+        };
+        let pid = raw
+            .trim()
+            .parse::<u32>()
+            .ok()
+            .filter(|pid| (2..=i32::MAX as u32).contains(pid))
+            .ok_or_else(|| {
+                Error::new(
+                    ErrorCode::NotReady,
+                    "invalid recorded print pid; stop is not confirmed",
+                )
+            })?;
+        if process_group_alive(pid, tools)? {
+            return Err(Error::new(
+                ErrorCode::NotReady,
+                "a recorded print process group still exists despite its outcome; stop is not confirmed",
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn process_group_alive(pgid: u32, tools: &Tools<'_>) -> Result<bool> {

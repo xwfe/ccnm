@@ -49,3 +49,13 @@ P3.5 缺少当前 build 的针对性双机部署/真实 Agent 调用授权及专
 定点覆盖：错误父进程无 signal、组长消失但子进程残留、Agent 组和 supervisor 组分别残留、ps 失败/空白/损坏输出不报告结束、既有正常停止与重复停止。状态不明时不结束 supervisor，也不清理 Runtime held marker。当前 macOS 的 ps 数字列格式已本机验证，不采集命令参数或环境。
 
 本轮最终 fmt、严格 clippy、全仓 Rust **512 passed / 0 failed**，Python **19 passed**。新增场景为离线 FakeRunner 回归，不冒充真实跨节点信号验收。父进程核验缩小 PID 误用范围，但不消除观察到发送信号之间的竞态，也不能发现主动脱离进程组的子进程；已有 outcome 快路径与 interactive stop 仍需后续定点复核。P3.2/P3.5 不因此标记完成。
+
+## P3.2 接续：已有结果仍复核 print 进程组
+
+修复前新增测试重现：结果文件存在时，精确 print stop 未查询进程就返回成功，即使 supervisor 或 Agent 组还有成员。现在先分发 print 分支，再对存在的 supervisor/Agent PID 记录逐一复用全组检查。残留成员（包括可能的 PID/PGID 复用）、ps 失败/损坏、PID 空值/非法/越界或记录不可读取均返回 NotReady，不发 signal、不改写既有结果；两组确认不存在后才保留重复 stop 的 killed=false。
+
+兼容边界：旧记录或启动前失败可以没有 PID 文件，继续按无已记录进程处理；这不能证明缺失记录背后的任意进程已结束。interactive 已有 outcome 分支、status 与结果优先级、脱离进程组的子进程、PID 查询竞态仍未解决，本次不扩大完成声明，也不修改 provider 参数或 Claude 默认选择。
+
+验证：新失败用例先红后绿；session_identity 8通过，全量 fmt/严格 clippy 通过，Rust 514 passed / 0 failed，Python 25通过。没有重录 golden，测试为离线 FakeRunner，不替代真机验收。日志 `/tmp/ccnm-p3/outcome-{fmt,clippy,tests}.log` 是本机临时辅助，接续不依赖它们。
+
+本轮网络前置检查在 SSH 建连阶段即 ConnectTimeout，未创建新远端目录，也未开始小块传输。修改前 release build 已完成（9,717,392 bytes），不是上述修复后的可部署构建；恢复网络后必须重新构建再验收。继续保留 P3.5 阻塞和已有临时系统资源清理清单。

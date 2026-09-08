@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-09-08T20:54:31+09:00",
+  "last_updated": "2026-09-08T20:57:23+09:00",
   "current_task": "P3",
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
@@ -156,7 +156,7 @@
       ],
       "owner": null,
       "started_at": "2026-09-08T12:44:30+09:00",
-      "last_updated": "2026-09-08T20:54:31+09:00",
+      "last_updated": "2026-09-08T20:57:23+09:00",
       "completed_criteria": [
         "P3.4",
         "P3.6"
@@ -231,8 +231,8 @@
           "criteria": [
             "P3.5"
           ],
-          "reason": "专用账号真实 SSH 已通过，但主组 staff 可读取 fodelf Agent home 下目录，隔离未接受；独立主组修正脚本已上传，需用户管理员终端执行。",
-          "unblock": "用户执行 isolate-runtime-group.sh --apply 后，使用全新 SSH 会话验证无 staff/admin 且 Agent home 不可读，再推进公共链路；清理清单新增本轮组。"
+          "reason": "组修正脚本安全拒绝：UID550 尚有 macOS distnoted（只读复核 PID9447/PPID1），主组仍为staff。尚未创建独立组；需要管理员注销仅临时账号的用户服务域，再重跑无进程门禁。",
+          "unblock": "用户 sudo launchctl bootout user/550 成功后重跑 isolate-runtime-group.sh --apply；失败保留输出，不放宽进程检查。随后新 SSH 复验隔离。"
         }
       ]
     },
@@ -317,7 +317,7 @@
     "P3 额外 64 线程压力出现既有 exec timeout 单测 30.5s 失败；默认全量 511 通过，高并发问题尚未解决。"
   ],
   "handoff": {
-    "next_action": "仅 P3：真实 SSH UID550/HOME 正确、已知凭据叶子及 SSH 非公开候选不可读，但 staff 主组允许 Agent 目录读取。用户需执行 sudo /bin/bash /tmp/ccnm-p3-setup.TnaRle/isolate-runtime-group.sh --apply；随后重新 SSH 核验。尚未创建独立组或启动模型；所有本轮资源和新增组清理要求见 p3-runtime-system-preparation.md。",
+    "next_action": "仅 P3：UID550 distnoted 阻止组修正，详见系统准备文档末节；用户在 fodelf sudo launchctl bootout user/550 后重跑原组脚本。未修改组，未启动模型；不要通过 Runtime SSH 预检再次创建用户后台进程，先由 fodelf 身份 ps 复核。",
     "scope": "仅 P3；不进入 P4/Machine API，不引入多 Agent/worktree 调度，不主动部署、登录或修改账号/ACL/防火墙。",
     "planning_validation": {
       "at": "2026-09-08T19:16:49+09:00",

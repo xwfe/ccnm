@@ -68,3 +68,9 @@
 待执行 `scripts/p3-isolate-runtime-group.sh --apply`：核对账号、目录所有权、无活跃 UID550 进程、组名/GID550 未占用后，创建本轮 `ccnmp3test` 独立组并改临时账号及 home/.ssh/authorized_keys 主组；不递归修改其他路径。变更前登记 root 清单 `group-resources.txt`；碰撞/部分失败保留现场，不重试覆盖。用户执行路径是 `/tmp/ccnm-p3-setup.TnaRle/isolate-runtime-group.sh`，上传 SHA-256 与仓库一致：`bf5dacccee51538ba232052535c6d4169bb5ac5896ad25606be8111f16b46899`。
 
 清理新增组时，先完成前述账号/文件清理，确认没有其他账号使用 GID550、组标记及本轮清单匹配，再删除本轮组及清单；发现其他使用者或未知残留则停止，不自动恢复成 staff 继续验收。当前组修正尚未执行，未启动真实 Agent。
+
+### 独立组准备被残留系统进程阻止
+
+用户执行组修正得到 `Runtime processes still active`。通过 fodelf 管理员身份只读 `ps`（未重新登录临时 Runtime）复核，UID550 仅有 PID9447、PPID1、PGID9447 的 `/usr/sbin/distnoted`；没有测试 shell/Agent。账号主组仍为20，脚本在写清单/创建组之前退出。不得放宽进程检查，也不能把系统进程忽略后宣称完整清理。
+
+下一步由用户执行 `sudo launchctl bootout user/550`，仅注销本轮临时账号的用户服务域；不触及 fodelf UID501 或本机服务。随后重跑原组修正脚本，它仍要求 UID550 无进程才修改。任一命令报错则保留输出，不自动 kill、不循环重试。当前无权限读取该 launchd 域（返回 Operation not permitted），域是否成功注销及残留是否归零须以管理员执行结果复核；不得预先宣称修复成功。

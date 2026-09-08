@@ -47,6 +47,14 @@
 
 用户报告两端 `sshd -T`：公钥认证开启、authorizedkeyscommand 为 none、authorizedkeysfile 为 `.ssh/authorized_keys`、authenticationmethods 为 any。这只证明用户报告的默认配置，不证明 Match/PAM/系统访问组或真实新账号 SSH 登录成功。
 
-fodelf 实际 `--check` 通过，未创建账号。脚本已上传至 `/tmp/ccnm-p3-setup.TnaRle/create-runtime-user.sh`，目录及脚本是本轮待清理资源；SHA-256 为 `e901b24cc888e3ec79a7116c53d8b6b332754ea5d7abedc6794ace144d1e68d5`，与仓库脚本一致。下一步由用户在 fodelf 终端审阅后运行 `sudo /bin/bash /tmp/ccnm-p3-setup.TnaRle/create-runtime-user.sh --create`，保留输出以核对是否成功；我方执行进程仍无管理员权限。
+用户已执行创建脚本；本轮 SSH 只读复核 `ccnmp3test` 为 UID 550、home `/Users/ccnmp3test` 为 0700，RealName 匹配本轮标记，组列表无 admin。root 清单内容尚未由我方读取，不将账号创建等同于凭据隔离或 SSH 验收。
 
-本轮未生成 SSH 密钥、写公钥授权、修改 ACL/防火墙或启动模型。4 个无特权脚本入口测试通过；真实创建/部分失败恢复/清理尚未实测，不拿入口测试替代系统验收。本机已有 ccrun 和两端 Agent 登录保持不变。
+本轮资源清单（均需结束后清理）：
+
+- fodelf：账号 `ccnmp3test`、home `/Users/ccnmp3test`、root 清单 `/var/db/ccnm-p3-account-20260908`；上传目录 `/tmp/ccnm-p3-setup.TnaRle`，含创建脚本、公钥 `runtime.pub` 与授权脚本。
+- 本机：`/Users/bing/.config/ccnm/p3-ssh-0a8i4v2q`，含一次性 SSH 密钥对及 `resources.json`。私钥仅在本机，未传输，未读取内容。
+- 待授权脚本创建：远端 `/Users/ccnmp3test/.ssh` 和 `authorized_keys`，以 root 清单 `ssh-resources.txt` 记录。现有 `.ssh` 一律拒绝覆盖。
+
+`p3-authorize-runtime-key.sh` 只允许安装指纹 `SHA256:AlJxpK96ks8KDg0woK1tSluntPXRt9XV0ZA/Rp2HPZ4` 的单行 ed25519 公钥，禁止 agent/端口/X11 转发及 user rc；不改 SSH 服务策略。脚本已上传且 SHA-256 与仓库一致：`cf0f8ed8552512174ae27059acc2ccf8c79d3f600ccb00e53b30447d49547988`。下一步用户在 fodelf 终端执行 `sudo /bin/bash /tmp/ccnm-p3-setup.TnaRle/authorize-runtime-key.sh --apply`；返回结果后验证专用账号 SSH 与实际凭据隔离，不能用管理员身份或假 HOME 代替。
+
+5 个脚本无特权入口测试通过；本轮 Python 全量 24 通过。实际授权、SSH、凭据隔离和清理尚未验证；未改 ACL/防火墙、未启动模型。本机已有 ccrun 和两端 Agent 登录保持不变。

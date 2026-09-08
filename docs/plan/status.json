@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-09-08T20:23:03+09:00",
+  "last_updated": "2026-09-08T20:48:18+09:00",
   "current_task": "P3",
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
@@ -156,7 +156,7 @@
       ],
       "owner": null,
       "started_at": "2026-09-08T12:44:30+09:00",
-      "last_updated": "2026-09-08T20:23:03+09:00",
+      "last_updated": "2026-09-08T20:48:18+09:00",
       "completed_criteria": [
         "P3.4",
         "P3.6"
@@ -208,6 +208,14 @@
           ],
           "ref": "docs/plan/p3-runtime-system-preparation.md",
           "result": "用户回报两端默认 sshd 公钥配置；fodelf 临时账号准备脚本无写预检通过，上传与本地 SHA-256 一致。4 个无特权入口测试通过；尚未执行特权创建和清理。上传目录已列入本轮资源清单。"
+        },
+        {
+          "kind": "real_nodes",
+          "criteria": [
+            "P3.5"
+          ],
+          "ref": "docs/plan/p3-runtime-system-preparation.md",
+          "result": "用户执行 fodelf 临时账号创建；SSH 只读复核 UID550/home0700/标记匹配，无 admin。只传本轮新 SSH 公钥，私钥留在本机；授权脚本待管理员执行。未通过 SSH/凭据隔离验收，资源清单已更新。"
         }
       ],
       "blockers": [
@@ -215,8 +223,8 @@
           "criteria": [
             "P3.5"
           ],
-          "reason": "用户已澄清允许 fodelf 临时新建专用 Runtime 用户，验收后必须清理；授权不再阻塞。专用账号和 SSH 入口尚未准备，特权动作仍需用户登录终端执行。",
-          "unblock": "核对两端 SSH 有效配置，按资源清单准备本机已有 ccrun 与 fodelf 临时 Runtime 用户及公钥入口；完成双向真实验收和逐项清理。"
+          "reason": "fodelf 临时 Runtime 账号创建已由用户执行并经只读复核；尚需用户管理员终端安装本轮公钥。当前执行进程无该权限，SSH 和凭据隔离尚未验证。",
+          "unblock": "用户执行已上传 authorize-runtime-key.sh --apply 后，验证专用账号登录与安全门禁，再推进双向真实验收及清理。"
         }
       ]
     },
@@ -301,7 +309,7 @@
     "P3 额外 64 线程压力出现既有 exec timeout 单测 30.5s 失败；默认全量 511 通过，高并发问题尚未解决。"
   ],
   "handoff": {
-    "next_action": "仅 P3：fodelf 临时账号脚本 --check 通过，已上传 /tmp/ccnm-p3-setup.TnaRle/create-runtime-user.sh；待用户在 fodelf 管理员终端执行 --create 并返回结果。按 p3-runtime-system-preparation.md 追踪和清理上传目录及后续账号；保留本机 ccrun，尚未创建账号或建立公钥入口。",
+    "next_action": "仅 P3：fodelf ccnmp3testUID550/home0700 已复核；用户需在 fodelf 执行 sudo /bin/bash /tmp/ccnm-p3-setup.TnaRle/authorize-runtime-key.sh --apply。之后用本机 /Users/bing/.config/ccnm/p3-ssh-0a8i4v2q/runtime_ed25519 验证 Runtime SSH；资源清单见 p3-runtime-system-preparation.md，所有本轮资源必须清理。",
     "scope": "仅 P3；不进入 P4/Machine API，不引入多 Agent/worktree 调度，不主动部署、登录或修改账号/ACL/防火墙。",
     "planning_validation": {
       "at": "2026-09-08T19:16:49+09:00",

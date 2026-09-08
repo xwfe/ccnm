@@ -1,0 +1,21 @@
+{
+  "runtime_user": "ccrun",
+  "uid": 504,
+  "primary_gid": 20,
+  "shell": "/bin/zsh",
+  "home": "/Users/ccrun",
+  "public_key_offered_and_accepted": true,
+  "remote_id_executed": false,
+  "observed_transport_exit": 0,
+  "connection_message": "Connection closed by server port 22",
+  "ssh_service_group_member": false,
+  "ssh_service_group_direct_members": [],
+  "ssh_service_group_nested_groups": [
+    "admin"
+  ],
+  "pam_account_sacl_required": true,
+  "sacl_service": "ssh",
+  "credential_files_read": false,
+  "membership_changed": false,
+  "limits": "Outer SSH exit0 is not proof of a usable session; no id output. Group/PAM evidence establishes an account admission restriction; no privileged auth logs inspected."
+}

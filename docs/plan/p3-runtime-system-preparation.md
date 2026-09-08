@@ -98,3 +98,11 @@
 新增保留资源：本机 `/tmp/ccnm-p3-agent-m8wmi9ng`（独立config/state/tmux、SSH配置私有备份、收到的local-runtime.pub），本机SSH唯一alias block `ccnm-p3-r7enw5`；远端 setup 下的 runtime-control.toml、control-state、本轮新密钥 local-runtime-key 及.pub。私钥不出生成节点。
 
 本机待执行 `sudo /bin/bash /Users/bing/xdw/ccnm/scripts/p3-authorize-local-runtime.sh --apply`。仅给UID504已有ccrun追加本轮公钥，任何已有路径的symlink/owner/权限异常即拒绝；开始前生成 `/var/db/ccnm-p3-local-20260908`，备份已有公开authorized_keys并记录新增行/目录。该root清单目前尚未创建。清理时只删除记录的追加字节，保留并发修改；仅当本轮创建且为空时删除目录，始终保留原ccrun账号。不要盲目回滚整份authorized_keys或SSH config。
+
+### 本机公钥已追加，但 Remote Login 准入仍阻止 ccrun
+
+用户报告本机授权脚本成功，root清单 `/var/db/ccnm-p3-local-20260908` 已由该脚本创建；我方尚未读取该root清单。实际从fodelf使用新key连接，服务端接受公钥后关闭连接，没有执行id。虽然外层SSH返回0，不能记为登录成功。
+
+只读证据：本机ccrun仍UID504/主组staff，无admin；`dsmemberutil` 确认不属于 `com.apple.access_ssh`。该服务组只嵌套admin组（GeneratedUID匹配），无直接用户成员；`/etc/pam.d/sshd` account阶段强制 `pam_sacl.so sacl_service=ssh`。这说明标准sshd公钥配置之外还有系统账号准入限制。证据见 `tests/fixtures/p3-local-runtime-access/result.json`，没有读取凭据或修改组。
+
+拟议最小变更（尚未批准或执行）：只将已有ccrun加入 `com.apple.access_ssh`，允许其通过Remote Login账号准入；不加入admin、不改主组/UID/密码/防火墙，也不开放所有用户。该准入对ccrun既有的有效认证方式同样生效，并非仅限定本轮key。先在本轮root清单记录原本非成员，验证结束后只移除本轮新增的直接成员关系；原组、其他成员和ccrun账号保留。此前约定要求发现服务拒绝专用账号时先检查策略、不自动绕过，因此此动作需要单独确认后由管理员终端执行。

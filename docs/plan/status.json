@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-09-08T22:32:51+09:00",
+  "last_updated": "2026-09-08T22:52:38+09:00",
   "current_task": "P3",
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
@@ -156,7 +156,7 @@
       ],
       "owner": null,
       "started_at": "2026-09-08T12:44:30+09:00",
-      "last_updated": "2026-09-08T22:32:51+09:00",
+      "last_updated": "2026-09-08T22:52:38+09:00",
       "completed_criteria": [
         "P3.4",
         "P3.6"
@@ -260,6 +260,14 @@
           ],
           "ref": "docs/research/p3-public-codex-2026-09-08.md",
           "result": "官方Codex0.153.4经公开probe/print/interactive与Aqua临时Controller验证，实际工具事件确认；detach/reattach、Controller重启、Ctrl-D、精确transport故障后stop及guard释放通过。局部进程清理完成，Claude与最终系统清理仍待验收，不标记P3完成。"
+        },
+        {
+          "kind": "real_nodes",
+          "criteria": [
+            "P3.5"
+          ],
+          "ref": "tests/fixtures/p3-local-runtime-access/result.json",
+          "result": "反向公钥被接受但会话关闭无id输出（外层exit0不算成功）；本机ccrun非SSH服务组成员，组仅嵌套admin，PAM强制sacl_service=ssh。未读取认证文件、未改组，Claude链路仍未启动。"
         }
       ],
       "blockers": [
@@ -267,8 +275,8 @@
           "criteria": [
             "P3.5"
           ],
-          "reason": "Codex公共链路已取得实测；反向Claude需要在本机已有ccrun中追加已生成的本轮公钥，当前执行进程无管理员权限。",
-          "unblock": "用户在本机终端执行p3-authorize-local-runtime.sh --apply后，验证从fodelf到本机ccrun的实际SSH/凭据隔离，再继续Claude公共链路及最终清理。"
+          "reason": "用户已追加本机公钥，服务端接受key后关闭连接；ccrun不属于Remote Login服务准入组，sshd PAM强制该检查。尚未改变系统服务准入范围。",
+          "unblock": "用户确认是否允许仅给ccrun新增临时com.apple.access_ssh直接成员关系，记录原状态并在验收后移除；获确认后管理员执行，再复验SSH与凭据隔离。"
         }
       ]
     },
@@ -353,7 +361,7 @@
     "P3 额外 64 线程压力出现既有 exec timeout 单测 30.5s 失败；默认全量 511 通过，高并发问题尚未解决。"
   ],
   "handoff": {
-    "next_action": "仅P3：Codex公共链路实测完成，临时Controller/session已结束。用户需在本机执行 sudo /bin/bash /Users/bing/xdw/ccnm/scripts/p3-authorize-local-runtime.sh --apply；然后从fodelf用本轮新key复核本机ccrun隔离，继续Claude方向。资源与回滚见系统准备文档末节，官方登录/历史保留，不进入P4。",
+    "next_action": "仅P3：本机公钥追加已由用户执行，但SSH会话无id；只读确认ccrun被Remote Login服务组准入限制。待用户确认仅临时添加com.apple.access_ssh成员并在验收后移除，不加admin/不改主组；拟议对象和回滚见系统准备文档末节。Claude尚未启动，勿进入P4。",
     "scope": "仅 P3；不进入 P4/Machine API，不引入多 Agent/worktree 调度，不主动部署、登录或修改账号/ACL/防火墙。",
     "planning_validation": {
       "at": "2026-09-08T21:22:43+09:00",

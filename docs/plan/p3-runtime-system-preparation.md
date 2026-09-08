@@ -35,8 +35,18 @@
 - 本机 ccrun 必须保留。fodelf 新账号仅在清单证明为本轮创建、无活动进程且无后续新增数据时删除；否则报告遗留，等待人工处理。
 - 检查两端资源清单均已归零，记录无法清理项和原因。历史 scratch 目录不自动认定为本轮资源。
 
+## fodelf 临时账号准备
+
+使用 `scripts/p3-create-runtime-user.sh`，仅针对 fodelf 登录用户执行；固定临时账号 `ccnmp3test`、UID 550、home `/Users/ccnmp3test`。执行时重新核对名称、UID 和目录未占用，碰撞即拒绝，不覆盖现有账号。密码字段为不可用值，不设置可登录密码、不加入 admin、不修改 SSH 服务或 sudoers。公钥入口另行准备和实测。
+
+`--check` 无写操作；`--create` 必须由用户在 fodelf 终端通过 sudo 执行。特权动作开始前创建 root 所有的 `/var/db/ccnm-p3-account-20260908/resources.txt` 清单；部分失败保留记录，禁止反复运行或自动清除。只有所有创建步骤成功才写入 `state=created`。
+
+清理账号前核对清单、目录服务中的 UID/home/RealName、无该 UID 活动进程，并按本轮清单移除授权和测试文件。home 必须只剩空目录才能用 `rmdir` 删除；发现未知文件或任何属性不匹配则停止。再删除对应目录服务账号和 root 清单；不使用递归删除处理未知残留。部分创建失败需按实际成功步骤恢复，不能假定 `state` 存在。
+
 ## 当前恢复点
 
-用户已打开两端终端，并澄清允许 fodelf 临时新建普通专用 Runtime 用户，验收后必须清理账号及本轮 home、公钥、测试目录；之前“不新建用户”的记录是误解，不再适用。本机已有 ccrun 保留。远端现有 fodelf 管理员身份仍不得替代隔离 Runtime。下一步由用户在两端登录终端核对 SSH 配置，再按唯一资源清单准备并验证专用入口。
+用户报告两端 `sshd -T`：公钥认证开启、authorizedkeyscommand 为 none、authorizedkeysfile 为 `.ssh/authorized_keys`、authenticationmethods 为 any。这只证明用户报告的默认配置，不证明 Match/PAM/系统访问组或真实新账号 SSH 登录成功。
 
-未创建账号、生成密钥、写授权或变更 ACL/防火墙，没有本轮临时资源需要清理。用户终端认证不代表 Agent 执行进程获得 sudo 权限；需要特权的命令仍由用户登录终端执行，不索取密码或添加临时 NOPASSWD 规则。
+fodelf 实际 `--check` 通过，未创建账号。脚本已上传至 `/tmp/ccnm-p3-setup.TnaRle/create-runtime-user.sh`，目录及脚本是本轮待清理资源；SHA-256 为 `e901b24cc888e3ec79a7116c53d8b6b332754ea5d7abedc6794ace144d1e68d5`，与仓库脚本一致。下一步由用户在 fodelf 终端审阅后运行 `sudo /bin/bash /tmp/ccnm-p3-setup.TnaRle/create-runtime-user.sh --create`，保留输出以核对是否成功；我方执行进程仍无管理员权限。
+
+本轮未生成 SSH 密钥、写公钥授权、修改 ACL/防火墙或启动模型。4 个无特权脚本入口测试通过；真实创建/部分失败恢复/清理尚未实测，不拿入口测试替代系统验收。本机已有 ccrun 和两端 Agent 登录保持不变。

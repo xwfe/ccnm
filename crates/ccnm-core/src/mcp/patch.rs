@@ -3292,9 +3292,15 @@ mod tests {
             text(&root, "src/main.rs"),
             "fn main() {\n    let x = 5;\n}\n"
         );
+        assert!(path.is_file(), "the active writer's journal must remain");
 
         // Released, and the same journal now reads as abandoned.
         drop(holder);
+        let probe = fs::File::open(&path).unwrap();
+        probe
+            .try_lock()
+            .expect("the kernel must release the journal lock with its owner");
+        drop(probe);
         let err = apply_patch(
             &root,
             Some(&journals),

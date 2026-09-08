@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-09-08T12:44:30+09:00",
+  "last_updated": "2026-09-08T14:25:54+09:00",
   "current_task": "P3",
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
@@ -150,16 +150,41 @@
     {
       "id": "P3",
       "title": "公共入口与单 Agent 执行闭环",
-      "status": "in_progress",
+      "status": "blocked",
       "depends_on": [
         "P2"
       ],
-      "owner": "Codex / P3 single-agent execution",
+      "owner": null,
       "started_at": "2026-09-08T12:44:30+09:00",
-      "last_updated": "2026-09-08T12:44:30+09:00",
-      "completed_criteria": [],
-      "evidence": [],
-      "blockers": []
+      "last_updated": "2026-09-08T14:25:54+09:00",
+      "completed_criteria": [
+        "P3.4",
+        "P3.6"
+      ],
+      "evidence": [
+        {
+          "kind": "offline",
+          "criteria": [
+            "P3.1",
+            "P3.2",
+            "P3.3",
+            "P3.4",
+            "P3.6"
+          ],
+          "ref": "docs/research/single-agent-p3-2026-09-08.md",
+          "commit": "94eb7bf",
+          "result": "当前 macOS 代码 fmt、严格 clippy、Rust 511 passed / 0 failed，Python 19 passed。公共 instance/v3/session/Runtime guard 离线验证；colocated 明确拒绝。P3.1-3 仍需真实生命周期复核，不以测试数替代真机与生产安全。"
+        }
+      ],
+      "blockers": [
+        {
+          "criteria": [
+            "P3.5"
+          ],
+          "reason": "缺少当前 P3 build 的针对性双机部署/真实 Agent 调用授权，以及专用 Runtime 身份与 ACL/sudo/socket/egress 验收证据；历史 scratch 不能替代。",
+          "unblock": "确认目标 SSH alias 和临时隔离部署/测试范围，不替换正在使用的 binary/Controller；授权真实 Claude/Codex 公共链路 dogfood。系统账号/ACL/防火墙变更另外确认。"
+        }
+      ]
     },
     {
       "id": "P4",
@@ -233,29 +258,26 @@
     }
   ],
   "observed_gaps": [
-    "Claude colocated 的启动参数与文档不一致；已有假 supervisor 测试不能证明可用，P3 定点修复或明确拒绝。",
-    "Codex 目前只有内部入口，限定实测版本 0.153.4；colocated 未开放。",
     "现有双机 Codex 证据使用 scratch Runtime，不是生产 ccrun/ACL/sudo/egress 验收。",
     "旧 Runtime 拒绝 v2 时可能以退出码 0 结束；协议错误不能被退出码掩盖。",
-    "Agent Instance 配置/绑定已在 P2 完成；公共 instance 执行、Machine API、Runtime 跨入口写入互斥和独立 Orchestrator 仍未实施。",
     "P1 安全检查已收敛但尚未部署；旧 Runtime 不因此获得新门禁，现有 0.2.0/v1/v2 握手不宣告 P1 安全能力，P3 真机部署须核对两端构建来源/指纹及服务端环境策略。",
     "Claude v1 的 claude_config_dir 保留旧参数语义；P2 必须定义 Agent-local profile 引用与 legacy 冲突/迁移，不能把旧明文路径当新 profile 授权模型。",
-    "P2 不允许新 instance/v3 session 执行。P3 必须真正连接 binding、Agent-local profile 目录的认证/启动/脱敏与 Runtime 验证，不能只删 guard；当前 Codex 内部 adapter 仍使用原专用 default HOME。",
-    "P2 首轮全量中既有 journal 锁测试曾失败；定点与后续完整门禁通过，但未修改 patch 模块或证明该非稳定现象已修复。"
+    "P3 公共 instance 与 Runtime guard 代码已落地但未完成当前 build 双机与生产隔离验收，尚不能进入 P4。",
+    "Claude colocated 候选命令已定点修复，但未真机验收，当前公共启动明确拒绝。",
+    "P3 额外 64 线程压力出现既有 exec timeout 单测 30.5s 失败；默认全量 511 通过，高并发问题尚未解决。"
   ],
   "handoff": {
-    "next_action": "P3 已认领：按 agent-execution-p3.md 实现 v3 公共选择/双端绑定、精确 session、Runtime 单写 guard 和 Claude colocated 定点修复；先离线门禁，真实系统/部署动作等待针对性授权。",
+    "next_action": "P3 blocked，勿进入 P4。代码 94eb7bf、Runtime guard 3903801；离线门禁 Rust 511/Python 19。先复核精确 stop 的残留进程/PID 与链路失败状态，再确认当前 build 的临时双机部署和真实两 Provider 调用授权，按 P3.5 保存公共链路及生产身份证据。",
     "scope": "仅 P3；不进入 P4/Machine API，不引入多 Agent/worktree 调度，不主动部署、登录或修改账号/ACL/防火墙。",
     "planning_validation": {
-      "at": "2026-09-08T12:22:59+09:00",
+      "at": "2026-09-08T14:25:54+09:00",
       "commands": [
         "cargo fmt --all --check：通过",
         "cargo clippy --workspace --all-targets -- -D warnings：通过",
-        "cargo test --workspace：485 passed / 0 failed",
-        "python3 -B -m unittest discover -s tests -p test_*.py -v：19 passed",
-        "python3 scripts/check_plan.py 与 git diff --check：通过"
+        "cargo test --workspace：511 passed / 0 failed",
+        "python3 -B -m unittest discover -s tests -p test_*.py -v：19 passed"
       ],
-      "limits": "本轮仅离线、合成 profile/目录/auth sentinel 与 marker 子进程；不是 P3 真机/生产权限验收。基线工作区干净，原用户变更已在 dc5f7db；原 Claude/Codex golden 未修改。"
+      "limits": "本次只在本机离线回归；未部署、登录或调用真实 Agent。64 线程额外压力曾出现既有 exec timeout 测试失败，未声称修复。"
     },
     "inherited_changes": [],
     "authorization": "本轮规划不授权真实 Agent 调用、创建账号、ACL/防火墙变更、登录、部署或新建 Orchestrator 仓库；后续对应动作逐项确认已有授权。",

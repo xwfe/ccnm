@@ -178,3 +178,9 @@ git -C <项目> diff
 要求是"不能悄悄地乱"，不是"让机器替你决定"。
 
 ---
+
+### MCP 初始化报 `workspace write guard is busy` 或 `unknown`
+
+busy 表示仍有受管 writer 持锁；unknown 表示异常退出或 marker 不完整，不能证明旧执行者已经结束。不要循环删锁或按时间强制接管。
+
+先在 Agent Node 用 `ccnm status <workspace> --agent <instance-id> --session <ccnm-session-id>` 定位会话，再由 Runtime 操作者确认旧 MCP 和子进程。完整人工恢复边界见[支持矩阵](support-matrix.md#runtime-单写-guard)。`doctor`/MCP probe 同样经过写 guard，活动 writer 下诊断被拒绝不等于 SSH 损坏。

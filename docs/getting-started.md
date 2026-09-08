@@ -1,5 +1,7 @@
 # 快速开始
 
+本页保留最小 legacy Claude 双机流程。Claude/Codex Agent Instance 的配置与当前验收级别分别见[配置说明](configuration.md)和[支持矩阵](support-matrix.md)；不要把个人 Codex 凭据复制到 ccnm 专用 HOME。
+
 ## 环境要求
 
 ### Agent Node

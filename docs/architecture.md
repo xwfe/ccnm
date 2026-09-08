@@ -19,9 +19,7 @@ Node 可以是：
 
 运行 AI Coding Agent，并持有对应的登录/订阅/OAuth 凭证。
 
-当前实现运行的是官方 Claude Code。项目源码不要求存在于 Agent Node。
-
-以后接入 Codex、Gemini CLI 或其他 Agent 时，也应该继续使用 Agent 角色，而不是再为每种物理部署方式发明新的机器名。
+legacy 配置运行官方 Claude Code；Agent Instance 通过明确 enum 分发到 Claude 或实测版本的 Codex CLI。项目源码不要求存在于 Agent Node。第三 Provider 尚未实现，也不需要插件系统。
 
 ## Runtime Node
 
@@ -43,13 +41,13 @@ Node 可以是：
 
 Controller 是 session 管理角色，不是项目数据角色。
 
-当前 macOS 实现中，Controller 运行在 Agent Node 的 GUI 登录会话里，通过 LaunchAgent 常驻。这样官方 Claude Code 可以正常访问自己登录会话中的 Keychain/OAuth 上下文，同时又能接受从 SSH 发起的 ccnm 请求。
+当前 macOS 实现中，Controller 运行在 Agent Node 的 GUI 登录会话里，通过 LaunchAgent 常驻。这样官方 CLI Agent 可以使用自己的正常登录上下文，同时又能接受从 SSH 发起的 ccnm 请求。
 
 Controller 负责：
 
 - 启动 session supervisor；
 - 创建和管理 tmux 交互会话；
-- 获取 Claude 版本和登录状态；
+- 按 Provider 获取官方 CLI 版本和登录状态；
 - 管理 session 状态。
 
 它不保存 workspace 真相，也不替 Runtime Node 执行项目工具。
@@ -67,8 +65,8 @@ Controller 负责：
 ```text
 Runtime Node                                  Agent Node
 ┌──────────────────────────────┐              ┌─────────────────────────────┐
-│ workspace                    │              │ Claude Code                 │
-│ Git / cargo / node / python  │              │ OAuth / subscription        │
+│ workspace                    │              │ Claude Code / Codex CLI     │
+│ Git / cargo / node / python  │              │ login / subscription        │
 │ ccnm internal mcp-serve      │◀── SSH ────▶│ ccnm controller + tmux     │
 │ Runtime Service Account      │   stdio MCP  │ session supervisor          │
 └──────────────────────────────┘              └─────────────────────────────┘
@@ -87,13 +85,13 @@ Runtime Node                                  Agent Node
 - ccnm 只消费已有 OpenSSH alias，不接管 Tailscale/VPN/Tunnel；
 - 项目工具自然运行在真正拥有 toolchain 的机器上。
 
-## 支持的三种拓扑
+## topology 模型与当前支持
 
 拓扑由配置决定，不靠探测机器。判据只有两个：`this`（我是哪个 node）和 workspace 的 `agent_node` / `runtime_node`。
 
 ### 1. `runtime -> agent -> runtime`
 
-项目在我这台，Claude 在那台，工具调用再回到我这台。这是主线。
+项目在我这台，Agent 在那台，工具调用再回到我这台。这是当前主线。
 
 ```text
 Runtime Node
@@ -103,7 +101,7 @@ Runtime Node
     ├──── SSH ────> Agent Node
     │               │
     │               ├─ Controller
-    │               ├─ Claude Code / tmux
+    │               ├─ Claude/Codex / tmux
     │               │
     │               └──── SSH stdio MCP ────> Runtime Node
     │                                         ccnm internal mcp-serve
@@ -113,35 +111,28 @@ Runtime Node
 
 ### 2. `agent -> runtime`
 
-坐在跑 Claude 的那台机器上发起。它不存 workspace 列表（顶层 `runtime_node` 就是这个意思），所以先把启动命令委托给 Runtime Node，再走上面那条完整路径，最后在本地 attach。
+坐在跑 Agent 的那台机器上发起。它不存 workspace 列表（顶层 `runtime_node` 就是这个意思），所以先把启动命令委托给 Runtime Node，再走上面那条完整路径，最后在本地 attach。已有 session 的 `attach/status/result/stop` 仍在 Agent 本机执行，避免 Runtime 短暂离线时连终端也无法管理。
 
 多这一跳是为了避免出现第二份 workspace root 配置。两份列表就是两个"这个项目在哪"的答案，其中一份迟早过期，然后某个会话绑到一个已经搬走的目录上。
 
 ### 3. `runtime -> agent`
 
-**Claude 和项目在同一台机器上**，我只是从别处把会话拉起来、attach 上去。workspace 里 `agent_node` 和 `runtime_node` 是同一个 node 就是这种。
+Agent 和项目在同一台机器上，workspace 的 Agent Node 和 `runtime_node` 相同就是这种模型。
 
 ```text
 这台（只负责发起）──── SSH ────> devbox
                                  ├─ Controller
-                                 ├─ Claude Code / tmux
+                                 ├─ CLI Agent / tmux
                                  └─ 项目就在本地磁盘
 ```
 
-这条路径**不建 MCP 通道**，Claude 直接用自己的原生工具（Read/Edit/Write/Grep/Glob/Bash）读写眼前的项目。
-
-具体差别就两个文件：不写 `mcp.json`，`settings.json` 里也不 deny 原生工具。**这两条都不能搞错**——deny 列表存在的意义是"项目在另一台机器上时，别让模型碰到本机磁盘"；项目就在本机时它只会碍事，结果是一个能启动但读不了任何文件的会话。
+当前 build **明确拒绝 colocated 启动**。Claude 的 native 候选命令已去掉 remote-only MCP/工具限制，但 installed CLI 尚未真机验证；Codex colocated 没有测量。不能因为配置能表达就声称支持，也不能静默降级。
 
 ### 为什么不是"单 Node"
 
-早先的文档写过一个"Agent + Runtime + Controller 全在一台机器"的单 Node 形态。**那个形态跑不起来**，而且不是实现没跟上，是自相矛盾：
+安全边界是进程身份、文件权限和传输，不是物理机器的标签。同一机器可以承担多个角色，但 Runtime 执行身份不能访问 Agent 凭据；这种部署必须单独验收，不能靠跳过诊断来证明隔离。
 
-- Agent Node 必须持有 Claude 凭证，否则没法登录；
-- Runtime Node 绝不能持有 Claude 凭证（第 [生产安全](production-safety.md) 节），否则它就成了 Anthropic 出口。
-
-同一台机器同时被当成两个 node 来审计，doctor 会因为"它是它自己"给出 6 条无法修复的 FAIL。
-
-第 3 种拓扑解决的正是这个需求，做法是**不把那台机器当成 Runtime Node 来审计**：它只承担 agent 角色，项目恰好也在那儿，不启用 MCP runtime，也就没有"runtime 必须隔离"这套要求。想要"就在一台装了 Claude 的电脑上干活"，用这个。
+如果未来重新开放第 3 种拓扑，它只能作为显式受信任的 native 模式，不能冒充隔离 Runtime。当前准确结论见[支持矩阵](support-matrix.md)。
 
 ### 未来多 Agent
 
@@ -161,7 +152,8 @@ MCP runtime 已经做了：
 - symlink/越界检查；
 - 有界输出；
 - patch 事务和版本检查；
-- Claude 凭证环境变量剥离等保护。
+- 所有已知 Agent 凭证环境变量剥离等保护；
+- 工作树级 Runtime 单写 guard。
 
 但 `exec_command` 仍然是在 Runtime OS 账号下执行真实程序。
 
@@ -191,7 +183,7 @@ work machine ≈ Agent Node
 
 ## Agent Provider 内部边界
 
-`crates/ccnm-core/src/provider/` 通过明确的 `AgentProvider::{Claude, Codex}` enum 分发；没有插件注册、动态加载或公开 provider 配置选择器。公开入口仍只选 Claude，Codex 限于版本化 internal 请求的验证。
+`crates/ccnm-core/src/provider/` 通过明确的 `AgentProvider::{Claude, Codex}` enum 分发；没有插件注册或动态加载。公开入口只接受已配置的 instance id，不能直接注入 Provider、路径或官方 CLI argv；Agent Node 本机 registry 决定实际 Provider/profile。
 
 - `provider/claude/`：CLI 定位、version/auth 探测、配置目录环境变量、启动参数、交互/print 输入、MCP 配置和工具权限、结果解析，以及项目 instruction/context 规则。
 - `provider/codex/`：已实测的官方 CLI `0.153.4` 适配、Agent-local HOME、固定工具策略、JSONL 结果和 Runtime 根目录 AGENTS 上下文。未测版本和 colocated 模式拒绝启动。
@@ -200,26 +192,34 @@ work machine ≈ Agent Node
 - `session/transport.rs` 是两 Provider 共用的 Agent-side stdio wrapper；Claude MCP JSON 和 Codex 会话参数均指向它，再由它清理环境并执行 OpenSSH。SSH 与 Runtime child 的机制不放在 Codex 模块里；详情见 [安全契约](provider-safety.md)。
 - session/Controller 仍负责进程、tmux 和生命周期；launcher/work 仍负责 topology、OpenSSH alias 与 Runtime Node 握手。Runtime MCP 的 7 个工具和执行边界未变。
 
-公开配置仍是 `claude_config_dir`、`claude_permission_mode`。Rust 内部使用通用字段名，通过 serde 显式保留旧 session/协议的 `claude_config_dir`、`claude_bin`、`claude-auth`、`claude`。旧 `claude` 和 `mcp::context` 模块只是兼容出口，不再承载实现。
+legacy 公开配置仍是 `claude_config_dir`、`claude_permission_mode`。Rust 内部使用通用字段名，通过 serde 显式保留旧 session/协议的 `claude_config_dir`、`claude_bin`、`claude-auth`、`claude`；没有顺便重命名旧字段。
 
 ### 行为等价的验证边界
 
 `tests/fixtures/claude-provider-baseline.json` 是从抽取前的代码生成的合成行为快照，**不是新的真机测量**。它固定启动参数/环境/stdin、两种会话模式、remote/colocated 输入、策略文件、上下文、结果及旧协议形状。已有 `claude-print-2.1.260.json` 真机 fixture 原样保留。
 
-有一个已存在的差异刻意未修复：colocated session 不写 `mcp.json`、settings 不 deny 原生工具，但启动函数仍无条件传 `--tools ""`、`--mcp-config` 等 remote 参数。现有 colocated 测试使用假 supervisor，不能证明真实 Claude 接受这组输入；本轮快照保留该现状，避免把功能修复夹进内部解耦。
+P3 将 Claude colocated 候选命令中的 remote-only `--tools ""`、`--mcp-config`/strict 参数移除，并在单独断言中记录该差异，没有重录 golden。由于尚无 installed Claude 真机验收，公共启动在创建 session 前明确拒绝该 topology。
 
 ### 第二 provider 的兼容与隔离
 
-Codex 的启动、探测、session 和 MCP 请求必须显式携带 `provider="codex"`、`protocol=2`。旧 peer 因版本不匹配拒绝请求，不能忽略 provider 后误启动 Claude。Claude 的 v1 序列化不增加 provider 字段，旧配置字段和响应标签不改名。只读响应保留 v1 外层格式，Codex 结果有独立 provider 标签；未报告的费用/API 耗时不填假零。
+历史 Codex internal 会话保留 `protocol=2` fixture；公开 Agent Instance 使用 v3 `InstanceRef` 请求，由 Agent 解析出完整 identity。旧 peer 因版本不匹配拒绝请求，不能忽略 identity 后误启动 Claude。Claude 的 v1 序列化不增加 provider 字段，旧配置字段和响应标签不改名。Codex 结果有独立 provider 标签；未报告的费用/API 耗时不填假零。
 
 专用 HOME 由 Agent 自己按 ccnm 配置目录解析，不接受 Runtime 传来的路径，不读取认证文件内容。用户必须在 Agent 登录会话中独立使用官方 CLI 登录；目录与认证文件要求仅属主可访问、非符号链接。启动前通过官方 CLI 检查版本、登录和空 MCP inventory。所有 Codex SSH 连接在 Agent 侧清除敏感环境、禁止 agent forwarding，不复用个人 ControlMaster；Runtime payload 只有 workspace、root、session 和 provider 等执行上下文。
 
 Codex 项目上下文仅投影 Runtime 根目录的 `AGENTS.override.md` 或 `AGENTS.md`，空 override 仍覆盖 base。它不是完整的 Codex 本机文件遍历：不读 Agent 私人配置，不自动枚举嵌套 instructions。Runtime/MCP 七工具及 ccrun/ACL/sudo/network policy 仍是原边界，固定 CLI tool policy 不等于 sandbox。
 
-实测依据与尚未开放的边界见 [Codex 内部接线](research/codex-internal-wiring-2026-09-07.md)。不扩展为 Agent Instance、多 Agent coordination 或并行 worktree 模型。
+实测依据见 [Codex 内部接线](research/codex-internal-wiring-2026-09-07.md)；P3 公共入口的当前验收级别见[支持矩阵](support-matrix.md)。不扩展为多 Agent coordination 或并行 worktree 调度。
 
-## Agent Instance 配置边界（P2）
+## Agent Instance 执行边界（P2/P3）
 
-后续 P2 已增加 node-scoped instance 配置与公开身份 DTO，范围仅为模型：Runtime workspace 保存 node/instance 引用；Agent registry 保存 provider/profile_ref；私有目录在 Agent-local profiles.toml 中独立解析。不复制 root 或远端 profile 定义。`WorkspaceBinding` 分别由 Runtime 校验 root/引用、Agent 校验完整 registry identity；`ResolvedAgent`/`ResolvedProfile` 不实现 Serialize/Debug，私有目录不进入绑定消息。
+P2 增加 node-scoped instance 配置与公开身份 DTO：Runtime workspace 保存 node/instance 引用；Agent registry 保存 provider/profile_ref；私有目录在 Agent-local profiles.toml 中独立解析。不复制 root 或远端 profile 定义。`WorkspaceBinding` 分别由 Runtime 校验 root/引用、Agent 校验完整 registry identity；`ResolvedAgent`/`ResolvedProfile` 不实现 Serialize/Debug，私有目录不进入绑定消息。
 
-新 instance workspace、v3 identity session 及其旧 MCP 调用目前均不可执行，旧配置及无 identity 的 session 保持兼容。P3 需要真正连接 binding、profile、权限与公共执行入口，而不是仅解除开关。契约、冲突和迁移预览见 [实例配置](agent-instance-config.md)。本阶段没有协调器、lease 或 worktree 编排。
+P3 将 v3 identity 接入现有 launcher/work/Controller/supervisor/tmux/SSH MCP。Runtime 发出受限 `InstanceRef`；Agent 每一层重新解析并比较 identity，Controller 启动前重新加载权威配置，supervisor 再解析 profile。session 固定 workspace/root/runtime_node/identity；不同 Provider 或 instance 不复用也不自动替换。ccnm session id 与 Provider thread/resume id 分开。
+
+Runtime MCP 初始化再用自己的配置重算 binding；legacy payload 不能打开 instance workspace。完整契约见[单 Agent 执行](agent-execution-p3.md)和[实例配置](agent-instance-config.md)。本阶段没有协调器、分布式 lease 或 worktree 调度。
+
+## Runtime 单写者
+
+每个 MCP server 在 Runtime 初始化时按 canonical workspace resource 获取内核独占锁，并持有到 server 结束。Git workspace 使用 canonical `git-common-dir`，所以不同 Agent Node、CLI/RPC 入口、路径 alias 及共享 common dir 的 worktree 不能获得两份受管写权限。
+
+正常退出写 `released` 并显式 unlock；异常退出保留 `held` marker。后者即使内核锁已经释放也保持 unknown，直到 Runtime 操作者证明旧进程与子进程结束后人工恢复，不按时钟自动转让。这个机制拒绝并发受管 writer，不承诺任意 shell 的 exactly-once、事务回滚或 sandbox。操作边界见[支持矩阵](support-matrix.md)。

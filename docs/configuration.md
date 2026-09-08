@@ -10,9 +10,9 @@ ccnm 默认读取：
 
 **每台机器有自己的一份，内容不一样。** 不要把同一份文件复制到两台机器上——里面的 `ssh` alias 是"从本机出发"的，复制过去就指错地方了。
 
-配置描述的是 **Node** 和 **workspace**。Node 名是你自己起的标识符；`ccnm init` 默认用 `agent` 和 `runtime`。P2 另支持下文的 Agent Instance 配置模型，但实例执行入口尚未开放。
+配置描述的是 **Node**、**workspace** 和 Agent Node 本机的 **Agent Instance**。Node 名是你自己起的标识符；`ccnm init` 默认用 `agent` 和 `runtime`。旧 `agent_node`/Claude 字段不改名，继续兼容。
 
-## Agent Instance 模型（可解析，暂不可执行）
+## Agent Instance 模型
 
 Runtime 只持引用，不复制 Agent 的 provider/profile 定义：
 
@@ -54,9 +54,24 @@ directory = "/absolute/agent/private/claude-extra"
 
 这是路径 schema 示例，不代表目录已存在或已登录。文件必须归当前 Agent UID、不向组/其他用户授权（建议 0600）且非 symlink；通过 `profile_ref = "claude-extra"` 引用。profile 未定义、provider 不匹配、目录是相对路径/含 `..`、重复目录或覆盖 default 均不接受。新目录需要用户独立官方登录，ccnm 不创建、复制或链接 auth。
 
+workspace 中的 `agent` 是默认选择。公共命令可用同一 Node 上的 instance id 覆盖：
+
+```bash
+ccnm doctor demo --agent codex-main
+ccnm run demo --agent codex-main
+ccnm status demo --agent codex-main
+ccnm result demo --agent codex-main --session <ccnm-session-id>
+ccnm attach demo --agent codex-main --session <ccnm-session-id>
+ccnm stop demo --agent codex-main --session <ccnm-session-id>
+```
+
+`--agent` 只替换 instance id，不接受 `worker/codex-main`、`provider=codex`、路径、root 或原始官方 CLI 参数。Runtime 用自己的 workspace 配置固定 node/root；Agent 再从本机 registry 解析 provider/profile。legacy `agent_node` workspace 使用 `--agent` 会明确报错，不会静默改成 Claude 或 Codex。
+
+在 Agent-only 配置所在的机器上，`run`、`doctor` 和 MCP probe 会先去 Runtime 获取 workspace 权威信息；已存在 session 的 `attach/status/result/stop` 仍在 Agent 本机执行，这样 Runtime 链路暂时断开时终端管理行为不变。要强制校验 instance，请显式带 `--agent`；稳定自动化应再带 `--session`。
+
 迁移预览目前仅有库 API `configedit::Edit::preview_instance(workspace, &InstanceRef)`，返回候选 TOML，不修改 editor 或磁盘，没有自动迁移命令。已有自定义 `claude_config_dir`、非默认权限或跨 Node 迁移会拒绝机械转换，需先确定语义；其他 workspace 与注释保留。更多约束见 [实例契约](agent-instance-config.md)。
 
-**当前用新 agent 字段调用 run、旧内部 session/MCP 执行入口会被拒绝，不会退回 Claude。** 要继续现有工作，请保留下面的 legacy 配置；P3 才接入公共选择、真实 profile preflight 和执行闭环。
+Agent Instance 公共执行已接入现有 Controller/session/SSH MCP，并通过离线门禁；当前 build 尚未完成 P3 双机公共链路和生产隔离验收。不要把“代码可执行”写成“已生产支持”，准确范围见[支持矩阵](support-matrix.md)。
 
 ## 最小的两份配置
 
@@ -180,13 +195,19 @@ allow_unconfined_exec = false
 
 ### `agent_node`
 
-跑 AI coding agent 的 node。当前实现是跑官方 Claude Code 的那台。
+legacy Claude workspace 中运行 Agent 的 node。新 workspace 可改用：
+
+```toml
+agent = { node = "worker", instance = "claude-main" }
+```
+
+两种 selector 不能同时出现。`agent` 的 provider/profile 不在 Runtime 定义。
 
 ### `runtime_node`
 
 存真实项目、执行 MCP tools 的 node。**注意这是 workspace 里的字段，跟顶层那个同名字段不是一回事**：这里说的是"这个项目在哪台机器上"，顶层说的是"我不存列表，去问谁"。
 
-把它写成和 `agent_node` 相同的值，就是第三种拓扑：Claude 和项目在同一台机器上，不建 MCP 通道，Claude 用自己的原生工具。见[架构说明](architecture.md)。
+把它写成和 Agent Node 相同会形成 colocated 配置模型，但当前执行入口明确拒绝：Claude 的 native 候选启动尚未真机验收，Codex colocated 未测。不要据此配置生产 workspace；见[支持矩阵](support-matrix.md)。
 
 ### `root`
 

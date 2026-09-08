@@ -10,7 +10,7 @@ ccnm my-project
 ccnm run my-project
 ```
 
-Claude session 本身运行在 Agent Node；它对项目的读取、搜索、修改和命令执行通过 MCP 落到 Runtime Node。
+Agent session 本身运行在 Agent Node；它对项目的读取、搜索、修改和命令执行通过 MCP 落到 Runtime Node。
 
 只启动、不 attach：
 
@@ -25,6 +25,19 @@ ccnm attach my-project
 ```
 
 SSH 断开、终端关闭或笔记本暂时离线，不等于结束 session。只要 Agent Node 上的 tmux/session 还活着，就可以重新 attach。
+
+## 选择 Agent Instance
+
+使用 `agent = { node = "worker", instance = "claude-main" }` 的 workspace 会默认选择该 instance。同一个 Agent Node 上可显式覆盖：
+
+```bash
+ccnm doctor my-project --agent codex-main
+ccnm run my-project --agent codex-main
+```
+
+`--agent` 是受限 instance id，不是 Provider、Node、路径或官方 CLI 参数。legacy `agent_node` workspace 不接受它。Provider/profile 只由 Agent Node 本机配置解析；Codex 的专用 HOME 不会发给 Runtime。
+
+一个正在运行的 session 固定绑定 workspace、root 和完整 Agent identity。换 Provider 或 instance 不会复用/替换旧 session；先精确停止旧 session。
 
 ## Prompt
 
@@ -54,7 +67,17 @@ ccnm status my-project --all
 ccnm stop my-project
 ```
 
-session 建立后，这些操作属于 Agent 侧 session 管理，不需要重新解析 workspace root。
+精确寻址使用 ccnm session id：
+
+```bash
+ccnm status my-project --agent codex-main --session <ccnm-session-id>
+ccnm attach my-project --agent codex-main --session <ccnm-session-id>
+ccnm stop my-project --agent codex-main --session <ccnm-session-id>
+```
+
+ccnm session id 与 Claude/Codex 自己的 thread/resume id 是两类值，不能互换。精确操作会校验 session 的 workspace 和 Agent identity。状态区分 `starting`、`running`、`completed`、`failed`、`stopping`、`unknown`；不能证明进程已经结束时不会猜成 failed。
+
+session 建立后，Agent Node 上的 `attach/status/result/stop` 继续本机管理记录，不依赖重新解析 workspace root。Runtime Node 发起的命令仍由 Runtime 默认选择或 `--agent` 选择约束。
 
 ## 非交互 `--print`
 
@@ -76,6 +99,8 @@ ccnm result my-project
 ccnm result my-project --session <id>
 ```
 
+Agent Instance 建议同时带 `--agent <instance-id>`；不带 session 的“最近一次”只保留给人类兼容使用，不是稳定机器接口。
+
 ## MCP 诊断
 
 本地 Runtime 诊断：
@@ -83,6 +108,8 @@ ccnm result my-project --session <id>
 ```bash
 ccnm mcp probe my-project --local --calls 100
 ```
+
+`--local` 仅适用于 legacy workspace；instance workspace 请使用不带 `--local` 的远程 probe，以便由 Agent 解析身份。probe 会参与 Runtime 写 guard，因此已有 writer 时会拒绝，不应为诊断清理活动锁。
 
 它会启动一个真实 `ccnm internal mcp-serve` 子进程，证明多次 MCP 调用由同一个持久 runtime process 处理，而不是每个工具调用都重新启动一次进程。
 
@@ -114,8 +141,18 @@ read_output
 - `apply_patch` 是结构化写入路径，带版本检查，并提供事务/恢复保护；
 - `exec_command` 使用 argv，不主动通过 shell 执行，但调用者仍然可以显式运行 `sh -c` 等程序，所以它本质上仍然是命令执行能力；
 - 大输出由 `read_output` 分页读取，避免一次把全部输出塞进模型上下文；
-- 项目根 `CLAUDE.md` 会投影到会话，其余规则文件按路径提示，模型按需读取；
-- 受管理的 Claude session 会禁用原生 Read/Edit/Write/Grep/Glob/Bash，让项目访问统一走 Runtime Node。
+- Claude 使用项目根 `CLAUDE.md` 上下文；Codex 使用根目录 `AGENTS.override.md`/`AGENTS.md` 的已测优先级；
+- remote session 使用对应 Provider 的已测工具策略，让项目访问统一走 Runtime Node。
+
+## 同一工作树的单写限制
+
+Runtime MCP 在完整 session 生命周期持有独占写 guard。另一个 Agent Node、CLI 或后续 RPC 即使绕开上层协调，只要进入同一 Runtime workspace，也会在 MCP 初始化阶段得到 busy/unknown：
+
+- canonical root、symlink alias 和嵌套 workspace 不会获得两份独立写权限；
+- 同一 Git common dir 下的 worktree 保守互斥；
+- 正常退出释放；异常退出留下 unknown，不会按超时自动接管。
+
+unknown 的人工恢复步骤见[支持矩阵](support-matrix.md)。命令 parser 不是 sandbox；真正的边界仍是 `ccrun`/ACL/sudo/credential/network policy。
 
 ## 当前不做什么
 

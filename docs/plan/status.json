@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-09-08T22:52:38+09:00",
+  "last_updated": "2026-09-09T22:28:03+09:00",
   "current_task": "P3",
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
@@ -156,7 +156,7 @@
       ],
       "owner": null,
       "started_at": "2026-09-08T12:44:30+09:00",
-      "last_updated": "2026-09-08T22:52:38+09:00",
+      "last_updated": "2026-09-09T22:28:03+09:00",
       "completed_criteria": [
         "P3.4",
         "P3.6"
@@ -268,6 +268,14 @@
           ],
           "ref": "tests/fixtures/p3-local-runtime-access/result.json",
           "result": "反向公钥被接受但会话关闭无id输出（外层exit0不算成功）；本机ccrun非SSH服务组成员，组仅嵌套admin，PAM强制sacl_service=ssh。未读取认证文件、未改组，Claude链路仍未启动。"
+        },
+        {
+          "kind": "review",
+          "criteria": [
+            "P3.5"
+          ],
+          "ref": "docs/plan/p3-runtime-system-preparation.md",
+          "result": "用户批准临时准入后新增 p3-grant-local-ssh-access.sh：apply/revert 互逆，先写root清单再改组，只增删ccrun直接成员，判定前后flushcache，并发修改保留现场。只读复核ccrun仍非成员、组GID399无直接成员。3个入口测试、Python全量28通过；尚未执行，系统未变更。"
         }
       ],
       "blockers": [
@@ -275,8 +283,8 @@
           "criteria": [
             "P3.5"
           ],
-          "reason": "用户已追加本机公钥，服务端接受key后关闭连接；ccrun不属于Remote Login服务准入组，sshd PAM强制该检查。尚未改变系统服务准入范围。",
-          "unblock": "用户确认是否允许仅给ccrun新增临时com.apple.access_ssh直接成员关系，记录原状态并在验收后移除；获确认后管理员执行，再复验SSH与凭据隔离。"
+          "reason": "ccrun不属于Remote Login服务准入组，sshd PAM强制sacl_service=ssh，公钥被接受后连接即关闭。用户已批准临时准入，但脚本需要管理员在本机终端执行，当前系统准入范围未变。",
+          "unblock": "用户在本机 bing 终端执行 sudo /bin/bash scripts/p3-grant-local-ssh-access.sh --apply，然后从fodelf用本轮key连接ccrun并取得id输出；复验凭据/Docker/sudo隔离后接Claude公共链路，验收结束以 --revert 移除。"
         }
       ]
     },
@@ -361,7 +369,7 @@
     "P3 额外 64 线程压力出现既有 exec timeout 单测 30.5s 失败；默认全量 511 通过，高并发问题尚未解决。"
   ],
   "handoff": {
-    "next_action": "仅P3：本机公钥追加已由用户执行，但SSH会话无id；只读确认ccrun被Remote Login服务组准入限制。待用户确认仅临时添加com.apple.access_ssh成员并在验收后移除，不加admin/不改主组；拟议对象和回滚见系统准备文档末节。Claude尚未启动，勿进入P4。",
+    "next_action": "仅P3：用户已批准临时把ccrun加入com.apple.access_ssh并在验收后移除。脚本 scripts/p3-grant-local-ssh-access.sh 已就绪待管理员在本机 bing 终端 sudo --apply；随后从fodelf用本轮key连接ccrun，必须取得id输出才算登录成功，再复验凭据/Docker/sudo隔离并接Claude公共链路，最后 --revert。Claude尚未启动，勿进入P4。",
     "scope": "仅 P3；不进入 P4/Machine API，不引入多 Agent/worktree 调度，不主动部署、登录或修改账号/ACL/防火墙。",
     "planning_validation": {
       "at": "2026-09-08T21:22:43+09:00",
@@ -373,8 +381,17 @@
       ],
       "limits": "本轮离线门禁；fodelf SSH 建连失败，没有新增远端资源或运行真实模型，不替代 P3.5。"
     },
+    "planning_validation_latest": {
+      "at": "2026-09-09T22:28:03+09:00",
+      "commands": [
+        "python3 scripts/check_plan.py：通过",
+        "python3 -B -m unittest discover -s tests -p test_*.py -q：28 passed",
+        "git diff --check：通过"
+      ],
+      "limits": "只改脚本、测试和计划文档，未修改 Rust，未重跑 Rust 门禁；未执行任何特权命令，系统准入范围未变。"
+    },
     "inherited_changes": [],
-    "authorization": "双机临时部署、角色互换、真实 Claude/Codex 验证及清理已授权；用户明确澄清允许 fodelf 临时新建普通 Runtime 用户，验证后清理该账号、home、公钥及测试目录，本机已有 ccrun 保留。范围见 p3-runtime-system-preparation.md；不改防火墙、不替换现有 Controller、不复制凭据；同范围无需重复询问。",
+    "authorization": "双机临时部署、角色互换、真实 Claude/Codex 验证及清理已授权；用户明确澄清允许 fodelf 临时新建普通 Runtime 用户，验证后清理该账号、home、公钥及测试目录，本机已有 ccrun 保留。用户另行批准临时把 ccrun 加入 com.apple.access_ssh、验收后移除，仅限该直接成员关系，不加 admin、不改主组/密码/防火墙。范围见 p3-runtime-system-preparation.md；不替换现有 Controller、不复制凭据；同范围无需重复询问。",
     "portability": "接续不依赖任何特定 MCP、任务管理器或 IDE 插件。任何模型只需 Git、仓库文件和项目命令即可按 current_task 继续；外部工具状态不作为产品阶段事实。"
   }
 }

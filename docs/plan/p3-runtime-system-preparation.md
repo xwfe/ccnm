@@ -105,4 +105,19 @@
 
 只读证据：本机ccrun仍UID504/主组staff，无admin；`dsmemberutil` 确认不属于 `com.apple.access_ssh`。该服务组只嵌套admin组（GeneratedUID匹配），无直接用户成员；`/etc/pam.d/sshd` account阶段强制 `pam_sacl.so sacl_service=ssh`。这说明标准sshd公钥配置之外还有系统账号准入限制。证据见 `tests/fixtures/p3-local-runtime-access/result.json`，没有读取凭据或修改组。
 
-拟议最小变更（尚未批准或执行）：只将已有ccrun加入 `com.apple.access_ssh`，允许其通过Remote Login账号准入；不加入admin、不改主组/UID/密码/防火墙，也不开放所有用户。该准入对ccrun既有的有效认证方式同样生效，并非仅限定本轮key。先在本轮root清单记录原本非成员，验证结束后只移除本轮新增的直接成员关系；原组、其他成员和ccrun账号保留。此前约定要求发现服务拒绝专用账号时先检查策略、不自动绕过，因此此动作需要单独确认后由管理员终端执行。
+最小变更：只将已有ccrun加入 `com.apple.access_ssh`，允许其通过Remote Login账号准入；不加入admin、不改主组/UID/密码/防火墙，也不开放所有用户。该准入对ccrun既有的有效认证方式同样生效，并非仅限定本轮key。原组、其他成员和ccrun账号保留。
+
+### 用户已确认临时准入，脚本待管理员执行
+
+用户明确批准「临时将 ccrun 加入 com.apple.access_ssh，验收后移除」。本轮只读复核与上节一致：ccrun UID504、主组staff、无admin；`com.apple.access_ssh` GID399，只嵌套admin，`GroupMembership` 属性不存在（无直接成员）；`dsmemberutil` 判定 ccrun 非成员。
+
+用 `scripts/p3-grant-local-ssh-access.sh`，两个动作互为逆操作，都必须由用户在本机 bing 终端 sudo 执行：
+
+- `--apply`：核对 UID504、root清单目录属性、组 GID399，确认 ccrun 当前非成员后，先写清单 `/var/db/ccnm-p3-local-20260908/ssh-access-group.txt`（记录变更前的非成员状态、`NestedGroups` 与 `GroupMembership` 原值），再用 `dseditgroup` 追加直接成员。清单已存在即拒绝，不覆盖上一轮现场。
+- `--revert`：要求清单存在且记录变更前为非成员，移除直接成员关系后复核已非成员，且组的嵌套与直接成员回到清单记录值才删除清单；发现别处并发修改则保留清单并以非0退出，等人工核对，不回滚他人变更。
+
+判定成员前后都执行 `dsmemberutil flushcache`，避免本地缓存把旧结果当结论。脚本不读取任何认证文件，不修改 sshd 配置或 PAM 策略。
+
+准入生效后复验：从 fodelf 用本轮 key 连接本机 ccrun，必须实际拿到 `id` 输出（UID504）才算登录成功，外层 SSH 退出0不算；随后按第4步重做凭据/Docker/sudo 只读隔离检查，再接 Claude 公共链路。最终清理时，`--revert` 与删除公钥行、root清单同属本轮资源，逆序执行。
+
+本轮新增 3 个脚本入口测试，Python 全量28通过；未修改 Rust，不重报历史 Rust 数字。执行前系统未发生任何变更。

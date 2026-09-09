@@ -284,6 +284,14 @@
           ],
           "ref": "tests/fixtures/p3-local-runtime-access/admitted.json",
           "result": "用户执行--apply后准入生效，组仅新增ccrun一个直接成员、嵌套与主组未变。反向SSH首次真成功：内层实际返回uid=504、真实HOME。但隔离失败：ccrun主组staff穿透0750的/Users/bing，Codex auth.json及.bak为0644可读、.claude.json可读、两目录共68个叶子可读；Claude credentials/Codex config.toml/8个SSH私钥候选/sudo仍拒绝。未读取任何凭据内容。另修正探针以[ -e ]把权限拒绝误报为absent，实际是父目录0700。"
+        },
+        {
+          "kind": "real_nodes",
+          "criteria": [
+            "P3.5"
+          ],
+          "ref": "tests/fixtures/p3-local-runtime-access/isolated.json",
+          "result": "用户按选定方案执行独立主组：ccrun转gid504、staff消失、无admin、SSH准入保留、home 504:504/0700。首次执行按设计被UID504的distnoted拒绝，bootout后成功。全新SSH复验：Agent home不可列，此前可读的codex auth.json/.bak、claude.json、settings.json、session_index均转拒绝，可读叶子68→0，Docker不可写，sudo拒绝，真实HOME无三个环境变量。本机Runtime侧隔离接受。遗留：auth.json仍0644对其他staff可读，属既有环境问题不在本轮范围。"
         }
       ],
       "blockers": [
@@ -291,8 +299,8 @@
           "criteria": [
             "P3.5"
           ],
-          "reason": "准入已生效且反向SSH取得真实id输出，但凭据隔离验收失败：ccrun主组staff可穿透0750的Agent home，Codex auth.json为0644直接可读，另有67个Agent叶子文件可读。这是既有环境权限状态，非ccnm引入，但Runtime能读Agent凭据即不满足P3.5。",
-          "unblock": "用户选定隔离修正方案（给既有ccrun建独立主组脱离staff，或收紧/Users/bing为0700，或两者兼有并单独收紧auth.json等0644叶子），该动作超出仅临时准入的授权需单独批准；修正后重跑隔离检查通过，再接Claude公共链路。建议在决定前先 --revert 关闭远程准入。"
+          "reason": "身份与隔离门禁已通过（准入生效、反向SSH取得真实uid=504、独立主组后可读叶子68→0），但P3.1/P3.2的Claude公共链路尚未在本机Runtime上实测，P3.5不能凭身份验收单独完成。",
+          "unblock": "在已隔离的本机ccrun Runtime上跑通Claude公共入口的print/interactive/精确session、Ctrl-D/stop、detach/reattach与链路失败，保存脱敏fixture；随后按清单逆序清理（组--revert、准入--revert、公钥行、临时目录与账号）。"
         }
       ]
     },
@@ -377,7 +385,7 @@
     "P3 额外 64 线程压力出现既有 exec timeout 单测 30.5s 失败；默认全量 511 通过，高并发问题尚未解决。"
   ],
   "handoff": {
-    "next_action": "仅P3：准入已生效，反向SSH取得真实uid=504，但凭据隔离验收失败（staff穿透+Codex auth.json 0644可读+68个叶子可读），已停止推进。等用户选定并授权隔离修正方案，修正后重跑 tests/fixtures/p3-local-runtime-access/admitted.json 对应检查，通过才接Claude公共链路。建议先执行 scripts/p3-grant-local-ssh-access.sh --revert 关闭远程准入。Claude尚未启动，勿进入P4。",
+    "next_action": "仅P3：本机Runtime身份与隔离已通过（独立主组+准入，可读叶子68→0，证据见 tests/fixtures/p3-local-runtime-access/isolated.json）。下一步在该Runtime上跑Claude公共链路，镜像已完成的Codex那轮：print/interactive/精确session、Ctrl-D/stop、detach/reattach、Controller重启与transport故障。完成后按清单逆序清理，两个本机脚本各自 --revert。勿进入P4。",
     "scope": "仅 P3；不进入 P4/Machine API，不引入多 Agent/worktree 调度，不主动部署、登录或修改账号/ACL/防火墙。",
     "planning_validation": {
       "at": "2026-09-08T21:22:43+09:00",

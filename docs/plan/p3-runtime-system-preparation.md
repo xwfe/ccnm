@@ -157,3 +157,15 @@
 注意这个方案关的是穿透那道门，`.codex/auth.json` 仍是 0644，对本机其他 staff 成员依然可读。这是既有环境的独立问题，本轮不改用户文件权限，如实留作待办。
 
 新增 2 个入口测试，Python 全量30通过。执行前系统未再变更。
+
+### 独立组已生效，本机凭据隔离通过
+
+首次执行按设计被 UID504 的活动进程拒绝。只读核对该进程是 PPID1、PGID1492 的系统 `distnoted`，启动时间正是本轮首次 SSH 连接的时刻，即 launchd 拉起的用户服务域残留，无用户 shell 或 Agent 进程。用户执行 `sudo launchctl bootout user/504` 后重跑成功。
+
+变更后只读复核：`id ccrun` 为 uid504/gid504(ccrun)，staff 已消失、无 admin，`com.apple.access_ssh` 准入保留；`/Users/ccrun` 为 504:504、0700。
+
+全新 SSH 连接复验隔离，结果见 `tests/fixtures/p3-local-runtime-access/isolated.json`：Agent home 不可列，`.claude`/`.codex`/`.ssh`/Keychains 全部权限拒绝，此前可读的 `.codex/auth.json`、`auth.json.bak`、`.claude.json`、`settings.json`、`session_index.jsonl` 均转为拒绝，两个 Agent 目录可读叶子数从 68 降到 0，两个 Docker socket 不可写，`sudo -n` 拒绝，真实 HOME 为 `/Users/ccrun` 且无 CODEX_HOME/CLAUDE_CONFIG_DIR/SSH_AUTH_SOCK。本机 Runtime 侧凭据隔离接受。
+
+探针同时改掉了之前的判定缺陷：改用 `ls -ld` 的实际错误文本区分「权限拒绝」「不存在」，不再用 `[ -e ]`。
+
+遗留待办（不在本轮变更范围）：`/Users/bing/.codex/auth.json` 与 `.bak` 仍是 0644，本机其他 staff 成员依旧可读。这是既有环境问题，与 ccnm 无关，按用户选择本轮不改个人文件权限。

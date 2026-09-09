@@ -1,0 +1,32 @@
+{
+  "kind": "real_nodes",
+  "runtime_user": "ccrun",
+  "uid": 504,
+  "primary_gid": 504,
+  "dedicated_group": "ccrun",
+  "previous_primary_gid": 20,
+  "staff_or_admin_membership": false,
+  "ssh_service_group_member": true,
+  "fresh_ssh_login": true,
+  "reverse_ssh_id_observed": true,
+  "real_home": "/Users/ccrun",
+  "env_codex_home_set": false,
+  "env_claude_config_dir_set": false,
+  "env_ssh_auth_sock_set": false,
+  "isolation_accepted": true,
+  "agent_home_traversable": false,
+  "known_agent_home_and_directories_readable": false,
+  "known_credential_paths_readable": false,
+  "known_docker_sockets_writable": false,
+  "sudo_noninteractive_allowed": false,
+  "readable_agent_leaf_count": 0,
+  "previously_readable_now_denied": [
+    "/Users/bing/.codex/auth.json",
+    "/Users/bing/.codex/auth.json.bak",
+    "/Users/bing/.claude.json",
+    "/Users/bing/.claude/settings.json",
+    "/Users/bing/.codex/session_index.jsonl"
+  ],
+  "credential_contents_read": false,
+  "limits": "Readability and metadata only; no credential contents were read. Closing the staff traversal fixed Runtime-side access, but /Users/bing/.codex/auth.json remains 0644 and is still readable by other staff members on this host — a pre-existing environment issue outside this round's changes. Not a full privilege escalation or egress audit."
+}

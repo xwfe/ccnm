@@ -140,3 +140,20 @@
 同时修正一处自身判定缺陷：上一版探针用 `[ -e ]`，权限拒绝时返回假，把 login Keychain 和 Docker socket 误报成 `absent`。重测确认真实原因是父目录 `/Users/bing/Library`、`/Users/bing/.orbstack` 均为 0700 拒绝访问，不是 TCC 也不是不存在；不可读/不可写的结论成立，但原因不能记错。
 
 在隔离修正方案确定前不启动 Claude 公共链路。修正涉及改既有 ccrun 主组或改个人 home 权限，超出「仅临时准入」的授权范围，需用户单独决定；在此期间建议先执行 `--revert` 关闭远程准入，因为验证结论已取得，继续开启只是让可读的 Codex 凭据多一条远程路径。
+
+### 用户选定：给既有 ccrun 建独立主组
+
+用户批准方案「给 ccrun 建独立主组」，不收紧 `/Users/bing` 权限、不加 ACL。理由是关掉 staff 这道门比逐个改用户文件权限更根治，且只改临时验收用的 Runtime 账号，不动个人环境。
+
+只读侦察确认可行：`/Users/ccrun` 为 504:20、0700；组名 `ccrun` 与 GID 504 均未占用；UID504 仅有 PPID1 的系统 `distnoted`，无用户会话或服务。
+
+用 `scripts/p3-isolate-local-runtime-group.sh`，apply/revert 互逆，都要用户在本机 bing 终端 sudo 执行：
+
+- `--apply`：核对 UID504、home 属性与 NFSHomeDirectory、当前主组确为 staff、组名/GID 504 未占用、root 清单目录属性，并要求 UID504 无活动进程；先写清单 `local-group-resources.txt`（记录 `previous_primary_gid=20` 和被改属组的路径），再建组、改主组，最后校验 `id ccrun` 不含 20/80。
+- `--revert`：要求清单记录变更前为 staff 且当前主组确为本轮值，改回 GID20、属组还原、删除本轮组和清单。
+
+只对 `/Users/ccrun`、`.ssh`、`authorized_keys` 三条已知路径改属组，不递归、不碰 ccrun 其他既有文件——这三条 mode 已是 0700/0600，改属组是防止日后放宽 mode 时缺口重开。改主组不影响已在运行进程的既有组身份，所以脚本拒绝在有 UID504 进程时执行，并提示 `sudo launchctl bootout user/504`；不自动 kill、不循环重试，与上一轮 fodelf 侧处理一致。
+
+注意这个方案关的是穿透那道门，`.codex/auth.json` 仍是 0644，对本机其他 staff 成员依然可读。这是既有环境的独立问题，本轮不改用户文件权限，如实留作待办。
+
+新增 2 个入口测试，Python 全量30通过。执行前系统未再变更。

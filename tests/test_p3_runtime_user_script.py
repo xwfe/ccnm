@@ -19,7 +19,8 @@ class RuntimeUserScriptTests(unittest.TestCase):
         for script in [SCRIPT, SCRIPT.with_name("p3-authorize-runtime-key.sh"),
                        SCRIPT.with_name("p3-isolate-runtime-group.sh"),
                        SCRIPT.with_name("p3-authorize-local-runtime.sh"),
-                       SCRIPT.with_name("p3-grant-local-ssh-access.sh")]:
+                       SCRIPT.with_name("p3-grant-local-ssh-access.sh"),
+                       SCRIPT.with_name("p3-isolate-local-runtime-group.sh")]:
             result = subprocess.run(["/bin/bash", "-n", str(script)], check=False)
             self.assertEqual(result.returncode, 0)
 
@@ -60,6 +61,24 @@ class RuntimeUserScriptTests(unittest.TestCase):
         for args in [(), ("--remove",), ("--apply", "--revert")]:
             result = subprocess.run(
                 ["/bin/bash", str(SCRIPT.with_name("p3-grant-local-ssh-access.sh")), *args],
+                env={**os.environ, "SUDO_USER": "bing"},
+                capture_output=True, text=True, check=False,
+            )
+            self.assertEqual(result.returncode, 2)
+
+    def test_local_group_wrong_operator_refused(self):
+        for action in ("--apply", "--revert"):
+            result = subprocess.run(
+                ["/bin/bash", str(SCRIPT.with_name("p3-isolate-local-runtime-group.sh")), action],
+                env={**os.environ, "SUDO_USER": "not-authorized"},
+                capture_output=True, text=True, check=False,
+            )
+            self.assertNotEqual(result.returncode, 0)
+
+    def test_local_group_unknown_action(self):
+        for args in [(), ("--delete",), ("--apply", "--revert")]:
+            result = subprocess.run(
+                ["/bin/bash", str(SCRIPT.with_name("p3-isolate-local-runtime-group.sh")), *args],
                 env={**os.environ, "SUDO_USER": "bing"},
                 capture_output=True, text=True, check=False,
             )

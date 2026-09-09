@@ -28,6 +28,14 @@ wrapper 必须固定 `CCNM_CONFIG`/`XDG_STATE_HOME`/`TMUX_TMPDIR`。本轮先把
 
 `claude in Background, keychain reachable` 不是故障：`session.rs` 已写明 tmux 必然 daemonize 出 `gui/` 域而报 `Background`，真正决定 Keychain 访问的是随之保留的 audit session，仅凭 `managername` 判断会误报。
 
+### 对照实验：controller 架构的正面证据
+
+在 fodelf 的 SSH 会话里直接跑官方 `claude --print`（绕开 ccnm），返回 `Not logged in · Please run /login`；同一台机器、同一用户、同一份 `~/.claude`，经 ccnm 由 Aqua 里的 controller 启动就正常计费返回结果。
+
+这证实凭据只在 login Keychain、只有登录会话可读，也正面验证了 controller 的存在价值：它不是多余的一层，去掉它 Agent 就会得到「未登录」这个假答案。设计文档里「ssh 会话问 Claude 登录状态必然得到假否定」的判断，本轮有了真机反例支撑。
+
+据此可以确定 interactive 停在向导不是凭据不可达造成的——真读不到时官方 CLI 直接回 `Not logged in`，而不是渲染主题选择界面。缺的是 `theme` 未落盘导致向导每次重来。
+
 期间观察到官方 CLI 自行做了配置迁移：新建 `~/.claude/.claude.json` 与 `backups/`，`~/.claude/.credentials.json` 消失。经独立 print 复核登录完好，判断是 2.1.265 把凭据迁往 Keychain，不是数据丢失。ccnm 未读取、复制或删除任何凭据。
 
 另修改一处 Agent 侧个人配置：`~/.claude` 由 0755 收紧为 **0700**。这是 P1 profile 目录的硬性前置，不改则安全检查拒绝、Agent 不返回 identity；方向是收紧权限，回滚为 `chmod 755 ~/.claude`。

@@ -276,6 +276,14 @@
           ],
           "ref": "docs/plan/p3-runtime-system-preparation.md",
           "result": "用户批准临时准入后新增 p3-grant-local-ssh-access.sh：apply/revert 互逆，先写root清单再改组，只增删ccrun直接成员，判定前后flushcache，并发修改保留现场。只读复核ccrun仍非成员、组GID399无直接成员。3个入口测试、Python全量28通过；尚未执行，系统未变更。"
+        },
+        {
+          "kind": "real_nodes",
+          "criteria": [
+            "P3.5"
+          ],
+          "ref": "tests/fixtures/p3-local-runtime-access/admitted.json",
+          "result": "用户执行--apply后准入生效，组仅新增ccrun一个直接成员、嵌套与主组未变。反向SSH首次真成功：内层实际返回uid=504、真实HOME。但隔离失败：ccrun主组staff穿透0750的/Users/bing，Codex auth.json及.bak为0644可读、.claude.json可读、两目录共68个叶子可读；Claude credentials/Codex config.toml/8个SSH私钥候选/sudo仍拒绝。未读取任何凭据内容。另修正探针以[ -e ]把权限拒绝误报为absent，实际是父目录0700。"
         }
       ],
       "blockers": [
@@ -283,8 +291,8 @@
           "criteria": [
             "P3.5"
           ],
-          "reason": "ccrun不属于Remote Login服务准入组，sshd PAM强制sacl_service=ssh，公钥被接受后连接即关闭。用户已批准临时准入，但脚本需要管理员在本机终端执行，当前系统准入范围未变。",
-          "unblock": "用户在本机 bing 终端执行 sudo /bin/bash scripts/p3-grant-local-ssh-access.sh --apply，然后从fodelf用本轮key连接ccrun并取得id输出；复验凭据/Docker/sudo隔离后接Claude公共链路，验收结束以 --revert 移除。"
+          "reason": "准入已生效且反向SSH取得真实id输出，但凭据隔离验收失败：ccrun主组staff可穿透0750的Agent home，Codex auth.json为0644直接可读，另有67个Agent叶子文件可读。这是既有环境权限状态，非ccnm引入，但Runtime能读Agent凭据即不满足P3.5。",
+          "unblock": "用户选定隔离修正方案（给既有ccrun建独立主组脱离staff，或收紧/Users/bing为0700，或两者兼有并单独收紧auth.json等0644叶子），该动作超出仅临时准入的授权需单独批准；修正后重跑隔离检查通过，再接Claude公共链路。建议在决定前先 --revert 关闭远程准入。"
         }
       ]
     },
@@ -369,7 +377,7 @@
     "P3 额外 64 线程压力出现既有 exec timeout 单测 30.5s 失败；默认全量 511 通过，高并发问题尚未解决。"
   ],
   "handoff": {
-    "next_action": "仅P3：用户已批准临时把ccrun加入com.apple.access_ssh并在验收后移除。脚本 scripts/p3-grant-local-ssh-access.sh 已就绪待管理员在本机 bing 终端 sudo --apply；随后从fodelf用本轮key连接ccrun，必须取得id输出才算登录成功，再复验凭据/Docker/sudo隔离并接Claude公共链路，最后 --revert。Claude尚未启动，勿进入P4。",
+    "next_action": "仅P3：准入已生效，反向SSH取得真实uid=504，但凭据隔离验收失败（staff穿透+Codex auth.json 0644可读+68个叶子可读），已停止推进。等用户选定并授权隔离修正方案，修正后重跑 tests/fixtures/p3-local-runtime-access/admitted.json 对应检查，通过才接Claude公共链路。建议先执行 scripts/p3-grant-local-ssh-access.sh --revert 关闭远程准入。Claude尚未启动，勿进入P4。",
     "scope": "仅 P3；不进入 P4/Machine API，不引入多 Agent/worktree 调度，不主动部署、登录或修改账号/ACL/防火墙。",
     "planning_validation": {
       "at": "2026-09-08T21:22:43+09:00",

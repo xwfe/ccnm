@@ -1,0 +1,46 @@
+{
+  "kind": "real_nodes",
+  "runtime_user": "ccrun",
+  "uid": 504,
+  "primary_gid": 20,
+  "ssh_service_group_member": true,
+  "ssh_service_group_direct_members": [
+    "ccrun"
+  ],
+  "ssh_service_group_nested_groups": [
+    "admin"
+  ],
+  "admin_membership": false,
+  "reverse_ssh_login": true,
+  "reverse_ssh_id_observed": true,
+  "real_home": "/Users/ccrun",
+  "env_codex_home_set": false,
+  "env_claude_config_dir_set": false,
+  "env_ssh_auth_sock_set": false,
+  "sudo_noninteractive_allowed": false,
+  "ssh_private_key_candidates_readable": false,
+  "ssh_private_key_candidates_checked": 8,
+  "isolation_accepted": false,
+  "agent_home_traversable": true,
+  "agent_home_mode": "0750",
+  "agent_home_group": "staff",
+  "runtime_shares_staff_primary_group": true,
+  "readable_agent_paths": [
+    "/Users/bing/.codex/auth.json",
+    "/Users/bing/.codex/auth.json.bak",
+    "/Users/bing/.claude.json",
+    "/Users/bing/.claude/settings.json",
+    "/Users/bing/.codex/session_index.jsonl",
+    "/Users/bing/.codex/thread_history_1.sqlite"
+  ],
+  "readable_agent_leaf_count": 68,
+  "denied_agent_paths": [
+    "/Users/bing/.claude/.credentials.json",
+    "/Users/bing/.codex/config.toml",
+    "/Users/bing/Library/Keychains",
+    "/Users/bing/.orbstack/run"
+  ],
+  "keychain_and_docker_denied_cause": "parent directory mode 0700, not TCC and not absent",
+  "credential_contents_read": false,
+  "limits": "Readability and metadata only; no credential contents were read and nothing was copied. Codex auth.json is world-readable at 0644 and the Runtime shares the staff primary group that traverses the 0750 agent home, so P3.5 credential isolation is NOT accepted. An earlier probe using [ -e ] misreported permission-denied paths as absent; corrected here."
+}

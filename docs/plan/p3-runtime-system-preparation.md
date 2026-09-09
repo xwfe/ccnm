@@ -121,3 +121,22 @@
 准入生效后复验：从 fodelf 用本轮 key 连接本机 ccrun，必须实际拿到 `id` 输出（UID504）才算登录成功，外层 SSH 退出0不算；随后按第4步重做凭据/Docker/sudo 只读隔离检查，再接 Claude 公共链路。最终清理时，`--revert` 与删除公钥行、root清单同属本轮资源，逆序执行。
 
 本轮新增 3 个脚本入口测试，Python 全量28通过；未修改 Rust，不重报历史 Rust 数字。执行前系统未发生任何变更。
+
+### 准入已生效、反向登录通过，但凭据隔离验收失败
+
+用户执行 `--apply`。只读复核：ccrun 已是 `com.apple.access_ssh` 成员，该组 `GroupMembership` 只有 ccrun 一个直接成员，`NestedGroups` 仍只有 admin，ccrun 主组仍 staff、无 admin，UID504 未变。
+
+反向链路首次真正成功：从 fodelf 用本轮 key（私钥仍只在 fodelf）连接 `ccrun@xdwmbp`，内层 SSH 退出0并实际返回 `uid=504(ccrun)`、真实 `HOME=/Users/ccrun`，不是上一轮那种只有外层退出0的假成功。禁用连接复用与 agent 转发，保留 host key 严格校验。内层 ssh 需要 `-n`，否则会吃掉外层 `bash -s` 的脚本，本轮实际踩到并修正。
+
+通过项：Claude `.credentials.json` 与 Codex `config.toml` 不可读，8 个 SSH 私钥候选全部不可读，`sudo -n` 拒绝，无 CODEX_HOME/CLAUDE_CONFIG_DIR/SSH_AUTH_SOCK。
+
+隔离不接受，缺口有两层，证据见 `tests/fixtures/p3-local-runtime-access/admitted.json`：
+
+- staff 穿透：`/Users/bing` 为 0750、属组 staff，而既有 ccrun 主组就是 staff，Agent home 及 `.claude`/`.codex`/`.ssh`（均0755）全部可列。
+- 叶子文件本身 world-readable：`/Users/bing/.codex/auth.json` 与 `.bak` 为 0644，Runtime 可读；`.claude.json`（126KB）可读；两个 Agent 目录下共 68 个叶子文件可读，含各 settings 配置与 Codex 会话历史 sqlite。
+
+只做 `[ -r ]` 判定和 `ls -l` 元数据，没有读取任何凭据内容，没有复制文件。这个缺口是既有环境的文件权限状态，不是 ccnm 引入的，但它使 Runtime 身份能拿到 Agent 凭据，P3.5 不能通过。
+
+同时修正一处自身判定缺陷：上一版探针用 `[ -e ]`，权限拒绝时返回假，把 login Keychain 和 Docker socket 误报成 `absent`。重测确认真实原因是父目录 `/Users/bing/Library`、`/Users/bing/.orbstack` 均为 0700 拒绝访问，不是 TCC 也不是不存在；不可读/不可写的结论成立，但原因不能记错。
+
+在隔离修正方案确定前不启动 Claude 公共链路。修正涉及改既有 ccrun 主组或改个人 home 权限，超出「仅临时准入」的授权范围，需用户单独决定；在此期间建议先执行 `--revert` 关闭远程准入，因为验证结论已取得，继续开启只是让可读的 Codex 凭据多一条远程路径。

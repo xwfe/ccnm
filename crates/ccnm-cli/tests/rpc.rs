@@ -176,6 +176,50 @@ fn an_oversize_line_is_refused_and_the_stream_continues() {
 }
 
 #[test]
+fn a_client_that_reads_while_it_writes_does_not_deadlock() {
+    // Backpressure: enough requests that the answers cannot fit in a pipe
+    // buffer. A client that only wrote would wedge -- the server blocks on
+    // write, stops reading stdin, and both sides wait forever. Reading on
+    // another thread while writing is the contract, and this proves the
+    // server holds up its end of it.
+    let home = sandbox("backpressure");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_ccnm"))
+        .env_clear()
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .env("USER", std::env::var_os("USER").unwrap_or_default())
+        .env("HOME", &home)
+        .env("XDG_STATE_HOME", home.join("state"))
+        .arg("--config")
+        .arg(fixture("agent-instance/runtime.toml"))
+        .arg("rpc")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+
+    let mut stdin = child.stdin.take().unwrap();
+    let writer = std::thread::spawn(move || {
+        stdin.write_all(HELLO.as_bytes()).unwrap();
+        stdin.write_all(b"\n").unwrap();
+        for id in 0..500 {
+            let line = format!("{{\"jsonrpc\":\"2.0\",\"id\":{id},\"method\":\"agents.list\"}}\n");
+            stdin.write_all(line.as_bytes()).unwrap();
+        }
+        // Dropping stdin is the EOF that ends the server.
+    });
+
+    let out = child.wait_with_output().unwrap();
+    writer.join().unwrap();
+    let answers = lines(&out);
+    assert_eq!(answers.len(), 501);
+    // Answers come back in request order: the server handles one at a time.
+    for (n, answer) in answers.iter().skip(1).enumerate() {
+        assert_eq!(answer["id"], n as i64, "answers must keep request order");
+    }
+}
+
+#[test]
 fn nothing_can_be_called_before_the_handshake() {
     let out = talk(
         "handshake",

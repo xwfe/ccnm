@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""校验公开协议的 schema 与 fixture 一致；不运行任何实现，也不证明实现正确。
+"""校验公开协议的 schema 与 fixture 一致；不运行 ccnm rpc，也不证明它的行为与契约一致。
 
 只用标准库。故意不依赖 jsonschema：接续这套计划的前提是"有 Git 和 python3
 就能跑"，为一份草案 schema 引入一个第三方包会把这个前提打掉。代价是这里只
@@ -189,7 +189,7 @@ def main() -> int:
         return 1
     total = len(list((root_dir / FIXTURES).glob("*.json")))
     print(f"协议检查通过：{total} 个 fixture 符合 schema，错误码与说明文档一致。")
-    print("只是结构检查；这套协议还没有实现，不代表任何实现正确。")
+    print("只是结构检查：证明这几份文件互相自洽，不证明 ccnm rpc 的行为与它们一致。")
     return 0
 
 

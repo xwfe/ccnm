@@ -9,8 +9,8 @@
 | legacy Claude，remote SSH MCP，从 Runtime Node 发起 | 预发布支持 | 旧公开命令、Claude v1 wire 与 remote CLI golden 保持兼容；双机真机跑通。 |
 | legacy Claude，remote SSH MCP，从 Agent Node 发起 | 预发布支持 | `run` 先委托 Runtime 解析 workspace，`attach/status/result/stop` 继续在 Agent 本机管理已有 session；`--print` 仍需在 Runtime Node 执行。 |
 | Claude Agent Instance，remote SSH MCP | 预发布支持 | 默认 instance 与 `--agent`、print/interactive、doctor、精确 session、profile 隔离均有测试；公共双机 dogfood 已在授权环境真机通过，见下方门禁结果。 |
-| Codex Agent Instance，remote SSH MCP | 预发布支持 | 仅接受实测的 Codex CLI `0.153.4`（见下方版本 pin）；公共入口已在授权双机真机验证。 |
-| Machine API（`ccnm rpc`），`print` 模式 | 候选，未经真机 | 协议是 **v1 候选**，不是稳定 v1。离线单元、集成和黑盒契约测试通过，**但没有跟真实 Agent 跑过一次**。见[协议说明](protocol/README.md)。 |
+| Codex Agent Instance，remote SSH MCP | 预发布支持 | 仅接受实测的 Codex CLI `0.154.0`（见下方版本 pin）；公共入口已在授权双机真机验证。 |
+| Machine API（`ccnm rpc`），`print` 模式 | 候选，已有真机证据 | 协议仍是 **v1 候选**，不是稳定 v1——冻结是 P7.5 的动作。两个 provider 各跑通一次真机双机闭环并与人类 CLI 对照（[Claude](research/p7-real-machine-2026-09-10.md)、[Codex](research/p7-codex-parity-2026-09-10.md)）：两条腿产物属主相同，`usage` 端到端到达调用方（Codex 不报 `cost`，永远缺席）。见[协议说明](protocol/README.md)。 |
 | Machine API 的 `interactive` 模式、输出分页、结果过期 | 未实现 | 都不在 `hello` 声明的能力里，调用会被明确拒绝，不静默降级。 |
 | Claude legacy colocated | 明确拒绝 | remote-only 启动参数已从 native 候选命令移除，但 installed Claude 尚未真实验收；本 build 在创建 session 前返回 `CCNM_E_NOT_READY`。 |
 | Claude/Codex Agent Instance colocated | 明确拒绝 | 没有可信 Runtime credential boundary 和真实验收，不自动降级为 legacy/native。 |

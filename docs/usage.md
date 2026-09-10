@@ -133,7 +133,7 @@ ccnm rpc
 
 它在 stdin/stdout 上说 JSON-RPC 2.0，一行一条消息，不开网络端口。谁能启动这个进程，谁就有这套 API 的全部权限。
 
-现在能用的是 `print` 模式的完整一轮：握手、列 instance、启动、查状态、取结果、停止。**还没跟真实 Agent 跑通过一次**——所有测试都是离线的。方法、参数、错误码和 fixture 见[协议说明](protocol/README.md)。
+现在能用的是 `print` 模式的完整一轮：握手、列 instance、启动、查状态、取结果、停止。Claude 与 Codex 各在真机上跑通过一次，**但协议还没冻结**，字段和语义仍可能改。方法、参数、错误码和 fixture 见[协议说明](protocol/README.md)。
 
 ## 当前模型能做什么
 

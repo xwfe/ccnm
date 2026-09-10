@@ -1,0 +1,108 @@
+{
+  "kind": "p7-parity",
+  "token": "ccnmp7-5f64318321f0",
+  "workspace": "p7codex",
+  "instance": "codex-main",
+  "declared_provider": "codex",
+  "workspace_root": "/Users/Shared/ccnm-p7codex",
+  "verdict": "fail",
+  "checks": [
+    {
+      "name": "human_cli_succeeded",
+      "passed": true,
+      "detail": "退出码 0"
+    },
+    {
+      "name": "human_cli_side_effect",
+      "passed": true,
+      "detail": "工作树里有内容正确的产物"
+    },
+    {
+      "name": "machine_api_succeeded",
+      "passed": true,
+      "detail": "completed 且 exit_code 0"
+    },
+    {
+      "name": "machine_api_side_effect",
+      "passed": false,
+      "detail": "文件不存在"
+    },
+    {
+      "name": "same_runtime_owner",
+      "passed": null,
+      "detail": "有一条腿没产物，属主无从比对"
+    },
+    {
+      "name": "machine_api_kept_private_data_out",
+      "passed": true,
+      "detail": "响应里没有私有路径或凭据名"
+    },
+    {
+      "name": "provider_matches_declaration",
+      "passed": true,
+      "detail": "声明 codex，Agent 报 codex"
+    }
+  ],
+  "human_cli": {
+    "ok": true,
+    "exit_code": 0,
+    "elapsed_s": 19.3,
+    "stdout_tail": "session   467c7016-0879-4d50-be82-80b021bc483d\nstarted   by ccnm 0.2.0 as bing, pid 31396, Aqua\ncodex     exited 0 in 17.9 s\nrun       1 turn; reported tokens in 57380 out 3040 cached 43392 cache-write 0 reasoning 2677; 0 permission denials; cost and API timing not reported\n\n--- result ---\nDONE\n",
+    "stderr_tail": "\nsession directory on work: /Users/bing/.local/state/ccnm/sessions/467c7016-0879-4d50-be82-80b021bc483d\n",
+    "reason": null
+  },
+  "human_cli_side_effect": {
+    "present": true,
+    "matches": true,
+    "owner": {
+      "uid": 504,
+      "name": "ccrun"
+    },
+    "bytes": 19,
+    "reason": null
+  },
+  "machine_api": {
+    "ok": true,
+    "reason": null,
+    "server": {
+      "name": "ccnm",
+      "version": "0.2.0"
+    },
+    "protocol": "ccnm.machine/1",
+    "agent_requested": {
+      "node": "codex-agent",
+      "instance": "codex-main"
+    },
+    "session": "s-ec506f07-c23c-4a8b-9781-f3a9a6553aae",
+    "reused": false,
+    "state": "completed",
+    "outcome": {
+      "duration_ms": 13415,
+      "exit_code": 0,
+      "stop_requested": false,
+      "timed_out": false
+    },
+    "provider": "codex",
+    "provider_session_id_present": true,
+    "usage": {
+      "input_tokens": 47021,
+      "output_tokens": 1764
+    },
+    "cost": null,
+    "text_tail": "DONE",
+    "elapsed_s": 15.1
+  },
+  "machine_api_side_effect": {
+    "present": false,
+    "matches": false,
+    "reason": "文件不存在"
+  },
+  "private_markers_found": [],
+  "artifacts_removed": [],
+  "sequencing": {
+    "method": "fixed-delay",
+    "waited_s": 10.0,
+    "observed": false,
+    "blamed_for_failure": false
+  }
+}

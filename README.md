@@ -16,7 +16,7 @@ The current pre-release build runs official CLI agents on an **Agent Node** and 
 
 **不复制源码，不把 AI 凭证下放到 Runtime Node，也不实现私有模型 API Client。**
 
-> 当前处于发布前 dogfood 阶段，**只支持 macOS**。Claude 和 Codex 两个方向的公共入口都已在授权双机上真机跑通；给外部程序用的 machine API 已经实现，但**还没跟真实 Agent 跑过一次**。准确范围和未验证项见[支持矩阵](docs/support-matrix.md)。
+> 当前处于发布前 dogfood 阶段，**只支持 macOS**。Claude 和 Codex 两个方向的公共入口都已在授权真机上跑通；给外部程序用的 machine API 也已用两个 provider 各跑通一次真机闭环，并与人类 CLI 做过副作用对照，但协议**仍是 v1 候选、尚未冻结**。准确范围和未验证项见[支持矩阵](docs/support-matrix.md)。
 
 ## 角色模型
 

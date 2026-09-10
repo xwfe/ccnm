@@ -69,12 +69,25 @@ def probe_prompt(path: Path, token: str) -> str:
     提示词写得死板是故意的：文件名和内容都要求逐字复现，模型少写一个字符就
     是没通过，不给"大概做到了"留解释空间。用英文是因为要求的是精确字符串复
     现，少一层翻译少一层歧义。
+
+    **为什么点名 apply_patch。** 第一版不点名任何工具，Claude 那轮照过；
+    Codex 那轮的 machine API 腿栽在这里：模型只试了一次 exec_command、参数形
+    状还写错（missing field `cmd`），被 ccnm 按名字拒绝之后就直接回 DONE，文
+    件根本没写。日志里它自己说的是"The first command was not accepted in this
+    executor; I'll check which nested tools are available"——ccnm 固定传
+    `--enable code_mode_only`，而这个模型不宣称支持 Code Mode，工具是被包了
+    一层的。那是模型的工具发现能力，不是这个脚本要测的东西。
+
+    七个工具是 **ccnm 自己的 MCP 契约**，两个 provider 拿到的是同一套，所以
+    点名它不偏袒谁，也没有放宽任何判据：文件在不在、内容对不对、属主是谁，
+    三条一字未改。
     """
     return (
         f"Create a file at exactly this path: {path}\n"
         f"Its entire content must be exactly this line, nothing else: {token}\n"
-        "Do not create any other file. Do not modify any existing file. "
-        "Reply with only the word DONE when the file is written."
+        "Use the apply_patch tool from the ccnm MCP server, with op \"add\", "
+        "to create it. Do not create any other file. Do not modify any "
+        "existing file. Reply with only the word DONE when the file is written."
     )
 
 

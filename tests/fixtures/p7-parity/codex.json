@@ -1,0 +1,113 @@
+{
+  "kind": "p7-parity",
+  "token": "ccnmp7-c11198aa8cb5",
+  "workspace": "p7codex",
+  "instance": "codex-main",
+  "declared_provider": "codex",
+  "workspace_root": "/Users/Shared/ccnm-p7codex",
+  "verdict": "pass",
+  "checks": [
+    {
+      "name": "human_cli_succeeded",
+      "passed": true,
+      "detail": "退出码 0"
+    },
+    {
+      "name": "human_cli_side_effect",
+      "passed": true,
+      "detail": "工作树里有内容正确的产物"
+    },
+    {
+      "name": "machine_api_succeeded",
+      "passed": true,
+      "detail": "completed 且 exit_code 0"
+    },
+    {
+      "name": "machine_api_side_effect",
+      "passed": true,
+      "detail": "工作树里有内容正确的产物"
+    },
+    {
+      "name": "same_runtime_owner",
+      "passed": true,
+      "detail": "人类 CLI uid=504，machine API uid=504"
+    },
+    {
+      "name": "machine_api_kept_private_data_out",
+      "passed": true,
+      "detail": "响应里没有私有路径或凭据名"
+    },
+    {
+      "name": "provider_matches_declaration",
+      "passed": true,
+      "detail": "声明 codex，Agent 报 codex"
+    }
+  ],
+  "human_cli": {
+    "ok": true,
+    "exit_code": 0,
+    "elapsed_s": 20.7,
+    "stdout_tail": "session   c762df8b-ffc0-4fd7-aa0d-3fbd25c9a673\nstarted   by ccnm 0.2.0 as bing, pid 31396, Aqua\ncodex     exited 0 in 19.2 s\nrun       1 turn; reported tokens in 40713 out 3595 cached 29184 cache-write 0 reasoning 3360; 0 permission denials; cost and API timing not reported\n\n--- result ---\nDONE\n",
+    "stderr_tail": "\nsession directory on work: /Users/bing/.local/state/ccnm/sessions/c762df8b-ffc0-4fd7-aa0d-3fbd25c9a673\n",
+    "reason": null
+  },
+  "human_cli_side_effect": {
+    "present": true,
+    "matches": true,
+    "owner": {
+      "uid": 504,
+      "name": "ccrun"
+    },
+    "bytes": 20,
+    "reason": null
+  },
+  "machine_api": {
+    "ok": true,
+    "reason": null,
+    "server": {
+      "name": "ccnm",
+      "version": "0.2.0"
+    },
+    "protocol": "ccnm.machine/1",
+    "agent_requested": {
+      "node": "codex-agent",
+      "instance": "codex-main"
+    },
+    "session": "s-2deeb969-a00c-4faa-92af-3f69e8b7cf73",
+    "reused": false,
+    "state": "completed",
+    "outcome": {
+      "duration_ms": 20289,
+      "exit_code": 0,
+      "stop_requested": false,
+      "timed_out": false
+    },
+    "provider": "codex",
+    "provider_session_id_present": true,
+    "usage": {
+      "input_tokens": 80308,
+      "output_tokens": 2225
+    },
+    "cost": null,
+    "text_tail": "DONE",
+    "elapsed_s": 22.2
+  },
+  "machine_api_side_effect": {
+    "present": true,
+    "matches": true,
+    "owner": {
+      "uid": 504,
+      "name": "ccrun"
+    },
+    "bytes": 19,
+    "reason": null
+  },
+  "private_markers_found": [],
+  "artifacts_removed": [],
+  "sequencing": {
+    "method": "fixed-delay",
+    "waited_s": 10.0,
+    "observed": false,
+    "blamed_for_failure": false
+  }
+}

@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-09-10T21:00:00+09:00",
+  "last_updated": "2026-09-10T17:20:00+09:00",
   "current_task": "P7",
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
@@ -500,7 +500,7 @@
       ],
       "owner": null,
       "started_at": "2026-09-10T16:20:00+09:00",
-      "last_updated": "2026-09-10T21:00:00+09:00",
+      "last_updated": "2026-09-10T17:20:00+09:00",
       "completed_criteria": [
         "P7.1",
         "P7.2"
@@ -553,6 +553,14 @@
           ],
           "ref": "docs/plan/p7-real-machine-session.md",
           "result": "真机会话计划：三件事一套环境且顺序不可换（先原 P6.3 的对照并据此确立或修改协议 v1，再真实项目完整 dogfood 与生产边界复核，最后全部门禁重跑）。逐项列出需单独授权的动作与其撤销方式，并写明订阅额度消耗不可撤销。拓扑先确认能否只用一个方向（两 provider 的 instance 登录在同一 Agent Node），不满足才退回 P3 的两个相反方向并记录原因。P3 撞出来的清理四条固化进计划：/Users 的 sunlnk 使 rmdir 报 Operation not permitted、SIP 拒绝 chflags 故改用带 entitlement 的 sysadminctl -deleteUser（/var/db 的 sunlnk 则可临时摘掉，两者不同）、deleteUser 已连带删除主组故再删组会报 -14009、删内容前先做可删性无损探测；另加 sysadminctl 失败也可能返回 0 与清理脚本必须可重跑。限制：这份计划本身未经真机验证，除对照工具外其余命令本轮未在真机执行；本条是准备记录，不代表 P7.3 有任何进展。"
+        },
+        {
+          "kind": "real_nodes",
+          "criteria": [
+            "P7.3"
+          ],
+          "ref": "docs/research/p7-real-machine-2026-09-10.md",
+          "result": "并入 P7.3 的原 P6.3 内容：Claude 双机闭环通过，判定 pass；Codex 未跑。拓扑 Agent=fodelf（官方 Claude 2.1.267）/ Runtime=本机 ccrun(uid504)，方向由登录位置决定；未创建任何新账号，ccrun 为既有账号仅改主组与准入，脚本 scripts/p7-*.sh，root 清单 /var/db/ccnm-p7-local-20260910。隔离先立住：新连接以 ccrun 探测，逐项区分拒绝与不存在，/Users/bing 及其下 .codex/.claude/.ssh/auth.json、docker.sock 全部拒绝，sudo 需密码；以 ccrun 跑 ccnm doctor p7parity 得 0 failed（2 个 SKIP 为文档写明只有活会话或 ccnm 之外才能证明），含 exec_command OK the runtime account is confined、Remote MCP handshake OK 7 工具。对照比副作用不比模型文字，七项全过：两条腿各写带一次性 token 的文件，内容正确且属主同为 uid=504——这一行证明两个公开入口落到同一条隔离执行链，machine API 未换身份执行；响应中 home 路径/.claude/.codex/auth.json/私钥名/session_dir/controller 出现 0 次；Agent 自报 provider=claude。顺带真机确认本轮所修的 usage/cost：session.result 实际返回 input_tokens 10、output_tokens 1031、total_usd 0.0856755。证据 tests/fixtures/p7-parity/claude.json（唯一脱敏是人类 CLI stderr 里的 Agent home 路径）。真机暴露四个问题，均已记录：controller install 不替换已在监听的 controller 且 doctor 因版本字符串相同而抓不到，症状是无关的两行报 protocol 3 vs 1（已写入运维手册）；No SSH keys 只扫 ~/.ssh，把传输私钥挪到 ~/.config/ccnm/transport 即由 FAIL 变 OK 而照用不误，故 production-safety 的最终门禁在 mcp-ssh 下只有这样才达得到，该检查声称的比证明的多；~/.claude 为 0755 时 instance 选不上，Runtime 侧只报身份不一致不提权限；session.start 要求 agent.node 而调用方本就不许选 node，第一轮真机在人类 CLI 已花额度后栽在这里。限制：Codex 装在本机且当前无额度，需相反拓扑并在 fodelf 另建账号，故未跑——经 machine API 跑 Codex 从未发生过；interactive、Ctrl-D、egress 与真实项目完整 dogfood 均未做。订阅消耗三次 Claude print，合计约 0.4 美元。"
         }
       ],
       "blockers": [
@@ -561,8 +569,8 @@
             "P7.3",
             "P7.4"
           ],
-          "reason": "P7.3 需要用户授权重建双机临时环境（Runtime 账号、SSH 准入、两端部署、真实 Claude/Codex 订阅额度、事后清理归零），并在同一套环境内先完成并入的原 P6.3 内容——用公共 API 各跑一次真实 provider 的双机闭环并与人类 CLI 结果对照。未获授权前没有任何真机证据，协议保持 v1 候选。P7.4 要冻结支持范围并提交发布候选，依赖 P7.3 的结果。",
-          "unblock": "离线准备已就绪：对照工具 scripts/p7_parity_check.py 与会话计划 docs/plan/p7-real-machine-session.md，后者按第二节列出待批准的逐项动作。用户授权后重建双机环境：先跑并入的原 P6.3（公共 API 双机闭环，与 ccnm run --print 对照，据结果确立或修改协议 v1），再做真实项目从启动→修改→测试→结果→停止/恢复的完整验收与生产边界复核，Rust/Python/计划检查/契约测试全部重跑并如实列出失败、跳过与未测平台；随后评审阻塞项、冻结范围、提交发布候选与限制说明。发布、推送、打 tag 另按用户授权执行。"
+          "reason": "P7.3 只完成 Claude 一半：Codex 装在本机而非 Agent Node，且当前没有额度，跑它需要相反拓扑并在 fodelf 另建临时 Runtime 账号，特权准备翻倍且没额度也跑不动。真实项目的完整 dogfood（启动→修改→测试→结果→停止/恢复）也未做——本轮工作树只是空 git 仓库，没有项目和工具链。P7.4 要冻结范围并提交发布候选，依赖用户对 Codex 缺口怎么处理的决定。",
+          "unblock": "用户二选一：（a）接受只有 Claude 的真机证据，带明确限制说明进 P7.4，限制须写明经 machine API 跑 Codex 从未发生过；（b）等 Codex 额度恢复后补齐相反拓扑再收口。无论哪种，真实项目 dogfood 仍需在工作树里放真项目与工具链后单独执行。另有三项真机findings待决定是否改实现：No SSH keys 检查的含义与传输密钥的位置、instance 选择失败时把 Agent 侧原因带回 Runtime 侧、session.start 是否放宽 agent.node 必填。"
         }
       ]
     },

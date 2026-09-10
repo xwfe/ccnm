@@ -1,0 +1,119 @@
+{
+  "kind": "p7-parity",
+  "token": "ccnmp7-ce35e3295a24",
+  "workspace": "p7parity",
+  "instance": "claude-main",
+  "declared_provider": "claude",
+  "workspace_root": "/Users/Shared/ccnm-p7-20260910/parity",
+  "verdict": "pass",
+  "checks": [
+    {
+      "name": "human_cli_succeeded",
+      "passed": true,
+      "detail": "退出码 0"
+    },
+    {
+      "name": "human_cli_side_effect",
+      "passed": true,
+      "detail": "工作树里有内容正确的产物"
+    },
+    {
+      "name": "machine_api_succeeded",
+      "passed": true,
+      "detail": "completed 且 exit_code 0"
+    },
+    {
+      "name": "machine_api_side_effect",
+      "passed": true,
+      "detail": "工作树里有内容正确的产物"
+    },
+    {
+      "name": "same_runtime_owner",
+      "passed": true,
+      "detail": "人类 CLI uid=504，machine API uid=504"
+    },
+    {
+      "name": "machine_api_kept_private_data_out",
+      "passed": true,
+      "detail": "响应里没有私有路径或凭据名"
+    },
+    {
+      "name": "provider_matches_declaration",
+      "passed": true,
+      "detail": "声明 claude，Agent 报 claude"
+    }
+  ],
+  "human_cli": {
+    "ok": true,
+    "exit_code": 0,
+    "elapsed_s": 33.9,
+    "stdout_tail": "session   73637d2c-a78d-4551-8b07-e85eead23c2d\nstarted   by ccnm 0.2.0 as fodelf, pid 53233, Aqua\nclaude    exited 0 in 31.5 s\nrun       8 turns in 28.6 s (api 29.7 s); tokens in 14 out 1646 cache-write 6152 cache-read 73997; $0.14; 0 permission denials\n\n--- result ---\nDONE\n",
+    "stderr_tail": "\nsession directory on work: <agent-home>/.local/state/ccnm/sessions/73637d2c-a78d-4551-8b07-e85eead23c2d\n",
+    "reason": null
+  },
+  "human_cli_side_effect": {
+    "present": true,
+    "matches": true,
+    "owner": {
+      "uid": 504,
+      "name": "ccrun"
+    },
+    "bytes": 20,
+    "reason": null
+  },
+  "machine_api": {
+    "ok": true,
+    "reason": null,
+    "server": {
+      "name": "ccnm",
+      "version": "0.2.0"
+    },
+    "protocol": "ccnm.machine/1",
+    "agent_requested": {
+      "node": "agent",
+      "instance": "claude-main"
+    },
+    "session": "s-f6489c01-1211-4bd2-81ef-38a4355cf0aa",
+    "reused": false,
+    "state": "completed",
+    "outcome": {
+      "duration_ms": 19879,
+      "exit_code": 0,
+      "stop_requested": false,
+      "timed_out": false
+    },
+    "provider": "claude",
+    "provider_session_id_present": true,
+    "usage": {
+      "input_tokens": 10,
+      "output_tokens": 1031
+    },
+    "cost": {
+      "total_usd": 0.0856755
+    },
+    "text_tail": "DONE",
+    "elapsed_s": 22.2
+  },
+  "machine_api_side_effect": {
+    "present": true,
+    "matches": true,
+    "owner": {
+      "uid": 504,
+      "name": "ccrun"
+    },
+    "bytes": 20,
+    "reason": null
+  },
+  "private_markers_found": [],
+  "artifacts_removed": [
+    "cli:ccnm-parity-cli-ccnmp7-ce35e3295a24.txt",
+    "api:ccnm-parity-api-ccnmp7-ce35e3295a24.txt"
+  ],
+  "sequencing": {
+    "method": "guard-dir",
+    "waited_s": 0.0,
+    "observed": true,
+    "blamed_for_failure": false
+  },
+  "$note": "P7.3 真机对照实测（2026-09-10）。Agent=fodelf 官方 Claude 2.1.267，Runtime=本机隔离 ccrun(uid 504)。人类 CLI 与 machine API 各跑一次同一件事，比对 Runtime 侧副作用。唯一脱敏是人类 CLI stderr 里的 Agent home 路径；machine API 的响应中私有路径出现 0 次，那是泄漏检查的结论而非脱敏结果。"
+}

@@ -6,6 +6,30 @@
 
 它不绑定“家庭机”这种物理位置，也不只是为了隐藏某几个目录。它真正解决的是：**AI 的一次工具调用，不应该自动继承你个人登录账号能做的一切。**
 
+## 四种身份，别混成一个
+
+一套 ccnm 里有四个操作系统身份。它们可能分布在两台机器上，也可能有几个在同一台，但**不能是同一个账号**：
+
+| 身份 | 干什么 | 可以持有 | 不该持有 |
+| --- | --- | --- | --- |
+| **Operator**（控制身份） | 你本人。敲 `ccnm run/status/stop`、跑 `ccnm rpc` | 连到 Agent Node 的 SSH 私钥、你自己的配置 | 这些不会自动传给 Runtime 工具 |
+| **Agent Identity** | Agent Node 上跑 Controller 和 Claude/Codex 的账号 | 官方 CLI 的登录/订阅、连到 Runtime Executor 的 SSH 私钥 | 项目的私密凭据（除非项目确实需要） |
+| **Runtime Executor**（`ccrun`） | Runtime Node 上跑 `internal mcp-serve` 和全部项目工具 | `authorized_keys` 这类**入站**公开状态、项目最小必要凭据 | Agent 登录、你的个人凭据、**任何 ccnm 正常运行所需的出站 SSH 私钥或 SSH agent**、sudo/admin/特权 socket |
+| **Administrator** | 建账号、配 ACL、改网络策略 | 主机管理权限 | 不参与日常 Agent session |
+
+一句话硬约束：
+
+> **以 Runtime Executor 身份运行、会碰到 Agent 输入或项目数据的 ccnm 进程，不能为了完成 ccnm 自己的控制链而主动 SSH 到别处。** `ccrun` 只接受入站连接。
+
+**为什么要分。** Runtime Executor 是唯一会执行模型产出内容的身份。它多一把出站私钥，就等于把"Agent 让我跑一条命令"变成"Agent 可以以我的名义连到别的机器"。而 Operator 手上有出站钥匙是正常的——因为 Operator 不执行模型的命令，它只发号施令。
+
+**现在的代码还没完全做到。** 这是 P7.3 在真机上量出来的，写在这里免得你照着做了却发现对不上：
+
+- `ccnm doctor` 那批身份检查判的是**敲命令的那个进程**，所以同一个 workspace 以 `ccrun` 跑是 0 failed、以你自己的账号跑是 7 failed。绿表只代表"跑 doctor 的这个账号是干净的"。
+- 当前主线链路里，Runtime 侧发起会话时要从 Runtime Node 拨号去 Agent Node，所以那个身份必须持一把出站私钥——**与上面的硬约束直接冲突**。
+
+两条都在修，批次和顺序见[双执行入口方案](plan/runtime-surfaces.md)：身份契约（Batch A）→ Runtime 权威解析（B）→ 换控制链（C）→ doctor 结论（D）。**在 Batch C/D 落地之前，不要把 doctor 的绿灯当成 Runtime Executor 的结论。**
+
 ## `ccrun` 能解决什么
 
 如果直接让 Runtime 以个人账号运行，`exec_command` 理论上可以继承这个账号能访问的所有资源，例如：
@@ -65,14 +89,16 @@ ccnm 不会假装“禁止 `curl` / `wget` / 某几个程序名”就等于 sand
 ccnm doctor <workspace>
 ```
 
+**先说清楚这条命令在审谁**：它审的是跑它的那个进程，不是"Runtime Executor"这个角色。所以这个 gate 必须**以 Runtime Executor 的身份执行**才有意义；以 Operator 身份跑出来的红绿，说的是 Operator 自己。改由权威 Runtime probe 报告是 P7.4 Batch D 的事。
+
 confinement gate 会检查它能在本机可靠判断的性质：
 
 ```text
 Runs as root            Runtime 不能是 root
-Runtime user            当前用户必须匹配 nodes.<runtime>.runtime_user
+Runtime user            被审计的账号必须匹配 nodes.<runtime>.runtime_user
 No sudo                 不能 passwordless sudo
 Not an admin            不应属于 admin / wheel / sudo 等管理组
-No SSH keys             ~/.ssh 中不应存在当前账号可读的私钥
+No SSH keys             ~/.ssh 中不应存在该账号可读的私钥（只看这一个目录）
 No Claude credential    Runtime identity 不应持有 Claude 凭证
 No Codex credential     不论当前选谁，都检查 Codex 默认、专用及本地引用目录
 No authentication environment  不接受未授权的认证环境（只检查名称，不打印值）
@@ -136,7 +162,18 @@ sudo chmod 600 /Users/ccrun/.ssh/authorized_keys
 
 这里只应该放 Agent Node 的**公钥**。
 
-不要在 `/Users/ccrun/.ssh/` 放任何私钥，也不要把个人 SSH agent 转发给它。
+`ccrun` 是**入站专用**（inbound-only）：别人连进来，它不连出去。所以它名下不该有任何私钥，也不要把个人 SSH agent 转发给它（`SSH_AUTH_SOCK` 不该在它的环境里）。
+
+### 换个目录藏私钥不算数
+
+`No SSH keys` 这条检查**只看 `~/.ssh`**。把同一把私钥挪到 `~/.config/ccnm/transport/`，这一行就从 FAIL 变成 OK，而账号该能连出去还是能连出去——检查看不见，不等于风险没了。
+
+**这个做法已经作废，不再是达标路径。** P7.3 真机上正是这么做才让[最终门禁](#最终门禁)全绿的，那份绿灯不能当作隔离证据。正确的目标状态只有一个：`ccrun` 名下**任何位置**都没有 ccnm 运行所需的出站私钥。
+
+要做到这一点，得先把"Runtime 侧发起会话时从 Runtime Node 拨号去 Agent"那条链路改掉（P7.4 Batch C），检查范围也要跟着扩到已知 transport 目录和 `SSH_AUTH_SOCK`（Batch D）。在那之前：
+
+- 如果你的部署里 Runtime 侧不需要主动发起（Agent 侧发起会话），`ccrun` 就应该一把私钥都没有；
+- 如果需要，那把 transport 私钥是**已知缺口**，请当成"这台机器上还有一条没关的路"来记账，别当成已经解决。
 
 在 Agent Node 的 `~/.ssh/config` 中，让 `nodes.runtime.ssh` 对应的 alias 使用 `ccrun`：
 
@@ -210,6 +247,10 @@ Runtime Node 的 ccnm 配置：
 [nodes.runtime]
 runtime_user = "ccrun"
 ```
+
+`runtime_user` 的含义只有一个：**Runtime Executor 应该是哪个账号**——也就是 Agent 的 SSH MCP transport 落到哪个账号上、项目工具最终以谁的身份跑。
+
+它**不**规定谁可以敲 `ccnm`。Operator 用自己的账号跑 CLI 是正常的。（当前 doctor 会因为这个差异报红，原因见开头的[四种身份](#四种身份别混成一个)。）
 
 Agent Node 那份则是它自己怎么连过来：
 
@@ -302,6 +343,8 @@ ccnm 的 doctor 能覆盖一部分明确可验证项，但不能证明整个操�
 ccnm doctor <workspace>
 ```
 
+**以 Runtime Executor 的身份跑它**（`ccrun`），否则你看的是自己账号的体检报告。
+
 目标是这些行全部成为 OK：
 
 ```text
@@ -313,6 +356,8 @@ No Claude credential
 No Docker socket
 exec_command
 ```
+
+这七行现在证明的是：**跑这条命令的账号**没有 sudo/admin、`~/.ssh` 里没有私钥、够不到已知 Agent 凭据、写不了 Docker socket。它们不证明这个账号连不出去（检查只看一个目录），也不证明真正执行工具的进程就是它——那两件事分别是 P7.4 Batch D 和 Batch C 在修。
 
 达到这个状态后，再让有价值的真实项目脱离 `allow_unconfined_exec` 进入长期 dogfood。
 

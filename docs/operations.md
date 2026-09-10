@@ -126,6 +126,8 @@ ccnm doctor demo
 
 真机上撞出来的两条，装完环境第一次放真项目时一定会遇到。
 
+这里说的“执行身份”是 **Runtime Executor**（通常叫 `ccrun`）：Agent 的 MCP transport 落到的那个账号，项目工具真正以它的身份跑。敲 `ccnm` 的是 **Operator**，通常是你自己的账号，两者不该是同一个——四种身份的完整边界见[生产安全](production-safety.md)。
+
 **项目目录必须属于 Runtime 执行身份本人，光可写不够。** 放在别人拥有的 0777 目录里，文件是写得进去，但那个身份跑任何 git 命令都会被拒：
 
 ```text
@@ -142,7 +144,9 @@ CCNM_E_WRONG_WORKSPACE:
 caused by: Permission denied (os error 13)
 ```
 
-第一行读着像路径写错了，真正的原因在第二行。用 Runtime 执行身份自己跑这条命令就好了。
+第一行读着像路径写错了，真正的原因在第二行。
+
+**这是个已知缺陷，不是设计。** 注册 workspace 是 Operator 的活儿，可它却拿当前进程的身份去 stat 那个目录，于是"项目放在执行身份自己家里"这种最该被支持的布局反而注册不了。眼下的绕法是临时用 Runtime Executor 的身份跑一次 `workspace add`；正式修法是把 workspace 权威解析搬到 Runtime Executor 那边（P7.4 Batch B，见[双执行入口方案](plan/runtime-surfaces.md)）。
 
 **新建的执行身份没有 git 身份，第一次 commit 直接失败：**
 

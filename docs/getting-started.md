@@ -124,6 +124,8 @@ allow_unconfined_exec = true
 runtime_user = "ccrun"
 ```
 
+这一行的意思是"Agent 连进来之后，项目工具以 `ccrun` 的身份跑"，**不是"你要用 `ccrun` 敲 ccnm"**。
+
 详细做法见 [生产安全](production-safety.md)。系统用户、ACL 和网络策略仍然故意由人手工配置；ccnm 负责检查边界，不会静默修改主机安全模型。
 
 ## 6. 启动项目

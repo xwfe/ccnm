@@ -103,10 +103,17 @@ pub struct Node {
     /// ccnm never performs that login (design doc section 21).
     #[serde(default)]
     pub claude_config_dir: Option<PathBuf>,
-    /// The dedicated account the MCP runtime must run as on this node
-    /// (design doc section 18). ccnm never creates it and never switches
-    /// to it; it checks that it is what the runtime is running as, and
-    /// refuses `exec_command` when it is not.
+    /// The **Runtime Executor**'s expected identity on this node: the
+    /// dedicated account the Agent's SSH MCP transport lands on, under
+    /// which `internal mcp-serve` and every project tool run (design doc
+    /// section 18). ccnm never creates it and never switches to it; it
+    /// checks that the runtime is running as that account and refuses
+    /// `exec_command` when it is not.
+    ///
+    /// It does **not** say which account may type `ccnm`. The Operator
+    /// running the public CLI or `ccnm rpc` is a separate identity and may
+    /// hold the control SSH credential to the Agent Node; the Runtime
+    /// Executor is inbound-only. See docs/production-safety.md.
     ///
     /// Unset is itself a failure on the Runtime Node: without it ccnm
     /// cannot tell the dedicated account from the developer's own.

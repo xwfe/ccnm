@@ -52,13 +52,18 @@ Controller 负责：
 
 它不保存 workspace 真相，也不替 Runtime Node 执行项目工具。
 
-## Runtime Service Account
+## 四种操作系统身份
 
-`ccrun` 是 Runtime Node 上建议使用的低权限 Unix 账号。
+Node 说的是"哪台机器负责什么"，身份说的是"哪个账号在动手"。两者不是一回事，一台 Node 上可以有好几个身份：
 
-它不是新的 Node 角色，也不是 AI 账号。它解决的是：**`exec_command` 到底继承哪个操作系统身份的权限。**
+- **Operator**：你本人，敲 public CLI / `ccnm rpc`。可以持有到 Agent Node 的 SSH 私钥。
+- **Agent Identity**：Agent Node 上跑 Controller 与官方 CLI 的账号，持有登录/订阅，以及连到 Runtime Executor 的 SSH 私钥。
+- **Runtime Executor**（建议叫 `ccrun`）：Runtime Node 上跑 `internal mcp-serve` 和全部项目工具的低权限账号。**入站专用**——Agent 连进来，它不为 ccnm 的控制链连出去。
+- **Administrator**：建账号、配 ACL、改网络策略，不参与日常 session。
 
-详细边界见 [生产安全](production-safety.md)。
+它不是新的 Node 角色，也不是 AI 账号。要分开是因为：**`exec_command` 到底继承哪个操作系统身份的权限**，而 Runtime Executor 是唯一真正执行模型产出内容的那个。
+
+完整表格、硬约束和当前实现与它的差距见 [生产安全](production-safety.md)；差距怎么收敛见[双执行入口方案](plan/runtime-surfaces.md)。
 
 ## 当前双 Node 拓扑
 
@@ -160,15 +165,18 @@ MCP runtime 已经做了：
 因此真正的主机权限边界是：
 
 ```text
-Runtime Service Account
+Runtime Executor 身份
 + filesystem ACL
 + sudo/admin 权限
 + credential exposure
++ 出站 SSH 凭据（含 SSH agent）
 + Docker/本地特权接口
 + network policy
 ```
 
 而不是“命令名黑名单”。
+
+出站 SSH 凭据算在边界里，是因为 Runtime Executor 有一把可用私钥，就等于 `exec_command` 能以它的名义连到别的机器。当前主线链路仍要求 Runtime 侧持有到 Agent 的出站私钥，这是**已知未闭合的边界**，见[生产安全](production-safety.md)与 [P7.4 批次](plan/runtime-surfaces.md)。
 
 ## 历史术语
 

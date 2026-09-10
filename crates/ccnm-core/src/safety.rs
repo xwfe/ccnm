@@ -157,8 +157,22 @@ impl Audit {
 
 /// Look at the account this process is running as.
 ///
-/// `expected_user` is the account the config says the runtime should be,
-/// and `home` is this process's home directory.
+/// `expected_user` is `runtime_user`: the identity the **Runtime Executor**
+/// is expected to be — the account the Agent's SSH MCP transport lands on
+/// and under which project tools actually run. It says nothing about which
+/// account may type `ccnm` (see docs/production-safety.md, 四种身份).
+///
+/// **This audits the calling process, whoever that is.** Called from
+/// `internal mcp-serve` the caller *is* the Runtime Executor, so the result
+/// is a Runtime verdict. Called from the public CLI it describes the
+/// Operator instead, and a caller that presents it as a Runtime verdict is
+/// reporting the wrong account — P7.3 hit exactly that: the same workspace
+/// audited green as `ccrun` and red as the operator's own login. Moving the
+/// verdict to an authoritative Runtime probe is P7.4 Batch D
+/// (docs/plan/runtime-surfaces.md); until then callers must label whose
+/// account they are showing.
+///
+/// `home` is the home directory of the account being audited.
 pub fn audit(expected_user: Option<&str>, home: &Path, runner: &dyn ProcessRunner) -> Audit {
     audit_with_environment(
         expected_user,
@@ -204,10 +218,12 @@ fn audit_with_environment(
         (Some(_), Some(want)) if identity.user != want => Finding::fail(
             "Runtime user",
             format!(
-                "the runtime is running as {} but config.toml expects {want}",
+                "this ccnm process runs as {}, and config.toml expects the Runtime Executor to be {want}",
                 identity.user
             ),
-            format!("start the runtime as {want}, or correct runtime_user in config.toml"),
+            format!(
+                "make the Agent's SSH MCP transport land on {want}, or correct runtime_user in config.toml; typing ccnm as {want} is not what this checks"
+            ),
         ),
         (Some(_), Some(want)) => Finding::ok("Runtime user", want.to_string()),
         (Some(_), None) => Finding::fail(
@@ -307,6 +323,19 @@ fn group_finding(identity: &Identity) -> Finding {
 
 /// A private key the runtime can read is a key the runtime can use, and
 /// `exec_command` is a shell.
+///
+/// The Runtime Executor is **inbound-only**: the Agent SSHes in, and no
+/// part of ccnm's control chain requires it to SSH out. So the correct
+/// state is no private key at all — `authorized_keys` and `known_hosts`
+/// are inbound state, not credentials.
+///
+/// Known limitation, pinned by a test below: this only inspects `~/.ssh`.
+/// A key kept anywhere else — including ccnm's own transport directory —
+/// is just as usable and is not seen here, so this row proves "the standard
+/// location is clean", not "this account cannot SSH out". Widening it to
+/// the known ccnm transport locations and `SSH_AUTH_SOCK` is P7.4 Batch D;
+/// moving a key out of `~/.ssh` to turn this row green was never a way to
+/// satisfy it (docs/production-safety.md).
 fn ssh_key_finding(home: &Path, runner: &dyn ProcessRunner) -> Finding {
     const NAME: &str = "No SSH keys";
     let dir = home.join(".ssh");
@@ -616,6 +645,96 @@ mod tests {
         // A public key and known_hosts are not credentials.
         assert!(!finding.detail.contains(".pub"), "{finding:?}");
         assert!(!finding.detail.contains("known_hosts"), "{finding:?}");
+    }
+
+    /// The Runtime Executor is inbound-only. Everything it legitimately
+    /// needs for SSH is public or non-secret: the Agent's public key in
+    /// `authorized_keys`, host fingerprints, a client config. None of that
+    /// is a credential, and an account holding only those must audit clean
+    /// — otherwise "no outbound key" and "the Agent can get in" would be
+    /// impossible to satisfy at the same time.
+    #[test]
+    fn an_inbound_only_executor_holds_no_private_key_and_is_still_confined() {
+        let home = empty_home("inbound-only");
+        std::fs::write(
+            home.join(".ssh/authorized_keys"),
+            "ssh-ed25519 SYNTHETIC_AGENT_PUBLIC_KEY agent-node\n",
+        )
+        .unwrap();
+        std::fs::write(
+            home.join(".ssh/known_hosts"),
+            "agent-node ssh-ed25519 AAAA\n",
+        )
+        .unwrap();
+        std::fs::write(home.join(".ssh/config"), "Host agent\n  User fodelf\n").unwrap();
+        std::fs::write(home.join(".ssh/id_ed25519.pub"), "ssh-ed25519 AAAA\n").unwrap();
+        let runner = FakeRunner::new();
+        identity(&runner, "ccrun", "504", "504", "ccrun");
+        runner.push(Output::exited(1, "")); // sudo -n true refused
+        let audit = audit(Some("ccrun"), &home, &runner);
+        assert_eq!(find(&audit, "No SSH keys").severity, Severity::Ok);
+        assert!(audit.confined(), "{:?}", audit.findings);
+    }
+
+    /// Known limitation, kept as a tripwire rather than a comment: the
+    /// check only inspects `~/.ssh`, so the same key one directory over is
+    /// invisible. P7.3 met this on real hardware — the transport key was
+    /// moved to `~/.config/ccnm/transport/` and the row went green while
+    /// the account could still SSH out exactly as before. Widening the
+    /// check is P7.4 Batch D; when it lands this test flips, and the
+    /// deprecation in docs/production-safety.md has to be revisited with it.
+    #[test]
+    fn a_private_key_outside_dot_ssh_is_not_seen_yet() {
+        let home = empty_home("hidden-key");
+        std::fs::write(
+            home.join(".ssh/authorized_keys"),
+            "ssh-ed25519 SYNTHETIC_AGENT_PUBLIC_KEY\n",
+        )
+        .unwrap();
+        let transport = home.join(".config/ccnm/transport");
+        std::fs::create_dir_all(&transport).unwrap();
+        std::fs::write(
+            transport.join("runtime"),
+            "-----BEGIN OPENSSH PRIVATE KEY-----\nsynthetic\n",
+        )
+        .unwrap();
+        let runner = FakeRunner::new();
+        identity(&runner, "ccrun", "504", "504", "ccrun");
+        runner.push(Output::exited(1, ""));
+        let audit = audit(Some("ccrun"), &home, &runner);
+        let finding = find(&audit, "No SSH keys");
+        assert_eq!(
+            finding.severity,
+            Severity::Ok,
+            "if this now fails, Batch D has widened the check: update the \
+             deprecation note in docs/production-safety.md and delete this test"
+        );
+        // And the wording must not overclaim while that hole is open.
+        assert!(finding.detail.contains("inspected home"), "{finding:?}");
+    }
+
+    /// `runtime_user` is the Runtime Executor's expected identity, not an
+    /// instruction about which account may type `ccnm`. A report can only
+    /// be read correctly if it names the account it actually looked at, so
+    /// the audit carries that account and the mismatch text names both.
+    #[test]
+    fn the_audit_names_the_account_it_looked_at_not_the_one_it_wanted() {
+        let home = empty_home("operator");
+        let runner = FakeRunner::new();
+        identity(&runner, "bing", "501", "20 80", "staff admin");
+        runner.push(Output::exited(1, ""));
+        let audit = audit(Some("ccrun"), &home, &runner);
+        assert_eq!(audit.user, "bing");
+        assert!(audit.refusal().contains("bing"), "{}", audit.refusal());
+        let finding = find(&audit, "Runtime user");
+        assert!(finding.detail.contains("bing"), "{finding:?}");
+        assert!(finding.detail.contains("ccrun"), "{finding:?}");
+        // The old fix line said "start the runtime as ccrun", which reads as
+        // "run this command as ccrun" and is exactly the conflation P7.4
+        // removes: the account being fixed is the one the Agent lands on.
+        let fix = finding.fix.clone().unwrap();
+        assert!(!fix.contains("start the runtime as"), "{fix}");
+        assert!(fix.contains("transport"), "{fix}");
     }
 
     #[test]

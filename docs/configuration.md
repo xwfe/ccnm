@@ -170,7 +170,7 @@ runtime_node = "runtime"
 ssh = "alias"                    # 从本机连它用的 alias
 ccnm_bin = "/absolute/path/ccnm" # 可选：它上面 ccnm 的路径，默认 ~/.local/bin/ccnm
 claude_config_dir = "/path"      # 可选：Agent 角色用的 CLAUDE_CONFIG_DIR
-runtime_user = "ccrun"           # Runtime 角色期望的系统账号
+runtime_user = "ccrun"           # Runtime Executor 期望的系统账号
 ```
 
 哪些必填取决于这个 node 承担什么角色：
@@ -178,6 +178,8 @@ runtime_user = "ccrun"           # Runtime 角色期望的系统账号
 - workspace 里除本机之外的每个 node 都要有 `ssh`；
 - 只有 Agent 角色用得上 Claude 相关配置；
 - 只有 Runtime 角色用得上 `runtime_user`。
+
+`runtime_user` 说的是 **Agent 的 MCP transport 落到哪个账号上**，项目工具就以谁的身份执行。它不规定谁可以敲 `ccnm`——那是 Operator，通常就是你自己的账号。四种身份怎么分见[生产安全](production-safety.md)。
 
 一个 node 可以同时具备这些字段，也就是同时承担多个角色。
 

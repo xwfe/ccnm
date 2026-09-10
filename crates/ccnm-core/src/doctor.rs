@@ -630,12 +630,19 @@ fn mcp_row(rep: &ProbeReport) -> Check {
     }
 }
 
-/// OK when the other side runs this build, else CCNM_E_VERSION. Both
-/// machines must run the same binary (design doc section 7).
 /// What the account this machine's runtime runs as can reach.
 ///
-/// Doctor runs on the Runtime Node, which is the runtime host, so this is
-/// an audit of the account that would actually execute `exec_command`.
+/// **These rows describe whoever ran `ccnm doctor`, not necessarily the
+/// Runtime Executor.** The audit is handed in by the caller, and the public
+/// CLI hands in an audit of its own process. That is only the account which
+/// executes `exec_command` when the operator happens to be the Runtime
+/// Executor. P7.3 measured the gap on real hardware: the same workspace,
+/// same build, same minute — 0 failed as `ccrun`, 7 failed as the
+/// operator's own login, because these rows judged the typist. Moving the
+/// Runtime verdict onto an authoritative probe of the executor is P7.4
+/// Batch D (docs/plan/runtime-surfaces.md); until then read a green table
+/// as "the account that ran doctor is confined".
+///
 /// One row per finding, because "the runtime is not confined" is not
 /// something anyone can act on and "this account is in the admin group,
 /// remove it" is.
@@ -704,6 +711,8 @@ fn safety_row_name(check: &str) -> &'static str {
     }
 }
 
+/// OK when the other side runs this build, else CCNM_E_VERSION. Both
+/// machines must run the same binary (design doc section 7).
 fn version_row(name: &'static str, hello: &HelloReport, side: &str) -> Check {
     if hello.ccnm_version == crate::VERSION {
         let exe = hello

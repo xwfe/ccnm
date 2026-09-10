@@ -31,6 +31,15 @@ P1 的安全收紧有显式差异断言：Claude CLI/策略/旧 wire 仍对照�
 
 P2 用 `cargo test -p ccnm-core --test instance_config` 验证配置、双端 binding、Agent-local profiles 与只读迁移；`cargo test -p ccnm-cli --test instance_closed` 验证公共/内部入口不会把 instance 误当 legacy 执行。profile 文件、目录、auth sentinel 都是合成数据，见 [P2 记录](research/agent-instance-p2-2026-09-08.md)。
 
+P4 的[公开协议草案](protocol/README.md)只有文档、schema 和 fixture，没有实现。改了这三样里的任何一个都要跑：
+
+```bash
+python3 scripts/check_protocol.py
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_check_protocol -q
+```
+
+校验脚本只用标准库。它检查 fixture 符合声明的 schema、错误码和说明文档的表一致、每个文档里定义的错误码都有 fixture、schema 里没有拼错的关键字。**通过不代表实现正确**——`ccnm rpc` 是 P5 的事，现在还没有实现。
+
 第二阶段先保存了 [Codex 0.153.4 真机测量](research/codex-provider-probe-2026-09-07.md)，尚未开放 provider。`cargo test -p ccnm-core --test codex_measurements` 只检查 fixture，不启动模型；重放/SSH transport 脚本的 7 个离线测试另用 `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p 'test_*codex*.py' -v` 运行。反向真实交互和 tmux 生命周期的证据见 [interactive 测量](research/codex-interactive-reverse-2026-09-07.md)。
 
 内部接线后的回归另跑 `cargo test -p ccnm-core provider::codex`；覆盖已测 JSONL、失败/拒绝/截断、私有目录权限、工具策略和版本边界。P3 公共 instance 回归另见 `cargo test -p ccnm-cli --test instance_execution`、`cargo test -p ccnm-core --test public_lifecycle`、`cargo test -p ccnm-core --test session_identity` 和 `cargo test -p ccnm-cli --test write_guard`。不要手改已有 session 的 Provider/identity；临时 Controller、历史真机与当前未复验边界见[内部接线记录](research/codex-internal-wiring-2026-09-07.md)和[支持矩阵](support-matrix.md)。

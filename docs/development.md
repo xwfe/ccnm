@@ -57,6 +57,17 @@ cargo test -p ccnm-cli --test rpc
 printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"hello","params":{"client":"me","protocol_versions":["ccnm.machine/1"]}}' '{"jsonrpc":"2.0","id":2,"method":"agents.list"}' | ccnm rpc
 ```
 
+黑盒契约测试（不 import 任何 ccnm 库，只走字节流）：
+
+```bash
+cargo build                                    # 测试要找 target/debug/ccnm
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_blackbox_client -q
+```
+
+用的客户端是 [clients/python/ccnm_machine_client.py](../clients/python/ccnm_machine_client.py)——**那个文件是给外部程序抄走的**，只用标准库，复制到别的项目就能跑（有一条测试专门证明这点）。坏对端的场景（说别的协议版本、答应了握手就消失、以退出码 0 代替回答）由 [tests/fixtures/fake_rpc_peer.py](../tests/fixtures/fake_rpc_peer.py) 扮演。
+
+找不到二进制时这组测试会 skip 而不是失败，因为 Python 测试不该依赖 cargo。看到 skip 就是没构建。
+
 **没有真实 Agent 的验收。** 用真 provider 做双机闭环排在 P6.3。
 
 第二阶段先保存了 [Codex 0.153.4 真机测量](research/codex-provider-probe-2026-09-07.md)，尚未开放 provider。`cargo test -p ccnm-core --test codex_measurements` 只检查 fixture，不启动模型；重放/SSH transport 脚本的 7 个离线测试另用 `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p 'test_*codex*.py' -v` 运行。反向真实交互和 tmux 生命周期的证据见 [interactive 测量](research/codex-interactive-reverse-2026-09-07.md)。

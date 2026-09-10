@@ -2,6 +2,7 @@
 """只读检查计划状态；不运行 Agent、不改文件，也不判断证据内容是否充分。"""
 
 import json
+import os
 import re
 import sys
 from datetime import datetime
@@ -11,10 +12,9 @@ from typing import Any
 
 STATUSES = {"pending", "in_progress", "blocked", "completed"}
 KINDS = {"historical", "offline", "real_nodes", "production_safety", "review"}
-ENTRY_DOCS = (
-    "AGENTS.md", "CLAUDE.md", "docs/plan/README.md",
-    "docs/plan/ROADMAP.md", "docs/development.md",
-)
+# 不进入的目录：.git 是 Git 自己的对象库，target 是 cargo 构建产物；
+# 两者都可能带 .md，但都不是仓库维护的文档，改动它们没有意义。
+SKIP_DIRS = {".git", "target"}
 
 
 def nonempty(value: Any) -> bool:
@@ -171,10 +171,25 @@ def validate(state: Any, roadmap: str, root: Path) -> list:
     return errors
 
 
+def markdown_files(root: Path) -> list:
+    """列出仓库内全部 .md 的相对路径；SKIP_DIRS 在任意层级都不进入。"""
+    found = []
+    for parent, dirs, files in os.walk(root):
+        # 原地改 dirs 才能让 os.walk 不下降；换成新列表对象不起作用。
+        dirs[:] = sorted(d for d in dirs if d not in SKIP_DIRS)
+        for name in sorted(files):
+            if name.endswith(".md"):
+                found.append(Path(parent, name).relative_to(root))
+    return found
+
+
 def check_links(root: Path) -> list:
+    """检查全部 .md 的相对链接；协议头链接和纯锚点不属于本地文件，跳过。"""
     errors = []
-    for name in ENTRY_DOCS:
-        path = root / name
+    resolved_root = root.resolve()
+    for relative in markdown_files(root):
+        path = root / relative
+        name = relative.as_posix()
         try:
             text = path.read_text(encoding="utf-8")
         except (OSError, UnicodeError) as exc:
@@ -185,7 +200,7 @@ def check_links(root: Path) -> list:
                 continue
             target = (path.parent / link.split("#", 1)[0]).resolve()
             try:
-                target.relative_to(root.resolve())
+                target.relative_to(resolved_root)
                 if not target.exists():
                     errors.append(name + " 链接不存在：" + link)
             except ValueError:

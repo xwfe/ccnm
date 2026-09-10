@@ -46,6 +46,12 @@ class PlanTests(unittest.TestCase):
     def errors(self):
         return check_plan.validate(self.state, self.roadmap, self.root)
 
+    def write(self, name, text):
+        path = self.root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        return path
+
     def test_valid_state_is_read_only(self):
         before = copy.deepcopy(self.state)
         self.assertEqual(self.errors(), [])
@@ -116,14 +122,28 @@ class PlanTests(unittest.TestCase):
             (self.root / "link.md").symlink_to(target)
             self.assertFalse(check_plan.local_file(self.root, "link.md"))
 
-    def test_entry_links_are_checked(self):
-        for name in check_plan.ENTRY_DOCS:
-            path = self.root / name
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text("# 文档", encoding="utf-8")
+    def test_links_are_checked_in_every_markdown_file(self):
+        self.write("AGENTS.md", "[计划](docs/plan/README.md)")
+        self.write("docs/plan/README.md", "[记录](../research/note.md)")
+        self.write("docs/architecture.md", "# 架构")
+        note = self.write("docs/research/note.md", "[架构](../architecture.md)")
         self.assertEqual(check_plan.check_links(self.root), [])
-        (self.root / "AGENTS.md").write_text("[状态](does-not-exist.json)", encoding="utf-8")
-        self.assertTrue(any("链接不存在" in e for e in check_plan.check_links(self.root)))
+        # docs/research/note.md 不在原来那 5 个入口文档里，以前它写错没人发现。
+        note.write_text("[架构](../architectrue.md)", encoding="utf-8")
+        self.assertEqual(check_plan.check_links(self.root),
+                         ["docs/research/note.md 链接不存在：../architectrue.md"])
+
+    def test_build_and_git_directories_are_skipped(self):
+        for name in ["target/doc/x.md", "crates/app/target/x.md", ".git/x.md"]:
+            self.write(name, "[没有这个文件](does-not-exist.md)")
+        self.assertEqual(check_plan.markdown_files(self.root), [Path("proof.md")])
+        self.assertEqual(check_plan.check_links(self.root), [])
+
+    def test_protocol_links_and_anchors_are_skipped_but_escapes_are_not(self):
+        self.write("docs/usage.md",
+                   "[站点](https://example.com/none.md) [本页](#一节) [上级](../../outside.md)")
+        self.assertEqual(check_plan.check_links(self.root),
+                         ["docs/usage.md 链接越界：../../outside.md"])
 
 
 if __name__ == "__main__":

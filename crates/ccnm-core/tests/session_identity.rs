@@ -304,6 +304,110 @@ fn exact_stop_checks_identity_before_kill_and_records_confirmed_terminal_state()
     assert!(repeated.calls().is_empty());
 }
 
+/// Stopping something that is already stopped is success, not
+/// `CCNM_E_NOT_READY`. Until v1 it was the error, which made every cleanup
+/// script that calls `stop` unconditionally look like it failed -- and a
+/// `--print` run that finished on its own could never be stopped
+/// successfully, because by then there is no terminal left to kill.
+///
+/// The returned identity matters as much as the exit code: the Runtime side
+/// compares it against the instance it selected and fails the call when they
+/// differ, so an empty one would turn this into `CCNM_E_VERSION`.
+#[test]
+fn stopping_a_workspace_with_nothing_running_succeeds_and_still_names_the_selection() {
+    let f = Fixture::new();
+    let runner = FakeRunner::new();
+    runner.push(Output::exited(1, "")); // tmux has-session: nothing there
+    let report = work::stop(
+        &StopRequest {
+            protocol: 3,
+            workspace: "demo".into(),
+            agent: Some(reference("claude-main")),
+            session: None,
+        },
+        &f.tools(&runner),
+    )
+    .unwrap();
+    assert!(!report.killed, "nothing was running, so nothing was killed");
+    assert_eq!(
+        report.agent_identity.as_ref().map(AgentIdentity::reference),
+        Some(reference("claude-main"))
+    );
+    assert!(
+        runner
+            .calls()
+            .iter()
+            .all(|cmd| !cmd.display().contains("kill-session")),
+        "an already-stopped workspace is not signalled"
+    );
+}
+
+/// A named session whose terminal is gone gets its terminal outcome written
+/// on the way out. Without that the record would stay outcome-less and
+/// `status` would report it as unknown for good.
+#[test]
+fn stopping_a_session_whose_terminal_vanished_records_its_terminal_outcome() {
+    let f = Fixture::new();
+    let id = "00000000-0000-4000-8000-000000000024";
+    let dir = f.record(
+        id,
+        "demo",
+        Some(f.identity("claude-main", AgentProvider::Claude)),
+        Mode::Interactive { prompt: None },
+    );
+    assert!(session::read_outcome(&dir).unwrap().is_none());
+    let runner = FakeRunner::new();
+    runner.push(Output::exited(1, ""));
+    let report = work::stop(
+        &StopRequest {
+            protocol: 3,
+            workspace: "demo".into(),
+            agent: Some(reference("claude-main")),
+            session: Some(id.into()),
+        },
+        &f.tools(&runner),
+    )
+    .unwrap();
+    assert!(!report.killed);
+    assert_eq!(report.session.as_deref(), Some(id));
+    assert!(
+        session::read_outcome(&dir)
+            .unwrap()
+            .unwrap()
+            .error
+            .unwrap()
+            .contains("no managed terminal was running")
+    );
+}
+
+/// Idempotency does not mean stop can never fail. A terminal that *is*
+/// running but carries no verifiable ccnm identity stays an error, because
+/// that check is what keeps ccnm from killing someone else's session.
+#[test]
+fn a_running_terminal_without_a_verifiable_identity_is_still_refused() {
+    let f = Fixture::new();
+    let runner = FakeRunner::new();
+    runner.push(Output::exited(0, "")); // tmux has-session: something is there
+    runner.push(Output::exited(0, "\n")); // but it shows no CCNM_SESSION
+    let error = work::stop(
+        &StopRequest {
+            protocol: 3,
+            workspace: "demo".into(),
+            agent: Some(reference("claude-main")),
+            session: None,
+        },
+        &f.tools(&runner),
+    )
+    .unwrap_err();
+    assert_eq!(error.code(), ErrorCode::NotReady);
+    assert!(
+        runner
+            .calls()
+            .iter()
+            .all(|cmd| !cmd.display().contains("kill-session"))
+    );
+}
+
 #[test]
 fn active_session_with_another_identity_is_never_reused_or_replaced() {
     let f = Fixture::new();

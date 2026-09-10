@@ -1,4 +1,4 @@
-//! Official Codex 0.153.4 only. No credential content is read or copied.
+//! Official Codex 0.154.0 only. No credential content is read or copied.
 use super::{AgentReport, Ask, AuthStatus};
 use crate::error::{Error, ErrorCode, Result};
 use crate::process::{Cmd, Output, ProcessRunner};
@@ -48,6 +48,39 @@ const DISABLED: &[&str] = &[
     "goals",
     "tool_suggest",
 ];
+
+/// Models measured to advertise Code Mode under the pinned CLI version.
+///
+/// `code_mode_only` is an under-development Codex feature, and a model is
+/// allowed to refuse it. `gpt-5.3-codex-spark` does: Codex prints "model
+/// `…` does not advertise Code Mode support" at startup, and in a measured
+/// run the model then made one wrongly-shaped tool call, was refused by
+/// name, and gave up — see `docs/research/p7-codex-parity-2026-09-10.md`.
+///
+/// **Nothing answers this before launch.** `codex doctor --json` reports
+/// which feature flags are on, not whether the model supports them, and the
+/// mismatch only surfaces as a warning item once the turn has started. So
+/// this is a measured table, exactly like [`VERSION`], and it is empty on
+/// purpose: every fixture under `tests/fixtures/` was captured **without**
+/// `--model`, i.e. on the CLI default model, which is the one entry
+/// [`code_mode`] treats as measured.
+const CODE_MODE_MODELS: &[&str] = &[];
+
+/// Whether this launch turns Code Mode on.
+///
+/// Naming no model means the CLI default, which every measured fixture was
+/// captured with. Naming one ccnm has not measured with Code Mode means it
+/// launches without it: forcing an under-development feature onto a model
+/// that says it does not support it is how the parity run above failed.
+///
+/// The trade is real and documented in the support matrix: with Code Mode
+/// on, `features.code_mode.excluded_tool_namespaces` was measured to remove
+/// Codex's own `apply_patch` from the registry the model sees; with it off,
+/// what keeps native tools from touching the Agent's disk is the read-only
+/// sandbox and the disabled feature list, which is a weaker guarantee.
+pub(crate) fn code_mode(model: Option<&str>) -> bool {
+    model.is_none_or(|model| CODE_MODE_MODELS.contains(&model))
+}
 
 pub fn locate(path: Option<&OsStr>, home: Option<&Path>) -> Option<PathBuf> {
     let mut candidates = Vec::new();
@@ -278,13 +311,19 @@ pub(crate) fn build_launch_cmd(
         },
         "-c",
         "web_search=\"disabled\"",
-        "--enable",
-        "code_mode_only",
+        // Not part of Code Mode: it keeps the model from spawning Codex's
+        // own sub-agents whichever tool surface it is given.
         "-c",
         "agents.enabled=false",
-        "-c",
-        "features.code_mode.excluded_tool_namespaces=[\"functions\",\"collaboration\"]",
     ]);
+    if code_mode(model) {
+        cmd = cmd.args([
+            "--enable",
+            "code_mode_only",
+            "-c",
+            "features.code_mode.excluded_tool_namespaces=[\"functions\",\"collaboration\"]",
+        ]);
+    }
     for feature in DISABLED {
         cmd = cmd.args(["--disable", feature]);
     }

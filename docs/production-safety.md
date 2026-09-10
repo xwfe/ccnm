@@ -320,6 +320,13 @@ ccnm 的 doctor 能覆盖一部分明确可验证项，但不能证明整个操�
 
 ## 网络出口
 
+**先把边界划清楚，这是 v1 的正式声明：**
+
+- **ccnm 不提供 egress isolation，也不声称提供。** 项目工具能不能连出去，由 OS、网络、防火墙、VM 或容器决定，不由 ccnm 决定。
+- **ccnm 保证的是它自己：控制链不要求 Runtime Executor 持有任何出站凭据。** 没有出站 SSH 私钥，没有 SSH agent，正常路径上不发起任何出站连接——这一条有真机证据（会话活着时 `ccrun` 名下只有入站 `sshd-session` 和它的 `mcp-serve` 子进程，没有任何 ssh 客户端）。
+
+两句话不能合并成第三句。"ccnm 不要求它出站"是 ccnm 的属性；"它出不去"是网络的属性，ccnm 说了不算。
+
 网络隔离是单独一层策略。
 
 如果你的安全要求是：
@@ -347,6 +354,14 @@ Authenticated to <agent> using "none".
 ```
 
 因为这不是可靠安全边界。
+
+### 部署环境本身的高权限风险，也不在 ccnm 的保证里
+
+同一轮真机验证里还撞到一条，跟上面是同一类事：**本轮那台 Agent Node 允许无传统凭据的 root 登录**——`ssh root@<host>` 由 Tailscale SSH 按 tailnet 身份放行，不要密码也不要密钥。
+
+这不是 ccnm 造成的，ccnm 也管不了；但它足以让上面所有身份隔离失去意义——能拿到 root 的人不需要绕过 `ccrun` 的权限，直接就是。**它是部署环境的风险，不计入 ccnm 的安全保证。**
+
+生产部署要自己关掉：在 tailnet ACL 里去掉 root 这个 SSH 用户，或在 OS 层禁掉 root 登录。上线前把这一条当作检查项，跟 `ccnm doctor` 的输出无关——doctor 查不到它。
 
 ## 最终门禁
 

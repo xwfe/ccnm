@@ -68,21 +68,16 @@
     "mcp_servers.ccnm.default_tools_approval_mode=\"approve\"",
     "-"
   ],
-  "stdin": "Controlled CCNM end-to-end fixture test. Use only the ccnm MCP tools, never native filesystem/shell/patch or other services. Call all seven tools in this exact order: (1) workspace_info, (2) list_files at the project root, (3) search_text for CCNM_RUNTIME_SENTINEL_7319, (4) read_file probe.txt and retain its exact version, (5) apply_patch using that version to change only probe.txt to CCNM_RUNTIME_PATCHED_7319 followed by newline, (6) exec_command with cmd [\"/bin/cat\",\"probe.txt\"], (7) read_output using the output_ref from that command. Report the resulting text and whether all seven calls succeeded. Do not spawn agents or do anything else. Stop.",
+  "stdin": "Inventory only. List every tool and function you can call right now, as a single JSON array of their exact names, and nothing else. Do not call any of them. Do not read or write any file. Stop.",
   "code_mode": false,
   "exit_code": 0,
   "timed_out": false,
   "terminal_event": "turn.completed",
-  "completed_tools": [
-    "workspace_info",
-    "list_files",
-    "search_text",
-    "read_file",
-    "apply_patch",
-    "exec_command",
-    "read_output"
-  ],
+  "completed_tools": [],
   "all_tools_succeeded": true,
-  "runtime_file": "CCNM_RUNTIME_PATCHED_7319\n\n",
-  "agent_file": "WRONG_AGENT_NODE_9520\n"
+  "runtime_file": "CCNM_RUNTIME_SENTINEL_7319\n",
+  "agent_file": "WRONG_AGENT_NODE_9520\n",
+  "reported_tools": [
+    "[\"functions.list_mcp_resources\",\"functions.list_mcp_resource_templates\",\"functions.read_mcp_resource\",\"functions.request_user_input\",\"functions.apply_patch\",\"tool_search.tool_search_tool\",\"multi_tool_use.parallel\"]"
+  ]
 }

@@ -28,6 +28,9 @@ DISABLED_FEATURES = [
     "image_generation", "memories", "workspace_dependencies", "skill_search",
     "shell_snapshot", "goals", "tool_suggest",
 ]
+# 与 crates/ccnm-core/src/provider/codex/mod.rs 的 CODE_MODE_MODELS 一一对应：
+# 实测过 Code Mode 的模型。空表示只有"不指定模型"的 CLI 默认模型算实测过。
+CODE_MODE_MODELS: list[str] = []
 PROMPT = (
     "Controlled CCNM end-to-end fixture test. Use only the ccnm MCP tools, "
     "never native filesystem/shell/patch or other services. Call all seven "
@@ -39,6 +42,14 @@ PROMPT = (
     "(7) read_output using the output_ref from that command. Report the "
     "resulting text and whether all seven calls succeeded. Do not spawn "
     "agents or do anything else. Stop."
+)
+# Code Mode 决定了模型看得见什么工具，所以关掉它之前要先量一次工具面。
+# 这是模型自述的运行时观察，不是权限证明——和 2026-09-07 那次探测同一个
+# 局限，那次也是让模型把注册表抄回来的。
+SURFACE_PROMPT = (
+    "Inventory only. List every tool and function you can call right now, "
+    "as a single JSON array of their exact names, and nothing else. "
+    "Do not call any of them. Do not read or write any file. Stop."
 )
 
 
@@ -120,7 +131,15 @@ def inspect(codex, directory):
         ), Path(temp))
 
 
-def seven_tools(codex, directory, ccnm, model=None):
+def seven_tools(codex, directory, ccnm, model=None, *, surface=False):
+    """跑一次真实会话。
+
+    `surface=True` 只问模型看得见哪些工具、不让它动手，用来观察 Code Mode
+    开关对工具面的影响；其余一切（隔离、启动参数、假 Runtime）完全一样，
+    否则量到的就不是同一件事。
+    """
+    name = "tool-surface" if surface else "seven-tools"
+    prompt = SURFACE_PROMPT if surface else PROMPT
     with tempfile.TemporaryDirectory(prefix=f"ccnm-codex-mcp-{os.getpid()}-") as temp:
         # resolve() 不是讲究：macOS 的 /tmp 和 /var 都是符号链接，而 Runtime
         # 的凭据检查见到祖先目录是 symlink 就判 "accessibility unknown"，那是
@@ -160,29 +179,39 @@ def seven_tools(codex, directory, ccnm, model=None):
             argv += ["--model", model]
         argv += [
             "--sandbox", "read-only", "-c", 'approval_policy="never"',
-            "-c", 'web_search="disabled"',
+            "-c", 'web_search="disabled"', "-c", "agents.enabled=false",
         ]
+        # 跟 provider 的 code_mode() 同一条规则：Code Mode 是 under-development
+        # 特性，模型可以不支持它，而 CLI 事前问不到——所以只对实测过的模型开，
+        # 目前那就是"不指定模型"的默认模型。这份列表跟 Rust 那边一起改。
+        if not model or model in CODE_MODE_MODELS:
+            argv += [
+                "--enable", "code_mode_only",
+                "-c", 'features.code_mode.excluded_tool_namespaces=["functions","collaboration"]',
+            ]
         for feature in DISABLED_FEATURES:
             argv += ["--disable", feature]
         argv += [
-            "--enable", "code_mode_only", "-c", "agents.enabled=false",
-            "-c", 'features.code_mode.excluded_tool_namespaces=["functions","collaboration"]',
             "-c", 'mcp_servers.ccnm.command="/usr/bin/env"',
             "-c", "mcp_servers.ccnm.args=" + json.dumps(transport),
             "-c", "mcp_servers.ccnm.required=true",
             "-c", "mcp_servers.ccnm.enabled_tools=" + json.dumps(TOOLS),
             "-c", 'mcp_servers.ccnm.default_tools_approval_mode="approve"', "-",
         ]
-        result = run(argv, cwd=agent, stdin=PROMPT.encode(), timeout=120)
+        result = run(argv, cwd=agent, stdin=prompt.encode(), timeout=120)
         for stream in ("stdout", "stderr"):
-            (directory / f"seven-tools.{stream}").write_text(redact(result[stream], fixture))
+            (directory / f"{name}.{stream}").write_text(redact(result[stream], fixture))
         # Record arguments without keeping an opaque payload hiding a local path.
         recorded_argv = [arg.replace(payload, "<fixture-payload-generated-above>") for arg in argv]
         events = [json.loads(line) for line in result["stdout"].splitlines() if line.strip()]
         completed = [event["item"] for event in events if event.get("type") == "item.completed"
                      and event.get("item", {}).get("type") == "mcp_tool_call"]
+        messages = [event["item"].get("text", "") for event in events
+                    if event.get("type") == "item.completed"
+                    and event.get("item", {}).get("type") == "agent_message"]
         outcome = {
-            "version": VERSION, "argv": recorded_argv, "stdin": PROMPT,
+            "version": VERSION, "argv": recorded_argv, "stdin": prompt,
+            "code_mode": not model or model in CODE_MODE_MODELS,
             "exit_code": result["exit_code"], "timed_out": result["timed_out"],
             "terminal_event": events[-1].get("type") if events else None,
             "completed_tools": [item["tool"] for item in completed],
@@ -190,7 +219,18 @@ def seven_tools(codex, directory, ccnm, model=None):
             "runtime_file": (runtime / "probe.txt").read_text(),
             "agent_file": (agent / "probe.txt").read_text(),
         }
-        save(directory, "seven-tools.json", outcome, fixture)
+        if surface:
+            # 模型自述的工具面，不是权限证明；判据只要求它没动手。
+            outcome["reported_tools"] = messages
+            save(directory, f"{name}.json", outcome, fixture)
+            return (
+                result["exit_code"] == 0 and not result["timed_out"]
+                and outcome["terminal_event"] == "turn.completed"
+                and not completed
+                and outcome["runtime_file"] == "CCNM_RUNTIME_SENTINEL_7319\n"
+                and outcome["agent_file"] == "WRONG_AGENT_NODE_9520\n"
+            )
+        save(directory, f"{name}.json", outcome, fixture)
         return (
             result["exit_code"] == 0 and not result["timed_out"]
             and outcome["terminal_event"] == "turn.completed"
@@ -203,7 +243,10 @@ def seven_tools(codex, directory, ccnm, model=None):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("output", type=Path, help="new output directory; existing paths are refused")
-    parser.add_argument("mode", nargs="?", choices=("inspect", "seven-tools"), default="inspect")
+    parser.add_argument(
+        "mode", nargs="?", default="inspect",
+        choices=("inspect", "seven-tools", "tool-surface"),
+    )
     parser.add_argument(
         "--model",
         help="measure with this model instead of the CLI default; recorded in the fixture argv",
@@ -216,15 +259,16 @@ def main():
     if version["exit_code"] != 0 or version["stdout"].strip() != VERSION:
         parser.error(f"this measured probe requires {VERSION}; inspect a different version first")
     ccnm = Path(__file__).resolve().parent.parent / "target/debug/ccnm"
-    if args.mode == "seven-tools" and not os.access(ccnm, os.X_OK):
+    if args.mode != "inspect" and not os.access(ccnm, os.X_OK):
         parser.error("build the local binary first: cargo build -p ccnm-cli")
     try:
         args.output.mkdir(mode=0o700, parents=True, exist_ok=False)
     except FileExistsError:
         parser.error(f"refusing to overwrite existing output: {args.output}")
     inspect(codex, args.output)
-    if args.mode == "seven-tools":
-        if not seven_tools(codex, args.output, ccnm, args.model):
+    if args.mode != "inspect":
+        surface = args.mode == "tool-surface"
+        if not seven_tools(codex, args.output, ccnm, args.model, surface=surface):
             raise SystemExit("measurement failed; preserved output must be inspected, not blessed")
     print(f"Captured {args.mode} evidence in {args.output}")
 

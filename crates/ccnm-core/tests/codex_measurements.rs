@@ -300,7 +300,14 @@ fn the_measured_0_154_0_run_reached_all_seven_tools_and_stayed_inside_the_worksp
     // The sentinel in the Runtime work tree was rewritten, and the one in
     // the Agent's directory was not: the model worked through ccnm's tools
     // on the far side, not on its own filesystem.
-    assert_eq!(outcome["runtime_file"], "CCNM_RUNTIME_PATCHED_7319\n");
+    //
+    // Two newlines, not one, and that is the model's doing rather than
+    // ccnm's: it replaced `CCNM_RUNTIME_SENTINEL_7319` -- which does not
+    // include the line's own newline -- with `CCNM_RUNTIME_PATCHED_7319\n`,
+    // so the file kept the newline that was already there. Reproduced on
+    // two separate measured runs. ccnm wrote exactly the edit it was given,
+    // which is why the byte-exact criterion is worth keeping strict.
+    assert_eq!(outcome["runtime_file"], "CCNM_RUNTIME_PATCHED_7319\n\n");
     assert_eq!(outcome["agent_file"], "WRONG_AGENT_NODE_9520\n");
 
     let events = events(include_str!(
@@ -336,8 +343,11 @@ fn the_measured_0_154_0_run_reached_all_seven_tools_and_stayed_inside_the_worksp
 /// broken adapter.
 #[test]
 fn the_patch_tool_refused_every_wrong_shape_before_one_worked() {
+    // The Code Mode capture, kept because it is the evidence behind the
+    // gate: this is the launch shape ccnm no longer produces for a model
+    // that does not advertise Code Mode.
     let events = events(include_str!(
-        "../../../tests/fixtures/codex-0.154.0/seven-tools.stdout"
+        "../../../tests/fixtures/codex-0.154.0/seven-tools-code-mode.stdout"
     ));
     let refusals: Vec<String> = events
         .iter()

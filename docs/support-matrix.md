@@ -10,7 +10,7 @@
 | legacy Claude，remote SSH MCP，从 Agent Node 发起 | 预发布支持 | `run` 先委托 Runtime 解析 workspace，`attach/status/result/stop` 继续在 Agent 本机管理已有 session；`--print` 仍需在 Runtime Node 执行。 |
 | Claude Agent Instance，remote SSH MCP | 预发布支持 | 默认 instance 与 `--agent`、print/interactive、doctor、精确 session、profile 隔离均有测试；公共双机 dogfood 已在授权环境真机通过，见下方门禁结果。 |
 | Codex Agent Instance，remote SSH MCP | 预发布支持 | 仅接受实测的 Codex CLI `0.154.0`（见下方版本 pin）；公共入口已在授权双机真机验证。 |
-| Machine API（`ccnm rpc`），`print` 模式 | 候选，已有真机证据 | 协议仍是 **v1 候选**，不是稳定 v1——冻结是 P7.5 的动作。两个 provider 各跑通一次真机双机闭环并与人类 CLI 对照（[Claude](research/p7-real-machine-2026-09-10.md)、[Codex](research/p7-codex-parity-2026-09-10.md)）：两条腿产物属主相同，`usage` 端到端到达调用方（Codex 不报 `cost`，永远缺席）。见[协议说明](protocol/README.md)。 |
+| Machine API（`ccnm rpc`），`print` 模式 | 预发布支持，协议已冻结 | `ccnm.machine/1` 于 2026-09-10 冻结。两个 provider 各跑通一次真机双机闭环并与人类 CLI 对照（[Claude](research/p7-real-machine-2026-09-10.md)、[Codex](research/p7-codex-parity-2026-09-10.md)）：两条腿产物属主相同，`usage` 端到端到达调用方（Codex 不报 `cost`，永远缺席）。实现仍比契约少四条，见[协议说明](protocol/README.md)。 |
 | Machine API 的 `interactive` 模式、输出分页、结果过期 | 未实现 | 都不在 `hello` 声明的能力里，调用会被明确拒绝，不静默降级。 |
 | Claude legacy colocated | 明确拒绝 | remote-only 启动参数已从 native 候选命令移除，但 installed Claude 尚未真实验收；本 build 在创建 session 前返回 `CCNM_E_NOT_READY`。 |
 | Claude/Codex Agent Instance colocated | 明确拒绝 | 没有可信 Runtime credential boundary 和真实验收，不自动降级为 legacy/native。 |
@@ -36,6 +36,25 @@
 5. 逐条比对新旧 fixture 的差异，把行为变化写进研究记录。
 
 **第 5 步不能跳。** 跳过它就是把一次未知的行为变更，混进一次看起来只是"升级版本号"的提交里。
+
+## Codex 的 Code Mode 与工具面：验证到哪一步
+
+Code Mode 是 Codex 的一个 under-development 特性，它把工具包一层，让模型通过代码调用而不是直接调函数。ccnm 用它是为了收窄模型看得见的工具：加上 `features.code_mode.excluded_tool_namespaces`，Codex 自带的 `apply_patch` 在模型眼里就不存在了。
+
+**但模型可以不支持它，而且事前问不到。** `gpt-5.3-codex-spark` 就不支持，Codex 启动时会打一句 `model … does not advertise Code Mode support`；`codex doctor --json` 只报特性开关是否打开，不报模型支不支持。所以 ccnm 只对**实测过的模型**开 Code Mode——目前那就是不写 `model` 时的 CLI 默认模型，全部 fixture 都是在它上面采的。
+
+两种配置的验证范围不一样，按实测写清楚：
+
+| 配置 | 模型看得见的工具 | 挡住 Agent 本机写入的是什么 |
+| --- | --- | --- |
+| **Code Mode 开**（不写 `model`） | 顶层只剩 exec/wait/用户输入/clock，ccnm 的七个工具在嵌套注册表里；Codex 自带 `apply_patch` **不存在**（[2026-09-07 探测](research/codex-provider-probe-2026-09-07.md)） | 工具被移除，外加只读 sandbox |
+| **Code Mode 关**（`model` 写了一个未实测的模型） | 顶层有 `functions.apply_patch`（Codex 自带的），ccnm 的七个工具经 `tool_search` 取用（[tool-surface fixture](../tests/fixtures/codex-0.154.0/tool-surface.json)） | **只有只读 sandbox** |
+
+**这是一次真实的取舍，不是等价替换。** 关掉 Code Mode 之后，拦住 Codex 自带 patch 工具去写 Agent 本机的只剩只读 sandbox 一层；开着它却硬塞给不支持的模型，代价是模型可能根本用不明白工具——实测出现过"回 DONE 但一个字没写"（[parity 记录](research/p7-codex-parity-2026-09-10.md)）。ccnm 选了前者：宁可工具面宽一点也要模型真的能干活，并把范围写在这里，而不是让两种配置看起来一样安全。
+
+想要窄的那一栏，就用默认模型（不写 `model`）。要给某个具体模型开 Code Mode，得先按上面的重新测量流程实测它，再把它加进 `CODE_MODE_MODELS`——Rust 和采集脚本里各有一份，必须一起改。
+
+已经试过但**无效**的路：`-c tools.apply_patch=false`（以及 `disabled_tools` 的几种写法）配置能加载，但实测工具面一点没变，属于被静默忽略的键。不要拿它当开关。
 
 ## Agent Instance 入口
 

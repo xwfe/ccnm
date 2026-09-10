@@ -61,10 +61,126 @@ fn a_named_model_reaches_the_command_line_and_absence_changes_nothing() {
         .position(|a| a == "--model")
         .expect("the flag is there");
     assert_eq!(with[at + 1], "gpt-5.3-codex-spark");
-    // Everything else is untouched: one flag and its value, nothing more.
+    // Two flags and their values, nothing more: the model, and Code Mode
+    // going away because this model is not in the measured table.
     let mut stripped = with.clone();
     stripped.drain(at..at + 2);
-    assert_eq!(stripped, without);
+    let mut expected = without.clone();
+    let code_mode = expected
+        .iter()
+        .position(|a| a == "--enable")
+        .expect("the default model runs with Code Mode");
+    assert_eq!(expected[code_mode + 1], "code_mode_only");
+    expected.drain(code_mode..code_mode + 4);
+    assert_eq!(stripped, expected);
+}
+
+/// The measured fixture records the launch ccnm actually performs, not one
+/// that resembles it.
+///
+/// This is the check that would have caught the drift the Code Mode gate
+/// created: the 0.154.0 fixture was captured with Code Mode forced on, and
+/// the moment the gate landed, that recorded argv stopped being what ccnm
+/// sends. Spot assertions on a flag or two do not notice that; comparing
+/// the whole option sequence does.
+///
+/// Everything from `exec` up to the MCP wiring is compared verbatim. The
+/// MCP block is where the harness legitimately differs -- it points the
+/// server at `/usr/bin/env` with a scratch fixture payload rather than at
+/// the real Agent transport -- so it is excluded rather than fudged.
+#[test]
+fn the_measured_fixture_records_the_launch_this_adapter_builds() {
+    let outcome: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../../tests/fixtures/codex-0.154.0/seven-tools.json"
+    ))
+    .unwrap();
+    let measured: Vec<String> = outcome["argv"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a.as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(outcome["code_mode"], false, "measured without Code Mode");
+
+    let built = build_launch_cmd(
+        Path::new("/agent/codex"),
+        &spec(Mode::Print {
+            prompt: "hi".into(),
+        }),
+        &Dir::at("/agent/session"),
+        Path::new("/agent/private-codex"),
+        Path::new("/agent/ccnm"),
+        Some("gpt-5.3-codex-spark"),
+    )
+    .unwrap();
+    let built: Vec<String> = built
+        .args
+        .iter()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+
+    let upto_mcp = |args: &[String]| -> Vec<String> {
+        let end = args
+            .iter()
+            .position(|a| a.starts_with("mcp_servers."))
+            .expect("the MCP wiring is there");
+        args[..end - 1].to_vec()
+    };
+    // The fixture's argv[0] is the codex binary; the built command carries
+    // it separately.
+    assert_eq!(upto_mcp(&measured[1..]), upto_mcp(&built));
+}
+
+/// What the model can reach when Code Mode is off, measured rather than
+/// assumed -- because turning Code Mode off is what the gate above does.
+///
+/// The answer is the reason the support matrix records a narrower claim for
+/// this configuration: Codex's own `apply_patch` is visible to the model,
+/// and what keeps it off the Agent's disk is the read-only sandbox rather
+/// than the tool being absent. With Code Mode on, the namespace filter was
+/// measured to remove it outright (docs/research/codex-provider-probe-2026-09-07.md).
+///
+/// It is the model reporting its own registry, so it is an observation, not
+/// a permission proof -- same limit as that earlier probe.
+#[test]
+fn the_measured_tool_surface_without_code_mode_still_shows_codex_own_patch_tool() {
+    let outcome: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../../tests/fixtures/codex-0.154.0/tool-surface.json"
+    ))
+    .unwrap();
+    assert_eq!(outcome["code_mode"], false);
+    assert_eq!(outcome["terminal_event"], "turn.completed");
+    assert!(
+        outcome["completed_tools"].as_array().unwrap().is_empty(),
+        "an inventory prompt must not touch anything"
+    );
+    let reported = outcome["reported_tools"].as_array().unwrap()[0]
+        .as_str()
+        .unwrap();
+    assert!(reported.contains("functions.apply_patch"), "{reported}");
+    // ccnm's seven are reachable through tool search, not at the top level;
+    // the seven-tools measurement is what proves the model gets to them.
+    assert!(reported.contains("tool_search"), "{reported}");
+}
+
+/// Code Mode is an under-development Codex feature that a model may refuse.
+/// ccnm turns it on only for models it has measured with it; the CLI default
+/// (no `--model`) is the one every fixture was captured on.
+///
+/// This is not cosmetic. Forcing it onto `gpt-5.3-codex-spark`, which tells
+/// Codex it does not support Code Mode, is how one measured parity leg
+/// reported success while writing nothing.
+#[test]
+fn code_mode_is_only_forced_on_a_model_measured_with_it() {
+    assert!(code_mode(None), "the CLI default is the measured one");
+    assert!(!code_mode(Some("gpt-5.3-codex-spark")));
+    assert!(
+        !code_mode(Some("some-model-nobody-measured")),
+        "an unknown model is not assumed to support an under-development feature"
+    );
+    for model in CODE_MODE_MODELS {
+        assert!(code_mode(Some(model)));
+    }
 }
 
 #[test]

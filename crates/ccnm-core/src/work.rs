@@ -766,6 +766,56 @@ pub fn attach(req: &AttachRequest, tools: &Tools<'_>) -> Result<i32> {
     Ok(captured.exit_code.unwrap_or(1))
 }
 
+/// Nothing is running, which is exactly the state `stop` exists to reach,
+/// so say so instead of failing.
+///
+/// Before v1 this returned `CCNM_E_NOT_READY` and exit code 3. It was not
+/// a lie -- there really was no session to stop -- but it made every
+/// cleanup script that calls `stop` unconditionally look like it failed,
+/// and a `--print` run that had already finished on its own could never be
+/// stopped successfully.
+///
+/// Idempotent means "already in the requested state is success". It does
+/// **not** mean stop can never fail: when a terminal *is* running and ccnm
+/// cannot verify it is the selected one, that stays an error, because that
+/// check exists to keep ccnm from killing someone else's session.
+fn already_stopped(
+    req: &StopRequest,
+    tmux_session: String,
+    tools: &Tools<'_>,
+) -> Result<StopReport> {
+    // The selection is resolved from this machine's own registry, the same
+    // way a live session's would be: the Runtime side compares the returned
+    // identity against what it asked for and fails the call if they differ.
+    let identity = requested_identity(req.agent.as_ref(), tools)?;
+    let mut session = None;
+    if let Some(id) = req.session.as_deref() {
+        // Reaching here with a named session means its record loaded and it
+        // has no outcome -- the terminal died without recording one. Write
+        // the terminal failure now, or the record stays outcome-less and
+        // `status` keeps reporting it as unknown for good.
+        let dir = session::Dir::at(paths::session_dir(&tools.state, id));
+        if session::read_outcome(&dir)?.is_none() {
+            session::record_terminal_failure(
+                &dir,
+                "no managed terminal was running when ccnm stopped this session",
+            )?;
+        }
+        session = Some(id.to_string());
+    }
+    Ok(StopReport {
+        protocol: if identity.is_some() {
+            crate::instance::INSTANCE_SESSION_PROTOCOL
+        } else {
+            PROTOCOL
+        },
+        tmux_session,
+        session,
+        agent_identity: identity,
+        killed: false,
+    })
+}
+
 /// End the workspace's session: tmux kills the supervisor, which kills
 /// Claude, which drops the ssh transport its MCP server was on.
 pub fn stop(req: &StopRequest, tools: &Tools<'_>) -> Result<StopReport> {
@@ -804,10 +854,7 @@ pub fn stop(req: &StopRequest, tools: &Tools<'_>) -> Result<StopReport> {
     let name = tmux::session_name(&req.workspace);
     let live_id = if req.agent.is_some() || req.session.is_some() {
         if !tools.runner.run(&tmux.has_session_cmd(&name))?.success() {
-            return Err(Error::new(
-                ErrorCode::NotReady,
-                "no verifiable selected session is running",
-            ));
+            return already_stopped(req, name, tools);
         }
         live_session_id(&tmux, tools, &name)
     } else {
@@ -830,9 +877,12 @@ pub fn stop(req: &StopRequest, tools: &Tools<'_>) -> Result<StopReport> {
         check_session_selection(&spec, &req.workspace, req.agent.as_ref(), tools)?;
         identity = spec.agent_identity;
     } else if req.agent.is_some() || req.session.is_some() {
+        // Not the idempotent case: a terminal *is* running, ccnm just
+        // cannot tell whether it is the one that was selected. Killing it
+        // on that evidence is exactly what this check prevents.
         return Err(Error::new(
             ErrorCode::NotReady,
-            "no verifiable selected session is running",
+            "a terminal is running for this workspace but carries no verifiable ccnm session identity; refusing to stop it",
         ));
     }
     let tracked_dir = live_id

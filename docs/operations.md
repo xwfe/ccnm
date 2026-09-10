@@ -217,7 +217,13 @@ ccnm stop demo --agent codex-main --session <id>  # 精确停一个
 
 `ccnm status demo` 看当前状态。两个实测出来的坑：
 
-- **`stop` 不是幂等的。** 对已经自己结束的会话再停一次，退出码 **3**，报 `CCNM_E_NOT_READY: no verifiable selected session is running`。话没说错（确实没有可停的会话），但清理脚本无脑调一次 stop 就会拿到非零退出，看起来像清理失败。脚本里要么容忍这个码，要么先用下面的办法确认还有没有会话。
+- **`stop` 对已经结束的会话是幂等的**（v1 起）：没有会话在跑时它退出码 **0**，报告里 `killed` 为 false。清理脚本可以无脑调一次，不用先判断有没有人在用。
+
+  但幂等**不等于 stop 永远不报错**。有一种情况仍然是失败：workspace 的终端**确实在跑**，而 ccnm 认不出它是不是你选的那个会话——报 `CCNM_E_NOT_READY: a terminal is running for this workspace but carries no verifiable ccnm session identity`。那道检查是为了不去杀别人的会话，跟幂等无关。
+
+  另外，`--session <id>` 指到一个这台机器上没有记录的 id，仍然报 `no session <id> on this machine`：不知道那个会话，和知道它已经结束，是两件事。
+
+  > 早于 v1 的构建在第一种情况下也报退出码 3。写清理脚本时如果要兼容旧版本，容忍这个码即可。
 - **`status` 看不见 `ccnm run --print` 的会话。** 它只报 Agent Node 上的 tmux 会话，非交互的 print 运行不在其中——会话正跑着、写入 guard 是 `held`、MCP 进程也在，`status` 照样说 `no live sessions`。据此判断"没人在用"然后起第二个会话，撞上的就是被占的写入 guard，而那个失败长得像别的毛病。要判断真没人用，看写入 guard 和进程列表，别只看 `status`。
 
 ## 故障恢复

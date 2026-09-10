@@ -590,35 +590,38 @@ fn on_the_work_machine_an_unknown_workspace_is_asked_about_not_refused() {
     );
 }
 
-/// The Agent Node starts a session by running this exact line on the
-/// Runtime Node. It is a string literal in `launcher::start_from_agent`,
-/// so nothing in the compiler ties the two together: rename the flag and
-/// the Agent-side entry keeps building and breaks at the far end, where
-/// the complaint is about an argument and the person is looking at a
-/// workspace.
+/// The Agent Node asks the Runtime with this exact line. The subcommand
+/// name is a string literal in `launcher::resolve_from_agent`, so nothing
+/// in the compiler ties the two together: rename it and the Agent-side
+/// entry keeps building and breaks at the far end, where the complaint is
+/// about an argument and the person is looking at a workspace.
 #[test]
-fn the_line_the_work_machine_sends_home_is_one_home_accepts() {
-    // Both shapes: without an opening line, and with one -- which adds
-    // --prompt-stdin and is the half where the two sides are furthest
-    // apart, the flag being what tells home the prompt is coming.
-    for args in [
-        vec!["run", "xshun", "--detached"],
-        vec!["run", "xshun", "--detached", "--prompt-stdin"],
-    ] {
-        let mut cmd = ccnm();
-        cmd.args(&args)
-            .arg("--config")
-            .arg(fixture("config-valid.toml"));
-        let out = with_stdin(&mut cmd, "fix the failing test");
-        let err = stderr(&out);
-        assert!(
-            !err.contains("unexpected argument") && !err.contains("Usage"),
-            "home must accept the line work sends it ({args:?}): {err}"
-        );
-        // Past clap and into the local preflight, which is as far as it
-        // can get without the project being here.
-        assert_eq!(out.status.code(), Some(30), "{args:?}: {err}");
-    }
+fn the_line_the_agent_sends_the_runtime_is_one_the_runtime_accepts() {
+    let wire = payload::encode(&ccnm_core::runtime::ResolveRequest::new("xshun", None)).unwrap();
+    let out = ccnm()
+        .args([
+            "internal",
+            "runtime-resolve",
+            "--payload",
+            &wire,
+            "--config",
+        ])
+        .arg(fixture("config-valid.toml"))
+        .output()
+        .unwrap();
+    let err = stderr(&out);
+    assert!(
+        !err.contains("unexpected argument") && !err.contains("Usage"),
+        "the Runtime must accept the line the Agent sends it: {err}"
+    );
+    assert_eq!(out.status.code(), Some(0), "{err}");
+    // And what comes back is the answer the Agent decodes, from the
+    // Runtime's own workspace definition.
+    let report: ccnm_core::runtime::ResolveReport =
+        serde_json::from_slice(&out.stdout).expect("a resolve report on stdout");
+    assert_eq!(report.workspace, "xshun");
+    assert_eq!(report.root, PathBuf::from("/Users/fodelf/Projects/xshun"));
+    assert_eq!(report.runtime_node, "runtime");
 }
 
 /// On the Agent Node the session is *on this machine*, so attach,
@@ -997,23 +1000,27 @@ fn sitting_at_home_detached_starts_the_session_and_keeps_the_terminal_here() {
 /// Direction two, through the real binary: `ccnm <ws>` typed at the work
 /// machine, with the Runtime Node scripted.
 ///
-/// This side has no workspace list, so it runs the user-facing command on
-/// the Runtime Node and attaches locally. Four things are pinned: the
-/// exact line sent (that `--detached` is on it is what stops the far side
-/// from waiting for a terminal that is here); that the attach then
-/// happens *here*, over no ssh; that where the config says home keeps
-/// ccnm is what gets run; and that an opening prompt is refused out loud
-/// rather than dropped, which is what used to happen.
+/// This side has no workspace list, so it asks the Runtime what the
+/// workspace is and starts the session here. Four things are pinned: that
+/// exactly one thing crosses and it is a question, not a command; that the
+/// configured remote ccnm path is the one that answers it; that the opening
+/// line never leaves this machine; and that everything after the answer is
+/// local, so a failure here is a local failure and not another hop.
+///
+/// It used to send the user-facing `ccnm run --detached` over and let the
+/// Runtime start the session. That made the Runtime Executor run the
+/// launcher and dial back to this machine -- the hop P7.4 Batch C removes.
 #[test]
-fn sitting_at_the_agent_the_start_goes_to_the_runtime_and_the_attach_stays_here() {
+fn sitting_at_the_agent_only_the_question_goes_to_the_runtime() {
     let dir = std::env::temp_dir().join(format!("ccnm-cli-{}-work-loop", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     // A name nothing can have a live session for on this machine.
     let workspace = "ccnm-test-loop";
+    let answer = r#"{"protocol":4,"workspace":"ccnm-test-loop","root":"/projects/ccnm-test-loop","runtime_node":"runtime","agent":null,"claude_config_dir":null,"permission_mode":"acceptEdits"}"#;
     let ssh = FakeSsh::install(
         &dir,
-        "  *' run ccnm-test-loop --detached') printf 'session   ccnm-ccnm-test-loop (started, tmux server pid 1)\\n' >&2 ;;",
+        &format!("  *'internal runtime-resolve'*) printf '%s\\n' '{answer}' ;;"),
     );
     let state = short_state("work-loop");
     let prepared = |args: &[&str], config: &Path| {
@@ -1030,52 +1037,36 @@ fn sitting_at_the_agent_the_start_goes_to_the_runtime_and_the_attach_stays_here(
         |args: &[&str], config: &Path, input: &str| with_stdin(&mut prepared(args, config), input);
     let agent_side = fixture("config-agent-side.toml");
 
-    // ---- the plain command: home starts it, this machine attaches -----
+    // ---- the plain command: one question, then everything is local ----
     let out = run(&[workspace], &agent_side);
     let said = format!("{}{}", stdout(&out), stderr(&out));
     let calls = ssh.calls();
+    assert_eq!(calls.len(), 1, "one question, and no second hop: {calls:?}");
+    let line = remote_line(&calls[0]);
     assert_eq!(
-        calls.len(),
-        1,
-        "one hop, and nothing decided here: {calls:?}"
-    );
-    assert_eq!(
-        remote_line(&calls[0]),
+        &line[..4],
         [
             "no-such-host-for-tests",
             "~/.local/bin/ccnm",
-            "run",
-            workspace,
-            "--detached"
+            "internal",
+            "runtime-resolve"
         ],
-        "the line home receives is the one a person would type there, plus --detached"
+        "what crosses is a question about the workspace, not a command to run it"
     );
     assert!(
-        said.contains("(started, tmux server pid 1)"),
-        "what home said about the session is relayed as it was: {said}"
+        !line.iter().any(|arg| arg == "run" || arg == "--detached"),
+        "nothing that starts a session goes over: {line:?}"
     );
-    // Then the local attach, which on a machine with no such session
-    // ends at tmux: no session (3), or no tmux at all (35). Either is a
-    // local answer; 21 would mean it went looking for home again.
-    assert!(
-        matches!(out.status.code(), Some(3 | 35)),
-        "attach must happen on this machine, exit was {:?}: {said}",
-        out.status.code()
+    // The start then happens here, so what fails is a local thing -- no
+    // tmux, no controller, no Agent binary. 21 would mean it went looking
+    // for the Runtime again.
+    assert_ne!(
+        out.status.code(),
+        Some(21),
+        "the session is started on this machine: {said}"
     );
 
-    // ---- --detached: the same hop, and no attach ----------------------
-    ssh.forget();
-    let out = run(&[workspace, "--detached"], &agent_side);
-    let said = format!("{}{}", stdout(&out), stderr(&out));
-    assert_eq!(out.status.code(), Some(0), "{said}");
-    assert_eq!(ssh.calls().len(), 1);
-    assert!(said.contains("(started, tmux server pid 1)"), "{said}");
-    assert!(
-        !said.contains("no live session"),
-        "--detached must not try to attach: {said}"
-    );
-
-    // ---- where home keeps ccnm is read from this machine's config -----
+    // ---- where the Runtime keeps ccnm is read from this machine's config
     ssh.forget();
     let elsewhere = dir.join("elsewhere.toml");
     std::fs::write(
@@ -1088,56 +1079,28 @@ fn sitting_at_the_agent_the_start_goes_to_the_runtime_and_the_attach_stays_here(
     assert_eq!(calls.len(), 1, "{}", stderr(&out));
     assert_eq!(
         remote_line(&calls[0])[..3],
-        ["no-such-host-for-tests", "/opt/elsewhere/ccnm", "run"],
-        "the configured path is the one that runs"
+        ["no-such-host-for-tests", "/opt/elsewhere/ccnm", "internal"],
+        "the configured path is the one that answers"
     );
 
-    // ---- the opening line goes over, and it goes over on stdin -------
+    // ---- the opening line stays here -----------------------------------
     //
-    // It used to be dropped here without a word. It cannot go on the
-    // remote command line -- that line is unquoted, and this prompt has
-    // a quote and an apostrophe in it -- so the far side is told to read
-    // it from stdin and the bytes go down the same connection.
+    // It used to ride the connection's stdin because the far side was the
+    // one starting the session. Now nothing about it crosses at all, which
+    // also retires the quoting problem that put it on stdin: this prompt
+    // has a quote and an apostrophe in it.
     ssh.forget();
     let prompt = "fix the \"failing\" test, it's in mod tests";
     let out = run(&[workspace, prompt, "--detached"], &agent_side);
     let said = format!("{}{}", stdout(&out), stderr(&out));
-    assert_eq!(out.status.code(), Some(0), "{said}");
     let calls = ssh.calls();
     assert_eq!(calls.len(), 1, "{said}");
-    assert_eq!(
-        remote_line(&calls[0]),
-        [
-            "no-such-host-for-tests",
-            "~/.local/bin/ccnm",
-            "run",
-            workspace,
-            "--detached",
-            "--prompt-stdin"
-        ],
-        "the line home receives says where to read the prompt, not what it is"
-    );
-    assert_eq!(ssh.fed_in(), prompt, "byte for byte, down the connection");
     assert!(
         !calls[0].iter().any(|a| a.contains("failing")),
         "not one word of it in the argv: {:?}",
         calls[0]
     );
-
-    // ---- and it can be piped in here too, which is how newlines get in
-    ssh.forget();
-    let out = pipe_in(
-        &[workspace, "--prompt-stdin", "--detached"],
-        &agent_side,
-        "first line\nsecond line\n",
-    );
-    let said = format!("{}{}", stdout(&out), stderr(&out));
-    assert_eq!(out.status.code(), Some(0), "{said}");
-    assert_eq!(
-        ssh.fed_in(),
-        "first line\nsecond line",
-        "trailing newline off, the one in the middle kept"
-    );
+    assert_eq!(ssh.fed_in(), "", "and nothing of it down the connection");
 
     // ---- --prompt-stdin with nothing on stdin is refused, not empty ---
     //

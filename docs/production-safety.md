@@ -25,10 +25,10 @@
 
 **现在的代码还没完全做到。** 这是 P7.3 在真机上量出来的，写在这里免得你照着做了却发现对不上：
 
-- `ccnm doctor` 那批身份检查判的是**敲命令的那个进程**，所以同一个 workspace 以 `ccrun` 跑是 0 failed、以你自己的账号跑是 7 failed。绿表只代表"跑 doctor 的这个账号是干净的"。
-- 当前主线链路里，Runtime 侧发起会话时要从 Runtime Node 拨号去 Agent Node，所以那个身份必须持一把出站私钥——**与上面的硬约束直接冲突**。
+- `ccnm doctor` 那批身份检查判的是**敲命令的那个进程**，所以同一个 workspace 以 `ccrun` 跑是 0 failed、以你自己的账号跑是 7 failed。绿表只代表"跑 doctor 的这个账号是干净的"。这一条还没修（Batch D），而它正是眼下逼着人用 `ccrun` 去敲命令的原因——一旦那么做，下面那条就又回来了。
+- 控制链本身已经不再要求 Runtime Executor 出站了（Batch C）：Runtime 侧发起时是 **Operator** 的进程拨号去 Agent Node，Agent 侧发起时只把一句只读的 `internal runtime-resolve` 问过去、会话在 Agent 本机创建。`ccrun` 只接受入站连接。
 
-两条都在修，批次和顺序见[双执行入口方案](plan/runtime-surfaces.md)：身份契约（Batch A）→ Runtime 权威解析（B）→ 换控制链（C）→ doctor 结论（D）。**在 Batch C/D 落地之前，不要把 doctor 的绿灯当成 Runtime Executor 的结论。**
+所以现在的正确做法是：**用你自己的账号（Operator）敲 ccnm，让 `ccrun` 名下一把私钥都没有。** 代价是 doctor 的身份那几行会报红，直到 Batch D 把结论改由真正的 Runtime 进程报告。批次和顺序见[双执行入口方案](plan/runtime-surfaces.md)：身份契约（A）→ Runtime 权威解析（B）→ 换控制链（C）→ doctor 结论（D）→ 真机复验（E）。**在 Batch D 落地之前，不要把 doctor 的绿灯当成 Runtime Executor 的结论。**
 
 ## `ccrun` 能解决什么
 
@@ -170,10 +170,9 @@ sudo chmod 600 /Users/ccrun/.ssh/authorized_keys
 
 **这个做法已经作废，不再是达标路径。** P7.3 真机上正是这么做才让[最终门禁](#最终门禁)全绿的，那份绿灯不能当作隔离证据。正确的目标状态只有一个：`ccrun` 名下**任何位置**都没有 ccnm 运行所需的出站私钥。
 
-要做到这一点，得先把"Runtime 侧发起会话时从 Runtime Node 拨号去 Agent"那条链路改掉（P7.4 Batch C），检查范围也要跟着扩到已知 transport 目录和 `SSH_AUTH_SOCK`（Batch D）。在那之前：
+**链路那一半已经改完了（P7.4 Batch C）**：Runtime 侧发起时拨号的是 Operator 的进程，Agent 侧发起时只把一句只读的问题问过来。所以现在 `ccrun` 一把私钥都不需要，把它清空是可以做到的目标，不再是"理论上应该"。
 
-- 如果你的部署里 Runtime 侧不需要主动发起（Agent 侧发起会话），`ccrun` 就应该一把私钥都没有；
-- 如果需要，那把 transport 私钥是**已知缺口**，请当成"这台机器上还有一条没关的路"来记账，别当成已经解决。
+还差两件事，都在 Batch D：`No SSH keys` 的扫描范围要扩到已知 transport 目录和 `SSH_AUTH_SOCK`；doctor 的身份结论要改由真正的 Runtime 进程报告，否则用别的账号敲命令会被报红，而那正是逼着人把私钥塞回 `ccrun` 的力。
 
 在 Agent Node 的 `~/.ssh/config` 中，让 `nodes.runtime.ssh` 对应的 alias 使用 `ccrun`：
 

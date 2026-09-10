@@ -116,9 +116,11 @@ Runtime Node
 
 ### 2. `agent -> runtime`
 
-坐在跑 Agent 的那台机器上发起。它不存 workspace 列表（顶层 `runtime_node` 就是这个意思），所以先把启动命令委托给 Runtime Node，再走上面那条完整路径，最后在本地 attach。已有 session 的 `attach/status/result/stop` 仍在 Agent 本机执行，避免 Runtime 短暂离线时连终端也无法管理。
+坐在跑 Agent 的那台机器上发起。它不存 workspace 列表（顶层 `runtime_node` 就是这个意思），所以**先问 Runtime 这个 workspace 是什么**（`internal runtime-resolve`，只读，不启动任何东西），拿到 root、runtime node、instance 引用和 permission mode 之后，**在本机把会话起起来**，再本地 attach。已有 session 的 `attach/status/result/stop` 一直在 Agent 本机执行，避免 Runtime 短暂离线时连终端也无法管理。
 
-多这一跳是为了避免出现第二份 workspace root 配置。两份列表就是两个"这个项目在哪"的答案，其中一份迟早过期，然后某个会话绑到一个已经搬走的目录上。
+问一句而不是自己存一份，是为了避免出现第二份 workspace root 配置。两份列表就是两个"这个项目在哪"的答案，其中一份迟早过期，然后某个会话绑到一个已经搬走的目录上。
+
+**以前不是这样的。** 以前这台机器把整条公共命令 `ccnm run <ws> --detached` ssh 过去，让 Runtime Node 去启动会话——work → home → work 绕一圈。代价是 P7.3 在真机上量出来的：ssh 落到的账号是 Runtime Executor，于是**它**在跑 launcher，而且必须持一把回连 Agent Node 的出站私钥。一个会执行模型产出内容的身份还能主动连出去，就没有任何它自己能证明的边界。现在过去的只有问题，答案回来，会话在 Agent 本机创建——Claude 本来就跑在这台。
 
 ### 3. `runtime -> agent`
 

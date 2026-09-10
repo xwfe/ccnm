@@ -17,7 +17,7 @@ use crate::protocol::run::{
     StartReport, StartRequest, StatusReport, StatusRequest, StopReport, StopRequest,
 };
 use crate::provider::AgentProvider;
-use crate::ssh::{Master, RemoteOutcome, Ssh};
+use crate::ssh::{Master, Ssh};
 
 /// `ccnm run <workspace> --print <prompt>`: one Claude session on the
 /// Agent Node, its result brought back here.
@@ -139,116 +139,44 @@ pub fn start_interactive_with_agent(
 /// timeout because this lasts as long as the person wants it to. Run it
 /// with [`crate::process::run_attached`]: it needs this process's real
 /// stdin and stdout, not pipes.
-/// Start a session from the *work* machine, by asking the Runtime Node to
-/// do it.
+/// Ask the Runtime Node what this workspace is, so the Agent Node can
+/// start the session itself.
 ///
-/// The Agent Node has no workspace list and must not grow one: the home
-/// machine is where a project's root is defined, and a second copy of that
-/// is a second answer to "where is this project", which is how a session
-/// ends up bound to a directory that has moved.
+/// The Agent Node has no workspace list and must not grow one: the Runtime
+/// is where a project's root is defined, and a second copy of that is a
+/// second answer to "where is this project", which is how a session ends up
+/// bound to a directory that has moved. So it asks, every time.
 ///
-/// So this delegates the whole thing -- config lookup, the version and
-/// root handshake, the controller -- to exactly the code path that runs
-/// when somebody types the command at home. The session is created on
-/// this machine either way, because that is where Claude runs; all that
-/// changes is who asked for it. Later workspace-authority checks use the
-/// same route; attach/status/result/stop stay local to the Agent session so
-/// an existing terminal remains manageable while the Runtime link is down.
+/// What it used to do instead was send the whole public `ccnm run` back
+/// over ssh and let the Runtime start the session -- work -> home -> work.
+/// That bought one definition of every workspace, and it cost the thing
+/// P7.3 measured: the account the Agent lands on is the Runtime Executor,
+/// so *it* ran the public launcher, and it needed an outbound key back to
+/// the Agent Node to do it. An execution identity that dials out is not
+/// confined by anything the account itself can prove
+/// (docs/production-safety.md).
 ///
-/// The cost is one extra hop, work -> home -> work. That buys a single
-/// definition of every workspace and not one line of duplicated
-/// launching.
-///
-/// `prompt` is the line Claude opens with, and it does **not** go on the
-/// command line: it is free text, and nothing that would need shell
-/// quoting is allowed on a remote command line (design doc section 8,
-/// [`crate::ssh::is_remote_safe`]). It rides the connection's stdin
-/// instead, which is bytes and needs no quoting, so `--prompt-stdin`
-/// tells the far side to read it there. Newlines and quotes survive.
-pub fn start_from_agent(
+/// Now only the question crosses. The answer is workspace data -- root,
+/// runtime node, instance reference, permission mode -- and the session is
+/// created here, where the Agent runs, by the same `work::start` the
+/// Runtime-initiated path reaches over ssh. The far side starts nothing,
+/// so nothing on the far side needs to dial anywhere.
+pub fn resolve_from_agent(
     runtime_alias: &str,
     runtime_ccnm_bin: &str,
     workspace: &str,
-    prompt: Option<&str>,
-    env: &Env<'_>,
-) -> Result<()> {
-    start_from_agent_with_instance(
-        runtime_alias,
-        runtime_ccnm_bin,
-        workspace,
-        prompt,
-        env,
-        None,
-    )
-}
-
-pub fn start_from_agent_with_instance(
-    runtime_alias: &str,
-    runtime_ccnm_bin: &str,
-    workspace: &str,
-    prompt: Option<&str>,
-    env: &Env<'_>,
     agent: Option<&str>,
-) -> Result<()> {
+    env: &Env<'_>,
+) -> Result<crate::runtime::ResolveReport> {
     let ssh = Ssh::new(runtime_alias, env.control_dir.clone())?.with_ccnm_bin(runtime_ccnm_bin);
-    let mut argv: Vec<&str> = vec![ssh.ccnm_bin(), "run", workspace, "--detached"];
-    if let Some(agent) = agent {
-        argv.extend(["--agent", agent]);
-    }
-    if prompt.is_some() {
-        argv.push("--prompt-stdin");
-    }
-    let mut cmd = ssh.remote_cmd(Master::Reuse, &argv, Duration::from_secs(180))?;
-    if let Some(prompt) = prompt {
-        cmd = cmd.stdin(prompt.as_bytes());
-    }
-    let out = env.runner.run(&cmd)?;
-    // Same three diagnoses every other remote call gets, from the same
-    // function. This used to read the exit code by hand, so the two
-    // failures that have a fix in one sentence -- ccnm is somewhere else
-    // over there, ccnm is not executable over there -- arrived as "could
-    // not start the session" with nothing under it.
-    match crate::ssh::classify(out) {
-        RemoteOutcome::Unreachable(why) => Err(Error::new(
-            ErrorCode::RuntimeUnreachable,
-            format!("ssh {runtime_alias}: {why}"),
-        )),
-        RemoteOutcome::CommandNotFound => Err(Error::new(
-            ErrorCode::Version,
-            format!(
-                "{runtime_ccnm_bin} not found on {runtime_alias} (the login shell exited 127)\ninstall the same ccnm build there, or set ccnm_bin under [nodes.runtime] in this machine's config.toml"
-            ),
-        )),
-        RemoteOutcome::NotExecutable => Err(Error::new(
-            ErrorCode::Version,
-            format!(
-                "{runtime_ccnm_bin} on {runtime_alias} is there but not executable (exit 126)\nssh {runtime_alias} 'chmod +x {runtime_ccnm_bin}'"
-            ),
-        )),
-        RemoteOutcome::Completed(out) => {
-            // The far side already says everything worth saying about the
-            // session it started, and it says it on stderr -- including
-            // why it refused, when it refused. Relayed as it is, then a
-            // single line saying whose failure it was.
-            let said = out.stderr_lossy();
-            if !said.trim().is_empty() {
-                eprint!("{said}");
-            }
-            if !out.success() {
-                return Err(Error::new(
-                    ErrorCode::RuntimeUnreachable,
-                    format!(
-                        "{runtime_alias} could not start `{workspace}`{}",
-                        match out.exit_code {
-                            Some(code) => format!(" (ccnm there exited {code})"),
-                            None => " (ccnm there was killed)".to_string(),
-                        }
-                    ),
-                ));
-            }
-            Ok(())
-        }
-    }
+    ssh.call_ccnm(
+        env.runner,
+        Master::Reuse,
+        &["internal", "runtime-resolve"],
+        &crate::runtime::ResolveRequest::new(workspace, agent),
+        Duration::from_secs(60),
+        ErrorCode::RuntimeUnreachable,
+    )
 }
 
 /// Send a non-interactive workspace-authority command from an Agent-only
@@ -1048,13 +976,14 @@ mod tests {
 
     /// Direction two: the same session, asked for from the Agent Node.
     ///
-    /// The Agent Node has no workspace list, so it cannot build the
-    /// start request itself -- it runs the *user-facing* command on the
-    /// Runtime Node and lets home do what it does when somebody types it
-    /// there. That is the whole design: one definition of every
-    /// workspace, and no second copy of the launching code.
+    /// The Agent Node has no workspace list, so it asks -- and that is all
+    /// that crosses. It used to send the *user-facing* `ccnm run` back to
+    /// the Runtime and let that machine start the session, which meant the
+    /// Runtime Executor ran the launcher and needed an outbound key to the
+    /// Agent Node. Now the question goes over, the answer comes back, and
+    /// the session is created on this side, where Claude runs anyway.
     #[test]
-    fn from_the_agent_node_the_entire_start_is_delegated_to_the_runtime() {
+    fn from_the_agent_node_only_the_question_crosses() {
         let config = Config::parse(
             "this = \"agent\"\nruntime_node = \"runtime\"\n[nodes.agent]\n[nodes.runtime]\nssh = \"to-runtime\"\nccnm_bin = \"/opt/runtime/ccnm\"\n",
         )
@@ -1064,26 +993,39 @@ mod tests {
             .expect("a config with no workspace list is the Agent Node's");
 
         let fake = FakeRunner::new();
-        let mut started = Output::exited(0, "");
-        started.stderr = b"ccnm-xshun (started, tmux server pid 22413)\n".to_vec();
-        fake.push(started);
+        fake.push(Output::exited(
+            0,
+            r#"{"protocol":4,"workspace":"xshun","root":"/Users/me/xshun","runtime_node":"runtime","agent":{"node":"agent","instance":"claude-main"},"claude_config_dir":null,"permission_mode":"acceptEdits"}"#,
+        ));
         let env = Env {
             runner: &fake,
-            control_dir: control("delegate"),
+            control_dir: control("resolve"),
             current_exe: PathBuf::from("/opt/work/ccnm"),
         };
-        start_from_agent(alias, &host.ccnm_bin(), "xshun", None, &env).unwrap();
+        let report = resolve_from_agent(alias, &host.ccnm_bin(), "xshun", None, &env).unwrap();
+        assert_eq!(report.root, PathBuf::from("/Users/me/xshun"));
+        assert_eq!(report.runtime_node, "runtime");
 
         let calls = fake.calls();
-        assert_eq!(calls.len(), 1, "one hop, and nothing decided on this side");
+        assert_eq!(calls.len(), 1, "one question, and no second hop");
         let line = calls[0].display();
         assert!(
-            line.contains("-T to-runtime /opt/runtime/ccnm run xshun --detached"),
+            line.contains("-T to-runtime /opt/runtime/ccnm internal runtime-resolve --payload"),
             "{line}"
         );
-        // --detached is not decoration. Without it the far side would sit
-        // there waiting to attach a terminal that is on this machine.
-        assert!(line.ends_with("--detached"), "{line}");
+        // Nothing that starts anything is sent over. The far side reads its
+        // config and answers; it does not launch, and it does not dial.
+        assert!(!line.contains(" run xshun"), "{line}");
+        assert!(!line.contains("--detached"), "{line}");
+        let at = calls[0]
+            .args
+            .iter()
+            .position(|a| a == "--payload")
+            .expect("a payload argument");
+        let sent: crate::runtime::ResolveRequest =
+            payload::decode(&calls[0].args[at + 1].to_string_lossy()).unwrap();
+        assert_eq!(sent.workspace, "xshun");
+        assert_eq!(sent.agent, None);
     }
 
     #[test]
@@ -1117,47 +1059,42 @@ mod tests {
         );
     }
 
-    /// The opening line makes the trip, and it makes it on stdin.
+    /// The opening line does not make the trip any more.
     ///
-    /// Two halves, and the second one is the point. That the prompt
-    /// arrives is half: it used to be dropped without a word, so somebody
-    /// typed a sentence and Claude opened with nothing. That it arrives
-    /// *on stdin* is the other half, and it is not a style choice --
-    /// remote command lines are unquoted (`ssh::is_remote_safe`), so a
-    /// prompt with a quote or a newline in it either gets refused or,
-    /// worse, gets taken apart by the far side's login shell. stdin is
-    /// bytes. The prompt below has a quote, an apostrophe, a backtick and
-    /// a newline in it for exactly that reason.
+    /// It used to, on stdin, because the far side was the one starting the
+    /// session and a prompt with a quote or a newline in it cannot go on an
+    /// unquoted remote command line (`ssh::is_remote_safe`). Now the
+    /// session starts here, so the Runtime never sees what the person
+    /// typed: [`resolve_from_agent`] has nowhere to put it, which the
+    /// compiler enforces better than any assertion here could.
+    ///
+    /// What is still worth pinning is the rule that forced it onto stdin in
+    /// the first place, because the question that replaced it still crosses
+    /// a login shell: every argument after the alias must survive it
+    /// unquoted.
     #[test]
-    fn an_opening_line_typed_at_work_rides_stdin_not_the_command_line() {
+    fn what_crosses_now_still_survives_an_unquoted_login_shell() {
         let fake = FakeRunner::new();
-        fake.push(Output::exited(0, ""));
+        fake.push(Output::exited(
+            0,
+            r#"{"protocol":4,"workspace":"xshun","root":"/p","runtime_node":"runtime","agent":null,"claude_config_dir":null,"permission_mode":"acceptEdits"}"#,
+        ));
         let env = Env {
             runner: &fake,
             control_dir: control("prompt-over"),
             current_exe: PathBuf::from("/opt/work/ccnm"),
         };
-        let prompt = "fix the \"failing\" test\nit's in `mod tests`";
-        start_from_agent("to-home", "/opt/home/ccnm", "xshun", Some(prompt), &env).unwrap();
+        resolve_from_agent(
+            "to-home",
+            "/opt/home/ccnm",
+            "xshun",
+            Some("codex-main"),
+            &env,
+        )
+        .unwrap();
 
         let call = fake.calls().remove(0);
-        let line = call.display();
-        assert!(
-            line.ends_with("/opt/home/ccnm run xshun --detached --prompt-stdin"),
-            "the far side is told to read it from stdin: {line}"
-        );
-        assert!(
-            !line.contains("failing"),
-            "not one word of it on the command line: {line}"
-        );
-        assert_eq!(
-            call.stdin.as_deref(),
-            Some(prompt.as_bytes()),
-            "byte for byte, newline included"
-        );
-        // The rule that forced the prompt onto stdin still holds for
-        // everything that did stay on the remote line -- everything after
-        // the alias, which is what the far side's login shell reads.
+        assert_eq!(call.stdin, None, "nothing rides stdin any more");
         let alias = call.args.iter().position(|a| a == "to-home").unwrap();
         for arg in call.args.iter().skip(alias + 1) {
             let arg = arg.to_string_lossy();
@@ -1175,7 +1112,7 @@ mod tests {
     /// the one that gets run, and that being wrong says which path it
     /// tried and where to fix it.
     #[test]
-    fn where_ccnm_lives_on_the_home_machine_is_read_and_named() {
+    fn where_ccnm_lives_on_the_runtime_machine_is_read_and_named() {
         let fake = FakeRunner::new();
         fake.push(Output::exited(127, ""));
         let env = Env {
@@ -1183,13 +1120,13 @@ mod tests {
             control_dir: control("notfound"),
             current_exe: PathBuf::from("/opt/work/ccnm"),
         };
-        let err =
-            start_from_agent("to-home", "/opt/homebrew/bin/ccnm", "xshun", None, &env).unwrap_err();
+        let err = resolve_from_agent("to-home", "/opt/homebrew/bin/ccnm", "xshun", None, &env)
+            .unwrap_err();
 
         assert!(
             fake.calls()[0]
                 .display()
-                .contains("/opt/homebrew/bin/ccnm run xshun"),
+                .contains("/opt/homebrew/bin/ccnm internal runtime-resolve"),
             "the configured path is the one that runs: {}",
             fake.calls()[0].display()
         );
@@ -1198,13 +1135,17 @@ mod tests {
         assert!(err.message().contains("ccnm_bin"), "{err}");
     }
 
-    /// A home that never answered and a home that answered "no" are two
-    /// different problems with two different fixes, and the Agent Node
+    /// A Runtime that never answered and a Runtime that answered "no" are
+    /// two different problems with two different fixes, and the Agent Node
     /// only ever sees an exit code. Reporting a refusal as unreachable
-    /// sends somebody to debug their network over a typo'd workspace
-    /// name.
+    /// sends somebody to debug their network over a typo'd workspace name.
+    ///
+    /// The refusal now keeps the far side's own error code as well:
+    /// `CCNM_E_CONFIG` on the way in stays `CCNM_E_CONFIG` on the way out,
+    /// where the delegated public command could only ever say "the Runtime
+    /// failed".
     #[test]
-    fn a_home_that_refused_is_not_reported_as_a_home_that_was_not_there() {
+    fn a_runtime_that_refused_is_not_reported_as_one_that_was_not_there() {
         fn env_for(fake: &FakeRunner) -> Env<'_> {
             Env {
                 runner: fake,
@@ -1217,19 +1158,19 @@ mod tests {
         let mut timeout = Output::exited(255, "");
         timeout.stderr = b"ssh: connect to host to-home port 22: Operation timed out\n".to_vec();
         down.push(timeout);
-        let err = start_from_agent("to-home", "/opt/home/ccnm", "xshun", None, &env_for(&down))
+        let err = resolve_from_agent("to-home", "/opt/home/ccnm", "xshun", None, &env_for(&down))
             .unwrap_err();
         assert_eq!(err.code(), ErrorCode::RuntimeUnreachable);
         assert!(err.message().contains("Operation timed out"), "{err}");
 
-        // Home was reached, looked, and said no. Its own words are
-        // relayed; the error says whose failure it was and with what.
+        // Reached, looked, and said no. Its words are relayed and its code
+        // survives the trip.
         let refused = FakeRunner::new();
         let mut no = Output::exited(ErrorCode::Config.exit_code(), "");
         no.stderr =
             b"CCNM_E_CONFIG:\nworkspace 'xshun' is not defined; defined: fixture\n".to_vec();
         refused.push(no);
-        let err = start_from_agent(
+        let err = resolve_from_agent(
             "to-home",
             "/opt/home/ccnm",
             "xshun",
@@ -1237,9 +1178,9 @@ mod tests {
             &env_for(&refused),
         )
         .unwrap_err();
-        assert_eq!(err.code(), ErrorCode::RuntimeUnreachable);
-        assert!(err.message().contains("exited 10"), "{err}");
+        assert_eq!(err.code(), ErrorCode::Config);
         assert!(err.message().contains("xshun"), "{err}");
+        assert!(err.message().contains("runtime-resolve"), "{err}");
     }
 
     /// Both roles refuse before the network when the project is not on

@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-09-10T19:05:00+09:00",
+  "last_updated": "2026-09-10T19:40:00+09:00",
   "current_task": "P7",
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
@@ -500,7 +500,7 @@
       ],
       "owner": null,
       "started_at": "2026-09-10T16:20:00+09:00",
-      "last_updated": "2026-09-10T19:05:00+09:00",
+      "last_updated": "2026-09-10T19:40:00+09:00",
       "completed_criteria": [
         "P7.1",
         "P7.2"
@@ -593,6 +593,14 @@
           ],
           "ref": "crates/ccnm-core/src/runtime.rs",
           "result": "P7.4 Batch B（Runtime authority / resolve）完成，边界建好且可离线验证，公共 launcher 未切换。新模块 crate::runtime 用一个纯函数 open(config, request) 回答“哪个项目、在哪、给谁开”，答案只来自 Runtime 本机配置与文件系统：root 由 workspace 定义解析并 canonicalize，runtime_user 与 allow_unconfined_exec 一并带出。新 internal wire protocol 4 的 OpenPayload **没有 root 字段**，也没有任何路径，配合 deny_unknown_fields 使“调用方塞一个 root 进来”是解码失败而非被忽略；另在边界校验 session id（它会变成本机目录名）与 policy。身份核对的分工写死并有测试：Runtime 只认它拥有的那一半——workspace 的 Agent Node，加上拓扑与 provider 能力；instance/provider/profile 属 Agent 本机事实，且 ccnm run --agent 本就允许同 node 换 instance，故 Runtime 不重复校验 instance。**这一条是被既有测试纠正过来的**：本轮先在 bind_workspace 加了 instance 相等检查，instance_config 的 substitutions_and_stale_registry_identity 立刻失败，它明写 same-node override 是 Runtime 授权、Agent 解析，于是撤回该检查并把理由写进代码注释与新模块文档，避免下一个人再撞。迁移边界不静默回退：decode_serve 按 protocol 数字分派（1..=3 旧形状、4 新形状），不认识的数字直接 CCNM_E_VERSION，不做“换个形状再试一次”；反向也验了——protocol 4 的 payload 用旧 ServePayload 解码必然失败（缺 root、多 agent）。mcp-serve 打开时仍重做全部检查：Server::open 走 runtime::open 之后仍进 Server::new，binding 再验一次、安全审计、root canonicalize、写入 guard 照旧，resolve 不当 capability token。canonical_root 从 mcp/server.rs 移进 runtime 模块，只此一份。测试：cargo test --workspace 619 passed / 0 failed（Batch B 新增 14 个：runtime 模块 10 个离线单测 + crates/ccnm-cli/tests/runtime_open.rs 4 个真实二进制集成测试，后者证明 internal mcp-serve 确实分派、Runtime 用自己的 root 报错、旧形状仍并存、未知版本停在 CCNM_E_VERSION）；fmt、clippy -D warnings、Python 120、check_protocol、check_plan、git diff --check 全通过。限制：公共 launcher 仍发旧 payload，没有任何调用方使用 protocol 4，因此这一批没有改变现网行为，也没有真机证据；Agent 侧发起时的 resolve 步骤与删除 ccrun→Agent 回跳是 Batch C。"
+        },
+        {
+          "kind": "offline",
+          "criteria": [
+            "P7.4"
+          ],
+          "ref": "crates/ccnm-core/src/session/transport.rs",
+          "result": "P7.4 Batch C（切 Managed control path）完成：正式路径上的 ccrun→Agent 回跳已删除，绑定会话的 MCP 传输改用 Batch B 的 protocol 4。Agent 侧发起：新增只读的 internal runtime-resolve（Runtime 用自己的权威配置回答 root/runtime_node/instance 引用/permission mode，不启动任何东西、不创建会话、可重复调用），launcher::resolve_from_agent 取回答案后由 Agent **本机** work::start 起会话——与 Runtime 发起时经 ssh 到达的是同一个函数，没有第二份启动代码。原 start_from_agent/start_from_agent_with_instance 及其发送的公共命令 ccnm run <ws> --detached 一并删除。这条回跳的代价是 P7.3 量出来的：ssh 落到的账号是 Runtime Executor，于是它在跑 launcher，并且必须持一把回连 Agent Node 的出站私钥。附带修好一处诊断质量：回跳时对端的拒绝只能报成 RuntimeUnreachable，现在 call_ccnm 保留对端自己的错误码（CCNM_E_CONFIG 进来仍是 CCNM_E_CONFIG 出去）。Runtime 发起：拨号的是 Operator 的进程，Agent 反向进入 ccrun，链路形状不变。MCP 传输：session/transport.rs 对有 agent_identity 的会话发 OpenPayload（protocol 4，无 root）；legacy agent_node workspace 保持旧形状——这是明确的 migration boundary，它们没有可解析的 identity 且本就在退役路上。doctor 的 Remote MCP handshake 探针与 provider 运行前预检一并改用同一条 wire，否则绿的握手证明的是另一条路径。ccnm rpc 仍直接调用 launcher 库函数（SystemRuns::run_print → launcher::run_print_with_agent），没有恢复 shell out 到 CLI；Machine API 的 session identity/start_key/result/stop 语义未动，黑盒契约测试原样通过。测试：cargo test --workspace 622 passed / 0 failed（新增 3 个 transport wire 测试；改写 4 个 launcher 测试、1 个 CLI 端到端测试和 1 个跨进程契约测试，让它们钉住新的那一行而不是旧的）。改写不是为了让绿灯继续绿：旧测试断言的是 -T <runtime> ccnm run <ws> --detached 这条现在不该再出现的命令。fmt、clippy -D warnings、Python 120、check_protocol、check_plan 全通过。限制：没有真机验证——Batch C 改的正是真机链路，P7.3 的 Claude 证据不再完整覆盖新路径，须按 Batch E 重跑最小复验；Agent 侧的 doctor 与 mcp probe 仍把整条公共命令委托给 Runtime（public_cmd_from_agent），那是诊断路径，归 Batch D 一起处理；此外新旧两端必须同构建，旧 Runtime 收到 protocol 4 会以 CCNM_E_VERSION 明确失败而不是静默降级。"
         }
       ],
       "blockers": [
@@ -629,7 +637,7 @@
       ],
       "owner": null,
       "started_at": null,
-      "last_updated": "2026-09-10T19:05:00+09:00",
+      "last_updated": "2026-09-10T18:19:30+09:00",
       "completed_criteria": [],
       "evidence": [],
       "blockers": []
@@ -643,7 +651,7 @@
       ],
       "owner": null,
       "started_at": null,
-      "last_updated": "2026-09-10T19:05:00+09:00",
+      "last_updated": "2026-09-10T18:19:30+09:00",
       "completed_criteria": [],
       "evidence": [],
       "blockers": []
@@ -657,7 +665,7 @@
       ],
       "owner": null,
       "started_at": null,
-      "last_updated": "2026-09-10T19:05:00+09:00",
+      "last_updated": "2026-09-10T18:19:30+09:00",
       "completed_criteria": [],
       "evidence": [],
       "blockers": []
@@ -671,7 +679,7 @@
       ],
       "owner": null,
       "started_at": null,
-      "last_updated": "2026-09-10T19:05:00+09:00",
+      "last_updated": "2026-09-10T18:19:30+09:00",
       "completed_criteria": [],
       "evidence": [],
       "blockers": []
@@ -693,7 +701,7 @@
     "协议契约里的 -32008（busy）没有实现会返回：写入 guard 在会话跑起来之后才由 Runtime 侧 MCP 获取，session.start 不做工作树占用预检，被占的表现是会话失败而非启动被拒。文档已如实标注；要不要补预检使该码可达是待定的产品决定。同一窗口也影响连续执行：前一次 ccnm run --print 返回时 guard 可能尚未释放，紧接着启动下一个会话会撞上，实际窗口时长未在真机测过。"
   ],
   "handoff": {
-    "next_action": "当前仍是 P7，正在按 docs/plan/runtime-surfaces.md 第 6 节实施 P7.4。**Batch A（身份契约）已完成并提交**：四种身份进产品文档、runtime_user 重定义为 Runtime Executor 期望身份、正式废弃隐藏 transport key 的达标路径、3 个离线契约测试、改掉 safety/doctor 两处写错的事实；本批不改启动链。**Batch B（Runtime authority / resolve）也已完成并提交**：新模块 crate::runtime 的 open() 让 workspace 在 Runtime 权威配置里解析，新 internal wire protocol 4 的 OpenPayload 没有 root 字段，decode_serve 按协议号分派且未知版本停在 CCNM_E_VERSION，mcp-serve 打开时仍重做 binding/安全/canonicalize/write guard；公共 launcher 仍发旧 payload，符合该批停止点。**下一步是 Batch C（切 Managed control path）**：Runtime 发起时 Operator 直接控制 Agent、Agent 反向进入 ccrun；Agent 发起时先 resolve Runtime authority 再本机 Controller start，删除正式路径上的 ccrun→Agent 回跳；CLI 与 ccnm rpc 共用同一应用逻辑，不恢复 RPC shell out 到 CLI；session identity、start_key、result、stop 等 Machine API 语义不因换链路漂移。停止点是全部离线/golden/black-box 通过后再上真机。之后 D（doctor 权威结论）、E（新链最小 Claude 真机复验）。不要重做已经通过的 P7.1/P7.2 或完整 Claude dogfood。Codex 额度恢复后再在新身份模型上补 P7.3 Codex parity；两者齐全后才做 P7.5 v1 freeze，P8/P9 之前都不要开始。",
+    "next_action": "当前仍是 P7，正在按 docs/plan/runtime-surfaces.md 第 6 节实施 P7.4。**Batch A（身份契约）已完成并提交**：四种身份进产品文档、runtime_user 重定义为 Runtime Executor 期望身份、正式废弃隐藏 transport key 的达标路径、3 个离线契约测试、改掉 safety/doctor 两处写错的事实；本批不改启动链。**Batch B（Runtime authority / resolve）也已完成并提交**：新模块 crate::runtime 的 open() 让 workspace 在 Runtime 权威配置里解析，新 internal wire protocol 4 的 OpenPayload 没有 root 字段，decode_serve 按协议号分派且未知版本停在 CCNM_E_VERSION，mcp-serve 打开时仍重做 binding/安全/canonicalize/write guard；公共 launcher 仍发旧 payload，符合该批停止点。**Batch C（切 Managed control path）也已完成并提交**：Agent 侧发起改为先问只读的 internal runtime-resolve 再本机 work::start，删除了 ccrun→Agent 回跳与它发送的公共命令；绑定会话的 MCP 传输、doctor 的握手探针和 provider 预检统一改用 protocol 4（无 root），legacy workspace 保持旧 wire 作为 migration boundary；rpc 仍直接调库，Machine API 语义未动。**下一步是 Batch D（Doctor 与安全结论）**：Runtime safety 那几行改由权威 Runtime probe 报告，Operator 本地只报告 control path 自己能证明的事；workspace root 检查补上「执行身份实际可用」的语义（至少覆盖 owner 与 git safe.directory，别把「目录可写」说成「项目可用」）；SSH credential 检查改精确措辞并覆盖已知 ccnm transport 位置与 agent socket；不把读不到的 Docker socket 说成不存在。另外把 Agent 侧 doctor/mcp probe 仍在委托整条公共命令（public_cmd_from_agent）一起处理掉。停止点是同一 workspace 从不同 Operator 身份跑 doctor，Runtime Executor 那部分结论必须一致。之后 E（新链最小 Claude 真机复验：Batch C 已改动真机链路，P7.3 的证据不再完整覆盖）。不要重做已经通过的 P7.1/P7.2 或完整 Claude dogfood。Codex 额度恢复后再在新身份模型上补 P7.3 Codex parity；两者齐全后才做 P7.5 v1 freeze，P8/P9 之前都不要开始。",
     "scope": "P7 收尾与 v1 身份/控制链修正。P7.4 是已确定的实现任务，可在 Codex 额度等待期间进行；需要部署、新账号/ACL、SSH 准入或其他系统修改时仍必须单独授权。P7.3 剩余 Codex 付费真机项继续 blocked。P9–P12 只作为后续 v1.x Remote Workspace MCP 路线记录，不在本轮提前实现。",
     "planning_validation": {
       "at": "2026-09-08T21:22:43+09:00",
@@ -706,11 +714,11 @@
       "limits": "本轮离线门禁；fodelf SSH 建连失败，没有新增远端资源或运行真实模型，不替代 P3.5。"
     },
     "planning_validation_latest": {
-      "at": "2026-09-10T19:05:00+09:00",
+      "at": "2026-09-10T19:40:00+09:00",
       "commands": [
         "cargo fmt --all --check：通过",
         "cargo clippy --workspace --all-targets -- -D warnings：退出码 0（未接管道）",
-        "cargo test --workspace：619 passed / 0 failed（Batch A 新增 3 个身份契约测试，Batch B 新增 14 个 Runtime 权威解析测试）",
+        "cargo test --workspace：622 passed / 0 failed（Batch A +3 身份契约、Batch B +14 Runtime 权威解析、Batch C +3 传输 wire 并改写 6 个钉住旧回跳的测试）",
         "PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p 'test_*.py' -q：120 passed（3.12 与系统 3.9 各一遍）",
         "python3 scripts/check_protocol.py：通过（38 个 fixture）",
         "python3 scripts/check_plan.py：通过",

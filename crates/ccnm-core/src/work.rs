@@ -1706,16 +1706,22 @@ fn mcp_handshake(
     selected: &SelectedAgent,
     ssh: &Ssh,
 ) -> Result<McpProbeReport> {
-    let mut serve = ServePayload::new(
-        &req.workspace,
-        req.root.clone(),
-        &format!("probe-{}", uuid::Uuid::new_v4().hyphenated()),
-    )
-    .with_provider(selected.provider);
-    if let Some(binding) = selected.binding(&req.workspace, &req.root, &req.runtime_node)? {
-        serve = serve.with_binding(binding);
-    }
-    let wire = payload::encode(&serve)?;
+    // The same wire a real session opens with, so a green handshake means
+    // the session's own path works. A bound one asks the Runtime to
+    // resolve the workspace (protocol 4); a legacy one still carries its
+    // root, as its sessions do.
+    let session = format!("probe-{}", uuid::Uuid::new_v4().hyphenated());
+    let wire = match selected.binding(&req.workspace, &req.root, &req.runtime_node)? {
+        Some(binding) => payload::encode(&crate::runtime::OpenPayload::new(
+            &req.workspace,
+            binding.agent,
+            &session,
+        ))?,
+        None => payload::encode(
+            &ServePayload::new(&req.workspace, req.root.clone(), &session)
+                .with_provider(selected.provider),
+        )?,
+    };
     let cmd = ssh.mcp_transport_cmd(&wire)?;
     mcp::probe::probe(
         &cmd,
@@ -1746,12 +1752,18 @@ fn provider_runtime_preflight(
     runtime_node: &str,
     ssh: &Ssh,
 ) -> Result<()> {
-    let mut payload = ServePayload::new(workspace, root.to_path_buf(), "provider-preflight")
-        .with_provider(selected.provider);
-    if let Some(binding) = selected.binding(workspace, root, runtime_node)? {
-        payload = payload.with_binding(binding);
-    }
-    let cmd = ssh.mcp_transport_cmd(&crate::protocol::payload::encode(&payload)?)?;
+    let wire = match selected.binding(workspace, root, runtime_node)? {
+        Some(binding) => crate::protocol::payload::encode(&crate::runtime::OpenPayload::new(
+            workspace,
+            binding.agent,
+            "provider-preflight",
+        ))?,
+        None => crate::protocol::payload::encode(
+            &ServePayload::new(workspace, root.to_path_buf(), "provider-preflight")
+                .with_provider(selected.provider),
+        )?,
+    };
+    let cmd = ssh.mcp_transport_cmd(&wire)?;
     mcp::probe::probe(
         &cmd,
         1,

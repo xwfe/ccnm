@@ -169,6 +169,102 @@ pub fn open(config: &Config, request: &OpenPayload) -> Result<Opened> {
     })
 }
 
+/// What the Agent Node asks the Runtime before starting a session on its
+/// own machine (P7.4 Batch C).
+///
+/// The Agent Node holds no workspace list and must not grow one — two
+/// registries are two answers to "where is this project", and one of them
+/// goes stale. So it asks. What it used to do instead was send the whole
+/// public `ccnm run` back to the Runtime over ssh and let *that* machine
+/// start the session, which meant the Runtime Executor ran the launcher and
+/// had to hold an outbound key to the Agent Node. That is the hop this
+/// message removes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResolveRequest {
+    pub protocol: u32,
+    pub workspace: String,
+    /// `--agent`: another instance on the workspace's own Agent Node. The
+    /// Runtime pins the node; only the instance name is the caller's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+}
+
+impl ResolveRequest {
+    pub fn new(workspace: &str, agent: Option<&str>) -> Self {
+        ResolveRequest {
+            protocol: OPEN_PROTOCOL,
+            workspace: workspace.to_string(),
+            agent: agent.map(str::to_string),
+        }
+    }
+}
+
+impl Protocol for ResolveRequest {
+    fn protocol(&self) -> u32 {
+        self.protocol
+    }
+    fn expected_protocol(&self) -> u32 {
+        OPEN_PROTOCOL
+    }
+}
+
+/// Everything the Agent needs to start the session locally, and nothing
+/// else: no credentials, no runtime identity, no state paths. The project
+/// root is here because the Agent records and displays it, not because the
+/// Agent may choose it — an open request cannot carry one back.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResolveReport {
+    pub protocol: u32,
+    pub workspace: String,
+    pub root: PathBuf,
+    pub runtime_node: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<crate::instance::InstanceRef>,
+    #[serde(rename = "claude_config_dir")]
+    pub provider_config_dir: Option<PathBuf>,
+    pub permission_mode: crate::config::PermissionMode,
+}
+
+impl Protocol for ResolveReport {
+    fn protocol(&self) -> u32 {
+        self.protocol
+    }
+    fn expected_protocol(&self) -> u32 {
+        OPEN_PROTOCOL
+    }
+}
+
+/// Answer one Agent-side resolve from this Runtime's authoritative config.
+///
+/// Read-only: it starts nothing, creates no session and touches no state.
+/// The Agent may call it and then never start anything, and calling it
+/// twice must give the same answer.
+pub fn resolve(config: &Config, request: &ResolveRequest) -> Result<ResolveReport> {
+    if request.protocol != OPEN_PROTOCOL {
+        return Err(Error::new(
+            ErrorCode::Version,
+            format!(
+                "resolve request is protocol {}, this Runtime answers protocol {OPEN_PROTOCOL}",
+                request.protocol
+            ),
+        ));
+    }
+    let resolved = config.workspace(&request.workspace)?;
+    let agent = resolved.agent_reference(request.agent.as_deref())?;
+    let provider = crate::provider::AgentProvider::current();
+    Ok(ResolveReport {
+        protocol: OPEN_PROTOCOL,
+        workspace: request.workspace.clone(),
+        root: resolved.workspace.root.clone(),
+        runtime_node: resolved.workspace.runtime_node.clone(),
+        agent,
+        provider_config_dir: provider.config_dir(resolved.agent).map(Path::to_path_buf),
+        permission_mode: provider.permission_mode(resolved.workspace),
+    })
+}
+
 /// What arrived on `internal mcp-serve --payload`.
 ///
 /// Two shapes, told apart by the `protocol` number that every ccnm message

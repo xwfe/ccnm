@@ -250,6 +250,12 @@ enum InternalCommand {
         #[arg(long)]
         payload: String,
     },
+    /// Answer what a workspace is, from this Runtime's own config. Read
+    /// only: it starts nothing and creates no session
+    RuntimeResolve {
+        #[arg(long)]
+        payload: String,
+    },
     /// Work-side run: create the session, have the controller start it,
     /// wait, report
     AgentRun {
@@ -393,10 +399,12 @@ fn run(cli: Cli) -> Result<i32> {
             detached,
         } => {
             let config = Config::load(&config_path()?)?;
-            // Sitting at the Agent Node: this config knows how to reach
-            // home and nothing about workspaces, so home is asked to start
-            // the session and this terminal attaches to it locally.
-            if let Some((home, host)) = agent_side(&config, workspace) {
+            // Sitting at the Agent Node: this config knows how to reach the
+            // Runtime and nothing about workspaces. So ask the Runtime what
+            // this workspace is, and start the session here -- Claude runs
+            // on this machine either way, and the Runtime Executor has no
+            // business running a launcher (P7.4 Batch C).
+            if let Some((runtime, host)) = agent_side(&config, workspace) {
                 if print.is_some() {
                     return Err(Error::invalid_args(
                         "--print has to be run where the projects are; ssh there and run it",
@@ -405,26 +413,21 @@ fn run(cli: Cli) -> Result<i32> {
                 let opening = opening_prompt(prompt.as_deref(), *prompt_stdin)?;
                 let selected = local_instance_ref(&config, agent.as_deref())?;
                 let env = launch_env()?;
-                launcher::start_from_agent_with_instance(
-                    home,
+                let authority = launcher::resolve_from_agent(
+                    runtime,
                     &host.ccnm_bin(),
                     workspace,
-                    opening.as_deref(),
+                    agent.as_deref(),
                     &env,
-                    selected
-                        .as_ref()
-                        .map(|reference| reference.instance.as_str()),
                 )?;
+                let tools = agent_tools(config_path().ok().as_deref())?;
+                let report = work::start(&start_request(&authority, opening), &tools)?;
+                eprintln!("{}", report.summary());
                 if *detached {
-                    // The far side already said how to attach, and its
-                    // wording is the one that matters -- it knows whether
-                    // the session was started or was already there.
+                    eprintln!("\nattach when you want it: ccnm attach {workspace}");
                     return Ok(0);
                 }
-                return work::attach(
-                    &attach_request(workspace, selected, None),
-                    &agent_tools(config_path().ok().as_deref())?,
-                );
+                return work::attach(&attach_request(workspace, selected, None), &tools);
             }
             let resolved = config.workspace(workspace)?;
             let env = launch_env()?;
@@ -670,6 +673,15 @@ fn run(cli: Cli) -> Result<i32> {
                     }
                 }
                 Ok(0)
+            }
+            InternalCommand::RuntimeResolve { payload } => {
+                // The Agent Node asking what a workspace is. This runs as
+                // the Runtime Executor, which is exactly the point: the
+                // authority answers, and answering needs no outbound
+                // connection of its own.
+                let req: ccnm_core::runtime::ResolveRequest = payload::decode(payload)?;
+                let config = Config::load(&config_path()?)?;
+                print_json(&ccnm_core::runtime::resolve(&config, &req)?)
             }
             InternalCommand::Controller => {
                 let socket = paths::controller_socket(&paths::state_dir()?);
@@ -1114,6 +1126,31 @@ fn attach_request(
         workspace: workspace.to_string(),
         agent,
         session,
+    }
+}
+
+/// The start the Agent Node makes for itself, from what the Runtime said.
+///
+/// Every field is the Runtime's answer, unedited: this side supplies only
+/// the opening prompt, which is the one thing the Runtime never sees.
+fn start_request(
+    authority: &ccnm_core::runtime::ResolveReport,
+    prompt: Option<String>,
+) -> StartRequest {
+    StartRequest {
+        protocol: if authority.agent.is_some() {
+            ccnm_core::instance::INSTANCE_SESSION_PROTOCOL
+        } else {
+            ccnm_core::protocol::payload::PROTOCOL
+        },
+        provider: Default::default(),
+        agent: authority.agent.clone(),
+        workspace: authority.workspace.clone(),
+        root: authority.root.clone(),
+        runtime_node: authority.runtime_node.clone(),
+        provider_config_dir: authority.provider_config_dir.clone(),
+        permission_mode: authority.permission_mode,
+        prompt,
     }
 }
 

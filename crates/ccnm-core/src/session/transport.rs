@@ -52,14 +52,30 @@ pub fn command(spec: &Spec) -> Result<Cmd> {
     let ssh = Ssh::new(&runtime.alias, "/unused")?
         .with_ccnm_bin(&runtime.ccnm_bin)
         .for_provider(spec.provider());
-    let mut serve =
-        crate::protocol::mcp::ServePayload::new(&spec.workspace, spec.root.clone(), &spec.id)
-            .with_interactive(spec.mode.is_interactive())
-            .with_provider(spec.provider());
-    if let Some(binding) = spec.workspace_binding()? {
-        serve = serve.with_binding(binding);
-    }
-    let mut cmd = ssh.mcp_transport_cmd(&payload::encode(&serve)?)?;
+    // A bound session asks the Runtime to open the workspace and lets it
+    // find the project itself (internal wire protocol 4). The root this
+    // machine holds is a record of what the Runtime said, not an argument
+    // it may send back: whoever names the directory names what every tool
+    // call, the write guard and the safety verdict apply to.
+    //
+    // Legacy `agent_node` workspaces keep the old shape, which carries the
+    // root. That is the migration boundary -- they have no identity to
+    // resolve with, and they are on their way out either way.
+    let wire = match spec.agent_identity.clone() {
+        Some(identity) => {
+            spec.workspace_binding()?;
+            payload::encode(
+                &crate::runtime::OpenPayload::new(&spec.workspace, identity, &spec.id)
+                    .with_interactive(spec.mode.is_interactive()),
+            )?
+        }
+        None => payload::encode(
+            &crate::protocol::mcp::ServePayload::new(&spec.workspace, spec.root.clone(), &spec.id)
+                .with_interactive(spec.mode.is_interactive())
+                .with_provider(spec.provider()),
+        )?,
+    };
+    let mut cmd = ssh.mcp_transport_cmd(&wire)?;
     // Claude's previous MCP JSON and measured Codex transport both pinned the
     // system OpenSSH; do not accidentally replace that with a PATH lookup.
     cmd.program = session::SSH_BIN.into();
@@ -77,4 +93,105 @@ pub fn exec(request: &Request) -> Result<()> {
     let cmd = command(&spec)?;
     let mut process = cmd.process();
     Err(Error::internal("cannot exec Agent-side SSH transport").with_source(process.exec()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::PermissionMode;
+    use crate::instance::AgentIdentity;
+    use crate::provider::AgentProvider;
+    use crate::session::{Mode, RuntimeLink, Spec};
+    use std::path::PathBuf;
+
+    const ROOT: &str = "/Users/bing/ccnm-fixture";
+    const ID: &str = "0b4c7a1e-2d3f-4a5b-8c6d-7e8f9a0b1c2d";
+
+    fn spec(identity: Option<AgentIdentity>) -> Spec {
+        Spec {
+            protocol: if identity.is_some() {
+                crate::instance::INSTANCE_SESSION_PROTOCOL
+            } else {
+                crate::protocol::payload::PROTOCOL
+            },
+            runtime_node: identity.as_ref().map(|_| "runtime".to_string()),
+            provider: identity
+                .as_ref()
+                .map_or_else(AgentProvider::default, |i| i.provider),
+            agent_identity: identity,
+            id: ID.into(),
+            workspace: "fixture".into(),
+            root: PathBuf::from(ROOT),
+            runtime: Some(RuntimeLink {
+                alias: "runtime-alias".into(),
+                ccnm_bin: "~/.local/bin/ccnm".into(),
+            }),
+            provider_config_dir: None,
+            permission_mode: PermissionMode::default(),
+            mode: Mode::Interactive { prompt: None },
+            timeout_secs: 600,
+            cwd: PathBuf::from("/Users/fodelf/.local/state/ccnm/workspaces/fixture"),
+        }
+    }
+
+    fn identity() -> AgentIdentity {
+        AgentIdentity {
+            node: "agent".into(),
+            instance: "claude-main".into(),
+            provider: AgentProvider::Claude,
+            profile_ref: "default".into(),
+        }
+    }
+
+    fn wire(cmd: &Cmd) -> String {
+        cmd.args.last().unwrap().to_string_lossy().into_owned()
+    }
+
+    /// A bound session names the workspace and who is asking. Where the
+    /// project is stays the Runtime's answer: this side records a root but
+    /// does not get to send one back, so nothing the Agent holds can decide
+    /// what the tools, the write guard and the safety verdict apply to.
+    #[test]
+    fn a_bound_session_asks_the_runtime_to_open_the_workspace() {
+        let spec = spec(Some(identity()));
+        let cmd = command(&spec).unwrap();
+        let sent: crate::runtime::OpenPayload = payload::decode(&wire(&cmd)).unwrap();
+        assert_eq!(sent.protocol, crate::runtime::OPEN_PROTOCOL);
+        assert_eq!(sent.workspace, "fixture");
+        assert_eq!(sent.session, ID);
+        assert_eq!(sent.agent, identity());
+        assert!(sent.interactive, "somebody is at this terminal");
+        // Not in the payload, and not anywhere else on the command line.
+        for arg in &cmd.args {
+            assert!(
+                !arg.to_string_lossy().contains(ROOT),
+                "the root must not cross: {arg:?}"
+            );
+        }
+    }
+
+    /// The migration boundary. A legacy `agent_node` workspace has no
+    /// identity to resolve with, so it keeps the old shape -- root and all
+    /// -- until it is retired.
+    #[test]
+    fn a_legacy_session_still_carries_its_own_root() {
+        let cmd = command(&spec(None)).unwrap();
+        let sent: crate::protocol::mcp::ServePayload = payload::decode(&wire(&cmd)).unwrap();
+        assert_eq!(sent.root, PathBuf::from(ROOT));
+        assert_eq!(sent.session, ID);
+        assert!(sent.binding.is_none());
+    }
+
+    /// The print half of the same decision: nobody is there to answer a
+    /// permission prompt, and the far side has to be told so.
+    #[test]
+    fn a_print_session_says_nobody_is_at_the_terminal() {
+        let mut spec = spec(Some(identity()));
+        spec.mode = Mode::Print {
+            prompt: "fix the failing test".into(),
+        };
+        let cmd = command(&spec).unwrap();
+        let sent: crate::runtime::OpenPayload = payload::decode(&wire(&cmd)).unwrap();
+        assert!(!sent.interactive);
+    }
 }

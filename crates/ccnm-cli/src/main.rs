@@ -2,13 +2,12 @@
 //! controller, home MCP runtime) is decided by the subcommand; all logic
 //! lives in ccnm-core.
 
-use std::io::Write as _;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 
-use ccnm_core::process::{ProcessRunner, SystemRunner};
+use ccnm_core::process::SystemRunner;
 use ccnm_core::protocol::hello::{self, HelloRequest};
 use ccnm_core::protocol::payload;
 use ccnm_core::protocol::probe::ProbeRequest;
@@ -380,10 +379,16 @@ fn run(cli: Cli) -> Result<i32> {
             let path = config_path()?;
             if let Some(workspace) = workspace {
                 let config = Config::load(&path)?;
-                let mut args = vec!["doctor".to_string(), workspace.clone()];
-                append_agent(&mut args, agent.as_deref())?;
-                if let Some(code) = delegate_public_from_agent(&config, workspace, &args)? {
-                    return Ok(code);
+                // On the Agent Node the workspace lives elsewhere, so ask
+                // the Runtime what it is and check the rest from here. The
+                // whole public command used to be sent over instead, which
+                // made the Runtime Executor dial back to this machine for a
+                // diagnostic (P7.4 Batch D2).
+                if let Some((runtime, node)) = agent_side(&config, workspace) {
+                    let report =
+                        agent_side_doctor(&path, workspace, agent.as_deref(), runtime, node)?;
+                    print!("{}", report.render());
+                    return Ok(report.exit_code());
                 }
             }
             let env = doctor::Env {
@@ -626,14 +631,36 @@ fn run(cli: Cli) -> Result<i32> {
                 },
         } => {
             let config = Config::load(&config_path()?)?;
-            let mut args = vec!["mcp".to_string(), "probe".to_string(), workspace.clone()];
-            append_agent(&mut args, agent.as_deref())?;
-            args.extend(["--calls".into(), calls.to_string()]);
-            if *local {
-                args.push("--local".into());
-            }
-            if let Some(code) = delegate_public_from_agent(&config, workspace, &args)? {
-                return Ok(code);
+            // The Agent Node opens the transport itself: it already holds
+            // the credential for the one direction that is allowed, and the
+            // Runtime Executor must never dial back here (P7.4 Batch D2).
+            if let Some((runtime, node)) = agent_side(&config, workspace) {
+                if *local {
+                    // --local means "serve the project on this machine",
+                    // and the project is not here. Refusing beats quietly
+                    // measuring the remote transport under the wrong name.
+                    return Err(Error::new(
+                        ccnm_core::ErrorCode::WrongWorkspace,
+                        format!(
+                            "--local probes a Runtime on this machine, and {workspace} is on another one\nrun it without --local, or run it where the project is"
+                        ),
+                    ));
+                }
+                let rep = agent_side_mcp_probe(
+                    &config_path()?,
+                    workspace,
+                    agent.as_deref(),
+                    runtime,
+                    node,
+                    *calls,
+                )?;
+                println!("{}", rep.summary());
+                println!("{}", payload::to_json(&rep)?);
+                return Ok(if rep.single_process {
+                    0
+                } else {
+                    ccnm_core::ErrorCode::Internal.exit_code()
+                });
             }
             let resolved = config.workspace(workspace)?;
             let env = launch_env()?;
@@ -1188,35 +1215,70 @@ fn local_instance_ref(
     Ok(Some(reference))
 }
 
-fn append_agent(args: &mut Vec<String>, agent: Option<&str>) -> Result<()> {
-    if let Some(agent) = agent {
-        ccnm_core::instance::identifier(agent)?;
-        args.extend(["--agent".into(), agent.into()]);
-    }
-    Ok(())
+/// `ccnm doctor <workspace>` as run on the Agent Node.
+///
+/// Two questions cross, both inbound to the Runtime Executor: what is this
+/// workspace, and what does that account say about itself. Everything else
+/// -- controller, official CLI, login, tmux -- is here, and is checked
+/// here. Nothing asks the Runtime to run a public command, so nothing makes
+/// it dial back (P7.4 Batch D2).
+fn agent_side_doctor(
+    config_path: &std::path::Path,
+    workspace: &str,
+    agent: Option<&str>,
+    runtime: &str,
+    node: &ccnm_core::config::Node,
+) -> Result<doctor::Report> {
+    let env = launch_env()?;
+    let authority = launcher::resolve_from_agent(runtime, &node.ccnm_bin(), workspace, agent, &env);
+    let authority = match authority {
+        Ok(authority) => authority,
+        Err(e) => return Ok(doctor::from_agent(config_path, workspace, Err(e))),
+    };
+    let tools = agent_tools(Some(config_path))?;
+    let probe = work::probe(&probe_request(&authority, 1), &tools);
+    Ok(doctor::from_agent(
+        config_path,
+        workspace,
+        Ok((&authority, &probe)),
+    ))
 }
 
-fn delegate_public_from_agent(
-    config: &Config,
+/// `ccnm mcp probe <workspace>` as run on the Agent Node: one real MCP
+/// session opened from here to the Runtime Executor.
+fn agent_side_mcp_probe(
+    config_path: &std::path::Path,
     workspace: &str,
-    args: &[String],
-) -> Result<Option<i32>> {
-    let Some((runtime, node)) = agent_side(config, workspace) else {
-        return Ok(None);
-    };
+    agent: Option<&str>,
+    runtime: &str,
+    node: &ccnm_core::config::Node,
+    calls: u32,
+) -> Result<ccnm_core::protocol::mcp::ProbeReport> {
     let env = launch_env()?;
-    let refs: Vec<_> = args.iter().map(String::as_str).collect();
-    let cmd = launcher::public_cmd_from_agent(runtime, &node.ccnm_bin(), &refs, &env)?;
-    let output = SystemRunner.run(&cmd)?;
-    std::io::stdout().write_all(&output.stdout)?;
-    std::io::stderr().write_all(&output.stderr)?;
-    if output.timed_out {
-        return Err(Error::new(
-            ccnm_core::ErrorCode::RuntimeUnreachable,
-            "Runtime command timed out",
-        ));
+    let authority =
+        launcher::resolve_from_agent(runtime, &node.ccnm_bin(), workspace, agent, &env)?;
+    let tools = agent_tools(Some(config_path))?;
+    work::mcp_probe(&probe_request(&authority, calls), &tools)
+}
+
+/// The probe request an Agent-side diagnostic makes from the Runtime's own
+/// answer. Every field is the Runtime's; this side adds only how many MCP
+/// calls to make.
+fn probe_request(authority: &ccnm_core::runtime::ResolveReport, mcp_calls: u32) -> ProbeRequest {
+    ProbeRequest {
+        protocol: if authority.agent.is_some() {
+            ccnm_core::instance::INSTANCE_SESSION_PROTOCOL
+        } else {
+            ccnm_core::protocol::payload::PROTOCOL
+        },
+        provider: Default::default(),
+        agent: authority.agent.clone(),
+        workspace: authority.workspace.clone(),
+        root: authority.root.clone(),
+        runtime_node: authority.runtime_node.clone(),
+        provider_config_dir: authority.provider_config_dir.clone(),
+        mcp_calls,
     }
-    Ok(Some(output.exit_code.unwrap_or(1)))
 }
 
 /// The Agent Node's own view of the world.

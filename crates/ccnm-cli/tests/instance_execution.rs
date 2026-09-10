@@ -54,8 +54,17 @@ impl Drop for Fixture {
     }
 }
 
+/// From the Agent Node, a diagnostic asks the Runtime a question. It does
+/// not hand it a command to run.
+///
+/// Both of these used to be delegated whole: the public `ccnm doctor` and
+/// `ccnm mcp probe` were sent over ssh, ran as the Runtime Executor, and
+/// then dialled *back* to this machine to probe it. That is an inbound-only
+/// account opening an outbound connection, for a diagnostic. The transcript
+/// below is the boundary (P7.4 Batch D2): every line that crosses is
+/// `internal`, and no public verb appears at all.
 #[test]
-fn agent_side_workspace_authority_checks_return_to_runtime_for_selection() {
+fn agent_side_diagnostics_ask_the_runtime_instead_of_delegating_to_it() {
     let f = Fixture::new();
     let config = f.0.join("agent.toml");
     std::fs::write(
@@ -66,6 +75,9 @@ fn agent_side_workspace_authority_checks_return_to_runtime_for_selection() {
     let log = f.0.join("delegated-args");
     let ssh = f.0.join("bin/ssh");
     std::fs::create_dir_all(ssh.parent().unwrap()).unwrap();
+    // Answers nothing: what is asserted here is what was asked, and a
+    // diagnostic that cannot reach the Runtime must still not fall back to
+    // sending it a command.
     std::fs::write(
         &ssh,
         format!("#!/bin/sh\nprintf '%s\\n' \"$@\" >> '{}'\n", log.display()),
@@ -73,16 +85,13 @@ fn agent_side_workspace_authority_checks_return_to_runtime_for_selection() {
     .unwrap();
     std::fs::set_permissions(&ssh, std::fs::Permissions::from_mode(0o700)).unwrap();
 
-    let default = f
-        .command()
+    f.command()
         .arg("--config")
         .arg(&config)
         .args(["doctor", "demo"])
         .output()
         .unwrap();
-    assert!(default.status.success());
-    let exact = f
-        .command()
+    f.command()
         .arg("--config")
         .arg(&config)
         .args([
@@ -96,19 +105,52 @@ fn agent_side_workspace_authority_checks_return_to_runtime_for_selection() {
         ])
         .output()
         .unwrap();
-    assert!(exact.status.success());
 
     let args = std::fs::read_to_string(log).unwrap();
     assert!(
-        args.contains("runtime-alias\n~/.local/bin/ccnm\ndoctor\ndemo\n"),
-        "{args}"
+        args.contains("runtime-alias\n~/.local/bin/ccnm\ninternal\nruntime-resolve\n--payload\n"),
+        "the question that crosses: {args}"
     );
-    assert!(
-        args.contains(
-            "runtime-alias\n~/.local/bin/ccnm\nmcp\nprobe\ndemo\n--agent\ncodex-main\n--calls\n1\n"
-        ),
-        "{args}"
+    for public in [
+        "\ndoctor\n",
+        "\nmcp\n",
+        "\nprobe\n",
+        "\nrun\n",
+        "\nstatus\n",
+    ] {
+        assert!(
+            !args.contains(public),
+            "a public command was sent to the Runtime ({public:?}): {args}"
+        );
+    }
+}
+
+/// `--local` on the Agent Node has nothing to serve: the project is not
+/// here. It fails, rather than quietly measuring the remote transport and
+/// reporting it under a name that means the opposite.
+#[test]
+fn a_local_probe_on_the_agent_node_is_refused_not_reinterpreted() {
+    let f = Fixture::new();
+    let config = f.0.join("agent.toml");
+    std::fs::write(
+        &config,
+        include_str!("../../../tests/fixtures/agent-instance/agent.toml"),
+    )
+    .unwrap();
+    let out = f
+        .command()
+        .arg("--config")
+        .arg(&config)
+        .args(["mcp", "probe", "demo", "--local", "--calls", "1"])
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(
+        out.status.code(),
+        Some(ccnm_core::ErrorCode::WrongWorkspace.exit_code()),
+        "{err}"
     );
+    assert!(err.contains("on another one"), "{err}");
 }
 
 #[test]

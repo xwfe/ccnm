@@ -388,6 +388,12 @@ pub struct AuditReport {
     pub protocol: u32,
     pub audit: crate::safety::Audit,
     pub root: RootStatus,
+    /// Whether this workspace has accepted an unconfined Runtime, as the
+    /// Runtime's own config says. It rides along because it decides how a
+    /// finding is rendered, and the copy that matters is the one
+    /// `exec_command`'s gate reads -- not the reader's.
+    #[serde(default)]
+    pub allow_unconfined_exec: bool,
 }
 
 impl Protocol for AuditReport {
@@ -426,6 +432,7 @@ pub fn audit(
         protocol: OPEN_PROTOCOL,
         audit: crate::safety::audit(resolved.runtime.runtime_user.as_deref(), &home, runner),
         root: RootStatus::of(&resolved.workspace.root, runner),
+        allow_unconfined_exec: resolved.workspace.allow_unconfined_exec,
     })
 }
 

@@ -118,6 +118,8 @@ Runtime Node
 
 坐在跑 Agent 的那台机器上发起。它不存 workspace 列表（顶层 `runtime_node` 就是这个意思），所以**先问 Runtime 这个 workspace 是什么**（`internal runtime-resolve`，只读，不启动任何东西），拿到 root、runtime node、instance 引用和 permission mode 之后，**在本机把会话起起来**，再本地 attach。已有 session 的 `attach/status/result/stop` 一直在 Agent 本机执行，避免 Runtime 短暂离线时连终端也无法管理。
 
+诊断走同一条规矩：`ccnm doctor` 在这台机器上查 Controller、官方 CLI、登录和 tmux，向 Runtime 只发两个只读问题（`runtime-resolve` 与 `runtime-audit`），MCP transport 也由这台主动开；`ccnm mcp probe` 同理。**没有任何一条路径要求 Runtime 反过来连 Agent。** `--local` 在这台机器上直接拒绝——项目不在这儿，测本地 Runtime 无从谈起。
+
 问一句而不是自己存一份，是为了避免出现第二份 workspace root 配置。两份列表就是两个"这个项目在哪"的答案，其中一份迟早过期，然后某个会话绑到一个已经搬走的目录上。
 
 **以前不是这样的。** 以前这台机器把整条公共命令 `ccnm run <ws> --detached` ssh 过去，让 Runtime Node 去启动会话——work → home → work 绕一圈。代价是 P7.3 在真机上量出来的：ssh 落到的账号是 Runtime Executor，于是**它**在跑 launcher，而且必须持一把回连 Agent Node 的出站私钥。一个会执行模型产出内容的身份还能主动连出去，就没有任何它自己能证明的边界。现在过去的只有问题，答案回来，会话在 Agent 本机创建——Claude 本来就跑在这台。
@@ -178,7 +180,7 @@ Runtime Executor 身份
 
 而不是“命令名黑名单”。
 
-出站 SSH 凭据算在边界里，是因为 Runtime Executor 有一把可用私钥，就等于 `exec_command` 能以它的名义连到别的机器。当前主线链路仍要求 Runtime 侧持有到 Agent 的出站私钥，这是**已知未闭合的边界**，见[生产安全](production-safety.md)与 [P7.4 批次](plan/runtime-surfaces.md)。
+出站 SSH 凭据算在边界里，是因为 Runtime Executor 有一把可用私钥，就等于 `exec_command` 能以它的名义连到别的机器。**现在没有任何一条 ccnm 路径要求它持有这样一把钥匙**：会话、诊断、MCP transport 全部是 Agent 连进来。这是 P7.4 的结果，尚未在真机上复验（Batch E），细节见[生产安全](production-safety.md)与[双执行入口方案](plan/runtime-surfaces.md)。
 
 ## 历史术语
 

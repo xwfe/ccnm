@@ -1720,6 +1720,37 @@ fn ask_about_agent(
     }
 }
 
+/// One MCP session from this Agent Node to the Runtime Executor, and what
+/// it measured.
+///
+/// `ccnm mcp probe` on the Agent Node used to send the whole public command
+/// to the Runtime, which then dialled back here to do exactly this. The
+/// Agent already holds the credential for the direction that is allowed --
+/// inbound to the executor -- so it opens the transport itself
+/// (P7.4 Batch D2).
+pub fn mcp_probe(req: &ProbeRequest, tools: &Tools<'_>) -> Result<McpProbeReport> {
+    let selected = select_agent(
+        req.agent.as_ref(),
+        req.provider,
+        req.provider_config_dir.as_deref(),
+        crate::config::PermissionMode::default(),
+        tools,
+    )?;
+    let link = tools.runtime_link(&req.runtime_node)?.ok_or_else(|| {
+        Error::new(
+            ErrorCode::NotReady,
+            format!(
+                "{} is this machine, so there is no MCP transport to open to it",
+                req.runtime_node
+            ),
+        )
+    })?;
+    let ssh = Ssh::new(&link.alias, &tools.control_dir)?
+        .with_ccnm_bin(&link.ccnm_bin)
+        .for_provider(selected.provider);
+    mcp_handshake(req, &selected, &ssh)
+}
+
 fn mcp_handshake(
     req: &ProbeRequest,
     selected: &SelectedAgent,
@@ -1918,6 +1949,7 @@ mod tests {
                 owned: true,
                 git: crate::runtime::GitStatus::Usable,
             },
+            allow_unconfined_exec: false,
         })
         .unwrap()
     }

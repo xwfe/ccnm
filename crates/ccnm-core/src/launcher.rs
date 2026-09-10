@@ -179,20 +179,6 @@ pub fn resolve_from_agent(
     )
 }
 
-/// Send a non-interactive workspace-authority command from an Agent-only
-/// config to the Runtime that owns the workspace and default selection.
-pub fn public_cmd_from_agent(
-    runtime_alias: &str,
-    runtime_ccnm_bin: &str,
-    subcommand: &[&str],
-    env: &Env<'_>,
-) -> Result<Cmd> {
-    let ssh = Ssh::new(runtime_alias, env.control_dir.clone())?.with_ccnm_bin(runtime_ccnm_bin);
-    let mut argv = vec![ssh.ccnm_bin()];
-    argv.extend_from_slice(subcommand);
-    ssh.remote_cmd(Master::Reuse, &argv, Duration::from_secs(180))
-}
-
 pub fn attach_cmd(resolved: &Resolved<'_>, env: &Env<'_>) -> Result<Cmd> {
     attach_cmd_selected(resolved, env, None, None)
 }
@@ -1026,37 +1012,6 @@ mod tests {
             payload::decode(&calls[0].args[at + 1].to_string_lossy()).unwrap();
         assert_eq!(sent.workspace, "xshun");
         assert_eq!(sent.agent, None);
-    }
-
-    #[test]
-    fn agent_side_workspace_authority_commands_return_to_runtime_for_selection() {
-        let fake = FakeRunner::new();
-        let env = Env {
-            runner: &fake,
-            control_dir: control("lifecycle-delegate"),
-            current_exe: PathBuf::from("/opt/agent/ccnm"),
-        };
-        let status = public_cmd_from_agent(
-            "to-runtime",
-            "/opt/runtime/ccnm",
-            &[
-                "status",
-                "demo",
-                "--agent",
-                "codex-main",
-                "--session",
-                "00000000-0000-4000-8000-000000000001",
-            ],
-            &env,
-        )
-        .unwrap();
-        assert!(
-            status.display().contains(
-                "-T to-runtime /opt/runtime/ccnm status demo --agent codex-main --session 00000000-0000-4000-8000-000000000001"
-            ),
-            "{}",
-            status.display()
-        );
     }
 
     /// The opening line does not make the trip any more.

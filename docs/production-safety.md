@@ -23,16 +23,15 @@
 
 **为什么要分。** Runtime Executor 是唯一会执行模型产出内容的身份。它多一把出站私钥，就等于把"Agent 让我跑一条命令"变成"Agent 可以以我的名义连到别的机器"。而 Operator 手上有出站钥匙是正常的——因为 Operator 不执行模型的命令，它只发号施令。
 
-**现在的代码还没完全做到。** 这是 P7.3 在真机上量出来的，写在这里免得你照着做了却发现对不上：
+**代码里怎么落实的**（P7.3 真机量出问题，P7.4 四批改完）：
 
-- 控制链已经不再要求 Runtime Executor 出站（Batch C）：Runtime 侧发起时是 **Operator** 的进程拨号去 Agent Node，Agent 侧发起时只把一句只读的 `internal runtime-resolve` 问过去、会话在 Agent 本机创建。`ccrun` 只接受入站连接。
-- `ccnm doctor` 关于 Runtime 的那几行也不再判"敲命令的人"了（Batch D）：它们由 Runtime Executor 自己回答，经 Agent 那条 ssh 取回。**换个人跑同一个 workspace，这几行一字不差**，这条有测试钉着。
+- 控制链不再要求 Runtime Executor 出站（Batch C）：Runtime 侧发起时是 **Operator** 的进程拨号去 Agent Node，Agent 侧发起时只把一句只读的 `internal runtime-resolve` 问过去、会话在 Agent 本机创建。
+- `ccnm doctor` 关于 Runtime 的那几行不再判"敲命令的人"（Batch D）：由 Runtime Executor 自己回答，经 Agent 那条 ssh 取回。**换个人跑同一个 workspace，这几行一字不差**，有测试钉着。
+- 诊断入口也一样（Batch D2）：在 Agent Node 上跑 `ccnm doctor` / `ccnm mcp probe`，过去是把整条公共命令 ssh 给 Runtime 执行、再由它连回 Agent 探测——执行身份为了一个诊断出站了一次。现在两端各查各能证明的：Agent 本机查 Controller/官方 CLI/登录/tmux，Runtime 的结论由 `ccrun` 自己回答（`runtime-resolve` / `runtime-audit`），MCP transport 由 Agent 主动开。**两个方向跑出来的 Runtime 结论一字不差**，同样有测试钉着。
 
-所以现在的做法就是直白的那个：**用你自己的账号（Operator）敲 ccnm，让 `ccrun` 名下一把私钥都没有。**
+所以现在的做法就是直白的那个：**用你自己的账号（Operator）敲 ccnm，让 `ccrun` 名下一把私钥都没有。** 诊断命令两台机器上都能跑。
 
-还剩一个已知缺口：**在 Agent Node 上跑 `ccnm doctor` 或 `ccnm mcp probe`**，当前实现仍把整条公共命令 ssh 给 Runtime 执行——落到的账号是 `ccrun`，而那条公共命令自己又要连回 Agent Node，于是执行身份再次出站。
-
-处理方向已经确定，不采用“Agent 侧直接禁用诊断”：P7.4 Batch D2 要把两条命令改成 topology-aware 双端诊断。Agent 本机检查 Agent/Controller/session，并由 Agent Identity 直接 SSH 到 Runtime Executor 获取 `runtime-resolve` / `runtime-audit` / 实际 MCP probe；`ccrun` 只回答或执行，不回拨 Agent。**Batch D2 完成前，Agent Node 上这两个诊断入口仍不能作为符合 inbound-only 安全模型的证据。**具体见[双执行入口方案](plan/runtime-surfaces.md)。
+**这些都还没在真机上验过**——P7.4 改的正是真机链路，P7.3 那份证据不再完整覆盖新路径，复验是 Batch E。
 
 ## `ccrun` 能解决什么
 
@@ -347,7 +346,7 @@ ccnm 的 doctor 能覆盖一部分明确可验证项，但不能证明整个操�
 ccnm doctor <workspace>
 ```
 
-**在 Runtime Node 上、用你自己的账号跑就行。** 关于 Runtime 的行由 Runtime Executor 自己回答，跟你是谁无关。
+**用你自己的账号跑就行，两台机器上都可以。** 关于 Runtime 的行由 Runtime Executor 自己回答，跟你是谁、在哪台敲都无关。
 
 目标是这些行全部成为 OK：
 

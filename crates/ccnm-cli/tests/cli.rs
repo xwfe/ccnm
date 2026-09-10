@@ -570,7 +570,7 @@ fn adding_a_workspace_before_init_says_to_init() {
 /// Sitting at the Agent Node, the same command works: the config there
 /// knows only how to reach the projects, so a workspace it does not
 /// define is a question for the other side rather than an error. It must
-/// reach ssh -- proving it delegated -- and not stop at "not defined".
+/// reach ssh -- proving it asked -- and not stop at "not defined".
 #[test]
 fn on_the_work_machine_an_unknown_workspace_is_asked_about_not_refused() {
     let out = ccnm()

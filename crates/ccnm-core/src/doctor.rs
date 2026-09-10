@@ -261,6 +261,88 @@ pub fn run_selected(
     Report { subject, checks }
 }
 
+/// Doctor as run **on the Agent Node**, which holds no workspace list.
+///
+/// It used to send the whole public `ccnm doctor` to the Runtime over ssh
+/// and print what came back. That made the Runtime Executor run a public
+/// command, and that command then dialled *back* to this machine to probe
+/// it -- an execution identity that is supposed to be inbound-only opening
+/// an outbound connection, for a diagnostic (P7.4 Batch D2).
+///
+/// Now the two sides do what each can prove. This machine asks the Runtime
+/// what the workspace is (`internal runtime-resolve`), probes itself
+/// locally, and asks the Runtime Executor about itself over the same
+/// inbound ssh the session uses. The rows are rendered by the same code the
+/// Runtime-side table uses, so the same Runtime Executor cannot be
+/// described two different ways depending on where somebody typed.
+pub fn from_agent(
+    config_path: &Path,
+    workspace: &str,
+    answer: crate::Result<(&crate::runtime::ResolveReport, &ProbeReport)>,
+) -> Report {
+    let subject = workspace.to_string();
+    let mut checks = match Config::load(config_path) {
+        Ok(_) => vec![Check::ok("Config", config_path.display().to_string())],
+        Err(err) => vec![Check::fail("Config", &err)],
+    };
+    let (authority, rep) = match answer {
+        Ok(pair) => pair,
+        Err(err) => {
+            // Without the Runtime's answer there is no workspace to check,
+            // and this machine must not invent one from a local guess.
+            checks.push(Check::fail("Workspace config", &err));
+            checks.extend(
+                [
+                    "Agent ccnm",
+                    "Controller",
+                    "Reverse SSH",
+                    "Runtime safety",
+                    "exec_command",
+                    "Remote MCP handshake",
+                    "Workspace root",
+                    "Terminal session",
+                ]
+                .into_iter()
+                .map(|name| Check::skip(name, "not checked: the Runtime did not answer")),
+            );
+            checks.extend(not_yet_implemented());
+            return Report { subject, checks };
+        }
+    };
+    checks.push(Check::ok("Workspace config", describe_authority(authority)));
+    let agent_node = authority
+        .agent
+        .as_ref()
+        .map(|reference| reference.node.as_str())
+        .unwrap_or("this machine");
+    checks.extend(probe_rows(
+        &Subject {
+            workspace,
+            root: &authority.root,
+            runtime_node: &authority.runtime_node,
+            agent_node,
+            provider_config_dir: authority.provider_config_dir.as_deref(),
+        },
+        rep,
+    ));
+    checks.extend(not_yet_implemented());
+    Report { subject, checks }
+}
+
+/// The Runtime's answer about a workspace, in one line, and said to be its
+/// answer: this machine has no workspace list to disagree with it.
+fn describe_authority(authority: &crate::runtime::ResolveReport) -> String {
+    let agent = match &authority.agent {
+        Some(reference) => format!("agent={}/{}", reference.node, reference.instance),
+        None => "legacy agent_node selection".to_string(),
+    };
+    format!(
+        "answered by {}: {agent}, root={}",
+        authority.runtime_node,
+        authority.root.display()
+    )
+}
+
 /// The one line that says which machines a workspace spans, and how this
 /// one dials them. Colocated workspaces dial nothing, so saying "ssh"
 /// there would be a lie about the topology.
@@ -431,7 +513,7 @@ fn workspace_checks(r: &Resolved<'_>, agent: Option<&str>, env: &Env<'_>) -> Vec
                 checks[index] = selected_project_instructions(&rep);
             }
             checks.push(Check::ok("Agent SSH", resolved.target()));
-            checks.extend(probe_rows(r, &rep));
+            checks.extend(probe_rows(&Subject::of(r), &rep));
         }
         Err(e) => {
             checks.push(Check::fail("Agent SSH", &e));
@@ -460,7 +542,35 @@ fn selected_project_instructions(rep: &ProbeReport) -> Check {
     }
 }
 
-fn probe_rows(r: &Resolved<'_>, rep: &ProbeReport) -> Vec<Check> {
+/// The few workspace facts the probe rows render.
+///
+/// Built from this machine's config on the Runtime Node, and from the
+/// Runtime's own answer on the Agent Node, which holds no workspace list.
+/// One struct rather than two rendering paths: the two sides must agree
+/// about the same Runtime Executor, and the cheapest way to guarantee that
+/// is to give them the same code and different inputs.
+pub(crate) struct Subject<'a> {
+    pub workspace: &'a str,
+    pub root: &'a Path,
+    pub runtime_node: &'a str,
+    pub agent_node: &'a str,
+    /// The Agent-side provider config directory, for the login hint.
+    pub provider_config_dir: Option<&'a Path>,
+}
+
+impl<'a> Subject<'a> {
+    fn of(r: &'a Resolved<'a>) -> Subject<'a> {
+        Subject {
+            workspace: r.name,
+            root: &r.workspace.root,
+            runtime_node: &r.workspace.runtime_node,
+            agent_node: r.agent_node(),
+            provider_config_dir: AgentProvider::current().config_dir(r.agent),
+        }
+    }
+}
+
+fn probe_rows(r: &Subject<'_>, rep: &ProbeReport) -> Vec<Check> {
     let mut checks = vec![version_row("Agent ccnm", &rep.hello, "work")];
 
     checks.push(controller_row(rep));
@@ -488,11 +598,11 @@ fn probe_rows(r: &Resolved<'_>, rep: &ProbeReport) -> Vec<Check> {
         None => {
             let why = format!(
                 "agent and project are both on {}, so nothing dials back",
-                r.agent_node()
+                r.agent_node
             );
             checks.push(Check::skip("Reverse SSH", &why));
             checks.push(Check::skip("Remote MCP handshake", &why));
-            checks.push(root_row(r, &rep.hello, r.agent_node()));
+            checks.push(root_row(r, &rep.hello, r.agent_node));
             checks.push(terminal_row(r, rep));
         }
         Some(_) => match &rep.runtime_hello {
@@ -500,10 +610,7 @@ fn probe_rows(r: &Resolved<'_>, rep: &ProbeReport) -> Vec<Check> {
                 checks.push(match version_row("Reverse SSH", h, "the Runtime Node") {
                     ok if ok.status == Status::Ok => Check::ok(
                         "Reverse SSH",
-                        format!(
-                            "{} as {}, ccnm {}",
-                            r.workspace.runtime_node, h.user, h.ccnm_version
-                        ),
+                        format!("{} as {}, ccnm {}", r.runtime_node, h.user, h.ccnm_version),
                     ),
                     fail => fail,
                 });
@@ -536,10 +643,10 @@ fn probe_rows(r: &Resolved<'_>, rep: &ProbeReport) -> Vec<Check> {
 /// The rows are identical whoever ran doctor, because none of them is
 /// computed here. When the far side could not be asked they are SKIPs that
 /// say so -- an unknown Runtime must never read as a confined one.
-fn executor_rows(r: &Resolved<'_>, rep: &ProbeReport) -> Vec<Check> {
+fn executor_rows(r: &Subject<'_>, rep: &ProbeReport) -> Vec<Check> {
     match &rep.runtime_audit {
         Some(Ok(report)) => {
-            let mut rows = runtime_safety_rows(&report.audit, r);
+            let mut rows = runtime_safety_rows(report);
             rows.push(executor_root_row(r, &report.root, &report.audit.user));
             rows
         }
@@ -574,18 +681,15 @@ fn executor_rows(r: &Resolved<'_>, rep: &ProbeReport) -> Vec<Check> {
 /// account, reachable through a world-writable parent, passed the old row
 /// -- and every git command the Agent ran failed with `detected dubious
 /// ownership` while the table stayed green.
-fn executor_root_row(r: &Resolved<'_>, root: &crate::runtime::RootStatus, user: &str) -> Check {
+fn executor_root_row(r: &Subject<'_>, root: &crate::runtime::RootStatus, user: &str) -> Check {
     use crate::runtime::GitStatus;
     const NAME: &str = "Workspace root";
-    let path = r.workspace.root.display();
+    let path = r.root.display();
     if !root.present {
         return Check::fail_with(
             NAME,
             ErrorCode::WrongWorkspace,
-            format!(
-                "{path} is missing for {user} on {}",
-                r.workspace.runtime_node
-            ),
+            format!("{path} is missing for {user} on {}", r.runtime_node),
         );
     }
     if !root.is_dir {
@@ -626,22 +730,18 @@ fn executor_root_row(r: &Resolved<'_>, root: &crate::runtime::RootStatus, user: 
 
 /// Whether the project is where the workspace says it is, as reported by
 /// whichever node is supposed to be holding it.
-fn root_row(r: &Resolved<'_>, h: &crate::protocol::hello::HelloReport, node: &str) -> Check {
+fn root_row(r: &Subject<'_>, h: &crate::protocol::hello::HelloReport, node: &str) -> Check {
     match h.root {
         Some(status) if status.is_ok() => Check::ok(
             "Workspace root",
-            format!(
-                "{} is a directory for {}",
-                r.workspace.root.display(),
-                h.user
-            ),
+            format!("{} is a directory for {}", r.root.display(), h.user),
         ),
         Some(status) => Check::fail_with(
             "Workspace root",
             ErrorCode::WrongWorkspace,
             format!(
                 "{} is {} for {} on {}",
-                r.workspace.root.display(),
+                r.root.display(),
                 status.describe(),
                 h.user,
                 node
@@ -674,7 +774,7 @@ fn skipped_after_reverse_ssh() -> Vec<Check> {
 /// half the product works without it. A live session is reported with what
 /// was measured about it, so "detached" reads as the normal state it is
 /// rather than as something wrong.
-fn terminal_row(r: &Resolved<'_>, rep: &ProbeReport) -> Check {
+fn terminal_row(r: &Subject<'_>, rep: &ProbeReport) -> Check {
     const NAME: &str = "Terminal session";
     let Some(status) = &rep.terminal else {
         return Check::skip(NAME, "not reported by that ccnm build");
@@ -683,11 +783,11 @@ fn terminal_row(r: &Resolved<'_>, rep: &ProbeReport) -> Check {
         Ok(v) => v,
         Err(e) => return Check::warn(NAME, &e.message),
     };
-    let wanted = crate::tmux::session_name(r.name);
+    let wanted = crate::tmux::session_name(r.workspace);
     match status.sessions.iter().find(|s| s.tmux_session == wanted) {
         None => Check::ok(
             NAME,
-            format!("tmux {version}, no live session for {}", r.name),
+            format!("tmux {version}, no live session for {}", r.workspace),
         ),
         // A live session whose transport died is a WARN, not an OK: it
         // looks like it is working from every side except the one that
@@ -739,12 +839,14 @@ fn mcp_row(rep: &ProbeReport) -> Check {
 ///
 /// A failure is a FAIL row, not a SKIP: nothing is unknown here. The
 /// property was checked and it does not hold.
-fn runtime_safety_rows(audit: &safety::Audit, r: &Resolved<'_>) -> Vec<Check> {
+fn runtime_safety_rows(report: &crate::runtime::AuditReport) -> Vec<Check> {
+    let audit = &report.audit;
     // A workspace that has accepted an unconfined runtime gets warnings,
     // not failures. The runtime will run its commands either way, and a
     // table that says NOT READY about a session that works is a table
-    // people learn to ignore.
-    let accepted = r.workspace.allow_unconfined_exec;
+    // people learn to ignore. The value is the Runtime's own -- it is the
+    // one `exec_command`'s gate reads, not this machine's copy of it.
+    let accepted = report.allow_unconfined_exec;
     let mut rows: Vec<Check> = audit
         .findings
         .iter()
@@ -856,7 +958,7 @@ fn controller_row(rep: &ProbeReport) -> Check {
 /// A *positive* answer is trusted from anywhere: a session that could not
 /// reach the credentials could not have found a login to report. The
 /// error runs one way only.
-fn auth_row(r: &Resolved<'_>, rep: &ProbeReport) -> Check {
+fn auth_row(r: &Subject<'_>, rep: &ProbeReport) -> Check {
     let name = rep.provider.authentication_check();
     let from_login_session = matches!(&rep.controller, Some(Ok(ctx)) if ctx.login_session());
     match &rep.agent.auth {
@@ -868,7 +970,7 @@ fn auth_row(r: &Resolved<'_>, rep: &ProbeReport) -> Check {
         Ok(_) => Check::fail_with(
             name,
             ErrorCode::Auth,
-            rep.provider.auth_hint(rep.provider.config_dir(r.agent)),
+            rep.provider.auth_hint(r.provider_config_dir),
         ),
         // "Nobody asked the right process" is not a diagnosis about
         // Claude. SKIP still blocks READY, so nothing runs on the strength
@@ -1114,6 +1216,7 @@ mod tests {
                 owned: true,
                 git: crate::runtime::GitStatus::Usable,
             },
+            allow_unconfined_exec: false,
         }
     }
 
@@ -1380,6 +1483,75 @@ mod tests {
         // And they are the Runtime's answer, not a default: `ccrun` is what
         // the probe reported, and this machine's account is not called that.
         assert!(plain[0].1.contains("ccrun"), "{plain:?}");
+    }
+
+    /// The stop point of P7.4 Batch D2: the same Runtime Executor,
+    /// described from both machines, says the same thing.
+    ///
+    /// The Agent Node has no workspace list, so its table is built from the
+    /// Runtime's own answer plus a probe it ran itself. If the two sources
+    /// could disagree, "run doctor over there" would become folklore about
+    /// which machine tells the truth.
+    #[test]
+    fn both_diagnostic_sources_describe_the_runtime_executor_the_same_way() {
+        const EXECUTOR_ROWS: [&str; 3] = ["Runtime user", "exec_command", "Workspace root"];
+        let (dir, config) = setup("two-sources", true, true);
+        let probe = good_probe();
+
+        // The Runtime Node's own table, with the probe scripted in.
+        let fake = FakeRunner::new();
+        fake.push(Output::exited(0, format!("ccnm {}\n", crate::VERSION)));
+        fake.push(Output::exited(0, "hostname workmac\nuser me\n"));
+        fake.push(Output::exited(0, serde_json::to_string(&probe).unwrap()));
+        let from_runtime = run(&config, Some("xshun"), &env(&fake, &dir));
+
+        // The Agent Node's, from the Runtime's answer and the same probe.
+        // Only the first row differs by construction: it names whichever
+        // config file the reader is holding.
+        let authority = crate::runtime::ResolveReport {
+            protocol: crate::runtime::OPEN_PROTOCOL,
+            workspace: "xshun".into(),
+            root: dir.join("root"),
+            runtime_node: "runtime".into(),
+            agent: None,
+            provider_config_dir: None,
+            permission_mode: Default::default(),
+        };
+        let from_agent = from_agent(&config, "xshun", Ok((&authority, &probe)));
+
+        for name in EXECUTOR_ROWS {
+            let there = row(&from_runtime, name);
+            let here = row(&from_agent, name);
+            assert_eq!(
+                (&there.status, &there.detail),
+                (&here.status, &here.detail),
+                "{name} differs between the two sources"
+            );
+        }
+    }
+
+    /// Without the Runtime's answer the Agent Node has no workspace to
+    /// check, and it must say so rather than describing one from a guess.
+    #[test]
+    fn an_agent_side_report_without_the_runtimes_answer_checks_nothing() {
+        let (dir, config) = setup("no-answer", true, true);
+        let _ = dir;
+        let report = from_agent(
+            &config,
+            "xshun",
+            Err(Error::new(
+                ErrorCode::RuntimeUnreachable,
+                "ssh runtime: down",
+            )),
+        );
+        assert_eq!(
+            row(&report, "Workspace config").status,
+            Status::Fail(ErrorCode::RuntimeUnreachable)
+        );
+        for name in ["Runtime safety", "exec_command", "Workspace root"] {
+            assert_eq!(row(&report, name).status, Status::Skip, "{name}");
+        }
+        assert_ne!(report.exit_code(), 0);
     }
 
     #[test]

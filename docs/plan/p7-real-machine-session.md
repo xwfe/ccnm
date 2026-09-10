@@ -18,23 +18,40 @@
 
 | 对象 | 动作 | 怎么撤销 |
 | --- | --- | --- |
-| Agent Node | 创建本轮专用 Runtime 账号（普通用户，不进 admin、不给 sudo、无可登录密码） | `sysadminctl -deleteUser`，见第五节 |
-| 两端 | 生成一次性 SSH 密钥，公钥追加到对端 Runtime 的 `authorized_keys` | 只删本轮那一行，其他行原样保留 |
-| 两端 | SSH config 追加本轮唯一 alias | 只删本轮区块，不整份恢复备份 |
+| fodelf | 生成一次性 SSH 密钥，**私钥不离开 fodelf** | 删掉那两个文件 |
+| 本机 ccrun | 把本轮公钥追加进 `authorized_keys` | 只删本轮那一行，其他行原样保留 |
 | 本机 ccrun | 加入 `com.apple.access_ssh` 直接成员 | 只删这一个直接成员关系 |
 | 本机 ccrun | 主组从 `staff` 换成专用组 | 换回 `staff`，删专用组 |
-| 两端 | 部署本轮构建的 ccnm，重启 Controller | 装回原来的版本，或删掉本轮部署目录 |
-| 订阅 | 真实 Claude / Codex 执行，消耗额度 | 不可撤销 |
+| fodelf | SSH config 追加本轮唯一 alias，指回本机的 ccrun | 只删本轮区块，不整份恢复备份 |
+| 两端 | 部署本轮构建的 ccnm，重启 Controller | 装回原来的版本 |
+| 订阅 | 真实 Claude / Codex 执行，消耗额度 | **不可撤销** |
 
-最后一行不可撤销，所以第 1 步一次跑对比跑三次省钱——这正是 `scripts/p7_parity_check.py` 存在的理由。
+最后一行不可撤销，所以对照那一步一次跑对比跑三次省钱——这正是 `scripts/p7_parity_check.py` 存在的理由。
 
-## 三、拓扑：先定一个方向
+**不需要创建任何新账号。** 本机的 `ccrun` 是既有账号，只改它的主组和准入，不重建、不动 UID/shell/密码。因此第五节那套删账号的坑这一轮碰不到，但清理仍然照清单逆序做。
 
-P3 是两个相反方向各跑一次：Claude 在 fodelf 当 Agent → 本机 ccrun 当 Runtime；Codex 在本机当 Agent → fodelf 当 Runtime。两个方向意味着两套特权准备。
+## 三、拓扑：已定
 
-**这一次先确认能不能用一个方向。** 条件是两个 provider 的 instance 都登录在同一台 Agent Node 上。能满足就只建一套 Runtime 身份，特权动作减半。
+**Agent = fodelf（Mac mini），Runtime = 本机。** 用户确认两个 provider 的 CLI 都登录在 fodelf 上，所以只有这一个方向可行——也正是 P3 跑 Claude 时验证过的那个。
 
-不满足就退回 P3 的两个方向，并在记录里写明是登录位置决定的，不是设计需要。这一条要在开工前用只读检查确认，别到部署完才发现。
+好处是**项目留在本机**：dogfood 直接用真实仓库，不用在对端另放一份。
+
+P3 是两个相反方向各跑一次（Claude 在 fodelf 当 Agent、Codex 在本机当 Agent），要两套特权准备。这一轮合成一个方向，本机 ccrun 那三步做一次就够，fodelf 上一个账号都不用建。
+
+### 开工前的基线（2026-09-10 只读复核）
+
+P3 的清理确实归零了，三步都要重做：
+
+| 检查 | 结果 |
+| --- | --- |
+| `ccrun` | uid=504，gid=20(staff) |
+| `com.apple.access_ssh` | 不是成员 |
+| 组名 `ccrun` / GID 504 | 空闲 |
+| `/var/db/ccnm-p3-local-20260908` | 已删 |
+| `/Users/ccrun` | `ccrun:staff` 0700 |
+| ccrun 的进程 | 0 个 |
+
+最后一行要在换主组之前再确认一次：**改主组不影响已经在跑的进程的组身份**，留着会让验收结果对不上。有残留就先 `sudo launchctl bootout user/504`，脚本不会自动 kill。
 
 ## 四、执行顺序与判据
 

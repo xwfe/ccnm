@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-09-10T21:05:00+09:00",
+  "last_updated": "2026-09-10T22:25:00+09:00",
   "current_task": "P7",
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
@@ -500,7 +500,7 @@
       ],
       "owner": null,
       "started_at": "2026-09-10T16:20:00+09:00",
-      "last_updated": "2026-09-10T21:05:00+09:00",
+      "last_updated": "2026-09-10T22:25:00+09:00",
       "completed_criteria": [
         "P7.1",
         "P7.2",
@@ -626,6 +626,14 @@
           ],
           "ref": "docs/research/p7-batch-e-2026-09-10.md",
           "result": "P7.4 Batch E（v1 回归与真机再确认）通过，用户逐项授权且授权条件（D2 完成 + 离线门禁全绿）已满足。部署：三端（Operator bing / Agent fodelf / Runtime Executor ccrun，外加 Agent 实际调用的共享副本）全部换成 commit 9882938 的构建，sha256 d9c8c8cc…；替换前记录旧构建 sha256 1c14492d…（三端一致）并在各自 ~/.local/bin/ccnm.pre-batch-e 留可回退副本；两者 --version 都是 0.2.0，所以核对的是哈希不是版本号，落地一律 .new+mv。Controller 重启 pid 53233→1330，ps 确认起于二进制 mtime 之后、跑新路径、全机唯一。验证前先删掉 ccrun 的出站私钥 ~/.config/ccnm/transport/agent-key（P7.3 旧回跳留下的），删完它名下只剩 authorized_keys/config/known_hosts 与 config.toml，SSH_AUTH_SOCK 未设置——新链路要在没有这把钥匙的状态下验才算数。结果：（1）以 bing（非 ccrun）跑 ccnm run p7parity --print，claude exited 0，3 turns，$0.10，产物 e-cli.txt 属主 uid=504 内容等于一次性 token；（2）ccnm rpc 同一 workspace 走 machine API，session.start/wait/session.result 全过，state completed、exit_code 0、usage 6/253、cost $0.038492，产物 e-rpc.txt 属主同为 uid=504，响应中 home 路径/.claude/.codex/auth.json/私钥名/session_dir/controller 出现 0 次；两条腿同属主即两个公开入口落在同一条隔离执行链上。（3）Agent Node 上 ccnm doctor p7dogfood 得 0 failed / 2 not checked，含新行 Workspace config OK answered by runtime 与 Workspace root OK is a git repository ccrun can work in；同一 workspace（p7parity）从 Runtime 侧与 Agent 侧各跑一次，全部 Runtime 相关行 diff 为空——D2 的停止点在真机上成立。（4）Agent Node 上 remote mcp probe 单进程服务 5/300/600 次调用（pid throughout），--local fail-closed 报 CCNM_E_WRONG_WORKSPACE。（5）会话活着时连拍三次 ccrun 进程表：只有入站 sshd-session ccrun@notty 与它的子进程 internal mcp-serve，没有任何 ssh 客户端；该 mcp-serve 的 payload 解出来是 protocol 4 且没有 root 字段，即 Batch B/C 的新 wire 在生产链路上实际生效。（6）资源归零：ccnm result 取回上一个 print 会话完整结果、status 无活会话、write-guards 两个 lock 均 released、会话后 ccrun 名下 ccnm 进程为 0、Agent 侧无 tmux 会话与 supervisor 进程；ccnm stop 对已结束会话仍 rc=3 CCNM_E_NOT_READY（已知不幂等，运维手册已记）。（7）收尾重跑完整离线门禁：fmt PASS、clippy 退出码 0、cargo test 626 passed / 0 failed、Python 120、check_protocol 38 fixture、check_plan、git diff --check 全过。真机另确认三件事：跑 doctor 的 bing 是 admin、持多把私钥、能读 Claude 凭据，而 Runtime 行全绿——同一条命令在 P7.4 之前会报 7 个 FAIL，这是 Batch D 的真机确认；新的 Workspace root 抓到 p7parity 那个 bing 拥有的 git 工作树并给出 git refuses it: the repository belongs to another account，正是 dogfood 撞了半天的 dubious ownership，该 FAIL 作为证据保留不修；**ccrun 删掉私钥后仍能连到 Agent Node**——答话的是 Tailscale SSH，Authenticated using none，按 tailnet 身份授权不看密钥，所以准确结论只能拆成两句：ccnm 不再要求 ccrun 出站且它名下无 ccnm 所需私钥/agent（已验证），但该账号在这台机器上仍有出站能力，来自主机网络策略，要关得在 tailnet ACL 或 OS 层做，不在本轮授权范围。订阅消耗 $0.14。未验：Codex 经 machine API（仍是 P7.3 缺口）、Agent 侧发起的 ccnm run 真实会话（其 resolve 步骤已由 doctor/probe 共用验证）、interactive、Ctrl-D、egress、完整项目 dogfood；只覆盖 macOS 与这一套两端拓扑。"
+        },
+        {
+          "kind": "offline",
+          "criteria": [
+            "P7.3"
+          ],
+          "ref": "tests/fixtures/codex-0.154.0/README.md",
+          "result": "Codex 那一半：环境已搭好并全绿，卡在版本 pin 上，parity 未跑。拓扑经用户两次确认后定为 Agent=xdwmbp/bing（Codex CLI、专用 CODEX_HOME 与登录都在这个账号）、Runtime Executor=xdwmbp/ccrun、Operator 也是 bing 但用独立配置文件（Controller 只读默认那份，所以两个角色能共用一个账号而不打架）。原计划的 fodelf-as-Runtime 被环境事实否掉并已实测记录：fodelf 没开 OpenSSH（192.168.1.3:22 Connection refused），入站只有 Tailscale SSH，而它的策略按用户名枚举——ssh nosuchuser@fodelf 直接回 tailnet policy does not permit you to SSH as user，所以在那台新建的隔离账号根本连不上；顺带实测 ssh root@fodelf 无凭据即可登入，这条与 ccrun 可经 Tailscale 出站属同一类事实，P7.5 写安全声明时要一起说。已搭好的部分：专用密钥 ~/.ssh/ccnm-p7codex（私钥不出本机）、bing 与 ccrun 两侧 authorized_keys 各一行、~/.ssh/config 的 ccnm-p7codex 标记块两个别名、bing 默认配置改为 Agent 侧并备份、新增 ~/.config/ccnm/p7codex-runtime.toml 作 Operator 视角、bing 账号装 Controller（pid 64855, Aqua）、工作树 /Users/Shared/ccnm-p7codex 由 ccrun 自建因此属主正确、ccrun 权威配置加 workspace p7codex。doctor 结果：exec_command OK、No SSH keys OK、Workspace root OK（is a git repository ccrun can work in）、Remote MCP handshake OK（7 工具、protocol 4、Codex provider）、Codex authentication OK logged in via ChatGPT，唯一 FAIL 是 Codex 0.154.0 has not been measured; this adapter requires 0.153.4——CLI 在本轮期间被升级。按用户决定走文档的重新测量流程，只完成了不花额度的 inspect 那半（tests/fixtures/codex-0.154.0/，旧目录原样保留作回归基线）；seven-tools 那半失败，事件流写明 You've hit your usage limit，专用 CODEX_HOME 的账号额度耗尽（提示 Sep 15 恢复），因此**适配器 pin 故意仍是 0.153.4**，未按半份测量改常量。这次尝试暴露三件事：（1）采集脚本把假 Runtime 建在系统临时目录，而 macOS 的 /tmp 与 /var 都是符号链接，凭据检查见祖先为 symlink 即判 accessibility unknown（不可豁免，allow_unconfined_exec 无效），表现为 MCP 握手 connection closed: initialize response——脚本已改为 resolve()，同一条对真实部署成立并写进运维手册；（2）0.154.0 新增 stable 且默认开启的 unified_exec_tty，而 ccnm 的 DISABLED 只关 unified_exec，是否补上属产品决定；（3）--enable code_mode_only 在 0.154.0 会多发一条 item.completed/type=error 的告警，结果解析要认得。另有两条本轮撞到的小事已记：Runtime 侧配置校验要求 workspace 的 agent node 必须有 ssh 别名，即便 P7.4 之后 Runtime 从不拨号（只能填一个故意不存在的别名占位）；~/.ssh 与 ~/.config/ccnm 里留备份文件（authorized_keys.pre-*、config.toml.pre-*）会被 No SSH keys 判成可疑私钥，保守失败是对的，但操作者会踩。"
         }
       ],
       "blockers": [
@@ -634,8 +642,8 @@
             "P7.3",
             "P7.5"
           ],
-          "reason": "P7.4 已完成（Batch A→E，含真机复验），P7.3 只差 Codex 一项。Codex 装在 xdwmbp，当前额度不足；补跑需要相反拓扑（xdwmbp 当 Agent、fodelf 当 Runtime）和新的隔离 Runtime 准备，因此 P7.3 与最终 P7.5 仍被外部条件阻塞。注意 Codex 那一次要在**新**身份模型上跑，不是 P7.3 当时的旧链路。",
-          "unblock": "等 xdwmbp Codex 额度恢复后，在新身份模型上按授权拓扑补跑一次真实 Codex Machine API parity 并记录结果。xdwmbp 的 codex-cli 已确认为 0.153.4，与仓库 pin 一致；若版本未变化不重测 fixture。补齐后 P7.3 才能勾完成，之后才进入 P7.5 v1 freeze。P7.5 冻结前另需处理两条已记录事实：ccrun 在当前主机上仍可经 Tailscale SSH 出站（网络策略层，非 ccnm 持有凭据），以及 ccnm stop 对已结束会话不幂等。"
+          "reason": "P7.4 已完成（Batch A→E，含真机复验），P7.3 只差 Codex 一项，且它的执行环境已经搭好并全绿（Agent=xdwmbp/bing，Runtime Executor=xdwmbp/ccrun，doctor 除版本行外全 OK）。现在卡在两件事上：Codex CLI 在本轮期间被升到 0.154.0 而适配器只认实测过的 0.153.4；按文档重新测量时，专用 CODEX_HOME 的账号额度耗尽（事件流回 You've hit your usage limit，提示 Sep 15 恢复），JSONL 那半测不了。适配器 pin 故意保持 0.153.4，不拿半份测量改常量。",
+          "unblock": "先让专用 home 有额度：使用者执行 CODEX_HOME=~/.config/ccnm/agents/codex codex login，登入一个额度未耗尽的账号（ccnm 从不复制 ~/.codex，所以个人那份的额度不顶用）；或等 Sep 15 额度重置。然后接着做重新测量的后三步：seven-tools 采 JSONL、改适配器 VERSION 并跑 cargo test -p ccnm-core provider::codex、逐条比对新旧 fixture 差异写进研究记录，其中要决定 unified_exec_tty 是否进 DISABLED。最后再跑那一次 CLI ↔ Machine API parity 并记录结果。xdwmbp 的 codex-cli 已确认为 0.153.4，与仓库 pin 一致；若版本未变化不重测 fixture。补齐后 P7.3 才能勾完成，之后才进入 P7.5 v1 freeze。P7.5 冻结前另需处理两条已记录事实：ccrun 在当前主机上仍可经 Tailscale SSH 出站（网络策略层，非 ccnm 持有凭据），以及 ccnm stop 对已结束会话不幂等。"
         }
       ]
     },
@@ -711,6 +719,8 @@
     }
   ],
   "observed_gaps": [
+    "macOS 上 /tmp 与 /var 都是符号链接，而凭据检查见到祖先目录是 symlink 即判 accessibility unknown——不可豁免，allow_unconfined_exec 无效，表现为 MCP 握手 connection closed: initialize response。任何把 Runtime 执行身份的 home 放在系统临时目录下的部署或测试都会踩到；已写进运维手册，采集脚本已改为对临时目录 resolve()。",
+    "Codex 0.154.0 新增 stable 且默认开启的 unified_exec_tty，而 ccnm 的 DISABLED 列表只关 unified_exec；升级 pin 前必须决定是否补上——这正是版本 pin 存在的理由，不是改个常量。同版本还把 --enable code_mode_only 变成会发一条 item.completed/type=error 的告警。",
     "真机实测：删掉 ccrun 名下 ccnm 所需的出站私钥之后，该账号仍能连到 Agent Node——答话的是 Tailscale SSH，Authenticated using \"none\"，按 tailnet 身份授权不看密钥。所以 No SSH keys 那一行只能读作「ccnm 不要求这个身份出站，且它名下没有 ccnm 所需的私钥/agent」，不能读作「这个账号出不去」。要真的关掉得在 tailnet ACL、防火墙或 OS 网络策略上做，不属于 ccnm 的边界，P7.5 冻结前要在支持矩阵里说清楚。",
     "双机验收已改用专用隔离执行身份，凭据/sudo/特权 socket 均已实测；egress/网络策略仍未逐项验证，本轮只做 transport 进程故障注入，不等同物理断网。",
     "旧 Runtime 拒绝 v2 时可能以退出码 0 结束；协议错误不能被退出码掩盖。",
@@ -727,7 +737,7 @@
     "协议契约里的 -32008（busy）没有实现会返回：写入 guard 在会话跑起来之后才由 Runtime 侧 MCP 获取，session.start 不做工作树占用预检，被占的表现是会话失败而非启动被拒。文档已如实标注；要不要补预检使该码可达是待定的产品决定。同一窗口也影响连续执行：前一次 ccnm run --print 返回时 guard 可能尚未释放，紧接着启动下一个会话会撞上，实际窗口时长未在真机测过。"
   ],
   "handoff": {
-    "next_action": "当前仍是 P7。**P7.4 已完成并勾选**：Batch A→E 全部落地，其中 Batch E 已按用户授权在 P7 测试拓扑上做完最小真机复验（证据 docs/research/p7-batch-e-2026-09-10.md）：三端换成 commit 9882938 的构建并留有回退副本；以 Operator（bing，非 ccrun）跑 public CLI 与 ccnm rpc 各一次真实 Claude 会话，两条腿产物属主同为 uid=504；Agent Node 上的 doctor 与 remote mcp probe 走新的双端路径，同一 workspace 两个方向的 Runtime 结论逐字相同；会话期间 ccrun 进程树只有入站 sshd 与 mcp-serve、无 ssh 客户端，其 payload 是 protocol 4 且无 root 字段；result/status/stop、write guard、transport 均归零；离线门禁 626/120 全绿。订阅消耗 $0.14。**下一步：只剩 P7.3 的 Codex 缺口**——等 xdwmbp 额度恢复后，在**新**身份模型上按授权拓扑跑一次真实 Codex Machine API parity（需要相反拓扑与新的隔离 Runtime 准备，属另行授权的系统动作）。补齐后 P7.3 才能勾完成，再做 P7.5 v1 freeze；**现在不要进入 P7.5**。P7.5 冻结前要一并处理两条已记录事实：ccrun 在当前主机上仍能经 Tailscale SSH 出站（tailnet 策略层，非 ccnm 持有凭据，要关得在 ACL/OS 层做），以及 ccnm stop 对已结束会话不幂等（退出码 3）。真机环境仍在运行未清理，回退副本与清单见 handoff.authorization 与 docs/research/p7-batch-e-2026-09-10.md 第五节。",
+    "next_action": "当前仍是 P7。P7.4 已完成（Batch A→E + D2，含真机复验）。**P7.3 只差 Codex 一项，环境已经搭好并全绿**：Agent=xdwmbp/bing（Codex CLI 与专用 CODEX_HOME 在这个账号）、Runtime Executor=xdwmbp/ccrun、Operator 也是 bing 但用 ~/.config/ccnm/p7codex-runtime.toml；doctor p7codex 除版本行外全 OK（exec_command、No SSH keys、Workspace root、Remote MCP handshake protocol 4、Codex 登录）。**卡点两个**：Codex CLI 被升到 0.154.0 而适配器只认实测过的 0.153.4；按文档重新测量时专用 home 的账号额度耗尽（提示 Sep 15 恢复），JSONL 那半没测成，所以 tests/fixtures/codex-0.154.0/ 是半份、适配器 pin 故意没动。**接续步骤**：(1) 让专用 home 有额度——`CODEX_HOME=~/.config/ccnm/agents/codex codex login` 登入额度未耗尽的账号，或等重置；(2) `python3 scripts/measure_codex.py <新目录> seven-tools` 补齐 JSONL；(3) 决定 unified_exec_tty 是否进 DISABLED；(4) 改 provider/codex 的 VERSION 并跑 cargo test -p ccnm-core provider::codex；(5) 逐条比对新旧 fixture 写研究记录（不能跳）；(6) 跑那一次 CLI ↔ Machine API parity，重点验 provider 无关的八条冻结性质；(7) P7.3 勾完成，进 P7.5。P7.5 集中处理三个发布决策：ccrun 可经 Tailscale SSH 出站、fodelf 允许无凭据 root 登录这两条网络策略层事实怎么写进安全声明，以及 stop 对已结束 session 的非幂等是修掉还是定为 v1 语义。不碰 P8/P9，不加功能。",
     "scope": "P7 收尾与 v1 身份/控制链修正。P7.4 是已确定的实现任务，可在 Codex 额度等待期间进行；需要部署、新账号/ACL、SSH 准入或其他系统修改时仍必须单独授权。P7.3 剩余 Codex 付费真机项继续 blocked。P9–P12 只作为后续 v1.x Remote Workspace MCP 路线记录，不在本轮提前实现。",
     "planning_validation": {
       "at": "2026-09-08T21:22:43+09:00",
@@ -754,7 +764,7 @@
       "limits": "门禁在 P7.4 Batch E 收尾时重跑，全绿。真机部分本轮已覆盖新链路的最小复验（Operator public CLI 与 ccnm rpc 各一次真实 Claude 会话、Agent 侧 doctor 与 remote mcp probe、执行属主、无出站 ssh、protocol 4 wire、资源归零），证据见 docs/research/p7-batch-e-2026-09-10.md。仍未覆盖：Codex 经 machine API（从未发生过）、Agent 侧发起的真实会话、interactive、Ctrl-D、egress、完整项目 dogfood；只在 macOS 与这一套两端拓扑上。"
     },
     "inherited_changes": [],
-    "authorization": "P3 的双机系统授权已执行完毕并归零，不再有效。P4 只写文档与 fixture，未做任何系统变更。P7.3 的授权已执行且**环境仍在运行、尚未清理**：本机 ccrun 主组仍是 ccrun(504)、仍在 com.apple.access_ssh、authorized_keys 里仍有本轮公钥，root 清单 /var/db/ccnm-p7-local-20260910 仍在，fodelf 的 ~/.ssh/config 仍有本轮 alias 区块。保留是为了等 Codex 额度回来接着用；要现在归零就按 scripts/p7-revoke-local-runtime-key.sh 逆序撤销，那需要用户执行 sudo。除此之外如需账号、ACL、防火墙、部署或替换二进制，必须重新逐项获得批准。 P7.4 Batch E 的部署与额度消耗已由用户逐项授权并执行完毕：三端 ccnm 换成 commit 9882938 的构建（sha256 d9c8c8cc…），旧构建（sha256 1c14492d…）留在各自 ~/.local/bin/ccnm.pre-batch-e 可回退；fodelf Controller 重启为 pid 1330；ccrun 的出站私钥 ~/.config/ccnm/transport/agent-key 已删除且不应还原。授权明确不含创建新账号、修改 ACL/防火墙、运行 Codex、push/tag/release。",
+    "authorization": "P3 的双机系统授权已执行完毕并归零，不再有效。P4 只写文档与 fixture，未做任何系统变更。P7.3 的授权已执行且**环境仍在运行、尚未清理**：本机 ccrun 主组仍是 ccrun(504)、仍在 com.apple.access_ssh、authorized_keys 里仍有本轮公钥，root 清单 /var/db/ccnm-p7-local-20260910 仍在，fodelf 的 ~/.ssh/config 仍有本轮 alias 区块。保留是为了等 Codex 额度回来接着用；要现在归零就按 scripts/p7-revoke-local-runtime-key.sh 逆序撤销，那需要用户执行 sudo。除此之外如需账号、ACL、防火墙、部署或替换二进制，必须重新逐项获得批准。 P7.4 Batch E 的部署与额度消耗已由用户逐项授权并执行完毕：三端 ccnm 换成 commit 9882938 的构建（sha256 d9c8c8cc…），旧构建（sha256 1c14492d…）留在各自 ~/.local/bin/ccnm.pre-batch-e 可回退；fodelf Controller 重启为 pid 1330；ccrun 的出站私钥 ~/.config/ccnm/transport/agent-key 已删除且不应还原。授权明确不含创建新账号、修改 ACL/防火墙、运行 Codex、push/tag/release。 P7.3 Codex 轮（用户选定复用 ccrun 的拓扑）新增这些可撤销资源，清理时逐条还原：本机 bing 的 ~/.ssh/ccnm-p7codex 密钥对、bing 与 ccrun 两侧 authorized_keys 各一行（备份分别在 ~/.ssh/authorized_keys.pre-p7codex 与 ccrun 家目录根下）、bing 的 ~/.ssh/config 中 ccnm-p7codex 标记块、bing 的 ~/.config/ccnm/config.toml 改为 Agent 侧（原件备份 config.toml.pre-p7codex）、新增 ~/.config/ccnm/p7codex-runtime.toml、bing 账号的 Controller LaunchAgent（ccnm controller uninstall 可撤）、工作树 /Users/Shared/ccnm-p7codex（ccrun 所有）、ccrun 配置里的 workspace p7codex 与 nodes.codex-agent（原件备份在 ccrun 家目录根下）。另注意：ccrun 的 SSH 准入在本轮被撤销后又按用户执行的 p7-grant-local-ssh-access.sh --apply 重新授予。",
     "portability": "接续不依赖任何特定 MCP、任务管理器或 IDE 插件。任何模型只需 Git、仓库文件和项目命令即可按 current_task 继续；外部工具状态不作为产品阶段事实。"
   }
 }

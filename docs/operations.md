@@ -236,6 +236,24 @@ ccnm stop demo --agent codex-main --session <id>  # 精确停一个
 
 不要批量删，不要仅因为"过了很久"就清。**证明不了旧执行者结束时，保持 unknown 才是对的状态。**
 
+### 会话在 initialize 就断，报 "connection closed: initialize response"
+
+先看 Runtime 执行身份的 home 路径上**有没有一层是符号链接**。macOS 的 `/tmp` 和 `/var` 都是，所以任何把 Runtime home 放在系统临时目录下的做法都会踩到：
+
+```text
+ccnm: handshaking with MCP server failed: connection closed: initialize response
+```
+
+真正的原因在 mcp-serve 的 stderr 里：
+
+```text
+CCNM_E_POLICY: … No Claude credential: known credential accessibility is unknown
+Runtime initialization is also refused: allow_unconfined_exec cannot waive unknown identity
+or Agent credential isolation.
+```
+
+凭据检查见到祖先目录是 symlink 就判 **unknown**，而 unknown 是不可豁免的——`allow_unconfined_exec` 也救不了。这是刻意的：够不到和"看不清能不能够到"不是一回事。用真实路径（`/private/tmp/...` 而不是 `/tmp/...`）就好了。
+
 ### controller 不响应
 
 ```bash

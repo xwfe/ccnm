@@ -17,7 +17,7 @@ import signal
 import subprocess
 import tempfile
 
-VERSION = "codex-cli 0.153.4"
+VERSION = "codex-cli 0.154.0"
 TOOLS = [
     "workspace_info", "list_files", "search_text", "read_file",
     "apply_patch", "exec_command", "read_output",
@@ -122,7 +122,11 @@ def inspect(codex, directory):
 
 def seven_tools(codex, directory, ccnm):
     with tempfile.TemporaryDirectory(prefix=f"ccnm-codex-mcp-{os.getpid()}-") as temp:
-        fixture = Path(temp)
+        # resolve() 不是讲究：macOS 的 /tmp 和 /var 都是符号链接，而 Runtime
+        # 的凭据检查见到祖先目录是 symlink 就判 "accessibility unknown"，那是
+        # 不可豁免的失败（allow_unconfined_exec 也救不了）。用真实路径起这个
+        # 假 Runtime，否则 MCP 握手在初始化就被拒。
+        fixture = Path(temp).resolve()
         agent, runtime, home = [fixture / name for name in ("agent", "runtime", "runtime-home")]
         for path in (agent, runtime, home):
             path.mkdir()

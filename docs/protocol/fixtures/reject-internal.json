@@ -1,0 +1,16 @@
+{
+  "$schema_ref": "#/$defs/response_error",
+  "$note": "服务端内部错误。detail 只说发生在哪一步，不带路径、不带栈——真正的细节进 stderr 日志，那是给运维看的，不是给调用方的。effect 是 unknown：内部错误发生时，这次调用有没有产生副作用本来就说不准。",
+  "message": {
+    "jsonrpc": "2.0",
+    "id": 31,
+    "error": {
+      "code": -32603,
+      "message": "internal error",
+      "data": {
+        "effect": "unknown",
+        "ccnm_code": "CCNM_E_INTERNAL"
+      }
+    }
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "$schema_ref": "#/$defs/response_error",
+  "$note": "合法 JSON，但不是合法的 Request 对象（比如 id 是 null 或小数、缺 method）。id 是 null，因为请求里那个 id 本身就不能用。",
+  "message": {
+    "jsonrpc": "2.0",
+    "id": null,
+    "error": {
+      "code": -32600,
+      "message": "not a valid request object",
+      "data": {
+        "effect": "none",
+        "reason": "id_must_be_string_or_integer"
+      }
+    }
+  }
+}

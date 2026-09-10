@@ -1,0 +1,15 @@
+{
+  "$schema_ref": "#/$defs/response_error",
+  "$note": "stdin 上那一行不是合法 JSON。id 只能是 null——连请求对象都没解析出来。连接不断，下一行照常处理。",
+  "message": {
+    "jsonrpc": "2.0",
+    "id": null,
+    "error": {
+      "code": -32700,
+      "message": "invalid JSON on stdin",
+      "data": {
+        "effect": "none"
+      }
+    }
+  }
+}

@@ -1,9 +1,9 @@
 {
   "$schema_ref": "#/$defs/response_error",
-  "$note": "JSON-RPC 允许批量，本协议明确不支持：批量会把幂等和顺序语义搅浑。id 为 null 因为服务端无法从一个数组里确定 id。",
+  "$note": "JSON-RPC 允许批量，本协议明确不支持：批量会把幂等和顺序语义搅浑。id 是 null，因为服务端无法从一个数组里确定该配哪个请求。",
   "message": {
     "jsonrpc": "2.0",
-    "id": 19,
+    "id": null,
     "error": {
       "code": -32600,
       "message": "batch requests are not supported",

@@ -8,10 +8,18 @@
       "const": "2.0"
     },
     "id": {
-      "description": "字符串或整数，不能是 null，不能是小数。",
+      "description": "请求的 id：字符串或整数，不能是 null，不能是小数。",
       "oneOf": [
         {"type": "string", "minLength": 1, "maxLength": 128},
         {"type": "integer"}
+      ]
+    },
+    "response_id": {
+      "description": "响应的 id。多一个 null：JSON-RPC 规定服务端确定不了请求 id 时（那一行不是合法 JSON、不是合法 Request 对象）必须回 null。",
+      "oneOf": [
+        {"type": "string", "minLength": 1, "maxLength": 128},
+        {"type": "integer"},
+        {"type": "null"}
       ]
     },
     "identifier": {
@@ -113,7 +121,7 @@
       "type": "object",
       "properties": {
         "jsonrpc": {"$ref": "#/$defs/jsonrpc"},
-        "id": {"$ref": "#/$defs/id"},
+        "id": {"$ref": "#/$defs/response_id"},
         "error": {"$ref": "#/$defs/error_object"}
       },
       "required": ["jsonrpc", "id", "error"],
@@ -220,26 +228,50 @@
       "additionalProperties": false
     },
 
-    "session_start_input": {
-      "description": "形状由 mode 决定。print 模式是 {\"prompt\": \"...\"}。",
+    "print_input": {
+      "description": "print 模式的输入。prompt 必填——这正是用 oneOf 分开两种模式的原因，一个共用的 input 定义表达不出\"这个模式下这个字段必填\"。",
       "type": "object",
       "properties": {
         "prompt": {"type": "string", "minLength": 1}
       },
+      "required": ["prompt"],
+      "additionalProperties": false
+    },
+    "interactive_input": {
+      "description": "interactive 模式的输入形状尚未定稿：P3 的真机验收没有覆盖它的结构化输入，所以这里先保持开放，不假装已经定义。",
+      "type": "object",
       "additionalProperties": true
     },
     "session_start_params": {
-      "type": "object",
-      "properties": {
-        "workspace": {"$ref": "#/$defs/identifier"},
-        "agent": {"$ref": "#/$defs/instance_ref"},
-        "mode": {"enum": ["print", "interactive"]},
-        "input": {"$ref": "#/$defs/session_start_input"},
-        "start_key": {"type": "string", "minLength": 1, "maxLength": 128},
-        "timeout_ms": {"type": "integer", "minimum": 1}
-      },
-      "required": ["workspace", "mode", "input"],
-      "additionalProperties": false
+      "description": "input 的形状由 mode 决定，所以按 mode 分成两个互斥分支。",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "workspace": {"$ref": "#/$defs/identifier"},
+            "agent": {"$ref": "#/$defs/instance_ref"},
+            "mode": {"const": "print"},
+            "input": {"$ref": "#/$defs/print_input"},
+            "start_key": {"type": "string", "minLength": 1, "maxLength": 128},
+            "timeout_ms": {"type": "integer", "minimum": 1}
+          },
+          "required": ["workspace", "mode", "input"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "workspace": {"$ref": "#/$defs/identifier"},
+            "agent": {"$ref": "#/$defs/instance_ref"},
+            "mode": {"const": "interactive"},
+            "input": {"$ref": "#/$defs/interactive_input"},
+            "start_key": {"type": "string", "minLength": 1, "maxLength": 128},
+            "timeout_ms": {"type": "integer", "minimum": 1}
+          },
+          "required": ["workspace", "mode", "input"],
+          "additionalProperties": false
+        }
+      ]
     },
     "session_start_request": {
       "type": "object",

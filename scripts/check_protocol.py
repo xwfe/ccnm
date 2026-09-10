@@ -167,10 +167,12 @@ def check(root_dir: Path) -> list:
             if code not in codes:
                 errors.append(f"{name}: 错误码 {code} 不在说明文档的表里")
 
-    # 实现定义区间的每个码都要有 fixture：写进文档却没有样例的码，等于没定义。
+    # 文档里的每个码都要有 fixture：写进表格却没有样例的码，等于没定义。JSON-RPC
+    # 预定义的那五个也算——它们的触发条件（id 该填什么、连接断不断）同样要有样例。
     for code, code_name in sorted(codes.items()):
-        if -32099 <= code <= -32000 and code not in seen_codes:
-            errors.append(f"{SPEC}: 错误码 {code}（{code_name}）没有对应的 fixture")
+        if code not in seen_codes:
+            label = f"{code}（{code_name}）" if code_name else str(code)
+            errors.append(f"{SPEC}: 错误码 {label} 没有对应的 fixture")
 
     return errors
 

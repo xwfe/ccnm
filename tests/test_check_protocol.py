@@ -139,6 +139,20 @@ class ProtocolTests(unittest.TestCase):
         self.assertTrue(check_protocol.type_ok(True, "boolean"))
         self.assertTrue(check_protocol.type_ok(1, "integer"))
 
+    def test_print_mode_requires_a_prompt(self):
+        # input 的形状由 mode 决定，schema 用 oneOf 把两种模式分开表达。
+        # 一个共用的 input 定义做不到这件事：它没法说"print 模式下 prompt 必填"。
+        schema = self.schema()
+        params = schema["$defs"]["session_start_params"]
+        base = {"workspace": "ccnm", "mode": "print"}
+        self.assertTrue(check_protocol.validate(
+            dict(base, input={}), params, schema, "p"))
+        self.assertEqual(check_protocol.validate(
+            dict(base, input={"prompt": "x"}), params, schema, "p"), [])
+        # interactive 的输入形状还没定稿，先保持开放，不假装已经定义。
+        self.assertEqual(check_protocol.validate(
+            {"workspace": "ccnm", "mode": "interactive", "input": {}}, params, schema, "p"), [])
+
     def test_one_of_needs_exactly_one_branch(self):
         root = {"$defs": {}}
         schema = {"oneOf": [{"type": "string"}, {"type": "integer"}]}

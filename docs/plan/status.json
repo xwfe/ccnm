@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-09-11T00:20:00+09:00",
+  "last_updated": "2026-09-11T02:40:00+09:00",
   "current_task": "P9",
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
@@ -705,13 +705,13 @@
     {
       "id": "P9",
       "title": "Remote Workspace MCP 契约",
-      "status": "pending",
+      "status": "in_progress",
       "depends_on": [
         "P8"
       ],
-      "owner": null,
-      "started_at": null,
-      "last_updated": "2026-09-10T18:19:30+09:00",
+      "owner": "claude-opus-5",
+      "started_at": "2026-09-11T02:40:00+09:00",
+      "last_updated": "2026-09-11T02:40:00+09:00",
       "completed_criteria": [],
       "evidence": [],
       "blockers": []

@@ -1,0 +1,16 @@
+{
+  "$schema_ref": "#/$defs/response_error",
+  "$note": "调了一个服务端没在 hello 里声明的能力。键不存在就等于没有，不能因为自己知道有这个特性就直接调用。",
+  "message": {
+    "jsonrpc": "2.0",
+    "id": 30,
+    "error": {
+      "code": -32013,
+      "message": "capability not offered by this server",
+      "data": {
+        "effect": "none",
+        "reason": "interactive"
+      }
+    }
+  }
+}

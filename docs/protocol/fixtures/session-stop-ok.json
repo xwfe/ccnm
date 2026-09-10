@@ -1,0 +1,13 @@
+{
+  "$schema_ref": "#/$defs/session_stop_response_ok",
+  "$note": "返回 stopping 不代表已经停了。只有 status 报出终态才算停成功，判据是进程组、MCP transport、写入 guard 三件事都能证明结束。",
+  "message": {
+    "jsonrpc": "2.0",
+    "id": 6,
+    "result": {
+      "session": "s-2026091012-7f3a",
+      "state": "stopping",
+      "stop_requested": true
+    }
+  }
+}

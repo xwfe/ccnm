@@ -1,0 +1,25 @@
+{
+  "$schema_ref": "#/$defs/session_result_response_ok",
+  "$note": "被 stop 结束的 session 终态是 failed，不是单独的 stopped 状态——底层实测就是这样，靠 stop_requested 区分是不是自己停的。",
+  "message": {
+    "jsonrpc": "2.0",
+    "id": 13,
+    "result": {
+      "session": "s-2026091012-33cc",
+      "state": "failed",
+      "workspace": "ccnm",
+      "agent": {
+        "node": "work",
+        "instance": "claude-main",
+        "provider": "claude"
+      },
+      "outcome": {
+        "exit_code": null,
+        "timed_out": false,
+        "duration_ms": 12045,
+        "stop_requested": true
+      },
+      "text": null
+    }
+  }
+}

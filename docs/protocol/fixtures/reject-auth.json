@@ -1,0 +1,16 @@
+{
+  "$schema_ref": "#/$defs/response_error",
+  "$note": "Agent 侧官方 CLI 没登录。ccnm 不提取、不复制、不代理任何订阅凭据，所以这件事只能由人在那台机器上登录解决。",
+  "message": {
+    "jsonrpc": "2.0",
+    "id": 30,
+    "error": {
+      "code": -32003,
+      "message": "the agent CLI is not logged in",
+      "data": {
+        "effect": "none",
+        "ccnm_code": "CCNM_E_AUTH"
+      }
+    }
+  }
+}

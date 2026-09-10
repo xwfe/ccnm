@@ -1,0 +1,441 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ccnm:schema:machine-protocol-v1",
+  "title": "ccnm Machine Protocol v1 (draft)",
+  "description": "每条消息的形状。说明见 ../machine-protocol-v1.md；这里是可机器校验的那一份，两边不一致以说明文档为准并修 schema。",
+  "$defs": {
+    "jsonrpc": {
+      "const": "2.0"
+    },
+    "id": {
+      "description": "字符串或整数，不能是 null，不能是小数。",
+      "oneOf": [
+        {"type": "string", "minLength": 1, "maxLength": 128},
+        {"type": "integer"}
+      ]
+    },
+    "identifier": {
+      "description": "node、instance、workspace 名。与 ccnm 内部 identifier() 同一套规则。",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
+    },
+    "session_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+    },
+    "timestamp": {
+      "description": "RFC 3339，必须带时区偏移。",
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}([.][0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$"
+    },
+    "provider": {
+      "enum": ["claude", "codex"]
+    },
+    "session_state": {
+      "description": "starting/running/stopping 非终态；completed/failed/unknown 终态。unknown 不会自己变好。",
+      "enum": ["starting", "running", "stopping", "completed", "failed", "unknown"]
+    },
+    "instance_ref": {
+      "type": "object",
+      "properties": {
+        "node": {"$ref": "#/$defs/identifier"},
+        "instance": {"$ref": "#/$defs/identifier"}
+      },
+      "required": ["node", "instance"],
+      "additionalProperties": false
+    },
+    "agent_public": {
+      "description": "响应里回给调用方的 instance 身份。不含 profile 路径、home 或任何私有路径。",
+      "type": "object",
+      "properties": {
+        "node": {"$ref": "#/$defs/identifier"},
+        "instance": {"$ref": "#/$defs/identifier"},
+        "provider": {"$ref": "#/$defs/provider"}
+      },
+      "required": ["node", "instance", "provider"],
+      "additionalProperties": false
+    },
+    "instance_capabilities": {
+      "description": "技术上是否支持，不是主观评价，也不代表已登录或有权启动。",
+      "type": "object",
+      "properties": {
+        "print": {"type": "boolean"},
+        "interactive": {"type": "boolean"},
+        "ssh_mcp": {"type": "boolean"},
+        "native_colocated": {"type": "boolean"}
+      },
+      "required": ["print", "interactive", "ssh_mcp", "native_colocated"],
+      "additionalProperties": false
+    },
+    "effect": {
+      "description": "这次调用有没有产生副作用。none 重发安全，unknown 必须先去查，applied 重发会重复。",
+      "enum": ["none", "unknown", "applied"]
+    },
+    "error_data": {
+      "type": "object",
+      "properties": {
+        "effect": {"$ref": "#/$defs/effect"},
+        "ccnm_code": {"type": "string", "pattern": "^CCNM_E_[A-Z_]+$"},
+        "detail": {"type": "string"},
+        "session": {"$ref": "#/$defs/session_id"},
+        "reason": {"type": "string"},
+        "supported": {"type": "array", "items": {"type": "string"}},
+        "unknown": {"type": "array", "items": {"type": "string"}}
+      },
+      "required": ["effect"],
+      "additionalProperties": true
+    },
+    "error_object": {
+      "type": "object",
+      "properties": {
+        "code": {"type": "integer"},
+        "message": {"type": "string", "minLength": 1},
+        "data": {"$ref": "#/$defs/error_data"}
+      },
+      "required": ["code", "message"],
+      "additionalProperties": false
+    },
+    "request": {
+      "description": "通用请求信封。params 必须是对象，不接受位置参数数组。",
+      "type": "object",
+      "properties": {
+        "jsonrpc": {"$ref": "#/$defs/jsonrpc"},
+        "id": {"$ref": "#/$defs/id"},
+        "method": {"type": "string", "minLength": 1},
+        "params": {"type": "object"}
+      },
+      "required": ["jsonrpc", "id", "method"],
+      "additionalProperties": false
+    },
+    "response_error": {
+      "type": "object",
+      "properties": {
+        "jsonrpc": {"$ref": "#/$defs/jsonrpc"},
+        "id": {"$ref": "#/$defs/id"},
+        "error": {"$ref": "#/$defs/error_object"}
+      },
+      "required": ["jsonrpc", "id", "error"],
+      "additionalProperties": false
+    },
+
+    "hello_params": {
+      "type": "object",
+      "properties": {
+        "client": {"type": "string", "minLength": 1, "maxLength": 128},
+        "protocol_versions": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "minLength": 1}
+        }
+      },
+      "required": ["client", "protocol_versions"],
+      "additionalProperties": false
+    },
+    "hello_request": {
+      "type": "object",
+      "properties": {
+        "jsonrpc": {"$ref": "#/$defs/jsonrpc"},
+        "id": {"$ref": "#/$defs/id"},
+        "method": {"const": "hello"},
+        "params": {"$ref": "#/$defs/hello_params"}
+      },
+      "required": ["jsonrpc", "id", "method", "params"],
+      "additionalProperties": false
+    },
+    "server_capabilities": {
+      "description": "键不存在等于没有这项能力。客户端必须忽略不认识的键。",
+      "type": "object",
+      "properties": {
+        "modes": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"enum": ["print", "interactive"]}
+        },
+        "session_output": {"type": "boolean"},
+        "start_key": {"type": "boolean"},
+        "stop": {"type": "boolean"}
+      },
+      "required": ["modes"],
+      "additionalProperties": true
+    },
+    "hello_result": {
+      "type": "object",
+      "properties": {
+        "protocol": {"type": "string", "pattern": "^ccnm[.]machine/[0-9]+$"},
+        "server": {
+          "type": "object",
+          "properties": {
+            "name": {"type": "string", "minLength": 1},
+            "version": {"type": "string", "minLength": 1}
+          },
+          "required": ["name", "version"],
+          "additionalProperties": false
+        },
+        "capabilities": {"$ref": "#/$defs/server_capabilities"}
+      },
+      "required": ["protocol", "server", "capabilities"],
+      "additionalProperties": false
+    },
+    "hello_response_ok": {
+      "type": "object",
+      "properties": {
+        "jsonrpc": {"$ref": "#/$defs/jsonrpc"},
+        "id": {"$ref": "#/$defs/id"},
+        "result": {"$ref": "#/$defs/hello_result"}
+      },
+      "required": ["jsonrpc", "id", "result"],
+      "additionalProperties": false
+    },
+
+    "agent_entry": {
+      "type": "object",
+      "properties": {
+        "node": {"$ref": "#/$defs/identifier"},
+        "instance": {"$ref": "#/$defs/identifier"},
+        "provider": {"$ref": "#/$defs/provider"},
+        "capabilities": {"$ref": "#/$defs/instance_capabilities"},
+        "workspaces": {"type": "array", "items": {"$ref": "#/$defs/identifier"}}
+      },
+      "required": ["node", "instance", "provider", "capabilities"],
+      "additionalProperties": false
+    },
+    "agents_list_result": {
+      "type": "object",
+      "properties": {
+        "agents": {"type": "array", "items": {"$ref": "#/$defs/agent_entry"}}
+      },
+      "required": ["agents"],
+      "additionalProperties": false
+    },
+    "agents_list_response_ok": {
+      "type": "object",
+      "properties": {
+        "jsonrpc": {"$ref": "#/$defs/jsonrpc"},
+        "id": {"$ref": "#/$defs/id"},
+        "result": {"$ref": "#/$defs/agents_list_result"}
+      },
+      "required": ["jsonrpc", "id", "result"],
+      "additionalProperties": false
+    },
+
+    "session_start_input": {
+      "description": "形状由 mode 决定。print 模式是 {\"prompt\": \"...\"}。",
+      "type": "object",
+      "properties": {
+        "prompt": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": true
+    },
+    "session_start_params": {
+      "type": "object",
+      "properties": {
+        "workspace": {"$ref": "#/$defs/identifier"},
+        "agent": {"$ref": "#/$defs/instance_ref"},
+        "mode": {"enum": ["print", "interactive"]},
+        "input": {"$ref": "#/$defs/session_start_input"},
+        "start_key": {"type": "string", "minLength": 1, "maxLength": 128},
+        "timeout_ms": {"type": "integer", "minimum": 1}
+      },
+      "required": ["workspace", "mode", "input"],
+      "additionalProperties": false
+    },
+    "session_start_request": {
+      "type": "object",
+      "properties": {
+        "jsonrpc": {"$ref": "#/$defs/jsonrpc"},
+        "id": {"$ref": "#/$defs/id"},
+        "method": {"const": "session.start"},
+        "params": {"$ref": "#/$defs/session_start_params"}
+      },
+      "required": ["jsonrpc", "id", "method", "params"],
+      "additionalProperties": false
+    },
+    "session_start_result": {
+      "type": "object",
+      "properties": {
+        "session": {"$ref": "#/$defs/session_id"},
+        "state": {"$ref": "#/$defs/session_state"},
+        "reused": {
+          "description": "true 表示 start_key 命中了已有 session，没有起第二个 Agent。",
+          "type": "boolean"
+        },
+        "workspace": {"$ref": "#/$defs/identifier"},
+        "agent": {"$ref": "#/$defs/agent_public"},
+        "accepted_at": {"$ref": "#/$defs/timestamp"}
+      },
+      "required": ["session", "state", "reused", "workspace", "agent", "accepted_at"],
+      "additionalProperties": false
+    },
+    "session_start_response_ok": {
+      "type": "object",
+      "properties": {
+        "jsonrpc": {"$ref": "#/$defs/jsonrpc"},
+        "id": {"$ref": "#/$defs/id"},
+        "result": {"$ref": "#/$defs/session_start_result"}
+      },
+      "required": ["jsonrpc", "id", "result"],
+      "additionalProperties": false
+    },
+
+    "session_status_params": {
+      "type": "object",
+      "properties": {
+        "session": {"$ref": "#/$defs/session_id"}
+      },
+      "required": ["session"],
+      "additionalProperties": false
+    },
+    "session_status_result": {
+      "type": "object",
+      "properties": {
+        "session": {"$ref": "#/$defs/session_id"},
+        "state": {"$ref": "#/$defs/session_state"},
+        "workspace": {"$ref": "#/$defs/identifier"},
+        "agent": {"$ref": "#/$defs/agent_public"},
+        "started_at": {"$ref": "#/$defs/timestamp"},
+        "stop_requested": {"type": "boolean"},
+        "provider_session_id": {
+          "description": "provider 自己的 thread/resume id。永远不要拿它调本协议的方法。",
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": ["session", "state", "workspace", "agent", "started_at", "stop_requested"],
+      "additionalProperties": false
+    },
+    "session_status_response_ok": {
+      "type": "object",
+      "properties": {
+        "jsonrpc": {"$ref": "#/$defs/jsonrpc"},
+        "id": {"$ref": "#/$defs/id"},
+        "result": {"$ref": "#/$defs/session_status_result"}
+      },
+      "required": ["jsonrpc", "id", "result"],
+      "additionalProperties": false
+    },
+
+    "session_result_params": {
+      "type": "object",
+      "properties": {
+        "session": {"$ref": "#/$defs/session_id"},
+        "output": {
+          "type": "object",
+          "properties": {
+            "max_bytes": {"type": "integer", "minimum": 1},
+            "cursor": {"type": ["string", "null"]}
+          },
+          "additionalProperties": false
+        }
+      },
+      "required": ["session"],
+      "additionalProperties": false
+    },
+    "outcome": {
+      "description": "进程层面的结果。exit_code 为 null 表示被信号杀死或根本没起来。",
+      "type": "object",
+      "properties": {
+        "exit_code": {"type": ["integer", "null"]},
+        "timed_out": {"type": "boolean"},
+        "duration_ms": {"type": "integer", "minimum": 0},
+        "stop_requested": {"type": "boolean"}
+      },
+      "required": ["exit_code", "timed_out", "duration_ms", "stop_requested"],
+      "additionalProperties": false
+    },
+    "output_ref": {
+      "type": "object",
+      "properties": {
+        "bytes_total": {"type": "integer", "minimum": 0},
+        "truncated": {"type": "boolean"},
+        "cursor": {
+          "description": "下一页游标；null 表示没有更多。游标会失效，别存进长期状态。",
+          "type": ["string", "null"]
+        },
+        "tail": {"type": "string"}
+      },
+      "required": ["bytes_total", "truncated", "cursor", "tail"],
+      "additionalProperties": false
+    },
+    "usage": {
+      "type": "object",
+      "properties": {
+        "input_tokens": {"type": "integer", "minimum": 0},
+        "output_tokens": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": true
+    },
+    "cost": {
+      "type": "object",
+      "properties": {
+        "total_usd": {"type": "number", "minimum": 0}
+      },
+      "additionalProperties": true
+    },
+    "session_result_result": {
+      "type": "object",
+      "properties": {
+        "session": {"$ref": "#/$defs/session_id"},
+        "state": {"$ref": "#/$defs/session_state"},
+        "workspace": {"$ref": "#/$defs/identifier"},
+        "agent": {"$ref": "#/$defs/agent_public"},
+        "provider_session_id": {"type": "string", "minLength": 1},
+        "outcome": {"$ref": "#/$defs/outcome"},
+        "text": {
+          "description": "Agent 的最终文本。只有 provider 真的产出结构化结果才有；interactive 模式可能永远没有。",
+          "type": ["string", "null"]
+        },
+        "usage": {"$ref": "#/$defs/usage"},
+        "cost": {"$ref": "#/$defs/cost"},
+        "output": {"$ref": "#/$defs/output_ref"},
+        "expires_at": {
+          "description": "null 或缺席表示保留期未定义，不等于永久保留。",
+          "oneOf": [{"$ref": "#/$defs/timestamp"}, {"type": "null"}]
+        }
+      },
+      "required": ["session", "state", "workspace", "agent"],
+      "additionalProperties": false
+    },
+    "session_result_response_ok": {
+      "type": "object",
+      "properties": {
+        "jsonrpc": {"$ref": "#/$defs/jsonrpc"},
+        "id": {"$ref": "#/$defs/id"},
+        "result": {"$ref": "#/$defs/session_result_result"}
+      },
+      "required": ["jsonrpc", "id", "result"],
+      "additionalProperties": false
+    },
+
+    "session_stop_params": {
+      "type": "object",
+      "properties": {
+        "session": {"$ref": "#/$defs/session_id"},
+        "mode": {"enum": ["graceful"]}
+      },
+      "required": ["session"],
+      "additionalProperties": false
+    },
+    "session_stop_result": {
+      "type": "object",
+      "properties": {
+        "session": {"$ref": "#/$defs/session_id"},
+        "state": {"$ref": "#/$defs/session_state"},
+        "stop_requested": {"type": "boolean"}
+      },
+      "required": ["session", "state", "stop_requested"],
+      "additionalProperties": false
+    },
+    "session_stop_response_ok": {
+      "type": "object",
+      "properties": {
+        "jsonrpc": {"$ref": "#/$defs/jsonrpc"},
+        "id": {"$ref": "#/$defs/id"},
+        "result": {"$ref": "#/$defs/session_stop_result"}
+      },
+      "required": ["jsonrpc", "id", "result"],
+      "additionalProperties": false
+    }
+  }
+}

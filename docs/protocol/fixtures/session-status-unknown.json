@@ -1,0 +1,20 @@
+{
+  "$schema_ref": "#/$defs/session_status_response_ok",
+  "$note": "未知终态：服务端证明不了这个 session 的下落。它是终态，不会自己变成 completed，正确处理是去看工作树和 Runtime 上的进程。",
+  "message": {
+    "jsonrpc": "2.0",
+    "id": 11,
+    "result": {
+      "session": "s-2026091012-7f3a",
+      "state": "unknown",
+      "workspace": "ccnm",
+      "agent": {
+        "node": "work",
+        "instance": "claude-main",
+        "provider": "claude"
+      },
+      "started_at": "2026-09-10T12:00:03+09:00",
+      "stop_requested": false
+    }
+  }
+}

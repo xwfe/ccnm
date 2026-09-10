@@ -1,0 +1,31 @@
+{
+  "$schema_ref": "#/$defs/session_result_response_ok",
+  "$note": "输出被截断：cursor 填回 session.result 的 output.cursor 取下一页。游标会失效，别存进长期状态。",
+  "message": {
+    "jsonrpc": "2.0",
+    "id": 14,
+    "result": {
+      "session": "s-2026091012-7f3a",
+      "state": "completed",
+      "workspace": "ccnm",
+      "agent": {
+        "node": "work",
+        "instance": "claude-main",
+        "provider": "claude"
+      },
+      "outcome": {
+        "exit_code": 0,
+        "timed_out": false,
+        "duration_ms": 48213,
+        "stop_requested": false
+      },
+      "output": {
+        "bytes_total": 184320,
+        "truncated": true,
+        "cursor": "c-8192",
+        "tail": "…前 8 KiB 到这里…"
+      },
+      "expires_at": null
+    }
+  }
+}

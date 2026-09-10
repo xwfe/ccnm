@@ -1,0 +1,16 @@
+{
+  "$schema_ref": "#/$defs/response_error",
+  "$note": "过期结果：曾经存在但已清理。和 not_found 分开，因为\"你的记录没错、只是过期了\"是不同的信息。",
+  "message": {
+    "jsonrpc": "2.0",
+    "id": 15,
+    "error": {
+      "code": -32012,
+      "message": "result is no longer available",
+      "data": {
+        "effect": "none",
+        "session": "s-2026091012-7f3a"
+      }
+    }
+  }
+}

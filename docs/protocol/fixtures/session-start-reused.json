@@ -1,0 +1,20 @@
+{
+  "$schema_ref": "#/$defs/session_start_response_ok",
+  "$note": "同一个 start_key 配同样的输入：返回原来那个 session，没有起第二个 Agent。",
+  "message": {
+    "jsonrpc": "2.0",
+    "id": 7,
+    "result": {
+      "session": "s-2026091012-7f3a",
+      "state": "running",
+      "reused": true,
+      "workspace": "ccnm",
+      "agent": {
+        "node": "work",
+        "instance": "claude-main",
+        "provider": "claude"
+      },
+      "accepted_at": "2026-09-10T12:00:03+09:00"
+    }
+  }
+}

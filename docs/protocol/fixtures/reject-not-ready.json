@@ -1,0 +1,17 @@
+{
+  "$schema_ref": "#/$defs/response_error",
+  "$note": "not_ready 不是失败：没有已知的错误，但也没能验证通过（doctor 有 SKIP、功能没实现）。跟每个 FAIL 类的码分开，调用方才能区分\"未验证\"和\"坏了\"。",
+  "message": {
+    "jsonrpc": "2.0",
+    "id": 30,
+    "error": {
+      "code": -32000,
+      "message": "nothing is known to be broken and nothing is proven to work",
+      "data": {
+        "effect": "none",
+        "ccnm_code": "CCNM_E_NOT_READY",
+        "detail": "doctor 有未能验证的检查项"
+      }
+    }
+  }
+}

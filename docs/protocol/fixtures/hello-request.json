@@ -1,0 +1,15 @@
+{
+  "$schema_ref": "#/$defs/hello_request",
+  "$note": "握手：必须是连接上的第一条请求。",
+  "message": {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "hello",
+    "params": {
+      "client": "my-orchestrator/0.1",
+      "protocol_versions": [
+        "ccnm.machine/1"
+      ]
+    }
+  }
+}

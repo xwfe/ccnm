@@ -1,0 +1,17 @@
+{
+  "$schema_ref": "#/$defs/response_error",
+  "$note": "游标在服务端重启或清理之后失效。",
+  "message": {
+    "jsonrpc": "2.0",
+    "id": 16,
+    "error": {
+      "code": -32012,
+      "message": "output cursor is no longer valid",
+      "data": {
+        "effect": "none",
+        "session": "s-2026091012-7f3a",
+        "reason": "cursor_expired"
+      }
+    }
+  }
+}

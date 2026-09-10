@@ -1,0 +1,17 @@
+{
+  "$schema_ref": "#/$defs/response_error",
+  "$note": "已知的坑：老版本 ccnm 收到不认识的内部协议时可能以退出码 0 结束、什么都没做。必须看协议结果，不能让一次静默的空操作冒充成功。",
+  "message": {
+    "jsonrpc": "2.0",
+    "id": 23,
+    "error": {
+      "code": -32002,
+      "message": "peer ccnm answered with an incompatible protocol",
+      "data": {
+        "effect": "none",
+        "ccnm_code": "CCNM_E_VERSION",
+        "detail": "对端进程退出码为 0，但协议结果不可用"
+      }
+    }
+  }
+}

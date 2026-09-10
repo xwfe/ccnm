@@ -1,0 +1,15 @@
+{
+  "$schema_ref": "#/$defs/response_error",
+  "$note": "还没 hello 就调别的方法。",
+  "message": {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "error": {
+      "code": -32014,
+      "message": "hello must be the first request",
+      "data": {
+        "effect": "none"
+      }
+    }
+  }
+}

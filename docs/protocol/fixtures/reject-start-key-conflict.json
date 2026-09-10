@@ -1,0 +1,16 @@
+{
+  "$schema_ref": "#/$defs/response_error",
+  "$note": "同一个 start_key 配不同的输入。服务端不猜哪个是对的，data.session 指出原来那个。",
+  "message": {
+    "jsonrpc": "2.0",
+    "id": 8,
+    "error": {
+      "code": -32010,
+      "message": "start_key already used with different input",
+      "data": {
+        "effect": "none",
+        "session": "s-2026091012-7f3a"
+      }
+    }
+  }
+}

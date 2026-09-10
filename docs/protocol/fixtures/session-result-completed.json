@@ -1,0 +1,40 @@
+{
+  "$schema_ref": "#/$defs/session_result_response_ok",
+  "$note": "completed 只表示 Agent 进程正常结束，不表示活干对了。业务验收由调用方自己判断。",
+  "message": {
+    "jsonrpc": "2.0",
+    "id": 5,
+    "result": {
+      "session": "s-2026091012-7f3a",
+      "state": "completed",
+      "workspace": "ccnm",
+      "agent": {
+        "node": "work",
+        "instance": "claude-main",
+        "provider": "claude"
+      },
+      "provider_session_id": "018f2c7a-4d31-7b90-9c11-5a2e6f0b8d43",
+      "outcome": {
+        "exit_code": 0,
+        "timed_out": false,
+        "duration_ms": 48213,
+        "stop_requested": false
+      },
+      "text": "三个用例失败，都在 mcp::exec 的超时分支。",
+      "usage": {
+        "input_tokens": 18422,
+        "output_tokens": 1204
+      },
+      "cost": {
+        "total_usd": 0.42
+      },
+      "output": {
+        "bytes_total": 8213,
+        "truncated": false,
+        "cursor": null,
+        "tail": "test result: FAILED. 3 failed; 511 passed\n"
+      },
+      "expires_at": "2026-09-17T12:00:03+09:00"
+    }
+  }
+}

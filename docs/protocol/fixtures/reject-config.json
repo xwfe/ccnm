@@ -1,0 +1,16 @@
+{
+  "$schema_ref": "#/$defs/response_error",
+  "$note": "配置缺失、解析失败或校验不过。错误里不会出现配置文件的绝对路径。",
+  "message": {
+    "jsonrpc": "2.0",
+    "id": 30,
+    "error": {
+      "code": -32001,
+      "message": "configuration is missing or invalid",
+      "data": {
+        "effect": "none",
+        "ccnm_code": "CCNM_E_CONFIG"
+      }
+    }
+  }
+}

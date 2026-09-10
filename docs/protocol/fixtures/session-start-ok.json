@@ -1,0 +1,20 @@
+{
+  "$schema_ref": "#/$defs/session_start_response_ok",
+  "$note": "拿到 handle 就返回，不等任务跑完。accepted_at 只表示请求被接受，不表示 Agent 已经在跑。",
+  "message": {
+    "jsonrpc": "2.0",
+    "id": 3,
+    "result": {
+      "session": "s-2026091012-7f3a",
+      "state": "starting",
+      "reused": false,
+      "workspace": "ccnm",
+      "agent": {
+        "node": "work",
+        "instance": "claude-main",
+        "provider": "claude"
+      },
+      "accepted_at": "2026-09-10T12:00:03+09:00"
+    }
+  }
+}

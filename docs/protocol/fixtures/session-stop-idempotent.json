@@ -1,0 +1,13 @@
+{
+  "$schema_ref": "#/$defs/session_stop_response_ok",
+  "$note": "对已经结束的 session 再 stop 一次：返回成功和当前状态，不报错。客户端重试不需要先查状态。",
+  "message": {
+    "jsonrpc": "2.0",
+    "id": 17,
+    "result": {
+      "session": "s-2026091012-7f3a",
+      "state": "failed",
+      "stop_requested": true
+    }
+  }
+}

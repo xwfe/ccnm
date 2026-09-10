@@ -1,0 +1,16 @@
+{
+  "$schema_ref": "#/$defs/response_error",
+  "$note": "Agent 到 Runtime 的 SSH 不通。和 agent_unreachable 分开，因为要修的是两台不同机器之间的链路。",
+  "message": {
+    "jsonrpc": "2.0",
+    "id": 30,
+    "error": {
+      "code": -32005,
+      "message": "the agent node cannot reach the runtime node",
+      "data": {
+        "effect": "none",
+        "ccnm_code": "CCNM_E_RUNTIME_UNREACHABLE"
+      }
+    }
+  }
+}

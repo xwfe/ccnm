@@ -1,0 +1,17 @@
+{
+  "$schema_ref": "#/$defs/response_error",
+  "$note": "断线场景：start_key 已落盘、服务端还没确认 Agent 起没起来就崩了。重发同 key 不会重启，返回 uncertain，要去查现场而不是重试。",
+  "message": {
+    "jsonrpc": "2.0",
+    "id": 10,
+    "error": {
+      "code": -32011,
+      "message": "cannot determine whether this start took effect",
+      "data": {
+        "effect": "unknown",
+        "session": "s-2026091012-7f3a",
+        "detail": "启动键已记录，但没有该 session 的执行确认"
+      }
+    }
+  }
+}

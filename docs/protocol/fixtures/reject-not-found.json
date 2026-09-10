@@ -1,0 +1,15 @@
+{
+  "$schema_ref": "#/$defs/response_error",
+  "$note": "不存在，或者无权知道它存不存在——两种情况给同一个错误、同一段文本，否则错误消息本身就成了探测工具。",
+  "message": {
+    "jsonrpc": "2.0",
+    "id": 22,
+    "error": {
+      "code": -32009,
+      "message": "no such workspace or instance",
+      "data": {
+        "effect": "none"
+      }
+    }
+  }
+}

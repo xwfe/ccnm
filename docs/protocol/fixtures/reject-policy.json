@@ -1,0 +1,17 @@
+{
+  "$schema_ref": "#/$defs/response_error",
+  "$note": "被安全策略拒绝。policy 的意思是\"不许这么做，别再试\"，跟 invalid params 的\"改个参数再来\"是两回事。",
+  "message": {
+    "jsonrpc": "2.0",
+    "id": 30,
+    "error": {
+      "code": -32007,
+      "message": "refused by the safety policy",
+      "data": {
+        "effect": "none",
+        "ccnm_code": "CCNM_E_POLICY",
+        "detail": "该模式在这台机器上没有通过验收，公共入口拒绝"
+      }
+    }
+  }
+}

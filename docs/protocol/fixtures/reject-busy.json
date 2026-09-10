@@ -1,0 +1,16 @@
+{
+  "$schema_ref": "#/$defs/response_error",
+  "$note": "同一棵工作树已经有受管写 session。effect 是 none：什么都没发生，换个时间重发是安全的。",
+  "message": {
+    "jsonrpc": "2.0",
+    "id": 9,
+    "error": {
+      "code": -32008,
+      "message": "workspace already has a managed write session",
+      "data": {
+        "effect": "none",
+        "detail": "另一个 session 持有这棵工作树的写入 guard"
+      }
+    }
+  }
+}

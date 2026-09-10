@@ -1,0 +1,23 @@
+{
+  "$schema_ref": "#/$defs/hello_response_ok",
+  "$note": "握手成功。判断能力只看 protocol 和 capabilities，不要看 server.version。",
+  "message": {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "result": {
+      "protocol": "ccnm.machine/1",
+      "server": {
+        "name": "ccnm",
+        "version": "0.2.0"
+      },
+      "capabilities": {
+        "modes": [
+          "print"
+        ],
+        "session_output": true,
+        "start_key": true,
+        "stop": true
+      }
+    }
+  }
+}

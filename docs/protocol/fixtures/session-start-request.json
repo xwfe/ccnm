@@ -1,0 +1,22 @@
+{
+  "$schema_ref": "#/$defs/session_start_request",
+  "$note": "带 start_key 的启动。省略 agent 就用 workspace 配置的默认 Agent。",
+  "message": {
+    "jsonrpc": "2.0",
+    "id": 3,
+    "method": "session.start",
+    "params": {
+      "workspace": "ccnm",
+      "agent": {
+        "node": "work",
+        "instance": "claude-main"
+      },
+      "mode": "print",
+      "input": {
+        "prompt": "跑一遍测试并报告失败项"
+      },
+      "start_key": "task-4821-attempt-1",
+      "timeout_ms": 900000
+    }
+  }
+}

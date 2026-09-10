@@ -1,0 +1,16 @@
+{
+  "$schema_ref": "#/$defs/response_error",
+  "$note": "超过 1 MiB 的请求行被整行丢弃，连接不断——分隔符是换行，读到下一个换行就重新对齐了。",
+  "message": {
+    "jsonrpc": "2.0",
+    "id": 18,
+    "error": {
+      "code": -32600,
+      "message": "request line exceeds the 1 MiB limit",
+      "data": {
+        "effect": "none",
+        "reason": "oversize"
+      }
+    }
+  }
+}

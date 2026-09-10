@@ -1,0 +1,31 @@
+{
+  "$schema_ref": "#/$defs/session_result_response_ok",
+  "$note": "到了 timeout_ms 被服务端结束：终态 failed，timed_out 为 true，exit_code 为 null 因为它是被信号杀掉的。",
+  "message": {
+    "jsonrpc": "2.0",
+    "id": 12,
+    "result": {
+      "session": "s-2026091012-91bd",
+      "state": "failed",
+      "workspace": "ccnm",
+      "agent": {
+        "node": "work",
+        "instance": "claude-main",
+        "provider": "claude"
+      },
+      "outcome": {
+        "exit_code": null,
+        "timed_out": true,
+        "duration_ms": 900004,
+        "stop_requested": false
+      },
+      "text": null,
+      "output": {
+        "bytes_total": 302,
+        "truncated": false,
+        "cursor": null,
+        "tail": "still waiting on cargo test\n"
+      }
+    }
+  }
+}

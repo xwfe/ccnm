@@ -1,0 +1,21 @@
+{
+  "$schema_ref": "#/$defs/session_status_response_ok",
+  "$note": "跑着。只能按 session id 查。",
+  "message": {
+    "jsonrpc": "2.0",
+    "id": 4,
+    "result": {
+      "session": "s-2026091012-7f3a",
+      "state": "running",
+      "workspace": "ccnm",
+      "agent": {
+        "node": "work",
+        "instance": "claude-main",
+        "provider": "claude"
+      },
+      "started_at": "2026-09-10T12:00:03+09:00",
+      "stop_requested": false,
+      "provider_session_id": "018f2c7a-4d31-7b90-9c11-5a2e6f0b8d43"
+    }
+  }
+}

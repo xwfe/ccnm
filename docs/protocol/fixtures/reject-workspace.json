@@ -1,0 +1,16 @@
+{
+  "$schema_ref": "#/$defs/response_error",
+  "$note": "两边看到的不是同一个项目，或者挂载没了。这时候拒绝执行是对的：在错的目录上跑一遍比不跑糟得多。",
+  "message": {
+    "jsonrpc": "2.0",
+    "id": 30,
+    "error": {
+      "code": -32006,
+      "message": "the two sides are not looking at the same project",
+      "data": {
+        "effect": "none",
+        "ccnm_code": "CCNM_E_WRONG_WORKSPACE"
+      }
+    }
+  }
+}

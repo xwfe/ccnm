@@ -1,0 +1,19 @@
+{
+  "$schema_ref": "#/$defs/response_error",
+  "$note": "协议标识谈不拢。supported 让客户端自己决定降级还是退出。",
+  "message": {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "error": {
+      "code": -32002,
+      "message": "no shared protocol version",
+      "data": {
+        "effect": "none",
+        "ccnm_code": "CCNM_E_VERSION",
+        "supported": [
+          "ccnm.machine/1"
+        ]
+      }
+    }
+  }
+}

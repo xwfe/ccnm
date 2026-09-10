@@ -1,0 +1,18 @@
+{
+  "$schema_ref": "#/$defs/response_error",
+  "$note": "多余的键一律拒绝。拼错的字段名如果被忽略，会静默变成\"没传\"，查起来比报错难得多。",
+  "message": {
+    "jsonrpc": "2.0",
+    "id": 21,
+    "error": {
+      "code": -32602,
+      "message": "unknown parameter",
+      "data": {
+        "effect": "none",
+        "unknown": [
+          "sesion"
+        ]
+      }
+    }
+  }
+}

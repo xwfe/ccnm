@@ -1,0 +1,15 @@
+{
+  "$schema_ref": "#/$defs/response_error",
+  "$note": "方法名按整串精确匹配，不做前缀路由。",
+  "message": {
+    "jsonrpc": "2.0",
+    "id": 20,
+    "error": {
+      "code": -32601,
+      "message": "unknown method",
+      "data": {
+        "effect": "none"
+      }
+    }
+  }
+}

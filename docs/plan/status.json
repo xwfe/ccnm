@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-09-10T15:10:00+09:00",
+  "last_updated": "2026-09-10T15:25:00+09:00",
   "current_task": "P6",
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
@@ -440,13 +440,13 @@
     {
       "id": "P6",
       "title": "黑盒消费者与 v1 兼容承诺",
-      "status": "pending",
+      "status": "in_progress",
       "depends_on": [
         "P5"
       ],
-      "owner": null,
-      "started_at": null,
-      "last_updated": "2026-09-07T23:22:36+09:00",
+      "owner": "Claude / P6 black-box consumer",
+      "started_at": "2026-09-10T15:25:00+09:00",
+      "last_updated": "2026-09-10T15:25:00+09:00",
       "completed_criteria": [],
       "evidence": [],
       "blockers": []

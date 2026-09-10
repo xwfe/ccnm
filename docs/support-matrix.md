@@ -21,7 +21,9 @@
 
 ## Codex 版本 pin 与重新测量
 
-只接受 `codex-cli 0.153.4`，**精确匹配**。别的版本——包括更新的——在启动前就返回 `CCNM_E_VERSION`，消息是 `Codex <版本> has not been measured; this adapter requires 0.153.4`。
+只接受 `codex-cli 0.154.0`，**精确匹配**。别的版本——包括更新的，也包括曾经测过的 `0.153.4`——在启动前就返回 `CCNM_E_VERSION`，消息是 `Codex <版本> has not been measured; this adapter requires 0.154.0`。
+
+上一次换版本的完整记录见 [0.154.0 重新测量](research/codex-0.154.0-2026-09-10.md)：那一次 `unified_exec_tty` 是新出现的 stable 且默认开启的执行路径，旧的禁用列表按名字拦不住它——"改个常量"正好会漏掉这种东西。
 
 **为什么钉死一个版本。** Codex 的 JSONL 输出形状、参数名和工具开关都是实测出来的，不是它的文档承诺的。某个 patch 版本改掉 JSONL 里一个字段，ccnm 不会报错，只会把结果解析错——而解析错比拒绝启动难发现得多。
 

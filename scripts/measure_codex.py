@@ -23,7 +23,7 @@ TOOLS = [
     "apply_patch", "exec_command", "read_output",
 ]
 DISABLED_FEATURES = [
-    "shell_tool", "unified_exec", "view_image", "apps", "plugins", "hooks",
+    "shell_tool", "unified_exec", "unified_exec_tty", "view_image", "apps", "plugins", "hooks",
     "multi_agent", "multi_agent_v2", "browser_use", "computer_use",
     "image_generation", "memories", "workspace_dependencies", "skill_search",
     "shell_snapshot", "goals", "tool_suggest",
@@ -120,7 +120,7 @@ def inspect(codex, directory):
         ), Path(temp))
 
 
-def seven_tools(codex, directory, ccnm):
+def seven_tools(codex, directory, ccnm, model=None):
     with tempfile.TemporaryDirectory(prefix=f"ccnm-codex-mcp-{os.getpid()}-") as temp:
         # resolve() 不是讲究：macOS 的 /tmp 和 /var 都是符号链接，而 Runtime
         # 的凭据检查见到祖先目录是 symlink 就判 "accessibility unknown"，那是
@@ -153,6 +153,12 @@ def seven_tools(codex, directory, ccnm):
         argv = [
             codex, "exec", "--ignore-user-config", "--ignore-rules",
             "--skip-git-repo-check", "--ephemeral", "--json", "--color", "never",
+        ]
+        # 跟 provider 的启动参数保持同一顺序：模型紧跟在模式参数之后。
+        # 不给就用 CLI 默认值，和不声明 model 的 instance 一样。
+        if model:
+            argv += ["--model", model]
+        argv += [
             "--sandbox", "read-only", "-c", 'approval_policy="never"',
             "-c", 'web_search="disabled"',
         ]
@@ -198,6 +204,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("output", type=Path, help="new output directory; existing paths are refused")
     parser.add_argument("mode", nargs="?", choices=("inspect", "seven-tools"), default="inspect")
+    parser.add_argument(
+        "--model",
+        help="measure with this model instead of the CLI default; recorded in the fixture argv",
+    )
     args = parser.parse_args()
     codex = shutil.which("codex")
     if not codex:
@@ -214,7 +224,7 @@ def main():
         parser.error(f"refusing to overwrite existing output: {args.output}")
     inspect(codex, args.output)
     if args.mode == "seven-tools":
-        if not seven_tools(codex, args.output, ccnm):
+        if not seven_tools(codex, args.output, ccnm, args.model):
             raise SystemExit("measurement failed; preserved output must be inspected, not blessed")
     print(f"Captured {args.mode} evidence in {args.output}")
 

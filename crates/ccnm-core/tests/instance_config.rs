@@ -345,6 +345,44 @@ fn substitutions_and_stale_registry_identity_fail_on_the_authoritative_side() {
     assert!(serde_json::from_value::<WorkspaceBinding>(forged).is_err());
 }
 
+/// `model` is Codex's, and only Codex's.
+///
+/// ccnm passes nothing of the sort to Claude -- its model is part of its own
+/// configuration -- so accepting the key there would set something no launch
+/// ever reads. It is also going onto a command line, so it is checked for
+/// that before anything tries to use it.
+#[test]
+fn only_codex_instances_may_name_a_model_and_the_value_is_checked() {
+    let base = "this='agent'\nruntime_node='runtime'\n[nodes.agent]\n[nodes.runtime]\nssh='r'\n";
+    let codex = Config::parse(&format!(
+        "{base}[agents.codex-main]\nprovider='codex'\nprofile_ref='default'\nmodel='gpt-5.3-codex-spark'\n"
+    ))
+    .expect("a Codex instance may name a model");
+    assert_eq!(
+        codex.agents["codex-main"].model.as_deref(),
+        Some("gpt-5.3-codex-spark")
+    );
+
+    let claude = Config::parse(&format!(
+        "{base}[agents.claude-main]\nprovider='claude'\nprofile_ref='default'\nmodel='whatever'\n"
+    ));
+    assert!(claude.is_err(), "Claude instances must refuse it");
+
+    for bad in ["", "gpt 5", "a;b", "$(x)"] {
+        let refused = Config::parse(&format!(
+            "{base}[agents.codex-main]\nprovider='codex'\nprofile_ref='default'\nmodel='{bad}'\n"
+        ));
+        assert!(refused.is_err(), "{bad:?} must not reach a command line");
+    }
+
+    // Omitting it stays the default: nothing is added anywhere.
+    let plain = Config::parse(&format!(
+        "{base}[agents.codex-main]\nprovider='codex'\nprofile_ref='default'\n"
+    ))
+    .unwrap();
+    assert_eq!(plain.agents["codex-main"].model, None);
+}
+
 #[test]
 fn unsupported_instance_topologies_are_not_claimed_as_capabilities() {
     let native = "this='runtime'\n[nodes.runtime]\n[agents.main]\nprovider='claude'\nprofile_ref='default'\n[workspaces.demo]\nroot='/project'\nagent={node='runtime',instance='main'}\n";

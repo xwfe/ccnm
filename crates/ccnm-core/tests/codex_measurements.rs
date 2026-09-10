@@ -277,3 +277,141 @@ fn runtime_environment_and_completed_session_receipts_keep_the_boundary() {
     assert_eq!(cleanup["orphaned_observed_mcp_pids"], serde_json::json!([]));
     assert_eq!(cleanup["dedicated_agent_home_preserved"], true);
 }
+
+// ---------------------------------------------------------------------
+// codex-cli 0.154.0 — the version this adapter now requires. The 0.153.4
+// block above stays as the regression baseline: those bytes are what the
+// parser was first written against, and a change that breaks them is a
+// change in behaviour, not in version.
+// ---------------------------------------------------------------------
+
+/// The measured run on 0.154.0: every ccnm tool reached, the work tree
+/// changed, the Agent's own directory untouched.
+#[test]
+fn the_measured_0_154_0_run_reached_all_seven_tools_and_stayed_inside_the_workspace() {
+    let outcome: Value = serde_json::from_str(include_str!(
+        "../../../tests/fixtures/codex-0.154.0/seven-tools.json"
+    ))
+    .unwrap();
+    assert_eq!(outcome["version"], "codex-cli 0.154.0");
+    assert_eq!(outcome["exit_code"], 0);
+    assert_eq!(outcome["timed_out"], false);
+    assert_eq!(outcome["terminal_event"], "turn.completed");
+    // The sentinel in the Runtime work tree was rewritten, and the one in
+    // the Agent's directory was not: the model worked through ccnm's tools
+    // on the far side, not on its own filesystem.
+    assert_eq!(outcome["runtime_file"], "CCNM_RUNTIME_PATCHED_7319\n");
+    assert_eq!(outcome["agent_file"], "WRONG_AGENT_NODE_9520\n");
+
+    let events = events(include_str!(
+        "../../../tests/fixtures/codex-0.154.0/seven-tools.stdout"
+    ));
+    let completed: Vec<&str> = events
+        .iter()
+        .filter(|event| event["type"] == "item.completed")
+        .map(|event| &event["item"])
+        .filter(|item| item["type"] == "mcp_tool_call" && item["status"] == "completed")
+        .filter_map(|item| item["tool"].as_str())
+        .collect();
+    for tool in [
+        "workspace_info",
+        "list_files",
+        "search_text",
+        "read_file",
+        "apply_patch",
+        "exec_command",
+        "read_output",
+    ] {
+        assert!(completed.contains(&tool), "{tool} never completed");
+    }
+}
+
+/// `all_tools_succeeded` is false in that capture, and the reason matters:
+/// the model guessed at `apply_patch`'s shape four times and ccnm refused
+/// each guess by name before the fifth one worked.
+///
+/// That is the tool contract holding, not a version regression -- including
+/// the refusal of Codex's own `*** Begin Patch` format, which ccnm does not
+/// accept. It is recorded here so nobody later reads the false flag as a
+/// broken adapter.
+#[test]
+fn the_patch_tool_refused_every_wrong_shape_before_one_worked() {
+    let events = events(include_str!(
+        "../../../tests/fixtures/codex-0.154.0/seven-tools.stdout"
+    ));
+    let refusals: Vec<String> = events
+        .iter()
+        .filter(|event| event["type"] == "item.completed")
+        .map(|event| &event["item"])
+        .filter(|item| item["type"] == "mcp_tool_call" && item["status"] == "failed")
+        .map(|item| {
+            item["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap_or("")
+                .to_string()
+        })
+        .collect();
+    assert_eq!(refusals.len(), 4, "{refusals:?}");
+    // Each refusal names what was wrong. None of them is a silent success.
+    assert!(refusals.iter().any(|r| r.contains("missing field `files`")));
+    assert!(refusals.iter().any(|r| r.contains("op is required")));
+    assert!(
+        refusals
+            .iter()
+            .any(|r| r.contains("unknown variant `replace`"))
+    );
+    assert!(
+        refusals
+            .iter()
+            .any(|r| r.contains("needs at least one edit"))
+    );
+}
+
+/// What the launch actually carried on 0.154.0: the model the instance
+/// named, and the new feature that had to be turned off for it.
+#[test]
+fn the_measured_launch_named_its_model_and_disabled_the_new_exec_path() {
+    let outcome: Value = serde_json::from_str(include_str!(
+        "../../../tests/fixtures/codex-0.154.0/seven-tools.json"
+    ))
+    .unwrap();
+    let argv: Vec<&str> = outcome["argv"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a.as_str().unwrap())
+        .collect();
+    let at = argv.iter().position(|a| *a == "--model").expect("--model");
+    assert_eq!(argv[at + 1], "gpt-5.3-codex-spark");
+    // 0.154.0 ships unified_exec_tty stable and on. It is another way to
+    // run something without going through ccnm's tools, so it is disabled
+    // exactly like unified_exec -- a different name the old list did not
+    // cover, which is the whole reason the version is pinned.
+    let disabled: Vec<&str> = argv
+        .windows(2)
+        .filter(|w| w[0] == "--disable")
+        .map(|w| w[1])
+        .collect();
+    assert!(disabled.contains(&"unified_exec"), "{disabled:?}");
+    assert!(disabled.contains(&"unified_exec_tty"), "{disabled:?}");
+}
+
+/// The adapter still parses what the new CLI prints. This is the half of
+/// the re-measurement that mattered: a field moving in that stream would
+/// not fail loudly, it would be read wrong.
+#[test]
+fn the_result_parser_reads_the_0_154_0_stream() {
+    use ccnm_core::provider::{AgentProvider, AgentResult};
+    let parsed = AgentProvider::Codex
+        .parse_result(include_bytes!(
+            "../../../tests/fixtures/codex-0.154.0/seven-tools.stdout"
+        ))
+        .expect("the measured stream parses");
+    let AgentResult::Codex(result) = parsed else {
+        panic!("a Codex stream must parse as a Codex result");
+    };
+    assert!(!result.is_error);
+    let usage = result.usage.expect("0.154.0 still reports usage");
+    assert!(usage.input_tokens > 0, "{usage:?}");
+    assert!(usage.output_tokens > 0, "{usage:?}");
+}

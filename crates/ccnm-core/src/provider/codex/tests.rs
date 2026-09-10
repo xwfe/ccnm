@@ -25,6 +25,48 @@ fn spec(mode: Mode) -> Spec {
     }
 }
 
+/// The instance can name a model; without one the CLI keeps its own
+/// default, which is what every measured fixture was captured with.
+///
+/// It rides on argv rather than the CLI's config file because ccnm starts
+/// Codex with `--ignore-user-config` -- deliberately, so that a file on the
+/// Agent cannot change measured behaviour. That left no way at all to
+/// choose a model until this existed.
+#[test]
+fn a_named_model_reaches_the_command_line_and_absence_changes_nothing() {
+    let spec = spec(Mode::Print {
+        prompt: "hi".into(),
+    });
+    let args = |model: Option<&str>| -> Vec<String> {
+        build_launch_cmd(
+            Path::new("/agent/codex"),
+            &spec,
+            &Dir::at("/agent/session"),
+            Path::new("/agent/private-codex"),
+            Path::new("/agent/ccnm"),
+            model,
+        )
+        .unwrap()
+        .args
+        .iter()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect()
+    };
+    let without = args(None);
+    assert!(!without.iter().any(|a| a == "--model"), "{without:?}");
+
+    let with = args(Some("gpt-5.3-codex-spark"));
+    let at = with
+        .iter()
+        .position(|a| a == "--model")
+        .expect("the flag is there");
+    assert_eq!(with[at + 1], "gpt-5.3-codex-spark");
+    // Everything else is untouched: one flag and its value, nothing more.
+    let mut stripped = with.clone();
+    stripped.drain(at..at + 2);
+    assert_eq!(stripped, without);
+}
+
 #[test]
 fn parses_measured_auth_without_retaining_key_or_email() {
     let hint = AgentProvider::Codex.auth_hint(None);
@@ -55,13 +97,18 @@ fn parses_measured_auth_without_retaining_key_or_email() {
 #[test]
 fn version_is_pinned_to_the_measured_cli() {
     assert_eq!(
-        parse_version(&Output::exited(0, "codex-cli 0.153.4\n")).unwrap(),
+        parse_version(&Output::exited(0, "codex-cli 0.154.0\n")).unwrap(),
         VERSION
     );
     for (code, text) in [
-        (0, "codex-cli 0.153.5"),
-        (1, "codex-cli 0.153.4"),
-        (0, "0.153.4"),
+        (0, "codex-cli 0.154.1"),
+        // The version this adapter used to require. Measured once, then
+        // superseded; it is refused now exactly like any other unmeasured
+        // build, which is what "exact match" has to mean to be worth
+        // anything.
+        (0, "codex-cli 0.153.4"),
+        (1, "codex-cli 0.154.0"),
+        (0, "0.154.0"),
     ] {
         assert!(parse_version(&Output::exited(code, text)).is_err());
     }
@@ -162,6 +209,7 @@ fn launch_modes_use_measured_flags_without_sending_home_to_runtime() {
             &Dir::at("/agent/session"),
             Path::new("/agent/private-codex"),
             Path::new("/agent/ccnm"),
+            None,
         )
         .unwrap();
         assert!(
@@ -252,6 +300,7 @@ fn bound_named_profile_drives_auth_launch_and_redaction_without_runtime_egress()
         &spec,
         &Dir::at(root.join("session")),
         Some(&home),
+        None,
     )
     .unwrap();
     assert!(
@@ -266,7 +315,7 @@ fn bound_named_profile_drives_auth_launch_and_redaction_without_runtime_egress()
     );
 
     let runner = FakeRunner::new();
-    runner.push(Output::exited(0, "codex-cli 0.153.4\n"));
+    runner.push(Output::exited(0, "codex-cli 0.154.0\n"));
     let mut auth = Output::exited(0, "");
     auth.stderr = b"Logged in using ChatGPT\n".to_vec();
     runner.push(auth);

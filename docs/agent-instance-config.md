@@ -7,7 +7,18 @@
 ## 唯一事实来源
 
 - Runtime 的 `[workspaces.<name>]` 唯一定义 root、runtime_node 与 Agent 引用。新引用为 `agent = { node = "worker", instance = "claude-main" }`，不复制 provider、profile 或第二份 root。
-- Agent 的本机配置定义 `[agents.<instance>] provider = "claude" | "codex"`、`profile_ref = "default" | <name>`。所属 node 隐含为这份配置的 `this`；instance 名只在该 node 内唯一，不需要全局目录服务。Runtime 只持 node/instance 引用，不复制此表。
+- Agent 的本机配置定义 `[agents.<instance>] provider = "claude" | "codex"`、`profile_ref = "default" | <name>`，Codex 还可以加一个可选的 `model`。所属 node 隐含为这份配置的 `this`；instance 名只在该 node 内唯一，不需要全局目录服务。Runtime 只持 node/instance 引用，不复制此表。
+
+  ```toml
+  [agents.codex-main]
+  provider = "codex"
+  profile_ref = "default"
+  model = "gpt-5.3-codex-spark"   # 可选，仅 Codex
+  ```
+
+  **`model` 只有 Codex 能写**，给 Claude instance 写会被配置校验拒绝——ccnm 不给 Claude 传模型，它的模型是 Claude 自己配置的事。之所以需要这个字段：ccnm 用 `--ignore-user-config` 启动 Codex（刻意的，免得 Agent 上的一个文件改掉实测过的行为），于是 CLI 配置文件里的 `model` 不生效，不给这个字段就**根本没有办法选模型**。不写就用 CLI 自己的默认值，也就是所有 fixture 当初被测量时用的那个。
+
+  它和 `provider`/profile 一样是 **Agent 本机的事实**：不进 `AgentIdentity`、不进 binding、不进会话记录，也不上任何 wire。supervisor 启动前会重新读一次本机 registry 解析 profile 目录，模型在同一处一起取。
 - 私有目录只放 Agent 本地的 `$XDG_CONFIG_HOME/ccnm/profiles.toml`（默认 `~/.config/ccnm/profiles.toml`）。`[profiles.<name>]` 定义 provider 与绝对 directory；不从 `CCNM_CONFIG` 或远端消息指定该文件位置。该文件不存 token，也不随共享配置、binding 或 session identity 序列化。
 - 内建 `default` 按 provider 区分：Claude 使用官方默认目录；Codex 使用现有 `~/.config/ccnm/agents/codex/`，尊重 Agent 的 XDG_CONFIG_HOME。不能覆盖 default，不能迁移、复制或链接现有 auth。
 

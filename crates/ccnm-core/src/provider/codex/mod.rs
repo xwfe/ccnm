@@ -24,10 +24,14 @@ pub const CREDENTIALS: super::CredentialMetadata = super::CredentialMetadata {
     login_command: "codex login",
     egress_host: "api.openai.com",
 };
-pub const VERSION: &str = "0.153.4";
+pub const VERSION: &str = "0.154.0";
 const DISABLED: &[&str] = &[
     "shell_tool",
     "unified_exec",
+    // 0.154.0 新增，stable 且默认开启。它和 unified_exec 是同一类东西——
+    // 一条不经 ccnm 七工具的执行路径——所以同样关掉。名字不一样，所以旧的
+    // 列表拦不住它：这正是版本 pin 存在的理由。
+    "unified_exec_tty",
     "view_image",
     "apps",
     "plugins",
@@ -212,7 +216,7 @@ pub fn validate_spec(spec: &Spec) -> Result<()> {
 }
 
 pub fn launch_cmd(bin: &Path, spec: &Spec, dir: &Dir) -> Result<Cmd> {
-    launch_cmd_at(bin, spec, dir, None)
+    launch_cmd_at(bin, spec, dir, None, None)
 }
 
 pub fn launch_cmd_at(
@@ -220,6 +224,7 @@ pub fn launch_cmd_at(
     spec: &Spec,
     dir: &Dir,
     profile_dir: Option<&Path>,
+    model: Option<&str>,
 ) -> Result<Cmd> {
     validate_spec(spec)?;
     let home = profile_dir.map(Path::to_path_buf).map_or_else(home, Ok)?;
@@ -229,7 +234,7 @@ pub fn launch_cmd_at(
             "Codex workspace state cannot live in its private authentication directory",
         ));
     }
-    build_launch_cmd(bin, spec, dir, &home, &std::env::current_exe()?)
+    build_launch_cmd(bin, spec, dir, &home, &std::env::current_exe()?, model)
 }
 
 pub(crate) fn build_launch_cmd(
@@ -238,6 +243,7 @@ pub(crate) fn build_launch_cmd(
     dir: &Dir,
     agent_home: &Path,
     exe: &Path,
+    model: Option<&str>,
 ) -> Result<Cmd> {
     let mut cmd = isolated(Cmd::new(bin), agent_home)
         .cwd(&spec.cwd)
@@ -255,6 +261,11 @@ pub(crate) fn build_launch_cmd(
         ]);
     } else {
         cmd = cmd.arg("--no-alt-screen");
+    }
+    // Only when the instance names one: without it the CLI picks its own
+    // default, which is what every measured fixture was captured with.
+    if let Some(model) = model {
+        cmd = cmd.args(["--model", model]);
     }
     cmd = cmd.args([
         "--sandbox",

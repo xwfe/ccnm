@@ -165,7 +165,7 @@ impl AgentProvider {
     }
 
     pub fn launch_cmd(self, bin: &Path, spec: &Spec, dir: &Dir) -> Result<Cmd> {
-        self.launch_cmd_at(bin, spec, dir, spec.provider_config_dir.as_deref())
+        self.launch_cmd_at(bin, spec, dir, spec.provider_config_dir.as_deref(), None)
     }
 
     pub fn launch_cmd_at(
@@ -174,6 +174,9 @@ impl AgentProvider {
         spec: &Spec,
         dir: &Dir,
         profile_dir: Option<&Path>,
+        // Agent-local, from the instance registry the supervisor just
+        // re-read. Not in the session record and not on any wire.
+        model: Option<&str>,
     ) -> Result<Cmd> {
         match self {
             Self::Claude => {
@@ -181,7 +184,7 @@ impl AgentProvider {
                 local.provider_config_dir = profile_dir.map(Path::to_path_buf);
                 Ok(claude::launch_cmd(bin, &local, dir))
             }
-            Self::Codex => codex::launch_cmd_at(bin, spec, dir, profile_dir),
+            Self::Codex => codex::launch_cmd_at(bin, spec, dir, profile_dir, model),
         }
     }
 

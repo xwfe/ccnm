@@ -659,7 +659,10 @@ pub fn supervise(req: &SuperviseRequest) -> Result<Outcome> {
                 "supervisor provider does not match session",
             ));
         }
-        let profile = req
+        // The profile directory and the model both come from the Agent's own
+        // registry, re-read here rather than carried in the session record:
+        // they are local facts, and the record crosses machines.
+        let local = req
             .identity
             .as_ref()
             .map(|identity| {
@@ -671,11 +674,18 @@ pub fn supervise(req: &SuperviseRequest) -> Result<Outcome> {
                     ));
                 }
                 resolved.profile().validate_private_directory()?;
-                Ok(resolved.profile().directory().to_path_buf())
+                Ok((
+                    resolved.profile().directory().to_path_buf(),
+                    resolved.model().map(str::to_string),
+                ))
             })
             .transpose()?;
+        let (profile, model) = match &local {
+            Some((dir, model)) => (Some(dir.as_path()), model.as_deref()),
+            None => (None, None),
+        };
         spec.provider()
-            .launch_cmd_at(&req.agent_bin, &spec, &dir, profile.as_deref())
+            .launch_cmd_at(&req.agent_bin, &spec, &dir, profile, model)
     })();
     // Measured here rather than assumed, because here is the one place
     // that is inside whatever context Claude will run in: under tmux, that

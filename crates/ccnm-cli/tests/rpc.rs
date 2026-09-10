@@ -306,9 +306,7 @@ fn a_start_key_stays_idempotent_across_a_server_restart() {
     assert_eq!(result["reused"], true);
 
     // A different prompt under the same key is a conflict, not a guess.
-    let other = format!(
-        r#"{{"jsonrpc":"2.0","id":2,"method":"session.start","params":{{"workspace":"demo","mode":"print","input":{{"prompt":"different"}},"start_key":"task-9"}}}}"#
-    );
+    let other = r#"{"jsonrpc":"2.0","id":2,"method":"session.start","params":{"workspace":"demo","mode":"print","input":{"prompt":"different"},"start_key":"task-9"}}"#.to_string();
     let third = talk_reusing(
         "restart",
         &config,

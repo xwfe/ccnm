@@ -1130,6 +1130,102 @@ root = "/runtime/legacy"
     }
 
     #[test]
+    fn the_timeout_reaches_the_executor() {
+        let peer = Peer::new("timeout", FakeRuns::ok(0, "x"));
+        let session = peer.call(&[&start_call(",\"timeout_ms\":1500")])[0]["result"]["session"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        peer.settle(&session);
+        assert_eq!(
+            peer.runs.asks.lock().unwrap()[0].timeout,
+            std::time::Duration::from_millis(1500)
+        );
+
+        // Zero and negative are refused rather than quietly turned into the
+        // default: a caller that meant to cap a run must not get 15 minutes.
+        for bad in ["0", "-1", "\"600\""] {
+            let out = peer.call(&[&start_call(&format!(",\"timeout_ms\":{bad}"))]);
+            assert_eq!(out[0]["error"]["code"], code::INVALID_PARAMS, "{bad}");
+        }
+    }
+
+    #[test]
+    fn the_default_timeout_is_used_when_none_is_given() {
+        let peer = Peer::new("default-timeout", FakeRuns::ok(0, "x"));
+        let session = peer.call(&[&start_call("")])[0]["result"]["session"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        peer.settle(&session);
+        assert_eq!(
+            peer.runs.asks.lock().unwrap()[0].timeout,
+            session::DEFAULT_TIMEOUT
+        );
+    }
+
+    #[test]
+    fn internal_payload_fields_never_reach_the_caller() {
+        // RunReport carries session_dir, the supervisor pid and the
+        // controller's context. Those are implementation, and putting them
+        // on the wire would freeze internal structure into a public
+        // contract.
+        let peer = Peer::new("no-internals", FakeRuns::ok(0, "x"));
+        let session = peer.call(&[&start_call("")])[0]["result"]["session"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        peer.settle(&session);
+        let out = peer.call(&[&format!(
+            "{{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"session.result\",\"params\":{{\"session\":\"{session}\"}}}}"
+        )]);
+        let text = serde_json::to_string(&out[0]).unwrap();
+        for leaked in [
+            "session_dir",
+            "controller",
+            "/private/state",
+            "\"pid\"",
+            "protocol\":3",
+        ] {
+            assert!(!text.contains(leaked), "{leaked} leaked into {text}");
+        }
+        // The ccnm session id is kept in the record so the two names for one
+        // run stay tied together, but it is not what the protocol addresses.
+        let store = store::Store::open(&peer.state).unwrap();
+        let record = store.read(&session).unwrap().unwrap();
+        assert_eq!(
+            record.finish.unwrap().ccnm_session.as_deref(),
+            Some("ccnm-uuid-1")
+        );
+    }
+
+    #[test]
+    fn a_corrupt_record_is_an_error_not_a_fake_success() {
+        let peer = Peer::new("corrupt", FakeRuns::ok(0, "x"));
+        let session = peer.call(&[&start_call("")])[0]["result"]["session"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        peer.settle(&session);
+        let path = peer
+            .state
+            .join("rpc/sessions")
+            .join(format!("{session}.json"));
+        std::fs::write(&path, "{ truncated").unwrap();
+
+        for method in ["session.status", "session.result", "session.stop"] {
+            let out = peer.call(&[&format!(
+                "{{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"{method}\",\"params\":{{\"session\":\"{session}\"}}}}"
+            )]);
+            // An unreadable record means the server does not know; it must
+            // not answer as if the session were fine, and must not answer
+            // "no such session" either, which would say it never existed.
+            assert!(out[0].get("result").is_none(), "{method}: {:?}", out[0]);
+            assert_eq!(out[0]["error"]["code"], code::INTERNAL_ERROR, "{method}");
+        }
+    }
+
+    #[test]
     fn the_caller_picks_the_instance_but_never_the_node() {
         let peer = Peer::new("override", FakeRuns::ok(0, "x"));
         let out = peer.call(&[&start_call(

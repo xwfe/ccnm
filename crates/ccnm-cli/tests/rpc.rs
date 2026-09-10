@@ -243,6 +243,135 @@ agent = { node = "worker", instance = "claude-main" }
     );
 }
 
+/// A config whose workspace root does not exist, so `session.start` is
+/// accepted and then fails in the local preflight -- before any ssh.
+fn unreachable_config(test: &str) -> PathBuf {
+    let config = sandbox(&format!("{test}-config")).join("config.toml");
+    std::fs::write(
+        &config,
+        r#"
+this = "runtime"
+[nodes.runtime]
+[nodes.worker]
+ssh = "worker.invalid"
+[workspaces.demo]
+root = "/nonexistent/project"
+agent = { node = "worker", instance = "claude-main" }
+"#,
+    )
+    .unwrap();
+    config
+}
+
+fn start_line(key: Option<&str>) -> String {
+    let key = key.map_or(String::new(), |k| format!(r#","start_key":"{k}""#));
+    format!(
+        r#"{{"jsonrpc":"2.0","id":2,"method":"session.start","params":{{"workspace":"demo","mode":"print","input":{{"prompt":"go"}}{key}}}}}"#
+    )
+}
+
+#[test]
+fn a_start_key_stays_idempotent_across_a_server_restart() {
+    // Two runs of the binary, one store. The second must reuse the first
+    // session rather than start a second Agent -- that is the whole promise
+    // of the key surviving a restart.
+    let config = unreachable_config("restart");
+    let first = talk(
+        "restart",
+        &config,
+        &format!(
+            "{HELLO}
+{}
+",
+            start_line(Some("task-9"))
+        ),
+    );
+    let session = lines(&first)[1]["result"]["session"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let second = talk_reusing(
+        "restart",
+        &config,
+        &format!(
+            "{HELLO}
+{}
+",
+            start_line(Some("task-9"))
+        ),
+    );
+    let result = &lines(&second)[1]["result"];
+    assert_eq!(result["session"], session);
+    assert_eq!(result["reused"], true);
+
+    // A different prompt under the same key is a conflict, not a guess.
+    let other = format!(
+        r#"{{"jsonrpc":"2.0","id":2,"method":"session.start","params":{{"workspace":"demo","mode":"print","input":{{"prompt":"different"}},"start_key":"task-9"}}}}"#
+    );
+    let third = talk_reusing(
+        "restart",
+        &config,
+        &format!(
+            "{HELLO}
+{other}
+"
+        ),
+    );
+    assert_eq!(lines(&third)[1]["error"]["code"], -32010);
+    assert_eq!(lines(&third)[1]["error"]["data"]["session"], session);
+}
+
+#[test]
+fn a_session_left_behind_by_a_killed_server_reads_as_unknown() {
+    // Fault injection: put the store into exactly the state a server that
+    // died mid-run leaves behind -- still running, owned by a pid that
+    // cannot be that server -- then ask the real binary about it.
+    let config = unreachable_config("killed");
+    let out = talk(
+        "killed",
+        &config,
+        &format!(
+            "{HELLO}
+{}
+",
+            start_line(None)
+        ),
+    );
+    let session = lines(&out)[1]["result"]["session"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let home = std::env::temp_dir().join(format!("ccnm-rpc-it-{}-killed", std::process::id()));
+    let path = home
+        .join("state/ccnm/rpc/sessions")
+        .join(format!("{session}.json"));
+    let mut record: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    record["state"] = Value::from("running");
+    record["owner_pid"] = Value::from(999_999);
+    record["owner_started"] = Value::from("Thu Jan  1 00:00:00 1970");
+    record.as_object_mut().unwrap().remove("finish");
+    std::fs::write(&path, serde_json::to_vec_pretty(&record).unwrap()).unwrap();
+
+    let status = format!(
+        r#"{{"jsonrpc":"2.0","id":2,"method":"session.status","params":{{"session":"{session}"}}}}"#
+    );
+    let out = talk_reusing(
+        "killed",
+        &config,
+        &format!(
+            "{HELLO}
+{status}
+"
+        ),
+    );
+    // Not `failed`: the Agent may well have finished on the other machine.
+    // Calling it failed invites a retry of work that already happened.
+    assert_eq!(lines(&out)[1]["result"]["state"], "unknown");
+}
+
 /// Same sandbox as a previous call, so the session store persists across
 /// what looks to the server like two separate clients.
 fn talk_reusing(test: &str, config: &Path, input: &str) -> Output {

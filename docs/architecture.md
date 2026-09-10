@@ -226,6 +226,22 @@ P3 将 v3 identity 接入现有 launcher/work/Controller/supervisor/tmux/SSH MCP
 
 Runtime MCP 初始化再用自己的配置重算 binding；legacy payload 不能打开 instance workspace。完整契约见[单 Agent 执行](agent-execution-p3.md)和[实例配置](agent-instance-config.md)。本阶段没有协调器、分布式 lease 或 worktree 调度。
 
+## Runtime 权威解析（P7.4 Batch B）
+
+"哪个项目、在哪、给谁开"由 **Runtime Executor 自己回答**，答案来自它本机的配置和文件系统。
+
+旧的 serve payload 里有一个 `root`，是调用方传过来的。绑定过的 payload 会拿它跟 Runtime 的 workspace 定义核对，但**这个形状本身在问调用方项目在哪**——而信任它给的路径，就等于信任它对这台机器的处置：每一次工具调用、写入 guard、保留输出和安全结论都挂在那个目录上。
+
+新的 open 请求（内部 wire protocol **4**）里**没有 root 字段**，也没有任何路径。它只说 workspace 名字和调用方解析出来的 Agent identity，其余由 Runtime 查自己的注册表。`deny_unknown_fields` 让这成为 wire 属性而不是约定：对端硬塞一个 root 进来是解码失败，不是被默默忽略。
+
+身份核对分工明确：**Runtime 只认它拥有的那一半——workspace 的 Agent Node**，外加拓扑和 provider 能力。instance/provider/profile 是 Agent 本机的事实，而 `ccnm run --agent` 本来就允许在同一个 node 上换 instance，所以 Runtime 不重复校验 instance，由 Agent 自己的 registry 接受或拒绝。
+
+**resolve 不是 capability token。** 从解析到真正 `mcp-serve` 打开之间有竞态，所以打开时 binding、安全审计、root canonicalize 和写入 guard 全部重做一遍。
+
+两种 wire 靠 `protocol` 数字区分，没有第三条路也没有回退：本 build 不认识的数字直接 `CCNM_E_VERSION`。旧 build 拿到 protocol 4 也一样——它缺 `root` 又多 `agent`，解码就失败。
+
+**当前公共 launcher 仍然发旧 payload**，切换控制链是 Batch C；这一批只把边界建好并可离线验证。
+
 ## Runtime 单写者
 
 每个 MCP server 在 Runtime 初始化时按 canonical workspace resource 获取内核独占锁，并持有到 server 结束。Git workspace 使用 canonical `git-common-dir`，所以不同 Agent Node、CLI/RPC 入口、路径 alias 及共享 common dir 的 worktree 不能获得两份受管写权限。

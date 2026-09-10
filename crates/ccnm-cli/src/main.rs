@@ -10,7 +10,6 @@ use clap::{Parser, Subcommand};
 
 use ccnm_core::process::{ProcessRunner, SystemRunner};
 use ccnm_core::protocol::hello::{self, HelloRequest};
-use ccnm_core::protocol::mcp::ServePayload;
 use ccnm_core::protocol::payload;
 use ccnm_core::protocol::probe::ProbeRequest;
 use ccnm_core::protocol::run::{
@@ -660,8 +659,16 @@ fn run(cli: Cli) -> Result<i32> {
                 Ok(0)
             }
             InternalCommand::McpServe { payload } => {
-                let req: ServePayload = payload::decode(payload)?;
-                mcp::server::serve(&req)?;
+                // Two wire shapes, told apart by their protocol number: the
+                // caller-supplied root the launcher still sends, and the
+                // Runtime-authority open of P7.4 Batch B. Nothing falls
+                // back — an unknown number is CCNM_E_VERSION.
+                match ccnm_core::runtime::decode_serve(payload)? {
+                    ccnm_core::runtime::ServeRequest::Legacy(req) => mcp::server::serve(&req)?,
+                    ccnm_core::runtime::ServeRequest::Managed(req) => {
+                        mcp::server::serve_managed(&req)?
+                    }
+                }
                 Ok(0)
             }
             InternalCommand::Controller => {

@@ -257,11 +257,24 @@ pub struct Server {
 }
 
 impl Server {
+    /// Open what this Runtime resolved for itself, from a request that
+    /// never named a path (P7.4 Batch B).
+    ///
+    /// It goes through [`Server::new`] rather than around it: the answer
+    /// from [`crate::runtime::open`] is not a capability token, so the
+    /// binding, the audit, the canonicalization and the write guard are all
+    /// done again here, against the config as it is now.
+    pub fn open(request: &crate::runtime::OpenPayload) -> CcnmResult<Self> {
+        let config = crate::Config::load(&crate::paths::effective_config_path()?)?;
+        let opened = crate::runtime::open(&config, request)?;
+        Self::new(&opened.serve_payload(request))
+    }
+
     /// Resolve the root and look at git once. Fails with
     /// `CCNM_E_WRONG_WORKSPACE` if the root is not a directory here, which
     /// the launcher sees as a failed `initialize`.
     pub fn new(payload: &ServePayload) -> CcnmResult<Self> {
-        let root = canonical_root(&payload.root)?;
+        let root = crate::runtime::canonical_root(&payload.root)?;
         let exec_gate = ExecGate::decide(payload)?;
         if !exec_gate.audit.agent_boundary_clear() {
             return Err(Error::policy(exec_gate.audit.refusal()));
@@ -695,7 +708,16 @@ impl ServerHandler for Server {
 /// Serve MCP on this process's stdin/stdout until the client closes the
 /// stream. Synchronous from the caller's point of view.
 pub fn serve(payload: &ServePayload) -> CcnmResult<()> {
-    let server = Server::new(payload)?;
+    run(Server::new(payload)?)
+}
+
+/// Serve a Runtime-authority open: the caller named a workspace, this
+/// machine decided the rest.
+pub fn serve_managed(request: &crate::runtime::OpenPayload) -> CcnmResult<()> {
+    run(Server::open(request)?)
+}
+
+fn run(server: Server) -> CcnmResult<()> {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -712,26 +734,6 @@ pub fn serve(payload: &ServePayload) -> CcnmResult<()> {
         tracing::info!(?reason, "mcp server stopped");
         Ok(())
     })
-}
-
-fn canonical_root(root: &Path) -> CcnmResult<PathBuf> {
-    let canonical = std::fs::canonicalize(root).map_err(|e| {
-        Error::new(
-            ErrorCode::WrongWorkspace,
-            format!(
-                "workspace root {} is not usable on this host",
-                root.display()
-            ),
-        )
-        .with_source(e)
-    })?;
-    if !canonical.is_dir() {
-        return Err(Error::new(
-            ErrorCode::WrongWorkspace,
-            format!("workspace root {} is not a directory", canonical.display()),
-        ));
-    }
-    Ok(canonical)
 }
 
 /// Is `root` inside a git work tree, and if so where relative to its top
@@ -764,7 +766,7 @@ mod tests {
     fn fixture_server(payload: &ServePayload) -> CcnmResult<Server> {
         Server::with_gate(
             payload,
-            canonical_root(&payload.root)?,
+            crate::runtime::canonical_root(&payload.root)?,
             ExecGate {
                 audit: crate::safety::Audit {
                     user: "fixture".into(),

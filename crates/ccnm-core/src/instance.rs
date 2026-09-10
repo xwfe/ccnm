@@ -292,6 +292,10 @@ impl Config {
     ) -> Result<WorkspaceBinding> {
         identity.validate()?;
         let expected = self.instance_reference(workspace)?;
+        // The node, and only the node. Picking another instance on the same
+        // Agent Node is a supported public override (`ccnm run --agent`),
+        // so the Runtime authorizes the machine and leaves the instance to
+        // the Agent's own registry, which is the authority for it.
         if expected.node != identity.node {
             return Err(Error::config(
                 "Agent identity node does not match the Runtime workspace reference",

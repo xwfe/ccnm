@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-09-09T22:28:03+09:00",
-  "current_task": "P3",
+  "last_updated": "2026-09-10T11:30:00+09:00",
+  "current_task": "P4",
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
     "source": "docs/research/codex-internal-wiring-2026-09-07.md",
@@ -150,15 +150,19 @@
     {
       "id": "P3",
       "title": "公共入口与单 Agent 执行闭环",
-      "status": "blocked",
+      "status": "completed",
       "depends_on": [
         "P2"
       ],
       "owner": null,
       "started_at": "2026-09-08T12:44:30+09:00",
-      "last_updated": "2026-09-09T22:28:03+09:00",
+      "last_updated": "2026-09-10T11:30:00+09:00",
       "completed_criteria": [
+        "P3.1",
+        "P3.2",
+        "P3.3",
         "P3.4",
+        "P3.5",
         "P3.6"
       ],
       "evidence": [
@@ -311,17 +315,17 @@
           ],
           "ref": "docs/research/p3-public-claude-2026-09-09.md",
           "result": "走完官方首次向导后interactive成立：tools connected，官方CLI自记Called ccnm 2 times返回P3_INTERACTIVE_READY。detach后仍tools connected；attach经PTY复原同一会话。/exit使session记Completed、Runtime MCP消失、guard held转released。transport故障先核对父进程含本session id再TERM，status正确区分Agent仍在而TOOLS DOWN，精确stop记Failed。Controller由51395重启为51607且均Aqua，既有session保持Running并可跨重启精确reattach（supervise挂tmux而非controller是结构原因）。同一tmux server内官方print返回TMUX_AUTH_OK，证明audit session保留。限制：官方CLI对Ctrl-D无响应故未验该键；仅transport进程故障，非物理断网。"
-        }
-      ],
-      "blockers": [
+        },
         {
+          "kind": "production_safety",
           "criteria": [
             "P3.5"
           ],
-          "reason": "身份隔离与两方向公共链路均已真机通过，清理已完成绝大部分：本机主组/准入/公钥行/root清单全部还原归零，两端部署目录、workspace、临时资源、SSH alias区块与project entry均已清除。仅剩fodelf临时账号ccnmp3test及其独立组、home、root清单和存放清理脚本的setup目录未删，需用户sudo执行。另：Ctrl-D因官方CLI无响应未取得证据（已用/exit覆盖同路径但不等价），egress/网络策略仍未逐项验证。",
-          "unblock": "用户在fodelf执行 sudo /bin/bash /tmp/ccnm-p3-setup.TnaRle/cleanup-runtime-user.sh --apply（UID550已无活动进程，前置满足）；随后本会话删除setup目录并做最终归零复核，记录无法清理项与原因。"
+          "ref": "docs/research/p3-public-claude-2026-09-09.md",
+          "result": "双机临时资源清理归零并逐项只读复核：fodelf 账号 ccnmp3test、独立组、home、root 清单与含一次性私钥的 setup 目录全部删除，GID550 无任何占用，/Users 与 /var/db 的 sunlnk 未被改动；本机 ccrun 回到 gid20(staff)、非 com.apple.access_ssh 成员、authorized_keys 只剩原有 1 行 98 字节、root 清单已删；两端 SSH config 77/32 行无本轮 alias，临时目录与 ~/.claude.json 本轮 entry 均为 0；fodelf 只剩用户既有的 9 月 5 日 work-controller。删账号连撞 /Users 的 sunlnk、SIP 拒绝 chflags 和主组随账号消失三次失败，最终由 sysadminctl -deleteUser 完成，脚本按实测补可重跑与可删性预检。无法清理项：无。仍未验证：Ctrl-D（官方 CLI 无响应，仅 /exit 覆盖同一自然退出路径）与 egress/网络策略逐项验证，支持矩阵因此不声明 egress 边界。"
         }
-      ]
+      ],
+      "blockers": []
     },
     {
       "id": "P4",
@@ -395,17 +399,17 @@
     }
   ],
   "observed_gaps": [
-    "现有双机 Codex 证据使用 scratch Runtime，不是生产 ccrun/ACL/sudo/egress 验收。",
+    "双机验收已改用专用隔离执行身份，凭据/sudo/特权 socket 均已实测；egress/网络策略仍未逐项验证，本轮只做 transport 进程故障注入，不等同物理断网。",
     "旧 Runtime 拒绝 v2 时可能以退出码 0 结束；协议错误不能被退出码掩盖。",
     "P1 安全检查已收敛但尚未部署；旧 Runtime 不因此获得新门禁，现有 0.2.0/v1/v2 握手不宣告 P1 安全能力，P3 真机部署须核对两端构建来源/指纹及服务端环境策略。",
     "Claude v1 的 claude_config_dir 保留旧参数语义；P2 必须定义 Agent-local profile 引用与 legacy 冲突/迁移，不能把旧明文路径当新 profile 授权模型。",
-    "P3 公共 instance 与 Runtime guard 代码已落地但未完成当前 build 双机与生产隔离验收，尚不能进入 P4。",
+    "P3 公共链路已在当前 build 双机真机通过并完成资源归零；遗留两项未取得证据：Ctrl-D 因官方 CLI 无响应，egress 边界不作声明。",
     "Claude colocated 候选命令已定点修复，但未真机验收，当前公共启动明确拒绝。",
     "P3 额外 64 线程压力出现既有 exec timeout 单测 30.5s 失败；默认全量 511 通过，高并发问题尚未解决。"
   ],
   "handoff": {
-    "next_action": "仅P3：两方向公共链路已全部真机通过（Codex见p3-public-codex-2026-09-08.md，Claude见p3-public-claude-2026-09-09.md）。本机清理已归零（主组/准入/公钥行/root清单全部还原）。仅剩用户在fodelf执行 sudo /bin/bash /tmp/ccnm-p3-setup.TnaRle/cleanup-runtime-user.sh --apply 删除临时账号ccnmp3test及其组/home/清单，之后本会话删setup目录并做最终归零复核，才可标记P3完成。勿进入P4。",
-    "scope": "仅 P3；不进入 P4/Machine API，不引入多 Agent/worktree 调度，不主动部署、登录或修改账号/ACL/防火墙。",
+    "next_action": "P4：在 docs/protocol/ 写 Machine Protocol v1 草案与机器可检查的 schema/fixture，按 P4.1…P4.5 逐条落地——握手与 framing、六个方法定稿、request_id 与启动幂等键、重试/超时/取消/EOF 语义、权限与输出引用契约及评审。协议独立于内部 PROTOCOL=1 与 INSTANCE_SESSION_PROTOCOL=3，本阶段不实现 HTTP、不动 rpc 代码、不冻结未验证接口。",
+    "scope": "仅 P4；协议草案与契约评审，不进入 P5 实现，不引入多 Agent/worktree 调度，不部署或修改账号/ACL/防火墙。",
     "planning_validation": {
       "at": "2026-09-08T21:22:43+09:00",
       "commands": [
@@ -417,16 +421,17 @@
       "limits": "本轮离线门禁；fodelf SSH 建连失败，没有新增远端资源或运行真实模型，不替代 P3.5。"
     },
     "planning_validation_latest": {
-      "at": "2026-09-09T22:28:03+09:00",
+      "at": "2026-09-10T11:30:00+09:00",
       "commands": [
-        "python3 scripts/check_plan.py：通过",
-        "python3 -B -m unittest discover -s tests -p test_*.py -q：28 passed",
-        "git diff --check：通过"
+        "python3 scripts/check_plan.py：通过（4/9 阶段完成，下一阶段 P4）",
+        "PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p 'test_*.py' -q：36 passed",
+        "git diff --check：通过",
+        "fodelf 与本机两端资源归零只读复核：全部通过，无无法清理项"
       ],
-      "limits": "只改脚本、测试和计划文档，未修改 Rust，未重跑 Rust 门禁；未执行任何特权命令，系统准入范围未变。"
+      "limits": "本轮只改清理脚本、计划状态与文档，未修改 Rust，未重跑 Rust 门禁；Ctrl-D 与 egress 两项仍无证据，已写入 observed_gaps 与支持矩阵。"
     },
     "inherited_changes": [],
-    "authorization": "双机临时部署、角色互换、真实 Claude/Codex 验证及清理已授权；用户明确澄清允许 fodelf 临时新建普通 Runtime 用户，验证后清理该账号、home、公钥及测试目录，本机已有 ccrun 保留。用户另行批准临时把 ccrun 加入 com.apple.access_ssh、验收后移除，仅限该直接成员关系，不加 admin、不改主组/密码/防火墙。范围见 p3-runtime-system-preparation.md；不替换现有 Controller、不复制凭据；同范围无需重复询问。",
+    "authorization": "P3 的双机临时部署、角色互换、真实 Claude/Codex 验证与清理授权已执行完毕，两端资源归零，临时账号/组/公钥/准入全部撤销，本机既有 ccrun 保留。P4 只写协议文档与 fixture，不需要系统变更授权；若后续需要账号、ACL、防火墙、部署或替换二进制，必须重新逐项获得批准。",
     "portability": "接续不依赖任何特定 MCP、任务管理器或 IDE 插件。任何模型只需 Git、仓库文件和项目命令即可按 current_task 继续；外部工具状态不作为产品阶段事实。"
   }
 }

@@ -82,8 +82,36 @@ P3.1/P3.2 的公共链路证据已齐：probe、print、工具真实性、精确
 
 追加公钥的脚本原先只有 `--apply`，清理阶段才发现缺逆操作，已补 `p3-revoke-local-runtime-key.sh`。账号清理脚本同样原先不存在，补为 `p3-cleanup-runtime-user.sh`；其首版用了 `mapfile` 与关联数组，在 macOS 自带 bash 3.2 上直接 `command not found`——`bash -n` 查不出这类问题，已改写并新增静态检查拦截 bash 4+ 特性。
 
-仍未归零：fodelf 临时账号 `ccnmp3test`、其独立组、home 与 root 清单 `/var/db/ccnm-p3-account-20260908`，以及存放清理脚本的 `/tmp/ccnm-p3-setup.TnaRle`。删除账号需要用户 sudo 执行 `p3-cleanup-runtime-user.sh --apply`；UID550 已无活动进程，前置条件满足。P3 在此归零前保持未完成。
+### fodelf 临时账号删除：三次失败与 SIP
+
+删账号这一步连撞三堵墙，都是 macOS 26 的系统保护，值得记下来，因为报错文本和真实原因对不上：
+
+1. `rmdir: /Users/ccnmp3test: Operation not permitted`。home 里记录的 SSH 路径已经删干净，目录是空的，属主也对。真实原因是 `/Users` 带 `sunlnk`（system no-unlink）flag——**父目录带这个 flag，其中的条目就删不掉，跟条目自己的权限无关**。看着像权限问题，实际是文件系统 flag。
+2. 于是改成删之前临时摘掉父目录的 flag，得到 `chflags: /Users: Operation not permitted`。root 也改不动，因为 `/Users` 列在 `/System/Library/Sandbox/rootless.conf` 第 84 行，SIP 已启用（`csrutil status: enabled`；`kern.securelevel` 是 0，排除 securelevel 的因素）。
+3. 改用 Apple 自己的 `sysadminctl -deleteUser`——它带 SIP entitlement，是系统设置里删用户走的同一条路——账号和 home 一次删掉。但脚本紧接着停在 `dscl . -delete /Groups/ccnmp3test`，报 `Invalid Path` / `eDSUnknownNodeName`：`-deleteUser` 会把用户的主组一并删掉，那一步已经没有对象。
+
+第 4 次执行时 `/var/db` 上重演了第 2 步：`chflags: /var/db: Operation not permitted`。而清单目录里的文件此时已经删掉了，只剩空目录——最坏的中间态，脚本所有前置核对都读那些清单文件，重跑也救不回来。最后用一条 `sudo rmdir /var/db/ccnm-p3-account-20260908` 删掉：**`/var/db` 的 `sunlnk` 并不阻止删除其中的条目**，和 `/Users` 的表现不一样，前面那次 `chflags` 完全是多余的猜测。
+
+脚本按这些实测结果改了四处（`bc7851b`、`d50411e` 等）：账号已删时能接着补做剩下的步骤；删组前先确认组还在；`rmdir` 前先直接试一次而不是先去动系统目录的 flag；最关键的是删目录内容之前先用 `probe_removable` 无损探一次——非空目录 `rmdir` 报 `Directory not empty`，父目录不让删报 `Operation not permitted`，这个区别足以在动手之前就知道最后一步能不能成。
+
+### 最终归零复核
+
+两端逐项只读复核，全部归零：
+
+| 项 | 本机 xdwmbp | fodelf |
+| --- | --- | --- |
+| 临时身份 | `id ccrun` 回到 `gid=20(staff)`，本轮独立组已删 | 账号/组/home 全部删除，GID 550 无任何占用 |
+| SSH 准入 | `ccrun is NOT a member of com.apple.access_ssh` | — |
+| 公钥 | `authorized_keys` 1 行 98 字节，只剩原有的 `fodelf -> xdwmbp` | 随 home 一起删除 |
+| root 清单 | `/var/db/ccnm-p3-local-20260908` 已删 | `/var/db/ccnm-p3-account-20260908` 已删 |
+| SSH config | 77 行，无 `ccnm-p3` | 32 行，无 `ccnm-p3` |
+| 临时目录 | `/tmp/ccnm-p3-*`、`/Users/Shared/ccnm-p3-*` 均无 | `/tmp/ccnm-p3-setup.TnaRle` 已删，含一次性私钥 |
+| `~/.claude.json` | 本轮相关 project entry 0 条 | — |
+| 系统 flag | — | `/Users`、`/var/db` 的 `sunlnk` 完好，失败的 `chflags` 没留下副作用 |
+| 进程 | — | 只剩用户既有的 PID 1716（9 月 5 日 16:03 启动的 `work-controller`），本轮前台 Controller 已退出 |
+
+无法清理项：无。
 
 本轮 Controller 由用户在 fodelf 图形终端前台启动（Aqua，PID 22991），未安装 LaunchAgent，未触碰既有的 `dev.ccnm.work-controller`。曾尝试用独立 label 临时 bootstrap，被权限策略拒绝，未绕过。
 
-保留待清理资源：两端部署目录、fodelf SSH alias 与备份、Runtime workspace 与测试产物、本机组/准入变更。无 Rust 改动，不重报历史 Rust 数字。
+清理阶段无 Rust 改动，不重报历史 Rust 数字。

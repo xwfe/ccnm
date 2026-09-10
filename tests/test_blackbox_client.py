@@ -9,6 +9,11 @@
 失败，要么根本不到传输那一层。真 provider 的双机闭环是 P6.3，另记。
 """
 
+# 没有它，下面 `Path | None` 这类注解在 Python 3.9 上会在 import 时就抛
+# TypeError: unsupported operand type(s) for |，整个文件一个用例都跑不了。
+# macOS 自带的就是 3.9，仓库里其他 Python 文件同样靠这一行兼容。
+from __future__ import annotations
+
 import json
 import os
 from pathlib import Path

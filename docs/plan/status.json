@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-09-10T16:20:00+09:00",
+  "last_updated": "2026-09-10T17:05:00+09:00",
   "current_task": "P7",
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
@@ -494,16 +494,45 @@
     {
       "id": "P7",
       "title": "发布前收口",
-      "status": "in_progress",
+      "status": "blocked",
       "depends_on": [
         "P6"
       ],
-      "owner": "Claude / P7 release hardening",
+      "owner": null,
       "started_at": "2026-09-10T16:20:00+09:00",
-      "last_updated": "2026-09-10T16:20:00+09:00",
-      "completed_criteria": [],
-      "evidence": [],
-      "blockers": []
+      "last_updated": "2026-09-10T17:05:00+09:00",
+      "completed_criteria": [
+        "P7.1",
+        "P7.2"
+      ],
+      "evidence": [
+        {
+          "kind": "review",
+          "criteria": [
+            "P7.1"
+          ],
+          "ref": "docs/support-matrix.md",
+          "result": "公开文档通查：README、支持矩阵、配置说明里停在 P3 完成之前的措辞（\"尚未部署到真实双机复验\"、\"公共双机 dogfood 待 P3.5\"、\"尚未真机复验\"）全部改为实际情况。未验证项单列而不混在字里行间：egress/网络策略未逐项验证故不声明任何出口边界、Ctrl-D 无证据、machine API 未跟真实 Agent 跑过因此协议只是 v1 候选、colocated 明确拒绝。平台改为写明只有 macOS 及其原因（Controller 是 launchd LaunchAgent，会话检查直接问 launchctl 与 security）。新增 Codex 版本 pin 与重新测量一节：精确匹配 0.153.4，不匹配启动前返回 CCNM_E_VERSION，并给出五步重新测量流程，明写第五步（逐条比对新旧 fixture 差异）不能跳。支持矩阵新增 machine API 两行，并去掉\"不属于 P3\"这类要求读者知道阶段编号的措辞。"
+        },
+        {
+          "kind": "review",
+          "criteria": [
+            "P7.2"
+          ],
+          "ref": "docs/operations.md",
+          "result": "运维记录覆盖安装/升级（含不可 cp 覆盖运行中 Mach-O 的原因与症状）、回退、legacy→instance 的手动配置迁移（如实写明没有自动迁移命令，preview_instance 只是库函数未接 CLI）、两侧状态目录布局与\"没有自动清理也没有保留期\"、停止判据、四类故障恢复（写入 guard 残留、controller 不在 Aqua、会话 unknown、machine API 侧）。开头写明仓库有 CI/release 文件不等于已正式发布。文档内命令语法用 --help 逐条核对（workspace remove --purge、controller status/install、stop --agent/--session）。撰写时发现并改正两处自述错误：版本不一致由 doctor 拦而非握手拦，运行时无兜底；会话记录兼容性取决于协议号而非\"字段只加不删\"。限制：部署、purge、controller install 这些需要真机或授权的命令本轮未实际执行，只据代码与脚本编写。"
+        }
+      ],
+      "blockers": [
+        {
+          "criteria": [
+            "P7.3",
+            "P7.4"
+          ],
+          "reason": "P7.3 需要用户授权重建双机临时环境（Runtime 账号、SSH 准入、两端部署、真实 Claude/Codex 订阅额度、事后清理归零），并在同一套环境内先完成并入的原 P6.3 内容——用公共 API 各跑一次真实 provider 的双机闭环并与人类 CLI 结果对照。未获授权前没有任何真机证据，协议保持 v1 候选。P7.4 要冻结支持范围并提交发布候选，依赖 P7.3 的结果。",
+          "unblock": "用户授权后重建双机环境：先跑并入的原 P6.3（公共 API 双机闭环，与 ccnm run --print 对照，据结果确立或修改协议 v1），再做真实项目从启动→修改→测试→结果→停止/恢复的完整验收与生产边界复核，Rust/Python/计划检查/契约测试全部重跑并如实列出失败、跳过与未测平台；随后评审阻塞项、冻结范围、提交发布候选与限制说明。发布、推送、打 tag 另按用户授权执行。"
+        }
+      ]
     },
     {
       "id": "P8",
@@ -532,8 +561,8 @@
     "ccnm rpc 全部为离线验证：没有跟真实 Agent 跑通过一次；Runtime 写互斥与取消的三条判据是结构上继承 launcher/Agent 侧的实现，没有 RPC 层面的独立真机证据。双机闭环见 P6.3。"
   ],
   "handoff": {
-    "next_action": "P7：先做不需要真机的部分——P7.1 通查 README/支持矩阵/usage，删掉超出实际验证的声明（平台、模式、topology、安全级别、Codex pin 与重新测量流程）；P7.2 写配置迁移、安装/回退、状态与日志保留、停止/清理和故障恢复的可执行记录。P7.3 需要用户授权重建双机环境，届时先跑原 P6.3 的公共 API 双机闭环并据结果确立 v1，再做完整 dogfood。P7.4 依赖前三条。未获授权前不重建环境、不消费订阅、不宣称 v1 稳定。",
-    "scope": "仅 P7；发布前收口。P7.3 的真机（含并入的原 P6.3 内容）需要用户单独授权系统与登录相关动作，未获授权前只做离线部分并如实记录未测范围。",
+    "next_action": "P7 仅剩 P7.3/P7.4：P7.1 的公开文档通查与 P7.2 的运维记录已完成（docs/support-matrix.md、README.md、docs/operations.md）。P7.3 需要用户授权重建双机环境，届时先跑并入的原 P6.3（公共 API 双机闭环、与人类 CLI 对照、据结果确立 v1），再做真实项目完整 dogfood 与生产边界复核，最后 P7.4 冻结范围并提交发布候选。未获授权前不重建环境、不消费订阅、不宣称 v1 稳定，也不宣称已发布。",
+    "scope": "仅 P7 的收尾；P7.3 的真机（含并入的原 P6.3）需要用户单独授权系统与登录相关动作。未获授权前只做离线部分并如实记录未测范围。",
     "planning_validation": {
       "at": "2026-09-08T21:22:43+09:00",
       "commands": [
@@ -545,15 +574,15 @@
       "limits": "本轮离线门禁；fodelf SSH 建连失败，没有新增远端资源或运行真实模型，不替代 P3.5。"
     },
     "planning_validation_latest": {
-      "at": "2026-09-10T16:00:00+09:00",
+      "at": "2026-09-10T17:05:00+09:00",
       "commands": [
-        "PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_blackbox_client -q：20 passed",
         "PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p 'test_*.py' -q：74 passed",
         "python3 scripts/check_protocol.py：通过（38 个 fixture）",
         "python3 scripts/check_plan.py：通过",
+        "ccnm workspace remove/controller/stop --help：文档内命令语法逐条核对通过",
         "git diff --check：通过"
       ],
-      "limits": "本轮未修改 Rust，不重跑也不重报 Rust 门禁数字（上一轮 596）。没有真实 provider、没有双机、没有与人类 CLI 的结果对照。"
+      "limits": "本轮只改文档，未修改 Rust，不重跑也不重报 Rust 门禁数字（上一轮 596）。部署、purge、controller install 等需要真机或授权的命令未实际执行。"
     },
     "inherited_changes": [],
     "authorization": "P3 的双机系统授权已执行完毕并归零，不再有效。P4 只写文档与 fixture，未做任何系统变更。P5 起如需账号、ACL、防火墙、部署或替换二进制，必须重新逐项获得批准。",

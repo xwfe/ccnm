@@ -6,7 +6,7 @@ The current pre-release build runs official CLI agents on an **Agent Node** and 
 
 **No source sync. No remote AI credentials. No custom model API client.**
 
-> Status: pre-release dogfood. The architecture has been exercised on two real macOS nodes, but the project is not published yet and configuration may still change.
+> Status: pre-release dogfood, macOS only. Both provider chains have been exercised on two real macOS nodes; the machine API for external programs is implemented but has not yet run against a real agent. Not published yet, and configuration may still change.
 
 ---
 
@@ -16,7 +16,7 @@ The current pre-release build runs official CLI agents on an **Agent Node** and 
 
 **不复制源码，不把 AI 凭证下放到 Runtime Node，也不实现私有模型 API Client。**
 
-> 当前处于发布前 dogfood 阶段。历史双机 macOS 链路已经真机跑通；本次公共 Agent Instance 入口已通过离线门禁，但尚未部署到真实双机复验。准确范围见[支持矩阵](docs/support-matrix.md)。
+> 当前处于发布前 dogfood 阶段，**只支持 macOS**。Claude 和 Codex 两个方向的公共入口都已在授权双机上真机跑通；给外部程序用的 machine API 已经实现，但**还没跟真实 Agent 跑过一次**。准确范围和未验证项见[支持矩阵](docs/support-matrix.md)。
 
 ## 角色模型
 
@@ -101,6 +101,7 @@ read_output
 - [使用说明](docs/usage.md)：run、attach、status、stop、result、prompt
 - [配置说明](docs/configuration.md)：`nodes`、workspace、双向 SSH 字段
 - [支持矩阵](docs/support-matrix.md)：Provider、版本、topology、验收级别与明确拒绝项
+- [公开协议](docs/protocol/README.md)：给外部程序的 machine API 契约与客户端示例
 - [架构说明](docs/architecture.md)：Node / Agent / Runtime / Controller 与 SSH stdio MCP
 - [生产安全](docs/production-safety.md)：`ccrun`、ACL、凭证、sudo、网络出口边界
 - [故障排查](docs/troubleshooting.md)：实际遇到过的运行问题
@@ -109,20 +110,29 @@ read_output
 
 仓库中的大型设计文档属于研发历史，部分旧章节仍会出现 `home/work`，那是历史术语；当前公开模型统一以 **Node + Agent / Runtime / Controller** 为准。
 
-## 当前进展
+## 已经真机验证过什么
 
-已经在两台真实 macOS 机器上 dogfood 验证过：
+在两台真实 macOS 机器上跑通的：
 
-- 持久 SSH stdio MCP session
-- search → read → patch → test → output 闭环
-- tmux 内交互式 Claude Code
-- detached session 与重新 attach
-- Controller 重启不杀正在运行的 session
-- 项目 `CLAUDE.md` 投影
-- 任一 Node 发起 prompt，包括多行 stdin
-- Agent Node 本地读取 `result`
+- 持久 SSH stdio MCP session，search → read → patch → test → output 闭环
+- Claude 和 Codex 两个方向的公共入口：print、interactive、stop、detach/reattach、Controller 重启、链路失败
+- tmux 内交互式会话；detached 之后重新 attach；Controller 重启不杀正在运行的 session
+- 精确 session 寻址、伪造 session 被拒、Runtime 单写 guard 的持有与释放
+- 专用低权限执行身份：能正常用项目，读不到任何已知 Agent 凭据和 SSH 私有状态，没有 sudo/admin，特权 socket 不可写
+- 项目 `CLAUDE.md` 投影；任一 Node 发起 prompt，包括多行 stdin
 
-这些是真实历史基线，不代表当前未部署的 P3 build 已完成公共 Claude/Codex 双链路验收。当前代码另已离线验证 instance 选择、精确 session、Controller/supervisor/tmux 绑定和 Runtime 单写 guard；真实双机与生产身份/ACL/egress 仍是 P3 阻塞项。
+## 还没验证的
+
+- **egress / 网络策略没有逐项验证。** 因此这个项目**不声明任何出口边界**，需要这种保证的场景由 OS 和网络层自己落实。
+- **Ctrl-D 没有证据**：官方 CLI 对该键无响应，只用 `/exit` 覆盖了同一条自然退出路径，两者不等价。
+- **machine API 没跟真实 Agent 跑过一次。** 协议是 v1 候选，不是稳定 v1。
+- colocated 模式没有真实验收，因此明确拒绝，不静默降级。
+
+## 给程序用的接口
+
+要让别的程序驱动 ccnm，用 `ccnm rpc`：stdio 上的 JSON-RPC 2.0，不开网络端口。契约、schema、fixture 和一个可以直接抄走的 Python 客户端见[协议说明](docs/protocol/README.md)。
+
+## 接下来做什么
 
 暂时不继续堆功能，优先用真实项目 dogfood 决定后续契约。Git 专用 MCP 工具、后台长进程、Browser provider、Linux Controller 和多 Agent 编排都放到真实需求出现之后再做。
 

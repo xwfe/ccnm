@@ -71,7 +71,7 @@ ccnm stop demo --agent codex-main --session <ccnm-session-id>
 
 迁移预览目前仅有库 API `configedit::Edit::preview_instance(workspace, &InstanceRef)`，返回候选 TOML，不修改 editor 或磁盘，没有自动迁移命令。已有自定义 `claude_config_dir`、非默认权限或跨 Node 迁移会拒绝机械转换，需先确定语义；其他 workspace 与注释保留。更多约束见 [实例契约](agent-instance-config.md)。
 
-Agent Instance 公共执行已接入现有 Controller/session/SSH MCP，并通过离线门禁；当前 build 尚未完成 P3 双机公共链路和生产隔离验收。不要把“代码可执行”写成“已生产支持”，准确范围见[支持矩阵](support-matrix.md)。
+Agent Instance 公共执行已接入现有 Controller/session/SSH MCP，Claude 和 Codex 两个方向都在授权双机上真机跑通，专用低权限执行身份的凭据隔离也已实测。仍未验证的是 egress/网络策略——因此本项目不声明任何出口边界。不要把“代码可执行”写成“已生产支持”，准确范围见[支持矩阵](support-matrix.md)。
 
 ## 最小的两份配置
 

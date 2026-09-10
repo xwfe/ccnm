@@ -6,16 +6,34 @@
 
 | 配置 / 入口 | 当前状态 | 证据与限制 |
 | --- | --- | --- |
-| legacy Claude，remote SSH MCP，从 Runtime Node 发起 | 预发布支持 | 旧公开命令、Claude v1 wire 与 remote CLI golden 保持兼容；历史双机已真机跑通。当前 P3 build 尚未重新部署验收。 |
+| legacy Claude，remote SSH MCP，从 Runtime Node 发起 | 预发布支持 | 旧公开命令、Claude v1 wire 与 remote CLI golden 保持兼容；双机真机跑通。 |
 | legacy Claude，remote SSH MCP，从 Agent Node 发起 | 预发布支持 | `run` 先委托 Runtime 解析 workspace，`attach/status/result/stop` 继续在 Agent 本机管理已有 session；`--print` 仍需在 Runtime Node 执行。 |
-| Claude Agent Instance，remote SSH MCP | 离线候选 | 默认 instance 与 `--agent`、print/interactive、doctor、精确 session、profile 隔离均有合成/真实进程测试；公共双机 dogfood 待 P3.5。 |
-| Codex Agent Instance，remote SSH MCP | 离线候选 | 仅接受实测的 Codex CLI `0.153.4`；历史 internal 双机链路已真机验证，P3 公共入口只完成离线回归，尚未真机复验。 |
+| Claude Agent Instance，remote SSH MCP | 预发布支持 | 默认 instance 与 `--agent`、print/interactive、doctor、精确 session、profile 隔离均有测试；公共双机 dogfood 已在授权环境真机通过，见下方门禁结果。 |
+| Codex Agent Instance，remote SSH MCP | 预发布支持 | 仅接受实测的 Codex CLI `0.153.4`（见下方版本 pin）；公共入口已在授权双机真机验证。 |
+| Machine API（`ccnm rpc`），`print` 模式 | 候选，未经真机 | 协议是 **v1 候选**，不是稳定 v1。离线单元、集成和黑盒契约测试通过，**但没有跟真实 Agent 跑过一次**。见[协议说明](protocol/README.md)。 |
+| Machine API 的 `interactive` 模式、输出分页、结果过期 | 未实现 | 都不在 `hello` 声明的能力里，调用会被明确拒绝，不静默降级。 |
 | Claude legacy colocated | 明确拒绝 | remote-only 启动参数已从 native 候选命令移除，但 installed Claude 尚未真实验收；本 build 在创建 session 前返回 `CCNM_E_NOT_READY`。 |
 | Claude/Codex Agent Instance colocated | 明确拒绝 | 没有可信 Runtime credential boundary 和真实验收，不自动降级为 legacy/native。 |
 | Codex legacy/internal protocol 2 | 兼容历史 fixture | 只用于保留已有内部测量与回归，不是新的公共配置入口。 |
-| `hybrid-smb`、第三 Provider、Browser/Git 专用 MCP、多 Agent/worktree 编排 | 未实现 | 不属于 P3，不做隐式 fallback。 |
+| `hybrid-smb`、第三 Provider、Browser/Git 专用 MCP、多 Agent/worktree 编排 | 未实现 | 不在当前范围内，不做隐式 fallback。 |
 
-当前目标平台是 macOS。Linux Controller、Windows 和其他官方 CLI 版本均未验收。
+当前目标平台是 **macOS，只有 macOS**。CI 也只跑 macOS，这不是"还没顾上 Linux"：Controller 是 launchd LaunchAgent，会话上下文检查直接问 `launchctl` 和 `security`，一个绿色的 Linux job 测的会是这个程序跑不了的东西。Linux Controller、Windows 和其他官方 CLI 版本均未验收。
+
+## Codex 版本 pin 与重新测量
+
+只接受 `codex-cli 0.153.4`，**精确匹配**。别的版本——包括更新的——在启动前就返回 `CCNM_E_VERSION`，消息是 `Codex <版本> has not been measured; this adapter requires 0.153.4`。
+
+**为什么钉死一个版本。** Codex 的 JSONL 输出形状、参数名和工具开关都是实测出来的，不是它的文档承诺的。某个 patch 版本改掉 JSONL 里一个字段，ccnm 不会报错，只会把结果解析错——而解析错比拒绝启动难发现得多。
+
+**版本变了要重新测量，不是改个常量。** 步骤：
+
+1. 在 Agent Node 装新版本，用官方 CLI 独立登录（不要复制 `~/.codex`）。
+2. `python3 scripts/measure_codex.py <输出目录> inspect` 采集 `--version`、`--help`、工具开关；`inspect` 不启动模型。要采 JSONL 就再跑 `seven-tools`，那一步**会消耗登录额度**，只在一次性 fixture 文件上操作。
+3. 结果落成 `tests/fixtures/codex-<新版本>/`，**不要覆盖旧目录**——旧 fixture 是回归基线。
+4. 改 `crates/ccnm-core/src/provider/codex/mod.rs` 的 `VERSION`，跑 `cargo test -p ccnm-core provider::codex`。
+5. 逐条比对新旧 fixture 的差异，把行为变化写进研究记录。
+
+**第 5 步不能跳。** 跳过它就是把一次未知的行为变更，混进一次看起来只是"升级版本号"的提交里。
 
 ## Agent Instance 入口
 

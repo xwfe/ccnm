@@ -8,7 +8,17 @@
 | [schema/machine-protocol-v1.schema.json](schema/machine-protocol-v1.schema.json) | 每条消息的 JSON Schema |
 | [fixtures/](fixtures/) | 成功、拒绝、断线、未知终态、过期结果的样例消息 |
 
-**当前状态：草案。** 没有任何命令实现它——`ccnm rpc` 是 P5 的事，外部消费者验证和 v1 兼容承诺是 P6 的事。在那之前字段和语义都可能改，不要对外宣称 v1 已稳定。
+**当前状态：草案，有实现。** `ccnm rpc` 已经能说这套协议的 `print` 模式：
+
+```bash
+ccnm rpc
+```
+
+它从 stdin 读、往 stdout 写，没有网络端口。谁能启动这个进程，谁就有这套 API 的全部权限。
+
+**但它还没跟真实 Agent 跑通过一次。** 所有测试都是离线的：单元测试注入替身执行器，集成测试跑真实二进制但每次调用要么在本地预检就失败、要么只读配置。用真实 provider 做双机闭环是 P6.3 的事，v1 兼容承诺也要等到那时。在那之前字段和语义都可能改，不要对外宣称 v1 已稳定。
+
+`interactive` 模式没有实现，也没有出现在 `hello` 的 `capabilities.modes` 里——调用它会得到 `-32013`。
 
 校验 schema 和 fixture：
 

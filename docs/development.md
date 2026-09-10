@@ -14,7 +14,7 @@
 ### 本地跑测试
 
 ```bash
-cargo test --workspace        # 485 个测试，不需要第二台机器，不启动真实 Agent
+cargo test --workspace        # 595 个测试，不需要第二台机器，不启动真实 Agent
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 ```
@@ -31,14 +31,33 @@ P1 的安全收紧有显式差异断言：Claude CLI/策略/旧 wire 仍对照�
 
 P2 用 `cargo test -p ccnm-core --test instance_config` 验证配置、双端 binding、Agent-local profiles 与只读迁移；`cargo test -p ccnm-cli --test instance_closed` 验证公共/内部入口不会把 instance 误当 legacy 执行。profile 文件、目录、auth sentinel 都是合成数据，见 [P2 记录](research/agent-instance-p2-2026-09-08.md)。
 
-P4 的[公开协议草案](protocol/README.md)只有文档、schema 和 fixture，没有实现。改了这三样里的任何一个都要跑：
+[公开协议](protocol/README.md)分两半，改哪半都要跑对应的检查。
+
+契约那半（说明、schema、fixture）：
 
 ```bash
 python3 scripts/check_protocol.py
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_check_protocol -q
 ```
 
-校验脚本只用标准库。它检查 fixture 符合声明的 schema、错误码和说明文档的表一致、每个文档里定义的错误码都有 fixture、schema 里没有拼错的关键字。**通过不代表实现正确**——`ccnm rpc` 是 P5 的事，现在还没有实现。
+校验脚本只用标准库。它检查 fixture 符合声明的 schema、错误码和说明文档的表一致、每个文档里定义的错误码都有 fixture、schema 里没有拼错的关键字。**通过不代表实现正确**，它只证明这几份文件互相自洽。
+
+实现那半（`ccnm rpc`）：
+
+```bash
+cargo test -p ccnm-core --lib rpc::
+cargo test -p ccnm-cli --test rpc
+```
+
+前者测分发器、存储和方法，执行入口用替身；后者跑真实二进制并通过管道对话，验证 stdout 只有协议、日志在 stderr、坏行不打乱流。两边都不启动 Agent，也不拨 ssh。
+
+手动看一眼它说什么：
+
+```bash
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"hello","params":{"client":"me","protocol_versions":["ccnm.machine/1"]}}' '{"jsonrpc":"2.0","id":2,"method":"agents.list"}' | ccnm rpc
+```
+
+**没有真实 Agent 的验收。** 用真 provider 做双机闭环排在 P6.3。
 
 第二阶段先保存了 [Codex 0.153.4 真机测量](research/codex-provider-probe-2026-09-07.md)，尚未开放 provider。`cargo test -p ccnm-core --test codex_measurements` 只检查 fixture，不启动模型；重放/SSH transport 脚本的 7 个离线测试另用 `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p 'test_*codex*.py' -v` 运行。反向真实交互和 tmux 生命周期的证据见 [interactive 测量](research/codex-interactive-reverse-2026-09-07.md)。
 

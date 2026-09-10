@@ -123,6 +123,18 @@ ccnm doctor my-project
 
 进行验证。
 
+## 给程序用的接口
+
+上面这些命令是给人敲的。要让别的程序驱动 ccnm，用 machine API：
+
+```bash
+ccnm rpc
+```
+
+它在 stdin/stdout 上说 JSON-RPC 2.0，一行一条消息，不开网络端口。谁能启动这个进程，谁就有这套 API 的全部权限。
+
+现在能用的是 `print` 模式的完整一轮：握手、列 instance、启动、查状态、取结果、停止。**还没跟真实 Agent 跑通过一次**——所有测试都是离线的。方法、参数、错误码和 fixture 见[协议说明](protocol/README.md)。
+
 ## 当前模型能做什么
 
 核心 MCP 工具：

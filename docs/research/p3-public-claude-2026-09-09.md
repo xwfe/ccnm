@@ -40,9 +40,19 @@ wrapper 必须固定 `CCNM_CONFIG`/`XDG_STATE_HOME`/`TMUX_TMPDIR`。本轮先把
 
 另修改一处 Agent 侧个人配置：`~/.claude` 由 0755 收紧为 **0700**。这是 P1 profile 目录的硬性前置，不改则安全检查拒绝、Agent 不返回 identity；方向是收紧权限，回滚为 `chmod 755 ~/.claude`。
 
+## 向导走完后 interactive 成立
+
+关键对照实验推翻了「tmux 丢了 audit session」这一猜测：在 controller 启动的**同一个 tmux server 里**直接跑官方 `claude --print`，返回 `TMUX_AUTH_OK`。tmux daemonize 后 audit session 确实保留，Keychain 可读，凭据自始至终正常。所以 interactive 停在向导只是官方 CLI 的首次运行 UI 流程，与认证无关；先前据 print 行为推断 interactive 的路径不成立，以本实验为准。
+
+用户在 fodelf 终端 `ccnm attach` 走完向导：官方 CLI 认出既有账号（`Login successful`），随后是安全提示与工作目录信任确认。信任确认前先记录 `~/.claude.json` 原有 53 个 project entry 且本轮路径不在其中，本轮新增的 entry 待验收后精确移除，不动其余条目；记录留在 Agent 目录 `trust-entry-path.txt`。
+
+之后 Claude 进入正常界面（v2.1.267，Opus 5，Claude Max），`status` 转为 `tools connected`。interactive 下实测工具调用：官方 CLI 显示 `Called ccnm 2 times`，返回 `P3_INTERACTIVE_READY`，工具事件以官方 CLI 自身记录为准，不取模型自述。
+
+`theme` 键在两个 `.claude.json` 中始终未出现，但向导已不再重复；本轮不追究官方 CLI 的存储位置，也不代改其配置。
+
 ## 未完成与接续
 
-interactive、detach/reattach、Ctrl-D、Controller 重启与 transport 故障均未取得证据，P3.1/P3.2 不能标记完成。下一步需用户在 fodelf 图形终端手动跑一次 `claude` 走完首次向导（主题、登录确认），使 theme 落盘；之后重跑 interactive 全套。这属于官方 CLI 的用户首次设置，不由 ccnm 代改配置文件。
+interactive 启动与工具调用已成立。仍缺 detach 后的存活复核、reattach、Ctrl-D、Controller 重启与 transport 故障，P3.1/P3.2 不能标记完成；这几项都需要终端控制权，当前 session 仍有用户客户端 attached。
 
 本轮 Controller 由用户在 fodelf 图形终端前台启动（Aqua，PID 22991），未安装 LaunchAgent，未触碰既有的 `dev.ccnm.work-controller`。曾尝试用独立 label 临时 bootstrap，被权限策略拒绝，未绕过。
 

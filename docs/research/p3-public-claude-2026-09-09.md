@@ -74,7 +74,15 @@ P3.1/P3.2 的公共链路证据已齐：probe、print、工具真实性、精确
 
 两项限制如实保留：Ctrl-D 因官方 CLI 无响应未取得证据，仅以 `/exit` 覆盖同一条自然退出路径，不记作 Ctrl-D 通过；本轮是 transport 进程故障注入，不等同物理断网，egress/网络策略仍未逐项验证。
 
-清理待执行：两端部署目录、fodelf SSH alias 与私有备份、Runtime workspace 与测试产物、`~/.claude.json` 中本轮新增的 project entry、上一轮 Codex 方向的 fodelf 临时账号与组，以及本机独立组与 SSH 准入两个 `--revert`。用户前台 controller 需自行 Ctrl-C 结束。`~/.claude` 的 0700 是安全收紧，建议保留，恢复与否由用户决定。
+## 清理执行结果
+
+本机已归零：ccrun 主组还原为 `gid=20(staff)`、本轮独立组删除、SSH 准入移除后 `com.apple.access_ssh` 恢复无直接成员且仅嵌套 admin、home 回到 `ccrun:staff` 0700。追加的公钥行按清单精确移除 183 字节，原有 96 字节保留（不盲目回滚整份 authorized_keys），root 清单 `/var/db/ccnm-p3-local-20260908` 删除。两端 SSH config 的本轮 alias 区块各自精确移除（本机 88→77 行、fodelf 43→32 行），其余 Host 条目完整。本机 SSH config 前置本轮 block 期间把 OrbStack 的说明行挤离首位，移除后已回到原位。
+
+两端部署目录、Runtime workspace 与测试产物、两轮 `/Users/Shared/ccnm-p3-*`、本机一次性密钥与临时日志脚本、`~/.claude.json` 中本轮新增的 project entry（1→0，旧文件 53 条未动）均已清除。`~/.claude` 按用户要求恢复为 0755。
+
+追加公钥的脚本原先只有 `--apply`，清理阶段才发现缺逆操作，已补 `p3-revoke-local-runtime-key.sh`。账号清理脚本同样原先不存在，补为 `p3-cleanup-runtime-user.sh`；其首版用了 `mapfile` 与关联数组，在 macOS 自带 bash 3.2 上直接 `command not found`——`bash -n` 查不出这类问题，已改写并新增静态检查拦截 bash 4+ 特性。
+
+仍未归零：fodelf 临时账号 `ccnmp3test`、其独立组、home 与 root 清单 `/var/db/ccnm-p3-account-20260908`，以及存放清理脚本的 `/tmp/ccnm-p3-setup.TnaRle`。删除账号需要用户 sudo 执行 `p3-cleanup-runtime-user.sh --apply`；UID550 已无活动进程，前置条件满足。P3 在此归零前保持未完成。
 
 本轮 Controller 由用户在 fodelf 图形终端前台启动（Aqua，PID 22991），未安装 LaunchAgent，未触碰既有的 `dev.ccnm.work-controller`。曾尝试用独立 label 临时 bootstrap，被权限策略拒绝，未绕过。
 

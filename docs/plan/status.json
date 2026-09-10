@@ -318,8 +318,8 @@
           "criteria": [
             "P3.5"
           ],
-          "reason": "身份隔离与两方向公共链路均已真机通过，但P3.5要求的最终清理尚未执行：两端部署目录、fodelf SSH alias与备份、Runtime workspace与测试产物、~/.claude.json本轮project entry、上一轮fodelf临时账号与组、本机独立组与SSH准入两个--revert都还在。清理未归零不能标记完成。另：Ctrl-D因官方CLI无响应未取得证据（已用/exit覆盖同路径但不等价），egress/网络策略仍未逐项验证。",
-          "unblock": "按资源清单逆序清理并复核归零：可无特权执行的部分由本会话完成，两个本机--revert与fodelf账号/组删除需用户sudo执行；controller由用户Ctrl-C结束。清理后记录无法清理项与原因。"
+          "reason": "身份隔离与两方向公共链路均已真机通过，清理已完成绝大部分：本机主组/准入/公钥行/root清单全部还原归零，两端部署目录、workspace、临时资源、SSH alias区块与project entry均已清除。仅剩fodelf临时账号ccnmp3test及其独立组、home、root清单和存放清理脚本的setup目录未删，需用户sudo执行。另：Ctrl-D因官方CLI无响应未取得证据（已用/exit覆盖同路径但不等价），egress/网络策略仍未逐项验证。",
+          "unblock": "用户在fodelf执行 sudo /bin/bash /tmp/ccnm-p3-setup.TnaRle/cleanup-runtime-user.sh --apply（UID550已无活动进程，前置满足）；随后本会话删除setup目录并做最终归零复核，记录无法清理项与原因。"
         }
       ]
     },
@@ -404,7 +404,7 @@
     "P3 额外 64 线程压力出现既有 exec timeout 单测 30.5s 失败；默认全量 511 通过，高并发问题尚未解决。"
   ],
   "handoff": {
-    "next_action": "仅P3：两方向公共链路已全部真机通过（Codex见p3-public-codex-2026-09-08.md，Claude见p3-public-claude-2026-09-09.md）。剩最终清理：可无特权部分由会话执行，需用户sudo的是本机 p3-isolate-local-runtime-group.sh --revert 与 p3-grant-local-ssh-access.sh --revert，以及fodelf临时账号/组删除；controller由用户Ctrl-C结束。清理归零并记录无法清理项后方可标记P3完成。勿进入P4。",
+    "next_action": "仅P3：两方向公共链路已全部真机通过（Codex见p3-public-codex-2026-09-08.md，Claude见p3-public-claude-2026-09-09.md）。本机清理已归零（主组/准入/公钥行/root清单全部还原）。仅剩用户在fodelf执行 sudo /bin/bash /tmp/ccnm-p3-setup.TnaRle/cleanup-runtime-user.sh --apply 删除临时账号ccnmp3test及其组/home/清单，之后本会话删setup目录并做最终归零复核，才可标记P3完成。勿进入P4。",
     "scope": "仅 P3；不进入 P4/Machine API，不引入多 Agent/worktree 调度，不主动部署、登录或修改账号/ACL/防火墙。",
     "planning_validation": {
       "at": "2026-09-08T21:22:43+09:00",

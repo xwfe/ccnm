@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-09-10T19:50:00+09:00",
+  "last_updated": "2026-09-10T21:00:00+09:00",
   "current_task": "P7",
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
@@ -500,7 +500,7 @@
       ],
       "owner": null,
       "started_at": "2026-09-10T16:20:00+09:00",
-      "last_updated": "2026-09-10T19:50:00+09:00",
+      "last_updated": "2026-09-10T21:00:00+09:00",
       "completed_criteria": [
         "P7.1",
         "P7.2"
@@ -521,6 +521,14 @@
           ],
           "ref": "docs/protocol/README.md",
           "result": "P7.1 第二遍通查补上三处，均在公开契约文档里：（1）协议说明的错误码表列了 -32008 busy，但实现从不返回它——wire.rs 的 from_ccnm 映射表没有这个分支，仓库里两处 code::BUSY 都在测试中；根因是工作树写入 guard 由 Runtime 侧 MCP 进程在会话跑起来之后才获取，session.start 那一刻不检查，所以工作树被占的实际表现是会话起来了然后失败，按 -32008 写退避重试的客户端等不到这个码。已加入\"实现得比契约少\"清单，并在说明表下、fixture 的 $note 与参考客户端的常量处各写明一次。（2）protocol/README 仍写\"因为现在还没有实现\"，与同一文件开头的\"草案，有实现\"自相矛盾，是 P4 的遗留；改为写清 check_protocol.py 证明的是几份文件互相自洽、不是实现与它们一致，并以 -32008 为例。（3）同文件仍写真机闭环是 P6.3 的事，与本轮 P6.3 并入 P7.3 的决定不符，已改。限制：只改文档，未改实现；是否要给 session.start 增加工作树占用预检以真正返回 -32008，属于会改变对外行为的产品决定，留给用户在 P7.4 冻结范围前定夺。"
+        },
+        {
+          "kind": "offline",
+          "criteria": [
+            "P7.1"
+          ],
+          "ref": "crates/ccnm-core/src/provider/result.rs",
+          "result": "把\"契约里有、实现里没有\"从碰运气改成系统查，三个方向都过了一遍。错误码：按 mod tests 之前/之后切分生产代码与测试代码逐个统计 code:: 引用，19 个码里只有 -32008 从不产生，与上一条findings一致，没有第二个。字段：从 schema 抽出全部响应属性名反查实现，只剩 expires_at 未出现，而它已在\"实现得比契约少\"清单里；反方向（实现写、schema 没声明）为零，README 那句\"都是实现得比契约少，没有反过来的\"成立。capability：文档四个键 modes/session_output/start_key/stop 与实现广播的完全一致。查出并修好一处：session.result 的 usage/cost 被生产转换写死为 None，而两个 provider 都已解析（Claude 的 parser 有 34/137 与 0.19 的断言），下游序列化本就写好，只是没有值可序列化——属于接线没做完而非设计取舍，协议当初承诺 usage 正因为这数据存在。已给 AgentResult 补 tokens()/total_cost_usd() 并接上；全零视为\"没报\"而不是测得为零（两种结果文档都把缺失字段默认成零，发一个没人测过的数比不发更糟）；cost 仅 Claude 有，Codex 文档无此字段故永远缺席。新增 6 个 Rust 测试。门禁：fmt 通过、clippy -D warnings 不接管道单独跑退出码 0、cargo test --workspace 602 passed / 0 failed、Python 113 passed、check_protocol 38 个 fixture 通过、check_plan 通过。限制：usage/cost 端到端真的到达调用方仍未经真实 provider 验证，留给 P7.3。"
         },
         {
           "kind": "review",
@@ -599,15 +607,17 @@
       "limits": "本轮离线门禁；fodelf SSH 建连失败，没有新增远端资源或运行真实模型，不替代 P3.5。"
     },
     "planning_validation_latest": {
-      "at": "2026-09-10T18:30:00+09:00",
+      "at": "2026-09-10T21:00:00+09:00",
       "commands": [
-        "PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_p7_parity -q：30 passed",
-        "PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p 'test_*.py' -q：104 passed",
+        "cargo fmt --all --check：通过",
+        "cargo clippy --workspace --all-targets -- -D warnings：退出码 0（未接管道）",
+        "cargo test --workspace：602 passed / 0 failed",
+        "PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p 'test_*.py' -q：113 passed",
         "python3 scripts/check_protocol.py：通过（38 个 fixture）",
         "python3 scripts/check_plan.py：通过",
         "git diff --check：通过"
       ],
-      "limits": "本轮只加 Python 与文档，未修改 Rust，不重跑也不重报 Rust 门禁数字（上一轮 596）。对照工具的成功路径由假二进制离线覆盖，没有跑过任何真实 provider、双机或订阅额度；会话计划里除该工具外的命令均未在真机执行。"
+      "limits": "全部离线。真实 provider、双机、订阅额度下的行为一概未验证：对照工具没碰过真 Agent，usage/cost 端到端未验，写入 guard 释放窗口的实际时长未测。会话计划里除对照工具外的命令均未在真机执行。"
     },
     "inherited_changes": [],
     "authorization": "P3 的双机系统授权已执行完毕并归零，不再有效。P4 只写文档与 fixture，未做任何系统变更。P5 起如需账号、ACL、防火墙、部署或替换二进制，必须重新逐项获得批准。",

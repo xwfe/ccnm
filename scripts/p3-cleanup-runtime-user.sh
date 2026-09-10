@@ -22,10 +22,12 @@ account_uid=550
 home=/Users/ccnmp3test
 record=/var/db/ccnm-p3-account-20260908
 
-# macOS 给 /Users 和 /var/db 设了 sunlnk（system no-unlink）：连 root 都不能删除或改名
-# 其中的条目，rmdir 直接报 "Operation not permitted"——本轮第一次执行就卡在这里。删本轮
-# 自己建的目录时临时摘掉父目录的这个 flag，删完立刻装回去，并复核装回成功；trap 保证脚本
-# 异常退出也不会把系统目录留在无保护状态。只动这一个 flag，不碰权限、属主，不递归。
+# macOS 给 /Users 和 /var/db 都设了 sunlnk（system no-unlink）：连 root 都不能删除或改名
+# 其中的条目，rmdir 直接报 "Operation not permitted"——本轮实际踩到两次。/var/db 可以临时
+# 摘掉这个 flag（下面这个函数），/Users 不行，它列在 SIP 的 rootless.conf 里，chflags 本身
+# 就被拒绝，那条路径改用 sysadminctl，见下文。
+# 摘 flag 后立刻装回并复核装回成功；trap 保证脚本异常退出也不会把系统目录留在无保护状态。
+# 只动这一个 flag，不碰权限、属主，不递归。
 sunlnk_set() {
     stat -f %Sf "$1" | grep -qw sunlnk
 }
@@ -96,15 +98,14 @@ if [[ $action == --check ]]; then
     echo "Preflight OK; nothing removed."
     printf 'account=%s uid=%s gid=%s home=%s\n' "$account" "$account_uid" "$gid_now" "$home"
     printf 'recorded ssh paths=%s dedicated group recorded=%s\n' "$recorded_count" "$group_recorded"
-    for parent in "${home%/*}" "${record%/*}"; do
-        if sunlnk_set "$parent"; then
-            printf 'apply will briefly clear sunlnk on %s and restore it\n' "$parent"
-        fi
-    done
+    printf 'apply will delete the account and home with: sysadminctl -deleteUser %s\n' "$account"
+    if sunlnk_set "${record%/*}"; then
+        printf 'apply will briefly clear sunlnk on %s and restore it\n' "${record%/*}"
+    fi
     exit 0
 fi
 
-# 逆序：先撤授权（文件在目录之前），再删空 home，最后账号与组。
+# 逆序：先撤授权（文件在目录之前），再删账号与 home，最后组和清单。
 # 从文件重定向而非管道，循环体才留在当前 shell，里面的 exit 才有效。
 reversed=$(sed -n '1!G;h;$p' "$recorded_file")
 while IFS= read -r p; do
@@ -114,8 +115,27 @@ while IFS= read -r p; do
     if [[ -d $p ]]; then rmdir "$p"; elif [[ -e $p ]]; then rm "$p"; fi
 done <<< "$reversed"
 [[ -z $(ls -A "$home") ]] || { echo "$home not empty after recorded cleanup" >&2; exit 1; }
-rmdir_in_protected_parent "$home"
-dscl . -delete "/Users/$account"
+
+# /Users 列在 SIP 的 rootless.conf 里，连 root 都改不了它的 flag（实测
+# chflags: /Users: Operation not permitted），所以摘 sunlnk 这条路对 home 不成立。
+# 删账号和 home 改用 Apple 自己的 sysadminctl：它带 SIP entitlement，是系统设置里
+# 删用户走的同一条路，一步同时删目录记录和 home。上面已经核对过 home 为空、属性与
+# 清单一致，这里不会连带删到别的东西。不加 -secure（安全擦除对空目录没有意义）。
+sysadminctl -deleteUser "$account" || true
+dscacheutil -flushcache
+# sysadminctl 失败时也可能返回 0，只认实际结果：账号记录和 home 都必须消失。
+if dscl . -read "/Users/$account" RecordName >/dev/null 2>&1; then
+    echo "sysadminctl did not remove $account. If it asked for administrator authentication," >&2
+    echo "run this in the fodelf login terminal: sudo sysadminctl -deleteUser $account interactive" >&2
+    exit 1
+fi
+[[ ! -e $home ]] || { echo "$home still exists after -deleteUser" >&2; exit 1; }
+# -deleteUser 有时会把 home 挪进 Deleted Users（或打包成 dmg）而不是删掉，那样并没有
+# 归零。发现就停手并保留清单，交人工处理，不自己去动那个目录。
+if ls -d "/Users/Deleted Users/$account"* >/dev/null 2>&1; then
+    echo "-deleteUser left this round's home under /Users/Deleted Users; not zeroed" >&2
+    exit 1
+fi
 
 if [[ $group_recorded == yes ]]; then
     # 只有确认没有其他账号还把 550 当主组，才删这个组。

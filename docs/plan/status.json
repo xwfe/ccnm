@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-09-10T13:05:00+09:00",
+  "last_updated": "2026-09-10T13:20:00+09:00",
   "current_task": "P5",
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
@@ -380,13 +380,13 @@
     {
       "id": "P5",
       "title": "本地 stdio Machine API",
-      "status": "pending",
+      "status": "in_progress",
       "depends_on": [
         "P4"
       ],
-      "owner": null,
-      "started_at": null,
-      "last_updated": "2026-09-07T23:22:36+09:00",
+      "owner": "Claude / P5 local stdio machine API",
+      "started_at": "2026-09-10T13:20:00+09:00",
+      "last_updated": "2026-09-10T13:20:00+09:00",
       "completed_criteria": [],
       "evidence": [],
       "blockers": []

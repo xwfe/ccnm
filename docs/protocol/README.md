@@ -16,9 +16,9 @@ ccnm rpc
 
 它从 stdin 读、往 stdout 写，没有网络端口。谁能启动这个进程，谁就有这套 API 的全部权限。
 
-**两个 provider 各跑通过一次真机闭环，但协议还没冻结。** 除了离线测试（单元测试注入替身执行器，集成测试跑真实二进制但每次调用要么在本地预检就失败、要么只读配置），Claude 与 Codex 各做过一次真机双机闭环，并与人类 CLI 走同一件事做副作用对照——两条腿的产物属主相同，`usage` 端到端到达调用方（记录见 [Claude](../research/p7-real-machine-2026-09-10.md) 与 [Codex](../research/p7-codex-parity-2026-09-10.md)）。冻结本身是 P7.5 的动作，**在那之前字段和语义仍可能改，不要对外宣称 v1 已稳定**。
+**`ccnm.machine/1` 已于 2026-09-10 冻结。** 依据是两个 provider 各跑通过一次真机双机闭环，并与人类 CLI 走同一件事做副作用对照——两条腿的产物属主相同，`usage` 端到端到达调用方（记录见 [Claude](../research/p7-real-machine-2026-09-10.md) 与 [Codex](../research/p7-codex-parity-2026-09-10.md)）。往后加字段、加方法、加非终态可以；删字段、改语义、加终态要升到 `ccnm.machine/2`，规则见[协议第 13 节](machine-protocol-v1.md#13-兼容规则)。
 
-当前实现与契约的差距，都是"实现得比契约少"，没有反过来的：
+冻结的是**契约**。实现仍然比契约少，下面这份清单就是差在哪里——补上它们属于加法，不需要升版本，也不违反冻结。差距全是这个方向，没有反过来的：
 
 - `interactive` 模式没有实现，也不在 `hello` 的 `capabilities.modes` 里——调用它得到 `-32013`。
 - 输出**不分页**：`session.result` 一次给最后 8 KiB，`cursor` 永远是 `null`。把任何游标填回去都会得到 `-32012`，因为这个 build 从没发过游标。
@@ -33,7 +33,7 @@ python3 scripts/check_protocol.py
 
 只用 Python 标准库，不需要装任何东西。它检查 fixture 符合声明的 schema、错误码和说明文档一致、schema 自己没有拼错的关键字。
 
-**它证明的是这几份文件互相自洽，不是 `ccnm rpc` 的行为和它们一致。** 那要靠 `tests/test_blackbox_client.py` 的契约测试（只走字节流），以及还没做的真机闭环。上面 `-32008` 那条就是这个区别的例子：fixture 和说明文档对得上，实现却从不发它。
+**它证明的是这几份文件互相自洽，不是 `ccnm rpc` 的行为和它们一致。** 那要靠 `tests/test_blackbox_client.py` 的契约测试（只走字节流）和上面那两次真机闭环。上面 `-32008` 那条就是这个区别的例子：fixture 和说明文档对得上，实现却从不发它。
 
 ## fixture 的格式
 

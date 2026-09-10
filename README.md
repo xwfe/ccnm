@@ -6,7 +6,7 @@ The current pre-release build runs official CLI agents on an **Agent Node** and 
 
 **No source sync. No remote AI credentials. No custom model API client.**
 
-> Status: pre-release dogfood, macOS only. Both provider chains have been exercised on two real macOS nodes; the machine API for external programs is implemented but has not yet run against a real agent. Not published yet, and configuration may still change.
+> Status: release candidate, macOS only. Both provider chains have been exercised on real macOS nodes, and the machine API has now closed the loop against a real agent once per provider, compared against the human CLI by side effect. The `ccnm.machine/1` contract is frozen as of 2026-09-10. Not published yet.
 
 ---
 
@@ -16,7 +16,7 @@ The current pre-release build runs official CLI agents on an **Agent Node** and 
 
 **不复制源码，不把 AI 凭证下放到 Runtime Node，也不实现私有模型 API Client。**
 
-> 当前处于发布前 dogfood 阶段，**只支持 macOS**。Claude 和 Codex 两个方向的公共入口都已在授权真机上跑通；给外部程序用的 machine API 也已用两个 provider 各跑通一次真机闭环，并与人类 CLI 做过副作用对照，但协议**仍是 v1 候选、尚未冻结**。准确范围和未验证项见[支持矩阵](docs/support-matrix.md)。
+> 当前是**发布候选**，**只支持 macOS**。Claude 和 Codex 两个方向的公共入口都已在授权真机上跑通；给外部程序用的 machine API 也已用两个 provider 各跑通一次真机闭环并与人类 CLI 做过副作用对照，协议 `ccnm.machine/1` **已于 2026-09-10 冻结**。准确范围和未验证项见[支持矩阵](docs/support-matrix.md)。
 
 ## 角色模型
 
@@ -126,7 +126,7 @@ read_output
 
 - **egress / 网络策略没有逐项验证。** 因此这个项目**不声明任何出口边界**，需要这种保证的场景由 OS 和网络层自己落实。
 - **Ctrl-D 没有证据**：官方 CLI 对该键无响应，只用 `/exit` 覆盖了同一条自然退出路径，两者不等价。
-- **machine API 没跟真实 Agent 跑过一次。** 协议是 v1 候选，不是稳定 v1。
+- **machine API 的 `interactive` 模式没有实现**，输出不分页、结果不过期、`-32008` 从不返回。协议 `ccnm.machine/1` 已冻结，但冻结的是契约，不是说这些已经补上——补它们属于加法。
 - colocated 模式没有真实验收，因此明确拒绝，不静默降级。
 
 ## 给程序用的接口

@@ -1,6 +1,7 @@
 #!/bin/bash
 # 按 root 清单逆序清理本轮 fodelf 临时 Runtime 账号：SSH 授权 → home → 账号 → 独立组 → 清单。
 # 只删清单记录过的对象；发现未记录残留或属性不符就停下等人工处理，不递归删除、不猜测。
+# 中途失败后可以直接重跑：已经删掉的记录路径会被跳过，前置核对每次重新做。
 set -euo pipefail
 export PATH=/usr/bin:/bin:/usr/sbin:/sbin
 umask 077
@@ -20,6 +21,30 @@ account=ccnmp3test
 account_uid=550
 home=/Users/ccnmp3test
 record=/var/db/ccnm-p3-account-20260908
+
+# macOS 给 /Users 和 /var/db 设了 sunlnk（system no-unlink）：连 root 都不能删除或改名
+# 其中的条目，rmdir 直接报 "Operation not permitted"——本轮第一次执行就卡在这里。删本轮
+# 自己建的目录时临时摘掉父目录的这个 flag，删完立刻装回去，并复核装回成功；trap 保证脚本
+# 异常退出也不会把系统目录留在无保护状态。只动这一个 flag，不碰权限、属主，不递归。
+sunlnk_set() {
+    stat -f %Sf "$1" | grep -qw sunlnk
+}
+
+rmdir_in_protected_parent() {
+    local target=$1
+    local parent=${target%/*}
+    if ! sunlnk_set "$parent"; then
+        rmdir "$target"
+        return
+    fi
+    # trap 在设置时就把路径展开进字符串：函数的 local 变量到脚本退出时已经不在了。
+    trap "chflags sunlnk '$parent'" EXIT
+    chflags nosunlnk "$parent"
+    rmdir "$target"
+    chflags sunlnk "$parent"
+    trap - EXIT
+    sunlnk_set "$parent" || { echo "Failed to restore sunlnk on $parent" >&2; exit 1; }
+}
 
 # 清单是唯一授权依据：没有它就无法证明这些对象属于本轮，拒绝动手。
 [[ ! -L $record && -d $record ]] || { echo "Missing this round's record $record" >&2; exit 1; }
@@ -71,6 +96,11 @@ if [[ $action == --check ]]; then
     echo "Preflight OK; nothing removed."
     printf 'account=%s uid=%s gid=%s home=%s\n' "$account" "$account_uid" "$gid_now" "$home"
     printf 'recorded ssh paths=%s dedicated group recorded=%s\n' "$recorded_count" "$group_recorded"
+    for parent in "${home%/*}" "${record%/*}"; do
+        if sunlnk_set "$parent"; then
+            printf 'apply will briefly clear sunlnk on %s and restore it\n' "$parent"
+        fi
+    done
     exit 0
 fi
 
@@ -84,7 +114,7 @@ while IFS= read -r p; do
     if [[ -d $p ]]; then rmdir "$p"; elif [[ -e $p ]]; then rm "$p"; fi
 done <<< "$reversed"
 [[ -z $(ls -A "$home") ]] || { echo "$home not empty after recorded cleanup" >&2; exit 1; }
-rmdir "$home"
+rmdir_in_protected_parent "$home"
 dscl . -delete "/Users/$account"
 
 if [[ $group_recorded == yes ]]; then
@@ -97,5 +127,5 @@ if [[ $group_recorded == yes ]]; then
 fi
 
 rm "$record"/*
-rmdir "$record"
+rmdir_in_protected_parent "$record"
 echo "Temporary account, home and record removed. fodelf's own account is untouched."

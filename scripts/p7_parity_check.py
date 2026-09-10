@@ -290,7 +290,11 @@ def run_machine_api(
             leg["outcome"] = result.get("outcome")
             leg["provider"] = (result.get("agent") or {}).get("provider")
             leg["provider_session_id_present"] = "provider_session_id" in result
+            # 只记不判。两条腿的提示词不一样（文件名带各自的 leg），token 数
+            # 本来就不该相同，拿它做判据没意义。但这两个字段是刚接通的，真机
+            # 那次的记录里有没有数字，是它端到端通没通的唯一证据。
             leg["usage"] = result.get("usage")
+            leg["cost"] = result.get("cost")
             leg["text_tail"] = (result.get("text") or "")[-2000:]
     except TimeoutError as exc:
         leg["reason"] = f"轮询超时：{exc}"
@@ -460,7 +464,8 @@ def main() -> int:
     )
     machine_effect = check_side_effect(targets["api"], token)
     print(f"  {'ok' if machine['ok'] else '失败'}：{machine.get('reason') or 'completed'}"
-          f" / 产物 {'对' if machine_effect['matches'] else '不对'}")
+          f" / 产物 {'对' if machine_effect['matches'] else '不对'}"
+          f" / usage {machine.get('usage') or '无'} cost {machine.get('cost') or '无'}")
 
     leaked = scan_for_private(machine["responses"], str(Path.home()))
     checks = build_checks(human, human_effect, machine, machine_effect, leaked, args.provider)

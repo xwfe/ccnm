@@ -181,7 +181,7 @@ session 目录）；config 里写的Runtime Node ccnm 路径是真被跑的那�
 ### 两台机器的开发循环
 
 ```bash
-scripts/deploy.sh <另一台的 ssh 别名> [workspace]
+bash scripts/deploy.sh <另一台的 ssh 别名> [workspace]
 ```
 
 在有 Rust toolchain 的那台上跑（通常是Agent Node，Runtime Node常常没装 cargo）。它编译、按

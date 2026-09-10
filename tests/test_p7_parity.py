@@ -22,6 +22,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 from p7_parity_check import (  # noqa: E402
     blames_the_guard,
+    resolve_agent,
     build_checks,
     check_side_effect,
     clear_target,
@@ -195,6 +196,44 @@ class GuardTests(unittest.TestCase):
 
     def test_a_successful_leg_never_blames_the_guard(self):
         self.assertFalse(blames_the_guard({"ok": True, "text_tail": "write guard"}))
+
+
+class ResolveAgentTests(unittest.TestCase):
+    """把 --instance 补成协议要的 {node, instance}。
+
+    session.start 的 agent.node 是必填的，哪怕调用方不许换机器——真机第一轮就
+    栽在只给 instance 上，回 -32602。
+    """
+
+    LISTED = [
+        {"node": "agent", "instance": "claude-main", "workspaces": ["p7parity"]},
+        {"node": "agent", "instance": "codex-main", "workspaces": ["other"]},
+    ]
+
+    def test_neither_given_means_use_the_configured_default(self):
+        self.assertIsNone(resolve_agent(self.LISTED, None, None))
+
+    def test_instance_alone_gets_its_node_looked_up(self):
+        self.assertEqual(
+            resolve_agent(self.LISTED, None, "claude-main"),
+            {"node": "agent", "instance": "claude-main"},
+        )
+
+    def test_both_given_are_passed_through(self):
+        self.assertEqual(
+            resolve_agent(self.LISTED, "agent", "claude-main"),
+            {"node": "agent", "instance": "claude-main"},
+        )
+
+    def test_an_unknown_instance_stops_rather_than_guessing(self):
+        with self.assertRaises(SystemExit):
+            resolve_agent(self.LISTED, None, "nosuch")
+
+    def test_an_ambiguous_instance_stops_rather_than_picking_one(self):
+        """同名 instance 在两个 node 上：挑错 node 比报错糟得多。"""
+        listed = self.LISTED + [{"node": "other-node", "instance": "claude-main"}]
+        with self.assertRaises(SystemExit):
+            resolve_agent(listed, None, "claude-main")
 
 
 class SideEffectTests(unittest.TestCase):

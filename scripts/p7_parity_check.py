@@ -236,6 +236,28 @@ def run_human_cli(
     }
 
 
+def resolve_agent(
+    listed: list[dict[str, Any]], node: str | None, instance: str | None
+) -> dict[str, str] | None:
+    """把 `--instance` 补成协议要的完整 `{node, instance}`。
+
+    两个都没给就返回 None，让服务端用 workspace 配置的默认绑定。给了 instance
+    没给 node 时从 `agents.list` 里查：同名 instance 恰好一条就用它的 node，
+    一条都没有或不止一条就不猜——报错让人去看，比挑一个错的 node 强。
+    """
+    if instance is None:
+        return {"node": node} if node else None
+    if node:
+        return {"node": node, "instance": instance}
+    matches = {entry["node"] for entry in listed if entry.get("instance") == instance}
+    if len(matches) != 1:
+        raise SystemExit(
+            f"agents.list 里 instance={instance} 匹配到 {len(matches)} 个 node，"
+            "用 --node 指明是哪个"
+        )
+    return {"node": matches.pop(), "instance": instance}
+
+
 def run_machine_api(
     ccnm: str,
     config: str | None,
@@ -252,14 +274,6 @@ def run_machine_api(
     键"，这里正好自己吃一次：真机会话中途断了，凭键就能找回同一个 session，
     不会重复消耗一次额度。
     """
-    agent = None
-    if node or instance:
-        agent = {}
-        if node:
-            agent["node"] = node
-        if instance:
-            agent["instance"] = instance
-
     leg: dict[str, Any] = {"ok": False, "reason": None, "responses": []}
     started = time.monotonic()
     try:
@@ -271,6 +285,12 @@ def run_machine_api(
 
             listed = client.agents_list()
             leg["responses"].append({"agents": listed})
+
+            # `session.start` 的 agent 里 node 是必填的，哪怕调用方根本不许换机
+            # 器——不填回 -32602。所以只给 instance 时自己去 agents.list 查它绑
+            # 在哪个 node 上，而不是让操作者手抄一遍。真机第一轮就栽在这儿。
+            agent = resolve_agent(listed, node, instance)
+            leg["agent_requested"] = agent
 
             begun = client.session_start(
                 workspace=workspace,

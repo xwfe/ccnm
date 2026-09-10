@@ -141,7 +141,7 @@ ccnm my-project
 两台 Node 必须部署**同一个二进制 build**。仅比较 Cargo 版本号不足以区分两个都叫 `0.2.0`、但代码不同的本地 build，因此开发阶段优先使用仓库的部署脚本：
 
 ```bash
-scripts/deploy.sh <other-node-ssh-alias>
+bash scripts/deploy.sh <other-node-ssh-alias>
 ```
 
 脚本会使用新文件 + rename 的方式替换二进制，并按当前 `ccnm controller` 接口重启 Controller。

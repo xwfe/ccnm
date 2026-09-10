@@ -15,10 +15,42 @@
 这是 doctor 拦下来的，不是协议层拦的——协议只在**协议号**不同时才拒。所以版本不同的两端有可能跑起来，只是没人验证过那种组合，别让它发生。
 
 ```bash
-scripts/deploy.sh <另一台的 ssh 别名> [workspace]
+bash scripts/deploy.sh <另一台的 ssh 别名> [workspace]
 ```
 
 在有 Rust toolchain 的那台上跑。它编译、装两边、重启 controller、最后跑一次 `ccnm doctor`。**正在跑的会话不受影响**——tmux server 在自己的进程组里。
+
+### 升级完一定要核对 controller 的进程启动时间
+
+**`ccnm controller install` 不会替换一个已经在监听的 controller。** 它看到有人在听就报告那一个，输出长这样：
+
+```text
+listening: ccnm 0.2.0 as fodelf, pid 1716, Aqua
+```
+
+读起来像刚重启过，实际那个 pid 可能是好几天前起的，跑的还是旧二进制。`ccnm doctor` 也抓不到——它显示的 `0.2.0` 是版本字符串，同一个版本号的新旧构建长得一模一样。
+
+症状出现在别的地方，而且不指向 controller：
+
+```text
+Claude Code             FAIL   CCNM_E_VERSION: remote ccnm speaks protocol 3, this one speaks 1
+Claude authentication   FAIL   CCNM_E_VERSION: remote ccnm speaks protocol 3, this one speaks 1
+```
+
+所以升级后自己核对一次，比对二进制的 mtime 和进程的启动时间：
+
+```bash
+ssh <agent> 'stat -f "%N %Sm" -t "%Y-%m-%d %H:%M" ~/.local/bin/ccnm; ccnm controller status'
+ssh <agent> 'ps -o pid=,lstart=,command= -p <上面那个 pid>'
+```
+
+进程比二进制还老就是没换掉。真正的重启是先卸再装：
+
+```bash
+ssh <agent> 'ccnm controller uninstall && ccnm controller install'
+```
+
+`uninstall` 会移除 plist 和 socket，但**不保证旧进程退出**：更老的构建里这个子命令叫 `internal work-controller`，launchd 的当前标签管不到它，卸载之后它会作为孤儿进程留着。socket 已经没了，所以它不会再被连上，但要彻底干净就自己确认一次并按 pid 结束它。
 
 ### 千万不要 `cp` 覆盖正在用的二进制
 
@@ -41,7 +73,7 @@ mv ~/.local/bin/ccnm.new ~/.local/bin/ccnm
 
 ```bash
 git checkout <旧的 tag 或 commit>
-scripts/deploy.sh <另一台的 ssh 别名>
+bash scripts/deploy.sh <另一台的 ssh 别名>
 ```
 
 两边必须一起退。只退一边的话，下一次 `ccnm doctor` 会把它标成 FAIL——但那是 doctor 在看，没有任何东西会在运行时拦住你，所以别指望它兜底。退完重启 controller（`deploy.sh` 会做），已有会话不受影响。

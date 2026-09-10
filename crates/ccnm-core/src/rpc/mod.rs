@@ -10,6 +10,7 @@
 //! background thread and answers with a handle, which is what lets a client
 //! disconnect and come back for the result later.
 
+pub mod store;
 pub mod wire;
 
 use std::collections::BTreeMap;

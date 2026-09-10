@@ -36,17 +36,39 @@ sunlnk_set() {
 rmdir_in_protected_parent() {
     local target=$1
     local parent=${target%/*}
+    # 父目录带 sunlnk 不等于一定删不掉，先直接试，别为了猜测去动系统目录的 flag。
+    if rmdir "$target" 2>/dev/null; then
+        return
+    fi
     if ! sunlnk_set "$parent"; then
-        rmdir "$target"
+        rmdir "$target"     # 不是 sunlnk 的问题，让真实错误打出来
         return
     fi
     # trap 在设置时就把路径展开进字符串：函数的 local 变量到脚本退出时已经不在了。
     trap "chflags sunlnk '$parent'" EXIT
-    chflags nosunlnk "$parent"
+    if ! chflags nosunlnk "$parent" 2>/dev/null; then
+        trap - EXIT
+        echo "Cannot remove $target: $parent has sunlnk and SIP refuses to clear it" >&2
+        exit 1
+    fi
     rmdir "$target"
     chflags sunlnk "$parent"
     trap - EXIT
     sunlnk_set "$parent" || { echo "Failed to restore sunlnk on $parent" >&2; exit 1; }
+}
+
+# 在删掉目录内容之前，先确认这个目录最后删得掉。非空目录 rmdir 报 "Directory not
+# empty"，父目录不让删则报 "Operation not permitted"，两者可以区分，所以这是一次
+# 无损探测：本轮就吃过亏——清单内容删干净了，却留下一个删不掉的空目录。
+probe_removable() {
+    local err
+    if err=$(rmdir "$1" 2>&1); then
+        return 0            # 本来就是空的，顺手删掉了
+    fi
+    case $err in
+        *'not empty'*) return 0 ;;
+        *) echo "Cannot remove $1: $err" >&2; return 1 ;;
+    esac
 }
 
 # 清单是唯一授权依据：没有它就无法证明这些对象属于本轮，拒绝动手。
@@ -120,7 +142,8 @@ if [[ $action == --check ]]; then
         printf 'account and home are already gone; apply will only finish the group and the record\n'
     fi
     if sunlnk_set "${record%/*}"; then
-        printf 'apply will briefly clear sunlnk on %s and restore it\n' "${record%/*}"
+        printf 'if a plain rmdir is refused, apply will briefly clear sunlnk on %s and restore it\n' \
+            "${record%/*}"
     fi
     exit 0
 fi
@@ -171,6 +194,9 @@ if [[ $group_recorded == yes ]]; then
     fi
 fi
 
-rm "$record"/*
-rmdir_in_protected_parent "$record"
+probe_removable "$record" || exit 1
+if [[ -d $record ]]; then
+    rm "$record"/*
+    rmdir_in_protected_parent "$record"
+fi
 echo "Temporary account, home and record removed. fodelf's own account is untouched."

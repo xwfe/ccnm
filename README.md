@@ -104,6 +104,7 @@ read_output
 - [公开协议](docs/protocol/README.md)：给外部程序的 machine API 契约与客户端示例
 - [架构说明](docs/architecture.md)：Node / Agent / Runtime / Controller 与 SSH stdio MCP
 - [生产安全](docs/production-safety.md)：`ccrun`、ACL、凭证、sudo、网络出口边界
+- [运维](docs/operations.md)：安装、回退、配置迁移、状态清理、故障恢复
 - [故障排查](docs/troubleshooting.md)：实际遇到过的运行问题
 - [开发与发布](docs/development.md)：测试、CI、release、mutation test
 - [研究记录](docs/research/)：实现调研和历史测量数据

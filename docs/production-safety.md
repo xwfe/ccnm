@@ -31,7 +31,7 @@
 
 所以现在的做法就是直白的那个：**用你自己的账号（Operator）敲 ccnm，让 `ccrun` 名下一把私钥都没有。** 诊断命令两台机器上都能跑。
 
-**这些都还没在真机上验过**——P7.4 改的正是真机链路，P7.3 那份证据不再完整覆盖新路径，复验是 Batch E。
+**这些在真机上复验过了**（[Batch E 记录](research/p7-batch-e-2026-09-10.md)）：以普通管理员账号跑 doctor，Runtime 那几行报的是 `ccrun` 且全绿——同一条命令在 P7.4 之前会报 7 个 FAIL；两个方向跑 doctor 结论逐字相同；会话期间执行身份的进程表里只有入站 sshd 与 `mcp-serve`。仍未验的是 Codex 那条链。
 
 ## `ccrun` 能解决什么
 
@@ -327,6 +327,16 @@ ccnm 的 doctor 能覆盖一部分明确可验证项，但不能证明整个操�
 > Runtime 项目代码永远不能访问 Anthropic，甚至不能访问公网。
 
 那么必须在 Runtime Node / `ccrun` 周围通过 OS、网络、防火墙、VM 或容器环境真正执行这个策略。
+
+**"名下没有私钥"不等于"连不出去"，这一条是真机上撞出来的。** Batch E 把 `ccrun` 的出站私钥删干净之后再试，它照样连得到 Agent Node：
+
+```text
+debug1: no identity pubkey loaded from ~/.config/ccnm/transport/agent-key
+debug1: remote software version Tailscale
+Authenticated to <agent> using "none".
+```
+
+答话的是 Tailscale SSH，按 tailnet 身份授权，根本不看密钥——这台机器上任何本地账号都到得了。ccnm 能保证的只是"ccnm 自己不要求这个身份出站，也不给它钥匙"；**能不能出站是网络策略的事**，要关就在 tailnet ACL、防火墙或 OS 层关。把 `No SSH keys` 那一行读成"这个账号出不去"，就会把一个没关的门当成关上的。
 
 不要用下面这种方式代替：
 

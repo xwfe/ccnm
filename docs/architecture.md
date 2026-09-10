@@ -180,7 +180,7 @@ Runtime Executor 身份
 
 而不是“命令名黑名单”。
 
-出站 SSH 凭据算在边界里，是因为 Runtime Executor 有一把可用私钥，就等于 `exec_command` 能以它的名义连到别的机器。**现在没有任何一条 ccnm 路径要求它持有这样一把钥匙**：会话、诊断、MCP transport 全部是 Agent 连进来。这是 P7.4 的结果，尚未在真机上复验（Batch E），细节见[生产安全](production-safety.md)与[双执行入口方案](plan/runtime-surfaces.md)。
+出站 SSH 凭据算在边界里，是因为 Runtime Executor 有一把可用私钥，就等于 `exec_command` 能以它的名义连到别的机器。**现在没有任何一条 ccnm 路径要求它持有这样一把钥匙**：会话、诊断、MCP transport 全部是 Agent 连进来。这是 P7.4 的结果，并已在真机上复验：会话活着时执行身份的进程表里只有入站 sshd 与 `mcp-serve`，没有任何 ssh 客户端（[Batch E 记录](research/p7-batch-e-2026-09-10.md)）。细节见[生产安全](production-safety.md)与[双执行入口方案](plan/runtime-surfaces.md)。
 
 ## 历史术语
 

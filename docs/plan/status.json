@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-09-10T20:30:00+09:00",
+  "last_updated": "2026-09-10T21:05:00+09:00",
   "current_task": "P7",
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
@@ -500,10 +500,11 @@
       ],
       "owner": null,
       "started_at": "2026-09-10T16:20:00+09:00",
-      "last_updated": "2026-09-10T20:30:00+09:00",
+      "last_updated": "2026-09-10T21:05:00+09:00",
       "completed_criteria": [
         "P7.1",
-        "P7.2"
+        "P7.2",
+        "P7.4"
       ],
       "evidence": [
         {
@@ -617,6 +618,14 @@
           ],
           "ref": "crates/ccnm-cli/tests/instance_execution.rs",
           "result": "P7.4 Batch D2（Agent 侧诊断去回跳）完成：Agent Node 上的 doctor 与 mcp probe 不再委托整条公共命令，最后一处让 Runtime Executor 出站的路径关掉了。doctor 改成 topology-aware 双端：Agent 本机跑 work::probe（Controller、官方 CLI 版本与登录、tmux/terminal 都在这台查），向 Runtime 只发两个只读问题——internal runtime-resolve 取 workspace 权威（root/runtime_node/instance/permission mode），internal runtime-audit 取执行身份自己的结论——MCP 握手也由 Agent 侧主动开；新增 doctor::from_agent 渲染，Runtime 不答时整表是 FAIL+SKIP，不拿本机猜测顶替。mcp probe 新增 work::mcp_probe，由 Agent Identity 直接建立到 Runtime Executor 的 transport；Agent-only 拓扑下的 --local 明确 fail-closed（CCNM_E_WRONG_WORKSPACE，说明项目不在这台），不静默当成 remote。两侧渲染统一到新的 doctor::Subject（workspace/root/runtime_node/agent_node/provider_config_dir），Runtime 侧从本机配置构造、Agent 侧从 Runtime 的答复构造，因此不存在两套渲染路径；allow_unconfined_exec 也改为随 AuditReport 从 Runtime 带回，用的是 exec_command 门禁自己读的那份值。delegate_public_from_agent 与 launcher::public_cmd_from_agent 一并删除——D2 之后没有任何生产调用者，留着就是给下一次回跳留的口子。边界测试用真实二进制加假 ssh 记录完整 argv：从 Agent 侧跑 doctor 与 mcp probe，断言过去的只有 internal runtime-resolve，且 argv 里不出现 doctor/mcp/probe/run/status 任何公共动词；另有 --local fail-closed 测试。一致性测试：同一份 ProbeReport 分别经 Runtime 侧 doctor 与 doctor::from_agent 渲染，Runtime user / exec_command / Workspace root 三行逐字相同。测试：cargo test --workspace 626 passed / 0 failed（净 +2：新增 4 个、删除 2 个只对旧回跳有意义的），Python 120，fmt、clippy -D warnings、check_protocol、check_plan、git diff --check 全通过。限制：仍全部为离线验证，Agent 侧 doctor/probe 没有在真机上跑过，属 Batch E 的验收项。"
+        },
+        {
+          "kind": "real_nodes",
+          "criteria": [
+            "P7.4"
+          ],
+          "ref": "docs/research/p7-batch-e-2026-09-10.md",
+          "result": "P7.4 Batch E（v1 回归与真机再确认）通过，用户逐项授权且授权条件（D2 完成 + 离线门禁全绿）已满足。部署：三端（Operator bing / Agent fodelf / Runtime Executor ccrun，外加 Agent 实际调用的共享副本）全部换成 commit 9882938 的构建，sha256 d9c8c8cc…；替换前记录旧构建 sha256 1c14492d…（三端一致）并在各自 ~/.local/bin/ccnm.pre-batch-e 留可回退副本；两者 --version 都是 0.2.0，所以核对的是哈希不是版本号，落地一律 .new+mv。Controller 重启 pid 53233→1330，ps 确认起于二进制 mtime 之后、跑新路径、全机唯一。验证前先删掉 ccrun 的出站私钥 ~/.config/ccnm/transport/agent-key（P7.3 旧回跳留下的），删完它名下只剩 authorized_keys/config/known_hosts 与 config.toml，SSH_AUTH_SOCK 未设置——新链路要在没有这把钥匙的状态下验才算数。结果：（1）以 bing（非 ccrun）跑 ccnm run p7parity --print，claude exited 0，3 turns，$0.10，产物 e-cli.txt 属主 uid=504 内容等于一次性 token；（2）ccnm rpc 同一 workspace 走 machine API，session.start/wait/session.result 全过，state completed、exit_code 0、usage 6/253、cost $0.038492，产物 e-rpc.txt 属主同为 uid=504，响应中 home 路径/.claude/.codex/auth.json/私钥名/session_dir/controller 出现 0 次；两条腿同属主即两个公开入口落在同一条隔离执行链上。（3）Agent Node 上 ccnm doctor p7dogfood 得 0 failed / 2 not checked，含新行 Workspace config OK answered by runtime 与 Workspace root OK is a git repository ccrun can work in；同一 workspace（p7parity）从 Runtime 侧与 Agent 侧各跑一次，全部 Runtime 相关行 diff 为空——D2 的停止点在真机上成立。（4）Agent Node 上 remote mcp probe 单进程服务 5/300/600 次调用（pid throughout），--local fail-closed 报 CCNM_E_WRONG_WORKSPACE。（5）会话活着时连拍三次 ccrun 进程表：只有入站 sshd-session ccrun@notty 与它的子进程 internal mcp-serve，没有任何 ssh 客户端；该 mcp-serve 的 payload 解出来是 protocol 4 且没有 root 字段，即 Batch B/C 的新 wire 在生产链路上实际生效。（6）资源归零：ccnm result 取回上一个 print 会话完整结果、status 无活会话、write-guards 两个 lock 均 released、会话后 ccrun 名下 ccnm 进程为 0、Agent 侧无 tmux 会话与 supervisor 进程；ccnm stop 对已结束会话仍 rc=3 CCNM_E_NOT_READY（已知不幂等，运维手册已记）。（7）收尾重跑完整离线门禁：fmt PASS、clippy 退出码 0、cargo test 626 passed / 0 failed、Python 120、check_protocol 38 fixture、check_plan、git diff --check 全过。真机另确认三件事：跑 doctor 的 bing 是 admin、持多把私钥、能读 Claude 凭据，而 Runtime 行全绿——同一条命令在 P7.4 之前会报 7 个 FAIL，这是 Batch D 的真机确认；新的 Workspace root 抓到 p7parity 那个 bing 拥有的 git 工作树并给出 git refuses it: the repository belongs to another account，正是 dogfood 撞了半天的 dubious ownership，该 FAIL 作为证据保留不修；**ccrun 删掉私钥后仍能连到 Agent Node**——答话的是 Tailscale SSH，Authenticated using none，按 tailnet 身份授权不看密钥，所以准确结论只能拆成两句：ccnm 不再要求 ccrun 出站且它名下无 ccnm 所需私钥/agent（已验证），但该账号在这台机器上仍有出站能力，来自主机网络策略，要关得在 tailnet ACL 或 OS 层做，不在本轮授权范围。订阅消耗 $0.14。未验：Codex 经 machine API（仍是 P7.3 缺口）、Agent 侧发起的 ccnm run 真实会话（其 resolve 步骤已由 doctor/probe 共用验证）、interactive、Ctrl-D、egress、完整项目 dogfood；只覆盖 macOS 与这一套两端拓扑。"
         }
       ],
       "blockers": [
@@ -625,8 +634,8 @@
             "P7.3",
             "P7.5"
           ],
-          "reason": "P7.3 已完成 Claude Machine API 对照、真实项目完整 dogfood 和全量门禁，缺的付费真机项只有 Codex。Codex 装在 xdwmbp，当前额度不足；补跑需要相反拓扑（xdwmbp 当 Agent、fodelf 当 Runtime）和新的隔离 Runtime 准备，因此 P7.3 与最终 P7.5 仍被外部条件阻塞。P7.3 暴露的身份/控制链矛盾已经由用户确认产品方向，不再是等待决策的 blocker：P7.4 应在等待 Codex 期间按 docs/plan/runtime-surfaces.md Batch A→E 继续实施。",
-          "unblock": "先完成 P7.4 新身份/控制链及最小 Claude 真机复验；等 xdwmbp Codex 额度恢复后，在新身份模型上按授权拓扑补跑一次真实 Codex Machine API parity 并记录结果。xdwmbp 的 codex-cli 已确认为 0.153.4，与仓库 pin 一致；若版本未变化不重测 fixture。P7.3、P7.4 都有完整证据后才进入 P7.5 v1 freeze。"
+          "reason": "P7.4 已完成（Batch A→E，含真机复验），P7.3 只差 Codex 一项。Codex 装在 xdwmbp，当前额度不足；补跑需要相反拓扑（xdwmbp 当 Agent、fodelf 当 Runtime）和新的隔离 Runtime 准备，因此 P7.3 与最终 P7.5 仍被外部条件阻塞。注意 Codex 那一次要在**新**身份模型上跑，不是 P7.3 当时的旧链路。",
+          "unblock": "等 xdwmbp Codex 额度恢复后，在新身份模型上按授权拓扑补跑一次真实 Codex Machine API parity 并记录结果。xdwmbp 的 codex-cli 已确认为 0.153.4，与仓库 pin 一致；若版本未变化不重测 fixture。补齐后 P7.3 才能勾完成，之后才进入 P7.5 v1 freeze。P7.5 冻结前另需处理两条已记录事实：ccrun 在当前主机上仍可经 Tailscale SSH 出站（网络策略层，非 ccnm 持有凭据），以及 ccnm stop 对已结束会话不幂等。"
         }
       ]
     },
@@ -702,6 +711,7 @@
     }
   ],
   "observed_gaps": [
+    "真机实测：删掉 ccrun 名下 ccnm 所需的出站私钥之后，该账号仍能连到 Agent Node——答话的是 Tailscale SSH，Authenticated using \"none\"，按 tailnet 身份授权不看密钥。所以 No SSH keys 那一行只能读作「ccnm 不要求这个身份出站，且它名下没有 ccnm 所需的私钥/agent」，不能读作「这个账号出不去」。要真的关掉得在 tailnet ACL、防火墙或 OS 网络策略上做，不属于 ccnm 的边界，P7.5 冻结前要在支持矩阵里说清楚。",
     "双机验收已改用专用隔离执行身份，凭据/sudo/特权 socket 均已实测；egress/网络策略仍未逐项验证，本轮只做 transport 进程故障注入，不等同物理断网。",
     "旧 Runtime 拒绝 v2 时可能以退出码 0 结束；协议错误不能被退出码掩盖。",
     "P1 安全检查已经进入后续构建并在 P3/P7 专用 Runtime 身份上得到真机证据；但 P7.4 将改变 public control path 和身份职责，旧链的真机结果不能自动证明新链仍满足相同边界，必须按新设计复验。",
@@ -717,7 +727,7 @@
     "协议契约里的 -32008（busy）没有实现会返回：写入 guard 在会话跑起来之后才由 Runtime 侧 MCP 获取，session.start 不做工作树占用预检，被占的表现是会话失败而非启动被拒。文档已如实标注；要不要补预检使该码可达是待定的产品决定。同一窗口也影响连续执行：前一次 ccnm run --print 返回时 guard 可能尚未释放，紧接着启动下一个会话会撞上，实际窗口时长未在真机测过。"
   ],
   "handoff": {
-    "next_action": "当前仍是 P7，P7.4 Batch A–D2 全部完成并提交。**Batch D2 已落地**：Agent Node 上的 doctor 改成 topology-aware 双端诊断（本机查 Controller/官方 CLI/登录/tmux，向 Runtime 只发只读的 runtime-resolve 与 runtime-audit，MCP 握手由 Agent 主动开），mcp probe 由 Agent Identity 直接建立到 Runtime Executor 的 transport，Agent-only 拓扑的 --local fail-closed；delegate_public_from_agent 与 launcher::public_cmd_from_agent 已删除，边界由真实二进制的 argv 测试钉住。至此**没有任何 ccnm 路径要求 Runtime Executor 出站**。离线门禁：626 Rust / 120 Python / fmt / clippy / check_protocol / check_plan 全绿。**下一步是 Batch E（v1 回归与真机再确认），用户已授权且授权条件（D2 完成 + 离线门禁全绿）已满足。** 授权范围：只替换当前 P7 测试拓扑两端本轮验证所需的 ccnm/Controller，替换前记录原二进制路径、版本、哈希并保留可回退副本；只消费必要 Claude 额度做最小复验，不重跑完整 dogfood；验证 public CLI → Agent → ccrun、ccnm rpc → Agent → ccrun，以及 Agent Node 上的 ccnm doctor 与 remote ccnm mcp probe；必须证明产物属主仍为 ccrun、ccrun 无 ccnm 所需私钥与 SSH_AUTH_SOCK、无 ccnm 所需 outbound SSH，并确认 result/status/stop、write guard、transport 资源归零。不授权创建新账号、改 ACL/防火墙、跑 Codex、push/tag/release 或其他无关系统修改。E 完成后更新 status 与证据、提交、停下汇报，**不进入 P7.5**。Codex 额度恢复后再按新身份模型补 P7.3 Codex parity；两者齐全后才做 P7.5 freeze。",
+    "next_action": "当前仍是 P7。**P7.4 已完成并勾选**：Batch A→E 全部落地，其中 Batch E 已按用户授权在 P7 测试拓扑上做完最小真机复验（证据 docs/research/p7-batch-e-2026-09-10.md）：三端换成 commit 9882938 的构建并留有回退副本；以 Operator（bing，非 ccrun）跑 public CLI 与 ccnm rpc 各一次真实 Claude 会话，两条腿产物属主同为 uid=504；Agent Node 上的 doctor 与 remote mcp probe 走新的双端路径，同一 workspace 两个方向的 Runtime 结论逐字相同；会话期间 ccrun 进程树只有入站 sshd 与 mcp-serve、无 ssh 客户端，其 payload 是 protocol 4 且无 root 字段；result/status/stop、write guard、transport 均归零；离线门禁 626/120 全绿。订阅消耗 $0.14。**下一步：只剩 P7.3 的 Codex 缺口**——等 xdwmbp 额度恢复后，在**新**身份模型上按授权拓扑跑一次真实 Codex Machine API parity（需要相反拓扑与新的隔离 Runtime 准备，属另行授权的系统动作）。补齐后 P7.3 才能勾完成，再做 P7.5 v1 freeze；**现在不要进入 P7.5**。P7.5 冻结前要一并处理两条已记录事实：ccrun 在当前主机上仍能经 Tailscale SSH 出站（tailnet 策略层，非 ccnm 持有凭据，要关得在 ACL/OS 层做），以及 ccnm stop 对已结束会话不幂等（退出码 3）。真机环境仍在运行未清理，回退副本与清单见 handoff.authorization 与 docs/research/p7-batch-e-2026-09-10.md 第五节。",
     "scope": "P7 收尾与 v1 身份/控制链修正。P7.4 是已确定的实现任务，可在 Codex 额度等待期间进行；需要部署、新账号/ACL、SSH 准入或其他系统修改时仍必须单独授权。P7.3 剩余 Codex 付费真机项继续 blocked。P9–P12 只作为后续 v1.x Remote Workspace MCP 路线记录，不在本轮提前实现。",
     "planning_validation": {
       "at": "2026-09-08T21:22:43+09:00",
@@ -730,21 +740,21 @@
       "limits": "本轮离线门禁；fodelf SSH 建连失败，没有新增远端资源或运行真实模型，不替代 P3.5。"
     },
     "planning_validation_latest": {
-      "at": "2026-09-10T20:30:00+09:00",
+      "at": "2026-09-10T21:05:00+09:00",
       "commands": [
         "cargo fmt --all --check：通过",
         "cargo clippy --workspace --all-targets -- -D warnings：退出码 0（未接管道）",
-        "cargo test --workspace：626 passed / 0 failed（Batch A +3、B +14、C +3、D +3、D2 +4 并删除 2 个只对旧回跳有意义的测试）",
+        "cargo test --workspace：626 passed / 0 failed（Batch A +3、B +14、C +3、D +3、D2 +4 并删除 2 个只对旧回跳有意义的测试；Batch E 收尾重跑同样 626）",
         "PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p 'test_*.py' -q：120 passed（3.12 与系统 3.9 各一遍）",
         "python3 scripts/check_protocol.py：通过（38 个 fixture）",
         "python3 scripts/check_plan.py：通过",
         "git diff --check：通过",
         "真机（以 ccrun）：ccnm doctor p7dogfood 0 failed / 2 not checked；dogfood 会话 A、B 均 exited 0；停止后无活会话、guard 均 released、mcp-serve 进程 0 个"
       ],
-      "limits": "离线门禁在 P7.4 Batch A 之后重跑；真机行是 P7.3 那次的记录，Batch A 只改语义/文档/测试，没有新的真机验证，也没有改变任何启动链行为。真机部分只覆盖 Claude：Codex 经 machine API 从未跑过，interactive、Ctrl-D、egress 未验，Rust 工具链在 Runtime 执行身份下不存在故 dogfood 只覆盖 Python 那半。Batch C/D 会改变控制链与 doctor 结论，届时 P7.3 的真机证据不再完整覆盖新路径，须按 Batch E 重跑最小复验。"
+      "limits": "门禁在 P7.4 Batch E 收尾时重跑，全绿。真机部分本轮已覆盖新链路的最小复验（Operator public CLI 与 ccnm rpc 各一次真实 Claude 会话、Agent 侧 doctor 与 remote mcp probe、执行属主、无出站 ssh、protocol 4 wire、资源归零），证据见 docs/research/p7-batch-e-2026-09-10.md。仍未覆盖：Codex 经 machine API（从未发生过）、Agent 侧发起的真实会话、interactive、Ctrl-D、egress、完整项目 dogfood；只在 macOS 与这一套两端拓扑上。"
     },
     "inherited_changes": [],
-    "authorization": "P3 的双机系统授权已执行完毕并归零，不再有效。P4 只写文档与 fixture，未做任何系统变更。P7.3 的授权已执行且**环境仍在运行、尚未清理**：本机 ccrun 主组仍是 ccrun(504)、仍在 com.apple.access_ssh、authorized_keys 里仍有本轮公钥，root 清单 /var/db/ccnm-p7-local-20260910 仍在，fodelf 的 ~/.ssh/config 仍有本轮 alias 区块。保留是为了等 Codex 额度回来接着用；要现在归零就按 scripts/p7-revoke-local-runtime-key.sh 逆序撤销，那需要用户执行 sudo。除此之外如需账号、ACL、防火墙、部署或替换二进制，必须重新逐项获得批准。",
+    "authorization": "P3 的双机系统授权已执行完毕并归零，不再有效。P4 只写文档与 fixture，未做任何系统变更。P7.3 的授权已执行且**环境仍在运行、尚未清理**：本机 ccrun 主组仍是 ccrun(504)、仍在 com.apple.access_ssh、authorized_keys 里仍有本轮公钥，root 清单 /var/db/ccnm-p7-local-20260910 仍在，fodelf 的 ~/.ssh/config 仍有本轮 alias 区块。保留是为了等 Codex 额度回来接着用；要现在归零就按 scripts/p7-revoke-local-runtime-key.sh 逆序撤销，那需要用户执行 sudo。除此之外如需账号、ACL、防火墙、部署或替换二进制，必须重新逐项获得批准。 P7.4 Batch E 的部署与额度消耗已由用户逐项授权并执行完毕：三端 ccnm 换成 commit 9882938 的构建（sha256 d9c8c8cc…），旧构建（sha256 1c14492d…）留在各自 ~/.local/bin/ccnm.pre-batch-e 可回退；fodelf Controller 重启为 pid 1330；ccrun 的出站私钥 ~/.config/ccnm/transport/agent-key 已删除且不应还原。授权明确不含创建新账号、修改 ACL/防火墙、运行 Codex、push/tag/release。",
     "portability": "接续不依赖任何特定 MCP、任务管理器或 IDE 插件。任何模型只需 Git、仓库文件和项目命令即可按 current_task 继续；外部工具状态不作为产品阶段事实。"
   }
 }

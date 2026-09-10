@@ -142,6 +142,10 @@ enum Command {
         #[arg(long, value_name = "ID")]
         session: Option<String>,
     },
+    /// Speak the machine protocol on stdin/stdout, for programs rather than
+    /// people: stdout carries only protocol lines, logs go to stderr. The
+    /// contract is in docs/protocol/
+    Rpc,
     /// MCP transport diagnostics
     Mcp {
         #[command(subcommand)]
@@ -584,6 +588,24 @@ fn run(cli: Cli) -> Result<i32> {
             } else {
                 println!("nothing to stop: {} was not running", rep.tmux_session);
             }
+            Ok(0)
+        }
+        Command::Rpc => {
+            // The store lives beside every other bit of ccnm state, so a
+            // session started through the API is visible to the same
+            // maintenance and cleanup as one started by hand.
+            let path = config_path()?;
+            let ctx = ccnm_core::rpc::Context {
+                config_path: path.clone(),
+                state: paths::state_dir()?,
+                runs: std::sync::Arc::new(ccnm_core::rpc::session::SystemRuns {
+                    config_path: path,
+                }),
+                runner: std::sync::Arc::new(SystemRunner),
+            };
+            let stdin = std::io::stdin();
+            let stdout = std::io::stdout();
+            ccnm_core::rpc::serve(ctx, stdin.lock(), stdout.lock())?;
             Ok(0)
         }
         Command::Mcp {

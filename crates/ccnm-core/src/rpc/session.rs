@@ -47,6 +47,52 @@ pub trait Runs: Send + Sync + 'static {
 /// How long a run may take when the caller does not say.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(900);
 
+/// The real executor: the same `launcher` calls `ccnm run --print` and
+/// `ccnm stop` make.
+///
+/// Config is loaded per call rather than held, for the same reason
+/// `agents.list` reloads it: this process outlives edits to the file, and a
+/// run started against a workspace definition from an hour ago is worse than
+/// a slightly slower call.
+pub struct SystemRuns {
+    pub config_path: std::path::PathBuf,
+}
+
+impl SystemRuns {
+    fn env() -> CcnmResult<crate::launcher::Env<'static>> {
+        Ok(crate::launcher::Env {
+            runner: &crate::process::SystemRunner,
+            control_dir: crate::paths::state_dir()?.join("ssh"),
+            current_exe: std::env::current_exe()?,
+        })
+    }
+}
+
+impl Runs for SystemRuns {
+    fn run_print(&self, ask: &RunAsk) -> CcnmResult<RunReport> {
+        let config = Config::load(&self.config_path)?;
+        let resolved = config.workspace(&ask.workspace)?;
+        crate::launcher::run_print_with_agent(
+            &resolved,
+            &Self::env()?,
+            &ask.prompt,
+            ask.timeout,
+            ask.instance.as_deref(),
+        )
+    }
+
+    fn stop(&self, workspace: &str, instance: Option<&str>) -> CcnmResult<bool> {
+        let config = Config::load(&self.config_path)?;
+        let resolved = config.workspace(workspace)?;
+        // No session id: in print mode ccnm's own id only comes back when
+        // the run ends. Still precise -- the workspace has at most one
+        // managed write session at a time -- and the Agent side verifies the
+        // process group before reporting anything stopped.
+        let report = crate::launcher::stop_selected(&resolved, &Self::env()?, instance, None)?;
+        Ok(report.killed)
+    }
+}
+
 pub fn start(ctx: &Context, params: &Map<String, Value>) -> Result<Value, RpcError> {
     reject_unknown(
         params,

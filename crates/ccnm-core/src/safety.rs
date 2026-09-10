@@ -326,71 +326,109 @@ fn group_finding(identity: &Identity) -> Finding {
 ///
 /// The Runtime Executor is **inbound-only**: the Agent SSHes in, and no
 /// part of ccnm's control chain requires it to SSH out. So the correct
-/// state is no private key at all — `authorized_keys` and `known_hosts`
-/// are inbound state, not credentials.
+/// state is no private key at all — `authorized_keys`, `known_hosts` and a
+/// client `config` are inbound or non-secret state, not credentials.
 ///
-/// Known limitation, pinned by a test below: this only inspects `~/.ssh`.
-/// A key kept anywhere else — including ccnm's own transport directory —
-/// is just as usable and is not seen here, so this row proves "the standard
-/// location is clean", not "this account cannot SSH out". Widening it to
-/// the known ccnm transport locations and `SSH_AUTH_SOCK` is P7.4 Batch D;
-/// moving a key out of `~/.ssh` to turn this row green was never a way to
-/// satisfy it (docs/production-safety.md).
+/// Two directories are inspected: `~/.ssh`, and `~/.config/ccnm`, which is
+/// ccnm's own. The second one is here because of P7.3: a transport key was
+/// moved out of `~/.ssh` into ccnm's config directory and this row went
+/// green while the account could SSH out exactly as before. A check that
+/// can be satisfied by `mv` is not a check.
+///
+/// It still says what it inspected rather than claiming more. Somewhere
+/// else entirely is not searched, and an inherited `SSH_AUTH_SOCK` is an
+/// outbound credential with no file at all — that one is caught by the
+/// authentication-environment row, which refuses it by name.
 fn ssh_key_finding(home: &Path, runner: &dyn ProcessRunner) -> Finding {
     const NAME: &str = "No SSH keys";
-    let dir = home.join(".ssh");
-    if std::fs::symlink_metadata(&dir).is_ok_and(|m| m.file_type().is_symlink()) {
-        return Finding::fail(
-            NAME,
-            "SSH credential directory is a symlink; accessibility is unknown",
-            "use a separate Runtime home and verify its permissions",
-        );
-    }
-    let entries = match std::fs::read_dir(&dir) {
-        Ok(entries) => entries,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Finding::ok(NAME, "no ~/.ssh directory at the inspected home");
-        }
-        Err(_) => {
-            return Finding::fail(
-                NAME,
-                "SSH credential directory accessibility is unknown",
-                "verify permissions for the Runtime execution identity",
-            );
-        }
-    };
-    for entry in entries {
-        let Ok(entry) = entry else {
-            return Finding::fail(
-                NAME,
-                "SSH credential inventory is unknown",
-                "verify permissions for the Runtime execution identity",
-            );
-        };
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if name.ends_with(".pub")
-            || matches!(
-                name.as_str(),
-                "known_hosts" | "config" | "authorized_keys" | "authorized_keys2"
-            )
-        {
-            continue;
-        }
-        if matches!(
-            credentials::access(&entry.path(), runner),
-            credentials::Access::Accessible | credentials::Access::Unknown
-        ) {
-            return Finding::fail(
-                NAME,
-                "a possible private SSH key is accessible or unknown (names and contents withheld)",
-                "use a Runtime identity without access to SSH private state",
-            );
+    const INSPECTED: &str = "~/.ssh and ~/.config/ccnm";
+    for dir in [home.join(".ssh"), home.join(".config/ccnm")] {
+        if let Some(problem) = private_key_in(&dir, runner) {
+            return problem;
         }
     }
     Finding::ok(
         NAME,
-        "no accessible private SSH key candidate in the inspected home; contents were not read",
+        format!(
+            "no accessible private key candidate in {INSPECTED}; contents were not read, and no other location was searched"
+        ),
     )
+}
+
+/// One directory's worth of the search above, recursing into what it holds.
+///
+/// `None` means nothing here looks like a usable private key.
+fn private_key_in(dir: &Path, runner: &dyn ProcessRunner) -> Option<Finding> {
+    const NAME: &str = "No SSH keys";
+    // Depth is bounded because this runs before every session; ccnm's own
+    // config directory is two levels deep at most, and a person who buries
+    // a key deeper than this has defeated a heuristic, not a boundary.
+    fn walk(dir: &Path, depth: u32, runner: &dyn ProcessRunner) -> Option<Finding> {
+        if std::fs::symlink_metadata(dir).is_ok_and(|m| m.file_type().is_symlink()) {
+            return Some(Finding::fail(
+                NAME,
+                "an inspected credential directory is a symlink; accessibility is unknown",
+                "use a separate Runtime home and verify its permissions",
+            ));
+        }
+        let entries = match std::fs::read_dir(dir) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
+            Err(_) => {
+                return Some(Finding::fail(
+                    NAME,
+                    "an inspected credential directory cannot be listed; accessibility is unknown",
+                    "verify permissions for the Runtime execution identity",
+                ));
+            }
+        };
+        for entry in entries {
+            let Ok(entry) = entry else {
+                return Some(Finding::fail(
+                    NAME,
+                    "SSH credential inventory is unknown",
+                    "verify permissions for the Runtime execution identity",
+                ));
+            };
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if entry.path().is_dir() {
+                if depth == 0 {
+                    continue;
+                }
+                if let Some(found) = walk(&entry.path(), depth - 1, runner) {
+                    return Some(found);
+                }
+                continue;
+            }
+            // Public keys, host fingerprints, client config and ccnm's own
+            // TOML are not credentials, and every Runtime needs some of them.
+            if name.ends_with(".pub")
+                || name.ends_with(".toml")
+                || matches!(
+                    name.as_str(),
+                    "known_hosts"
+                        | "known_hosts.old"
+                        | "config"
+                        | "authorized_keys"
+                        | "authorized_keys2"
+                )
+            {
+                continue;
+            }
+            if matches!(
+                credentials::access(&entry.path(), runner),
+                credentials::Access::Accessible | credentials::Access::Unknown
+            ) {
+                return Some(Finding::fail(
+                    NAME,
+                    "a possible private SSH key is accessible or unknown (names and contents withheld)",
+                    "use a Runtime identity that holds no outbound SSH credential; it only needs inbound access",
+                ));
+            }
+        }
+        None
+    }
+    walk(dir, 3, runner)
 }
 
 /// Write access to the Docker socket is root, one `docker run -v /:/host`
@@ -400,7 +438,19 @@ fn docker_finding(identity: &Identity) -> Finding {
     const NAME: &str = "No Docker socket";
     let socket = Path::new("/var/run/docker.sock");
     let Ok(meta) = std::fs::metadata(socket) else {
-        return Finding::ok(NAME, "no Docker socket on this machine");
+        // Two different observations reach the same conclusion, and saying
+        // the wrong one is how a reader stops trusting the row. P7.3 saw
+        // this: the socket was a symlink into another account's home, so
+        // stat failed and ccnm reported "no Docker socket on this machine"
+        // about a machine that was running Docker.
+        return if std::fs::symlink_metadata(socket).is_ok() {
+            Finding::ok(
+                NAME,
+                "a Docker socket exists but this account cannot reach it, so it cannot write to it either",
+            )
+        } else {
+            Finding::ok(NAME, "there is no Docker socket on this machine")
+        };
     };
     use std::os::unix::fs::MetadataExt;
     let mode = meta.mode();
@@ -676,15 +726,13 @@ mod tests {
         assert!(audit.confined(), "{:?}", audit.findings);
     }
 
-    /// Known limitation, kept as a tripwire rather than a comment: the
-    /// check only inspects `~/.ssh`, so the same key one directory over is
-    /// invisible. P7.3 met this on real hardware — the transport key was
-    /// moved to `~/.config/ccnm/transport/` and the row went green while
-    /// the account could still SSH out exactly as before. Widening the
-    /// check is P7.4 Batch D; when it lands this test flips, and the
-    /// deprecation in docs/production-safety.md has to be revisited with it.
+    /// The tripwire this replaced asserted the hole: a key one directory
+    /// over was invisible, so the row could be satisfied by `mv`. P7.3 did
+    /// exactly that on real hardware -- the transport key went to
+    /// `~/.config/ccnm/transport/` and the row turned green while the
+    /// account could SSH out as before. It is found now.
     #[test]
-    fn a_private_key_outside_dot_ssh_is_not_seen_yet() {
+    fn a_private_key_in_ccnms_own_config_directory_is_found() {
         let home = empty_home("hidden-key");
         std::fs::write(
             home.join(".ssh/authorized_keys"),
@@ -703,14 +751,45 @@ mod tests {
         runner.push(Output::exited(1, ""));
         let audit = audit(Some("ccrun"), &home, &runner);
         let finding = find(&audit, "No SSH keys");
-        assert_eq!(
-            finding.severity,
-            Severity::Ok,
-            "if this now fails, Batch D has widened the check: update the \
-             deprecation note in docs/production-safety.md and delete this test"
+        assert_eq!(finding.severity, Severity::Fail, "{finding:?}");
+        assert!(!audit.confined());
+        // The name of the key is not in the report, in either direction.
+        assert!(!finding.detail.contains("runtime"), "{finding:?}");
+        assert!(
+            finding.fix.as_ref().is_some_and(|f| f.contains("inbound")),
+            "{finding:?}"
         );
-        // And the wording must not overclaim while that hole is open.
-        assert!(finding.detail.contains("inspected home"), "{finding:?}");
+    }
+
+    /// ccnm's config directory holds config, and config is not a
+    /// credential. Finding a key there must not turn every ordinary
+    /// Runtime red.
+    #[test]
+    fn ccnms_own_config_files_are_not_mistaken_for_keys() {
+        let home = empty_home("config-files");
+        let dir = home.join(".config/ccnm");
+        std::fs::create_dir_all(dir.join("agents")).unwrap();
+        std::fs::write(dir.join("config.toml"), "this = \"runtime\"\n").unwrap();
+        std::fs::write(dir.join("profiles.toml"), "").unwrap();
+        std::fs::write(
+            home.join(".ssh/authorized_keys"),
+            "ssh-ed25519 SYNTHETIC_AGENT_PUBLIC_KEY\n",
+        )
+        .unwrap();
+        let runner = FakeRunner::new();
+        identity(&runner, "ccrun", "504", "504", "ccrun");
+        runner.push(Output::exited(1, ""));
+        let audit = audit(Some("ccrun"), &home, &runner);
+        let finding = find(&audit, "No SSH keys");
+        assert_eq!(finding.severity, Severity::Ok, "{finding:?}");
+        // And it says which directories that verdict covers, rather than
+        // claiming the account cannot SSH out at all.
+        assert!(finding.detail.contains("~/.ssh"), "{finding:?}");
+        assert!(finding.detail.contains("~/.config/ccnm"), "{finding:?}");
+        assert!(
+            finding.detail.contains("no other location was searched"),
+            "{finding:?}"
+        );
     }
 
     /// `runtime_user` is the Runtime Executor's expected identity, not an

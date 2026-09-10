@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-09-10T19:40:00+09:00",
+  "last_updated": "2026-09-10T19:55:00+09:00",
   "current_task": "P7",
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
@@ -500,7 +500,7 @@
       ],
       "owner": null,
       "started_at": "2026-09-10T16:20:00+09:00",
-      "last_updated": "2026-09-10T19:40:00+09:00",
+      "last_updated": "2026-09-10T19:55:00+09:00",
       "completed_criteria": [
         "P7.1",
         "P7.2"
@@ -601,6 +601,14 @@
           ],
           "ref": "crates/ccnm-core/src/session/transport.rs",
           "result": "P7.4 Batch C（切 Managed control path）完成：正式路径上的 ccrun→Agent 回跳已删除，绑定会话的 MCP 传输改用 Batch B 的 protocol 4。Agent 侧发起：新增只读的 internal runtime-resolve（Runtime 用自己的权威配置回答 root/runtime_node/instance 引用/permission mode，不启动任何东西、不创建会话、可重复调用），launcher::resolve_from_agent 取回答案后由 Agent **本机** work::start 起会话——与 Runtime 发起时经 ssh 到达的是同一个函数，没有第二份启动代码。原 start_from_agent/start_from_agent_with_instance 及其发送的公共命令 ccnm run <ws> --detached 一并删除。这条回跳的代价是 P7.3 量出来的：ssh 落到的账号是 Runtime Executor，于是它在跑 launcher，并且必须持一把回连 Agent Node 的出站私钥。附带修好一处诊断质量：回跳时对端的拒绝只能报成 RuntimeUnreachable，现在 call_ccnm 保留对端自己的错误码（CCNM_E_CONFIG 进来仍是 CCNM_E_CONFIG 出去）。Runtime 发起：拨号的是 Operator 的进程，Agent 反向进入 ccrun，链路形状不变。MCP 传输：session/transport.rs 对有 agent_identity 的会话发 OpenPayload（protocol 4，无 root）；legacy agent_node workspace 保持旧形状——这是明确的 migration boundary，它们没有可解析的 identity 且本就在退役路上。doctor 的 Remote MCP handshake 探针与 provider 运行前预检一并改用同一条 wire，否则绿的握手证明的是另一条路径。ccnm rpc 仍直接调用 launcher 库函数（SystemRuns::run_print → launcher::run_print_with_agent），没有恢复 shell out 到 CLI；Machine API 的 session identity/start_key/result/stop 语义未动，黑盒契约测试原样通过。测试：cargo test --workspace 622 passed / 0 failed（新增 3 个 transport wire 测试；改写 4 个 launcher 测试、1 个 CLI 端到端测试和 1 个跨进程契约测试，让它们钉住新的那一行而不是旧的）。改写不是为了让绿灯继续绿：旧测试断言的是 -T <runtime> ccnm run <ws> --detached 这条现在不该再出现的命令。fmt、clippy -D warnings、Python 120、check_protocol、check_plan 全通过。限制：没有真机验证——Batch C 改的正是真机链路，P7.3 的 Claude 证据不再完整覆盖新路径，须按 Batch E 重跑最小复验；Agent 侧的 doctor 与 mcp probe 仍把整条公共命令委托给 Runtime（public_cmd_from_agent），那是诊断路径，归 Batch D 一起处理；此外新旧两端必须同构建，旧 Runtime 收到 protocol 4 会以 CCNM_E_VERSION 明确失败而不是静默降级。"
+        },
+        {
+          "kind": "offline",
+          "criteria": [
+            "P7.4"
+          ],
+          "ref": "crates/ccnm-core/src/doctor.rs",
+          "result": "P7.4 Batch D（Doctor 与安全结论）完成：doctor 关于 Runtime 的每一行都改由 Runtime Executor 自己回答。新增只读的 internal runtime-audit，经 Agent 的反向 ssh 执行——那条连接落到的正是执行身份——回传结构化的 safety::Audit 与项目可用性；ProbeReport 增加 runtime_audit 字段，旧报告缺该字段时解码为 None 并渲染成 SKIP（问不到的 Runtime 必须读作没查，不能读作没问题）。doctor::Env 的 audit 字段整个删除，本机进程的审计不再是 doctor 的输入，因此不可能再混进表里；main.rs 里算它的 helper 一并删掉。停止点有测试钉住：the_runtime_rows_do_not_depend_on_who_ran_doctor 用两个不同的 Operator home 跑同一个 workspace（其中一个 home 在 ~/.ssh 和 ~/.config/ccnm 里都放了私钥，正是旧代码会判红的那种），断言 Runtime user / exec_command / Workspace root 三行逐字相同。Workspace root 改成回答“执行身份能不能用这个项目”：新增 RootStatus{present,is_dir,owned,git}，git 状态由 git rev-parse --git-dir 的真实结果分类；因属主被 git 拒绝是 FAIL 并直接给出改属主的修法，属主不对但 git 可用是 WARN，git 问不到是 WARN。这正是 P7.3 撞到的那个洞：0777 父目录下别人拥有的工作树可写、doctor 绿、而 Agent 侧每条 git 都 fatal: detected dubious ownership。No SSH keys 扩到两个目录（~/.ssh 与 ccnm 自己的 ~/.config/ccnm，含子目录，深度上限 3），跳过 .pub/known_hosts/config/authorized_keys/*.toml；措辞改成只说查过的地方（“这两个目录之外没有搜”），不再暗示账号连不出去；没有文件的那种出站凭据（继承的 SSH_AUTH_SOCK）由既有的认证环境那一行按名字拒绝，不在这里重复。Batch A 埋的 tripwire 测试如期变红，按它自己写的指示处理：删掉它，换成两个新测试（ccnm 配置目录里的私钥能被发现；ccnm 自己的配置文件不会被误判成密钥），并同步改掉 production-safety 里那段“换个目录藏私钥”的说明。Docker socket 不再把读不到说成不存在：socket 存在但 stat 不到时报“存在但这个账号够不到，因此也写不了”，结论与观测分开——P7.3 真机上它是指向另一个账号 home 的 symlink，旧文案说的是“这台机器没有 Docker socket”。测试：cargo test --workspace 624 passed / 0 failed；Python 120；fmt、clippy -D warnings、check_protocol、check_plan 全通过。provider_compat 里那份内联 wire 加了 runtime_audit: null 并写明原因（新增字段、旧报告缺字段即 not checked），不是为了绿灯重录 golden。限制：没有真机验证；Agent Node 上跑 doctor / mcp probe 仍然把整条公共命令委托给 Runtime，落到 ccrun 之后那条命令又要连回 Agent，执行身份因此再次出站——这条已写进 production-safety 的已知缺口，改法待用户决定；Batch C/D 合起来改变了真机链路与结论，P7.3 的证据不再完整覆盖，需按 Batch E 重跑最小复验。"
         }
       ],
       "blockers": [
@@ -701,7 +709,7 @@
     "协议契约里的 -32008（busy）没有实现会返回：写入 guard 在会话跑起来之后才由 Runtime 侧 MCP 获取，session.start 不做工作树占用预检，被占的表现是会话失败而非启动被拒。文档已如实标注；要不要补预检使该码可达是待定的产品决定。同一窗口也影响连续执行：前一次 ccnm run --print 返回时 guard 可能尚未释放，紧接着启动下一个会话会撞上，实际窗口时长未在真机测过。"
   ],
   "handoff": {
-    "next_action": "当前仍是 P7，正在按 docs/plan/runtime-surfaces.md 第 6 节实施 P7.4。**Batch A（身份契约）已完成并提交**：四种身份进产品文档、runtime_user 重定义为 Runtime Executor 期望身份、正式废弃隐藏 transport key 的达标路径、3 个离线契约测试、改掉 safety/doctor 两处写错的事实；本批不改启动链。**Batch B（Runtime authority / resolve）也已完成并提交**：新模块 crate::runtime 的 open() 让 workspace 在 Runtime 权威配置里解析，新 internal wire protocol 4 的 OpenPayload 没有 root 字段，decode_serve 按协议号分派且未知版本停在 CCNM_E_VERSION，mcp-serve 打开时仍重做 binding/安全/canonicalize/write guard；公共 launcher 仍发旧 payload，符合该批停止点。**Batch C（切 Managed control path）也已完成并提交**：Agent 侧发起改为先问只读的 internal runtime-resolve 再本机 work::start，删除了 ccrun→Agent 回跳与它发送的公共命令；绑定会话的 MCP 传输、doctor 的握手探针和 provider 预检统一改用 protocol 4（无 root），legacy workspace 保持旧 wire 作为 migration boundary；rpc 仍直接调库，Machine API 语义未动。**下一步是 Batch D（Doctor 与安全结论）**：Runtime safety 那几行改由权威 Runtime probe 报告，Operator 本地只报告 control path 自己能证明的事；workspace root 检查补上「执行身份实际可用」的语义（至少覆盖 owner 与 git safe.directory，别把「目录可写」说成「项目可用」）；SSH credential 检查改精确措辞并覆盖已知 ccnm transport 位置与 agent socket；不把读不到的 Docker socket 说成不存在。另外把 Agent 侧 doctor/mcp probe 仍在委托整条公共命令（public_cmd_from_agent）一起处理掉。停止点是同一 workspace 从不同 Operator 身份跑 doctor，Runtime Executor 那部分结论必须一致。之后 E（新链最小 Claude 真机复验：Batch C 已改动真机链路，P7.3 的证据不再完整覆盖）。不要重做已经通过的 P7.1/P7.2 或完整 Claude dogfood。Codex 额度恢复后再在新身份模型上补 P7.3 Codex parity；两者齐全后才做 P7.5 v1 freeze，P8/P9 之前都不要开始。",
+    "next_action": "当前仍是 P7，正在按 docs/plan/runtime-surfaces.md 第 6 节实施 P7.4。**Batch A（身份契约）已完成并提交**：四种身份进产品文档、runtime_user 重定义为 Runtime Executor 期望身份、正式废弃隐藏 transport key 的达标路径、3 个离线契约测试、改掉 safety/doctor 两处写错的事实；本批不改启动链。**Batch B（Runtime authority / resolve）也已完成并提交**：新模块 crate::runtime 的 open() 让 workspace 在 Runtime 权威配置里解析，新 internal wire protocol 4 的 OpenPayload 没有 root 字段，decode_serve 按协议号分派且未知版本停在 CCNM_E_VERSION，mcp-serve 打开时仍重做 binding/安全/canonicalize/write guard；公共 launcher 仍发旧 payload，符合该批停止点。**Batch C（切 Managed control path）也已完成并提交**：Agent 侧发起改为先问只读的 internal runtime-resolve 再本机 work::start，删除了 ccrun→Agent 回跳与它发送的公共命令；绑定会话的 MCP 传输、doctor 的握手探针和 provider 预检统一改用 protocol 4（无 root），legacy workspace 保持旧 wire 作为 migration boundary；rpc 仍直接调库，Machine API 语义未动。**Batch D（Doctor 与安全结论）也已完成并提交**：Runtime 的每一行改由 internal runtime-audit 经 Agent 反向 ssh 由执行身份自己回答，doctor::Env 的本机 audit 字段整个删除，问不到时是 SKIP；Workspace root 改答「执行身份能不能用这个项目」（属主 + git 因属主拒绝）；No SSH keys 扩到 ~/.ssh 与 ~/.config/ccnm 并把措辞收窄成只说查过的地方；读不到的 Docker socket 不再说成不存在。停止点已有测试钉住：两个不同 Operator home 跑同一 workspace，Runtime 三行逐字相同。**唯一没做的是 Agent 侧 doctor/mcp probe 仍委托整条公共命令（public_cmd_from_agent），落到 ccrun 后又连回 Agent，等于执行身份再次出站**——这条不在 Batch D 的清单里，是我在 Batch C 的交接里自己加的，改法有两种（诊断命令在 Agent 侧直接拒绝，或把 doctor 拆成可从任一侧发起），都会改变对外行为，留给用户决定。**下一步是 Batch E（v1 回归与真机再确认）**：不必重跑整个昂贵 dogfood，但至少重新完成 Operator public CLI → Agent → ccrun 的 Claude smoke/parity、ccnm rpc 同路径一次真实 session、产物属主为执行身份、ccrun 的 ~/.ssh 与已知 transport 位置无私钥且 SSH_AUTH_SOCK 不可用、执行身份进程轨迹中没有 ccnm 所需的出站 SSH、result/status/stop 与写入 guard 资源归零、完整离线门禁重跑。它需要真机与订阅额度授权。不要重做已经通过的 P7.1/P7.2 或完整 Claude dogfood。Codex 额度恢复后再在新身份模型上补 P7.3 Codex parity；两者齐全后才做 P7.5 v1 freeze，P8/P9 之前都不要开始。",
     "scope": "P7 收尾与 v1 身份/控制链修正。P7.4 是已确定的实现任务，可在 Codex 额度等待期间进行；需要部署、新账号/ACL、SSH 准入或其他系统修改时仍必须单独授权。P7.3 剩余 Codex 付费真机项继续 blocked。P9–P12 只作为后续 v1.x Remote Workspace MCP 路线记录，不在本轮提前实现。",
     "planning_validation": {
       "at": "2026-09-08T21:22:43+09:00",
@@ -714,11 +722,11 @@
       "limits": "本轮离线门禁；fodelf SSH 建连失败，没有新增远端资源或运行真实模型，不替代 P3.5。"
     },
     "planning_validation_latest": {
-      "at": "2026-09-10T19:40:00+09:00",
+      "at": "2026-09-10T19:55:00+09:00",
       "commands": [
         "cargo fmt --all --check：通过",
         "cargo clippy --workspace --all-targets -- -D warnings：退出码 0（未接管道）",
-        "cargo test --workspace：622 passed / 0 failed（Batch A +3 身份契约、Batch B +14 Runtime 权威解析、Batch C +3 传输 wire 并改写 6 个钉住旧回跳的测试）",
+        "cargo test --workspace：624 passed / 0 failed（Batch A +3 身份契约、B +14 Runtime 权威解析、C +3 传输 wire 并改写 6 个旧回跳测试、D +2 凭据范围与 1 个不同 Operator 结论一致性测试）",
         "PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p 'test_*.py' -q：120 passed（3.12 与系统 3.9 各一遍）",
         "python3 scripts/check_protocol.py：通过（38 个 fixture）",
         "python3 scripts/check_plan.py：通过",

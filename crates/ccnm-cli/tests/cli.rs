@@ -262,8 +262,19 @@ fn doctor_against_an_unreachable_agent_exits_agent_unreachable() {
         text.contains("Project instructions    OK     no CLAUDE.md at"),
         "{text}"
     );
+    // The Runtime Executor's own rows are among the skips: it is only
+    // reachable through the Agent, and an unknown Runtime must not read
+    // as a confined one.
     assert!(
-        text.contains("NOT READY (1 failed, 10 not checked)"),
+        text.contains("Runtime safety          SKIP   not checked: Agent SSH failed"),
+        "{text}"
+    );
+    assert!(
+        text.contains("exec_command            SKIP   not checked: Agent SSH failed"),
+        "{text}"
+    );
+    assert!(
+        text.contains("NOT READY (1 failed, 12 not checked)"),
         "{text}"
     );
     // Read-only: nothing appeared in the root.

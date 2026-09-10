@@ -1529,49 +1529,66 @@ pub fn probe(req: &ProbeRequest, tools: &Tools<'_>) -> ProbeReport {
     // A colocated workspace has no reverse link at all, and says so with
     // `None` rather than with an error: there is nothing broken about a
     // machine that is already holding the project.
-    let (runtime_ssh, runtime_hello, mcp) = match tools.runtime_link(&req.runtime_node) {
-        Ok(None) => (None, None, None),
-        Err(e) => (Some(Err(e.into())), None, None),
-        Ok(Some(link)) => {
-            match Ssh::new(&link.alias, &tools.control_dir).map(|ssh| {
-                ssh.with_ccnm_bin(&link.ccnm_bin)
-                    .for_provider(selected.provider)
-            }) {
-                Err(e) => (
-                    Some(Err(e.into())),
-                    Some(Err(Error::new(
-                        ErrorCode::RuntimeUnreachable,
-                        format!(
-                            "not attempted: the alias for {} is invalid",
-                            req.runtime_node
-                        ),
-                    )
-                    .into())),
-                    None,
-                ),
-                Ok(ssh) => {
-                    let runtime_ssh = ssh.resolve(tools.runner).map_err(Into::into);
-                    let runtime_hello = ssh
-                        .check_control_path()
-                        .and_then(|()| {
-                            ssh.call_ccnm::<_, HelloReport>(
+    let (runtime_ssh, runtime_hello, runtime_audit, mcp) =
+        match tools.runtime_link(&req.runtime_node) {
+            Ok(None) => (None, None, None, None),
+            Err(e) => (Some(Err(e.into())), None, None, None),
+            Ok(Some(link)) => {
+                match Ssh::new(&link.alias, &tools.control_dir).map(|ssh| {
+                    ssh.with_ccnm_bin(&link.ccnm_bin)
+                        .for_provider(selected.provider)
+                }) {
+                    Err(e) => (
+                        Some(Err(e.into())),
+                        Some(Err(Error::new(
+                            ErrorCode::RuntimeUnreachable,
+                            format!(
+                                "not attempted: the alias for {} is invalid",
+                                req.runtime_node
+                            ),
+                        )
+                        .into())),
+                        None,
+                        None,
+                    ),
+                    Ok(ssh) => {
+                        let runtime_ssh = ssh.resolve(tools.runner).map_err(Into::into);
+                        let runtime_hello = ssh
+                            .check_control_path()
+                            .and_then(|()| {
+                                ssh.call_ccnm::<_, HelloReport>(
+                                    tools.runner,
+                                    Master::Reuse,
+                                    &["internal", "hello"],
+                                    &HelloRequest::new(Some(req.root.clone())),
+                                    Duration::from_secs(30),
+                                    ErrorCode::RuntimeUnreachable,
+                                )
+                            })
+                            .map_err(Into::into);
+                        // The safety verdict has to come from the far end. This
+                        // ssh lands on the Runtime Executor, so asking here is
+                        // the only way doctor learns about the account that will
+                        // actually run the tools instead of about its own.
+                        let runtime_audit = runtime_hello.is_ok().then(|| {
+                            ssh.call_ccnm::<_, crate::runtime::AuditReport>(
                                 tools.runner,
                                 Master::Reuse,
-                                &["internal", "hello"],
-                                &HelloRequest::new(Some(req.root.clone())),
+                                &["internal", "runtime-audit"],
+                                &crate::runtime::AuditRequest::new(&req.workspace),
                                 Duration::from_secs(30),
                                 ErrorCode::RuntimeUnreachable,
                             )
-                        })
-                        .map_err(Into::into);
-                    // Only worth the round trips if the plain reverse ssh worked.
-                    let mcp = (req.mcp_calls > 0 && runtime_hello.is_ok())
-                        .then(|| mcp_handshake(req, &selected, &ssh).map_err(Into::into));
-                    (Some(runtime_ssh), Some(runtime_hello), mcp)
+                            .map_err(Into::into)
+                        });
+                        // Only worth the round trips if the plain reverse ssh worked.
+                        let mcp = (req.mcp_calls > 0 && runtime_hello.is_ok())
+                            .then(|| mcp_handshake(req, &selected, &ssh).map_err(Into::into));
+                        (Some(runtime_ssh), Some(runtime_hello), runtime_audit, mcp)
+                    }
                 }
             }
-        }
-    };
+        };
 
     let (controller, agent) = ask_about_agent(tools, &selected);
     ProbeReport {
@@ -1587,6 +1604,7 @@ pub fn probe(req: &ProbeRequest, tools: &Tools<'_>) -> ProbeReport {
         agent,
         runtime_ssh,
         runtime_hello,
+        runtime_audit,
         mcp,
         // Read-only, like everything else here: tmux is asked its version
         // and which sessions exist, and nothing is started or stopped.
@@ -1618,6 +1636,7 @@ fn rejected_probe(req: &ProbeRequest, tools: &Tools<'_>, error: Error) -> ProbeR
         },
         runtime_ssh: None,
         runtime_hello: None,
+        runtime_audit: None,
         mcp: None,
         terminal: Some(status(
             &StatusRequest {
@@ -1884,6 +1903,25 @@ mod tests {
         serde_json::to_string(&rep).unwrap()
     }
 
+    /// What the Runtime Executor answers about itself, over the same
+    /// reverse ssh the hello used.
+    fn audit_json() -> String {
+        serde_json::to_string(&crate::runtime::AuditReport {
+            protocol: crate::runtime::OPEN_PROTOCOL,
+            audit: crate::safety::Audit {
+                user: "ccrun".into(),
+                findings: vec![],
+            },
+            root: crate::runtime::RootStatus {
+                present: true,
+                is_dir: true,
+                owned: true,
+                git: crate::runtime::GitStatus::Usable,
+            },
+        })
+        .unwrap()
+    }
+
     fn request() -> ProbeRequest {
         ProbeRequest {
             agent: None,
@@ -1910,11 +1948,12 @@ mod tests {
     fn probe_collects_every_fact_in_one_report() {
         let dir = temp("probe");
         let fake = FakeRunner::new();
-        // Call order: ssh -G, ssh internal hello, claude --version. No
-        // `claude auth status`: with no controller its answer would be
-        // wrong, so it is not asked at all.
+        // Call order: ssh -G, ssh internal hello, ssh internal
+        // runtime-audit, claude --version. No `claude auth status`: with no
+        // controller its answer would be wrong, so it is not asked at all.
         fake.push(Output::exited(0, "hostname home.ts\nuser ccrun\n"));
         fake.push(Output::exited(0, hello_json(true)));
+        fake.push(Output::exited(0, audit_json()));
         fake.push(Output::exited(0, "2.1.259 (Claude Code)\n"));
 
         let tools = Tools {
@@ -1956,10 +1995,16 @@ mod tests {
         );
         assert_eq!(rep.mcp, None, "mcp_calls = 0 means no handshake");
 
+        // The verdict about the Runtime Executor came from the Runtime
+        // Executor, over the same reverse ssh.
+        let executor = rep.runtime_audit.as_ref().unwrap().as_ref().unwrap();
+        assert_eq!(executor.audit.user, "ccrun");
+        assert!(executor.root.usable());
+
         let calls = fake.calls();
         assert_eq!(
             calls.len(),
-            3,
+            4,
             "{:?}",
             calls.iter().map(Cmd::display).collect::<Vec<_>>()
         );
@@ -1983,8 +2028,13 @@ mod tests {
             sent.root,
             Some(PathBuf::from("/Users/ccrun/Projects/xshun"))
         );
+        let audit_call = calls[2].display();
         assert!(
-            calls[2]
+            audit_call.contains("-T to-runtime /opt/runtime/ccnm internal runtime-audit --payload"),
+            "{audit_call}"
+        );
+        assert!(
+            calls[3]
                 .env
                 .iter()
                 .any(|(k, v)| k == "CLAUDE_CONFIG_DIR" && v == "/x/claude")
@@ -3056,6 +3106,7 @@ mod tests {
         let fake = FakeRunner::new();
         fake.push(Output::exited(0, "hostname home.ts\nuser ccrun\n"));
         fake.push(Output::exited(0, hello_json(true)));
+        fake.push(Output::exited(0, audit_json()));
         let tools = Tools {
             local: None,
             config: agent_config(),
@@ -3079,8 +3130,9 @@ mod tests {
             Some(PathBuf::from("/opt/homebrew/bin/claude")),
             "the binary reported must be the controller's, not this session's"
         );
+        // ssh -G, the hello, and the Runtime Executor's own audit.
         let ssh_calls: Vec<String> = fake.calls().iter().map(Cmd::display).collect();
-        assert_eq!(ssh_calls.len(), 2, "{ssh_calls:?}");
+        assert_eq!(ssh_calls.len(), 3, "{ssh_calls:?}");
         assert!(
             !ssh_calls.iter().any(|c| c.contains("claude")),
             "the ssh session must not run claude itself: {ssh_calls:?}"

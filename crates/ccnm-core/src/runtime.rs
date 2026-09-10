@@ -29,6 +29,7 @@ use serde::{Deserialize, Serialize};
 use crate::config::Config;
 use crate::error::{Error, ErrorCode, Result};
 use crate::instance::{AgentIdentity, WorkspaceBinding, identifier};
+use crate::process::ProcessRunner;
 use crate::protocol::mcp::ServePayload;
 use crate::protocol::payload::Protocol;
 
@@ -262,6 +263,169 @@ pub fn resolve(config: &Config, request: &ResolveRequest) -> Result<ResolveRepor
         agent,
         provider_config_dir: provider.config_dir(resolved.agent).map(Path::to_path_buf),
         permission_mode: provider.permission_mode(resolved.workspace),
+    })
+}
+
+/// What the Runtime Executor is asked about itself (P7.4 Batch D).
+///
+/// Doctor cannot answer this from the machine it runs on. Its identity
+/// checks judge the process that calls them, so run by an Operator they
+/// describe the Operator — P7.3 saw the same workspace read 0 failed as
+/// `ccrun` and 7 failed as the operator's own login, in the same minute.
+/// The account that matters is the one the Agent's ssh lands on, so the
+/// question is asked over that connection and answered there.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AuditRequest {
+    pub protocol: u32,
+    pub workspace: String,
+}
+
+impl AuditRequest {
+    pub fn new(workspace: &str) -> Self {
+        AuditRequest {
+            protocol: OPEN_PROTOCOL,
+            workspace: workspace.to_string(),
+        }
+    }
+}
+
+impl Protocol for AuditRequest {
+    fn protocol(&self) -> u32 {
+        self.protocol
+    }
+    fn expected_protocol(&self) -> u32 {
+        OPEN_PROTOCOL
+    }
+}
+
+/// Whether the project is usable by the identity that would run its tools
+/// — not whether a directory happens to be there.
+///
+/// "The directory is writable" was the old claim, and P7.3 showed what it
+/// misses: a work tree owned by somebody else is writable through a 0777
+/// parent and still makes every git command fail, while doctor's row stays
+/// green. Ownership and git's own verdict are the two facts that decide it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RootStatus {
+    pub present: bool,
+    pub is_dir: bool,
+    /// Owned by the identity that answered, by uid.
+    pub owned: bool,
+    pub git: GitStatus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GitStatus {
+    /// A repository this identity can work in.
+    Usable,
+    /// Not a repository at all, which is not a problem.
+    NotARepo,
+    /// Git refused because the repository belongs to someone else. Every
+    /// git command fails this way, including the ones an Agent runs.
+    RefusedOwnership,
+    /// Git could not be asked: not installed, or it failed in a way this
+    /// does not recognise. Reported as unknown rather than as either
+    /// answer.
+    Unknown,
+}
+
+impl RootStatus {
+    pub fn of(root: &Path, runner: &dyn ProcessRunner) -> RootStatus {
+        let meta = std::fs::metadata(root).ok();
+        let present = meta.is_some();
+        let is_dir = meta.as_ref().is_some_and(std::fs::Metadata::is_dir);
+        let owned = meta.as_ref().is_some_and(|meta| {
+            use std::os::unix::fs::MetadataExt;
+            current_uid(runner).is_some_and(|uid| uid == meta.uid())
+        });
+        RootStatus {
+            present,
+            is_dir,
+            owned,
+            git: git_status(root, runner),
+        }
+    }
+
+    /// Nothing here stops the project being served.
+    pub fn usable(&self) -> bool {
+        self.present && self.is_dir && self.git != GitStatus::RefusedOwnership
+    }
+}
+
+fn current_uid(runner: &dyn ProcessRunner) -> Option<u32> {
+    let out = runner
+        .run(&crate::process::Cmd::new("/usr/bin/id").args(["-u"]))
+        .ok()?;
+    out.success()
+        .then(|| out.stdout_lossy().trim().parse().ok())?
+}
+
+fn git_status(root: &Path, runner: &dyn ProcessRunner) -> GitStatus {
+    let cmd = crate::process::Cmd::new("git")
+        .args(["-C", &root.to_string_lossy(), "rev-parse", "--git-dir"])
+        .timeout(std::time::Duration::from_secs(10));
+    let Ok(out) = runner.run(&cmd) else {
+        return GitStatus::Unknown;
+    };
+    if out.success() {
+        return GitStatus::Usable;
+    }
+    let said = out.stderr_lossy().to_lowercase();
+    if said.contains("dubious ownership") {
+        GitStatus::RefusedOwnership
+    } else if said.contains("not a git repository") {
+        GitStatus::NotARepo
+    } else {
+        GitStatus::Unknown
+    }
+}
+
+/// The Runtime Executor's own answer about itself and the project.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuditReport {
+    pub protocol: u32,
+    pub audit: crate::safety::Audit,
+    pub root: RootStatus,
+}
+
+impl Protocol for AuditReport {
+    fn protocol(&self) -> u32 {
+        self.protocol
+    }
+    fn expected_protocol(&self) -> u32 {
+        OPEN_PROTOCOL
+    }
+}
+
+/// Answer an audit request as whoever is running this process.
+///
+/// Meant to be reached over the Agent's ssh into the Runtime Executor, so
+/// that the verdict describes the account that will really execute the
+/// tools. Nothing here reveals a path outside the workspace, an
+/// environment value or a credential: the findings are the same structured
+/// conclusions `exec_command`'s own gate uses.
+pub fn audit(
+    config: &Config,
+    request: &AuditRequest,
+    runner: &dyn ProcessRunner,
+) -> Result<AuditReport> {
+    if request.protocol != OPEN_PROTOCOL {
+        return Err(Error::new(
+            ErrorCode::Version,
+            format!(
+                "audit request is protocol {}, this Runtime answers protocol {OPEN_PROTOCOL}",
+                request.protocol
+            ),
+        ));
+    }
+    let resolved = config.workspace(&request.workspace)?;
+    let home = crate::paths::home_dir().unwrap_or_else(|_| PathBuf::from("/nonexistent"));
+    Ok(AuditReport {
+        protocol: OPEN_PROTOCOL,
+        audit: crate::safety::audit(resolved.runtime.runtime_user.as_deref(), &home, runner),
+        root: RootStatus::of(&resolved.workspace.root, runner),
     })
 }
 

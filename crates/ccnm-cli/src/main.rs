@@ -19,7 +19,7 @@ use ccnm_core::protocol::run::{
 use ccnm_core::provider::AgentProvider;
 use ccnm_core::{
     Config, Error, Result, configedit, controller, doctor, launchagent, launcher, mcp, paths,
-    safety, session, tmux, work,
+    session, tmux, work,
 };
 
 /// Terminal-native remote workspace runtime for configured CLI agents.
@@ -256,6 +256,13 @@ enum InternalCommand {
         #[arg(long)]
         payload: String,
     },
+    /// Answer what this Runtime Executor is and whether the project is
+    /// usable by it. Read-only, and meaningful only because it runs as
+    /// the account the Agent's transport lands on
+    RuntimeAudit {
+        #[arg(long)]
+        payload: String,
+    },
     /// Work-side run: create the session, have the controller start it,
     /// wait, report
     AgentRun {
@@ -383,7 +390,6 @@ fn run(cli: Cli) -> Result<i32> {
                 runner: &SystemRunner,
                 control_dir: paths::state_dir()?.join("ssh"),
                 home: paths::home_dir()?,
-                audit: runtime_audit(&path, workspace.as_deref()),
             };
             let report = doctor::run_selected(&path, workspace.as_deref(), agent.as_deref(), &env);
             print!("{}", report.render());
@@ -682,6 +688,15 @@ fn run(cli: Cli) -> Result<i32> {
                 let req: ccnm_core::runtime::ResolveRequest = payload::decode(payload)?;
                 let config = Config::load(&config_path()?)?;
                 print_json(&ccnm_core::runtime::resolve(&config, &req)?)
+            }
+            InternalCommand::RuntimeAudit { payload } => {
+                // Doctor cannot answer this where it runs: its identity
+                // checks judge the calling process. This one is called over
+                // the Agent's ssh, so it runs as the account that will
+                // really execute the tools.
+                let req: ccnm_core::runtime::AuditRequest = payload::decode(payload)?;
+                let config = Config::load(&config_path()?)?;
+                print_json(&ccnm_core::runtime::audit(&config, &req, &SystemRunner)?)
             }
             InternalCommand::Controller => {
                 let socket = paths::controller_socket(&paths::state_dir()?);
@@ -1414,19 +1429,4 @@ fn init_logging(verbose: bool) {
         .with_writer(std::io::stderr)
         .with_target(false)
         .init();
-}
-
-/// Audit the account this machine's runtime runs as.
-///
-/// Done here rather than inside doctor so doctor stays a pure function of
-/// its inputs. The config is loaded best-effort: without it there is no
-/// declared runtime user, which the audit already treats as a failure.
-fn runtime_audit(config_path: &std::path::Path, workspace: Option<&str>) -> safety::Audit {
-    let expected = Config::load(config_path).ok().and_then(|config| {
-        let name = workspace?;
-        let resolved = config.workspace(name).ok()?;
-        resolved.runtime.runtime_user.clone()
-    });
-    let home = paths::home_dir().unwrap_or_else(|_| std::path::PathBuf::from("/nonexistent"));
-    safety::audit(expected.as_deref(), &home, &SystemRunner)
 }

@@ -57,13 +57,6 @@ pub struct Env<'a> {
     pub control_dir: PathBuf,
     /// This user's home, for expanding the `~/` in a remote ccnm path.
     pub home: PathBuf,
-    /// What the account this machine's runtime runs as can reach.
-    ///
-    /// Passed in rather than computed here so doctor stays a pure
-    /// function of its inputs: the audit runs `id` and `sudo -n`, and a
-    /// test that had to script those into the same queue as every ssh
-    /// would be asserting on command ordering instead of on behaviour.
-    pub audit: safety::Audit,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -341,18 +334,15 @@ fn workspace_checks(r: &Resolved<'_>, agent: Option<&str>, env: &Env<'_>) -> Vec
             checks.push(project_instructions(r));
         }
         checks.push(runtime_ccnm(r, env));
-        // Before anything that needs the network: this is an audit of the
-        // local account, and it is exactly as true when the Agent Node is
-        // unreachable.
-        checks.extend(runtime_safety_rows(env, r));
+        // The safety rows used to be added here, from an audit of this
+        // process. They are not this machine's to answer: the account that
+        // runs the tools is the one the Agent's transport lands on, so they
+        // come back with the probe instead (`probe_rows`). Doing it here
+        // would answer a question nobody asked -- "is the person typing
+        // confined?" -- and answer it FAIL for every normal operator.
     } else {
         let why = format!("the project is on {}, not on this machine", ws.runtime_node);
-        for name in [
-            "Runtime workspace",
-            "Project instructions",
-            "Runtime ccnm",
-            "Runtime user",
-        ] {
+        for name in ["Runtime workspace", "Project instructions", "Runtime ccnm"] {
             checks.push(Check::skip(name, &why));
         }
     }
@@ -517,8 +507,10 @@ fn probe_rows(r: &Resolved<'_>, rep: &ProbeReport) -> Vec<Check> {
                     ),
                     fail => fail,
                 });
+                // The Runtime Executor's own answer about itself and the
+                // project, from the account the transport lands on.
+                checks.extend(executor_rows(r, rep));
                 checks.push(mcp_row(rep));
-                checks.push(root_row(r, h, &r.workspace.runtime_node));
                 checks.push(terminal_row(r, rep));
             }
             Some(Err(e)) => {
@@ -536,6 +528,100 @@ fn probe_rows(r: &Resolved<'_>, rep: &ProbeReport) -> Vec<Check> {
     }
 
     checks
+}
+
+/// Everything the Runtime Executor reported about itself: the safety
+/// findings, the exec verdict, and whether the project is usable by it.
+///
+/// The rows are identical whoever ran doctor, because none of them is
+/// computed here. When the far side could not be asked they are SKIPs that
+/// say so -- an unknown Runtime must never read as a confined one.
+fn executor_rows(r: &Resolved<'_>, rep: &ProbeReport) -> Vec<Check> {
+    match &rep.runtime_audit {
+        Some(Ok(report)) => {
+            let mut rows = runtime_safety_rows(&report.audit, r);
+            rows.push(executor_root_row(r, &report.root, &report.audit.user));
+            rows
+        }
+        Some(Err(e)) => {
+            let mut rows = vec![Check::fail_report("Runtime safety", e)];
+            rows.push(Check::skip(
+                "Workspace root",
+                "not checked: the Runtime Executor did not answer",
+            ));
+            rows.push(Check::skip(
+                "exec_command",
+                "not checked: the Runtime Executor did not answer",
+            ));
+            rows
+        }
+        None => ["Runtime safety", "Workspace root", "exec_command"]
+            .into_iter()
+            .map(|name| {
+                Check::skip(
+                    name,
+                    "not checked: that ccnm build does not report the Runtime Executor's audit",
+                )
+            })
+            .collect(),
+    }
+}
+
+/// Whether the project is usable *by the identity that would run its
+/// tools*, which is not the same question as whether a directory is there.
+///
+/// P7.3 met the difference on real hardware: a work tree owned by another
+/// account, reachable through a world-writable parent, passed the old row
+/// -- and every git command the Agent ran failed with `detected dubious
+/// ownership` while the table stayed green.
+fn executor_root_row(r: &Resolved<'_>, root: &crate::runtime::RootStatus, user: &str) -> Check {
+    use crate::runtime::GitStatus;
+    const NAME: &str = "Workspace root";
+    let path = r.workspace.root.display();
+    if !root.present {
+        return Check::fail_with(
+            NAME,
+            ErrorCode::WrongWorkspace,
+            format!(
+                "{path} is missing for {user} on {}",
+                r.workspace.runtime_node
+            ),
+        );
+    }
+    if !root.is_dir {
+        return Check::fail_with(
+            NAME,
+            ErrorCode::WrongWorkspace,
+            format!("{path} exists but is not a directory for {user}"),
+        );
+    }
+    match root.git {
+        GitStatus::RefusedOwnership => Check::fail_with(
+            NAME,
+            ErrorCode::WrongWorkspace,
+            format!(
+                "{path} is a directory for {user}, but git refuses it: the repository belongs to another account\nfix: make the project directory owned by {user}, the identity that runs its tools"
+            ),
+        ),
+        GitStatus::Unknown => Check::warn(
+            NAME,
+            format!("{path} is a directory for {user}; git could not be asked about it"),
+        ),
+        _ if !root.owned => Check::warn(
+            NAME,
+            format!(
+                "{path} is a directory for {user} but is owned by another account; tools that check ownership will refuse it"
+            ),
+        ),
+        GitStatus::Usable => Check::ok(
+            NAME,
+            format!("{path} is a git repository {user} can work in"),
+        ),
+        GitStatus::NotARepo => Check::ok(
+            NAME,
+            format!("{path} is a directory owned by {user} (not a git repository)"),
+        ),
+    }
 }
 
 /// Whether the project is where the workspace says it is, as reported by
@@ -569,10 +655,16 @@ fn root_row(r: &Resolved<'_>, h: &crate::protocol::hello::HelloReport, node: &st
 }
 
 fn skipped_after_reverse_ssh() -> Vec<Check> {
-    ["Remote MCP handshake", "Workspace root", "Terminal session"]
-        .into_iter()
-        .map(|name| Check::skip(name, "not checked: reverse SSH failed"))
-        .collect()
+    [
+        "Runtime safety",
+        "exec_command",
+        "Remote MCP handshake",
+        "Workspace root",
+        "Terminal session",
+    ]
+    .into_iter()
+    .map(|name| Check::skip(name, "not checked: reverse SSH failed"))
+    .collect()
 }
 
 /// tmux on the Agent Node, and whether this workspace has a session in
@@ -630,18 +722,16 @@ fn mcp_row(rep: &ProbeReport) -> Check {
     }
 }
 
-/// What the account this machine's runtime runs as can reach.
+/// What the Runtime Executor can reach, as reported by the Runtime
+/// Executor.
 ///
-/// **These rows describe whoever ran `ccnm doctor`, not necessarily the
-/// Runtime Executor.** The audit is handed in by the caller, and the public
-/// CLI hands in an audit of its own process. That is only the account which
-/// executes `exec_command` when the operator happens to be the Runtime
-/// Executor. P7.3 measured the gap on real hardware: the same workspace,
-/// same build, same minute — 0 failed as `ccrun`, 7 failed as the
-/// operator's own login, because these rows judged the typist. Moving the
-/// Runtime verdict onto an authoritative probe of the executor is P7.4
-/// Batch D (docs/plan/runtime-surfaces.md); until then read a green table
-/// as "the account that ran doctor is confined".
+/// These rows used to describe whoever ran `ccnm doctor`, because the audit
+/// judges the process that calls it. P7.3 measured what that costs: the
+/// same workspace, same build, same minute — 0 failed as `ccrun`, 7 failed
+/// as the operator's own login, because the rows judged the typist. So the
+/// audit is now asked over the Agent's ssh into the Runtime Executor and
+/// arrives in the probe (P7.4 Batch D). Whoever types the command no longer
+/// changes the answer.
 ///
 /// One row per finding, because "the runtime is not confined" is not
 /// something anyone can act on and "this account is in the admin group,
@@ -649,8 +739,7 @@ fn mcp_row(rep: &ProbeReport) -> Check {
 ///
 /// A failure is a FAIL row, not a SKIP: nothing is unknown here. The
 /// property was checked and it does not hold.
-fn runtime_safety_rows(env: &Env<'_>, r: &Resolved<'_>) -> Vec<Check> {
-    let audit = &env.audit;
+fn runtime_safety_rows(audit: &safety::Audit, r: &Resolved<'_>) -> Vec<Check> {
     // A workspace that has accepted an unconfined runtime gets warnings,
     // not failures. The runtime will run its commands either way, and a
     // table that says NOT READY about a session that works is a table
@@ -798,6 +887,11 @@ fn skipped_after_agent_ssh() -> Vec<Check> {
         "Claude Code",
         "Claude authentication",
         "Reverse SSH",
+        // The Runtime Executor is only reachable through the Agent, so a
+        // broken control path leaves its verdict unknown -- which must read
+        // as unknown, not as confined.
+        "Runtime safety",
+        "exec_command",
         "Remote MCP handshake",
         "Workspace root",
         "Terminal session",
@@ -1001,15 +1095,25 @@ mod tests {
     }
 
     fn env<'a>(fake: &'a FakeRunner, dir: &Path) -> Env<'a> {
-        env_with(fake, dir, confined_audit())
-    }
-
-    fn env_with<'a>(fake: &'a FakeRunner, dir: &Path, audit: safety::Audit) -> Env<'a> {
         Env {
             runner: fake,
             control_dir: control(dir),
             home: dir.join("home"),
-            audit,
+        }
+    }
+
+    /// What the Runtime Executor reports about a machine set up per
+    /// docs/production-safety.md.
+    fn confined_report() -> crate::runtime::AuditReport {
+        crate::runtime::AuditReport {
+            protocol: crate::runtime::OPEN_PROTOCOL,
+            audit: confined_audit(),
+            root: crate::runtime::RootStatus {
+                present: true,
+                is_dir: true,
+                owned: true,
+                git: crate::runtime::GitStatus::Usable,
+            },
         }
     }
 
@@ -1089,6 +1193,7 @@ mod tests {
                 proxy_jump: None,
             })),
             runtime_hello: Some(Ok(hello("ccrun", crate::VERSION, Some(true)))),
+            runtime_audit: Some(Ok(confined_report())),
             mcp: Some(Ok(crate::protocol::mcp::ProbeReport {
                 connect_us: 190_000,
                 server_name: "ccnm".into(),
@@ -1208,21 +1313,88 @@ mod tests {
         );
     }
 
+    /// The stop point of P7.4 Batch D: whoever types the command, the rows
+    /// about the Runtime Executor say the same thing.
+    ///
+    /// The second operator here is one the old code would have judged --
+    /// their own home holds a private key, in `~/.ssh` and in ccnm's config
+    /// directory. Doctor used to audit that home and report it as the
+    /// Runtime's, which is how the same workspace read 0 failed as `ccrun`
+    /// and 7 failed as the operator's own login. Now nothing about the
+    /// caller reaches these rows: they arrive in the probe, from the
+    /// account the Agent's transport lands on.
+    #[test]
+    fn the_runtime_rows_do_not_depend_on_who_ran_doctor() {
+        const RUNTIME_ROWS: [&str; 3] = ["Runtime user", "exec_command", "Workspace root"];
+        let (dir, config) = setup("two-operators", true, true);
+
+        // A second operator home, with everything the old local audit would
+        // have failed on, plus the ccnm the control path needs to find.
+        let loaded = dir.join("loaded-home");
+        std::fs::create_dir_all(loaded.join(".ssh")).unwrap();
+        std::fs::write(
+            loaded.join(".ssh/id_ed25519"),
+            "-----BEGIN OPENSSH PRIVATE KEY-----\nsynthetic\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(loaded.join(".config/ccnm/transport")).unwrap();
+        std::fs::write(
+            loaded.join(".config/ccnm/transport/runtime"),
+            "-----BEGIN OPENSSH PRIVATE KEY-----\nsynthetic\n",
+        )
+        .unwrap();
+        let bin = loaded.join(".local/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(
+            bin.join("ccnm"),
+            format!("#!/bin/sh\necho ccnm {}\n", crate::VERSION),
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(bin.join("ccnm"), std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let executor_rows = |home: PathBuf| {
+            let fake = FakeRunner::new();
+            fake.push(Output::exited(0, format!("ccnm {}\n", crate::VERSION)));
+            fake.push(Output::exited(0, "hostname workmac\nuser me\n"));
+            fake.push(Output::exited(
+                0,
+                serde_json::to_string(&good_probe()).unwrap(),
+            ));
+            let env = Env {
+                runner: &fake,
+                control_dir: control(&dir),
+                home,
+            };
+            let report = run(&config, Some("xshun"), &env);
+            RUNTIME_ROWS
+                .iter()
+                .map(|name| {
+                    let row = row(&report, name);
+                    (row.status.clone(), row.detail.clone())
+                })
+                .collect::<Vec<_>>()
+        };
+        let plain = executor_rows(dir.join("home"));
+        assert_eq!(plain, executor_rows(loaded));
+        // And they are the Runtime's answer, not a default: `ccrun` is what
+        // the probe reported, and this machine's account is not called that.
+        assert!(plain[0].1.contains("ccrun"), "{plain:?}");
+    }
+
     #[test]
     fn an_unconfined_runtime_fails_the_exec_row_and_the_whole_report() {
         let (dir, config) = setup("unconfined", true, true);
         let fake = FakeRunner::new();
         fake.push(Output::exited(0, format!("ccnm {}\n", crate::VERSION)));
         fake.push(Output::exited(0, "hostname workmac\nuser me\n"));
-        fake.push(Output::exited(
-            0,
-            serde_json::to_string(&good_probe()).unwrap(),
-        ));
-        let report = run(
-            &config,
-            Some("xshun"),
-            &env_with(&fake, &dir, unconfined_audit()),
-        );
+        let mut probe = good_probe();
+        probe.runtime_audit = Some(Ok(crate::runtime::AuditReport {
+            audit: unconfined_audit(),
+            ..confined_report()
+        }));
+        fake.push(Output::exited(0, serde_json::to_string(&probe).unwrap()));
+        let report = run(&config, Some("xshun"), &env(&fake, &dir));
         let text = report.render();
         // The finding itself, with its fix, and the verdict the runtime's
         // own gate will reach.
@@ -1432,7 +1604,7 @@ mod tests {
         assert_eq!(row(&report, "Workspace root").status, Status::Skip);
         let text = report.render();
         assert!(
-            text.ends_with("NOT READY (1 failed, 10 not checked)\n"),
+            text.ends_with("NOT READY (1 failed, 12 not checked)\n"),
             "{text}"
         );
     }
@@ -1449,6 +1621,17 @@ mod tests {
             subscription_type: None,
         });
         probe.runtime_hello = Some(Ok(hello("ccrun", crate::VERSION, Some(false))));
+        // The root row is the Runtime Executor's answer now, not the
+        // hello's: it is about whether *that* account can use the project.
+        probe.runtime_audit = Some(Ok(crate::runtime::AuditReport {
+            root: crate::runtime::RootStatus {
+                present: false,
+                is_dir: false,
+                owned: false,
+                git: crate::runtime::GitStatus::Unknown,
+            },
+            ..confined_report()
+        }));
 
         let fake = FakeRunner::new();
         fake.push(Output::exited(0, format!("ccnm {}\n", crate::VERSION)));

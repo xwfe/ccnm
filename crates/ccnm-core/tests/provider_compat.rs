@@ -226,12 +226,19 @@ fn old_launch_and_probe_requests_keep_their_wire_names() {
     .unwrap();
     let mut agent = baseline["controller_reply"].clone();
     agent.as_object_mut().unwrap().remove("reply");
+    // `runtime_audit` is new in P7.4 Batch D: the Runtime Executor's own
+    // verdict, which doctor used to compute about its own process. It is
+    // listed here because this report now carries it -- every existing name
+    // is unchanged, and a report from a build that predates it decodes with
+    // the field absent (`#[serde(default)]`), which reads as "not checked"
+    // rather than as confined.
     let probe: protocol::probe::ProbeReport = roundtrip(json!({
         "protocol": 1,
         "hello": { "protocol": 1, "ccnm_version": "0.2.0", "user": "fixture",
             "platform": "macos/aarch64", "exe": "/agent/ccnm", "root": null },
         "controller": null, "claude": agent, "runtime_ssh": null,
-        "runtime_hello": null, "mcp": null, "terminal": null,
+        "runtime_hello": null, "runtime_audit": null, "mcp": null,
+        "terminal": null,
     }));
     assert_eq!(probe.agent.version, Ok("2.1.260".into()));
 }

@@ -91,6 +91,15 @@ pub struct ProbeReport {
     /// agent and project are the same machine.
     #[serde(default)]
     pub runtime_hello: Option<Reported<HelloReport>>,
+    /// What the Runtime Executor says about itself and the project, asked
+    /// over the same reverse ssh so the answer describes the account that
+    /// would really run the tools rather than whoever ran doctor.
+    ///
+    /// `None` when there is no reverse link (colocated) or the plain hello
+    /// already failed; the row then says "not checked" rather than
+    /// borrowing this machine's own audit and calling it the Runtime's.
+    #[serde(default)]
+    pub runtime_audit: Option<Reported<crate::runtime::AuditReport>>,
     /// One MCP session over the reverse ssh (`None` when not requested or
     /// when the hello already failed).
     #[serde(default)]

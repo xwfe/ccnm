@@ -134,7 +134,7 @@ ccnm doctor demo
 fatal: detected dubious ownership in repository at '/path/to/worktree'
 ```
 
-而 `ccnm doctor` 那一行仍然是绿的（`Workspace root OK … is a directory for <user>`）——它查的是可写，不查属主。**绿灯不代表 git 能用。**
+以前 `ccnm doctor` 那一行照样是绿的（`Workspace root OK … is a directory for <user>`），因为它只查目录在不在。**现在它连属主和 git 一起查**：git 因属主拒绝时这一行是 FAIL 并直说原因，属主不对但 git 能用时是 WARN。绿灯这才等于"这个身份真的能用这个项目"。
 
 顺带一条：`ccnm workspace add` 用**当前进程的身份**校验路径。以别的账号去注册 Runtime 执行身份自己家目录下的项目，会得到
 
@@ -146,7 +146,9 @@ caused by: Permission denied (os error 13)
 
 第一行读着像路径写错了，真正的原因在第二行。
 
-**这是个已知缺陷，不是设计。** 注册 workspace 是 Operator 的活儿，可它却拿当前进程的身份去 stat 那个目录，于是"项目放在执行身份自己家里"这种最该被支持的布局反而注册不了。眼下的绕法是临时用 Runtime Executor 的身份跑一次 `workspace add`；正式修法是把 workspace 权威解析搬到 Runtime Executor 那边（P7.4 Batch B，见[双执行入口方案](plan/runtime-surfaces.md)）。
+**这是个已知缺陷，不是设计。** 注册 workspace 是 Operator 的活儿，可它却拿当前进程的身份去 stat 那个目录，于是"项目放在执行身份自己家里"这种最该被支持的布局反而注册不了。眼下的绕法是临时用 Runtime Executor 的身份跑一次 `workspace add`。
+
+（会话打开那条路已经修了：Runtime 自己解析 workspace 和 root，`doctor` 的项目可用性也由执行身份回答。`workspace add` 是**写配置**的命令，还留在 Operator 侧用当前身份校验，没跟着改。）
 
 **新建的执行身份没有 git 身份，第一次 commit 直接失败：**
 

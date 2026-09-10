@@ -25,10 +25,12 @@
 
 **现在的代码还没完全做到。** 这是 P7.3 在真机上量出来的，写在这里免得你照着做了却发现对不上：
 
-- `ccnm doctor` 那批身份检查判的是**敲命令的那个进程**，所以同一个 workspace 以 `ccrun` 跑是 0 failed、以你自己的账号跑是 7 failed。绿表只代表"跑 doctor 的这个账号是干净的"。这一条还没修（Batch D），而它正是眼下逼着人用 `ccrun` 去敲命令的原因——一旦那么做，下面那条就又回来了。
-- 控制链本身已经不再要求 Runtime Executor 出站了（Batch C）：Runtime 侧发起时是 **Operator** 的进程拨号去 Agent Node，Agent 侧发起时只把一句只读的 `internal runtime-resolve` 问过去、会话在 Agent 本机创建。`ccrun` 只接受入站连接。
+- 控制链已经不再要求 Runtime Executor 出站（Batch C）：Runtime 侧发起时是 **Operator** 的进程拨号去 Agent Node，Agent 侧发起时只把一句只读的 `internal runtime-resolve` 问过去、会话在 Agent 本机创建。`ccrun` 只接受入站连接。
+- `ccnm doctor` 关于 Runtime 的那几行也不再判"敲命令的人"了（Batch D）：它们由 Runtime Executor 自己回答，经 Agent 那条 ssh 取回。**换个人跑同一个 workspace，这几行一字不差**，这条有测试钉着。
 
-所以现在的正确做法是：**用你自己的账号（Operator）敲 ccnm，让 `ccrun` 名下一把私钥都没有。** 代价是 doctor 的身份那几行会报红，直到 Batch D 把结论改由真正的 Runtime 进程报告。批次和顺序见[双执行入口方案](plan/runtime-surfaces.md)：身份契约（A）→ Runtime 权威解析（B）→ 换控制链（C）→ doctor 结论（D）→ 真机复验（E）。**在 Batch D 落地之前，不要把 doctor 的绿灯当成 Runtime Executor 的结论。**
+所以现在的做法就是直白的那个：**用你自己的账号（Operator）敲 ccnm，让 `ccrun` 名下一把私钥都没有。**
+
+还剩一个已知缺口：**在 Agent Node 上跑 `ccnm doctor` 或 `ccnm mcp probe`**，它仍然把整条公共命令 ssh 给 Runtime 执行——落到的账号是 `ccrun`，而那条公共命令自己又要连回 Agent Node，于是执行身份又出站了一次。诊断命令请在 Runtime Node 上跑；这条什么时候改由用户决定，批次见[双执行入口方案](plan/runtime-surfaces.md)。
 
 ## `ccrun` 能解决什么
 
@@ -89,16 +91,19 @@ ccnm 不会假装“禁止 `curl` / `wget` / 某几个程序名”就等于 sand
 ccnm doctor <workspace>
 ```
 
-**先说清楚这条命令在审谁**：它审的是跑它的那个进程，不是"Runtime Executor"这个角色。所以这个 gate 必须**以 Runtime Executor 的身份执行**才有意义；以 Operator 身份跑出来的红绿，说的是 Operator 自己。改由权威 Runtime probe 报告是 P7.4 Batch D 的事。
+**先说清楚这几行在审谁**：审的是 Runtime Executor——`ccnm doctor` 把这个问题经 Agent 的那条 ssh 交给它自己回答（`internal runtime-audit`），拿回来的是结构化结论，不含路径、环境值或凭据内容。你用哪个账号敲 doctor 不改变答案。
 
-confinement gate 会检查它能在本机可靠判断的性质：
+Agent 不通的时候这几行是 SKIP，不是 OK：问不到的 Runtime 必须读作"没查"，不能读作"没问题"。
+
+confinement gate 会检查 Runtime Executor 能在它本机可靠判断的性质：
 
 ```text
 Runs as root            Runtime 不能是 root
 Runtime user            被审计的账号必须匹配 nodes.<runtime>.runtime_user
 No sudo                 不能 passwordless sudo
 Not an admin            不应属于 admin / wheel / sudo 等管理组
-No SSH keys             ~/.ssh 中不应存在该账号可读的私钥（只看这一个目录）
+No SSH keys             ~/.ssh 和 ~/.config/ccnm 里都不该有该账号可读的私钥
+Workspace root          项目目录对该账号是可用的（存在、是目录、git 不因属主拒绝）
 No Claude credential    Runtime identity 不应持有 Claude 凭证
 No Codex credential     不论当前选谁，都检查 Codex 默认、专用及本地引用目录
 No authentication environment  不接受未授权的认证环境（只检查名称，不打印值）
@@ -166,13 +171,11 @@ sudo chmod 600 /Users/ccrun/.ssh/authorized_keys
 
 ### 换个目录藏私钥不算数
 
-`No SSH keys` 这条检查**只看 `~/.ssh`**。把同一把私钥挪到 `~/.config/ccnm/transport/`，这一行就从 FAIL 变成 OK，而账号该能连出去还是能连出去——检查看不见，不等于风险没了。
+以前 `No SSH keys` 只看 `~/.ssh`：把同一把私钥挪到 `~/.config/ccnm/transport/`，这一行就从 FAIL 变成 OK，而账号该能连出去还是能连出去。P7.3 真机上正是这么达标的，那份绿灯不能当隔离证据。
 
-**这个做法已经作废，不再是达标路径。** P7.3 真机上正是这么做才让[最终门禁](#最终门禁)全绿的，那份绿灯不能当作隔离证据。正确的目标状态只有一个：`ccrun` 名下**任何位置**都没有 ccnm 运行所需的出站私钥。
+**现在两个目录都查**（`~/.ssh` 与 ccnm 自己的 `~/.config/ccnm`，含子目录），所以这条路走不通了。同时链路那一半也改完了（Batch C）：Runtime 侧发起时拨号的是 Operator 的进程，Agent 侧发起时只把一句只读的问题问过来。**`ccrun` 一把私钥都不需要，把它清空是现在就能做到的目标。**
 
-**链路那一半已经改完了（P7.4 Batch C）**：Runtime 侧发起时拨号的是 Operator 的进程，Agent 侧发起时只把一句只读的问题问过来。所以现在 `ccrun` 一把私钥都不需要，把它清空是可以做到的目标，不再是"理论上应该"。
-
-还差两件事，都在 Batch D：`No SSH keys` 的扫描范围要扩到已知 transport 目录和 `SSH_AUTH_SOCK`；doctor 的身份结论要改由真正的 Runtime 进程报告，否则用别的账号敲命令会被报红，而那正是逼着人把私钥塞回 `ccrun` 的力。
+这一行仍然只说它查过的地方：这两个目录之外没有搜。真正的隔离靠独立账号和 OS 权限，不靠这条启发式。另外一种没有文件的出站凭据是继承来的 `SSH_AUTH_SOCK`，它由"认证环境"那一行按名字拒绝，不在这条里重复。
 
 在 Agent Node 的 `~/.ssh/config` 中，让 `nodes.runtime.ssh` 对应的 alias 使用 `ccrun`：
 
@@ -249,7 +252,7 @@ runtime_user = "ccrun"
 
 `runtime_user` 的含义只有一个：**Runtime Executor 应该是哪个账号**——也就是 Agent 的 SSH MCP transport 落到哪个账号上、项目工具最终以谁的身份跑。
 
-它**不**规定谁可以敲 `ccnm`。Operator 用自己的账号跑 CLI 是正常的。（当前 doctor 会因为这个差异报红，原因见开头的[四种身份](#四种身份别混成一个)。）
+它**不**规定谁可以敲 `ccnm`。Operator 用自己的账号跑 CLI 是正常的，doctor 也不会因此报红——关于 Runtime 的那几行是 Runtime Executor 自己回答的。
 
 Agent Node 那份则是它自己怎么连过来：
 
@@ -342,7 +345,7 @@ ccnm 的 doctor 能覆盖一部分明确可验证项，但不能证明整个操�
 ccnm doctor <workspace>
 ```
 
-**以 Runtime Executor 的身份跑它**（`ccrun`），否则你看的是自己账号的体检报告。
+**在 Runtime Node 上、用你自己的账号跑就行。** 关于 Runtime 的行由 Runtime Executor 自己回答，跟你是谁无关。
 
 目标是这些行全部成为 OK：
 
@@ -353,10 +356,13 @@ Not an admin
 No SSH keys
 No Claude credential
 No Docker socket
+Workspace root
 exec_command
 ```
 
-这七行现在证明的是：**跑这条命令的账号**没有 sudo/admin、`~/.ssh` 里没有私钥、够不到已知 Agent 凭据、写不了 Docker socket。它们不证明这个账号连不出去（检查只看一个目录），也不证明真正执行工具的进程就是它——那两件事分别是 P7.4 Batch D 和 Batch C 在修。
+这几行证明的是：**Agent 的 transport 落到的那个账号**没有 sudo/admin、在两个被查目录里没有私钥、够不到已知 Agent 凭据、写不了 Docker socket，而且项目目录它真的能用（存在、是目录、git 不因属主拒绝）。
+
+它们**不**证明这个账号绝对连不出去：查的是两个目录，别的地方没搜。要那种程度的保证，得靠独立账号、OS 权限和网络策略。
 
 达到这个状态后，再让有价值的真实项目脱离 `allow_unconfined_exec` 进入长期 dogfood。
 

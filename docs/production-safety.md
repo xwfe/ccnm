@@ -30,7 +30,9 @@
 
 所以现在的做法就是直白的那个：**用你自己的账号（Operator）敲 ccnm，让 `ccrun` 名下一把私钥都没有。**
 
-还剩一个已知缺口：**在 Agent Node 上跑 `ccnm doctor` 或 `ccnm mcp probe`**，它仍然把整条公共命令 ssh 给 Runtime 执行——落到的账号是 `ccrun`，而那条公共命令自己又要连回 Agent Node，于是执行身份又出站了一次。诊断命令请在 Runtime Node 上跑；这条什么时候改由用户决定，批次见[双执行入口方案](plan/runtime-surfaces.md)。
+还剩一个已知缺口：**在 Agent Node 上跑 `ccnm doctor` 或 `ccnm mcp probe`**，当前实现仍把整条公共命令 ssh 给 Runtime 执行——落到的账号是 `ccrun`，而那条公共命令自己又要连回 Agent Node，于是执行身份再次出站。
+
+处理方向已经确定，不采用“Agent 侧直接禁用诊断”：P7.4 Batch D2 要把两条命令改成 topology-aware 双端诊断。Agent 本机检查 Agent/Controller/session，并由 Agent Identity 直接 SSH 到 Runtime Executor 获取 `runtime-resolve` / `runtime-audit` / 实际 MCP probe；`ccrun` 只回答或执行，不回拨 Agent。**Batch D2 完成前，Agent Node 上这两个诊断入口仍不能作为符合 inbound-only 安全模型的证据。**具体见[双执行入口方案](plan/runtime-surfaces.md)。
 
 ## `ccrun` 能解决什么
 

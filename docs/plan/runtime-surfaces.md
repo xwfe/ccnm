@@ -178,6 +178,24 @@ Remote MCP handshake              真实 ccrun 进程启动后的工具/版本�
 
 Runtime safety verdict 必须来自即将执行项目的 Runtime 进程，或来自与它相同 OS identity 的只读 probe；不能用 public CLI 当前进程做替身。安全报告只传结构化结论，不返回私有路径、环境值或凭据内容。
 
+`doctor` 和 `mcp probe` 都必须能从 Runtime 侧或 Agent 侧发起；**不要在 Agent Node 直接拒绝这两个诊断命令**。Agent Node 本身是合法控制面，而且后续 Remote Workspace MCP 也需要从 Agent/client 一侧诊断远端 Runtime。
+
+Agent 侧诊断不能再复用“把整条 public 命令委托给 Runtime”的 `public_cmd_from_agent` 路径。正确形状是 topology-aware 的双端采集：
+
+```text
+Agent Node 上执行 ccnm doctor <workspace>
+  ├─ 本机：Agent instance / provider / auth / Controller / session
+  ├─ SSH → Runtime Executor：runtime-resolve / runtime-audit
+  └─ SSH → Runtime Executor：真实 MCP handshake / tools probe
+
+Agent Node 上执行 ccnm mcp probe <workspace>
+  └─ 本机直接建立 Agent → Runtime Executor 的实际 MCP transport 并测量
+```
+
+其中 Runtime Executor 只回答 Runtime 自己的事实或承载 MCP；它不需要、也不允许再 SSH 回 Agent。Runtime 侧发起的 `doctor` 则继续允许 Operator → Agent，由 Agent 再直接进入 Runtime Executor；无论从哪边发起，都不出现 `ccrun → Agent`。
+
+`mcp probe --local` 在 Agent-only 拓扑上没有“本地项目”语义，应明确拒绝或只在真正 colocated/local Runtime 时允许，不能为了兼容把它偷换成 remote probe。
+
 ### 5.4 Runtime authority 与配置
 
 逻辑事实来源保持一个：Runtime Node 的 workspace registry。不同 OS 用户为了 transport/UX 保存的本地配置不能形成第二个可覆盖 root 的权威来源。
@@ -231,6 +249,19 @@ v1 改造优先采用最小方案：
 
 停止点：doctor 同一 workspace 从不同 Operator 身份运行时，Runtime Executor 部分必须一致。
 
+### Batch D2 — Agent 侧诊断去回跳
+
+Batch D 完成后、Batch E 真机复验前必须补这一批。它解决的不是新的产品功能，而是把两个现有公共诊断入口纳入已经确定的 `ccrun inbound-only` 硬约束。
+
+- Agent Node 上的 `ccnm doctor <workspace>` 不再把整条 public doctor 命令 SSH 到 Runtime；在 Agent 本机组合 Agent/Controller/session 检查，并直接向 Runtime Executor 请求权威 resolve/audit 与实际 MCP probe。
+- Agent Node 上的 `ccnm mcp probe <workspace>` 直接从 Agent Identity 建立到 Runtime Executor 的 MCP transport；不允许 `Runtime Executor → Agent` 回拨。
+- Runtime Node 上原有 doctor/probe 语义保持：Operator 可以控制 Agent，真正 Runtime verdict 仍由 Executor 自己回答。
+- 两个来源的诊断对同一 Runtime Executor 应给出同一 Runtime safety/workspace 结论；Agent-only 路径不得需要 Runtime Executor 的私钥或 `SSH_AUTH_SOCK`。
+- 给 `delegate_public_from_agent` 增加边界测试：doctor/mcp probe 不再走它；如果它仍服务其他非诊断命令，不能顺手扩大范围。
+- Agent-only 拓扑的 `mcp probe --local` 明确 fail-closed，不静默解释成 remote。
+
+停止点：离线测试证明，从 Agent 发起 doctor/probe 时命令轨迹中不存在“先到 Runtime 再由 Runtime SSH 回 Agent”的公共命令委托。完成并提交后才进入 Batch E。
+
 ### Batch E — v1 回归与真机再确认
 
 身份/控制链改变会使旧 P7.3 的 Claude 真机证据不再完整覆盖新路径。无需重复整个昂贵 dogfood，但至少重新完成一次：
@@ -240,8 +271,11 @@ v1 改造优先采用最小方案：
 3. 产物属主确认为 Runtime Executor；
 4. `ccrun` 的 `~/.ssh`、已知 ccnm transport 私钥位置无私钥，`SSH_AUTH_SOCK` 不可用；
 5. Runtime Executor 进程轨迹中没有 ccnm 所需 outbound SSH；
-6. result/status/stop、write guard 和资源归零；
-7. 完整离线门禁重新跑。
+6. 从 Agent Node 各跑一次 `ccnm doctor` 与 remote `ccnm mcp probe`，两者不要求 ccrun 持私钥/SSH agent，Runtime verdict 与 Runtime 侧发起一致；
+7. result/status/stop、write guard 和资源归零；
+8. 完整离线门禁重新跑。
+
+Batch E 只做**最小真机复验**，不重复 P7.3 的完整昂贵 dogfood。部署范围只覆盖当前 P7 测试拓扑所需的两端 ccnm 二进制/Controller 兼容更新；替换前记录版本/路径/哈希并保留可回退副本。不要趁本批创建新账号、改 ACL/防火墙、跑 Codex、发布/tag/push，除非另有明确授权。
 
 Codex 额度恢复后再按新身份模型补 P7.3 缺失的一次 real-machine Machine API parity。**只有 Claude 新路径复验 + Codex 缺口补齐 + P7 其余 blocker 处理完，才做最终 v1 freeze。**
 

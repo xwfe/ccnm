@@ -145,7 +145,7 @@ ccnm 不需要安装 Orchestrator 也能独立使用。Orchestrator 核心不链
 - **P7.1** 公开文档只描述真实支持的版本、平台、模式、topology 和安全级别；README 保持简短中英简介，其余中文，细节进入 docs。明确 Codex pin/version 拒绝与重新测量流程。
 - **P7.2** 配置迁移、安装/回退、状态/日志保留、停止/清理和故障恢复有可执行记录；部署与登录相关动作单独获得授权。不因存在 CI/release 文件就宣称已正式发布。
 - **P7.3** 在同一套授权环境内先完成原 P6.3 的内容——用公共 API 各跑一次真实 provider 的双机闭环，与人类 CLI 结果对照，据结果确立或修改协议 v1——再完成真实项目从启动→修改→测试→结果→停止/恢复的验收及生产边界复核；Rust、Python、计划检查、契约测试通过，失败/跳过/未测平台如实列出。
-- **P7.4** 修正 P7.3 真机证明的 OS 身份/控制链矛盾：public CLI/RPC 的 Operator、Agent Identity、Runtime Executor 分离；`ccrun` 成为 inbound-only executor，不持 ccnm 所需出站 SSH credential；Agent 侧发起不再走 `Agent → Runtime public run → Agent` 回跳；Runtime workspace/root 与 safety verdict 由真正 Runtime Executor 权威解析/报告。按 [双执行入口方案](runtime-surfaces.md) Batch A→E 分批实现，至少重新跑一次新链路 Claude CLI + Machine API parity，证明执行属主仍为 ccrun、ccrun 无出站 key/agent、资源归零。旧“把 key 移出 ~/.ssh 让 No SSH keys 变绿”不能作为验收。
+- **P7.4** 修正 P7.3 真机证明的 OS 身份/控制链矛盾：public CLI/RPC 的 Operator、Agent Identity、Runtime Executor 分离；`ccrun` 成为 inbound-only executor，不持 ccnm 所需出站 SSH credential；Agent 侧发起不再走 `Agent → Runtime public run → Agent` 回跳；Runtime workspace/root 与 safety verdict 由真正 Runtime Executor 权威解析/报告；**Agent Node 上的 doctor/mcp probe 也不能再把整条公共命令委托给 Runtime 后要求 ccrun 回拨 Agent，而应在 Agent 本机组合本地检查并直接请求 Runtime resolve/audit/MCP probe。**按 [双执行入口方案](runtime-surfaces.md) Batch A→D→D2→E 分批实现，至少重新跑一次新链路 Claude CLI + Machine API parity，以及 Agent 侧 doctor/probe，证明执行属主仍为 ccrun、ccrun 无出站 key/agent、资源归零。旧“把 key 移出 ~/.ssh 让 No SSH keys 变绿”不能作为验收。
 - **P7.5** 评审所有剩余阻塞项，确认 P7.3 Codex 缺口已补齐且 P7.4 新身份链有真机证据，冻结 Machine Protocol v1 与本次支持范围，提交发布候选和限制说明。发布、推送、打 tag 按用户授权执行；本阶段完成可表示发布候选可交付，不强制未经授权发布。
 
 停止点：ccnm 收口为可独立使用的执行产品。第三 provider、TUI、后台长进程、Browser/Git 专用工具和新 transport 按真实需求单独立项，不自动续做。

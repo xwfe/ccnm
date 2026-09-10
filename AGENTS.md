@@ -23,6 +23,8 @@
 
 改 `ccnm rpc` 或[黑盒客户端](clients/python/ccnm_machine_client.py)：另跑 `cargo test -p ccnm-core --lib rpc::`、`cargo test -p ccnm-cli --test rpc`，以及 `cargo build` 之后的 `python3 -m unittest tests.test_blackbox_client -q`。
 
+改[执行接口示例](clients/python/execution_backend.py)或[交接文档](docs/orchestrator-handoff.md)：另跑 `cargo build` 之后的 `python3 -m unittest tests.test_execution_backend -q`。它是给独立 Orchestrator 抄走的示例，不是 ccnm 的运行路径；改它不影响 `ccnm rpc` 的行为，但两个 Python 文件都必须能脱离仓库单独跑。
+
 改 Runtime 权威解析（`crates/ccnm-core/src/runtime.rs`，internal wire protocol 4）：另跑 `cargo test -p ccnm-core --lib runtime::` 和 `cargo test -p ccnm-cli --test runtime_open`。前者证明决策本身，后者证明真实二进制的 `internal mcp-serve` 确实按 protocol 数字分派、且不认识的版本会停下而不是回退。
 
 改 [P7.3 对照工具](scripts/p7_parity_check.py)：另跑 `cargo build` 之后的 `python3 -m unittest tests.test_p7_parity -q`。它自己的成功路径由 `tests/fixtures/fake_ccnm.py` 离线覆盖，真机结论仍以 `--out` 写出的证据文件为准。

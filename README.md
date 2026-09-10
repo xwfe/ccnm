@@ -102,6 +102,7 @@ read_output
 - [配置说明](docs/configuration.md)：`nodes`、workspace、双向 SSH 字段
 - [支持矩阵](docs/support-matrix.md)：Provider、版本、topology、验收级别与明确拒绝项
 - [公开协议](docs/protocol/README.md)：给外部程序的 machine API 契约与客户端示例
+- [执行接口交接](docs/orchestrator-handoff.md)：独立 Orchestrator 的状态归属边界与最小 ExecutionBackend 示例
 - [架构说明](docs/architecture.md)：Node / Agent / Runtime / Controller 与 SSH stdio MCP
 - [生产安全](docs/production-safety.md)：`ccrun`、ACL、凭证、sudo、网络出口边界
 - [运维](docs/operations.md)：安装、回退、配置迁移、状态清理、故障恢复
@@ -132,6 +133,8 @@ read_output
 ## 给程序用的接口
 
 要让别的程序驱动 ccnm，用 `ccnm rpc`：stdio 上的 JSON-RPC 2.0，不开网络端口。契约、schema、fixture 和一个可以直接抄走的 Python 客户端见[协议说明](docs/protocol/README.md)。
+
+要写的是一个**编排项目**（决定谁做什么、验收和重试），先看[执行接口交接](docs/orchestrator-handoff.md)：哪份状态归你、哪份归 ccnm，以及一个最小的 `ExecutionBackend` 示例。ccnm 自己不做编排。
 
 ## 接下来做什么
 

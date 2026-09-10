@@ -7,6 +7,9 @@
 | [machine-protocol-v1.md](machine-protocol-v1.md) | 正式说明：传输、握手、六个方法、幂等、状态、取消、权限、错误码 |
 | [schema/machine-protocol-v1.schema.json](schema/machine-protocol-v1.schema.json) | 每条消息的 JSON Schema |
 | [fixtures/](fixtures/) | 成功、拒绝、断线、未知终态、过期结果的样例消息 |
+| [../../clients/python/ccnm_machine_client.py](../../clients/python/ccnm_machine_client.py) | 可以直接抄走的单文件客户端，只用标准库 |
+
+写编排项目的人还要看[执行接口交接](../orchestrator-handoff.md)：状态归属边界，以及建在这套协议上的最小 `ExecutionBackend` 示例。
 
 **当前状态：草案，有实现。** `ccnm rpc` 已经能说这套协议的 `print` 模式：
 

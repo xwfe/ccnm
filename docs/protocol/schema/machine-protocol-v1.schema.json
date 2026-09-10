@@ -55,14 +55,14 @@
       "additionalProperties": false
     },
     "agent_public": {
-      "description": "响应里回给调用方的 instance 身份。不含 profile 路径、home 或任何私有路径。",
+      "description": "响应里回给调用方的 instance 身份。不含 profile 路径、home 或任何私有路径。provider 只有在 Agent Node 已经回话之后才有——它由那一侧权威解析，服务端在 session.start 返回时还不知道。",
       "type": "object",
       "properties": {
         "node": {"$ref": "#/$defs/identifier"},
         "instance": {"$ref": "#/$defs/identifier"},
         "provider": {"$ref": "#/$defs/provider"}
       },
-      "required": ["node", "instance", "provider"],
+      "required": ["node", "instance"],
       "additionalProperties": false
     },
     "effect": {

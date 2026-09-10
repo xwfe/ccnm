@@ -1,6 +1,6 @@
 {
   "$schema_ref": "#/$defs/session_start_response_ok",
-  "$note": "拿到 handle 就返回，不等任务跑完。accepted_at 只表示请求被接受，不表示 Agent 已经在跑。",
+  "$note": "拿到 handle 就返回，不等任务跑完。accepted_at 只表示请求被接受，不表示 Agent 已经在跑。agent 里没有 provider——Agent Node 还没回话，服务端这时并不知道。",
   "message": {
     "jsonrpc": "2.0",
     "id": 3,
@@ -11,8 +11,7 @@
       "workspace": "ccnm",
       "agent": {
         "node": "work",
-        "instance": "claude-main",
-        "provider": "claude"
+        "instance": "claude-main"
       },
       "accepted_at": "2026-09-10T12:00:03+09:00"
     }

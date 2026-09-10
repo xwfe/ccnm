@@ -229,6 +229,8 @@ v1 只有六个方法，名字在本阶段定稿：
 
 **`accepted_at` 只表示请求被接受。** 它不表示 Agent 已经在跑，更不表示任务开始执行。
 
+**`agent.provider` 这时通常没有。** 同 `agents.list` 的道理：provider 由 Agent Node 权威解析，而 `session.start` 一拿到 handle 就返回，那一刻 Agent Node 还没回过话。等 `session.result` 拿到它自己报的身份，`provider` 就有了。`node` 和 `instance` 一直都在。
+
 关于 `mode`：
 
 - `print`：一次性执行，有结构化最终结果。这是 v1 唯一要求所有实现都支持的模式。
@@ -340,8 +342,8 @@ v1 只有六个方法，名字在本阶段定稿：
 
 | `state` | 含义 | 终态 |
 | --- | --- | --- |
-| `starting` | 已接受，尚未确认 Agent 在跑 | 否 |
-| `running` | Agent 在跑 | 否 |
+| `starting` | 已接受，还没交给执行链路 | 否 |
+| `running` | 已经交给执行链路，还没结束 | 否 |
 | `stopping` | 收到过 stop，还没确认结束 | 否 |
 | `completed` | Agent 自己正常结束了 | **是** |
 | `failed` | Agent 异常结束、启动失败或被停掉 | **是** |

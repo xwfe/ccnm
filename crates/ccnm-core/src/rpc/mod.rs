@@ -10,6 +10,7 @@
 //! background thread and answers with a handle, which is what lets a client
 //! disconnect and come back for the result later.
 
+pub mod session;
 pub mod store;
 pub mod wire;
 
@@ -41,6 +42,12 @@ fn capabilities() -> Value {
 /// What the server needs from the machine it runs on.
 pub struct Context {
     pub config_path: PathBuf,
+    /// Where session records live; `paths::state_dir()` in production.
+    pub state: PathBuf,
+    /// What actually starts and stops sessions.
+    pub runs: std::sync::Arc<dyn session::Runs>,
+    /// For asking `ps` whether a record's owning process is still there.
+    pub runner: std::sync::Arc<dyn crate::process::ProcessRunner + Send + Sync>,
 }
 
 impl Context {
@@ -85,6 +92,10 @@ impl Server {
         }
         match req.method.as_str() {
             "agents.list" => agents_list(&self.ctx, &req.params),
+            "session.start" => session::start(&self.ctx, &req.params),
+            "session.status" => session::status(&self.ctx, &req.params),
+            "session.result" => session::result(&self.ctx, &req.params),
+            "session.stop" => session::stop(&self.ctx, &req.params),
             _ => Err(RpcError::refused(
                 code::METHOD_NOT_FOUND,
                 format!("unknown method {}", req.method),
@@ -166,7 +177,10 @@ fn hello(params: &Map<String, Value>) -> Result<Value, RpcError> {
 ///
 /// Silently ignoring them turns a typo into "you did not pass it", and the
 /// caller then spends an afternoon wondering why the field had no effect.
-fn reject_unknown(params: &Map<String, Value>, allowed: &[&str]) -> Result<(), RpcError> {
+pub(crate) fn reject_unknown(
+    params: &Map<String, Value>,
+    allowed: &[&str],
+) -> Result<(), RpcError> {
     let unknown: Vec<String> = params
         .keys()
         .filter(|key| !allowed.contains(&key.as_str()))
@@ -178,7 +192,10 @@ fn reject_unknown(params: &Map<String, Value>, allowed: &[&str]) -> Result<(), R
     Err(RpcError::refused(code::INVALID_PARAMS, "unknown parameter").with_unknown(unknown))
 }
 
-fn require_str<'a>(params: &'a Map<String, Value>, name: &str) -> Result<&'a str, RpcError> {
+pub(crate) fn require_str<'a>(
+    params: &'a Map<String, Value>,
+    name: &str,
+) -> Result<&'a str, RpcError> {
     params
         .get(name)
         .and_then(Value::as_str)
@@ -342,11 +359,102 @@ fn read_bounded<R: BufRead>(
 mod tests {
     use super::*;
 
+    use crate::process::SystemRunner;
+    use session::{RunAsk, Runs};
+    use std::sync::{Arc, Mutex};
+
+    /// A fresh directory every call: tests run in parallel and two of them
+    /// sharing a state directory would see each other's session records.
     fn temp(test: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("ccnm-rpc-{}-{test}", std::process::id()));
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static NEXT: AtomicU32 = AtomicU32::new(0);
+        let n = NEXT.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("ccnm-rpc-{}-{test}-{n}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    /// Stands in for the launcher. No ssh, no Agent, no controller: these
+    /// tests are about the protocol and the record, and a test that needs a
+    /// real Agent is not an offline test.
+    #[derive(Default)]
+    struct FakeRuns {
+        /// What `run_print` should do. `None` means "fail to start".
+        report: Option<crate::protocol::run::RunReport>,
+        asks: Mutex<Vec<RunAsk>>,
+        stops: Mutex<Vec<String>>,
+    }
+
+    impl FakeRuns {
+        fn ok(exit_code: i32, text: &str) -> Self {
+            FakeRuns {
+                report: Some(report(exit_code, text)),
+                ..FakeRuns::default()
+            }
+        }
+    }
+
+    impl Runs for FakeRuns {
+        fn run_print(&self, ask: &RunAsk) -> crate::error::Result<crate::protocol::run::RunReport> {
+            self.asks.lock().unwrap().push(ask.clone());
+            self.report
+                .clone()
+                .ok_or_else(|| crate::Error::new(crate::ErrorCode::AgentUnreachable, "no route"))
+        }
+
+        fn stop(&self, workspace: &str, _instance: Option<&str>) -> crate::error::Result<bool> {
+            self.stops.lock().unwrap().push(workspace.to_string());
+            Ok(true)
+        }
+    }
+
+    fn report(exit_code: i32, text: &str) -> crate::protocol::run::RunReport {
+        crate::protocol::run::RunReport {
+            protocol: 3,
+            provider: crate::provider::AgentProvider::Claude,
+            agent_identity: None,
+            session: "ccnm-uuid-1".to_string(),
+            session_dir: PathBuf::from("/private/state/sessions/ccnm-uuid-1"),
+            controller: crate::controller::Context {
+                hello: crate::protocol::hello::answer(&crate::protocol::hello::HelloRequest::new(
+                    None,
+                )),
+                pid: 4241,
+                manager: Ok("Aqua".to_string()),
+            },
+            pid: 4242,
+            outcome: crate::session::Outcome {
+                exit_code: Some(exit_code),
+                timed_out: false,
+                duration_ms: 1234,
+                error: None,
+            },
+            result: None,
+            stdout_tail: text.to_string(),
+            stderr_tail: String::new(),
+        }
+    }
+
+    /// Run a conversation against a given executor and config.
+    fn talk(runs: Arc<dyn Runs>, config_path: PathBuf, state: PathBuf, input: &str) -> Vec<Value> {
+        let mut out = Vec::new();
+        serve(
+            Context {
+                config_path,
+                state,
+                runs,
+                runner: Arc::new(SystemRunner),
+            },
+            std::io::BufReader::new(input.as_bytes()),
+            &mut out,
+        )
+        .unwrap();
+        String::from_utf8(out)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("stdout must be protocol JSON"))
+            .collect()
     }
 
     /// A config file with whatever body the test needs.
@@ -362,18 +470,12 @@ mod tests {
     }
 
     fn exchange_with(config_path: PathBuf, input: &str) -> Vec<Value> {
-        let mut out = Vec::new();
-        serve(
-            Context { config_path },
-            std::io::BufReader::new(input.as_bytes()),
-            &mut out,
+        talk(
+            Arc::new(FakeRuns::default()),
+            config_path,
+            temp("exchange-state"),
+            input,
         )
-        .unwrap();
-        String::from_utf8(out)
-            .unwrap()
-            .lines()
-            .map(|line| serde_json::from_str(line).expect("stdout must be protocol JSON"))
-            .collect()
     }
 
     const HELLO: &str = r#"{"jsonrpc":"2.0","id":1,"method":"hello","params":{"client":"t","protocol_versions":["ccnm.machine/1"]}}"#;
@@ -497,6 +599,9 @@ mod tests {
         serve(
             Context {
                 config_path: PathBuf::from("/nonexistent/ccnm/config.toml"),
+                state: temp("utf8-state"),
+                runs: Arc::new(FakeRuns::default()),
+                runner: Arc::new(SystemRunner),
             },
             std::io::BufReader::new(&input[..]),
             &mut out,
@@ -652,5 +757,389 @@ root = "/runtime/legacy"
         );
         assert_eq!(out[1]["error"]["code"], code::INVALID_PARAMS);
         assert_eq!(out[1]["error"]["data"]["unknown"][0], "node");
+    }
+
+    // ---- session.* ----
+
+    /// A conversation helper that keeps one state directory across several
+    /// connections, which is how a client that reconnects is tested.
+    struct Peer {
+        runs: Arc<FakeRuns>,
+        config: PathBuf,
+        state: PathBuf,
+    }
+
+    impl Peer {
+        fn new(test: &str, runs: FakeRuns) -> Self {
+            Peer {
+                runs: Arc::new(runs),
+                config: config_with(test, RUNTIME_CONFIG),
+                state: temp(test),
+            }
+        }
+
+        /// One connection: hello, then the given calls.
+        fn call(&self, calls: &[&str]) -> Vec<Value> {
+            let mut input = format!("{HELLO}\n");
+            for call in calls {
+                input.push_str(call);
+                input.push('\n');
+            }
+            let mut out = talk(
+                self.runs.clone(),
+                self.config.clone(),
+                self.state.clone(),
+                &input,
+            );
+            out.remove(0); // the hello answer
+            out
+        }
+
+        /// Wait for the background thread to write a terminal state.
+        fn settle(&self, session: &str) -> store::Record {
+            for _ in 0..400 {
+                let store = store::Store::open(&self.state).unwrap();
+                if let Some(record) = store.read(session).unwrap()
+                    && record.state.terminal()
+                {
+                    return record;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            panic!("the session never reached a terminal state");
+        }
+    }
+
+    fn start_call(extra: &str) -> String {
+        format!(
+            "{{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"session.start\",\"params\":{{\"workspace\":\"demo\",\"mode\":\"print\",\"input\":{{\"prompt\":\"go\"}}{extra}}}}}"
+        )
+    }
+
+    #[test]
+    fn start_answers_with_a_handle_before_the_run_finishes() {
+        let peer = Peer::new("start-ok", FakeRuns::ok(0, "done\n"));
+        let out = peer.call(&[&start_call("")]);
+        let result = &out[0]["result"];
+        let session = result["session"].as_str().unwrap();
+        assert!(session.starts_with("s-"), "{session}");
+        // starting or running: the thread may already have picked it up.
+        assert!(
+            ["starting", "running"].contains(&result["state"].as_str().unwrap()),
+            "{result}"
+        );
+        assert_eq!(result["reused"], false);
+        assert_eq!(result["workspace"], "demo");
+        assert_eq!(result["agent"]["node"], "worker");
+        assert_eq!(result["agent"]["instance"], "claude-main");
+        // The Agent has not answered yet, so there is no provider to report.
+        assert!(result["agent"].get("provider").is_none(), "{result}");
+        assert!(result["accepted_at"].as_str().unwrap().ends_with('Z'));
+        peer.settle(session);
+    }
+
+    #[test]
+    fn a_client_that_reconnects_still_gets_its_result() {
+        // The session belongs to the record on disk, not to the connection.
+        let peer = Peer::new("reconnect", FakeRuns::ok(0, "three failed\n"));
+        let session = peer.call(&[&start_call("")])[0]["result"]["session"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        peer.settle(&session);
+
+        let out = peer.call(&[&format!(
+            "{{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"session.result\",\"params\":{{\"session\":\"{session}\"}}}}"
+        )]);
+        let result = &out[0]["result"];
+        assert_eq!(result["state"], "completed");
+        assert_eq!(result["outcome"]["exit_code"], 0);
+        assert_eq!(result["outcome"]["timed_out"], false);
+        assert_eq!(result["outcome"]["stop_requested"], false);
+        assert_eq!(result["output"]["tail"], "three failed\n");
+        assert_eq!(result["output"]["truncated"], false);
+        // Now the Agent has reported, so the provider is known.
+        assert_eq!(result["agent"]["provider"], "claude");
+    }
+
+    #[test]
+    fn a_nonzero_exit_is_failed_but_still_a_result() {
+        let peer = Peer::new("nonzero", FakeRuns::ok(2, "boom\n"));
+        let session = peer.call(&[&start_call("")])[0]["result"]["session"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        peer.settle(&session);
+        let out = peer.call(&[&format!(
+            "{{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"session.status\",\"params\":{{\"session\":\"{session}\"}}}}"
+        )]);
+        assert_eq!(out[0]["result"]["state"], "failed");
+    }
+
+    #[test]
+    fn a_run_that_never_started_is_failed_with_a_reason_not_a_lost_session() {
+        // FakeRuns::default() fails to start. A start that failed must still
+        // leave a record: "errored but no such session" is the one answer a
+        // caller cannot act on.
+        let peer = Peer::new("nostart", FakeRuns::default());
+        let session = peer.call(&[&start_call("")])[0]["result"]["session"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let record = peer.settle(&session);
+        assert_eq!(record.state, store::State::Failed);
+        assert!(record.finish.unwrap().error.is_some());
+    }
+
+    #[test]
+    fn the_same_start_key_and_input_reuses_the_session() {
+        let peer = Peer::new("idempotent", FakeRuns::ok(0, "ok\n"));
+        let first = peer.call(&[&start_call(",\"start_key\":\"task-1\"")]);
+        let session = first[0]["result"]["session"].as_str().unwrap().to_string();
+        peer.settle(&session);
+
+        let second = peer.call(&[&start_call(",\"start_key\":\"task-1\"")]);
+        assert_eq!(second[0]["result"]["session"], session);
+        assert_eq!(second[0]["result"]["reused"], true);
+        // The point of the key: exactly one Agent was asked to run.
+        assert_eq!(peer.runs.asks.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn the_same_start_key_with_different_input_is_a_conflict() {
+        let peer = Peer::new("conflict", FakeRuns::ok(0, "ok\n"));
+        let session =
+            peer.call(&[&start_call(",\"start_key\":\"task-1\"")])[0]["result"]["session"]
+                .as_str()
+                .unwrap()
+                .to_string();
+        peer.settle(&session);
+
+        let other = "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"session.start\",\"params\":{\"workspace\":\"demo\",\"mode\":\"print\",\"input\":{\"prompt\":\"something else\"},\"start_key\":\"task-1\"}}".to_string();
+        let out = peer.call(&[&other]);
+        assert_eq!(out[0]["error"]["code"], code::CONFLICT);
+        assert_eq!(out[0]["error"]["data"]["session"], session);
+        assert_eq!(out[0]["error"]["data"]["effect"], "none");
+        assert_eq!(peer.runs.asks.lock().unwrap().len(), 1, "no second Agent");
+    }
+
+    #[test]
+    fn an_unknown_session_is_not_found_and_says_nothing_else() {
+        let peer = Peer::new("unknown-session", FakeRuns::ok(0, ""));
+        for method in ["session.status", "session.result", "session.stop"] {
+            let out = peer.call(&[&format!(
+                "{{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"{method}\",\"params\":{{\"session\":\"s-nope\"}}}}"
+            )]);
+            assert_eq!(out[0]["error"]["code"], code::NOT_FOUND, "{method}");
+            assert_eq!(out[0]["error"]["message"], "no such session");
+        }
+    }
+
+    #[test]
+    fn an_unknown_workspace_and_a_wrong_node_give_the_same_answer() {
+        // Different messages here would turn the error into a probe for what
+        // this machine is configured with.
+        let peer = Peer::new("probe", FakeRuns::ok(0, ""));
+        let missing = peer.call(&[
+            "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"session.start\",\"params\":{\"workspace\":\"nosuch\",\"mode\":\"print\",\"input\":{\"prompt\":\"go\"}}}",
+        ]);
+        let wrong_node = peer.call(&[&start_call(
+            ",\"agent\":{\"node\":\"elsewhere\",\"instance\":\"claude-main\"}",
+        )]);
+        assert_eq!(missing[0]["error"]["code"], code::NOT_FOUND);
+        assert_eq!(wrong_node[0]["error"]["code"], code::NOT_FOUND);
+        assert_eq!(
+            missing[0]["error"]["message"],
+            wrong_node[0]["error"]["message"]
+        );
+        assert!(peer.runs.asks.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_workspace_without_an_instance_binding_is_refused() {
+        let config = config_with(
+            "legacy-start",
+            r#"
+this = "runtime"
+[nodes.runtime]
+[nodes.worker]
+ssh = "agent-alias"
+[workspaces.demo]
+agent_node = "worker"
+root = "/runtime/legacy"
+"#,
+        );
+        let out = talk(
+            Arc::new(FakeRuns::ok(0, "")),
+            config,
+            temp("legacy-start-state"),
+            &format!("{HELLO}\n{}\n", start_call("")),
+        );
+        assert_eq!(out[1]["error"]["code"], code::NOT_READY);
+    }
+
+    #[test]
+    fn interactive_is_refused_because_it_is_not_offered() {
+        let peer = Peer::new("interactive", FakeRuns::ok(0, ""));
+        let out = peer.call(&[
+            "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"session.start\",\"params\":{\"workspace\":\"demo\",\"mode\":\"interactive\",\"input\":{}}}",
+        ]);
+        assert_eq!(out[0]["error"]["code"], code::UNSUPPORTED_CAPABILITY);
+        // What hello advertises and what start accepts must agree.
+        let modes = capabilities()["modes"].clone();
+        assert_eq!(modes.as_array().unwrap(), &[Value::from("print")]);
+    }
+
+    #[test]
+    fn print_mode_requires_a_prompt() {
+        let peer = Peer::new("no-prompt", FakeRuns::ok(0, ""));
+        let out = peer.call(&[
+            "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"session.start\",\"params\":{\"workspace\":\"demo\",\"mode\":\"print\",\"input\":{}}}",
+        ]);
+        assert_eq!(out[0]["error"]["code"], code::INVALID_PARAMS);
+    }
+
+    #[test]
+    fn result_before_the_end_is_a_state_not_an_error() {
+        let peer = Peer::new("early-result", FakeRuns::ok(0, "x"));
+        let session = peer.call(&[&start_call("")])[0]["result"]["session"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        peer.settle(&session);
+        // Same shape a caller polling early would see: an absent outcome is
+        // not a failure. Checked here on a record with no finish written.
+        let store = store::Store::open(&peer.state).unwrap();
+        let mut record = store.read(&session).unwrap().unwrap();
+        record.state = store::State::Running;
+        record.finish = None;
+        store.write(&record).unwrap();
+        let out = peer.call(&[&format!(
+            "{{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"session.result\",\"params\":{{\"session\":\"{session}\"}}}}"
+        )]);
+        assert!(out[0]["result"].get("outcome").is_none(), "{out:?}");
+        // Still ours and still running, so the state is running -- the point
+        // is that a missing outcome is not an error.
+        assert_eq!(out[0]["result"]["state"], "running");
+    }
+
+    #[test]
+    fn a_cursor_this_build_never_issued_is_expired() {
+        let peer = Peer::new("cursor", FakeRuns::ok(0, "x"));
+        let session = peer.call(&[&start_call("")])[0]["result"]["session"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        peer.settle(&session);
+        let out = peer.call(&[&format!(
+            "{{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"session.result\",\"params\":{{\"session\":\"{session}\",\"output\":{{\"cursor\":\"c-8192\"}}}}}}"
+        )]);
+        assert_eq!(out[0]["error"]["code"], code::EXPIRED);
+        assert_eq!(out[0]["error"]["data"]["reason"], "cursor_expired");
+    }
+
+    #[test]
+    fn stop_is_accepted_but_does_not_claim_the_session_is_over() {
+        let peer = Peer::new("stop", FakeRuns::ok(0, "x"));
+        let session = peer.call(&[&start_call("")])[0]["result"]["session"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        peer.settle(&session);
+        // Put it back to running so stop has something to act on.
+        let store = store::Store::open(&peer.state).unwrap();
+        let mut record = store.read(&session).unwrap().unwrap();
+        record.state = store::State::Running;
+        record.owner_pid = std::process::id();
+        record.finish = None;
+        store.write(&record).unwrap();
+
+        let out = peer.call(&[&format!(
+            "{{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"session.stop\",\"params\":{{\"session\":\"{session}\"}}}}"
+        )]);
+        // Not `completed`: only an observed end -- process group, transport,
+        // released write guard -- makes it over.
+        assert_eq!(out[0]["result"]["state"], "stopping");
+        assert_eq!(out[0]["result"]["stop_requested"], true);
+        assert_eq!(peer.runs.stops.lock().unwrap().as_slice(), &["demo"]);
+    }
+
+    #[test]
+    fn stopping_something_already_finished_succeeds_without_touching_it() {
+        let peer = Peer::new("stop-idempotent", FakeRuns::ok(0, "x"));
+        let session = peer.call(&[&start_call("")])[0]["result"]["session"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        peer.settle(&session);
+        let call = format!(
+            "{{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"session.stop\",\"params\":{{\"session\":\"{session}\"}}}}"
+        );
+        let first = peer.call(&[&call]);
+        let second = peer.call(&[&call]);
+        assert_eq!(first[0]["result"]["state"], "completed");
+        assert_eq!(second[0]["result"]["state"], "completed");
+        // Nothing was asked to stop: it was already over.
+        assert!(peer.runs.stops.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_record_left_by_a_dead_server_reads_as_unknown_not_failed() {
+        let peer = Peer::new("crashed", FakeRuns::ok(0, "x"));
+        let session = peer.call(&[&start_call("")])[0]["result"]["session"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        peer.settle(&session);
+        // Rewrite it the way a server that died mid-run would have left it:
+        // running, owned by a pid that is not us and cannot be alive.
+        let store = store::Store::open(&peer.state).unwrap();
+        let mut record = store.read(&session).unwrap().unwrap();
+        record.state = store::State::Running;
+        record.owner_pid = 999_999;
+        record.owner_started = "Thu Jan  1 00:00:00 1970".to_string();
+        record.finish = None;
+        store.write(&record).unwrap();
+
+        let out = peer.call(&[&format!(
+            "{{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"session.status\",\"params\":{{\"session\":\"{session}\"}}}}"
+        )]);
+        // Not `failed`: the Agent is on another machine and may well have
+        // finished. Saying "failed" here invites a retry of work that could
+        // already have changed the tree.
+        assert_eq!(out[0]["result"]["state"], "unknown");
+    }
+
+    #[test]
+    fn a_long_output_is_truncated_and_says_so() {
+        let long = "x".repeat(20_000);
+        let peer = Peer::new("truncate", FakeRuns::ok(0, &long));
+        let session = peer.call(&[&start_call("")])[0]["result"]["session"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        peer.settle(&session);
+        let out = peer.call(&[&format!(
+            "{{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"session.result\",\"params\":{{\"session\":\"{session}\"}}}}"
+        )]);
+        let output = &out[0]["result"]["output"];
+        assert_eq!(output["bytes_total"], 20_000);
+        assert_eq!(output["truncated"], true);
+        assert_eq!(output["tail"].as_str().unwrap().len(), 8192);
+        assert_eq!(output["cursor"], Value::Null);
+    }
+
+    #[test]
+    fn the_caller_picks_the_instance_but_never_the_node() {
+        let peer = Peer::new("override", FakeRuns::ok(0, "x"));
+        let out = peer.call(&[&start_call(
+            ",\"agent\":{\"node\":\"worker\",\"instance\":\"codex-main\"}",
+        )]);
+        assert_eq!(out[0]["result"]["agent"]["instance"], "codex-main");
+        assert_eq!(out[0]["result"]["agent"]["node"], "worker");
+        let session = out[0]["result"]["session"].as_str().unwrap().to_string();
+        peer.settle(&session);
+        let asks = peer.runs.asks.lock().unwrap();
+        assert_eq!(asks[0].instance.as_deref(), Some("codex-main"));
     }
 }

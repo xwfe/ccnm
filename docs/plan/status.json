@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-09-10T13:20:00+09:00",
-  "current_task": "P5",
+  "last_updated": "2026-09-10T15:10:00+09:00",
+  "current_task": "P6",
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
     "source": "docs/research/codex-internal-wiring-2026-09-07.md",
@@ -380,15 +380,61 @@
     {
       "id": "P5",
       "title": "本地 stdio Machine API",
-      "status": "in_progress",
+      "status": "completed",
       "depends_on": [
         "P4"
       ],
-      "owner": "Claude / P5 local stdio machine API",
+      "owner": null,
       "started_at": "2026-09-10T13:20:00+09:00",
-      "last_updated": "2026-09-10T13:20:00+09:00",
-      "completed_criteria": [],
-      "evidence": [],
+      "last_updated": "2026-09-10T15:10:00+09:00",
+      "completed_criteria": [
+        "P5.1",
+        "P5.2",
+        "P5.3",
+        "P5.4",
+        "P5.5"
+      ],
+      "evidence": [
+        {
+          "kind": "offline",
+          "criteria": [
+            "P5.1",
+            "P5.4"
+          ],
+          "ref": "crates/ccnm-cli/tests/rpc.rs",
+          "result": "11 个跑真实 ccnm rpc 二进制、通过管道对话的集成测试：stdout 只有协议（--verbose 与 CCNM_LOG=debug 全开、并发一条通知的情况下仍然只有协议，通知按规范不回、只记 stderr）；EOF 干净退出；非法 JSON、批量、1 MiB 超长行各自被回 id 为 null 的错误且后续请求照常处理；握手前调用回 -32014；缺配置回 -32001；背压用一个写 500 请求的线程加主线程读验证，501 条响应且顺序与请求一致。限制：每次调用要么在本地预检失败、要么只读配置，不启动 Agent、不拨 ssh。"
+        },
+        {
+          "kind": "offline",
+          "criteria": [
+            "P5.1",
+            "P5.2",
+            "P5.3",
+            "P5.4",
+            "P5.5"
+          ],
+          "ref": "crates/ccnm-core/src/rpc/session.rs",
+          "result": "rpc 单元测试 71 个，全量 cargo test --workspace 596 passed / 0 failed，fmt 与严格 clippy 通过，Python 54 passed，check_protocol 38 个 fixture 通过。执行入口抽成 Runs trait，生产实现调 launcher::run_print_with_agent 与 stop_selected——人类 CLI 走的同一批函数，不解析 CLI 文案；测试注入替身，无一测试启动 Agent。covered：启动幂等（同键同输入复用、只问执行器一次；同键不同输入回 -32010）、跨进程重启幂等、崩溃窗口故障注入后读为 unknown 而非 failed、stop 幂等且非终态时只记 stopping 不报完成、timeout 传递与非法值拒绝、记录损坏回 -32603、internal payload（session_dir/pid/controller）不出现在响应里。"
+        },
+        {
+          "kind": "review",
+          "criteria": [
+            "P5.2",
+            "P5.3",
+            "P5.4"
+          ],
+          "ref": "docs/research/machine-api-p5-2026-09-10.md",
+          "result": "实现反过来改掉 P4 草案三处：agents.list 的 provider/capabilities 删除（配置校验决定绑定里的 node 永远不是本机，那个分支执行不到）、agent_public 的 provider 改可选（start 返回时 Agent 尚未回话）、running 定义改为\"已交给执行链路\"（观察不到 Agent 何时真正开始）。三处同一根因：provider 由 Agent 侧权威解析，Runtime 侧不留第二份。协议 handle 与 ccnm session id 分开并在记录中映射，理由与被否掉的替代方案（改内部 RunRequest 加 session 字段）一并记录。stop 按 workspace 寻址依赖 P3.3 写互斥的唯一性，代码注释标明该依赖。"
+        },
+        {
+          "kind": "review",
+          "criteria": [
+            "P5.5"
+          ],
+          "ref": "docs/protocol/README.md",
+          "result": "未实现项如实公开且都是\"实现得比契约少\"：interactive 未实现且不在 capabilities.modes 里，调用回 -32013；输出不分页，一次给最后 8 KiB，任何游标回 -32012；结果不过期，expires_at 不出现。未开 HTTP、未做云鉴权/ChatGPT 接入/控制 MCP。持久化与互斥只用标准库（文件加 create_new），未引入外部队列。"
+        }
+      ],
       "blockers": []
     },
     {
@@ -442,11 +488,12 @@
     "P3 公共链路已在当前 build 双机真机通过并完成资源归零；遗留两项未取得证据：Ctrl-D 因官方 CLI 无响应，egress 边界不作声明。",
     "Claude colocated 候选命令已定点修复，但未真机验收，当前公共启动明确拒绝。",
     "P3 额外 64 线程压力出现既有 exec timeout 单测 30.5s 失败；默认全量 511 通过，高并发问题尚未解决。",
-    "Machine Protocol v1 是草案：无实现、无外部消费者验证；客户端不声明 capabilities（加推送时必须一并解决）、interactive 输入形状未定稿、1 MiB 行上限无实测依据。P6 之前不建立兼容承诺。"
+    "Machine Protocol v1 是草案：无实现、无外部消费者验证；客户端不声明 capabilities（加推送时必须一并解决）、interactive 输入形状未定稿、1 MiB 行上限无实测依据。P6 之前不建立兼容承诺。",
+    "ccnm rpc 全部为离线验证：没有跟真实 Agent 跑通过一次；Runtime 写互斥与取消的三条判据是结构上继承 launcher/Agent 侧的实现，没有 RPC 层面的独立真机证据。双机闭环见 P6.3。"
   ],
   "handoff": {
-    "next_action": "P5：实现 ccnm rpc，与人类 CLI 共用同一套应用服务，按 P5.1…P5.5 逐条落地——严格 framing 与有界读、stdout 只有协议、身份/状态/结果/取消/互斥走同一套逻辑而不是解析 CLI 文案、启动幂等与崩溃恢复持久化、取消覆盖真实进程组。协议契约见 docs/protocol/，改动协议要同时更新 schema/fixture 并跑 scripts/check_protocol.py。不开 HTTP，不做云鉴权与控制 MCP。",
-    "scope": "仅 P5；本地 stdio Machine API 实现，不开网络端口，不做远程接入，不引入外部队列或数据库。",
+    "next_action": "P6：建一个不链接任何 ccnm crate 的最小黑盒 client，只 spawn ccnm rpc 并通过字节流走完 hello/list/start/status/result/stop，按 P6.1…P6.4 逐条落地——契约测试覆盖 provider 错配、旧 peer、重复启动键、启动响应丢失、重连、RPC 重启、取消中、Runtime 不可达、输出截断/过期；经授权用公共 API 各跑一次真实 provider/双机闭环，与人类 CLI 结果对照；据反馈修改草案后才确立 v1。离线 fake-agent 与付费真机测试分开记录，CI 默认不消费登录凭据。",
+    "scope": "仅 P6；黑盒消费者与 v1 兼容承诺。真机双机验证需要用户单独授权系统与登录相关动作，未获授权则记 blocked 并完成离线部分。",
     "planning_validation": {
       "at": "2026-09-08T21:22:43+09:00",
       "commands": [
@@ -458,14 +505,17 @@
       "limits": "本轮离线门禁；fodelf SSH 建连失败，没有新增远端资源或运行真实模型，不替代 P3.5。"
     },
     "planning_validation_latest": {
-      "at": "2026-09-10T13:05:00+09:00",
+      "at": "2026-09-10T15:10:00+09:00",
       "commands": [
+        "cargo fmt --all --check：通过",
+        "cargo clippy --workspace --all-targets -- -D warnings：通过",
+        "cargo test --workspace：596 passed / 0 failed",
         "python3 scripts/check_protocol.py：通过（38 个 fixture）",
         "PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p 'test_*.py' -q：54 passed",
         "python3 scripts/check_plan.py：通过",
         "git diff --check：通过"
       ],
-      "limits": "本轮只写协议文档、schema、fixture、校验脚本与测试，未修改 Rust，未重跑 Rust 门禁；协议没有任何实现，所有\"服务端必须…\"都还没被代码执行过。"
+      "limits": "全部离线：没有启动真实 Agent，没有拨 ssh，没有双机验证。写互斥与取消判据继承自 launcher/Agent 侧，本轮无独立真机证据。"
     },
     "inherited_changes": [],
     "authorization": "P3 的双机系统授权已执行完毕并归零，不再有效。P4 只写文档与 fixture，未做任何系统变更。P5 起如需账号、ACL、防火墙、部署或替换二进制，必须重新逐项获得批准。",

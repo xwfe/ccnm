@@ -50,9 +50,22 @@ wrapper 必须固定 `CCNM_CONFIG`/`XDG_STATE_HOME`/`TMUX_TMPDIR`。本轮先把
 
 `theme` 键在两个 `.claude.json` 中始终未出现，但向导已不再重复；本轮不追究官方 CLI 的存储位置，也不代改其配置。
 
+## 生命周期与故障注入
+
+6. detach：客户端全部分离后 `status` 仍为 `tools connected`，Agent 与 MCP 存活。
+7. reattach：`ccnm attach` 经 PTY 重新连上（`/dev/ttys020`，xterm-256color），画面恢复到同一会话的既有输出。
+8. Agent 自然退出：官方 CLI 对 `send-keys C-d` 无响应——输入框为空（`C-u` 后占位提示不变可证）、有无 attached 客户端都试过，均不退出，这是 Claude Code 2.1.267 自身行为，与 ccnm 无关，本轮据此**不能**宣称验过 Ctrl-D。改用 `/exit` 验证同一条「Agent 自己结束」路径：tmux server 消失，session 记 **Completed**（区别于 stop 的 Failed），Runtime 侧 mcp-serve PID 42437 消失，guard 由 `held 94818b0d… p3claude` 转为 `released`。
+9. transport 故障注入：空闲 interactive 下定位 Claude 的子进程 SSH（PID 49781），先核对其父进程命令行含本 session id 才发 TERM，不对历史 PID 或同名进程动手。终止后 Claude 仍存活，`status` 正确区分 **Agent 仍在 detached 而 TOOLS DOWN**；Runtime 侧 mcp-serve 随之消失且 guard 正常 `released`。随后精确 `stop` 成功，session 记 **Failed**（受控终止）。这是 transport 进程故障，不等同物理断网。
+
+`stop` 返回时 tmux 与 supervisor 已确认结束，但官方 CLI 进程尚存活约 10 秒后自行退出。契约要求确认的是 supervisor/tmux，故不算残留；记此一笔以免下次把异步退出误判为泄漏。
+
+两端最终复核：Agent 侧无 tmux/supervise/transport 残留，Runtime 侧无 `ccnm-bin internal mcp-serve`，guard `released`，`status` 无存活 session。
+
 ## 未完成与接续
 
-interactive 启动与工具调用已成立。仍缺 detach 后的存活复核、reattach、Ctrl-D、Controller 重启与 transport 故障，P3.1/P3.2 不能标记完成；这几项都需要终端控制权，当前 session 仍有用户客户端 attached。
+只剩 Controller 重启一项。本轮 Controller 由用户在 fodelf 图形终端前台启动才能进 Aqua，重启需用户再操作一次：先记录当前 PID 与监听 socket，停掉后在同一配置下重启，再验证既有 session 仍 Running 且可精确 reattach。Ctrl-D 因官方 CLI 无响应而未取得证据，已用 `/exit` 覆盖同一路径，但不记作 Ctrl-D 通过。
+
+这两项之外，P3.1/P3.2 的公共链路证据已齐。清理仍待执行：两端部署目录、fodelf SSH alias 与备份、Runtime workspace 与测试产物、`~/.claude.json` 中本轮新增的 project entry，以及本机的独立组与 SSH 准入两个 `--revert`。
 
 本轮 Controller 由用户在 fodelf 图形终端前台启动（Aqua，PID 22991），未安装 LaunchAgent，未触碰既有的 `dev.ccnm.work-controller`。曾尝试用独立 label 临时 bootstrap，被权限策略拒绝，未绕过。
 

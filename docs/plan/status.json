@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-09-10T15:25:00+09:00",
+  "last_updated": "2026-09-10T16:00:00+09:00",
   "current_task": "P6",
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
@@ -440,16 +440,54 @@
     {
       "id": "P6",
       "title": "黑盒消费者与 v1 兼容承诺",
-      "status": "in_progress",
+      "status": "blocked",
       "depends_on": [
         "P5"
       ],
-      "owner": "Claude / P6 black-box consumer",
+      "owner": null,
       "started_at": "2026-09-10T15:25:00+09:00",
-      "last_updated": "2026-09-10T15:25:00+09:00",
-      "completed_criteria": [],
-      "evidence": [],
-      "blockers": []
+      "last_updated": "2026-09-10T16:00:00+09:00",
+      "completed_criteria": [
+        "P6.1",
+        "P6.2"
+      ],
+      "evidence": [
+        {
+          "kind": "offline",
+          "criteria": [
+            "P6.1"
+          ],
+          "ref": "clients/python/ccnm_machine_client.py",
+          "result": "约 260 行、只用 Python 标准库的黑盒 client，不 import 任何 ccnm 库也不需要仓库在场：spawn ccnm rpc，按行收发 JSON，走完 hello/agents.list/session.start/status/result/stop 六个方法，能显式选 instance（两个 workspace 分别绑 claude-main 与 codex-main，并可在同一 node 上覆盖 instance）。有一条测试把该文件复制到与仓库无关的目录再执行，验证\"复制走就能用\"。选 Python 而非 Rust 是结构性的：Rust 客户端最省事的写法总是 use ccnm_core，Python 物理上做不到。"
+        },
+        {
+          "kind": "offline",
+          "criteria": [
+            "P6.2"
+          ],
+          "ref": "tests/test_blackbox_client.py",
+          "result": "20 个只走字节流的契约测试全部通过，覆盖 P6.2 点名场景：provider/instance 错配（换 node 一律 -32009，与不存在的 workspace 同一句话）、旧 peer（只说 ccnm.machine/9 时收到 -32002 与 supported）、重复启动键（同键同输入复用、同键不同输入 -32010）、启动响应丢失（假对端答完握手即消失，客户端报连接中断而非成功）、重连、RPC 重启后键仍有效、取消中（注入 owner 已死的运行中记录得到 unknown，stop 幂等且不宣称完成）、Runtime 不可达以终态收场、输出有界与失效游标 -32012。另验证不重复执行、不串 session，以及把全部响应序列化后逐项断言 home 路径/.claude/.codex/auth.json/CLAUDE_CONFIG_DIR/私钥文件名/session_dir/controller 均未出现。坏对端由 tests/fixtures/fake_rpc_peer.py 扮演，含\"以退出码 0 代替回答\"这一已知坑，测试同时确认对端确实返回 0。限制：唯一一处碰内部状态的是取消中场景，需要注入运行中记录，已在测试中写明理由。"
+        },
+        {
+          "kind": "review",
+          "criteria": [
+            "P6.1",
+            "P6.2"
+          ],
+          "ref": "docs/research/blackbox-consumer-p6-2026-09-10.md",
+          "result": "第一个消费者的反馈记录：六个方法够写 Orchestrator 执行层；effect 比任何 retriable 布尔好用；session.result 未完成时返回状态让轮询只有一条路径。决定不加 session.list 并写明理由——Orchestrator 本来就要持久化任务与 attempt，给一个列表方法会诱使调用方拿它当真相来源，即第二份真相；补偿是文档写清后果并建议凡结果有意义就给 start_key。agents.list 无 provider 的别扭如实保留，并指出结构上不可能提供。兼容规则三张清单已写入协议第 13 节，含\"终态集合冻结在三个\"这项交换。"
+        }
+      ],
+      "blockers": [
+        {
+          "criteria": [
+            "P6.3",
+            "P6.4"
+          ],
+          "reason": "用户决定把 P6.3 的真机双机闭环推迟，与 P7.3 的发布前 dogfood 合并成一次执行，只重建一遍临时环境（Runtime 账号、SSH 准入、两端部署、真实 Claude/Codex 订阅额度、事后清理归零）。P6.4 的规范、schema、golden 与兼容测试均已提交，但其落点\"确立 v1\"依赖 P6.3 的真机结果，故一并留在此处。当前没有真实 provider、双机、与人类 CLI 结果对照的任何证据。",
+          "unblock": "获得授权并重建双机临时环境后，先执行 P6.3：用公共 API 分别跑一次真实 Claude 与 Codex 的双机闭环，与 ccnm run --print 的结果对照，离线 fake 与付费真机分开记录；据结果修改草案后确立 v1 并收口 P6.4，随后在同一套环境内进入 P7 执行 P7.3。CI 默认不消费登录凭据或订阅。"
+        }
+      ]
     },
     {
       "id": "P7",
@@ -492,8 +530,8 @@
     "ccnm rpc 全部为离线验证：没有跟真实 Agent 跑通过一次；Runtime 写互斥与取消的三条判据是结构上继承 launcher/Agent 侧的实现，没有 RPC 层面的独立真机证据。双机闭环见 P6.3。"
   ],
   "handoff": {
-    "next_action": "P6：建一个不链接任何 ccnm crate 的最小黑盒 client，只 spawn ccnm rpc 并通过字节流走完 hello/list/start/status/result/stop，按 P6.1…P6.4 逐条落地——契约测试覆盖 provider 错配、旧 peer、重复启动键、启动响应丢失、重连、RPC 重启、取消中、Runtime 不可达、输出截断/过期；经授权用公共 API 各跑一次真实 provider/双机闭环，与人类 CLI 结果对照；据反馈修改草案后才确立 v1。离线 fake-agent 与付费真机测试分开记录，CI 默认不消费登录凭据。",
-    "scope": "仅 P6；黑盒消费者与 v1 兼容承诺。真机双机验证需要用户单独授权系统与登录相关动作，未获授权则记 blocked 并完成离线部分。",
+    "next_action": "P6 仅剩 P6.3/P6.4：离线黑盒 client 与契约测试已完成（clients/python/ 与 tests/test_blackbox_client.py，20 个用例）。真机双机闭环按用户决定与 P7.3 合并执行——重建环境后先跑 P6.3（公共 API 各跑一次真实 provider，与人类 CLI 对照）收口 P6 与 v1，再进 P7 跑 P7.3。未获授权前不重建环境、不消费订阅，也不宣称 v1 已确立。",
+    "scope": "仅 P6 的收尾；真机双机与 P7.3 合并那次需要用户单独授权系统与登录相关动作。不在获得授权前重建临时账号、SSH 准入或部署。",
     "planning_validation": {
       "at": "2026-09-08T21:22:43+09:00",
       "commands": [
@@ -505,17 +543,15 @@
       "limits": "本轮离线门禁；fodelf SSH 建连失败，没有新增远端资源或运行真实模型，不替代 P3.5。"
     },
     "planning_validation_latest": {
-      "at": "2026-09-10T15:10:00+09:00",
+      "at": "2026-09-10T16:00:00+09:00",
       "commands": [
-        "cargo fmt --all --check：通过",
-        "cargo clippy --workspace --all-targets -- -D warnings：通过",
-        "cargo test --workspace：596 passed / 0 failed",
+        "PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_blackbox_client -q：20 passed",
+        "PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p 'test_*.py' -q：74 passed",
         "python3 scripts/check_protocol.py：通过（38 个 fixture）",
-        "PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p 'test_*.py' -q：54 passed",
         "python3 scripts/check_plan.py：通过",
         "git diff --check：通过"
       ],
-      "limits": "全部离线：没有启动真实 Agent，没有拨 ssh，没有双机验证。写互斥与取消判据继承自 launcher/Agent 侧，本轮无独立真机证据。"
+      "limits": "本轮未修改 Rust，不重跑也不重报 Rust 门禁数字（上一轮 596）。没有真实 provider、没有双机、没有与人类 CLI 的结果对照。"
     },
     "inherited_changes": [],
     "authorization": "P3 的双机系统授权已执行完毕并归零，不再有效。P4 只写文档与 fixture，未做任何系统变更。P5 起如需账号、ACL、防火墙、部署或替换二进制，必须重新逐项获得批准。",

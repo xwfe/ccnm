@@ -21,6 +21,8 @@
 
 改 `ccnm rpc` 或[黑盒客户端](clients/python/ccnm_machine_client.py)：另跑 `cargo test -p ccnm-core --lib rpc::`、`cargo test -p ccnm-cli --test rpc`，以及 `cargo build` 之后的 `python3 -m unittest tests.test_blackbox_client -q`。
 
+改 [P7.3 对照工具](scripts/p7_parity_check.py)：另跑 `cargo build` 之后的 `python3 -m unittest tests.test_p7_parity -q`。它自己的成功路径由 `tests/fixtures/fake_ccnm.py` 离线覆盖，真机结论仍以 `--out` 写出的证据文件为准。
+
 修改 Rust：另跑 `cargo fmt --all --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace`；Python helper 改动另跑对应 unittest。真机、生产权限和断网验证分别记录，不能用离线测试数量替代。
 
 创建系统账号、ACL、防火墙、独立登录、部署或替换已安装二进制，必须有针对该动作的明确授权。只规划不代表授权执行这些动作。

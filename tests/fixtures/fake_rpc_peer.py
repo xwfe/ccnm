@@ -27,6 +27,9 @@ def main() -> int:
     parser.add_argument("--protocol", default="ccnm.machine/1")
     parser.add_argument("--die-after", type=int, default=None)
     parser.add_argument("--exit-zero-on-start", action="store_true")
+    # 演一个"未来版本"的服务端：多几个字段、多几个 capability、状态是这一版
+    # 没定义过的。客户端必须照常工作——这是兼容规则里客户端那半边的义务。
+    parser.add_argument("--from-the-future", action="store_true")
     args = parser.parse_args()
 
     answered = 0
@@ -45,15 +48,17 @@ def main() -> int:
         if method == "hello":
             offered = request.get("params", {}).get("protocol_versions", [])
             if args.protocol in offered:
-                answer({
-                    "jsonrpc": "2.0",
-                    "id": request["id"],
-                    "result": {
-                        "protocol": args.protocol,
-                        "server": {"name": "fake", "version": "0.0.0"},
-                        "capabilities": {"modes": ["print"]},
-                    },
-                })
+                capabilities = {"modes": ["print"]}
+                result = {
+                    "protocol": args.protocol,
+                    "server": {"name": "fake", "version": "0.0.0"},
+                    "capabilities": capabilities,
+                }
+                if args.from_the_future:
+                    capabilities["session_events"] = True
+                    capabilities["modes"] = ["print", "interactive"]
+                    result["negotiated_extensions"] = ["something-new"]
+                answer({"jsonrpc": "2.0", "id": request["id"], "result": result})
             else:
                 answer({
                     "jsonrpc": "2.0",
@@ -64,6 +69,35 @@ def main() -> int:
                         "data": {"effect": "none", "supported": [args.protocol]},
                     },
                 })
+        elif args.from_the_future and method == "session.start":
+            answer({
+                "jsonrpc": "2.0",
+                "id": request["id"],
+                "result": {
+                    "session": "s-future-1",
+                    "state": "starting",
+                    "reused": False,
+                    "workspace": "demo",
+                    "agent": {"node": "worker", "instance": "claude-main"},
+                    "accepted_at": "2026-09-10T00:00:00Z",
+                    "queue_position": 3,
+                },
+            })
+        elif args.from_the_future and method == "session.status":
+            answer({
+                "jsonrpc": "2.0",
+                "id": request["id"],
+                "result": {
+                    "session": "s-future-1",
+                    # v1 里没有这个状态。规则说：不认识的 state 当成还没结束。
+                    "state": "queued",
+                    "workspace": "demo",
+                    "agent": {"node": "worker", "instance": "claude-main"},
+                    "started_at": "2026-09-10T00:00:00Z",
+                    "stop_requested": False,
+                    "queue_position": 2,
+                },
+            })
         else:
             answer({
                 "jsonrpc": "2.0",

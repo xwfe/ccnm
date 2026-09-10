@@ -84,6 +84,9 @@ E_EXPIRED = -32012
 E_UNSUPPORTED_CAPABILITY = -32013
 E_HANDSHAKE_REQUIRED = -32014
 
+# 终态集合由契约冻结在这三个（协议说明第 13 节）。**不认识的 state 一律当成
+# "还没结束"继续轮询**——服务端承诺不再新增终态，所以等下去总会走到这三个之
+# 一。反过来做（把不认识的当结束）会让调用方以为一个还在跑的任务已经完了。
 TERMINAL_STATES = frozenset({"completed", "failed", "unknown"})
 
 

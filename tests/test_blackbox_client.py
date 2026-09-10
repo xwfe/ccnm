@@ -303,6 +303,37 @@ class BlackBoxTests(unittest.TestCase):
             )
         self.assertEqual(caught.exception.code, -32012)
 
+    # -- P6.4：兼容规则 --
+
+    def test_a_client_survives_a_server_from_the_future(self):
+        # 兼容规则里客户端那半边的义务：多出来的字段和 capability 一律忽略，
+        # 不认识的 state 当成"还没结束"。这两条一破，加字段就成了破坏性变更。
+        client = self.fake_peer("--from-the-future")
+        info = client.hello("blackbox/1")
+        self.assertEqual(info["protocol"], "ccnm.machine/1")
+        self.assertIn("session_events", info["capabilities"])
+        self.assertIn("negotiated_extensions", info)
+
+        started = client.session_start("demo", "go")
+        self.assertEqual(started["session"], "s-future-1")
+        self.assertEqual(started["queue_position"], 3)
+
+        status = client.session_status(started["session"])
+        self.assertEqual(status["state"], "queued")
+        # 不在终态集合里，所以 wait 会继续轮询——超时退出，而不是把一个
+        # 没结束的会话当成结束了。
+        with self.assertRaises(TimeoutError):
+            client.wait(started["session"], timeout=0.3, poll=0.1)
+
+    def test_the_terminal_set_is_exactly_the_three_the_contract_freezes(self):
+        # 客户端"不认识就继续等"之所以安全，全靠终态集合冻结在这三个。
+        # 哪天要加第四个终态，那是 ccnm.machine/2 的事。
+        from ccnm_machine_client import TERMINAL_STATES
+
+        self.assertEqual(TERMINAL_STATES, {"completed", "failed", "unknown"})
+        spec = (ROOT / "docs/protocol/machine-protocol-v1.md").read_text(encoding="utf-8")
+        self.assertIn("终态集合冻结在 `completed` / `failed` / `unknown` 三个", spec)
+
     # -- P6.2：拒绝与不泄漏 --
 
     def test_refusals_use_codes_a_client_can_branch_on(self):

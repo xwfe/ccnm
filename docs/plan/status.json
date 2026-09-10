@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-09-10T11:40:00+09:00",
-  "current_task": "P4",
+  "last_updated": "2026-09-10T13:05:00+09:00",
+  "current_task": "P5",
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
     "source": "docs/research/codex-internal-wiring-2026-09-07.md",
@@ -330,15 +330,51 @@
     {
       "id": "P4",
       "title": "Machine Protocol v1 草案与契约评审",
-      "status": "in_progress",
+      "status": "completed",
       "depends_on": [
         "P3"
       ],
-      "owner": "Claude / P4 machine protocol draft",
+      "owner": null,
       "started_at": "2026-09-10T11:40:00+09:00",
-      "last_updated": "2026-09-10T11:40:00+09:00",
-      "completed_criteria": [],
-      "evidence": [],
+      "last_updated": "2026-09-10T13:05:00+09:00",
+      "completed_criteria": [
+        "P4.1",
+        "P4.2",
+        "P4.3",
+        "P4.4",
+        "P4.5"
+      ],
+      "evidence": [
+        {
+          "kind": "review",
+          "criteria": [
+            "P4.1",
+            "P4.2",
+            "P4.3",
+            "P4.4",
+            "P4.5"
+          ],
+          "ref": "docs/protocol/machine-protocol-v1.md",
+          "result": "stdio 上的 JSON-RPC 2.0 单行消息草案：采用前逐条核对官方规范（请求/响应/错误对象成员、五个预定义码、-32000..-32099 实现区间、rpc. 保留前缀、批量规则），在规范允许范围内收紧三处（不支持批量、不用通知、请求 id 不接受 null 和小数）。握手声明 protocol/version/capabilities，framing、1 MiB 上限、非法消息、未知 method/param/capability 与版本不匹配均有定义。六个方法定稿：hello、agents.list、session.start/status/result/stop；start 拿到 handle 即返回，不传 PTY，不承诺 interactive 有结构化最终结果。start_key 与 JSON-RPC id 分开，崩溃窗口返回 uncertain 不自动重启；状态含非终态/终态/取消中/未知；错误给 effect(none/unknown/applied) 而非 recoverable。权限只覆盖已配置 workspace/instance，not_found 不区分不存在与无权，输出引用有界且不含私有路径。协议与内部 PROTOCOL=1、INSTANCE_SESSION_PROTOCOL=3 完全脱钩。限制：无任何实现，草案未冻结。"
+        },
+        {
+          "kind": "offline",
+          "criteria": [
+            "P4.5"
+          ],
+          "ref": "tests/test_check_protocol.py",
+          "result": "38 个 fixture 覆盖成功、拒绝、断线（崩溃窗口 uncertain）、未知终态与过期结果/游标；python3 scripts/check_protocol.py 通过，18 个测试通过（含\"仓库现状通过\"这条基线）。校验器只用标准库、只实现 JSON Schema 子集，白名单外关键字一律报错。测试逐项证明它抓得住多字段、缺字段、错类型、非法状态、无时区时间戳、越界错误码、悬空 $ref、拼错的 schema 关键字，以及 print 模式缺 prompt。限制：只证明这几份文件互相自洽，不证明实现正确——没有实现。"
+        },
+        {
+          "kind": "review",
+          "criteria": [
+            "P4.1",
+            "P4.5"
+          ],
+          "ref": "docs/research/machine-protocol-review-2026-09-10.md",
+          "result": "单人自审（无第二人复核，无外部消费者试写客户端），逐条对照验收编号、JSON-RPC 规范与仓库现有数据结构（AgentProvider、InstanceRef、identifier()、Capabilities、SessionState、Outcome、RunResult.usage、14 个 CCNM_E_*）。当场改掉 7 处：响应 id 不许 null 与规范冲突且与自身 fixture 自相矛盾、预定义错误码无样例而检查脚本查不出、schema 表达不出 print 模式必填 prompt、start_key 作用域未定义、无 session.list 的后果未写明、expired 墓碑过期后的边界、agents.list 撞上限的行为。留下 6 项明知的权衡并写明未被验证的范围。"
+        }
+      ],
       "blockers": []
     },
     {
@@ -405,11 +441,12 @@
     "Claude v1 的 claude_config_dir 保留旧参数语义；P2 必须定义 Agent-local profile 引用与 legacy 冲突/迁移，不能把旧明文路径当新 profile 授权模型。",
     "P3 公共链路已在当前 build 双机真机通过并完成资源归零；遗留两项未取得证据：Ctrl-D 因官方 CLI 无响应，egress 边界不作声明。",
     "Claude colocated 候选命令已定点修复，但未真机验收，当前公共启动明确拒绝。",
-    "P3 额外 64 线程压力出现既有 exec timeout 单测 30.5s 失败；默认全量 511 通过，高并发问题尚未解决。"
+    "P3 额外 64 线程压力出现既有 exec timeout 单测 30.5s 失败；默认全量 511 通过，高并发问题尚未解决。",
+    "Machine Protocol v1 是草案：无实现、无外部消费者验证；客户端不声明 capabilities（加推送时必须一并解决）、interactive 输入形状未定稿、1 MiB 行上限无实测依据。P6 之前不建立兼容承诺。"
   ],
   "handoff": {
-    "next_action": "P4：在 docs/protocol/ 写 Machine Protocol v1 草案与机器可检查的 schema/fixture，按 P4.1…P4.5 逐条落地——握手与 framing、六个方法定稿、request_id 与启动幂等键、重试/超时/取消/EOF 语义、权限与输出引用契约及评审。协议独立于内部 PROTOCOL=1 与 INSTANCE_SESSION_PROTOCOL=3，本阶段不实现 HTTP、不动 rpc 代码、不冻结未验证接口。",
-    "scope": "仅 P4；协议草案与契约评审，不进入 P5 实现，不引入多 Agent/worktree 调度，不部署或修改账号/ACL/防火墙。",
+    "next_action": "P5：实现 ccnm rpc，与人类 CLI 共用同一套应用服务，按 P5.1…P5.5 逐条落地——严格 framing 与有界读、stdout 只有协议、身份/状态/结果/取消/互斥走同一套逻辑而不是解析 CLI 文案、启动幂等与崩溃恢复持久化、取消覆盖真实进程组。协议契约见 docs/protocol/，改动协议要同时更新 schema/fixture 并跑 scripts/check_protocol.py。不开 HTTP，不做云鉴权与控制 MCP。",
+    "scope": "仅 P5；本地 stdio Machine API 实现，不开网络端口，不做远程接入，不引入外部队列或数据库。",
     "planning_validation": {
       "at": "2026-09-08T21:22:43+09:00",
       "commands": [
@@ -421,17 +458,17 @@
       "limits": "本轮离线门禁；fodelf SSH 建连失败，没有新增远端资源或运行真实模型，不替代 P3.5。"
     },
     "planning_validation_latest": {
-      "at": "2026-09-10T11:30:00+09:00",
+      "at": "2026-09-10T13:05:00+09:00",
       "commands": [
-        "python3 scripts/check_plan.py：通过（4/9 阶段完成，下一阶段 P4）",
-        "PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p 'test_*.py' -q：36 passed",
-        "git diff --check：通过",
-        "fodelf 与本机两端资源归零只读复核：全部通过，无无法清理项"
+        "python3 scripts/check_protocol.py：通过（38 个 fixture）",
+        "PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p 'test_*.py' -q：54 passed",
+        "python3 scripts/check_plan.py：通过",
+        "git diff --check：通过"
       ],
-      "limits": "本轮只改清理脚本、计划状态与文档，未修改 Rust，未重跑 Rust 门禁；Ctrl-D 与 egress 两项仍无证据，已写入 observed_gaps 与支持矩阵。"
+      "limits": "本轮只写协议文档、schema、fixture、校验脚本与测试，未修改 Rust，未重跑 Rust 门禁；协议没有任何实现，所有\"服务端必须…\"都还没被代码执行过。"
     },
     "inherited_changes": [],
-    "authorization": "P3 的双机临时部署、角色互换、真实 Claude/Codex 验证与清理授权已执行完毕，两端资源归零，临时账号/组/公钥/准入全部撤销，本机既有 ccrun 保留。P4 只写协议文档与 fixture，不需要系统变更授权；若后续需要账号、ACL、防火墙、部署或替换二进制，必须重新逐项获得批准。",
+    "authorization": "P3 的双机系统授权已执行完毕并归零，不再有效。P4 只写文档与 fixture，未做任何系统变更。P5 起如需账号、ACL、防火墙、部署或替换二进制，必须重新逐项获得批准。",
     "portability": "接续不依赖任何特定 MCP、任务管理器或 IDE 插件。任何模型只需 Git、仓库文件和项目命令即可按 current_task 继续；外部工具状态不作为产品阶段事实。"
   }
 }

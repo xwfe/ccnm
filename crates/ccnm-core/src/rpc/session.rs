@@ -538,6 +538,7 @@ fn finish_from(report: &RunReport) -> (State, Finish) {
         State::Failed
     };
     let result = report.result.as_ref();
+    let tokens = result.and_then(|r| r.tokens());
     const TAIL: usize = 8192;
     let stdout = &report.stdout_tail;
     (
@@ -552,9 +553,9 @@ fn finish_from(report: &RunReport) -> (State, Finish) {
                 .and_then(|r| r.provider_session_id())
                 .map(str::to_string),
             text: result.and_then(|r| r.text()).map(str::to_string),
-            total_cost_usd: None,
-            input_tokens: None,
-            output_tokens: None,
+            total_cost_usd: result.and_then(|r| r.total_cost_usd()),
+            input_tokens: tokens.map(|(input, _)| input),
+            output_tokens: tokens.map(|(_, output)| output),
             output: tail(stdout, TAIL),
             output_total: stdout.len() as u64,
             error: outcome.error.clone(),
@@ -669,5 +670,68 @@ mod tests {
         let a = new_session_id();
         assert!(a.starts_with("s-"), "{a}");
         assert_ne!(a, new_session_id());
+    }
+
+    fn report_with(result: Option<crate::provider::AgentResult>) -> RunReport {
+        RunReport {
+            protocol: 3,
+            provider: crate::provider::AgentProvider::Claude,
+            agent_identity: None,
+            session: "ccnm-uuid-1".to_string(),
+            session_dir: std::path::PathBuf::from("/private/state/sessions/ccnm-uuid-1"),
+            controller: crate::controller::Context {
+                hello: crate::protocol::hello::answer(&crate::protocol::hello::HelloRequest::new(
+                    None,
+                )),
+                pid: 1,
+                manager: Ok("Aqua".to_string()),
+            },
+            pid: 2,
+            outcome: crate::session::Outcome {
+                exit_code: Some(0),
+                timed_out: false,
+                duration_ms: 1,
+                error: None,
+            },
+            result,
+            stdout_tail: String::new(),
+            stderr_tail: String::new(),
+        }
+    }
+
+    /// The contract publishes `usage` and `cost`, and both providers parse
+    /// them, but this conversion used to hardcode `None` and drop them on
+    /// the floor — so the fields were promised and never sent.
+    #[test]
+    fn what_the_provider_reported_reaches_the_record() {
+        let result = crate::provider::AgentResult::Claude(crate::provider::RunResult {
+            is_error: false,
+            subtype: None,
+            result: None,
+            session_id: None,
+            num_turns: 1,
+            duration_ms: 0,
+            duration_api_ms: 0,
+            total_cost_usd: 0.42,
+            usage: crate::provider::Usage {
+                input_tokens: 18422,
+                output_tokens: 1204,
+                ..Default::default()
+            },
+            permission_denials: vec![],
+        });
+        let (_, finish) = finish_from(&report_with(Some(result)));
+        assert_eq!(finish.input_tokens, Some(18422));
+        assert_eq!(finish.output_tokens, Some(1204));
+        assert_eq!(finish.total_cost_usd, Some(0.42));
+    }
+
+    /// No result document at all: nothing to report, and nothing invented.
+    #[test]
+    fn an_absent_result_leaves_the_numbers_out() {
+        let (_, finish) = finish_from(&report_with(None));
+        assert_eq!(finish.input_tokens, None);
+        assert_eq!(finish.output_tokens, None);
+        assert_eq!(finish.total_cost_usd, None);
     }
 }

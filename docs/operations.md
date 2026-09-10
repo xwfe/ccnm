@@ -122,6 +122,43 @@ ccnm doctor demo
 
 迁移前有会话在跑的话，先 `ccnm stop <workspace>`：会话记着自己的 identity，配置换了它也不会跟着换。
 
+## 项目目录：属主要对，git 身份要配
+
+真机上撞出来的两条，装完环境第一次放真项目时一定会遇到。
+
+**项目目录必须属于 Runtime 执行身份本人，光可写不够。** 放在别人拥有的 0777 目录里，文件是写得进去，但那个身份跑任何 git 命令都会被拒：
+
+```text
+fatal: detected dubious ownership in repository at '/path/to/worktree'
+```
+
+而 `ccnm doctor` 那一行仍然是绿的（`Workspace root OK … is a directory for <user>`）——它查的是可写，不查属主。**绿灯不代表 git 能用。**
+
+顺带一条：`ccnm workspace add` 用**当前进程的身份**校验路径。以别的账号去注册 Runtime 执行身份自己家目录下的项目，会得到
+
+```text
+CCNM_E_WRONG_WORKSPACE:
+/Users/<runtime-user>/<project> is not a directory on this machine
+caused by: Permission denied (os error 13)
+```
+
+第一行读着像路径写错了，真正的原因在第二行。用 Runtime 执行身份自己跑这条命令就好了。
+
+**新建的执行身份没有 git 身份，第一次 commit 直接失败：**
+
+```text
+fatal: unable to auto-detect email address
+```
+
+`doctor` 不查这个。在那个身份下配一次就行：
+
+```bash
+git config --global user.name "<name>"
+git config --global user.email "<email>"
+```
+
+不配也能干活——Agent 会退而用 `git -c user.name=… -c user.email=…` 传单次参数，但**下一个会话还会撞同一堵墙**。
+
 ## 状态文件在哪，多大，怎么清
 
 两边都在 `${XDG_STATE_HOME:-~/.local/state}/ccnm/`，但内容分工不同。
@@ -172,7 +209,10 @@ ccnm stop demo --agent codex-main --session <id>  # 精确停一个
 
 停成功的判据是**三件事都被观察到**：Agent 进程组结束、承载工具调用的 MCP transport 结束、Runtime 的写入 guard 释放。任何一条证明不了，状态停在 unknown 而不是报成功——写权限提前交给下一个人，两个 Agent 就会同时改一棵工作树。
 
-`ccnm status demo` 看当前状态。`stop` 是幂等的，对已经结束的会话再停一次不报错。
+`ccnm status demo` 看当前状态。两个实测出来的坑：
+
+- **`stop` 不是幂等的。** 对已经自己结束的会话再停一次，退出码 **3**，报 `CCNM_E_NOT_READY: no verifiable selected session is running`。话没说错（确实没有可停的会话），但清理脚本无脑调一次 stop 就会拿到非零退出，看起来像清理失败。脚本里要么容忍这个码，要么先用下面的办法确认还有没有会话。
+- **`status` 看不见 `ccnm run --print` 的会话。** 它只报 Agent Node 上的 tmux 会话，非交互的 print 运行不在其中——会话正跑着、写入 guard 是 `held`、MCP 进程也在，`status` 照样说 `no live sessions`。据此判断"没人在用"然后起第二个会话，撞上的就是被占的写入 guard，而那个失败长得像别的毛病。要判断真没人用，看写入 guard 和进程列表，别只看 `status`。
 
 ## 故障恢复
 

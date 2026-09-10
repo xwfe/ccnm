@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-09-10T17:20:00+09:00",
+  "last_updated": "2026-09-10T17:45:00+09:00",
   "current_task": "P7",
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
@@ -500,7 +500,7 @@
       ],
       "owner": null,
       "started_at": "2026-09-10T16:20:00+09:00",
-      "last_updated": "2026-09-10T17:20:00+09:00",
+      "last_updated": "2026-09-10T17:45:00+09:00",
       "completed_criteria": [
         "P7.1",
         "P7.2"
@@ -539,6 +539,14 @@
           "result": "运维记录覆盖安装/升级（含不可 cp 覆盖运行中 Mach-O 的原因与症状）、回退、legacy→instance 的手动配置迁移（如实写明没有自动迁移命令，preview_instance 只是库函数未接 CLI）、两侧状态目录布局与\"没有自动清理也没有保留期\"、停止判据、四类故障恢复（写入 guard 残留、controller 不在 Aqua、会话 unknown、machine API 侧）。开头写明仓库有 CI/release 文件不等于已正式发布。文档内命令语法用 --help 逐条核对（workspace remove --purge、controller status/install、stop --agent/--session）。撰写时发现并改正两处自述错误：版本不一致由 doctor 拦而非握手拦，运行时无兜底；会话记录兼容性取决于协议号而非\"字段只加不删\"。限制：部署、purge、controller install 这些需要真机或授权的命令本轮未实际执行，只据代码与脚本编写。"
         },
         {
+          "kind": "real_nodes",
+          "criteria": [
+            "P7.2"
+          ],
+          "ref": "docs/operations.md",
+          "result": "P7.3 的 dogfood 把这份运维记录放到真机上用了一遍，改掉一处写错的事实并补上三条只有真项目才会撞到的坑。改错的那条：原文写\"stop 是幂等的，对已经结束的会话再停一次不报错\"，实测是退出码 3 + CCNM_E_NOT_READY: no verifiable selected session is running——清理脚本无脑调 stop 会拿到非零退出。新增：ccnm status 看不见 --print 会话（只报 Agent 侧 tmux），判断有没有人在用要看写入 guard 和进程列表；项目目录必须属于 Runtime 执行身份本人，放在别人拥有的 0777 目录里 git 会 fatal: detected dubious ownership 而 doctor 的 Workspace root 仍是绿的；新建执行身份没有 git 身份，第一次 commit 报 unable to auto-detect email address 且 doctor 不查。ccnm workspace add 以当前进程身份校验路径这一条一并写明（首行报 not a directory，真原因在第二行的 Permission denied）。限制：这四条来自 macOS 上的一次真机会话，部署/purge/controller install 仍未实际执行。"
+        },
+        {
           "kind": "offline",
           "criteria": [
             "P7.3"
@@ -561,6 +569,14 @@
           ],
           "ref": "docs/research/p7-real-machine-2026-09-10.md",
           "result": "并入 P7.3 的原 P6.3 内容：Claude 双机闭环通过，判定 pass；Codex 未跑。拓扑 Agent=fodelf（官方 Claude 2.1.267）/ Runtime=本机 ccrun(uid504)，方向由登录位置决定；未创建任何新账号，ccrun 为既有账号仅改主组与准入，脚本 scripts/p7-*.sh，root 清单 /var/db/ccnm-p7-local-20260910。隔离先立住：新连接以 ccrun 探测，逐项区分拒绝与不存在，/Users/bing 及其下 .codex/.claude/.ssh/auth.json、docker.sock 全部拒绝，sudo 需密码；以 ccrun 跑 ccnm doctor p7parity 得 0 failed（2 个 SKIP 为文档写明只有活会话或 ccnm 之外才能证明），含 exec_command OK the runtime account is confined、Remote MCP handshake OK 7 工具。对照比副作用不比模型文字，七项全过：两条腿各写带一次性 token 的文件，内容正确且属主同为 uid=504——这一行证明两个公开入口落到同一条隔离执行链，machine API 未换身份执行；响应中 home 路径/.claude/.codex/auth.json/私钥名/session_dir/controller 出现 0 次；Agent 自报 provider=claude。顺带真机确认本轮所修的 usage/cost：session.result 实际返回 input_tokens 10、output_tokens 1031、total_usd 0.0856755。证据 tests/fixtures/p7-parity/claude.json（唯一脱敏是人类 CLI stderr 里的 Agent home 路径）。真机暴露四个问题，均已记录：controller install 不替换已在监听的 controller 且 doctor 因版本字符串相同而抓不到，症状是无关的两行报 protocol 3 vs 1（已写入运维手册）；No SSH keys 只扫 ~/.ssh，把传输私钥挪到 ~/.config/ccnm/transport 即由 FAIL 变 OK 而照用不误，故 production-safety 的最终门禁在 mcp-ssh 下只有这样才达得到，该检查声称的比证明的多；~/.claude 为 0755 时 instance 选不上，Runtime 侧只报身份不一致不提权限；session.start 要求 agent.node 而调用方本就不许选 node，第一轮真机在人类 CLI 已花额度后栽在这里。限制：Codex 装在本机且当前无额度，需相反拓扑并在 fodelf 另建账号，故未跑——经 machine API 跑 Codex 从未发生过；interactive、Ctrl-D、egress 与真实项目完整 dogfood 均未做。订阅消耗三次 Claude print，合计约 0.4 美元。"
+        },
+        {
+          "kind": "real_nodes",
+          "criteria": [
+            "P7.3"
+          ],
+          "ref": "docs/research/p7-real-machine-2026-09-10.md",
+          "result": "真实项目完整 dogfood 通过（同一套环境、同一构建、同一 Runtime 执行身份，与上一条对照相隔约一小时）。项目是 ccnm 自己的克隆（起点 26d27de）放在 Runtime 执行身份自己的家目录 /Users/ccrun/p7-dogfood，workspace p7dogfood，ccnm doctor 以 ccrun 跑 0 failed / 2 not checked。选 ccnm 自己因为被隔离身份手上的工具链够用（/usr/bin/python3 3.9.6、git、clang、make；无 cargo 无 node）且有会红会绿的真测试。两个会话覆盖启动→修改→测试→结果→停止→恢复：A（session a9cc7d3c）exited 0，262.7 s，38 turns，$1.43，0 permission denials，产出 commit 7b22edb；B（session 8c36fad8，全新 id）开场 git log 看见 A 的提交后在同一工作树继续，exited 0，175.3 s，30 turns，$0.61，产出 3b49d9a——恢复这条判据由此成立：工作树跨会话留存，不依赖会话留存。ccnm result 能把 B 的完整结果（print 标记、退出码、turns、usage、cost、正文）重新取回。产出是真交付并已 fast-forward 进 main 且 hash 未变：7b22edb 把 check_links 从 5 个入口文档扩到全仓库 39 个 .md/101 条相对链接（.git 与 target 任意层级剪掉，补 3 条测试，现有链接一条没坏）；3b49d9a 补 from __future__ import annotations，此前黑盒契约测试在系统 Python 3.9 上 import 即 TypeError，20 个用例进不了 discover。两条都做了红绿对照。验收不采信模型自述：以 ccrun 另跑一遍 git log/status、unittest discover（120 passed / 22 skipped，skip 全因缺 target/{debug,release}/ccnm）、check_plan、git diff --check；合入后本机 3.12 与 3.9 各 120 passed。停止后资源归零：无活会话、两个写入 guard 均 released、ccrun 名下 mcp-serve 进程 0 个。生产边界复核在两个会话（合计 68 turns 真实任务）之后重做：非 staff/admin/wheel，/Users/bing 下 .claude/.codex/.ssh/auth.json 全部拒绝，sudo 需密码，SSH_AUTH_SOCK 未设置，无凭据形状环境变量，keychain 无 Claude Code-credentials 条目——边界一寸未撑开。dogfood 另暴露六个问题，均已记录：工作树属主非执行身份时 Agent 侧 git 全废（dubious ownership）而 doctor 的 Workspace root 只查可写故为绿；ccnm workspace add 以操作者身份校验路径，注册执行身份自己的目录报 CCNM_E_WRONG_WORKSPACE 首行像路径不存在；同一 workspace 同一时刻 doctor 以 ccrun 跑 0 failed、以 bing 跑 7 failed，即 ccnm 期望操作者就是执行身份，而这与 production-safety 要求 ccrun 不持私钥冲突（run 必须从 Runtime 拨号去 Agent），是 No SSH keys 那条findings的完整版本；ccnm status 看不见 --print 会话（只报 Agent 侧 tmux），而 guard 是 held、mcp-serve 在跑，操作者据此起第二个会话必撞 guard；新执行身份没有 git 身份，commit 报 unable to auto-detect email address，Agent 用 git -c 单次绕过未改机器配置，doctor 不查；ccnm stop 对已结束的 print 会话不幂等，退出码 3 + CCNM_E_NOT_READY。限制：Rust 那半在此隔离方案下跑不了（执行身份 PATH 无 cargo），不是没做是做不到；interactive、Ctrl-D、egress 仍未验。本轮订阅消耗 2.04 美元，加对照约 0.4，P7.3 至今合计约 2.4 美元。"
         }
       ],
       "blockers": [
@@ -569,8 +585,8 @@
             "P7.3",
             "P7.4"
           ],
-          "reason": "P7.3 只完成 Claude 一半：Codex 装在本机而非 Agent Node，且当前没有额度，跑它需要相反拓扑并在 fodelf 另建临时 Runtime 账号，特权准备翻倍且没额度也跑不动。真实项目的完整 dogfood（启动→修改→测试→结果→停止/恢复）也未做——本轮工作树只是空 git 仓库，没有项目和工具链。P7.4 要冻结范围并提交发布候选，依赖用户对 Codex 缺口怎么处理的决定。",
-          "unblock": "用户二选一：（a）接受只有 Claude 的真机证据，带明确限制说明进 P7.4，限制须写明经 machine API 跑 Codex 从未发生过；（b）等 Codex 额度恢复后补齐相反拓扑再收口。无论哪种，真实项目 dogfood 仍需在工作树里放真项目与工具链后单独执行。另有三项真机findings待决定是否改实现：No SSH keys 检查的含义与传输密钥的位置、instance 选择失败时把 Agent 侧原因带回 Runtime 侧、session.start 是否放宽 agent.node 必填。"
+          "reason": "P7.3 三件事完成两件：并入的原 P6.3 对照（Claude）通过，真实项目完整 dogfood 通过，全量离线门禁通过。缺的只有 Codex：它装在本机 xdwmbp 而非 Agent Node，且当前没有额度；跑它需要相反拓扑（本机当 Agent、fodelf 当 Runtime）并在 fodelf 另建临时执行身份，特权准备翻倍，没额度也跑不动。用户已决定等额度恢复再补，不拿只有 Claude 的状态进 P7.4，故 P7.3 不勾完成、P7.4 不开工。",
+          "unblock": "等 xdwmbp 的 Codex 额度恢复，按相反拓扑补跑一次 scripts/p7_parity_check.py --provider codex 并记录结果；xdwmbp 上的 codex-cli 已确认为 0.153.4，等于仓库 pin 的版本，不需要重新测量 fixture。补齐后 P7.3 才能勾完成。P7.4 冻结范围前还有一组待用户决定是否改实现的真机findings：（1）ccnm 到底该由谁运行——doctor 身份检查要求操作者就是 Runtime 执行身份，而 production-safety 要求该身份不持私钥，两者当前只能靠把传输密钥放到 ~/.ssh 之外同时成立；（2）session.start 是否放宽 agent.node 必填；（3）instance 选择失败时把 Agent 侧原因带回 Runtime 侧；（4）ccnm status 是否报告 --print 会话，以及 session.start 是否做工作树占用预检使 -32008 可达；（5）workspace root 是否连属主一起查；（6）ccnm stop 是否对已结束会话幂等。"
         }
       ]
     },
@@ -598,12 +614,14 @@
     "Claude colocated 候选命令已定点修复，但未真机验收，当前公共启动明确拒绝。",
     "P3 额外 64 线程压力出现既有 exec timeout 单测 30.5s 失败；默认全量 511 通过，高并发问题尚未解决。",
     "Machine Protocol v1 是草案：无实现、无外部消费者验证；客户端不声明 capabilities（加推送时必须一并解决）、interactive 输入形状未定稿、1 MiB 行上限无实测依据。P6 之前不建立兼容承诺。",
-    "ccnm rpc 全部为离线验证：没有跟真实 Agent 跑通过一次；Runtime 写互斥与取消的三条判据是结构上继承 launcher/Agent 侧的实现，没有 RPC 层面的独立真机证据。双机闭环见 P6.3。",
+    "ccnm rpc 已在 P7.3 与真实 Claude 跑通一次双机闭环（对照七项全过，usage/cost 端到端确认）；仍未验的是 Codex 经 machine API（从未发生过）、interactive 输入形状，以及 Runtime 写互斥与取消在 RPC 层面的独立真机证据——那三条判据目前仍是结构上继承 launcher/Agent 侧实现。",
+    "Runtime 执行身份手上只有系统工具链（macOS 自带 python3 3.9、git、clang、make），没有 cargo 也没有 node。P7.3 的 dogfood 因此只覆盖了 Python 那半，Rust 项目在当前隔离方案下无法在 Runtime 侧构建或测试。要支持这类项目得先决定给执行身份装什么工具链、由谁维护，产品文档目前对此只字未提。",
+    "ccnm 期望操作者本人就是 Runtime 执行身份：同一 workspace 同一时刻，doctor 以 ccrun 跑 0 failed、以操作者账号跑 7 failed；而 workspace add 也用当前身份校验路径。这与 production-safety 要求该身份不持私钥直接冲突（run 要从 Runtime 拨号去 Agent），当前只能靠把传输密钥放到 ~/.ssh 之外让检查看不见。v1 定稿前必须给出一个答案。",
     "协议契约里的 -32008（busy）没有实现会返回：写入 guard 在会话跑起来之后才由 Runtime 侧 MCP 获取，session.start 不做工作树占用预检，被占的表现是会话失败而非启动被拒。文档已如实标注；要不要补预检使该码可达是待定的产品决定。同一窗口也影响连续执行：前一次 ccnm run --print 返回时 guard 可能尚未释放，紧接着启动下一个会话会撞上，实际窗口时长未在真机测过。"
   ],
   "handoff": {
-    "next_action": "P7 仅剩 P7.3/P7.4，且离线能做的都做完了：P7.1 公开文档通查、P7.2 运维记录（docs/operations.md），以及 P7.3 的两项准备——对照工具 scripts/p7_parity_check.py（30 个离线测试）与会话计划 docs/plan/p7-real-machine-session.md。下一步只等用户逐项批准计划第二节的特权动作与订阅额度消耗；批准后按该计划执行：先跑并入的原 P6.3（用对照工具各跑一次真实 provider，据结果确立或修改协议 v1），再做真实项目完整 dogfood 与生产边界复核，最后 P7.4 冻结范围并提交发布候选。未获授权前不重建环境、不消费订阅、不宣称 v1 稳定，也不宣称已发布。",
-    "scope": "仅 P7 的收尾；P7.3 的真机（含并入的原 P6.3）需要用户单独授权系统与登录相关动作。未获授权前只做离线部分并如实记录未测范围。",
+    "next_action": "P7.3 三件事完成两件：并入的原 P6.3 对照（Claude）通过、真实项目完整 dogfood 通过、全量离线门禁通过，证据都在 docs/research/p7-real-machine-2026-09-10.md。**卡在 Codex 一项上，用户已决定等 xdwmbp 额度恢复再跑**——那要相反拓扑（本机当 Agent、fodelf 当 Runtime）并在 fodelf 另建临时执行身份，特权动作需重新逐项批准；xdwmbp 的 codex-cli 已确认 0.153.4，等于仓库 pin，不必重新测量 fixture。P7.3 环境仍在运行未清理（见 handoff.authorization）。补齐 Codex 之前不勾 P7.3、不开 P7.4、不宣称 v1 稳定、不宣称已发布。等待期间可做的是 P7.4 冻结前那组待决定的真机findings（blockers 里列了六条），每条都会改变对外行为，需要用户先拍板再动实现。",
+    "scope": "仅 P7 的收尾。P7.3 只剩 Codex 那一半，需要用户单独授权相反拓扑的系统动作与订阅额度消耗。未获授权前只做离线部分并如实记录未测范围。",
     "planning_validation": {
       "at": "2026-09-08T21:22:43+09:00",
       "commands": [
@@ -615,20 +633,21 @@
       "limits": "本轮离线门禁；fodelf SSH 建连失败，没有新增远端资源或运行真实模型，不替代 P3.5。"
     },
     "planning_validation_latest": {
-      "at": "2026-09-10T21:00:00+09:00",
+      "at": "2026-09-10T17:45:00+09:00",
       "commands": [
         "cargo fmt --all --check：通过",
         "cargo clippy --workspace --all-targets -- -D warnings：退出码 0（未接管道）",
         "cargo test --workspace：602 passed / 0 failed",
-        "PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p 'test_*.py' -q：113 passed",
+        "PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p 'test_*.py' -q：120 passed（3.12 与系统 3.9 各一遍）",
         "python3 scripts/check_protocol.py：通过（38 个 fixture）",
         "python3 scripts/check_plan.py：通过",
-        "git diff --check：通过"
+        "git diff --check：通过",
+        "真机（以 ccrun）：ccnm doctor p7dogfood 0 failed / 2 not checked；dogfood 会话 A、B 均 exited 0；停止后无活会话、guard 均 released、mcp-serve 进程 0 个"
       ],
-      "limits": "全部离线。真实 provider、双机、订阅额度下的行为一概未验证：对照工具没碰过真 Agent，usage/cost 端到端未验，写入 guard 释放窗口的实际时长未测。会话计划里除对照工具外的命令均未在真机执行。"
+      "limits": "离线门禁在合入 dogfood 产出的两个 commit 之后重跑。真机部分只覆盖 Claude：Codex 经 machine API 从未跑过，interactive、Ctrl-D、egress 未验，Rust 工具链在 Runtime 执行身份下不存在故 dogfood 只覆盖 Python 那半。"
     },
     "inherited_changes": [],
-    "authorization": "P3 的双机系统授权已执行完毕并归零，不再有效。P4 只写文档与 fixture，未做任何系统变更。P5 起如需账号、ACL、防火墙、部署或替换二进制，必须重新逐项获得批准。",
+    "authorization": "P3 的双机系统授权已执行完毕并归零，不再有效。P4 只写文档与 fixture，未做任何系统变更。P7.3 的授权已执行且**环境仍在运行、尚未清理**：本机 ccrun 主组仍是 ccrun(504)、仍在 com.apple.access_ssh、authorized_keys 里仍有本轮公钥，root 清单 /var/db/ccnm-p7-local-20260910 仍在，fodelf 的 ~/.ssh/config 仍有本轮 alias 区块。保留是为了等 Codex 额度回来接着用；要现在归零就按 scripts/p7-revoke-local-runtime-key.sh 逆序撤销，那需要用户执行 sudo。除此之外如需账号、ACL、防火墙、部署或替换二进制，必须重新逐项获得批准。",
     "portability": "接续不依赖任何特定 MCP、任务管理器或 IDE 插件。任何模型只需 Git、仓库文件和项目命令即可按 current_task 继续；外部工具状态不作为产品阶段事实。"
   }
 }

@@ -21,7 +21,8 @@ class RuntimeUserScriptTests(unittest.TestCase):
                        SCRIPT.with_name("p3-authorize-local-runtime.sh"),
                        SCRIPT.with_name("p3-grant-local-ssh-access.sh"),
                        SCRIPT.with_name("p3-isolate-local-runtime-group.sh"),
-                       SCRIPT.with_name("p3-cleanup-runtime-user.sh")]:
+                       SCRIPT.with_name("p3-cleanup-runtime-user.sh"),
+                       SCRIPT.with_name("p3-revoke-local-runtime-key.sh")]:
             result = subprocess.run(["/bin/bash", "-n", str(script)], check=False)
             self.assertEqual(result.returncode, 0)
 
@@ -113,6 +114,24 @@ class RuntimeUserScriptTests(unittest.TestCase):
                 capture_output=True, text=True, check=False,
             )
             self.assertNotEqual(result.returncode, 0)
+
+    def test_revoke_wrong_operator_refused(self):
+        for action in ("--check", "--apply"):
+            result = subprocess.run(
+                ["/bin/bash", str(SCRIPT.with_name("p3-revoke-local-runtime-key.sh")), action],
+                env={**os.environ, "SUDO_USER": "not-authorized"},
+                capture_output=True, text=True, check=False,
+            )
+            self.assertNotEqual(result.returncode, 0)
+
+    def test_revoke_unknown_action(self):
+        for args in [(), ("--remove",), ("--apply", "extra")]:
+            result = subprocess.run(
+                ["/bin/bash", str(SCRIPT.with_name("p3-revoke-local-runtime-key.sh")), *args],
+                env={**os.environ, "SUDO_USER": "bing"},
+                capture_output=True, text=True, check=False,
+            )
+            self.assertEqual(result.returncode, 2)
 
     def test_missing_or_unknown_action(self):
         for args in [(), ("--delete",), ("--create", "extra")]:

@@ -115,6 +115,24 @@ class RuntimeUserScriptTests(unittest.TestCase):
             )
             self.assertNotEqual(result.returncode, 0)
 
+    def test_no_bash4_only_features(self):
+        """这些脚本由用户在 macOS 终端用 /bin/bash 执行，那是 bash 3.2。
+
+        mapfile/declare -A 等 bash 4+ 特性 `bash -n` 查不出来，只在真机运行时
+        才报 command not found，本轮已经踩过一次。
+        """
+        banned = ("mapfile", "readarray", "declare -A", "local -A", "${!")
+        for script in sorted(SCRIPT.parent.glob("p3-*.sh")):
+            # 只看代码：注释里为了解释这条规则本身就会提到这些名字。
+            code = "\n".join(
+                line for line in script.read_text().splitlines()
+                if not line.lstrip().startswith("#")
+            )
+            for token in banned:
+                self.assertNotIn(
+                    token, code, f"{script.name} uses bash 4+ feature {token!r}"
+                )
+
     def test_revoke_wrong_operator_refused(self):
         for action in ("--check", "--apply"):
             result = subprocess.run(

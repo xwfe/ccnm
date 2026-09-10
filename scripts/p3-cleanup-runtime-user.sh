@@ -41,18 +41,21 @@ if ps -axo uid= | grep -Eq "^[[:space:]]*$account_uid[[:space:]]*$"; then
 fi
 
 # home 下只允许出现清单记录的路径；未记录的文件一律停手，交人工判断。
-mapfile -t recorded < <(cat "$record/ssh-resources.txt" 2>/dev/null || true)
-declare -A allowed=()
-for p in "${recorded[@]}"; do allowed["$p"]=1; done
-unexpected=()
+# 用户在 macOS 终端执行，那里的 /bin/bash 是 3.2，只用它支持的语法。
+recorded_file=$record/ssh-resources.txt
+[[ -f $recorded_file ]] || { echo "Missing $recorded_file; refusing to guess what this round installed" >&2; exit 1; }
+recorded_count=$(grep -c . "$recorded_file")
+unexpected=""
 while IFS= read -r name; do
     [[ -n $name ]] || continue
-    path=$home/$name
-    [[ -n ${allowed[$path]:-} ]] || unexpected+=("$path")
+    if ! grep -qxF "$home/$name" "$recorded_file"; then
+        unexpected="$unexpected$home/$name
+"
+    fi
 done < <(ls -A "$home")
-if (( ${#unexpected[@]} )); then
+if [[ -n $unexpected ]]; then
     printf 'Unrecorded leftovers in %s; stopping for manual review:\n' "$home" >&2
-    printf '  %s\n' "${unexpected[@]}" >&2
+    printf '%s' "$unexpected" | sed 's/^/  /' >&2
     exit 1
 fi
 
@@ -67,17 +70,19 @@ fi
 if [[ $action == --check ]]; then
     echo "Preflight OK; nothing removed."
     printf 'account=%s uid=%s gid=%s home=%s\n' "$account" "$account_uid" "$gid_now" "$home"
-    printf 'recorded ssh paths=%s dedicated group recorded=%s\n' "${#recorded[@]}" "$group_recorded"
+    printf 'recorded ssh paths=%s dedicated group recorded=%s\n' "$recorded_count" "$group_recorded"
     exit 0
 fi
 
-# 逆序：先撤授权，再删空 home，最后账号与组。
-for ((i=${#recorded[@]}-1; i>=0; i--)); do
-    p=${recorded[i]}
+# 逆序：先撤授权（文件在目录之前），再删空 home，最后账号与组。
+# 从文件重定向而非管道，循环体才留在当前 shell，里面的 exit 才有效。
+reversed=$(sed -n '1!G;h;$p' "$recorded_file")
+while IFS= read -r p; do
+    [[ -n $p ]] || continue
     [[ $p == "$home"/* ]] || { echo "Recorded path outside home: $p" >&2; exit 1; }
     [[ ! -L $p ]] || { echo "Refusing to follow symlink: $p" >&2; exit 1; }
     if [[ -d $p ]]; then rmdir "$p"; elif [[ -e $p ]]; then rm "$p"; fi
-done
+done <<< "$reversed"
 [[ -z $(ls -A "$home") ]] || { echo "$home not empty after recorded cleanup" >&2; exit 1; }
 rmdir "$home"
 dscl . -delete "/Users/$account"

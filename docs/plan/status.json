@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-09-11T00:40:00+09:00",
+  "last_updated": "2026-09-11T00:10:00+09:00",
   "current_task": "P8",
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
@@ -667,13 +667,13 @@
     {
       "id": "P8",
       "title": "独立 Orchestrator 交接",
-      "status": "pending",
+      "status": "in_progress",
       "depends_on": [
         "P7"
       ],
-      "owner": null,
-      "started_at": null,
-      "last_updated": "2026-09-07T23:22:36+09:00",
+      "owner": "claude-opus-5",
+      "started_at": "2026-09-11T00:10:00+09:00",
+      "last_updated": "2026-09-11T00:10:00+09:00",
       "completed_criteria": [],
       "evidence": [],
       "blockers": []
@@ -758,7 +758,7 @@
     "部署环境的高权限风险：本轮 Agent Node 允许无传统凭据的 root 登录（Tailscale SSH 按 tailnet 身份放行，不要密码也不要密钥）。ccnm 造不成也管不了，但它足以让全部身份隔离失去意义。已按用户拍板列为部署环境风险、不计入 ccnm 安全保证，生产部署自己在 tailnet ACL 或 OS 层关掉；ccnm doctor 查不到它。"
   ],
   "handoff": {
-    "next_action": "**P7 全部完成（P7.1–P7.5），Machine Protocol ccnm.machine/1 已冻结**，发布候选可交付。冻结前落的两个行为修正与两条只写声明的事实见 docs/research/p7-5-freeze-2026-09-10.md，都做了最小真机复验。**没有做、需要用户单独授权的**：push、打 tag、release——本轮授权明确不含这些。**待办：环境归零**。P7.3 与 Codex 轮、P7.5 复验的资源仍在运行（逐条清单见 handoff.authorization），按逆序执行、三条都要用户的 sudo：p7-isolate-local-runtime-group.sh --revert → p7-grant-local-ssh-access.sh --revert → p7-revoke-local-runtime-key.sh --apply；另有一批不需要 sudo 的（bing 的 ~/.ssh/ccnm-p7codex 密钥对与 config 标记块、config.toml 的 Agent 侧改动与 model 行、p7codex-runtime.toml、Controller、/Users/Shared/ccnm-p7codex）。部署的二进制与 .pre-batch-e / .pre-codex / .pre-p75 回退副本按用户要求保留。下一阶段是 P8（独立 Orchestrator 交接），**本轮不碰**：它要求新项目另开仓库，创建动作另获授权。不加功能。",
+    "next_action": "**本轮认领 P8（独立 Orchestrator 交接），只写边界文档与接口示例，不创建新仓库、不做任何系统变更。** 上一轮的收口结论保留在下面。**P7 全部完成（P7.1–P7.5），Machine Protocol ccnm.machine/1 已冻结**，发布候选可交付。冻结前落的两个行为修正与两条只写声明的事实见 docs/research/p7-5-freeze-2026-09-10.md，都做了最小真机复验。**没有做、需要用户单独授权的**：push、打 tag、release——本轮授权明确不含这些。**待办：环境归零**。P7.3 与 Codex 轮、P7.5 复验的资源仍在运行（逐条清单见 handoff.authorization），按逆序执行、三条都要用户的 sudo：p7-isolate-local-runtime-group.sh --revert → p7-grant-local-ssh-access.sh --revert → p7-revoke-local-runtime-key.sh --apply；另有一批不需要 sudo 的（bing 的 ~/.ssh/ccnm-p7codex 密钥对与 config 标记块、config.toml 的 Agent 侧改动与 model 行、p7codex-runtime.toml、Controller、/Users/Shared/ccnm-p7codex）。部署的二进制与 .pre-batch-e / .pre-codex / .pre-p75 回退副本按用户要求保留。下一阶段是 P8（独立 Orchestrator 交接），**本轮不碰**：它要求新项目另开仓库，创建动作另获授权。不加功能。",
     "scope": "P7 已收口：身份/控制链、真机验收、v1 冻结全部完成。剩下的只有环境归零（需用户 sudo）与发布动作（需单独授权）。P8–P12 只作为后续路线记录，不在本轮提前实现。",
     "planning_validation": {
       "at": "2026-09-08T21:22:43+09:00",

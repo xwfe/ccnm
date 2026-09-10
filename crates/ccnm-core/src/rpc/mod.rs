@@ -12,10 +12,13 @@
 
 pub mod wire;
 
+use std::collections::BTreeMap;
 use std::io::{BufRead, Write};
+use std::path::PathBuf;
 
 use serde_json::{Map, Value};
 
+use crate::config::Config;
 use wire::{Incoming, Request, RpcError, code};
 
 /// The protocol identifier this build speaks. Only the major version is in
@@ -34,21 +37,35 @@ fn capabilities() -> Value {
     })
 }
 
+/// What the server needs from the machine it runs on.
+pub struct Context {
+    pub config_path: PathBuf,
+}
+
+impl Context {
+    /// Read the config fresh for every call.
+    ///
+    /// `agents.list` promises to reflect the *current* configuration, and a
+    /// long-lived process that cached it at startup would keep answering
+    /// with a workspace the operator removed an hour ago.
+    fn config(&self) -> Result<Config, RpcError> {
+        Config::load(&self.config_path).map_err(|err| wire::from_ccnm(&err))
+    }
+}
+
 /// One connection's state. Only the handshake for now; the session store
 /// joins it when `session.*` lands.
 pub struct Server {
     greeted: bool,
-}
-
-impl Default for Server {
-    fn default() -> Self {
-        Server::new()
-    }
+    ctx: Context,
 }
 
 impl Server {
-    pub fn new() -> Self {
-        Server { greeted: false }
+    pub fn new(ctx: Context) -> Self {
+        Server {
+            greeted: false,
+            ctx,
+        }
     }
 
     /// Answer one parsed request. Returns the value for `result`, or the
@@ -65,11 +82,60 @@ impl Server {
                 "hello must be the first request",
             ));
         }
-        Err(RpcError::refused(
-            code::METHOD_NOT_FOUND,
-            format!("unknown method {}", req.method),
-        ))
+        match req.method.as_str() {
+            "agents.list" => agents_list(&self.ctx, &req.params),
+            _ => Err(RpcError::refused(
+                code::METHOD_NOT_FOUND,
+                format!("unknown method {}", req.method),
+            )),
+        }
     }
+}
+
+/// Every `(node, instance)` this machine can address, and the workspaces
+/// bound to each.
+///
+/// Config only, by design: no ssh, no login check, no process. Whether one
+/// of these can actually run is a question only `session.start` answers.
+///
+/// No `provider` field, and not because it was forgotten. Config validation
+/// requires an instance workspace's root to live only on its Runtime Node
+/// and requires instance mode to be non-colocated, so the node in a binding
+/// is never this machine -- and the instance definition that would name the
+/// provider lives on that other machine. Reporting one from here would mean
+/// copying a second, driftable copy of something the Agent side owns.
+fn agents_list(ctx: &Context, params: &Map<String, Value>) -> Result<Value, RpcError> {
+    reject_unknown(params, &[])?;
+    let config = ctx.config()?;
+    let mut bound: BTreeMap<(&str, &str), Vec<&str>> = BTreeMap::new();
+    // Instances defined here but not yet bound still get an entry: they are
+    // addressable the moment a workspace points at them, and leaving them
+    // out would look like they do not exist.
+    for instance in config.agents.keys() {
+        if let Some(node) = config.this.as_deref() {
+            bound.entry((node, instance)).or_default();
+        }
+    }
+    for (name, workspace) in &config.workspaces {
+        if let Some(reference) = &workspace.agent {
+            bound
+                .entry((&reference.node, &reference.instance))
+                .or_default()
+                .push(name);
+        }
+    }
+
+    let agents: Vec<Value> = bound
+        .into_iter()
+        .map(|((node, instance), workspaces)| {
+            serde_json::json!({
+                "node": node,
+                "instance": instance,
+                "workspaces": workspaces,
+            })
+        })
+        .collect();
+    Ok(serde_json::json!({"agents": agents}))
 }
 
 fn hello(params: &Map<String, Value>) -> Result<Value, RpcError> {
@@ -128,8 +194,12 @@ fn require_str<'a>(params: &'a Map<String, Value>, name: &str) -> Result<&'a str
 ///
 /// EOF is a normal end, not a failure: the client closing the pipe means
 /// "no more calls", and sessions already accepted keep running without it.
-pub fn serve<R: BufRead, W: Write>(mut input: R, mut output: W) -> std::io::Result<()> {
-    let mut server = Server::new();
+pub fn serve<R: BufRead, W: Write>(
+    ctx: Context,
+    mut input: R,
+    mut output: W,
+) -> std::io::Result<()> {
+    let mut server = Server::new(ctx);
     loop {
         match next_line(&mut input)? {
             Framed::Eof => return Ok(()),
@@ -271,10 +341,33 @@ fn read_bounded<R: BufRead>(
 mod tests {
     use super::*;
 
+    fn temp(test: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("ccnm-rpc-{}-{test}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// A config file with whatever body the test needs.
+    fn config_with(test: &str, body: &str) -> PathBuf {
+        let path = temp(test).join("config.toml");
+        std::fs::write(&path, body).unwrap();
+        path
+    }
+
     /// Feed lines in, get answered lines back.
     fn exchange(input: &str) -> Vec<Value> {
+        exchange_with(PathBuf::from("/nonexistent/ccnm/config.toml"), input)
+    }
+
+    fn exchange_with(config_path: PathBuf, input: &str) -> Vec<Value> {
         let mut out = Vec::new();
-        serve(std::io::BufReader::new(input.as_bytes()), &mut out).unwrap();
+        serve(
+            Context { config_path },
+            std::io::BufReader::new(input.as_bytes()),
+            &mut out,
+        )
+        .unwrap();
         String::from_utf8(out)
             .unwrap()
             .lines()
@@ -400,7 +493,14 @@ mod tests {
         input.extend_from_slice(HELLO.as_bytes());
         input.push(b'\n');
         let mut out = Vec::new();
-        serve(std::io::BufReader::new(&input[..]), &mut out).unwrap();
+        serve(
+            Context {
+                config_path: PathBuf::from("/nonexistent/ccnm/config.toml"),
+            },
+            std::io::BufReader::new(&input[..]),
+            &mut out,
+        )
+        .unwrap();
         let lines: Vec<Value> = String::from_utf8(out)
             .unwrap()
             .lines()
@@ -439,5 +539,117 @@ mod tests {
     fn effect_is_none_on_envelope_refusals() {
         let out = exchange("[]\n");
         assert_eq!(out[0]["error"]["data"]["effect"], "none");
+    }
+
+    /// A Runtime Node: it holds the workspaces and the bindings, and has no
+    /// instance definitions of its own. This is the normal deployment.
+    const RUNTIME_CONFIG: &str = r#"
+this = "runtime"
+[nodes.runtime]
+[nodes.worker]
+ssh = "agent-alias"
+[workspaces.demo]
+root = "/runtime/project"
+agent = { node = "worker", instance = "claude-main" }
+[workspaces.other]
+root = "/runtime/other"
+agent = { node = "worker", instance = "claude-main" }
+"#;
+
+    fn agents_of(config: &str, test: &str) -> Value {
+        let path = config_with(test, config);
+        let out = exchange_with(
+            path,
+            &format!("{HELLO}\n{{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"agents.list\"}}\n"),
+        );
+        out[1].clone()
+    }
+
+    #[test]
+    fn agents_list_reports_bindings_and_their_workspaces() {
+        let answer = agents_of(RUNTIME_CONFIG, "agents-list");
+        let agents = answer["result"]["agents"].as_array().unwrap();
+        assert_eq!(agents.len(), 1, "one binding, even with two workspaces");
+        assert_eq!(agents[0]["node"], "worker");
+        assert_eq!(agents[0]["instance"], "claude-main");
+        assert_eq!(agents[0]["workspaces"][0], "demo");
+        assert_eq!(agents[0]["workspaces"][1], "other");
+    }
+
+    #[test]
+    fn a_runtime_node_does_not_invent_a_provider() {
+        // The Agent Node owns provider and profile resolution; the Runtime
+        // side keeps no second copy, so the field is absent rather than
+        // guessed or fetched over ssh.
+        let answer = agents_of(RUNTIME_CONFIG, "agents-no-provider");
+        let entry = &answer["result"]["agents"][0];
+        assert!(entry.get("provider").is_none(), "{entry}");
+        assert!(entry.get("capabilities").is_none(), "{entry}");
+    }
+
+    #[test]
+    fn an_agent_node_lists_its_own_instances_before_anything_binds_them() {
+        // On the Agent side the instances are defined but no workspace
+        // lives here, so the only honest listing is "defined, unbound".
+        let config = r#"
+this = "worker"
+[nodes.worker]
+[nodes.runtime]
+ssh = "runtime-alias"
+[agents.codex-main]
+provider = "codex"
+profile_ref = "default"
+[agents.claude-main]
+provider = "claude"
+profile_ref = "default"
+"#;
+        let agents = agents_of(config, "agents-defined")["result"]["agents"].clone();
+        let agents = agents.as_array().unwrap();
+        assert_eq!(agents.len(), 2);
+        assert_eq!(agents[0]["instance"], "claude-main");
+        assert_eq!(agents[0]["node"], "worker");
+        assert_eq!(agents[0]["workspaces"].as_array().unwrap().len(), 0);
+        assert!(agents[0].get("provider").is_none());
+    }
+
+    #[test]
+    fn legacy_workspaces_are_not_listed() {
+        // A workspace with no instance binding cannot be addressed by
+        // {node, instance}, so listing it would hand out an address that
+        // does not work.
+        let config = r#"
+this = "runtime"
+[nodes.runtime]
+[nodes.worker]
+ssh = "agent-alias"
+[workspaces.legacy]
+agent_node = "worker"
+root = "/runtime/legacy"
+"#;
+        let answer = agents_of(config, "agents-legacy");
+        assert_eq!(answer["result"]["agents"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn a_missing_config_is_a_config_error_not_a_crash() {
+        let out = exchange(&format!(
+            "{HELLO}\n{{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"agents.list\"}}\n"
+        ));
+        assert_eq!(out[1]["error"]["code"], code::CONFIG);
+        assert_eq!(out[1]["error"]["data"]["ccnm_code"], "CCNM_E_CONFIG");
+        assert_eq!(out[1]["error"]["data"]["effect"], "none");
+    }
+
+    #[test]
+    fn agents_list_takes_no_parameters() {
+        let path = config_with("agents-params", RUNTIME_CONFIG);
+        let out = exchange_with(
+            path,
+            &format!(
+                "{HELLO}\n{{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"agents.list\",\"params\":{{\"node\":\"worker\"}}}}\n"
+            ),
+        );
+        assert_eq!(out[1]["error"]["code"], code::INVALID_PARAMS);
+        assert_eq!(out[1]["error"]["data"]["unknown"][0], "node");
     }
 }

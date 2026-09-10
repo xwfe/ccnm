@@ -1,6 +1,6 @@
 {
   "$schema_ref": "#/$defs/agents_list_response_ok",
-  "$note": "只反映当前配置：不探测网络、不检查登录、不启动任何进程。",
+  "$note": "只反映当前配置：不探测网络、不检查登录、不启动任何进程。条目里没有 provider——那是 Agent Node 权威解析的，而 ccnm rpc 跑在 Runtime Node 上，配置里根本没有这份定义。",
   "message": {
     "jsonrpc": "2.0",
     "id": 2,
@@ -9,27 +9,13 @@
         {
           "node": "work",
           "instance": "claude-main",
-          "provider": "claude",
-          "capabilities": {
-            "print": true,
-            "interactive": true,
-            "ssh_mcp": true,
-            "native_colocated": false
-          },
           "workspaces": [
             "ccnm"
           ]
         },
         {
           "node": "work",
-          "instance": "codex-main",
-          "provider": "codex",
-          "capabilities": {
-            "print": true,
-            "interactive": true,
-            "ssh_mcp": true,
-            "native_colocated": false
-          },
+          "instance": "codex-review",
           "workspaces": []
         }
       ]

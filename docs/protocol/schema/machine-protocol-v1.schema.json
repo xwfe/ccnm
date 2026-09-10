@@ -65,18 +65,6 @@
       "required": ["node", "instance", "provider"],
       "additionalProperties": false
     },
-    "instance_capabilities": {
-      "description": "技术上是否支持，不是主观评价，也不代表已登录或有权启动。",
-      "type": "object",
-      "properties": {
-        "print": {"type": "boolean"},
-        "interactive": {"type": "boolean"},
-        "ssh_mcp": {"type": "boolean"},
-        "native_colocated": {"type": "boolean"}
-      },
-      "required": ["print", "interactive", "ssh_mcp", "native_colocated"],
-      "additionalProperties": false
-    },
     "effect": {
       "description": "这次调用有没有产生副作用。none 重发安全，unknown 必须先去查，applied 重发会重复。",
       "enum": ["none", "unknown", "applied"]
@@ -198,15 +186,14 @@
     },
 
     "agent_entry": {
+      "description": "一条可寻址的 instance 绑定。没有 provider——那由 Agent Node 权威解析，而 ccnm rpc 跑在 Runtime Node 上，它的配置里没有这份定义。要 provider 就看 session.* 返回的 agent。",
       "type": "object",
       "properties": {
         "node": {"$ref": "#/$defs/identifier"},
         "instance": {"$ref": "#/$defs/identifier"},
-        "provider": {"$ref": "#/$defs/provider"},
-        "capabilities": {"$ref": "#/$defs/instance_capabilities"},
         "workspaces": {"type": "array", "items": {"$ref": "#/$defs/identifier"}}
       },
-      "required": ["node", "instance", "provider", "capabilities"],
+      "required": ["node", "instance", "workspaces"],
       "additionalProperties": false
     },
     "agents_list_result": {

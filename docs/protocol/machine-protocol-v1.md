@@ -176,9 +176,15 @@ v1 只有六个方法，名字在本阶段定稿：
 ```
 
 - `node` + `instance` 一起构成寻址用的 instance 引用，`session.start` 就用这两个字段。
-- `provider` 是 `"claude"` 或 `"codex"`。
-- `capabilities` 是**技术上是否支持**，不是"擅长什么"。这里永远不会出现"擅长架构"这类主观标签；`true` 也不代表已登录、已就绪或有权限启动。
-- `workspaces` 是这个 instance 被配置成默认 Agent 的 workspace 名字。一个 workspace 也可以在 `session.start` 时显式指定别的 instance。
+- `workspaces` 是这个 instance 被绑定为默认 Agent 的 workspace 名字。空数组表示配置里定义了它，但还没有 workspace 用它。
+
+### 这里为什么没有 provider
+
+一条 instance 是 Claude 还是 Codex，由 **Agent Node** 权威解析——这是配置模型的基本约定，Runtime Node 不保存第二份。而 `ccnm rpc` 跑在持有项目的 Runtime Node 上，它的配置里只有 workspace 到 `{node, instance}` 的绑定。
+
+这不是"通常没有"，是**结构上不可能有**：配置校验要求 instance workspace 的 root 只在它的 Runtime Node 上定义，同时要求 instance 模式不是 colocated，两条加起来就决定了绑定里的那个 node 永远不是本机。既然给不出，协议里就不留这个字段——留一个永远缺席的字段，只会让调用方写一段永远不执行的分支。
+
+想知道 provider，看 `session.start` / `session.status` / `session.result` 返回的 `agent.provider`——那是 Agent Node 自己报的，权威。
 
 列表只反映**当前配置**。它不探测网络、不检查登录、不启动任何进程——想知道能不能真的跑起来，只有 `session.start` 会告诉你。
 

@@ -63,7 +63,21 @@ P3 的清理确实归零了，三步都要重做：
 
 ### 1. 建环境
 
-按第二节的表逐项执行，每执行一项就写进 root 清单（`/var/db/ccnm-p7-<日期>`，0700）。清单是清理的唯一依据：**没记进清单的东西，清理时一律不删**。
+本机这三步各有一个脚本，**顺序不能换**——后两个的前置核对都要求 root 清单已经存在，而清单是第一个脚本建的：
+
+```bash
+sudo scripts/p7-authorize-local-runtime.sh   --check   # 每一步都先 --check 再 --apply
+sudo scripts/p7-grant-local-ssh-access.sh    --check
+sudo scripts/p7-isolate-local-runtime-group.sh --check
+```
+
+清单在 `/var/db/ccnm-p7-local-20260910`（root 所有，0700）。**它是清理的唯一依据：没记进清单的东西，清理时一律不删。**
+
+密码只输进你自己的终端，不要发给 Agent。
+
+三个脚本都是 P3 那三个成功执行过的脚本改轮次号，外加两处改进：**每个都有 `--check`**（P3 只有撤销脚本有，装的时候没法预览），公钥**直接内嵌在脚本里**而不是从 `/tmp` 读——外部文件多一次被换掉的机会，内嵌没有这个窗口，指纹仍然当场重算比对。
+
+撤销用 `scripts/p7-revoke-local-runtime-key.sh`，它按安装的逆序检查：主组和准入还没撤就拒绝执行，并告诉你先跑哪个。
 
 ### 2. 部署
 

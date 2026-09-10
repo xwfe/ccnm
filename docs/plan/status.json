@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-09-10T17:45:00+09:00",
+  "last_updated": "2026-09-10T18:19:30+09:00",
   "current_task": "P7",
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
@@ -500,7 +500,7 @@
       ],
       "owner": null,
       "started_at": "2026-09-10T16:20:00+09:00",
-      "last_updated": "2026-09-10T17:45:00+09:00",
+      "last_updated": "2026-09-10T18:19:30+09:00",
       "completed_criteria": [
         "P7.1",
         "P7.2"
@@ -583,10 +583,10 @@
         {
           "criteria": [
             "P7.3",
-            "P7.4"
+            "P7.5"
           ],
-          "reason": "P7.3 三件事完成两件：并入的原 P6.3 对照（Claude）通过，真实项目完整 dogfood 通过，全量离线门禁通过。缺的只有 Codex：它装在本机 xdwmbp 而非 Agent Node，且当前没有额度；跑它需要相反拓扑（本机当 Agent、fodelf 当 Runtime）并在 fodelf 另建临时执行身份，特权准备翻倍，没额度也跑不动。用户已决定等额度恢复再补，不拿只有 Claude 的状态进 P7.4，故 P7.3 不勾完成、P7.4 不开工。",
-          "unblock": "等 xdwmbp 的 Codex 额度恢复，按相反拓扑补跑一次 scripts/p7_parity_check.py --provider codex 并记录结果；xdwmbp 上的 codex-cli 已确认为 0.153.4，等于仓库 pin 的版本，不需要重新测量 fixture。补齐后 P7.3 才能勾完成。P7.4 冻结范围前还有一组待用户决定是否改实现的真机findings：（1）ccnm 到底该由谁运行——doctor 身份检查要求操作者就是 Runtime 执行身份，而 production-safety 要求该身份不持私钥，两者当前只能靠把传输密钥放到 ~/.ssh 之外同时成立；（2）session.start 是否放宽 agent.node 必填；（3）instance 选择失败时把 Agent 侧原因带回 Runtime 侧；（4）ccnm status 是否报告 --print 会话，以及 session.start 是否做工作树占用预检使 -32008 可达；（5）workspace root 是否连属主一起查；（6）ccnm stop 是否对已结束会话幂等。"
+          "reason": "P7.3 已完成 Claude Machine API 对照、真实项目完整 dogfood 和全量门禁，缺的付费真机项只有 Codex。Codex 装在 xdwmbp，当前额度不足；补跑需要相反拓扑（xdwmbp 当 Agent、fodelf 当 Runtime）和新的隔离 Runtime 准备，因此 P7.3 与最终 P7.5 仍被外部条件阻塞。P7.3 暴露的身份/控制链矛盾已经由用户确认产品方向，不再是等待决策的 blocker：P7.4 应在等待 Codex 期间按 docs/plan/runtime-surfaces.md Batch A→E 继续实施。",
+          "unblock": "先完成 P7.4 新身份/控制链及最小 Claude 真机复验；等 xdwmbp Codex 额度恢复后，在新身份模型上按授权拓扑补跑一次真实 Codex Machine API parity 并记录结果。xdwmbp 的 codex-cli 已确认为 0.153.4，与仓库 pin 一致；若版本未变化不重测 fixture。P7.3、P7.4 都有完整证据后才进入 P7.5 v1 freeze。"
         }
       ]
     },
@@ -603,25 +603,82 @@
       "completed_criteria": [],
       "evidence": [],
       "blockers": []
+    },
+    {
+      "id": "P9",
+      "title": "Remote Workspace MCP 契约",
+      "status": "pending",
+      "depends_on": [
+        "P8"
+      ],
+      "owner": null,
+      "started_at": null,
+      "last_updated": "2026-09-10T18:19:30+09:00",
+      "completed_criteria": [],
+      "evidence": [],
+      "blockers": []
+    },
+    {
+      "id": "P10",
+      "title": "Remote Workspace MCP stdio bridge",
+      "status": "pending",
+      "depends_on": [
+        "P9"
+      ],
+      "owner": null,
+      "started_at": null,
+      "last_updated": "2026-09-10T18:19:30+09:00",
+      "completed_criteria": [],
+      "evidence": [],
+      "blockers": []
+    },
+    {
+      "id": "P11",
+      "title": "跨入口安全、并发与真实 MCP Host",
+      "status": "pending",
+      "depends_on": [
+        "P10"
+      ],
+      "owner": null,
+      "started_at": null,
+      "last_updated": "2026-09-10T18:19:30+09:00",
+      "completed_criteria": [],
+      "evidence": [],
+      "blockers": []
+    },
+    {
+      "id": "P12",
+      "title": "Remote Workspace MCP 真项目 dogfood 与 v1.x 冻结",
+      "status": "pending",
+      "depends_on": [
+        "P11"
+      ],
+      "owner": null,
+      "started_at": null,
+      "last_updated": "2026-09-10T18:19:30+09:00",
+      "completed_criteria": [],
+      "evidence": [],
+      "blockers": []
     }
   ],
   "observed_gaps": [
     "双机验收已改用专用隔离执行身份，凭据/sudo/特权 socket 均已实测；egress/网络策略仍未逐项验证，本轮只做 transport 进程故障注入，不等同物理断网。",
     "旧 Runtime 拒绝 v2 时可能以退出码 0 结束；协议错误不能被退出码掩盖。",
-    "P1 安全检查已收敛但尚未部署；旧 Runtime 不因此获得新门禁，现有 0.2.0/v1/v2 握手不宣告 P1 安全能力，P3 真机部署须核对两端构建来源/指纹及服务端环境策略。",
+    "P1 安全检查已经进入后续构建并在 P3/P7 专用 Runtime 身份上得到真机证据；但 P7.4 将改变 public control path 和身份职责，旧链的真机结果不能自动证明新链仍满足相同边界，必须按新设计复验。",
     "Claude v1 的 claude_config_dir 保留旧参数语义；P2 必须定义 Agent-local profile 引用与 legacy 冲突/迁移，不能把旧明文路径当新 profile 授权模型。",
     "P3 公共链路已在当前 build 双机真机通过并完成资源归零；遗留两项未取得证据：Ctrl-D 因官方 CLI 无响应，egress 边界不作声明。",
     "Claude colocated 候选命令已定点修复，但未真机验收，当前公共启动明确拒绝。",
     "P3 额外 64 线程压力出现既有 exec timeout 单测 30.5s 失败；默认全量 511 通过，高并发问题尚未解决。",
-    "Machine Protocol v1 是草案：无实现、无外部消费者验证；客户端不声明 capabilities（加推送时必须一并解决）、interactive 输入形状未定稿、1 MiB 行上限无实测依据。P6 之前不建立兼容承诺。",
+    "Machine Protocol v1 候选已经有 ccnm rpc 实现、schema/fixture 和独立 Python 黑盒消费者，且 P7.3 已用真实 Claude 跑通一次；它仍不是稳定 v1，因为 Codex 真机 Machine API parity 缺失且 P7.4 身份/控制链会改变底层执行路径。interactive 输入形状等未承诺能力继续留在支持范围之外。",
     "ccnm rpc 已在 P7.3 与真实 Claude 跑通一次双机闭环（对照七项全过，usage/cost 端到端确认）；仍未验的是 Codex 经 machine API（从未发生过）、interactive 输入形状，以及 Runtime 写互斥与取消在 RPC 层面的独立真机证据——那三条判据目前仍是结构上继承 launcher/Agent 侧实现。",
     "Runtime 执行身份手上只有系统工具链（macOS 自带 python3 3.9、git、clang、make），没有 cargo 也没有 node。P7.3 的 dogfood 因此只覆盖了 Python 那半，Rust 项目在当前隔离方案下无法在 Runtime 侧构建或测试。要支持这类项目得先决定给执行身份装什么工具链、由谁维护，产品文档目前对此只字未提。",
-    "ccnm 期望操作者本人就是 Runtime 执行身份：同一 workspace 同一时刻，doctor 以 ccrun 跑 0 failed、以操作者账号跑 7 failed；而 workspace add 也用当前身份校验路径。这与 production-safety 要求该身份不持私钥直接冲突（run 要从 Runtime 拨号去 Agent），当前只能靠把传输密钥放到 ~/.ssh 之外让检查看不见。v1 定稿前必须给出一个答案。",
+    "P7.3 已证明旧实现混淆 Operator 与 Runtime Executor：同一 workspace 以 ccrun 跑 doctor 为绿、个人账号为红，同时旧 Agent→Runtime→Agent 回跳迫使 ccrun 持出站 SSH key。产品决定已写入 docs/plan/runtime-surfaces.md：v1 分离 Operator/Agent/Runtime Executor，ccrun inbound-only；旧真机证据不能完整覆盖改造后的控制链，P7.4 必须复验。",
+    "Remote Workspace MCP 是 v1.x 规划能力，当前尚未实现。它将让已经运行的 Claude Code/Codex/其他 MCP Host 通过 ccnm 操作一个远端权威 workspace；首版只接受 Runtime 配置的 disabled/read/coding 权限，不做 raw ssh_exec、多租户凭据代理、Agent 自动部署或公网 MCP gateway。",
     "协议契约里的 -32008（busy）没有实现会返回：写入 guard 在会话跑起来之后才由 Runtime 侧 MCP 获取，session.start 不做工作树占用预检，被占的表现是会话失败而非启动被拒。文档已如实标注；要不要补预检使该码可达是待定的产品决定。同一窗口也影响连续执行：前一次 ccnm run --print 返回时 guard 可能尚未释放，紧接着启动下一个会话会撞上，实际窗口时长未在真机测过。"
   ],
   "handoff": {
-    "next_action": "P7.3 三件事完成两件：并入的原 P6.3 对照（Claude）通过、真实项目完整 dogfood 通过、全量离线门禁通过，证据都在 docs/research/p7-real-machine-2026-09-10.md。**卡在 Codex 一项上，用户已决定等 xdwmbp 额度恢复再跑**——那要相反拓扑（本机当 Agent、fodelf 当 Runtime）并在 fodelf 另建临时执行身份，特权动作需重新逐项批准；xdwmbp 的 codex-cli 已确认 0.153.4，等于仓库 pin，不必重新测量 fixture。P7.3 环境仍在运行未清理（见 handoff.authorization）。补齐 Codex 之前不勾 P7.3、不开 P7.4、不宣称 v1 稳定、不宣称已发布。等待期间可做的是 P7.4 冻结前那组待决定的真机findings（blockers 里列了六条），每条都会改变对外行为，需要用户先拍板再动实现。",
-    "scope": "仅 P7 的收尾。P7.3 只剩 Codex 那一半，需要用户单独授权相反拓扑的系统动作与订阅额度消耗。未获授权前只做离线部分并如实记录未测范围。",
+    "next_action": "当前仍是 P7。先读 docs/plan/runtime-surfaces.md，然后直接实施 P7.4 Batch A→E：把 public Operator、Agent Identity、Runtime Executor 分开；让 ccrun 成为 inbound-only，不再通过隐藏 transport key 满足 No SSH keys；新增 Runtime authority/resolve，切掉 Agent→Runtime public run→Agent 回跳；doctor 的 Runtime safety 改由真实 Executor 权威报告。不要重做已经通过的 P7.1/P7.2 或完整 Claude dogfood。离线门禁全绿后只需对新链做最小 Claude CLI + ccnm rpc 真机 parity。Codex 额度恢复后，再在新身份模型上补 P7.3 Codex parity。两者齐全后执行 P7.5 v1 freeze；P8/P9 之前都不要开始。",
+    "scope": "P7 收尾与 v1 身份/控制链修正。P7.4 是已确定的实现任务，可在 Codex 额度等待期间进行；需要部署、新账号/ACL、SSH 准入或其他系统修改时仍必须单独授权。P7.3 剩余 Codex 付费真机项继续 blocked。P9–P12 只作为后续 v1.x Remote Workspace MCP 路线记录，不在本轮提前实现。",
     "planning_validation": {
       "at": "2026-09-08T21:22:43+09:00",
       "commands": [

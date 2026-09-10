@@ -8,6 +8,8 @@
 - 状态只以 Git 跟踪的 `docs/plan/status.json` 为准。开始、阻塞、交接、完成都要更新状态；没有证据不能标记完成。
 - 默认只完成 `current_task` 对应的一个阶段。用户指定范围优先，但不得跳过依赖和安全门禁。阶段验收后交接，不自动把整份路线连续执行完。
 - ccnm 只负责 Agent 的执行机制；Planner、Router、任务图、review/retry 策略和 worktree 编排属于独立 Orchestrator 项目。
+- ccnm 有两个执行入口，边界见 [双执行入口方案](docs/plan/runtime-surfaces.md)：v1 主线是 Managed Agent Runtime（`runtime → agent → runtime`）；v1.x 扩展是外部 MCP client → ccnm → remote Runtime。两者共用 Runtime 安全/工具/写互斥，不把 Remote MCP 做成裸 SSH，也不实现 Agent 凭据代理。
+- Runtime Executor（通常是 `ccrun`）是入站执行身份，不应持有 ccnm 正常运行所需的主动 SSH 私钥/SSH agent。public CLI/RPC 的 Operator、Agent 登录身份和 Runtime Executor 不能再视为同一个 OS identity；P7 冻结前先修这个边界。
 - 官方 Agent 的参数、认证、工具策略和输出以实测版本及 fixture 为依据。不得猜参数、复制订阅凭据、读取认证文件内容或实现私有模型客户端。
 - 不覆盖、恢复、暂存或提交用户已有修改。禁止 `git add .` / `git add -A`、无关清理和自动 push；按逻辑改动提交本次文件。patch 不匹配时重读并缩小补丁，不用整文件覆盖掩盖失败。
 - 不为通过测试重录 golden fixture。修复已知行为缺陷时，单独说明行为变更和新证据，不能伪装成等价重构。

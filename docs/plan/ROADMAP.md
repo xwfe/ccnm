@@ -38,7 +38,7 @@ ccnm 不需要安装 Orchestrator 也能独立使用。Orchestrator 核心不链
 
 ## 二、顺序和基线
 
-`P0 → P1 → P2 → P3 → P4 → P5 → P6 → P7 → P8`。默认每轮只执行一个阶段。
+`P0 → P1 → P2 → P3 → P4 → P5 → P6 → P7 → P8 → P9 → P10 → P11 → P12`。默认每轮只执行一个阶段。P0–P8 是 ccnm v1 收口和独立 Orchestrator 的接口交接；P9–P12 是 ccnm v1.x 的 Remote Workspace MCP 扩展。完整边界见 [双执行入口方案](runtime-surfaces.md)。
 
 ### P0 — 已有内部验证基线
 
@@ -145,7 +145,8 @@ ccnm 不需要安装 Orchestrator 也能独立使用。Orchestrator 核心不链
 - **P7.1** 公开文档只描述真实支持的版本、平台、模式、topology 和安全级别；README 保持简短中英简介，其余中文，细节进入 docs。明确 Codex pin/version 拒绝与重新测量流程。
 - **P7.2** 配置迁移、安装/回退、状态/日志保留、停止/清理和故障恢复有可执行记录；部署与登录相关动作单独获得授权。不因存在 CI/release 文件就宣称已正式发布。
 - **P7.3** 在同一套授权环境内先完成原 P6.3 的内容——用公共 API 各跑一次真实 provider 的双机闭环，与人类 CLI 结果对照，据结果确立或修改协议 v1——再完成真实项目从启动→修改→测试→结果→停止/恢复的验收及生产边界复核；Rust、Python、计划检查、契约测试通过，失败/跳过/未测平台如实列出。
-- **P7.4** 评审所有阻塞项，冻结本次支持范围，提交发布候选与限制说明。发布、推送、打 tag 按用户授权执行；本阶段完成可表示发布候选可交付，不强制未经授权发布。
+- **P7.4** 修正 P7.3 真机证明的 OS 身份/控制链矛盾：public CLI/RPC 的 Operator、Agent Identity、Runtime Executor 分离；`ccrun` 成为 inbound-only executor，不持 ccnm 所需出站 SSH credential；Agent 侧发起不再走 `Agent → Runtime public run → Agent` 回跳；Runtime workspace/root 与 safety verdict 由真正 Runtime Executor 权威解析/报告。按 [双执行入口方案](runtime-surfaces.md) Batch A→E 分批实现，至少重新跑一次新链路 Claude CLI + Machine API parity，证明执行属主仍为 ccrun、ccrun 无出站 key/agent、资源归零。旧“把 key 移出 ~/.ssh 让 No SSH keys 变绿”不能作为验收。
+- **P7.5** 评审所有剩余阻塞项，确认 P7.3 Codex 缺口已补齐且 P7.4 新身份链有真机证据，冻结 Machine Protocol v1 与本次支持范围，提交发布候选和限制说明。发布、推送、打 tag 按用户授权执行；本阶段完成可表示发布候选可交付，不强制未经授权发布。
 
 停止点：ccnm 收口为可独立使用的执行产品。第三 provider、TUI、后台长进程、Browser/Git 专用工具和新 transport 按真实需求单独立项，不自动续做。
 
@@ -167,6 +168,50 @@ ccnm 不需要安装 Orchestrator 也能独立使用。Orchestrator 核心不链
 | O4 | CLI/MCP 集成及按需插件、远程客户端入口 | 先确认客户端真实 transport/auth 支持；第三方插件仍需最小权限/审计，不能假定协调插件天然安全 |
 
 worktree **分配、调度、合并策略**在 Orchestrator；受管 workspace 的执行授权、写互斥和必要低层操作在执行 backend。确需新增 backend 操作时另提 ccnm capability，不让协调层绕过执行端边界。
+
+### P9 — Remote Workspace MCP 契约
+
+**依赖 P8。**这是 ccnm 自己的 v1.x 扩展，不是 Orchestrator 功能。先定义外部 Claude Code/Codex/其他 MCP Host 如何把 ccnm 当一个 remote workspace tool server 使用；不启动/代理 Agent。
+
+- **P9.1** 定稿标准 stdio MCP bridge 的 CLI/配置形状：一次进程绑定一个已配置 workspace/Runtime；root 在 Runtime 权威解析，禁止把任意 host/root/private key 作为 MCP tool 参数。命令名在本阶段定稿，规划文档中的 `ccnm mcp connect` 只是占位。
+- **P9.2** Runtime 侧定义 external MCP opt-in 与 `disabled/read/coding` 最大权限；read 模式没有 `apply_patch` 和 `exec_command`，coding 模式才竞争 writer guard。调用方不能请求高于 Runtime 配置的能力；多租户 token/共享账号不在首版。
+- **P9.3** 给七工具形成稳定 ToolSemantics/标准 MCP annotations 映射；annotations 只用于 Host UX，Runtime enforcement 不依赖 Host 是否尊重它。`exec_command` 永远按 write/open-world-capable 保守处理，不解析 shell 猜只读。
+- **P9.4** 定义连接/EOF/interrupt、busy/unknown、输出预算、版本不匹配、instructions/context policy 和错误泄漏边界；External MCP 不猜调用方 Provider，不读取 Client 的 Agent profile。契约、fixture 和评审先行，不开始真机付费调用。
+
+停止点：Remote Workspace MCP 仍是设计候选；不顺手加 raw SSH/SFTP/端口转发。
+
+### P10 — Remote Workspace MCP stdio bridge
+
+**依赖 P9。**实现外部 MCP Host → 本地 ccnm bridge → persistent OpenSSH → Runtime 的最小数据面，复用现有 Runtime server。
+
+- **P10.1** stdio MCP initialize/tools/list/tools/call 全链使用一个有界 SSH 子进程；stdout 只承载 MCP，日志 stderr；EOF/interrupt/bridge crash 能回收自己的 transport，不终止无关 Managed session。
+- **P10.2** Runtime open/binding 从自己的配置解析 workspace/root/runtime_user，client payload 不能覆盖；需要新 internal protocol 时 fail-closed 版本握手，不静默降级旧 root-trusting 路径。
+- **P10.3** 七工具不复制实现；Remote MCP 与 Managed path 复用 path policy、credential/environment gate、output retention 和同一 workspace write guard。read/coding 两种工具列表/权限有离线测试。
+- **P10.4** 本地 fake SSH、坏 peer、断线、超大/坏 MCP 消息、Runtime 不可达、旧 ccnm 和资源清理测试通过；Rust/Python/plan/link 门禁通过，不宣称真实 Host 已验证。
+
+停止点：得到离线可验 bridge；不加 HTTP/remote MCP 公网 transport。
+
+### P11 — 跨入口安全、并发与真实 MCP Host
+
+**依赖 P10。**证明第二入口没有绕开第一入口已经建立的 Runtime 边界。
+
+- **P11.1** Managed coding session 与 Remote coding MCP 同 workspace 竞争同一 writer guard；不同入口同时启动时只有一个可写，旧执行者未确认退出不能转让。read 模式可按定义并行，但无任意 exec。
+- **P11.2** Tool annotations 与 Runtime 实际权限一致；用忽略 annotations 的测试 Host 再跑一次，越权仍被 Runtime 拒绝，证明提示不是安全机制。
+- **P11.3** 至少用真实 Claude Code 标准 MCP 配置跑 workspace_info/read/list/search/patch/exec/output 的允许矩阵，并用一个 provider-neutral MCP 测试 client 重放同一协议；验收看 Runtime 副作用/属主/错误，不采信模型文字。
+- **P11.4** 凭据泄漏、private path、SSH agent forwarding、连接复用、断连残留、输出保留与 busy/unknown 有跨入口回归；不要求外部 Host 向 ccnm透露其 Claude/Codex 登录。
+
+停止点：功能仍可标 experimental；真正远端项目/非 macOS 支持由 P12 决定。
+
+### P12 — Remote Workspace MCP 真项目 dogfood 与 v1.x 冻结
+
+**依赖 P11。**用真实远端项目和实际目标 OS 做支持声明，不把本机/假 SSH 结果推广出去。
+
+- **P12.1** 至少一个远端真实项目完成 read→search→patch→exec/test→read_output、结果核对、断开/重连和资源归零；优先 Linux Runtime，以补当前 Managed 路线主要是 macOS 的证据空白。
+- **P12.2** 专用 Runtime identity 复核无 Agent credential、无 ccnm 出站私钥/SSH agent、无 sudo/admin/特权 socket；项目 toolchain 实际可用。egress 没配置就明确“不保证”，不靠禁止 curl 冒充隔离。
+- **P12.3** 版本错配、workspace 未 opt-in、read→coding 升权、writer busy、远端消失和 Host crash 在真/准真环境至少各有可追溯结果；失败后无孤儿 transport/guard。
+- **P12.4** 更新 README/usage/support-matrix/operations，写明与 Managed Agent Runtime 的区别和支持平台；全部门禁通过后冻结 Remote Workspace MCP v1.x 契约。第三 Provider、HTTP gateway、generic SSH 管理继续另立项。
+
+停止点：ccnm 拥有两个独立可用入口，但仍只有一个 Runtime 执行核心；不继续自动扩功能。
 
 ## 三、首次规划提交的范围（历史说明）
 

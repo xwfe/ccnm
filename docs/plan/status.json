@@ -301,24 +301,25 @@
             "P3.5"
           ],
           "ref": "docs/research/p3-public-claude-2026-09-09.md",
-          "result": "反向拓扑（Agent=fodelf官方Claude 2.1.265，Runtime=本机隔离ccrun）当前build两端哈希一致部署。公共probe七工具/同PID；print退出0返回P3_PUBLIC_CLAUDE_OK，session为protocol3、identity完整且claude_config_dir为null。工具真实性以Runtime侧副作用取证：Claude经MCP编译出Mach-O arm64并写result.txt，owner均为ccrun（Claude的--print不写官方JSONL，不以模型自述替代）。精确status/result正确、伪造session拒绝、stop后记Failed且无残留。interactive被官方CLI首次运行向导阻塞，未按键以免触发OAuth；detach/Ctrl-D/Controller重启/transport故障无证据。Claude登录经独立print复核完好。"
+          "result": "反向拓扑（Agent=fodelf官方Claude 2.1.265/267，Runtime=本机隔离ccrun）当前build两端哈希一致部署。公共probe七工具/同PID；print退出0返回P3_PUBLIC_CLAUDE_OK，session为protocol3、identity完整且claude_config_dir为null。工具真实性以Runtime侧副作用取证：Claude经MCP编译出Mach-O arm64并写result.txt，owner均为ccrun（Claude的--print不写官方JSONL，不以模型自述替代）。精确status/result正确、伪造session拒绝、stop后记Failed且无残留。Claude登录经独立print复核完好。"
+        },
+        {
+          "kind": "real_nodes",
+          "criteria": [
+            "P3.1",
+            "P3.2"
+          ],
+          "ref": "docs/research/p3-public-claude-2026-09-09.md",
+          "result": "走完官方首次向导后interactive成立：tools connected，官方CLI自记Called ccnm 2 times返回P3_INTERACTIVE_READY。detach后仍tools connected；attach经PTY复原同一会话。/exit使session记Completed、Runtime MCP消失、guard held转released。transport故障先核对父进程含本session id再TERM，status正确区分Agent仍在而TOOLS DOWN，精确stop记Failed。Controller由51395重启为51607且均Aqua，既有session保持Running并可跨重启精确reattach（supervise挂tmux而非controller是结构原因）。同一tmux server内官方print返回TMUX_AUTH_OK，证明audit session保留。限制：官方CLI对Ctrl-D无响应故未验该键；仅transport进程故障，非物理断网。"
         }
       ],
       "blockers": [
         {
           "criteria": [
-            "P3.1",
-            "P3.2"
-          ],
-          "reason": "Claude公共print链路、精确session与stop已真机通过，但interactive被官方CLI首次运行向导阻塞：fodelf的~/.claude.json无theme键，2.1.265的主题步骤不在旧onboarding标记内，向导未走完就不落盘，Claude停在选择界面未连MCP（TOOLS DOWN）。未继续按键以免误触发OAuth。detach/reattach、Ctrl-D、Controller重启与transport故障因此均无证据。",
-          "unblock": "用户在fodelf图形终端手动跑一次 claude 走完首次向导（选主题并确认登录状态），使theme落盘；之后重跑 run --detached 全套 interactive 验收。属官方CLI用户首次设置，不由ccnm代改配置文件。"
-        },
-        {
-          "criteria": [
             "P3.5"
           ],
-          "reason": "身份与隔离门禁已通过（准入生效、反向SSH取得真实uid=504、独立主组后可读叶子68→0），但P3.1/P3.2的Claude公共链路尚未在本机Runtime上实测完整，P3.5不能凭身份验收单独完成。",
-          "unblock": "在已隔离的本机ccrun Runtime上跑通Claude公共入口的print/interactive/精确session、Ctrl-D/stop、detach/reattach与链路失败，保存脱敏fixture；随后按清单逆序清理（组--revert、准入--revert、公钥行、临时目录与账号）。"
+          "reason": "身份隔离与两方向公共链路均已真机通过，但P3.5要求的最终清理尚未执行：两端部署目录、fodelf SSH alias与备份、Runtime workspace与测试产物、~/.claude.json本轮project entry、上一轮fodelf临时账号与组、本机独立组与SSH准入两个--revert都还在。清理未归零不能标记完成。另：Ctrl-D因官方CLI无响应未取得证据（已用/exit覆盖同路径但不等价），egress/网络策略仍未逐项验证。",
+          "unblock": "按资源清单逆序清理并复核归零：可无特权执行的部分由本会话完成，两个本机--revert与fodelf账号/组删除需用户sudo执行；controller由用户Ctrl-C结束。清理后记录无法清理项与原因。"
         }
       ]
     },
@@ -403,7 +404,7 @@
     "P3 额外 64 线程压力出现既有 exec timeout 单测 30.5s 失败；默认全量 511 通过，高并发问题尚未解决。"
   ],
   "handoff": {
-    "next_action": "仅P3：Claude反向链路的print、精确session、stop与工具副作用取证已真机通过（docs/research/p3-public-claude-2026-09-09.md）。当前卡在官方CLI首次运行向导：需用户在fodelf图形终端跑一次 claude 走完主题/登录确认使theme落盘，之后重跑 interactive、detach/reattach、Ctrl-D、Controller重启与transport故障。全部通过后按清单逆序清理，两个本机脚本各自 --revert。勿进入P4。",
+    "next_action": "仅P3：两方向公共链路已全部真机通过（Codex见p3-public-codex-2026-09-08.md，Claude见p3-public-claude-2026-09-09.md）。剩最终清理：可无特权部分由会话执行，需用户sudo的是本机 p3-isolate-local-runtime-group.sh --revert 与 p3-grant-local-ssh-access.sh --revert，以及fodelf临时账号/组删除；controller由用户Ctrl-C结束。清理归零并记录无法清理项后方可标记P3完成。勿进入P4。",
     "scope": "仅 P3；不进入 P4/Machine API，不引入多 Agent/worktree 调度，不主动部署、登录或修改账号/ACL/防火墙。",
     "planning_validation": {
       "at": "2026-09-08T21:22:43+09:00",

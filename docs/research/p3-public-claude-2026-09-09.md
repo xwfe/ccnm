@@ -61,11 +61,20 @@ wrapper 必须固定 `CCNM_CONFIG`/`XDG_STATE_HOME`/`TMUX_TMPDIR`。本轮先把
 
 两端最终复核：Agent 侧无 tmux/supervise/transport 残留，Runtime 侧无 `ccnm-bin internal mcp-serve`，guard `released`，`status` 无存活 session。
 
+## Controller 重启
+
+10. Controller 缺失时的行为先被意外验证：用户关闭前台窗口后 controller 消失，`run` 明确报 `CCNM_E_NOT_READY: nothing is listening on …/controller.sock` 并解释「ssh 会话读不到 login Keychain，所以没有 controller 就无法核对 Claude 登录」。诊断准确可操作。但它附带的修复建议 `launchctl kickstart -k gui/$(id -u)/dev.ccnm.controller` 在本轮场景下不适用——该判断只看到 `~/Library/LaunchAgents` 里存在 ccnm 的 plist，而那是用户既有的 `dev.ccnm.work-controller`（旧二进制、默认 socket 路径），执行只会拉起原服务，不会监听本轮临时 socket。手动 controller 场景需要手动重启，本条建议不能照搬。
+11. 重启本身：基线 controller PID 51395（Aqua）、tmux server 51458（PPID 1）、supervise 51459（父进程是 tmux 而非 controller）、`tools connected`。用户在图形终端 Ctrl-C 后重新启动，PID 变为 51607 且仍为 Aqua；既有 session `9adb492c` 保持 **Running 且 tools connected**，跨重启精确 `attach --session` 成功（客户端 `/dev/ttys017`，画面渲染出官方 UI）。supervise 挂在 tmux 而非 controller 之下，是 session 能扛过 controller 重启的结构原因。
+
+随后精确 stop，两端复核无残留：Agent 侧无 tmux/supervise/claude，Runtime 侧无本轮 `mcp-serve`，guard `released`。
+
 ## 未完成与接续
 
-只剩 Controller 重启一项。本轮 Controller 由用户在 fodelf 图形终端前台启动才能进 Aqua，重启需用户再操作一次：先记录当前 PID 与监听 socket，停掉后在同一配置下重启，再验证既有 session 仍 Running 且可精确 reattach。Ctrl-D 因官方 CLI 无响应而未取得证据，已用 `/exit` 覆盖同一路径，但不记作 Ctrl-D 通过。
+P3.1/P3.2 的公共链路证据已齐：probe、print、工具真实性、精确 session、stop、interactive、detach/reattach、Agent 自然退出、transport 故障、Controller 重启均有真机记录。
 
-这两项之外，P3.1/P3.2 的公共链路证据已齐。清理仍待执行：两端部署目录、fodelf SSH alias 与备份、Runtime workspace 与测试产物、`~/.claude.json` 中本轮新增的 project entry，以及本机的独立组与 SSH 准入两个 `--revert`。
+两项限制如实保留：Ctrl-D 因官方 CLI 无响应未取得证据，仅以 `/exit` 覆盖同一条自然退出路径，不记作 Ctrl-D 通过；本轮是 transport 进程故障注入，不等同物理断网，egress/网络策略仍未逐项验证。
+
+清理待执行：两端部署目录、fodelf SSH alias 与私有备份、Runtime workspace 与测试产物、`~/.claude.json` 中本轮新增的 project entry、上一轮 Codex 方向的 fodelf 临时账号与组，以及本机独立组与 SSH 准入两个 `--revert`。用户前台 controller 需自行 Ctrl-C 结束。`~/.claude` 的 0700 是安全收紧，建议保留，恢复与否由用户决定。
 
 本轮 Controller 由用户在 fodelf 图形终端前台启动（Aqua，PID 22991），未安装 LaunchAgent，未触碰既有的 `dev.ccnm.work-controller`。曾尝试用独立 label 临时 bootstrap，被权限策略拒绝，未绕过。
 

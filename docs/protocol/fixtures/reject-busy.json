@@ -1,6 +1,6 @@
 {
   "$schema_ref": "#/$defs/response_error",
-  "$note": "同一棵工作树已经有受管写 session。effect 是 none：什么都没发生，换个时间重发是安全的。",
+  "$note": "同一棵工作树已经有受管写 session。effect 是 none：什么都没发生，换个时间重发是安全的。这是契约样例，不是实测：当前 build 从不返回 -32008，理由见 ../README.md。",
   "message": {
     "jsonrpc": "2.0",
     "id": 9,

@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-09-10T19:15:00+09:00",
+  "last_updated": "2026-09-10T19:50:00+09:00",
   "current_task": "P7",
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
@@ -500,7 +500,7 @@
       ],
       "owner": null,
       "started_at": "2026-09-10T16:20:00+09:00",
-      "last_updated": "2026-09-10T19:15:00+09:00",
+      "last_updated": "2026-09-10T19:50:00+09:00",
       "completed_criteria": [
         "P7.1",
         "P7.2"
@@ -513,6 +513,14 @@
           ],
           "ref": "docs/support-matrix.md",
           "result": "公开文档通查：README、支持矩阵、配置说明里停在 P3 完成之前的措辞（\"尚未部署到真实双机复验\"、\"公共双机 dogfood 待 P3.5\"、\"尚未真机复验\"）全部改为实际情况。未验证项单列而不混在字里行间：egress/网络策略未逐项验证故不声明任何出口边界、Ctrl-D 无证据、machine API 未跟真实 Agent 跑过因此协议只是 v1 候选、colocated 明确拒绝。平台改为写明只有 macOS 及其原因（Controller 是 launchd LaunchAgent，会话检查直接问 launchctl 与 security）。新增 Codex 版本 pin 与重新测量一节：精确匹配 0.153.4，不匹配启动前返回 CCNM_E_VERSION，并给出五步重新测量流程，明写第五步（逐条比对新旧 fixture 差异）不能跳。支持矩阵新增 machine API 两行，并去掉\"不属于 P3\"这类要求读者知道阶段编号的措辞。"
+        },
+        {
+          "kind": "review",
+          "criteria": [
+            "P7.1"
+          ],
+          "ref": "docs/protocol/README.md",
+          "result": "P7.1 第二遍通查补上三处，均在公开契约文档里：（1）协议说明的错误码表列了 -32008 busy，但实现从不返回它——wire.rs 的 from_ccnm 映射表没有这个分支，仓库里两处 code::BUSY 都在测试中；根因是工作树写入 guard 由 Runtime 侧 MCP 进程在会话跑起来之后才获取，session.start 那一刻不检查，所以工作树被占的实际表现是会话起来了然后失败，按 -32008 写退避重试的客户端等不到这个码。已加入\"实现得比契约少\"清单，并在说明表下、fixture 的 $note 与参考客户端的常量处各写明一次。（2）protocol/README 仍写\"因为现在还没有实现\"，与同一文件开头的\"草案，有实现\"自相矛盾，是 P4 的遗留；改为写清 check_protocol.py 证明的是几份文件互相自洽、不是实现与它们一致，并以 -32008 为例。（3）同文件仍写真机闭环是 P6.3 的事，与本轮 P6.3 并入 P7.3 的决定不符，已改。限制：只改文档，未改实现；是否要给 session.start 增加工作树占用预检以真正返回 -32008，属于会改变对外行为的产品决定，留给用户在 P7.4 冻结范围前定夺。"
         },
         {
           "kind": "review",
@@ -574,7 +582,8 @@
     "Claude colocated 候选命令已定点修复，但未真机验收，当前公共启动明确拒绝。",
     "P3 额外 64 线程压力出现既有 exec timeout 单测 30.5s 失败；默认全量 511 通过，高并发问题尚未解决。",
     "Machine Protocol v1 是草案：无实现、无外部消费者验证；客户端不声明 capabilities（加推送时必须一并解决）、interactive 输入形状未定稿、1 MiB 行上限无实测依据。P6 之前不建立兼容承诺。",
-    "ccnm rpc 全部为离线验证：没有跟真实 Agent 跑通过一次；Runtime 写互斥与取消的三条判据是结构上继承 launcher/Agent 侧的实现，没有 RPC 层面的独立真机证据。双机闭环见 P6.3。"
+    "ccnm rpc 全部为离线验证：没有跟真实 Agent 跑通过一次；Runtime 写互斥与取消的三条判据是结构上继承 launcher/Agent 侧的实现，没有 RPC 层面的独立真机证据。双机闭环见 P6.3。",
+    "协议契约里的 -32008（busy）没有实现会返回：写入 guard 在会话跑起来之后才由 Runtime 侧 MCP 获取，session.start 不做工作树占用预检，被占的表现是会话失败而非启动被拒。文档已如实标注；要不要补预检使该码可达是待定的产品决定。同一窗口也影响连续执行：前一次 ccnm run --print 返回时 guard 可能尚未释放，紧接着启动下一个会话会撞上，实际窗口时长未在真机测过。"
   ],
   "handoff": {
     "next_action": "P7 仅剩 P7.3/P7.4，且离线能做的都做完了：P7.1 公开文档通查、P7.2 运维记录（docs/operations.md），以及 P7.3 的两项准备——对照工具 scripts/p7_parity_check.py（30 个离线测试）与会话计划 docs/plan/p7-real-machine-session.md。下一步只等用户逐项批准计划第二节的特权动作与订阅额度消耗；批准后按该计划执行：先跑并入的原 P6.3（用对照工具各跑一次真实 provider，据结果确立或修改协议 v1），再做真实项目完整 dogfood 与生产边界复核，最后 P7.4 冻结范围并提交发布候选。未获授权前不重建环境、不消费订阅、不宣称 v1 稳定，也不宣称已发布。",

@@ -76,6 +76,8 @@ E_INTERNAL = -32603
 E_NOT_READY = -32000
 E_CONFIG = -32001
 E_VERSION_MISMATCH = -32002
+# 契约里有，当前服务端从不返回：工作树被占的实际表现是会话起来了然后失败，
+# 不是启动被拒。别把退避重试只挂在这个码上。
 E_BUSY = -32008
 E_NOT_FOUND = -32009
 E_CONFLICT = -32010

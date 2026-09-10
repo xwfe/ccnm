@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-09-10T11:30:00+09:00",
+  "last_updated": "2026-09-10T11:40:00+09:00",
   "current_task": "P4",
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
@@ -330,13 +330,13 @@
     {
       "id": "P4",
       "title": "Machine Protocol v1 草案与契约评审",
-      "status": "pending",
+      "status": "in_progress",
       "depends_on": [
         "P3"
       ],
-      "owner": null,
-      "started_at": null,
-      "last_updated": "2026-09-07T23:22:36+09:00",
+      "owner": "Claude / P4 machine protocol draft",
+      "started_at": "2026-09-10T11:40:00+09:00",
+      "last_updated": "2026-09-10T11:40:00+09:00",
       "completed_criteria": [],
       "evidence": [],
       "blockers": []

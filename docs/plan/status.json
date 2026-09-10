@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-09-10T18:30:00+09:00",
+  "last_updated": "2026-09-10T19:15:00+09:00",
   "current_task": "P7",
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
@@ -500,7 +500,7 @@
       ],
       "owner": null,
       "started_at": "2026-09-10T16:20:00+09:00",
-      "last_updated": "2026-09-10T18:30:00+09:00",
+      "last_updated": "2026-09-10T19:15:00+09:00",
       "completed_criteria": [
         "P7.1",
         "P7.2"
@@ -528,7 +528,7 @@
             "P7.3"
           ],
           "ref": "scripts/p7_parity_check.py",
-          "result": "P7.3 的对照工具先行落地，30 个离线测试通过（tests/test_p7_parity.py），全量 Python 104 passed。它把\"同一件事分别走人类 CLI 与 machine API 再对照\"压缩成一条命令并写出机器可读证据。比的是副作用不是模型文字：两条腿各在 Runtime 工作树写一个带一次性 token 的文件，由脚本回读存在性、内容与属主，并要求两条腿属主一致——那是两个公开入口共用同一条隔离执行链的判据。七项检查任一判不出来即 inconclusive，绝不算通过。.invalid 沙盒只能演双腿失败，故另加 tests/fixtures/fake_ccnm.py 扮演两个入口并真写产物，离线覆盖成功路径、属主比对、清理、泄漏扫描，以及\"回 DONE 却没写文件\"必须判失败。限制：真 provider、双机与订阅额度下的行为一概未验证，本条只证明工具本身可用。"
+          "result": "P7.3 的对照工具先行落地，39 个离线测试通过（tests/test_p7_parity.py），全量 Python 113 passed。它把\"同一件事分别走人类 CLI 与 machine API 再对照\"压缩成一条命令并写出机器可读证据。比的是副作用不是模型文字：两条腿各在 Runtime 工作树写一个带一次性 token 的文件，由脚本回读存在性、内容与属主，并要求两条腿属主一致——那是两个公开入口共用同一条隔离执行链的判据。七项检查任一判不出来即 inconclusive，绝不算通过。.invalid 沙盒只能演双腿失败，故另加 tests/fixtures/fake_ccnm.py 扮演两个入口并真写产物，离线覆盖成功路径、属主比对、清理、泄漏扫描，以及\"回 DONE 却没写文件\"必须判失败。读 write_guard.rs 后补上两腿之间的排队：guard 由 Runtime 侧 MCP 进程持有、退出才释放，而 run_print_with_agent 走另一条 SSH 通道同步返回，二者无同步，第二条腿可能撞上 guard 未放开而显示为 machine API 失败。--guard-dir 给了就等到真放开、并把 sequencing.method 记为 guard-dir，不给则盲等并记为 fixed-delay，读记录的人能分清这一步是观察还是假设；开跑前已有 held 记录直接拒绝执行，不白花额度；guard 导致的失败单独做诊断标注，不混进判定。限制：真 provider、双机与订阅额度下的行为一概未验证，guard 窗口的实际时长也没在真机上测过，本条只证明工具本身可用。"
         },
         {
           "kind": "review",

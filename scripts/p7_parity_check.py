@@ -108,6 +108,61 @@ def check_side_effect(path: Path, token: str) -> dict[str, Any]:
     }
 
 
+def guards_held(guard_dir: Path | None) -> list[str] | None:
+    """哪些工作树的写入 guard 还锁着。读不到就返回 None，不假装没有。
+
+    `write-guards/` 里每个文件要么是 `released`，要么是 `held <session>
+    <workspace>`。[运维手册](../docs/operations.md)本来就让人工去这个目录看，
+    所以这不算碰内部状态。
+
+    **guard 由 Runtime 执行身份写**，它的 XDG_STATE_HOME 通常不是操作者的，
+    多半读不到——所以这个目录要显式给。
+    """
+    if guard_dir is None or not guard_dir.is_dir():
+        return None
+    held = []
+    for path in sorted(guard_dir.iterdir()):
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            return None
+        if text.startswith("held "):
+            held.append(text.strip())
+    return held
+
+
+def settle_between_legs(guard_dir: Path | None, seconds: float) -> dict[str, Any]:
+    """两条腿之间等写入 guard 放开。
+
+    **为什么必须等。** guard 由 Runtime 侧的 MCP 进程持有，进程退出时才释放；
+    而 `ccnm run --print` 是走另一条 SSH 通道同步返回的，两者之间没有任何同
+    步。第一条腿返回的那一刻，Runtime 那边的 MCP 可能还没退干净，紧接着起第
+    二条腿就会撞上 "workspace write guard is busy"——在花额度的会话里，那会
+    显示成"machine API 失败"，实际只是排队没排开。
+
+    能读到 guard 目录就等到真放开（有依据）；读不到就固定等一段（是假设）。
+    两者的区别写进证据，读的人得知道这一步是验过的还是猜的。
+    """
+    deadline = time.monotonic() + seconds
+    if guards_held(guard_dir) is None:
+        time.sleep(seconds)
+        return {"method": "fixed-delay", "waited_s": seconds, "observed": False}
+
+    while True:
+        held = guards_held(guard_dir)
+        waited = round(time.monotonic() - (deadline - seconds), 1)
+        if held == []:
+            return {"method": "guard-dir", "waited_s": waited, "observed": True}
+        if time.monotonic() >= deadline:
+            return {
+                "method": "guard-dir",
+                "waited_s": waited,
+                "observed": True,
+                "still_held": held,
+            }
+        time.sleep(0.5)
+
+
 def clear_target(path: Path) -> None:
     """开跑前确认产物路径是空的。
 
@@ -263,6 +318,19 @@ def scan_for_private(responses: list[Any], home: str) -> list[str]:
     return [marker for marker in [home, *PRIVATE_MARKERS] if marker and marker in blob]
 
 
+def blames_the_guard(leg: dict[str, Any]) -> bool:
+    """这条腿是不是栽在写入 guard 上。
+
+    只是个诊断，不参与判定：guard 没排开和协议出错都会让会话失败，但前者重跑
+    有意义、后者重跑只是再花一次额度。分不清这两者，读记录的人就会往错的方向
+    查。匹配的是 crates/ccnm-core/src/mcp/write_guard.rs 给操作者看的那两句话。
+    """
+    if leg.get("ok"):
+        return False
+    blob = json.dumps(leg, ensure_ascii=False)
+    return "write guard" in blob
+
+
 def verdict(checks: list[dict[str, Any]]) -> str:
     """判不出来一律不算通过。
 
@@ -341,11 +409,28 @@ def main() -> int:
     parser.add_argument("--timeout", type=int, default=600, help="单条腿的秒数上限，默认 600")
     parser.add_argument("--out", type=Path, help="证据文件写到哪；不给就只打印")
     parser.add_argument("--keep-artifacts", action="store_true", help="跑完不删两个产物文件")
+    parser.add_argument(
+        "--guard-dir", type=Path,
+        help="Runtime 执行身份的 write-guards/ 目录；给了就能观察 guard 何时放开，不给只能盲等",
+    )
+    parser.add_argument(
+        "--settle-seconds", type=float, default=10.0,
+        help="两条腿之间等 guard 放开的上限秒数，默认 10",
+    )
     args = parser.parse_args()
 
     root: Path = args.root.expanduser().resolve()
     if not root.is_dir():
         raise SystemExit(f"工作树不存在或不是目录：{root}")
+
+    # 开跑前就有 guard 锁着，说明有别的会话还占着工作树或者上一轮留了残留。
+    # 这时候起腿注定失败，而失败要花一次额度——先停下来。
+    preexisting = guards_held(args.guard_dir)
+    if preexisting:
+        raise SystemExit(
+            "开跑前已经有工作树被占着，先按运维手册的写入 guard 残留一节处理：\n  "
+            + "\n  ".join(preexisting)
+        )
 
     token = "ccnmp7-" + secrets.token_hex(6)
     targets = {leg: root / f"ccnm-parity-{leg}-{token}.txt" for leg in ("cli", "api")}
@@ -364,6 +449,10 @@ def main() -> int:
     print(f"  {'ok' if human['ok'] else '失败'}：{human.get('reason') or '退出码 0'}"
           f" / 产物 {'对' if human_effect['matches'] else '不对'}")
 
+    sequencing = settle_between_legs(args.guard_dir, args.settle_seconds)
+    print(f"  等 guard 放开：{sequencing['method']} {sequencing['waited_s']}s"
+          + ("（仍被占着）" if sequencing.get("still_held") else ""))
+
     print("→ 第二条腿：machine API（ccnm rpc）")
     machine = run_machine_api(
         args.ccnm, args.config, args.workspace, args.node, args.instance,
@@ -376,6 +465,7 @@ def main() -> int:
     leaked = scan_for_private(machine["responses"], str(Path.home()))
     checks = build_checks(human, human_effect, machine, machine_effect, leaked, args.provider)
     outcome = verdict(checks)
+    sequencing["blamed_for_failure"] = blames_the_guard(machine)
 
     removed = []
     if not args.keep_artifacts:
@@ -398,6 +488,7 @@ def main() -> int:
         "machine_api_side_effect": machine_effect,
         "private_markers_found": leaked,
         "artifacts_removed": removed,
+        "sequencing": sequencing,
     }
     if args.out:
         args.out.write_text(json.dumps(evidence, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -407,6 +498,10 @@ def main() -> int:
     for check in checks:
         mark = {True: "通过", False: "未通过", None: "判不出"}[check["passed"]]
         print(f"  [{mark}] {check['name']}：{check['detail']}")
+    if sequencing["blamed_for_failure"]:
+        print("\n第二条腿是被工作树写入 guard 挡下的，不是协议问题：第一条腿的 Runtime MCP\n"
+              "还没退干净。加大 --settle-seconds，或用 --guard-dir 指到 Runtime 执行身份的\n"
+              "write-guards/ 让它等到真放开，然后重跑——这一条重跑是值得的。")
     if outcome != "pass":
         print("\n没通过的项要在记录里如实写明，不要重跑到绿为止——真机每一轮都在花额度。")
     return 0 if outcome == "pass" else 1

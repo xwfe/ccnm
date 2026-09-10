@@ -60,10 +60,17 @@ P3 是两个相反方向各跑一次：Claude 在 fodelf 当 Agent → 本机 cc
 scripts/p7_parity_check.py \
     --workspace <ws> --root <工作树> \
     --instance claude-main --provider claude \
+    --guard-dir <Runtime 执行身份的 state>/ccnm/write-guards \
     --out docs/research/p7-parity-claude.json
 ```
 
 它把同一件事分别走人类 CLI 和 machine API，然后比**副作用**而不是模型说了什么：两条腿各自在工作树里写一个带一次性 token 的文件，脚本回头去看文件在不在、内容对不对、属主是谁。七项检查里任何一项判不出来都不算通过。
+
+**`--guard-dir` 别省。** 工作树的写入 guard 由 Runtime 侧的 MCP 进程持有，进程退出才释放；而 `ccnm run --print` 是走另一条 SSH 通道同步返回的，两者之间没有任何同步。第一条腿刚返回就起第二条，可能撞上 guard 还锁着——报出来是"machine API 失败"，实际只是没排开，而这一撞就是一次额度。给了目录它就等到真放开，不给只能盲等一段固定时间，证据里的 `sequencing.method` 会写明这一步是观察到的（`guard-dir`）还是假设的（`fixed-delay`）。
+
+目录是**Runtime 执行身份**的 `${XDG_STATE_HOME:-~/.local/state}/ccnm/write-guards/`，不是操作者自己那份。读不到就退回盲等，不要为了读它去放宽权限。
+
+开跑前那个目录里如果已经有 `held` 记录，脚本会直接停下——那时候起腿注定失败，先按[运维手册](../operations.md)的写入 guard 残留一节处理。
 
 判不出和没通过要原样记进 `docs/research/`，**不要重跑到绿为止**——每一轮都在花额度，而反复重试掩盖掉的正是要找的问题。
 

@@ -21,12 +21,15 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from p7_parity_check import (  # noqa: E402
+    blames_the_guard,
     build_checks,
     check_side_effect,
     clear_target,
+    guards_held,
     probe_prompt,
     remove_artifact,
     scan_for_private,
+    settle_between_legs,
     verdict,
 )
 
@@ -138,6 +141,62 @@ class ChecksTests(unittest.TestCase):
         self.assertIsNone(named["provider_matches_declaration"])
 
 
+class GuardTests(unittest.TestCase):
+    """两条腿之间的排队。
+
+    guard 由 Runtime 侧的 MCP 进程持有、进程退出才释放，而 `ccnm run --print`
+    走另一条 SSH 通道返回，两者没有同步。第一条腿刚回来就起第二条，可能撞上
+    guard 还锁着——那看起来像 machine API 坏了，实际只是没排开。
+    """
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="ccnm-guard-")
+        self.addCleanup(self.temp.cleanup)
+        self.guards = Path(self.temp.name)
+
+    def test_unreadable_directory_is_unknown_not_empty(self):
+        """读不到就说读不到，不能当成"没有人占着"。"""
+        self.assertIsNone(guards_held(None))
+        self.assertIsNone(guards_held(self.guards / "nosuch"))
+
+    def test_all_released_reads_as_free(self):
+        (self.guards / "a.lock").write_text("released\n", encoding="utf-8")
+        self.assertEqual(guards_held(self.guards), [])
+
+    def test_a_held_guard_is_reported(self):
+        (self.guards / "a.lock").write_text("released\n", encoding="utf-8")
+        (self.guards / "b.lock").write_text("held s-1 demo\n", encoding="utf-8")
+        self.assertEqual(guards_held(self.guards), ["held s-1 demo"])
+
+    def test_settle_observes_the_directory_when_it_can(self):
+        (self.guards / "a.lock").write_text("released\n", encoding="utf-8")
+        result = settle_between_legs(self.guards, 5)
+        self.assertEqual(result["method"], "guard-dir")
+        self.assertTrue(result["observed"])
+        self.assertNotIn("still_held", result)
+
+    def test_settle_gives_up_and_says_so(self):
+        (self.guards / "a.lock").write_text("held s-1 demo\n", encoding="utf-8")
+        result = settle_between_legs(self.guards, 0.6)
+        self.assertEqual(result["still_held"], ["held s-1 demo"])
+
+    def test_settle_falls_back_to_blind_waiting(self):
+        """读不到目录只能盲等，证据里必须写明这一步是假设不是观察。"""
+        result = settle_between_legs(None, 0)
+        self.assertEqual(result["method"], "fixed-delay")
+        self.assertFalse(result["observed"])
+
+    def test_guard_failure_is_told_apart_from_a_protocol_failure(self):
+        busy = {"ok": False, "reason": "终态是 failed，不是 completed",
+                "text_tail": "workspace write guard is busy; another managed session…"}
+        self.assertTrue(blames_the_guard(busy))
+        other = {"ok": False, "reason": "协议错误 -32009：no such workspace or instance"}
+        self.assertFalse(blames_the_guard(other))
+
+    def test_a_successful_leg_never_blames_the_guard(self):
+        self.assertFalse(blames_the_guard({"ok": True, "text_tail": "write guard"}))
+
+
 class SideEffectTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="ccnm-parity-")
@@ -243,6 +302,7 @@ class OfflineEndToEndTests(unittest.TestCase):
                     "--ccnm", str(BINARY),
                     "--config", str(config),
                     "--timeout", "15",
+                    "--settle-seconds", "0",
                     "--out", str(evidence),
                 ],
                 capture_output=True,
@@ -319,6 +379,7 @@ class SuccessPathTests(unittest.TestCase):
                 "--ccnm", str(self.FAKE),
                 "--config", str(config),
                 "--timeout", "15",
+                "--settle-seconds", "0",
                 "--out", str(evidence),
                 *extra_args,
             ],
@@ -362,6 +423,33 @@ class SuccessPathTests(unittest.TestCase):
         done, record, _ = self.run_harness({"FAKE_CCNM_PROVIDER": "codex"})
         self.assertNotEqual(done.returncode, 0)
         self.assertIs(self.named(record)["provider_matches_declaration"], False)
+
+    def test_a_busy_work_tree_stops_it_before_spending_anything(self):
+        """开跑前就有 guard 锁着，一条腿都不该起——起了也是白花额度。"""
+        temp = tempfile.TemporaryDirectory(prefix="ccnm-parity-busy-")
+        self.addCleanup(temp.cleanup)
+        home = Path(temp.name)
+        workspace = home / "demo"
+        workspace.mkdir()
+        guards = home / "write-guards"
+        guards.mkdir()
+        (guards / "a.lock").write_text("held s-old demo\n", encoding="utf-8")
+        config = home / "config.toml"
+        config.write_text(SANDBOX_CONFIG.format(root=workspace), encoding="utf-8")
+
+        done = subprocess.run(
+            [
+                sys.executable, str(HARNESS),
+                "--workspace", "demo", "--root", str(workspace),
+                "--ccnm", str(self.FAKE), "--config", str(config),
+                "--guard-dir", str(guards),
+            ],
+            capture_output=True, text=True, timeout=60,
+        )
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("held s-old demo", done.stdout + done.stderr)
+        # 一个产物都没有，说明两条腿都没起。
+        self.assertEqual(list(workspace.iterdir()), [])
 
     def test_keep_artifacts_leaves_them_for_inspection(self):
         _, record, workspace = self.run_harness(extra_args=["--keep-artifacts"])

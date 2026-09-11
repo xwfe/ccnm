@@ -293,9 +293,13 @@ Linux"。** 别因为这个 job 绿了就去改支持矩阵。它存在的理由
 一次 release，都绿，两个 release 建出来了、带 tar 和 sha256。下载回来验过：sha256 对得上、
 `lipo -info` 是 `x86_64 arm64`、解出来 `rwxr-xr-x`、`ccnm --version` 报的号跟 tag 一致。
 
-**Linux 那两条还没在 runner 上跑过**：`scripts/dist-linux.sh` 和 Linux 门禁是在一台真实
-Debian 13 / x86_64 上验的（见[支持矩阵](support-matrix.md)），workflow 本身要等下一次 push 才
-有 runner 上的证据。
+**`ci.yml` 的 Linux job 也真跑过了，而且它第一次跑就抓到一个真缺陷**：`kill -KILL -<pgid>`
+在 Linux 上从来没杀成过进程组，还报成功（见[支持矩阵](support-matrix.md)那一段）。修掉之后
+clippy 干净、681 passed / 0 failed、`scripts/dist-linux.sh` 在 runner 上产出了包。
+
+**`release.yml` 的 Linux job 还没在 runner 上跑过**——它只在推 tag 时触发，第一次运行就是
+第一次发版。它调用的东西（同一套门禁、同一个打包脚本）已经在 `ci.yml` 的 Linux job 和一台真实
+Debian 13 上各验过一遍。
 
 **推 tag 就是发版，撤不回来**——GitHub release 建出来了，别人可能已经下过。所以推之前先把门禁
 和打包在本机跑一遍：macOS 上 `bash scripts/dist.sh`，Linux 那半要么找一台 x86_64 的 Linux 跑

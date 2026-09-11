@@ -116,6 +116,24 @@ class McpClient:
                 stream.close()
         return code
 
+    @property
+    def pid(self) -> int:
+        """本地那个进程的 pid。真 bridge 已经 exec 成 ssh，所以它就是 transport。"""
+        return self._proc.pid
+
+    def kill(self) -> int:
+        """SIGKILL，不给它收尾的机会——这是"Host 崩了"的样子。
+
+        正常结束用 `close()`。这里要的恰恰是不正常：Host 被 kill -9 之后，远端
+        那半边和写锁该由谁回收，只有这样才问得出来。
+        """
+        self._proc.kill()
+        code = self._proc.wait(timeout=20)
+        for stream in (self._proc.stdin, self._proc.stdout, self._proc.stderr):
+            if stream and not stream.closed:
+                stream.close()
+        return code
+
     def __enter__(self) -> McpClient:
         return self
 

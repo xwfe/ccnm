@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-09-11T11:47:38+09:00",
+  "last_updated": "2026-09-11T14:05:00+09:00",
   "current_task": "P12",
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
@@ -873,15 +873,26 @@
     {
       "id": "P12",
       "title": "Remote Workspace MCP 真项目 dogfood 与 v1.x 冻结",
-      "status": "pending",
+      "status": "in_progress",
       "depends_on": [
         "P11"
       ],
-      "owner": null,
-      "started_at": null,
-      "last_updated": "2026-09-10T18:19:30+09:00",
+      "owner": "claude-code/p12-2026-09-11",
+      "started_at": "2026-09-11T14:05:00+09:00",
+      "last_updated": "2026-09-11T14:05:00+09:00",
       "completed_criteria": [],
-      "evidence": [],
+      "evidence": [
+        {
+          "kind": "offline",
+          "criteria": [
+            "P12.1",
+            "P12.2",
+            "P12.3"
+          ],
+          "ref": "docs/plan/p12-real-project-session.md",
+          "result": "只是这一轮的准备，**一行真机结论都没有产生**。三件新工具：scripts/p12-provision-linux-runtime.sh（Debian 上建专用执行身份 ccrun、装本轮唯一的系统级包 gcc/libc6-dev/make/ripgrep、清单先于变更、--revert 按清单精确撤销，账号不是本轮建的就绝不 userdel）；scripts/p12-runtime-toolchain.sh（以 ccrun 自己的身份把 rustup stable+clippy+rustfmt 和官方 Node 装进它的 home，校验官方 sha256，并把 PATH 写在 Debian .bashrc 那个非交互 return 之前）；scripts/p12_dogfood_check.py（provider-neutral MCP 客户端走真 bridge：身份审计、工具链在 exec_command 里叫得动、read→search→patch→构建必须失败且错误指着被改的文件→read_output 分页→收回→由 Runtime 上的 git status 判干净→测试通过，再加 writer busy / 没 opt-in / read 升 coding / 版本错配 / 远端消失 / Host 崩六条失败路径，每条都要求失败之后远端没有孤儿 mcp-serve）。tests/test_p12_dogfood.py 7 条用例用 fake_bridge_ccnm.py 把 bridge 接到本机真实 server 覆盖成功路径，并证明它抓得住「构建没看见 patch」、工具链叫不动、执行身份不对、开发者自己的账号（admin/staff）不算受限、私有路径泄漏、workspace 没 opt-in；全量 Python 168 passed。准备阶段只读查明四件在真机上现学就来不及的事：ccnm 的 search_text 依赖 Runtime 上有 ripgrep；rustup 默认写的两个 PATH 位置在非交互 ssh 里都不生效，表现是 ccnm 报 cargo 没装；两个 workspace 不能指同一棵树（roots overlap after canonicalization），同一棵树的两种模式只能靠同一个 workspace 要 read 模式来证；写锁在 writer 被 kill 之后按设计留在 held、不自动接管，恢复要人删锁。hpsrv 只读预检：Debian 13 trixie x86_64、Tailscale SSH 关闭（真 OpenSSH key 认证）、无 AllowUsers/AllowGroups、/home/bing 0700、没有 cargo/node/gcc/rg。限制：真机部分（建账号、装包、部署、真实 Claude Code）要用户逐项授权，尚未执行。"
+        }
+      ],
       "blockers": []
     }
   ],
@@ -908,8 +919,8 @@
     "部署环境的高权限风险：本轮 Agent Node 允许无传统凭据的 root 登录（Tailscale SSH 按 tailnet 身份放行，不要密码也不要密钥）。ccnm 造不成也管不了，但它足以让全部身份隔离失去意义。已按用户拍板列为部署环境风险、不计入 ccnm 安全保证，生产部署自己在 tailnet ACL 或 OS 层关掉；ccnm doctor 查不到它。"
   ],
   "handoff": {
-    "next_action": "**P11 已完成（四条验收都有证据），下一阶段是 P12。** 本轮把 P11.3 在真机上跑完了：真 ssh、真实 Claude Code 2.1.268、专用执行身份 ccrun，允许矩阵脚本退出码 0，记录见 docs/research/p11-real-host-2026-09-11.md。P12 要远端真实项目 dogfood（优先 Linux Runtime）并冻结 v1.x 契约，**同样需要真机和用户逐项授权**；开工前先看 P12.2 那条：Runtime 执行身份手上只有系统工具链，没有 cargo 也没有 node，「项目 toolchain 实际可用」这一条要先决定给执行身份装什么、由谁维护，产品文档目前对此只字未提（见 observed_gaps）。push/tag/release 仍未授权。",
-    "scope": "本轮两段：先修了 observed_gaps 里一条从 P3 挂到现在的并发缺陷（超时杀不到孙进程），再在用户授权下执行 P11.3 真机轮。真机部分有系统变更、有部署、消耗了订阅额度（三次 claude -p）。",
+    "next_action": "**P12 进行中：离线准备已提交，真机部分等授权。** 下一步按 docs/plan/p12-real-project-session.md 第三节问用户四件事：(1) 在 hpsrv（Debian 13，当 Linux Runtime，用来补 P3–P11 全是 macOS 的证据空白）上建专用账号 ccrun 并装本轮公钥；(2) 系统级装 gcc/libc6-dev/make/ripgrep（前三个给 rustc 链接用，ripgrep 是 ccnm 的 search_text 要的）；(3) 以 ccrun 身份把 rustup 和 Node 装进它自己的 home；(4) 真实 Claude Code 那一腿要花的订阅额度。授权到手就按第四节顺序跑：provision → toolchain → 在 Runtime 上自己编译 ccnm 并**第一次在 Linux 上跑全量门禁** → 三个一次性 workspace → scripts/p12_dogfood_check.py（不花额度，必须先过）→ 真实 Claude Code 一次真改动 → 逐条归零。push/tag/release 仍未授权。",
+    "scope": "本轮第一段：P12 的离线准备（三件工具、7 条自测、会话计划），不动 Rust 代码，不碰真机。第二段是真机 dogfood，要用户授权后才做。",
     "planning_validation": {
       "at": "2026-09-08T21:22:43+09:00",
       "commands": [

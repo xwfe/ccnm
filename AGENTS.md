@@ -29,6 +29,8 @@
 
 改 [P11.3 允许矩阵工具](scripts/p11_matrix_check.py)：另跑 `cargo build` 之后的 `python3 -m unittest tests.test_p11_matrix -q`。它的成功路径由 `tests/fixtures/fake_bridge_ccnm.py` 把 bridge 接到本机真实 server 来覆盖；真机结论仍以 `--out` 写出的证据文件为准，会话顺序见 [真实 Host 会话计划](docs/plan/p11-real-host-session.md)。
 
+改 [P12 dogfood 工具](scripts/p12_dogfood_check.py)：另跑 `cargo build` 之后的 `python3 -m unittest tests.test_p12_dogfood -q`。它的成功路径同样由 `tests/fixtures/fake_bridge_ccnm.py` 接本机真实 server 覆盖；`--skip-identity-audit` 只给这条自测用，真机轮用它等于没验。两个系统脚本（[建执行身份](scripts/p12-provision-linux-runtime.sh)、[装工具链](scripts/p12-runtime-toolchain.sh)）只在 Linux 上跑，改完至少过 `bash -n` 和目标机器上的 `--check`（只读）；真机结论以 `--out` 写出的证据文件为准，顺序见 [真实项目会话计划](docs/plan/p12-real-project-session.md)。
+
 改 [P7.3 对照工具](scripts/p7_parity_check.py)：另跑 `cargo build` 之后的 `python3 -m unittest tests.test_p7_parity -q`。它自己的成功路径由 `tests/fixtures/fake_ccnm.py` 离线覆盖，真机结论仍以 `--out` 写出的证据文件为准。
 
 改超时或进程组（`crates/ccnm-core/src/process.rs`）：另跑 `cargo test --workspace -- --test-threads=64`。这条压力路径专门抓只在 fork 压力下出现的问题——超时要 spawn 一个 `kill` 才能杀到整个进程组，那次 spawn 失败时只有 leader 会死，孙进程继续占着管道，表现是「超时了但过了 30 秒才回来」。默认线程数看不见它。

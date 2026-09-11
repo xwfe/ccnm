@@ -163,7 +163,7 @@ session 目录）；config 里写的Runtime Node ccnm 路径是真被跑的那�
 
 **这组抓出来的两个**：①Agent Node上 `ccnm xshun "开场白"` 会把开场白悄悄丢掉——Runtime Node那半边把它
 带到底，对Agent Node提同样的要求时才发现那边根本没东西带它（现在走 stdin 送过去，见
-[README](../README.md#你坐在哪台前面都行)）。②`ccnm result` 在Agent Node上会答 "workspace 未定义"，
+[使用说明](usage.md#prompt)）。②`ccnm result` 在Agent Node上会答 "workspace 未定义"，
 而那台机器上就躺着那个 session 的全部输出。两个都是"这半边根本没实现"，而不是实现错了——
 只有把另一半的命令逐条对着提一遍才看得见。
 
@@ -185,7 +185,7 @@ bash scripts/deploy.sh <另一台的 ssh 别名> [workspace]
 ```
 
 在有 Rust toolchain 的那台上跑（通常是Agent Node，Runtime Node常常没装 cargo）。它编译、按
-[README 的「升级」](../README.md#升级)那个安全办法装到两边、重启 controller（哪台有它就重启哪台）、然后跑一次
+[运维的「安装与升级」](operations.md#安装与升级)那个安全办法装到两边、重启 controller（哪台有它就重启哪台）、然后跑一次
 `ccnm doctor`。正在跑的会话不受影响。
 
 最后那次 `doctor` 是**先在本机跑、只在收到 `CCNM_E_CONFIG`(10) 时才转去另一台**。别改成

@@ -177,8 +177,10 @@ pub trait ProcessRunner {
 /// `Child::kill` signals one process. A command like `sh -c 'x & sleep 30'`
 /// leaves its own children holding the pipes, so killing only the leader
 /// means the drain threads read on until the grandchild finishes -- a
-/// timeout that does not time out. Both spawn sites put the child in its
-/// own process group, so a negative pid here reaches all of it.
+/// timeout that does not time out. All three piped spawn sites put the
+/// child in its own process group, so a negative pid here reaches all of
+/// it. (`run_attached` deliberately does not: it shares the operator's
+/// terminal and has no deadline.)
 ///
 /// `kill(1)` rather than `libc::killpg` because this crate forbids unsafe.
 /// The direct kill still runs afterwards: if `kill` is missing or the
@@ -677,6 +679,13 @@ impl ProcessRunner for SystemRunner {
             })
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        // Its own process group, for the same reason the other two spawn
+        // sites do it: [`kill_group`] can only aim at a group the child
+        // leads, and without one the deadline below reaches the leader
+        // only. The cost is that ctrl-c in the operator's terminal no
+        // longer reaches this child directly -- it has no terminal anyway,
+        // both its pipes are ours, and the deadline is what bounds it.
+        std::os::unix::process::CommandExt::process_group(&mut command, 0);
         tracing::debug!(cmd = %cmd.display(), "spawn");
         let mut child = command.spawn().map_err(|e| {
             Error::internal(format!("cannot spawn {}", cmd.program.to_string_lossy()))
@@ -701,30 +710,38 @@ impl ProcessRunner for SystemRunner {
         let stdout_reader = drain(child.stdout.take());
         let stderr_reader = drain(child.stderr.take());
 
-        let deadline = started + cmd.timeout;
-        let mut timed_out = false;
-        let mut poll = POLL_MIN;
-        let status = loop {
-            if let Some(status) = child.try_wait()? {
-                break status;
-            }
-            if Instant::now() >= deadline {
-                timed_out = true;
-                tracing::warn!(cmd = %cmd.display(), timeout = ?cmd.timeout, "timeout, killing");
-                // kill() fails only if the child already exited; wait()
-                // below picks up the status either way.
-                let _ = child.kill();
-                break child.wait()?;
-            }
-            thread::sleep(poll);
-            poll = (poll * 2).min(POLL_MAX);
-        };
+        // The shared [`watchdog`], not a `try_wait` poll of its own. That
+        // poll killed the leader and nothing else, which is a deadline
+        // that a command with one background child walks straight through:
+        // the grandchild keeps the pipes, the drain threads read on, and
+        // the call returns when the *command* was done rather than when the
+        // deadline said. Measured on Debian, where `sh` is dash and forks
+        // even for `sh -c 'sleep 10'`: 10.0s against a 100ms timeout. macOS
+        // hid it because bash execs that shape, so the leader *was* the
+        // sleep. Three spawn sites, one answer.
+        let child = std::sync::Arc::new(Mutex::new(child));
+        let finished = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let watchdog = watchdog(
+            std::sync::Arc::clone(&child),
+            std::sync::Arc::clone(&finished),
+            started + cmd.timeout,
+            KILLER.into(),
+            "spawn",
+            cmd.display(),
+        );
 
         if let Some(writer) = stdin_writer {
             join(writer)?;
         }
         let stdout = join(stdout_reader)?;
         let stderr = join(stderr_reader)?;
+        finished.store(true, std::sync::atomic::Ordering::SeqCst);
+        let timed_out = watchdog.join().unwrap_or(false);
+        // Both pipes are at EOF, so this does not wait.
+        let status = child
+            .lock()
+            .map_err(|_| Error::internal("process mutex poisoned"))?
+            .wait()?;
 
         Ok(Output {
             exit_code: status.code(),
@@ -843,20 +860,24 @@ mod tests {
     /// starts a background process and waits leaves that process holding
     /// the pipes, so killing only the leader means the drain threads read
     /// on until the grandchild finishes -- a timeout that does not time
-    /// out. Both entry points get the same test.
+    /// out. **All three** entry points get the same test: `spawn` is the
+    /// one every ccnm command goes through, and it was the one left with a
+    /// leader-only kill until the first Linux run of this suite showed it.
     #[test]
     fn a_timeout_reaches_the_grandchildren_too() {
-        for label in ["stream", "capture"] {
+        for label in ["stream", "capture", "spawn"] {
             let cmd = Cmd::new("sh")
                 .args(["-c", "sleep 30 & echo started; wait"])
                 .timeout(Duration::from_millis(400));
             let started = Instant::now();
-            let timed_out = if label == "stream" {
-                stream_lines(&cmd, |_| Flow::Continue).unwrap().timed_out
-            } else {
-                run_captured(&cmd, std::io::sink(), std::io::sink())
-                    .unwrap()
-                    .timed_out
+            let timed_out = match label {
+                "stream" => stream_lines(&cmd, |_| Flow::Continue).unwrap().timed_out,
+                "capture" => {
+                    run_captured(&cmd, std::io::sink(), std::io::sink())
+                        .unwrap()
+                        .timed_out
+                }
+                _ => SystemRunner.run(&cmd).unwrap().timed_out,
             };
             assert!(timed_out, "{label}");
             assert!(

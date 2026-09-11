@@ -1698,28 +1698,21 @@ mod tests {
 
     /// Set a file's modification time, so "old enough to sweep" can be
     /// tested without waiting an hour.
+    ///
+    /// This used to shell out to `touch -t`, with `date -r <seconds>` to
+    /// format the stamp. `-r` is where that fell over: on BSD date it means
+    /// "this argument is a unix timestamp", on GNU date it means "read this
+    /// *file's* mtime". So on Linux `date` failed, the stamp came out empty,
+    /// and the test died on `touch failed` -- a portability bug in the test
+    /// that hid nothing about the product but cost the first Linux run a
+    /// red. `set_times` needs no subprocess and no calendar arithmetic.
     fn filetime(path: &Path, when: std::time::SystemTime) {
-        let secs = when
-            .duration_since(std::time::UNIX_EPOCH)
+        std::fs::File::options()
+            .write(true)
+            .open(path)
             .unwrap()
-            .as_secs();
-        let stamp = std::process::Command::new("/usr/bin/touch")
-            .arg("-t")
-            .arg(unix_to_touch(secs))
-            .arg(path)
-            .status()
+            .set_times(std::fs::FileTimes::new().set_modified(when))
             .unwrap();
-        assert!(stamp.success(), "touch failed");
-    }
-
-    /// Unix seconds to touch(1)'s `[[CC]YY]MMDDhhmm[.SS]`, via date(1) so
-    /// this test carries no calendar arithmetic of its own.
-    fn unix_to_touch(secs: u64) -> String {
-        let out = std::process::Command::new("/bin/date")
-            .args(["-r", &secs.to_string(), "+%Y%m%d%H%M.%S"])
-            .output()
-            .unwrap();
-        String::from_utf8(out.stdout).unwrap().trim().to_string()
     }
 
     #[test]

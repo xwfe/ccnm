@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-09-11T02:40:00+09:00",
-  "current_task": "P9",
+  "last_updated": "2026-09-11T09:30:00+09:00",
+  "current_task": "P10",
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
     "source": "docs/research/codex-internal-wiring-2026-09-07.md",
@@ -705,15 +705,52 @@
     {
       "id": "P9",
       "title": "Remote Workspace MCP 契约",
-      "status": "in_progress",
+      "status": "completed",
       "depends_on": [
         "P8"
       ],
-      "owner": "claude-opus-5",
+      "owner": null,
       "started_at": "2026-09-11T02:40:00+09:00",
-      "last_updated": "2026-09-11T02:40:00+09:00",
-      "completed_criteria": [],
-      "evidence": [],
+      "last_updated": "2026-09-11T09:30:00+09:00",
+      "completed_criteria": [
+        "P9.1",
+        "P9.2",
+        "P9.3",
+        "P9.4"
+      ],
+      "evidence": [
+        {
+          "kind": "review",
+          "criteria": [
+            "P9.1",
+            "P9.2",
+            "P9.3"
+          ],
+          "ref": "docs/protocol/remote-workspace-mcp-v1.md",
+          "commit": "6ff5bd3",
+          "result": "命令定稿 `ccnm mcp bridge <workspace>`（规划里的 `ccnm mcp connect` 只是占位，已作废），参数只有 --node/--mode/--config；任意 host/user/root/私钥既不能当命令参数也不能当 MCP tool 输入，远端 root 只由 Runtime 权威配置解析。授权来自 Runtime 侧 `external_mcp = disabled|read|coding`，不写就是 disabled；请求高于配置直接拒绝启动而不降级（降级会让模型一路碰壁然后谎报完成）。read 模式 4 个工具、coding 七工具且在远端 server 打开时就抢与 Managed session 同一把写入互斥锁（锁键是工作树规范化根路径，别名/嵌套/共享 .git 的 worktree 算同一棵）。七工具的 annotations 映射定稿，exec_command 永远 destructive+open-world，不按命令文本动态改；annotations 只做 Host UX，忽略它的 Host 得到相同授权结果。限制：**没有任何实现**，这些命令和配置字段当前一个都不存在；没有真实 MCP Host 验证过命令形状。"
+        },
+        {
+          "kind": "review",
+          "criteria": [
+            "P9.4"
+          ],
+          "ref": "docs/research/remote-workspace-mcp-review-2026-09-11.md",
+          "commit": "6ff5bd3",
+          "result": "单人自审，无第二人复核、无真实 Host。逐条对照 P9.1–P9.4、runtime-surfaces 第 7 节，并把每一处\"实测\"说法拿去 rmcp 3.2.0 源码与仓库代码核对。当场改掉 7 处：read 模式原本含 read_output（output_ref 是 session 作用域，read 模式永远产不出，留着不是死工具就是跨会话泄漏，故收窄到 4 个，比 ROADMAP 下限更严并写明）；\"版本不匹配会报错\"是错的（negotiate_protocol_version 实际是协商到共同版本，-32022 只在服务端没有任何带 initialize 的版本时才发）；启动失败发生在 initialize 之前、原本没有可检查的表达（改为定义退出码非 0 + stderr 最后一行 CCNM_E_* 并配 9 个 fixture）；越权原本打算降级改为拒绝；read 工具白名单从一句话改为 schema 强制；不照抄 Managed 的 anthropic/requiresUserInteraction；检查脚本从单协议硬编码改为两套 bundle。另留下 7 项明知的权衡（命令名未经真实 Host、断线不自动重连、instructions 固定顺序 AGENTS.md→CLAUDE.md、read 并发无上限、busy 只能表现为 server 起不来、无 tools/list 变更通知、bridge 与 probe 同组需在帮助文本里区分）。"
+        },
+        {
+          "kind": "offline",
+          "criteria": [
+            "P9.2",
+            "P9.3",
+            "P9.4"
+          ],
+          "ref": "tests/test_check_protocol.py",
+          "commit": "6ff5bd3",
+          "result": "21 个 fixture 覆盖握手、两种模式的工具表、成功调用、四类 isError 结果、未知工具名的 JSON-RPC 错误，以及 9 条启动失败诊断（九个 CCNM_E_* 名字各有样例）。python3 scripts/check_protocol.py 通过（38 + 21）；python3 -m unittest tests.test_check_protocol -q：24 passed（本轮净 +6）；全量 Python discover 146 passed；check_plan 与 git diff --check 通过。新增的 6 条测试逐项证明校验器抓得住：read 工具表里塞 exec_command、编造的 CCNM_E_ 名字、文档里写了却没样例的名字、失败结果正文不以错误名开头、启动失败以 0 退出、以及一套契约坏掉不会被另一套的通过掩盖。限制：只证明这些文件互相自洽——**没有实现可以对照**；未跑 Rust 门禁（本轮没改 Rust）；没有真实 Host、没有远端真实项目、没有非 macOS 证据。"
+        }
+      ],
       "blockers": []
     },
     {
@@ -782,8 +819,8 @@
     "部署环境的高权限风险：本轮 Agent Node 允许无传统凭据的 root 登录（Tailscale SSH 按 tailnet 身份放行，不要密码也不要密钥）。ccnm 造不成也管不了，但它足以让全部身份隔离失去意义。已按用户拍板列为部署环境风险、不计入 ccnm 安全保证，生产部署自己在 tailnet ACL 或 OS 层关掉；ccnm doctor 查不到它。"
   ],
   "handoff": {
-    "next_action": "**P8 完成（P8.1–P8.3）。** 交接件三份：docs/orchestrator-handoff.md（状态归属边界、落盘顺序、start_key 约定、五条红线、O1–O4 表）、clients/python/execution_backend.py（最小 ExecutionBackend + 只依赖公开协议的 CcnmBackend + 内存 FakeBackend）、tests/test_execution_backend.py（20 个离线测试）。**新仓库没有创建**：O1–O4 明确记为\"交接就绪，未实施\"，创建它需要单独授权，ccnm 这边不再有 Orchestrator 的活。**两件待办都要用户动作**：一是环境归零（P7 留下的资源仍在运行，逐条清单见 handoff.authorization；三条逆序 sudo 脚本 p7-isolate-local-runtime-group.sh --revert → p7-grant-local-ssh-access.sh --revert → p7-revoke-local-runtime-key.sh --apply，另有一批不需要 sudo 的），二是发布动作（push/tag/release 仍未授权）。**下一阶段 P9（Remote Workspace MCP 契约）**：只写契约、schema/fixture 和评审，不开始真机付费调用；开工前先读 docs/plan/runtime-surfaces.md 第 8 节和 ROADMAP 的 P9.1–P9.4。建议先做环境归零再开 P9——P9 用不上那套真机环境，留着只是多一份暴露面。上一轮的收口结论保留在下面：**P7 全部完成（P7.1–P7.5），Machine Protocol ccnm.machine/1 已冻结**，发布候选可交付。冻结前落的两个行为修正与两条只写声明的事实见 docs/research/p7-5-freeze-2026-09-10.md，都做了最小真机复验。**没有做、需要用户单独授权的**：push、打 tag、release——本轮授权明确不含这些。**待办：环境归零**。P7.3 与 Codex 轮、P7.5 复验的资源仍在运行（逐条清单见 handoff.authorization），按逆序执行、三条都要用户的 sudo：p7-isolate-local-runtime-group.sh --revert → p7-grant-local-ssh-access.sh --revert → p7-revoke-local-runtime-key.sh --apply；另有一批不需要 sudo 的（bing 的 ~/.ssh/ccnm-p7codex 密钥对与 config 标记块、config.toml 的 Agent 侧改动与 model 行、p7codex-runtime.toml、Controller、/Users/Shared/ccnm-p7codex）。部署的二进制与 .pre-batch-e / .pre-codex / .pre-p75 回退副本按用户要求保留。下一阶段是 P8（独立 Orchestrator 交接），**本轮不碰**：它要求新项目另开仓库，创建动作另获授权。不加功能。",
-    "scope": "本轮只做 P8：一份边界文档、两个可抄走的 Python 示例文件、20 个离线测试。没有系统变更、没有调用任何 Agent、没有拨 ssh、没有改 Rust、没有部署，也没有创建新仓库。P7 遗留的环境归零与发布动作仍待用户授权；P9–P12 只作为后续路线记录，不提前实现。",
+    "next_action": "**P9 完成（P9.1–P9.4）**：Remote Workspace MCP 契约、schema 与 21 个 fixture 已提交，评审记录见 docs/research/remote-workspace-mcp-review-2026-09-11.md。**契约不等于功能**：`ccnm mcp bridge` 和 `external_mcp`/`external_instructions` 配置项当前都不存在，对外文档已按此措辞。**下一阶段 P10（Remote Workspace MCP stdio bridge）**：实现本地 stdio MCP server → 一条持久 SSH → 远端既有 Runtime server，复用七工具与写互斥，不复制实现；EOF/interrupt 必须回收自己的 transport 且不影响无关 Managed session；read/coding 两套工具列表要有离线测试；用本地 fake SSH、坏 peer、断线、超大/坏消息、Runtime 不可达、旧 ccnm 和资源清理覆盖，不宣称真实 Host 已验证（那是 P11）。开工前先读契约第 3、4、6 节和 runtime-surfaces 第 7 节。**仍待用户动作**：P7 遗留环境的三条 sudo 逆序脚本与 /Users/Shared/ccnm-p7codex（清单见 handoff.authorization），以及发布动作（push/tag/release 仍未授权）。",
+    "scope": "本轮做了两件事：P8（Orchestrator 交接件）与 P9（Remote Workspace MCP 契约），都是文档、示例与离线测试。没有系统变更、没有调用任何 Agent、没有拨 ssh、没有改 Rust、没有部署。P10–P12 不提前实现。",
     "planning_validation": {
       "at": "2026-09-08T21:22:43+09:00",
       "commands": [
@@ -795,14 +832,14 @@
       "limits": "本轮离线门禁；fodelf SSH 建连失败，没有新增远端资源或运行真实模型，不替代 P3.5。"
     },
     "planning_validation_latest": {
-      "at": "2026-09-11T00:20:00+09:00",
+      "at": "2026-09-11T09:30:00+09:00",
       "commands": [
-        "PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_execution_backend -q：20 passed",
-        "PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p 'test_*.py' -q：140 passed（本轮净 +20）",
+        "python3 scripts/check_protocol.py：通过（38 + 21 个 fixture，两套契约）",
+        "PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p 'test_*.py' -q：146 passed（本轮净 +26：执行接口 20、协议校验 6）",
         "python3 scripts/check_plan.py：通过（含全仓库相对链接检查）",
         "git diff --check：通过"
       ],
-      "limits": "本轮只加文档、两个示例 Python 文件和它们的测试，没有改 Rust、协议说明、schema 或 fixture，因此没有重跑 cargo 三门禁和 check_protocol——上一轮（P7.5）的结果仍是最近一次全量门禁记录。测试不启动任何 Agent、不拨 ssh：CcnmBackend 的用例每次启动都在 Runtime 本地预检失败，FakeBackend 不出进程。没有真实消费者按这套接口写过东西，接口未经外部验证。"
+      "limits": "P8 与 P9 都只加文档、示例文件、schema/fixture 和它们的测试，没有改 Rust，因此没有重跑 cargo 三门禁——最近一次全量门禁仍是 P7.5 那轮（fmt/clippy 通过、cargo test --workspace 638 passed）。没有启动任何 Agent、没有拨 ssh、没有消耗订阅额度。P9 的契约没有实现可以对照，只证明文件之间自洽。"
     },
     "inherited_changes": [],
     "authorization": "P3 的双机系统授权已执行完毕并归零，不再有效。P4 只写文档与 fixture，未做任何系统变更。P7.3 的授权已执行且**环境仍在运行、尚未清理**：本机 ccrun 主组仍是 ccrun(504)、仍在 com.apple.access_ssh、authorized_keys 里仍有本轮公钥，root 清单 /var/db/ccnm-p7-local-20260910 仍在，fodelf 的 ~/.ssh/config 仍有本轮 alias 区块。保留是为了等 Codex 额度回来接着用；要现在归零就按 scripts/p7-revoke-local-runtime-key.sh 逆序撤销，那需要用户执行 sudo。除此之外如需账号、ACL、防火墙、部署或替换二进制，必须重新逐项获得批准。 P7.4 Batch E 的部署与额度消耗已由用户逐项授权并执行完毕：三端 ccnm 换成 commit 9882938 的构建（sha256 d9c8c8cc…），旧构建（sha256 1c14492d…）留在各自 ~/.local/bin/ccnm.pre-batch-e 可回退；fodelf Controller 重启为 pid 1330；ccrun 的出站私钥 ~/.config/ccnm/transport/agent-key 已删除且不应还原。授权明确不含创建新账号、修改 ACL/防火墙、运行 Codex、push/tag/release。 P7.3 Codex 轮（用户选定复用 ccrun 的拓扑）新增这些可撤销资源，清理时逐条还原：本机 bing 的 ~/.ssh/ccnm-p7codex 密钥对、bing 与 ccrun 两侧 authorized_keys 各一行（备份分别在 ~/.ssh/authorized_keys.pre-p7codex 与 ccrun 家目录根下）、bing 的 ~/.ssh/config 中 ccnm-p7codex 标记块、bing 的 ~/.config/ccnm/config.toml 改为 Agent 侧（原件备份 config.toml.pre-p7codex）、新增 ~/.config/ccnm/p7codex-runtime.toml、bing 账号的 Controller LaunchAgent（ccnm controller uninstall 可撤）、工作树 /Users/Shared/ccnm-p7codex（ccrun 所有）、ccrun 配置里的 workspace p7codex 与 nodes.codex-agent（原件备份在 ccrun 家目录根下）。另注意：ccrun 的 SSH 准入在本轮被撤销后又按用户执行的 p7-grant-local-ssh-access.sh --apply 重新授予。 P7.3 Codex parity 轮（本轮）按用户授权执行并已完成：两端 ccnm 换成 sha256 e97a2ccd… 的构建，被替换的 d9c8c8cc… 留在各自 ~/.local/bin/ccnm.pre-codex（更早的 .pre-batch-e 原样保留）；bing 的 Controller 重启为 pid 31396；bing 的 [agents.codex-main] 加了 model = \"gpt-5.3-codex-spark\"（删掉该行即回默认模型）；工作树 /Users/Shared/ccnm-p7codex 里的两个 parity 产物已删、git status 干净。订阅消耗 Codex 4 次真实执行（两轮各两条腿，Codex 不报费用只有 token 数）。授权明确不含创建新账号、修改 ACL/防火墙、push/tag/release。 P7.5（本轮）按用户拍板执行并已完成：两端 ccnm 换成 sha256 51c5c73e…，被替换的 51…前那份留在各自 ~/.local/bin/ccnm.pre-p75；bing 的 Controller 重启为 pid 1531；一次真实 Codex --print 复验，产物已删、工作树干净。用户明确不授权在 P7.5 修改 Tailscale ACL、防火墙或 fodelf 的 root 策略——那两条只写进安全声明。用户明确要求**先不清理环境**：两个行为修正可能还要再做极小真机回归，等最终验收完成再按逆序脚本统一归零。",

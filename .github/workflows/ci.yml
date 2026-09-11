@@ -117,8 +117,24 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      # The failure goes into the job summary, not just the log. Logs on
+      # this repository need a token to read; the summary is part of the
+      # public run page, so "which test went red on Linux" is answerable
+      # by anyone looking at the run, including from a machine that has no
+      # gh login. `cargo test` is fail-fast, so the tail is the useful part.
       - name: Test
-        run: cargo test --workspace
+        run: |
+          set -o pipefail
+          if ! cargo test --workspace 2>&1 | tee /tmp/test.log; then
+            {
+              echo '### `cargo test --workspace` failed on Linux'
+              echo
+              echo '```'
+              tail -n 60 /tmp/test.log
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
 
       # The Linux download is built by this script; a release is a bad
       # place to find out it does not run.

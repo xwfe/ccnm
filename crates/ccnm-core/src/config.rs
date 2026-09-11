@@ -179,10 +179,16 @@ pub struct Workspace {
     /// the credential to every child process rather than merely leaving it
     /// on disk.
     ///
-    /// Runtime-side only, like every other workspace field -- the machine
-    /// taking the risk is the one that decides, not the caller.
+    /// The name is the same shape as its sibling on purpose:
+    /// `allow_unconfined_exec` and `allow_unisolated_credentials` both say
+    /// "the property does not hold, go ahead anyway", and both name the
+    /// property -- confinement, isolation -- rather than a machine. An
+    /// earlier spelling ended in `_on_runtime`, which read as though there
+    /// were an `_on_agent` to pair with. There is not: every workspace
+    /// field is read from the Runtime's own config, because the machine
+    /// taking the risk is the one that gets to decide, not the caller.
     #[serde(default)]
-    pub allow_agent_credentials_on_runtime: bool,
+    pub allow_unisolated_credentials: bool,
     /// The most an **external** MCP client may do with this workspace
     /// (docs/protocol/remote-workspace-mcp-v1.md section 4).
     ///

@@ -17,7 +17,7 @@
 //!
 //! There are two such switches, and they are deliberately not one:
 //! `allow_unconfined_exec` accepts an account with more OS access than it
-//! should have, and `allow_agent_credentials_on_runtime` accepts one that
+//! should have, and `allow_unisolated_credentials` accepts one that
 //! can read the agent's own login. The second is the thing this program
 //! exists to prevent, so it is never implied -- it has to be written down
 //! by itself, on the machine taking the risk, and it is said out loud once
@@ -91,8 +91,8 @@ impl Finding {
     /// "This identity can reach a known Agent login."
     ///
     /// Waivable, but only by the switch that names it — see
-    /// [`Accepted::agent_credentials`] and the field it comes from,
-    /// `allow_agent_credentials_on_runtime`.
+    /// [`Accepted::unisolated_credentials`] and the field it comes from,
+    /// `allow_unisolated_credentials`.
     pub fn is_agent_credential(&self) -> bool {
         crate::provider::AgentProvider::ALL
             .iter()
@@ -107,7 +107,7 @@ impl Finding {
             return false;
         }
         if self.is_agent_credential() {
-            return accepted.agent_credentials;
+            return accepted.unisolated_credentials;
         }
         true
     }
@@ -152,15 +152,15 @@ impl Finding {
 pub struct Accepted {
     /// `allow_unconfined_exec`
     pub unconfined_exec: bool,
-    /// `allow_agent_credentials_on_runtime`
-    pub agent_credentials: bool,
+    /// `allow_unisolated_credentials`
+    pub unisolated_credentials: bool,
 }
 
 impl Accepted {
     /// The default posture: nothing waived.
     pub const NOTHING: Self = Self {
         unconfined_exec: false,
-        agent_credentials: false,
+        unisolated_credentials: false,
     };
 
     /// Only the unconfined-exec switch, which is what most callers and
@@ -168,14 +168,14 @@ impl Accepted {
     pub fn unconfined(unconfined_exec: bool) -> Self {
         Self {
             unconfined_exec,
-            agent_credentials: false,
+            unisolated_credentials: false,
         }
     }
 
     /// Is anything waived at all? Used to decide whether a session has to
     /// carry a warning with its results.
     pub fn any(&self) -> bool {
-        self.unconfined_exec || self.agent_credentials
+        self.unconfined_exec || self.unisolated_credentials
     }
 }
 
@@ -198,7 +198,7 @@ pub fn warn_accepted_once(state_dir: &Path, workspace: &str, accepted: Accepted)
     let marker = state_dir
         .join("accepted-risks")
         .join(format!("{workspace}.agent-credentials"));
-    if !accepted.agent_credentials {
+    if !accepted.unisolated_credentials {
         let _ = std::fs::remove_file(&marker);
         return None;
     }
@@ -210,7 +210,7 @@ pub fn warn_accepted_once(state_dir: &Path, workspace: &str, accepted: Accepted)
     }
     let _ = std::fs::write(&marker, b"said\n");
     Some(format!(
-        "!! ccnm: workspace \"{workspace}\" has allow_agent_credentials_on_runtime set.\n\
+        "!! ccnm: workspace \"{workspace}\" has allow_unisolated_credentials set.\n\
          \n\
          The account that runs this workspace's commands on the Runtime Node can\n\
          read a known Agent login on that machine. So can every command the model\n\
@@ -220,7 +220,7 @@ pub fn warn_accepted_once(state_dir: &Path, workspace: &str, accepted: Accepted)
          That separation is the one thing ccnm otherwise refuses to bend. This\n\
          workspace has accepted losing it. Nothing else is standing in the way.\n\
          \n\
-         To take it back: remove allow_agent_credentials_on_runtime from\n\
+         To take it back: remove allow_unisolated_credentials from\n\
          [workspaces.{workspace}] in the Runtime Node's config.toml.\n\
          \n\
          Said once. `ccnm doctor {workspace}` keeps showing it."
@@ -278,7 +278,7 @@ impl Audit {
                 );
             } else {
                 text.push_str(
-                    "\nRuntime initialization is also refused: this identity can reach a known Agent login. To accept that for one workspace -- every command the model runs could then read it -- set allow_agent_credentials_on_runtime = true on it in config.toml.",
+                    "\nRuntime initialization is also refused: this identity can reach a known Agent login. To accept that for one workspace -- every command the model runs could then read it -- set allow_unisolated_credentials = true on it in config.toml.",
                 );
             }
         }
@@ -1017,14 +1017,14 @@ mod tests {
         // account is still unconfined, and that is a separate yes.
         let credentials_only = Accepted {
             unconfined_exec: false,
-            agent_credentials: true,
+            unisolated_credentials: true,
         };
         assert!(audit.agent_boundary_clear(credentials_only));
         assert!(!audit.exec_allowed(credentials_only));
 
         let both = Accepted {
             unconfined_exec: true,
-            agent_credentials: true,
+            unisolated_credentials: true,
         };
         assert!(audit.exec_allowed(both));
     }
@@ -1042,10 +1042,7 @@ mod tests {
         runner.push(Output::exited(1, ""));
         let audit = audit(Some("bing"), &home, &runner);
         let text = audit.refusal(Accepted::unconfined(true));
-        assert!(
-            text.contains("allow_agent_credentials_on_runtime"),
-            "{text}"
-        );
+        assert!(text.contains("allow_unisolated_credentials"), "{text}");
         assert!(text.contains("can reach a known Agent login"), "{text}");
     }
 
@@ -1060,7 +1057,7 @@ mod tests {
         let audit = audit(Some("ccrun"), &home, &runner);
         let everything = Accepted {
             unconfined_exec: true,
-            agent_credentials: true,
+            unisolated_credentials: true,
         };
         assert_eq!(audit.user, "unknown");
         assert!(
@@ -1082,14 +1079,11 @@ mod tests {
         std::fs::create_dir_all(&state).unwrap();
         let on = Accepted {
             unconfined_exec: true,
-            agent_credentials: true,
+            unisolated_credentials: true,
         };
 
         let first = warn_accepted_once(&state, "xdo", on).expect("the first time says it");
-        assert!(
-            first.contains("allow_agent_credentials_on_runtime"),
-            "{first}"
-        );
+        assert!(first.contains("allow_unisolated_credentials"), "{first}");
         assert!(first.contains("xdo"), "{first}");
         assert!(warn_accepted_once(&state, "xdo", on).is_none());
         // A different workspace is a different decision.

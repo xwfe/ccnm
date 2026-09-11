@@ -206,7 +206,7 @@ impl ExecGate {
             .and_then(|config| config.workspaces.get(&payload.workspace))
             .map(|w| crate::safety::Accepted {
                 unconfined_exec: w.allow_unconfined_exec,
-                agent_credentials: w.allow_agent_credentials_on_runtime,
+                unisolated_credentials: w.allow_unisolated_credentials,
             })
             .unwrap_or(crate::safety::Accepted::NOTHING);
         let home = crate::paths::home_dir().unwrap_or_else(|_| PathBuf::from("/nonexistent"));
@@ -232,9 +232,9 @@ impl ExecGate {
                 "this runtime is NOT confined (running as {}) and this workspace has allow_unconfined_exec set; a command here has the access that account has",
                 self.audit.user
             );
-            if self.accepted.agent_credentials {
+            if self.accepted.unisolated_credentials {
                 note.push_str(
-                    "; it also has allow_agent_credentials_on_runtime set, so that account can read a known Agent login and so can anything the model runs",
+                    "; it also has allow_unisolated_credentials set, so that account can read a known Agent login and so can anything the model runs",
                 );
             }
             note

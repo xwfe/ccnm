@@ -391,7 +391,7 @@ pub struct ResolveReport {
     /// to the Runtime, but the person who needs to hear about it is
     /// wherever the session was started from. Absent means not accepted.
     #[serde(default)]
-    pub allow_agent_credentials_on_runtime: bool,
+    pub allow_unisolated_credentials: bool,
 }
 
 impl Protocol for ResolveReport {
@@ -432,7 +432,7 @@ pub fn resolve(config: &Config, request: &ResolveRequest) -> Result<ResolveRepor
             .and_then(|node| provider.config_dir(node))
             .map(Path::to_path_buf),
         permission_mode: provider.permission_mode(resolved.workspace),
-        allow_agent_credentials_on_runtime: resolved.workspace.allow_agent_credentials_on_runtime,
+        allow_unisolated_credentials: resolved.workspace.allow_unisolated_credentials,
     })
 }
 
@@ -568,7 +568,7 @@ pub struct AuditReport {
     /// replacement so an older reader still understands the rest of the
     /// report: absent means "not accepted", which is the safe reading.
     #[serde(default)]
-    pub allow_agent_credentials_on_runtime: bool,
+    pub allow_unisolated_credentials: bool,
 }
 
 impl AuditReport {
@@ -576,7 +576,7 @@ impl AuditReport {
     pub fn accepted(&self) -> crate::safety::Accepted {
         crate::safety::Accepted {
             unconfined_exec: self.allow_unconfined_exec,
-            agent_credentials: self.allow_agent_credentials_on_runtime,
+            unisolated_credentials: self.allow_unisolated_credentials,
         }
     }
 }
@@ -618,7 +618,7 @@ pub fn audit(
         audit: crate::safety::audit(resolved.runtime.runtime_user.as_deref(), &home, runner),
         root: RootStatus::of(&resolved.workspace.root, runner),
         allow_unconfined_exec: resolved.workspace.allow_unconfined_exec,
-        allow_agent_credentials_on_runtime: resolved.workspace.allow_agent_credentials_on_runtime,
+        allow_unisolated_credentials: resolved.workspace.allow_unisolated_credentials,
     })
 }
 

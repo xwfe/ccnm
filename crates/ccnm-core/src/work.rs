@@ -2002,7 +2002,7 @@ mod tests {
                 git: crate::runtime::GitStatus::Usable,
             },
             allow_unconfined_exec: false,
-            allow_agent_credentials_on_runtime: false,
+            allow_unisolated_credentials: false,
         })
         .unwrap()
     }

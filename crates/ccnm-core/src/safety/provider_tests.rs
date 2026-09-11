@@ -166,7 +166,7 @@ fn both_providers_default_managed_and_local_override_paths_are_audited() {
     assert!(!audit.agent_boundary_clear(Accepted::unconfined(true)));
     assert!(audit.agent_boundary_clear(Accepted {
         unconfined_exec: true,
-        agent_credentials: true,
+        unisolated_credentials: true,
     }));
     assert_eq!(runner.calls().len(), 6);
     let text = serde_json::to_string(&report).unwrap();

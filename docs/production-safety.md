@@ -132,7 +132,7 @@ exec_command            confinement 通过后才正常允许
 [workspaces.demo]
 root = "/Users/me/code/demo"
 allow_unconfined_exec = true            # 这个账号没被约束
-allow_agent_credentials_on_runtime = true   # 这个账号能读到 Agent 的登录
+allow_unisolated_credentials = true   # 这个账号能读到 Agent 的登录
 ```
 
 **两个都要写，而且互不蕴含。** 它们是两件不同的事：前一句说"跑命令的账号 OS 权限比它该有的大"，后一句说"一句 prompt 就能把我的登录读出去"。后面这一件正是这个项目存在的理由，所以它绝不会被前一句顺带打开。

@@ -379,17 +379,17 @@ fn with_default_subcommand(args: Vec<std::ffi::OsString>) -> Vec<std::ffi::OsStr
     args
 }
 
-/// Say once what `allow_agent_credentials_on_runtime` costs, on the
+/// Say once what `allow_unisolated_credentials` costs, on the
 /// machine the operator typed on.
 ///
 /// Best effort by design. A state directory this account cannot write is a
 /// reason to say it again next time -- the marker never exists, so the
 /// warning always prints -- and never a reason to fail a session over.
-fn warn_accepted_risk(workspace: &str, agent_credentials: bool) {
+fn warn_accepted_risk(workspace: &str, unisolated_credentials: bool) {
     let state = ccnm_core::paths::state_dir().unwrap_or_else(|_| PathBuf::from("/nonexistent"));
     let accepted = ccnm_core::safety::Accepted {
         unconfined_exec: false,
-        agent_credentials,
+        unisolated_credentials,
     };
     if let Some(text) = ccnm_core::safety::warn_accepted_once(&state, workspace, accepted) {
         eprintln!("\n{text}\n");
@@ -465,7 +465,7 @@ fn run(cli: Cli) -> Result<i32> {
                     agent.as_deref(),
                     &env,
                 )?;
-                warn_accepted_risk(workspace, authority.allow_agent_credentials_on_runtime);
+                warn_accepted_risk(workspace, authority.allow_unisolated_credentials);
                 let tools = agent_tools(config_path().ok().as_deref())?;
                 let report = work::start(&start_request(&authority, opening), &tools)?;
                 eprintln!("{}", report.summary());
@@ -476,10 +476,7 @@ fn run(cli: Cli) -> Result<i32> {
                 return work::attach(&attach_request(workspace, selected, None), &tools);
             }
             let resolved = config.workspace(workspace)?;
-            warn_accepted_risk(
-                workspace,
-                resolved.workspace.allow_agent_credentials_on_runtime,
-            );
+            warn_accepted_risk(workspace, resolved.workspace.allow_unisolated_credentials);
             let env = launch_env()?;
             if let Some(prompt) = print {
                 let rep = launcher::run_print_with_agent(

@@ -161,6 +161,23 @@ pub struct Workspace {
     /// result of such a session says so.
     #[serde(default)]
     pub allow_unconfined_exec: bool,
+    /// The most an **external** MCP client may do with this workspace
+    /// (docs/protocol/remote-workspace-mcp-v1.md section 4).
+    ///
+    /// Absent means [`ExternalAccess::Disabled`]: being able to ssh in as
+    /// the Runtime Executor is not permission to open every project on the
+    /// machine, so each one says so for itself. A client may ask for less
+    /// than this and gets it; asking for more is refused, not downgraded.
+    #[serde(default)]
+    pub external_mcp: ExternalAccess,
+    /// What an external MCP client is told about the project in
+    /// `initialize.result.instructions`.
+    ///
+    /// Separate from [`external_mcp`](Self::external_mcp) because it is
+    /// context, not permission: `project` hands over the project's own
+    /// instruction file and grants nothing.
+    #[serde(default)]
+    pub external_instructions: ExternalInstructions,
     /// Hybrid only: where the restricted runner may write. Must not overlap
     /// `root`.
     #[serde(default)]
@@ -197,6 +214,55 @@ impl Backend {
             Backend::HybridSmb => "hybrid-smb",
         }
     }
+}
+
+/// How much of a workspace an external MCP client may have.
+///
+/// Ordered on purpose: `disabled < read < coding`, so "is the request
+/// within what this workspace allows" is one comparison rather than a
+/// table somebody has to keep in step.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExternalAccess {
+    /// External MCP cannot open this workspace at all. The default, and
+    /// the answer for a workspace that does not exist either — the two are
+    /// deliberately indistinguishable from outside.
+    #[default]
+    Disabled,
+    /// The tools that cannot change anything: `workspace_info`,
+    /// `read_file`, `list_files`, `search_text`.
+    Read,
+    /// All seven tools, holding the workspace's write guard for as long as
+    /// the connection lives.
+    Coding,
+}
+
+impl ExternalAccess {
+    /// The value as written in config.toml.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ExternalAccess::Disabled => "disabled",
+            ExternalAccess::Read => "read",
+            ExternalAccess::Coding => "coding",
+        }
+    }
+}
+
+/// What an external MCP client is told about the project itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExternalInstructions {
+    /// ccnm's own paragraph only: which workspace this is, and that every
+    /// path is relative to its root.
+    #[default]
+    Generic,
+    /// The paragraph plus the project's own instruction file. The Runtime
+    /// looks for `AGENTS.md`, then `CLAUDE.md`, and takes the first that
+    /// exists — an external client's provider is unknown and must not be
+    /// guessed from anything it says about itself.
+    Project,
+    /// Nothing at all.
+    None,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
@@ -525,12 +591,19 @@ impl Config {
             } else {
                 "agent_node"
             };
-            let roles: &[(&str, &String)] = if *agent_node == ws.runtime_node {
-                &[(agent_role, agent_node)]
-            } else {
-                &[(agent_role, agent_node), ("runtime_node", &ws.runtime_node)]
-            };
-            for (role, node_name) in roles {
+            // An external-MCP-only workspace has no Agent to check, and
+            // demanding one would force a fictional node into the config of
+            // a machine whose project is only ever reached by clients that
+            // bring their own.
+            let has_agent = ws.agent.is_some() || !ws.agent_node.is_empty();
+            let mut roles: Vec<(&str, &String)> = Vec::new();
+            if has_agent {
+                roles.push((agent_role, agent_node));
+            }
+            if !has_agent || *agent_node != ws.runtime_node {
+                roles.push(("runtime_node", &ws.runtime_node));
+            }
+            for (role, node_name) in &roles {
                 match self.nodes.get(*node_name) {
                     None => problems.push(format!(
                         "{at}.{role} = \"{node_name}\" does not match any [nodes.*] entry"

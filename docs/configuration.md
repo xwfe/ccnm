@@ -193,6 +193,7 @@ runtime_node = "runtime"     # 可省略，默认就是 "runtime"
 root = "/absolute/project/root"
 claude_permission_mode = "acceptEdits"
 allow_unconfined_exec = false
+external_mcp = "disabled"    # 默认值，可省略
 ```
 
 ### `agent_node`
@@ -230,6 +231,38 @@ allow_unconfined_exec = true
 它允许 Runtime OS 账号没通过 confinement 检查时仍然执行 `exec_command`，但每条命令结果都会标记 runtime **未隔离**。
 
 这不是生产安全配置。真实项目应该在 Runtime Node 建 `ccrun` 之类的专用低权限账号，然后把它改回 `false`。
+
+### `external_mcp`（experimental）
+
+外部 MCP Host（你本机已经在跑的 Claude Code / Codex / 别的客户端）能不能把这个 workspace 当成远程项目工具用，以及最多能做什么：
+
+```toml
+external_mcp = "read"        # disabled（默认）| read | coding
+```
+
+| 值 | 给出去的东西 |
+| --- | --- |
+| `disabled` | 什么都没有。不写这一行就是它 |
+| `read` | 四个只读工具：`workspace_info` / `read_file` / `list_files` / `search_text` |
+| `coding` | 七工具，并且**持有这个工作树的写入互斥锁**，和受管会话抢同一把 |
+
+**不写就是关着的**：别人能 SSH 到 Runtime 账号，不等于能打开这台机器上每一个项目。客户端可以要求比这更少（`--mode read`），要求更多会被拒绝启动，不会静默降级。
+
+只给外部 MCP 用的 workspace **可以没有 Agent**：没有 `agent` 也没有 `agent_node` 时，只要 `external_mcp` 不是 `disabled` 就合法——那种项目从来不由 ccnm 启动 Agent。它必须定义在自己的 Runtime Node 上。
+
+用法和限制见 [Remote Workspace MCP 契约](protocol/remote-workspace-mcp-v1.md)。**目前是 experimental**：离线测试覆盖，但还没有真实 MCP Host 连过。
+
+### `external_instructions`
+
+外部客户端在 MCP 握手里拿到什么项目说明。**只影响上下文，不影响权限**：
+
+```toml
+external_instructions = "generic"   # generic（默认）| project | none
+```
+
+- `generic`：只有 ccnm 自己那段（这是哪个 workspace、路径都是相对的、这次能不能写）。
+- `project`：再加上项目自己的说明文件。Runtime 按固定顺序找 `AGENTS.md` → `CLAUDE.md`，取第一个存在的——外部客户端的 provider 无从得知，也不能靠它自称的名字去猜。
+- `none`：什么都不给。
 
 ## CLI 改配置
 

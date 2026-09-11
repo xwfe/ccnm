@@ -3,6 +3,6 @@
   "$note": "没有已知失败，但也验证不过。和每个 FAIL 码分开，调用方才能区分“没验过”和“坏了”。",
   "message": {
     "exit_code": 1,
-    "stderr_last_line": "CCNM_E_NOT_READY: external MCP is not implemented in this build"
+    "stderr": "CCNM_E_NOT_READY:\nexternal MCP is not implemented in this build"
   }
 }

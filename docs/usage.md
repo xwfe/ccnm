@@ -135,6 +135,18 @@ ccnm rpc
 
 现在能用的是 `print` 模式的完整一轮：握手、列 instance、启动、查状态、取结果、停止。Claude 与 Codex 各在真机上跑通过一次，协议 `ccnm.machine/1` **已于 2026-09-10 冻结**：往后加字段、加方法可以，删字段和改语义要升版本。方法、参数、错误码和 fixture 见[协议说明](protocol/README.md)。
 
+## 把远端项目给已经在跑的 Agent 用（experimental）
+
+上面那条是 ccnm 帮你启动 Agent。反过来：你的 Claude Code 或 Codex 已经开着，只是项目在另一台机器上——那就把这个进程配进它的 MCP server 列表：
+
+```bash
+ccnm mcp bridge my-project --mode read
+```
+
+它不自己实现 MCP，而是 `exec` 成一条到 Runtime 的 ssh，真正回答工具调用的还是那台机器上的同一个 server。**默认什么都打不开**：Runtime 侧要先给那个 workspace 写 `external_mcp = "read"`（或 `coding`），见[配置说明](configuration.md)。`read` 给四个只读工具，`coding` 给七个并持有工作树的写入互斥锁；请求高于配置会直接拒绝启动，不降级。
+
+**目前是 experimental**：离线测试覆盖，但还没有真实 MCP Host 连过。完整契约见 [Remote Workspace MCP](protocol/remote-workspace-mcp-v1.md)。
+
 ## 当前模型能做什么
 
 核心 MCP 工具：

@@ -2,19 +2,30 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://ccnm.invalid/schema/remote-workspace-mcp-v1.json",
   "title": "ccnm Remote Workspace MCP v1",
-  "description": "契约阶段的消息形状：MCP 握手、两种模式的工具表、工具调用结果，以及 initialize 之前失败时的启动诊断。没有实现，这些只描述约定。",
+  "description": "消息形状：MCP 握手、两种模式的工具表、工具调用结果，以及 initialize 之前失败时的启动诊断。命令与权限模型已实现（P10），但没有真实 MCP Host 连过。",
   "$defs": {
     "id": {
       "description": "JSON-RPC 请求 id。MCP 不允许 null。",
       "oneOf": [
-        { "type": "string", "minLength": 1 },
-        { "type": "integer" }
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "integer"
+        }
       ]
     },
     "protocol_version": {
       "description": "MCP 协议版本。这几个是当前 SDK 认识的全部版本。",
       "type": "string",
-      "enum": ["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25", "2026-07-28"]
+      "enum": [
+        "2024-11-05",
+        "2025-03-26",
+        "2025-06-18",
+        "2025-11-25",
+        "2026-07-28"
+      ]
     },
     "tool_name": {
       "type": "string",
@@ -31,249 +42,461 @@
     "read_tool_name": {
       "description": "read 模式允许出现的全部工具。exec_command 和 apply_patch 不在里面是权限；read_output 不在里面是因为 read 模式产不出 output_ref。",
       "type": "string",
-      "enum": ["workspace_info", "read_file", "list_files", "search_text"]
+      "enum": [
+        "workspace_info",
+        "read_file",
+        "list_files",
+        "search_text"
+      ]
     },
     "annotations": {
       "description": "标准 MCP tool annotations。只影响 Host 的审批 UX，不是门禁。",
       "type": "object",
       "properties": {
-        "title": { "type": "string" },
-        "readOnlyHint": { "type": "boolean" },
-        "destructiveHint": { "type": "boolean" },
-        "idempotentHint": { "type": "boolean" },
-        "openWorldHint": { "type": "boolean" }
+        "title": {
+          "type": "string"
+        },
+        "readOnlyHint": {
+          "type": "boolean"
+        },
+        "destructiveHint": {
+          "type": "boolean"
+        },
+        "idempotentHint": {
+          "type": "boolean"
+        },
+        "openWorldHint": {
+          "type": "boolean"
+        }
       },
-      "required": ["readOnlyHint", "openWorldHint"],
+      "required": [
+        "readOnlyHint",
+        "openWorldHint"
+      ],
       "additionalProperties": false
     },
     "tool": {
       "type": "object",
       "properties": {
-        "name": { "$ref": "#/$defs/tool_name" },
-        "description": { "type": "string", "minLength": 1 },
-        "inputSchema": { "type": "object" },
-        "annotations": { "$ref": "#/$defs/annotations" }
+        "name": {
+          "$ref": "#/$defs/tool_name"
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "inputSchema": {
+          "type": "object"
+        },
+        "annotations": {
+          "$ref": "#/$defs/annotations"
+        }
       },
-      "required": ["name", "description", "inputSchema", "annotations"],
+      "required": [
+        "name",
+        "description",
+        "inputSchema",
+        "annotations"
+      ],
       "additionalProperties": false
     },
     "read_tool": {
       "description": "read 模式的工具：名字在白名单里，而且必须自称只读。",
       "type": "object",
       "properties": {
-        "name": { "$ref": "#/$defs/read_tool_name" },
-        "description": { "type": "string", "minLength": 1 },
-        "inputSchema": { "type": "object" },
+        "name": {
+          "$ref": "#/$defs/read_tool_name"
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "inputSchema": {
+          "type": "object"
+        },
         "annotations": {
           "type": "object",
           "properties": {
-            "title": { "type": "string" },
-            "readOnlyHint": { "const": true },
-            "openWorldHint": { "const": false }
+            "title": {
+              "type": "string"
+            },
+            "readOnlyHint": {
+              "const": true
+            },
+            "openWorldHint": {
+              "const": false
+            }
           },
-          "required": ["readOnlyHint", "openWorldHint"],
+          "required": [
+            "readOnlyHint",
+            "openWorldHint"
+          ],
           "additionalProperties": false
         }
       },
-      "required": ["name", "description", "inputSchema", "annotations"],
+      "required": [
+        "name",
+        "description",
+        "inputSchema",
+        "annotations"
+      ],
       "additionalProperties": false
     },
     "text_content": {
       "type": "object",
       "properties": {
-        "type": { "const": "text" },
-        "text": { "type": "string", "minLength": 1 }
+        "type": {
+          "const": "text"
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1
+        }
       },
-      "required": ["type", "text"],
+      "required": [
+        "type",
+        "text"
+      ],
       "additionalProperties": false
     },
     "error_content": {
       "description": "失败结果的第一块文本：第一行必须是 CCNM_E_* 名字，模型按它决定下一步。",
       "type": "object",
       "properties": {
-        "type": { "const": "text" },
-        "text": { "type": "string", "pattern": "^CCNM_E_[A-Z_]+:" }
+        "type": {
+          "const": "text"
+        },
+        "text": {
+          "type": "string",
+          "pattern": "^CCNM_E_[A-Z_]+:"
+        }
       },
-      "required": ["type", "text"],
+      "required": [
+        "type",
+        "text"
+      ],
       "additionalProperties": false
     },
     "initialize_request": {
       "type": "object",
       "properties": {
-        "jsonrpc": { "const": "2.0" },
-        "id": { "$ref": "#/$defs/id" },
-        "method": { "const": "initialize" },
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "method": {
+          "const": "initialize"
+        },
         "params": {
           "type": "object",
           "properties": {
-            "protocolVersion": { "$ref": "#/$defs/protocol_version" },
-            "capabilities": { "type": "object" },
+            "protocolVersion": {
+              "$ref": "#/$defs/protocol_version"
+            },
+            "capabilities": {
+              "type": "object"
+            },
             "clientInfo": {
               "type": "object",
               "properties": {
-                "name": { "type": "string", "minLength": 1 },
-                "version": { "type": "string" }
+                "name": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "version": {
+                  "type": "string"
+                }
               },
-              "required": ["name"],
+              "required": [
+                "name"
+              ],
               "additionalProperties": false
             }
           },
-          "required": ["protocolVersion", "capabilities", "clientInfo"],
+          "required": [
+            "protocolVersion",
+            "capabilities",
+            "clientInfo"
+          ],
           "additionalProperties": false
         }
       },
-      "required": ["jsonrpc", "id", "method", "params"],
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ],
       "additionalProperties": false
     },
     "initialize_result": {
       "type": "object",
       "properties": {
-        "jsonrpc": { "const": "2.0" },
-        "id": { "$ref": "#/$defs/id" },
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/$defs/id"
+        },
         "result": {
           "type": "object",
           "properties": {
-            "protocolVersion": { "$ref": "#/$defs/protocol_version" },
+            "protocolVersion": {
+              "$ref": "#/$defs/protocol_version"
+            },
             "capabilities": {
               "type": "object",
-              "properties": { "tools": { "type": "object" } },
-              "required": ["tools"],
+              "properties": {
+                "tools": {
+                  "type": "object"
+                }
+              },
+              "required": [
+                "tools"
+              ],
               "additionalProperties": false
             },
             "serverInfo": {
               "type": "object",
               "properties": {
-                "name": { "const": "ccnm" },
-                "version": { "type": "string", "minLength": 1 }
+                "name": {
+                  "const": "ccnm"
+                },
+                "version": {
+                  "type": "string",
+                  "minLength": 1
+                }
               },
-              "required": ["name", "version"],
+              "required": [
+                "name",
+                "version"
+              ],
               "additionalProperties": false
             },
-            "instructions": { "type": "string", "maxLength": 16384 }
+            "instructions": {
+              "type": "string",
+              "maxLength": 16384
+            }
           },
-          "required": ["protocolVersion", "capabilities", "serverInfo"],
+          "required": [
+            "protocolVersion",
+            "capabilities",
+            "serverInfo"
+          ],
           "additionalProperties": false
         }
       },
-      "required": ["jsonrpc", "id", "result"],
+      "required": [
+        "jsonrpc",
+        "id",
+        "result"
+      ],
       "additionalProperties": false
     },
     "tools_list_result": {
       "type": "object",
       "properties": {
-        "jsonrpc": { "const": "2.0" },
-        "id": { "$ref": "#/$defs/id" },
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/$defs/id"
+        },
         "result": {
           "type": "object",
           "properties": {
             "tools": {
               "type": "array",
               "minItems": 4,
-              "items": { "$ref": "#/$defs/tool" }
+              "items": {
+                "$ref": "#/$defs/tool"
+              }
             }
           },
-          "required": ["tools"],
+          "required": [
+            "tools"
+          ],
           "additionalProperties": false
         }
       },
-      "required": ["jsonrpc", "id", "result"],
+      "required": [
+        "jsonrpc",
+        "id",
+        "result"
+      ],
       "additionalProperties": false
     },
     "tools_list_result_read": {
       "description": "read 模式的工具表。写工具不在这里不是靠约定，是靠这份 schema 拦住。",
       "type": "object",
       "properties": {
-        "jsonrpc": { "const": "2.0" },
-        "id": { "$ref": "#/$defs/id" },
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/$defs/id"
+        },
         "result": {
           "type": "object",
           "properties": {
             "tools": {
               "type": "array",
               "minItems": 4,
-              "items": { "$ref": "#/$defs/read_tool" }
+              "items": {
+                "$ref": "#/$defs/read_tool"
+              }
             }
           },
-          "required": ["tools"],
+          "required": [
+            "tools"
+          ],
           "additionalProperties": false
         }
       },
-      "required": ["jsonrpc", "id", "result"],
+      "required": [
+        "jsonrpc",
+        "id",
+        "result"
+      ],
       "additionalProperties": false
     },
     "call_tool_result_ok": {
       "type": "object",
       "properties": {
-        "jsonrpc": { "const": "2.0" },
-        "id": { "$ref": "#/$defs/id" },
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/$defs/id"
+        },
         "result": {
           "type": "object",
           "properties": {
             "content": {
               "type": "array",
               "minItems": 1,
-              "items": { "$ref": "#/$defs/text_content" }
+              "items": {
+                "$ref": "#/$defs/text_content"
+              }
             },
-            "isError": { "const": false }
+            "isError": {
+              "const": false
+            }
           },
-          "required": ["content"],
+          "required": [
+            "content"
+          ],
           "additionalProperties": false
         }
       },
-      "required": ["jsonrpc", "id", "result"],
+      "required": [
+        "jsonrpc",
+        "id",
+        "result"
+      ],
       "additionalProperties": false
     },
     "call_tool_result_error": {
       "description": "工具干的活失败了：结果而不是协议错误，模型必须能读到。",
       "type": "object",
       "properties": {
-        "jsonrpc": { "const": "2.0" },
-        "id": { "$ref": "#/$defs/id" },
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/$defs/id"
+        },
         "result": {
           "type": "object",
           "properties": {
             "content": {
               "type": "array",
               "minItems": 1,
-              "items": { "$ref": "#/$defs/error_content" }
+              "items": {
+                "$ref": "#/$defs/error_content"
+              }
             },
-            "isError": { "const": true }
+            "isError": {
+              "const": true
+            }
           },
-          "required": ["content", "isError"],
+          "required": [
+            "content",
+            "isError"
+          ],
           "additionalProperties": false
         }
       },
-      "required": ["jsonrpc", "id", "result"],
+      "required": [
+        "jsonrpc",
+        "id",
+        "result"
+      ],
       "additionalProperties": false
     },
     "jsonrpc_error": {
       "description": "调用本身不合法。很多 Host 不把它给模型看，所以只用于真正的协议错误。",
       "type": "object",
       "properties": {
-        "jsonrpc": { "const": "2.0" },
-        "id": { "$ref": "#/$defs/id" },
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/$defs/id"
+        },
         "error": {
           "type": "object",
           "properties": {
-            "code": { "type": "integer", "enum": [-32602, -32603, -32022] },
-            "message": { "type": "string", "minLength": 1 },
-            "data": { "type": "object" }
+            "code": {
+              "type": "integer",
+              "enum": [
+                -32602,
+                -32603,
+                -32022
+              ]
+            },
+            "message": {
+              "type": "string",
+              "minLength": 1
+            },
+            "data": {
+              "type": "object"
+            }
           },
-          "required": ["code", "message"],
+          "required": [
+            "code",
+            "message"
+          ],
           "additionalProperties": false
         }
       },
-      "required": ["jsonrpc", "id", "error"],
+      "required": [
+        "jsonrpc",
+        "id",
+        "error"
+      ],
       "additionalProperties": false
     },
     "startup_error": {
-      "description": "initialize 之前就失败：没有 MCP 消息，只有退出码和 stderr 最后一行。不是协议消息。",
+      "description": "initialize 之前就失败：没有 MCP 消息，只有退出码和 stderr 上的诊断。第一行是 CCNM_E_* 名字，后面是给人看的解释；远端拒绝和本机拒绝形状相同，因为打印它们的是同一段代码。",
       "type": "object",
       "properties": {
-        "exit_code": { "type": "integer", "minimum": 1, "maximum": 255 },
-        "stderr_last_line": { "type": "string", "pattern": "^CCNM_E_[A-Z_]+: " }
+        "exit_code": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 255
+        },
+        "stderr": {
+          "type": "string",
+          "pattern": "^CCNM_E_[A-Z_]+:\\n"
+        }
       },
-      "required": ["exit_code", "stderr_last_line"],
+      "required": [
+        "exit_code",
+        "stderr"
+      ],
       "additionalProperties": false
     }
   }

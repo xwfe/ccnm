@@ -170,6 +170,165 @@ pub fn open(config: &Config, request: &OpenPayload) -> Result<Opened> {
     })
 }
 
+/// The wire version of an **external** MCP open (P10).
+///
+/// A third number rather than a field on [`OpenPayload`], for the reason
+/// that made 4 separate from 3: the trust model differs. A managed open
+/// says "this Agent Node, this instance, opened by ccnm"; this one says "an
+/// MCP client nobody here manages, whose provider is unknown and must not
+/// be guessed". A build that does not know the number stops with
+/// `CCNM_E_VERSION` instead of reading it as a managed open and handing out
+/// seven tools.
+pub const EXTERNAL_PROTOCOL: u32 = 5;
+
+/// What an external MCP client asks for. Never more than the workspace's
+/// own `external_mcp` allows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExternalMode {
+    Read,
+    Coding,
+}
+
+impl ExternalMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ExternalMode::Read => "read",
+            ExternalMode::Coding => "coding",
+        }
+    }
+
+    /// The access level this request is asking for.
+    pub fn requested(self) -> crate::config::ExternalAccess {
+        match self {
+            ExternalMode::Read => crate::config::ExternalAccess::Read,
+            ExternalMode::Coding => crate::config::ExternalAccess::Coding,
+        }
+    }
+
+    pub fn writes(self) -> bool {
+        self == ExternalMode::Coding
+    }
+}
+
+/// A request to open a workspace for an external MCP client.
+///
+/// Same missing fields as [`OpenPayload`] — no root, no paths, no node
+/// addresses — and one more thing missing on purpose: there is no identity
+/// here to check. The bridge is not a managed Agent, so authorization comes
+/// from the workspace's own `external_mcp`, not from a binding.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExternalOpenPayload {
+    pub protocol: u32,
+    pub workspace: String,
+    /// Names this connection's retained-output directory. Validated here
+    /// rather than trusted, like the managed one.
+    pub session: String,
+    pub mode: ExternalMode,
+}
+
+impl ExternalOpenPayload {
+    pub fn new(workspace: &str, session: &str, mode: ExternalMode) -> Self {
+        ExternalOpenPayload {
+            protocol: EXTERNAL_PROTOCOL,
+            workspace: workspace.to_string(),
+            session: session.to_string(),
+            mode,
+        }
+    }
+}
+
+impl Protocol for ExternalOpenPayload {
+    fn protocol(&self) -> u32 {
+        self.protocol
+    }
+    fn expected_protocol(&self) -> u32 {
+        EXTERNAL_PROTOCOL
+    }
+}
+
+/// What this Runtime decided for an external open.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenedExternal {
+    pub workspace: String,
+    pub root: PathBuf,
+    /// What the client actually got, which is never more than the config
+    /// allows and never more than it asked for.
+    pub mode: ExternalMode,
+    pub instructions: crate::config::ExternalInstructions,
+    pub runtime_user: Option<String>,
+    pub allow_unconfined_exec: bool,
+}
+
+impl OpenedExternal {
+    /// The in-process shape the MCP server opens with — same constructor as
+    /// every other entry, so an external session lands on the same binding
+    /// re-check, audit, canonicalization and (in coding mode) write guard.
+    pub fn serve_payload(&self, request: &ExternalOpenPayload) -> ServePayload {
+        ServePayload::new(&self.workspace, self.root.clone(), &request.session)
+            .with_entry(crate::protocol::mcp::Entry::External(self.mode))
+    }
+}
+
+/// Resolve an external open against this Runtime's authoritative config.
+///
+/// Refuses in one voice. "No such workspace" and "that workspace does not
+/// accept external MCP" are the same error with the same text: otherwise
+/// the error message itself becomes a way to find out what projects sit on
+/// somebody else's machine.
+pub fn open_external(config: &Config, request: &ExternalOpenPayload) -> Result<OpenedExternal> {
+    if request.protocol != EXTERNAL_PROTOCOL {
+        return Err(Error::new(
+            ErrorCode::Version,
+            format!(
+                "external open request is protocol {}, this Runtime opens protocol {EXTERNAL_PROTOCOL}",
+                request.protocol
+            ),
+        ));
+    }
+    identifier(&request.session)?;
+    let unavailable = || {
+        Error::policy(format!(
+            "workspace {} is not available to external MCP",
+            request.workspace
+        ))
+    };
+    let workspace = config
+        .workspaces
+        .get(&request.workspace)
+        .ok_or_else(unavailable)?;
+    let allowed = workspace.external_mcp;
+    if allowed == crate::config::ExternalAccess::Disabled {
+        return Err(unavailable());
+    }
+    // Asking for more than the workspace allows stops here. It is not
+    // downgraded: a client told to write and silently given a read-only
+    // session spends the rest of its life calling apply_patch and being
+    // told the tool does not exist.
+    if request.mode.requested() > allowed {
+        return Err(Error::policy(format!(
+            "workspace {} allows external MCP in {} mode; {} was requested",
+            request.workspace,
+            allowed.as_str(),
+            request.mode.as_str()
+        )));
+    }
+    let root = canonical_root(&workspace.root)?;
+    let runtime_user = config
+        .nodes
+        .get(&workspace.runtime_node)
+        .and_then(|node| node.runtime_user.clone());
+    Ok(OpenedExternal {
+        workspace: request.workspace.clone(),
+        root,
+        mode: request.mode,
+        instructions: workspace.external_instructions,
+        runtime_user,
+        allow_unconfined_exec: workspace.allow_unconfined_exec,
+    })
+}
+
 /// What the Agent Node asks the Runtime before starting a session on its
 /// own machine (P7.4 Batch C).
 ///
@@ -448,6 +607,9 @@ pub enum ServeRequest {
     Legacy(ServePayload),
     /// Protocol 4. Runtime authority decides the root.
     Managed(OpenPayload),
+    /// Protocol 5. An external MCP client, authorized by the workspace's
+    /// own `external_mcp` rather than by an Agent binding.
+    External(ExternalOpenPayload),
 }
 
 /// Decode a serve payload without deciding in advance which shape it is.
@@ -468,13 +630,16 @@ pub fn decode_serve(text: &str) -> Result<ServeRequest> {
         OPEN_PROTOCOL => Ok(ServeRequest::Managed(crate::protocol::payload::decode(
             text,
         )?)),
+        EXTERNAL_PROTOCOL => Ok(ServeRequest::External(crate::protocol::payload::decode(
+            text,
+        )?)),
         1..=3 => Ok(ServeRequest::Legacy(crate::protocol::payload::decode(
             text,
         )?)),
         other => Err(Error::new(
             ErrorCode::Version,
             format!(
-                "serve payload is protocol {other}; this ccnm serves 1..=3 (root from the caller) and {OPEN_PROTOCOL} (root from this Runtime)"
+                "serve payload is protocol {other}; this ccnm serves 1..=3 (root from the caller), {OPEN_PROTOCOL} (root from this Runtime) and {EXTERNAL_PROTOCOL} (external MCP client)"
             ),
         )),
     }
@@ -565,6 +730,151 @@ agent = {{ node = "agent", instance = "claude-main" }}
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("project")).unwrap();
         dir
+    }
+
+    /// A workspace with an `external_mcp` line, and one without.
+    fn external_config(root: &Path, access: &str, instructions: &str) -> Config {
+        let toml = format!(
+            r#"
+this = "runtime"
+
+[nodes.runtime]
+runtime_user = "ccrun"
+
+[workspaces.demo]
+root = "{}"
+external_mcp = "{access}"
+external_instructions = "{instructions}"
+
+[workspaces.private]
+root = "{}"
+"#,
+            root.display(),
+            root.display()
+        );
+        toml::from_str(&toml).expect("test config")
+    }
+
+    fn external(workspace: &str, mode: ExternalMode) -> ExternalOpenPayload {
+        ExternalOpenPayload::new(workspace, "bridge-1", mode)
+    }
+
+    /// The default is closed. Being able to reach this machine is not
+    /// permission to open a project on it.
+    #[test]
+    fn a_workspace_without_the_opt_in_is_not_open_to_external_mcp() {
+        let dir = workspace_dir("external-default");
+        let config = external_config(&dir.join("project"), "read", "generic");
+        let err = open_external(&config, &external("private", ExternalMode::Read)).unwrap_err();
+        assert_eq!(err.code(), ErrorCode::Policy);
+        // A workspace that does not exist at all answers the same way. The
+        // only difference is the name the caller itself sent back to it, so
+        // the error cannot be used to find out what projects are here.
+        let missing = open_external(&config, &external("nope", ExternalMode::Read)).unwrap_err();
+        assert_eq!(missing.code(), ErrorCode::Policy);
+        assert_eq!(
+            err.message().replace("private", "<name>"),
+            missing.message().replace("nope", "<name>")
+        );
+    }
+
+    #[test]
+    fn read_is_granted_and_the_root_comes_from_this_machine() {
+        let dir = workspace_dir("external-read");
+        let config = external_config(&dir.join("project"), "read", "generic");
+        let opened = open_external(&config, &external("demo", ExternalMode::Read)).unwrap();
+        assert_eq!(opened.mode, ExternalMode::Read);
+        assert_eq!(opened.root, dir.join("project").canonicalize().unwrap());
+        assert_eq!(opened.runtime_user.as_deref(), Some("ccrun"));
+        // And the payload it opens the server with says read, so the guard
+        // and the tool list follow from one decision.
+        let payload = opened.serve_payload(&external("demo", ExternalMode::Read));
+        assert!(!payload.entry.writes());
+        assert!(payload.entry.is_external());
+    }
+
+    /// Asking for more than the workspace allows stops here. Downgrading
+    /// instead would hand the client a session whose tools quietly differ
+    /// from what it was configured to do.
+    #[test]
+    fn coding_is_refused_when_the_workspace_only_allows_read() {
+        let dir = workspace_dir("external-escalate");
+        let config = external_config(&dir.join("project"), "read", "generic");
+        let err = open_external(&config, &external("demo", ExternalMode::Coding)).unwrap_err();
+        assert_eq!(err.code(), ErrorCode::Policy);
+        assert!(err.message().contains("read mode"), "{err}");
+    }
+
+    /// The other direction is fine: a client may ask for less than it could
+    /// have, and gets exactly what it asked for.
+    #[test]
+    fn read_on_a_coding_workspace_stays_read() {
+        let dir = workspace_dir("external-downgrade");
+        let config = external_config(&dir.join("project"), "coding", "project");
+        let opened = open_external(&config, &external("demo", ExternalMode::Read)).unwrap();
+        assert_eq!(opened.mode, ExternalMode::Read);
+        assert_eq!(
+            opened.instructions,
+            crate::config::ExternalInstructions::Project
+        );
+        let coding = open_external(&config, &external("demo", ExternalMode::Coding)).unwrap();
+        assert!(
+            coding
+                .serve_payload(&external("demo", ExternalMode::Coding))
+                .entry
+                .writes()
+        );
+    }
+
+    /// The session id becomes a directory name on this machine.
+    #[test]
+    fn an_external_session_id_is_validated_not_trusted() {
+        let dir = workspace_dir("external-session");
+        let config = external_config(&dir.join("project"), "read", "generic");
+        let mut request = external("demo", ExternalMode::Read);
+        request.session = "../../etc".into();
+        assert!(open_external(&config, &request).is_err());
+    }
+
+    #[test]
+    fn an_external_open_from_another_protocol_is_a_version_error() {
+        let dir = workspace_dir("external-version");
+        let config = external_config(&dir.join("project"), "read", "generic");
+        let mut request = external("demo", ExternalMode::Read);
+        request.protocol = OPEN_PROTOCOL;
+        let err = open_external(&config, &request).unwrap_err();
+        assert_eq!(err.code(), ErrorCode::Version);
+    }
+
+    /// The wire shape carries a workspace, a session and a mode -- and
+    /// `deny_unknown_fields` means a peer that tries to add a root gets a
+    /// decode error rather than a quietly ignored field.
+    #[test]
+    fn an_external_payload_cannot_smuggle_a_root() {
+        let json = serde_json::json!({
+            "protocol": EXTERNAL_PROTOCOL,
+            "workspace": "demo",
+            "session": "bridge-1",
+            "mode": "read",
+            "root": "/somewhere/else",
+        });
+        let wire = {
+            use base64::Engine as _;
+            base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .encode(serde_json::to_vec(&json).unwrap())
+        };
+        assert!(decode_serve(&wire).is_err());
+    }
+
+    /// Protocol 5 decodes as itself, not as the managed shape.
+    #[test]
+    fn an_external_open_is_decoded_as_external() {
+        let wire =
+            crate::protocol::payload::encode(&external("demo", ExternalMode::Coding)).unwrap();
+        match decode_serve(&wire).unwrap() {
+            ServeRequest::External(req) => assert_eq!(req.mode, ExternalMode::Coding),
+            other => panic!("decoded as {other:?}"),
+        }
     }
 
     #[test]
@@ -702,7 +1012,12 @@ agent = {{ node = "agent", instance = "claude-main" }}
     /// retried as an older shape until one of them parses.
     #[test]
     fn an_unknown_protocol_is_a_version_error_not_a_fallback() {
-        let json = serde_json::json!({"protocol": OPEN_PROTOCOL + 1, "workspace": "demo"});
+        // One past the highest number this build knows. It moves when a new
+        // shape is added -- 5 stopped being "the future" when external
+        // opens got it -- and that is the point: the assertion is about a
+        // number nothing here serves, not about a particular integer.
+        let unknown = EXTERNAL_PROTOCOL + 1;
+        let json = serde_json::json!({"protocol": unknown, "workspace": "demo"});
         let wire = {
             use base64::Engine as _;
             base64::engine::general_purpose::URL_SAFE_NO_PAD
@@ -710,7 +1025,10 @@ agent = {{ node = "agent", instance = "claude-main" }}
         };
         let err = decode_serve(&wire).unwrap_err();
         assert_eq!(err.code(), ErrorCode::Version);
-        assert!(err.message().contains("protocol 5"), "{err}");
+        assert!(
+            err.message().contains(&format!("protocol {unknown}")),
+            "{err}"
+        );
     }
 
     #[test]

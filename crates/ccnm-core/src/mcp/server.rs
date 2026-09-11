@@ -173,11 +173,18 @@ impl ExecGate {
                     "bound Agent execution requires the Runtime's authoritative config",
                 ));
             }
+            // An external MCP client has no binding to verify and must not
+            // be asked for one: it is not a managed Agent, and what
+            // authorizes it is the workspace's own `external_mcp`, checked
+            // before this server is constructed. Everything else this gate
+            // decides — the audit, the runtime account, the unconfined
+            // opt-in — applies to it unchanged.
             (None, Some(config))
-                if config
-                    .workspaces
-                    .get(&payload.workspace)
-                    .is_some_and(|workspace| workspace.agent.is_some()) =>
+                if !payload.entry.is_external()
+                    && config
+                        .workspaces
+                        .get(&payload.workspace)
+                        .is_some_and(|workspace| workspace.agent.is_some()) =>
             {
                 return Err(Error::policy(
                     "instance-selected workspace requires a verified Runtime binding",
@@ -247,6 +254,8 @@ struct Inner {
     git_subdir: Option<String>,
     /// Somebody is at a terminal, so a permission prompt can be answered.
     interactive: bool,
+    /// Which entry opened this server, and therefore whether it may write.
+    entry: crate::protocol::mcp::Entry,
     calls: AtomicU64,
 }
 
@@ -279,16 +288,32 @@ impl Server {
         if !exec_gate.audit.agent_boundary_clear() {
             return Err(Error::policy(exec_gate.audit.refusal()));
         }
-        let state = crate::paths::state_dir()?;
-        let guard = crate::mcp::write_guard::WriteGuard::acquire(
-            &state,
-            &root,
-            &payload.workspace,
-            &payload.session,
-            exec_gate.config.as_ref(),
-            &SystemRunner,
-        )?;
-        Self::with_gate(payload, root, exec_gate, Some(guard))
+        // A session that cannot write does not take the workspace's write
+        // guard: holding it would block a real writer for as long as
+        // somebody keeps a read-only client open, and it protects nothing
+        // — this session has no tool that changes a file.
+        let guard = if payload.entry.writes() {
+            let state = crate::paths::state_dir()?;
+            Some(crate::mcp::write_guard::WriteGuard::acquire(
+                &state,
+                &root,
+                &payload.workspace,
+                &payload.session,
+                exec_gate.config.as_ref(),
+                &SystemRunner,
+            )?)
+        } else {
+            None
+        };
+        Self::with_gate(payload, root, exec_gate, guard)
+    }
+
+    /// Open for an external MCP client: this Runtime's config decides the
+    /// workspace, the root and how much the client gets.
+    pub fn open_external(request: &crate::runtime::ExternalOpenPayload) -> CcnmResult<Self> {
+        let config = crate::Config::load(&crate::paths::effective_config_path()?)?;
+        let opened = crate::runtime::open_external(&config, request)?;
+        Self::new(&opened.serve_payload(request))
     }
 
     fn with_gate(
@@ -347,6 +372,7 @@ impl Server {
                 git,
                 git_subdir,
                 interactive: payload.interactive,
+                entry: payload.entry,
                 calls: AtomicU64::new(0),
             }),
             tool_router: Self::tool_router(),
@@ -364,8 +390,18 @@ impl Server {
         self.tool_router
             .list_all()
             .into_iter()
+            .filter(|tool| self.offers(&tool.name))
             .map(|tool| {
-                if self.inner.interactive && tool.name == INTERACTION_TOOL {
+                let annotations = annotations_for(&tool.name);
+                let tool = tool.annotate(annotations);
+                // Only where somebody can answer, and never to an external
+                // client: this server cannot know whether there is a person
+                // on the other side of a bridge, and claiming to know would
+                // let a Host skip the approval it would otherwise ask for.
+                if self.inner.interactive
+                    && !self.inner.entry.is_external()
+                    && tool.name == INTERACTION_TOOL
+                {
                     tool.with_meta(requires_user_interaction())
                 } else {
                     tool
@@ -374,17 +410,65 @@ impl Server {
             .collect()
     }
 
+    /// Whether this session offers a tool at all.
+    ///
+    /// `read_output` is in the withheld set for a different reason than the
+    /// other two: an `output_ref` only means anything inside the session
+    /// that produced it, and a session with no `exec_command` can never
+    /// produce one. Offering it would be a tool that always fails, and
+    /// resolving somebody else's ref is the leak that must not exist.
+    fn offers(&self, tool: &str) -> bool {
+        self.inner.entry.writes() || !WITHHELD_WITHOUT_WRITE.contains(&tool)
+    }
+
+    /// The refusal a withheld tool gets if a client calls it anyway.
+    ///
+    /// `tools/list` not naming it is a hint; a Host is free to ignore hints.
+    /// This is the part that is not a hint.
+    fn refuse_withheld(&self, tool: &str) -> Option<CallToolResult> {
+        (!self.offers(tool)).then(|| {
+            tool_error(&Error::policy(format!(
+                "{tool} is not available: this workspace is open for external MCP in read mode"
+            )))
+        })
+    }
+
     /// What goes into `initialize.result.instructions`: ccnm's own
     /// paragraph, then the project's CLAUDE.md, within
     /// [`MAX_INSTRUCTIONS_BYTES`] (design doc section 20).
+    ///
+    /// An external client gets what the workspace configured instead, and
+    /// never a provider's projection: which instruction file a managed
+    /// session projects follows from the provider ccnm started, and there
+    /// is no provider here to follow.
     pub fn instructions(&self) -> String {
-        let text = self.inner.provider.project_instructions(
-            &self.inner.workspace,
-            self.inner.project.as_ref(),
-            &self.inner.named,
-        );
+        let text = match self.inner.entry {
+            crate::protocol::mcp::Entry::External(mode) => context::external(
+                &self.inner.workspace,
+                &self.inner.root,
+                self.external_policy(),
+                mode,
+            ),
+            crate::protocol::mcp::Entry::Managed => self.inner.provider.project_instructions(
+                &self.inner.workspace,
+                self.inner.project.as_ref(),
+                &self.inner.named,
+            ),
+        };
         debug_assert!(text.len() <= MAX_INSTRUCTIONS_BYTES);
         text
+    }
+
+    /// The workspace's external instruction policy, read from the same
+    /// config copy the exec gate used — one load, one answer.
+    fn external_policy(&self) -> crate::config::ExternalInstructions {
+        self.inner
+            .exec_gate
+            .config
+            .as_ref()
+            .and_then(|config| config.workspaces.get(&self.inner.workspace))
+            .map(|workspace| workspace.external_instructions)
+            .unwrap_or_default()
     }
 
     /// Count one served tool call and return the new total. Every tool
@@ -493,6 +577,9 @@ impl Server {
         Parameters(args): Parameters<ExecCommandArgs>,
     ) -> std::result::Result<CallToolResult, ErrorData> {
         self.count_call();
+        if let Some(refusal) = self.refuse_withheld("exec_command") {
+            return Ok(refusal);
+        }
         // The hard gate of design doc section 18. Every other tool is
         // bounded by the path policy; this one is a shell, so it is
         // bounded by the account it runs as -- and if nobody has arranged
@@ -551,6 +638,9 @@ impl Server {
         Parameters(args): Parameters<ReadOutputArgs>,
     ) -> std::result::Result<CallToolResult, ErrorData> {
         self.count_call();
+        if let Some(refusal) = self.refuse_withheld("read_output") {
+            return Ok(refusal);
+        }
         let Some(state) = self.inner.state.clone() else {
             return Ok(tool_error(&Error::new(
                 ErrorCode::NotReady,
@@ -580,6 +670,9 @@ impl Server {
         Parameters(args): Parameters<ApplyPatchArgs>,
     ) -> std::result::Result<CallToolResult, ErrorData> {
         self.count_call();
+        if let Some(refusal) = self.refuse_withheld("apply_patch") {
+            return Ok(refusal);
+        }
         let root = self.inner.root.clone();
         // Where a commit in progress is recorded. Without a state
         // directory there is nowhere to put it and patching still works,
@@ -626,6 +719,38 @@ impl Server {
 /// this is a second lock. The first is `exec_gate`, on this side, which
 /// no client can talk its way past.
 const INTERACTION_TOOL: &str = "exec_command";
+
+/// The tools a session without write access does not get. Two of them
+/// change things; `read_output` is here because of session scoping, see
+/// [`Server::offers`].
+const WITHHELD_WITHOUT_WRITE: [&str; 3] = ["exec_command", "apply_patch", "read_output"];
+
+/// The standard MCP annotations for one tool.
+///
+/// They are **hints for the Host's approval UX and nothing else**. A Host
+/// that ignores every one of them gets exactly the same authorization
+/// result, because what decides that is the OS identity the runtime runs
+/// as, the workspace binding, the access mode and the write guard. They are
+/// published anyway: a Host that does honour them can ask the person about
+/// the right calls instead of about all of them.
+///
+/// `exec_command` is destructive and open-world whatever this particular
+/// command looks like. An annotation is a property of the tool, not of one
+/// call, and "this one is only `ls`" is exactly the reasoning that cannot
+/// be trusted.
+fn annotations_for(tool: &str) -> rmcp::model::ToolAnnotations {
+    let read_only = !WITHHELD_WITHOUT_WRITE.contains(&tool) || tool == "read_output";
+    if read_only {
+        return rmcp::model::ToolAnnotations::from_raw(None, Some(true), None, None, Some(false));
+    }
+    rmcp::model::ToolAnnotations::from_raw(
+        None,
+        Some(false),
+        Some(true),
+        Some(false),
+        Some(tool == "exec_command"),
+    )
+}
 const REQUIRES_INTERACTION: &str = "anthropic/requiresUserInteraction";
 
 fn requires_user_interaction() -> rmcp::model::MetaObject {
@@ -715,6 +840,15 @@ pub fn serve(payload: &ServePayload) -> CcnmResult<()> {
 /// machine decided the rest.
 pub fn serve_managed(request: &crate::runtime::OpenPayload) -> CcnmResult<()> {
     run(Server::open(request)?)
+}
+
+/// Serve an external MCP client through a bridge (P10).
+///
+/// Same server, same tools, same guard. What differs is decided before the
+/// first byte of MCP: whether this workspace is open to external clients at
+/// all, and how much of it.
+pub fn serve_external(request: &crate::runtime::ExternalOpenPayload) -> CcnmResult<()> {
+    run(Server::open_external(request)?)
 }
 
 fn run(server: Server) -> CcnmResult<()> {

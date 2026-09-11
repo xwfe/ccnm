@@ -124,30 +124,113 @@ fn named_block(named: &[Named]) -> String {
     )
 }
 
+/// The paragraph every session opens with, whichever entry it came in
+/// through.
+///
+/// The second sentence exists because of a real session: Claude's own
+/// environment block said its cwd was not a git repository (true -- that is
+/// the Agent Node's state directory), while workspace_info said the project
+/// was one, and it refused to commit on the contradiction. Claude Code
+/// cannot be stopped from describing the directory it runs in, so the
+/// instructions say which one to believe.
+pub(crate) fn base(workspace: &str) -> String {
+    format!(
+        "CCNM remote workspace \"{workspace}\". The project lives on another machine and is reachable only through the ccnm tools; there is no local copy. Whatever your own environment says about the current directory, its git status or its files describes the machine you run on, not the project: for the project, workspace_info is the truth. Every path you pass or receive is relative to the workspace root."
+    )
+}
+
+/// The project's own instruction file, wrapped in the frame that says whose
+/// rules these are.
+fn project_block(file: &str, project: &Project) -> String {
+    format!(
+        "\n\n--- {file} from the workspace root. These are the project's own instructions, written for this project; they are not about the machine you run on. Follow them. ---\n{}\n--- end of {file} ---",
+        project.text.trim_end()
+    )
+}
+
 pub(crate) fn render(
     file: &str,
     workspace: &str,
     project: Option<&Project>,
     named: &[Named],
 ) -> String {
-    // The second sentence exists because of a real session: Claude's own
-    // environment block said its cwd was not a git repository (true --
-    // that is the Agent Node's state directory), while workspace_info
-    // said the project was one, and it refused to commit on the
-    // contradiction. Claude Code cannot be stopped from describing the
-    // directory it runs in, so the instructions say which one to believe.
-    let base = format!(
-        "CCNM remote workspace \"{workspace}\". The project lives on another machine and is reachable only through the ccnm tools; there is no local copy. Whatever your own environment says about the current directory, its git status or its files describes the machine you run on, not the project: for the project, workspace_info is the truth. Every path you pass or receive is relative to the workspace root."
-    );
+    let base = base(workspace);
     let more = named_block(named);
     let Some(project) = project else {
         return format!("{base}{more}\n{}", marker_file(file, None));
     };
     format!(
-        "{base}\n\n--- {file} from the workspace root. These are the project's own instructions, written for this project; they are not about the machine you run on. Follow them. ---\n{}\n--- end of {file} ---{more}\n{}",
-        project.text.trim_end(),
+        "{base}{}{more}\n{}",
+        project_block(file, project),
         marker_file(file, Some(project))
     )
+}
+
+/// The instruction files an external client's project may have, in the
+/// order the Runtime looks for them.
+///
+/// Order, not provider: a bridge carries no provider, and what a client
+/// calls itself in `clientInfo` is a string it chose. Guessing from it
+/// would make the handshake depend on something anybody can write.
+const EXTERNAL_PROJECT_FILES: [&str; 2] = ["AGENTS.md", "CLAUDE.md"];
+
+/// `initialize.result.instructions` for an external MCP client.
+///
+/// Three shapes, chosen by the workspace's `external_instructions`; the
+/// mode sentence is always there, because a client that does not know it
+/// cannot write will spend the session trying.
+pub fn external(
+    workspace: &str,
+    root: &Path,
+    policy: crate::config::ExternalInstructions,
+    mode: crate::runtime::ExternalMode,
+) -> String {
+    use crate::config::ExternalInstructions as Policy;
+    if policy == Policy::None {
+        return String::new();
+    }
+    let mode_line = match mode {
+        crate::runtime::ExternalMode::Read => {
+            "\n\nThis session is read-only: it has no tool that changes a file or runs a command, and asking for one is refused by the machine the project is on, not by this text."
+        }
+        crate::runtime::ExternalMode::Coding => {
+            "\n\nThis session may change the project. It holds that workspace's single write lock for as long as it lasts, so nothing else can be editing the same working tree at the same time."
+        }
+    };
+    let head = format!("{}{mode_line}", base(workspace));
+    if policy == Policy::Generic {
+        return head;
+    }
+    // What is left of the cap once the frame is rendered, measured the same
+    // way the provider budgets are: render the worst case and subtract.
+    let worst = Project {
+        source: EXTERNAL_PROJECT_FILES[0],
+        bytes: usize::MAX,
+        text: String::new(),
+    };
+    let frame = format!(
+        "{head}{}\n{}",
+        project_block(worst.source, &worst),
+        marker_file(worst.source, Some(&worst))
+    );
+    let budget = MAX_INSTRUCTIONS_BYTES.saturating_sub(frame.len());
+    for file in EXTERNAL_PROJECT_FILES {
+        // A file that is there but unreadable is not a reason to fail the
+        // handshake; the session works, without the project's rules. The
+        // marker says which, and a person can act on it.
+        match claude::context::find_file(root, file, budget) {
+            Ok(Some(project)) => {
+                return format!(
+                    "{head}{}\n{}",
+                    project_block(file, &project),
+                    marker_file(file, Some(&project))
+                );
+            }
+            Ok(None) => {}
+            Err(e) => tracing::warn!(error = %e, file, "project instructions not readable"),
+        }
+    }
+    format!("{head}\n{}", marker_file(EXTERNAL_PROJECT_FILES[0], None))
 }
 
 pub(crate) fn marker_file(file: &str, project: Option<&Project>) -> String {

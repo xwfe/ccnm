@@ -3,6 +3,6 @@
   "$note": "本机或远端配置缺失/解析不了。",
   "message": {
     "exit_code": 1,
-    "stderr_last_line": "CCNM_E_CONFIG: no node named runtime in this machine's config"
+    "stderr": "CCNM_E_CONFIG:\nno node named runtime in this machine's config"
   }
 }

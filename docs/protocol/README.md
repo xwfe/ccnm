@@ -9,11 +9,11 @@
 | [fixtures/](fixtures/) | 成功、拒绝、断线、未知终态、过期结果的样例消息 |
 | [../../clients/python/ccnm_machine_client.py](../../clients/python/ccnm_machine_client.py) | 可以直接抄走的单文件客户端，只用标准库 |
 
-第二套契约是给**已经在跑的外部 Agent** 用的，还没有实现：
+第二套契约是给**已经在跑的外部 Agent** 用的。命令和权限模型已经实现（P10），但还没有真实 MCP Host 连过，属于 experimental：
 
 | 文件 | 是什么 |
 | --- | --- |
-| [remote-workspace-mcp-v1.md](remote-workspace-mcp-v1.md) | Remote Workspace MCP 契约：`ccnm mcp bridge`、read/coding 权限、七工具与 annotations、生命周期、错误边界。**契约阶段，命令和配置字段都还不存在** |
+| [remote-workspace-mcp-v1.md](remote-workspace-mcp-v1.md) | Remote Workspace MCP 契约：`ccnm mcp bridge`、read/coding 权限、七工具与 annotations、生命周期、错误边界 |
 | [schema/remote-workspace-mcp-v1.schema.json](schema/remote-workspace-mcp-v1.schema.json) + [fixtures-mcp/](fixtures-mcp/) | 它的消息形状与 21 个样例 |
 
 写编排项目的人还要看[执行接口交接](../orchestrator-handoff.md)：状态归属边界，以及建在这套协议上的最小 `ExecutionBackend` 示例。

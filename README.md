@@ -136,7 +136,7 @@ read_output
 
 要写的是一个**编排项目**（决定谁做什么、验收和重试），先看[执行接口交接](docs/orchestrator-handoff.md)：哪份状态归你、哪份归 ccnm，以及一个最小的 `ExecutionBackend` 示例。ccnm 自己不做编排。
 
-如果你的 Claude Code / Codex 已经在本机跑着，只是项目在另一台机器上——那是另一个入口 **Remote Workspace MCP**：把远端项目作为一组绑定 workspace 的 MCP 工具给它用。**契约已定稿，但还没有实现**，命令和配置字段现在都不存在；契约见[协议说明](docs/protocol/README.md)。
+如果你的 Claude Code / Codex 已经在本机跑着，只是项目在另一台机器上——那是另一个入口 **Remote Workspace MCP**：`ccnm mcp bridge <workspace>` 把远端项目作为一组绑定 workspace 的 MCP 工具交给它用，权限由 Runtime 侧的 `external_mcp` 决定（默认关）。**目前是 experimental：离线测试覆盖，但还没有任何真实 MCP Host 连过它。** 契约见[协议说明](docs/protocol/README.md)。
 
 ## 接下来做什么
 

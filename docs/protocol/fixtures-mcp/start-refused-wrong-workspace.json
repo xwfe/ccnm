@@ -3,6 +3,6 @@
   "$note": "远端 root 不再是一个目录，或者两边不是同一个项目。",
   "message": {
     "exit_code": 1,
-    "stderr_last_line": "CCNM_E_WRONG_WORKSPACE: the workspace root is not a directory on the runtime machine"
+    "stderr": "CCNM_E_WRONG_WORKSPACE:\nthe workspace root is not a directory on the runtime machine"
   }
 }

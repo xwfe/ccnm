@@ -12,6 +12,37 @@ use serde::{Deserialize, Serialize};
 
 use super::payload::{PROTOCOL, Protocol};
 
+/// Who opened this server, and therefore what it may do.
+///
+/// Not a wire field. Which entry a session came in through is decided by
+/// the payload's own protocol number (4 = managed, 5 = external), so
+/// putting it on the wire as well would let the two disagree — and a peer
+/// that could send `Managed` alongside an external open would be asking for
+/// the write guard and the seven tools by claiming to be something else.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Entry {
+    /// A ccnm-managed Agent session. The only entry there was before P10.
+    #[default]
+    Managed,
+    /// An external MCP client, in the mode this Runtime granted it.
+    External(crate::runtime::ExternalMode),
+}
+
+impl Entry {
+    /// Whether this session may change anything — the one question the
+    /// write guard, the tool list and every write tool ask.
+    pub fn writes(self) -> bool {
+        match self {
+            Entry::Managed => true,
+            Entry::External(mode) => mode.writes(),
+        }
+    }
+
+    pub fn is_external(self) -> bool {
+        matches!(self, Entry::External(_))
+    }
+}
+
 /// What `ccnm internal mcp-serve --payload` needs to know.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -46,6 +77,10 @@ pub struct ServePayload {
     /// (a probe, a test) is not a person waiting at a keyboard.
     #[serde(default)]
     pub interactive: bool,
+    /// In-process only; see [`Entry`]. `skip` rather than `default`: it
+    /// must not appear on the wire in either direction.
+    #[serde(skip)]
+    pub entry: Entry,
 }
 
 impl ServePayload {
@@ -59,7 +94,14 @@ impl ServePayload {
             session: session.to_string(),
             policy: "coding".to_string(),
             interactive: false,
+            entry: Entry::Managed,
         }
+    }
+
+    /// Say this server is being opened for an external MCP client.
+    pub fn with_entry(mut self, entry: Entry) -> Self {
+        self.entry = entry;
+        self
     }
 
     pub fn with_provider(mut self, provider: crate::provider::AgentProvider) -> Self {

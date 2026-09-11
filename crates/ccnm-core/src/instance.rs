@@ -218,8 +218,26 @@ pub(crate) fn validate_config(config: &Config, problems: &mut Vec<String>) {
     }
     for (name, ws) in &config.workspaces {
         match &ws.agent {
+            // A workspace with no Agent at all is legal in exactly one
+            // case: it exists for external MCP clients (P10), which bring
+            // their own Agent and never ask ccnm to start one. Everything
+            // else still has to say who works on it.
             None if ws.agent_node.is_empty() => {
-                problems.push(format!("workspaces.{name} requires agent_node or agent"))
+                if ws.external_mcp == crate::config::ExternalAccess::Disabled {
+                    problems.push(format!("workspaces.{name} requires agent_node or agent"));
+                } else {
+                    if identifier(name).is_err() {
+                        problems.push("workspace names must be valid bounded identifiers".into());
+                    }
+                    // The Runtime's own config is the authority for where
+                    // the project is; a copy on another machine would be a
+                    // second answer nobody can reconcile.
+                    if config.this.as_deref() != Some(ws.runtime_node.as_str()) {
+                        problems.push(format!(
+                            "workspaces.{name} is external-MCP only, so it must be defined on its own Runtime Node"
+                        ));
+                    }
+                }
             }
             Some(reference) => {
                 if identifier(name).is_err() {

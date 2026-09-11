@@ -213,6 +213,22 @@ enum McpCommand {
         #[arg(long)]
         local: bool,
     },
+    /// Serve a remote workspace to an external MCP Host over stdio: this
+    /// process becomes one ssh to the Runtime, which runs the real server.
+    /// Put it in the Host's MCP config as the command to run
+    Bridge {
+        /// Workspace name as the **Runtime** knows it. It must have opted
+        /// in with `external_mcp`; this machine keeps no workspace list
+        workspace: String,
+        /// Node from this machine's config to open the transport to.
+        /// Optional when exactly one node has an ssh alias
+        #[arg(long, value_name = "NODE")]
+        node: Option<String>,
+        /// How much to ask for. `coding` is refused unless the workspace
+        /// allows it, and is never silently downgraded
+        #[arg(long, default_value = "read", value_parser = ["read", "coding"])]
+        mode: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -621,6 +637,36 @@ fn run(cli: Cli) -> Result<i32> {
             ccnm_core::rpc::serve(ctx, stdin.lock(), stdout.lock())?;
             Ok(0)
         }
+        // One ssh whose stdin/stdout are the MCP stream. This process
+        // does not proxy it: it `exec`s, so there is no supervisor left to
+        // leak an orphan transport if the Host kills the bridge.
+        Command::Mcp {
+            command:
+                McpCommand::Bridge {
+                    workspace,
+                    node,
+                    mode,
+                },
+        } => {
+            use std::os::unix::process::CommandExt as _;
+            let request = ccnm_core::mcp::bridge::Request {
+                workspace: workspace.clone(),
+                node: node.clone(),
+                mode: if mode == "coding" {
+                    ccnm_core::runtime::ExternalMode::Coding
+                } else {
+                    ccnm_core::runtime::ExternalMode::Read
+                },
+            };
+            let config = Config::load(&config_path()?)?;
+            let cmd = ccnm_core::mcp::bridge::command(
+                &config,
+                &request,
+                &ccnm_core::mcp::bridge::session_id(),
+            )?;
+            let mut process = cmd.process();
+            Err(Error::internal("cannot exec the MCP bridge transport").with_source(process.exec()))
+        }
         Command::Mcp {
             command:
                 McpCommand::Probe {
@@ -703,6 +749,12 @@ fn run(cli: Cli) -> Result<i32> {
                     ccnm_core::runtime::ServeRequest::Legacy(req) => mcp::server::serve(&req)?,
                     ccnm_core::runtime::ServeRequest::Managed(req) => {
                         mcp::server::serve_managed(&req)?
+                    }
+                    // An external MCP client (P10). Same server, same
+                    // tools; what it gets is decided here from this
+                    // machine's own `external_mcp`, not from the payload.
+                    ccnm_core::runtime::ServeRequest::External(req) => {
+                        mcp::server::serve_external(&req)?
                     }
                 }
                 Ok(0)

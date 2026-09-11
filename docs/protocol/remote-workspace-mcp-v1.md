@@ -1,6 +1,8 @@
 # ccnm Remote Workspace MCP v1（契约）
 
-> **这是契约，不是已有功能。** 本文定稿的命令、配置字段和行为**今天一个都不存在**：`ccnm mcp bridge` 还没有实现，`external_mcp` 配置项也还没有。实现是 P10，真实 Host 验证是 P11，远端真实项目 dogfood 与冻结是 P12。在那之前不要在任何对外文档里说它可用。
+> **状态：命令和权限模型已经实现（P10），但没有任何真实 MCP Host 连过它。**
+> `ccnm mcp bridge`、`external_mcp` 和 `external_instructions` 现在真的存在，行为由离线测试覆盖：真实二进制、真实 MCP 消息、真实写入互斥锁，但走的是管道而不是 ssh，对面也不是 Claude Code 或 Codex。
+> 用真实 Host 跑允许矩阵是 P11，远端真实项目 dogfood 与 v1.x 冻结是 P12。**在那之前这个入口是 experimental**，不要按“已支持”对外描述。
 
 面向的读者是**已经在本机跑着 Claude Code / Codex / 别的 MCP Host，但项目在另一台机器上的人**。它给你的不是一条裸 SSH 通道，而是一个绑定了 workspace 的远程项目工具集。
 
@@ -30,7 +32,7 @@ ccnm internal mcp-serve @ Runtime Executor（ccrun）
       └─ 权威 workspace：Git / 构建 / 测试 / 工具链
 ```
 
-**bridge 不是 MCP server 的实现**，真正的 server 在远端 Runtime 上——就是 Managed 路径用的同一个进程、同一套七工具、同一份路径策略和同一把写入互斥锁。bridge 只做三件事：解析要连哪台机器、把 stdio 接到那条 SSH 上、在连接结束时收拾自己的子进程。
+**bridge 不是 MCP server 的实现**，真正的 server 在远端 Runtime 上——就是 Managed 路径用的同一个进程、同一套七工具、同一份路径策略和同一把写入互斥锁。bridge 只做两件事：解析要连哪台机器，然后 `exec` 成那条 SSH——它不转发字节，它就是那条连接。
 
 ## 2. 一次连接从头到尾
 
@@ -55,7 +57,7 @@ Host                     bridge                    Runtime Executor
  │ ────────────────────────>│ 关 SSH ──────────────────> │ server 退出，guard 释放
 ```
 
-**远端失败在 initialize 之前就发生了。** workspace 没开放、模式越权、写入互斥被占、远端 ccnm 太旧——这些都让 bridge **不回答 initialize 就退出**，退出码非 0，stderr 最后一行是一条 `CCNM_E_*` 诊断。Host 那边看到的是"这个 MCP server 起不来"，而不是一个能连上却什么都做不了的 server。
+**远端失败在 initialize 之前就发生了。** workspace 没开放、模式越权、写入互斥被占、远端 ccnm 太旧——这些都让连接**不回答 initialize 就结束**，退出码非 0，stderr 上是一条以 `CCNM_E_*` 开头的诊断。Host 那边看到的是"这个 MCP server 起不来"，而不是一个能连上却什么都做不了的 server。
 
 ## 3. 入口形状
 
@@ -218,9 +220,9 @@ transport 的认证边界是 **OpenSSH identity + 独立的 Runtime OS 账号**�
 
 ### 6.2 断线、中断、崩溃
 
-- **Host 关掉 bridge（EOF 或 SIGTERM）**：bridge 必须回收自己的 SSH 子进程再退出。**不能留孤儿 transport**，那会让远端 server 活着、锁一直被占。
+- **Host 关掉 bridge（EOF 或 SIGTERM）**：没有子进程要回收——bridge 做完本机检查就 `exec` 成那条 ssh，所以这个进程**就是** transport。EOF 和信号直接落在 ssh 上，远端 server 随之结束，锁随进程释放。**留不下孤儿 transport**，因为没有第二个进程可留。
 - **SSH 断了**：bridge 把这条连接当作结束，退出；**不自动重连**。重连意味着换一个远端 session，而调用方手里的 `output_ref` 属于旧 session——静默重连会让它们指向不存在的东西。
-- **bridge 自己崩了**：远端 server 会因为 stdin EOF 结束，锁随进程释放。
+- **bridge 自己崩了**：同一件事——崩的就是那条 ssh，远端 server 读到 EOF 后结束。
 - **MCP 的 `notifications/cancelled`**：转发给远端；但一次已经在跑的 `exec_command` 是否能立刻停下取决于那个进程，契约不承诺"取消返回 = 命令已停"。
 - **bridge 绝不影响 Managed session。** 它只管自己这一条 SSH 和这一个远端进程；不去枚举、不去清理别人的 session，哪怕它们属于同一个 workspace。
 
@@ -304,13 +306,14 @@ external_instructions = "generic"   # generic（默认）| project | none
 
 ### 11.2 启动失败：不是 MCP 消息
 
-initialize 之前失败时，bridge **不回答 initialize**，退出码非 0，stderr 最后一行形如：
+initialize 之前失败时，bridge **不回答 initialize**，退出码非 0，stderr 上是 ccnm 一贯的错误形状——第一行是 `CCNM_E_*` 名字，后面是给人看的解释：
 
 ```text
-CCNM_E_POLICY: workspace myproject does not allow external MCP in coding mode
+CCNM_E_POLICY:
+workspace myproject allows external MCP in read mode; coding was requested
 ```
 
-这一行是给人看的稳定诊断（Host 通常会把 stderr 展示出来）；它不是协议消息，也不保证机器可解析的结构——要机器判断就看退出码和这个 `CCNM_E_*` 名字。
+**远端拒绝和本机拒绝长得一样**，因为打印它们的是同一段代码：远端那份由 Runtime 打在自己的 stderr 上，ssh 原样带回来。要机器判断就看退出码和第一行的名字，不要解析后面的措辞。
 
 ### 11.3 可能出现的 `CCNM_E_*`
 

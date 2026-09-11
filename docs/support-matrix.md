@@ -12,6 +12,7 @@
 | Codex Agent Instance，remote SSH MCP | 预发布支持 | 仅接受实测的 Codex CLI `0.154.0`（见下方版本 pin）；公共入口已在授权双机真机验证。 |
 | Machine API（`ccnm rpc`），`print` 模式 | 预发布支持，协议已冻结 | `ccnm.machine/1` 于 2026-09-10 冻结。两个 provider 各跑通一次真机双机闭环并与人类 CLI 对照（[Claude](research/p7-real-machine-2026-09-10.md)、[Codex](research/p7-codex-parity-2026-09-10.md)）：两条腿产物属主相同，`usage` 端到端到达调用方（Codex 不报 `cost`，永远缺席）。实现仍比契约少四条，见[协议说明](protocol/README.md)。 |
 | Machine API 的 `interactive` 模式、输出分页、结果过期 | 未实现 | 都不在 `hello` 声明的能力里，调用会被明确拒绝，不静默降级。 |
+| Remote Workspace MCP（`ccnm mcp bridge`） | **experimental** | 命令、`external_mcp` 权限模型（disabled/read/coding）、两种工具表、写入互斥和 annotations 都已实现，由真实二进制 + 真实 MCP 消息的离线测试覆盖（`cargo test -p ccnm-cli --test external_mcp`）。**走的是管道不是 ssh，对面不是真实 Host**：Claude Code/Codex 的允许矩阵验证是 P11，远端真实项目 dogfood 是 P12。不要按"已支持"部署到有价值的项目上。 |
 | Claude legacy colocated | 明确拒绝 | remote-only 启动参数已从 native 候选命令移除，但 installed Claude 尚未真实验收；本 build 在创建 session 前返回 `CCNM_E_NOT_READY`。 |
 | Claude/Codex Agent Instance colocated | 明确拒绝 | 没有可信 Runtime credential boundary 和真实验收，不自动降级为 legacy/native。 |
 | Codex legacy/internal protocol 2 | 兼容历史 fixture | 只用于保留已有内部测量与回归，不是新的公共配置入口。 |
@@ -82,7 +83,8 @@ ccnm session id 是生命周期主键；Claude/Codex 自己的 thread/resume id 
 - Git workspace 按 canonical `git-common-dir` 互斥，因此同一仓库的 worktree 也保守串行；
 - 正常退出写入精确 `released` 状态并显式解锁；
 - live owner 返回 busy；异常退出留下 `held <session> <workspace>`，状态为 unknown，不按时间自动接管；
-- guard 覆盖 `exec_command` 和 `apply_patch` 所在的完整 MCP 生命周期，不只是某个工具调用或某个 Agent Node。
+- guard 覆盖 `exec_command` 和 `apply_patch` 所在的完整 MCP 生命周期，不只是某个工具调用或某个 Agent Node；
+- **外部 MCP 的 `coding` 会话抢同一把锁**，`read` 会话不碰它（没有能改东西的工具，让它等写者只会白等）。
 
 异常恢复必须由 Runtime 操作者完成：先按 session/status 和进程列表证明旧 supervisor、Agent、SSH MCP 及其子进程都已结束，再在 Runtime 的 `${XDG_STATE_HOME:-$HOME/.local/state}/ccnm/write-guards/` 中定位包含该 session id 的**单个** marker，备份后删除该文件。不要批量删除，也不要仅因时间过去就清理。删除前无法证明旧执行者结束时，保持 unknown 才是正确状态。
 

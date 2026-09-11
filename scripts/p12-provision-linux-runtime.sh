@@ -176,8 +176,13 @@ fi
 [[ $record_exists == yes ]] || { echo "Missing this round's record $record" >&2; exit 1; }
 [[ $(stat -c '%u:%a' "$record") == 0:700 ]]
 
-if [[ -f $line_file ]] && [[ -f $keys && ! -L $keys ]]; then
-    appended=$(grep -v '^$' "$line_file")
+# Every `appended-line*` in the record, not just the one --apply wrote: a
+# round with a second Host (its own key, its own private half) records its
+# line next to the first, and the revert has to take both back out.
+for line_record in "$record"/appended-line*; do
+    [[ -f $line_record ]] || continue
+    [[ -f $keys && ! -L $keys ]] || continue
+    appended=$(grep -v '^$' "$line_record")
     if [[ -n $appended ]] && grep -qxF "$appended" "$keys"; then
         tmp=$(mktemp "$home/.ssh/.authorized_keys.p12.XXXXXX")
         trap 'rm -f "$tmp"' EXIT
@@ -187,11 +192,12 @@ if [[ -f $line_file ]] && [[ -f $keys && ! -L $keys ]]; then
         mv "$tmp" "$keys"
         trap - EXIT
         ! grep -qxF "$appended" "$keys"
-        echo 'This round key line removed; every other line kept.'
+        printf 'Removed the key line recorded in %s; every other line kept.\n' \
+            "$(basename "$line_record")"
     else
-        echo 'This round key line was not present; nothing removed.'
+        printf 'The line in %s was not present; nothing removed.\n' "$(basename "$line_record")"
     fi
-fi
+done
 if [[ -f $record/authorized-keys-created && -f $keys && ! -s $keys ]]; then
     rm "$keys"
     echo 'authorized_keys was created by this round and is now empty; removed.'

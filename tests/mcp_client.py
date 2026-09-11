@@ -104,7 +104,14 @@ class McpClient:
     def close(self) -> int:
         """关掉 stdin 让服务端正常结束，返回它的退出码。"""
         if self._proc.stdin and not self._proc.stdin.closed:
-            self._proc.stdin.close()
+            try:
+                self._proc.stdin.close()
+            except OSError:
+                # 服务端已经没了。关一条对面已经关掉的管道会再抛一次
+                # BrokenPipeError（缓冲里还有上一次没写出去的字节），而这时候
+                # 要做的只是把这边收干净——真机上就是这样把一次"远端被 kill"
+                # 变成了一句看不懂的 Broken pipe。
+                pass
         try:
             code = self._proc.wait(timeout=20)
         except subprocess.TimeoutExpired:
@@ -131,7 +138,10 @@ class McpClient:
         code = self._proc.wait(timeout=20)
         for stream in (self._proc.stdin, self._proc.stdout, self._proc.stderr):
             if stream and not stream.closed:
-                stream.close()
+                try:
+                    stream.close()
+                except OSError:
+                    pass
         return code
 
     def __enter__(self) -> McpClient:

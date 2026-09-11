@@ -231,9 +231,12 @@ agent_node = "agent"
         self.assertIn("CCNM_E_", checks["not_opted_in"])
         self.assertEqual(checks["leak_scan"], "clean")
 
-        # Host 崩过之后：coding 明确被拒（不自动接管）、read 照常开、人工恢复之
-        # 后 coding 又能开。
+        # Host 崩过之后。这里的"Host"和服务端是同一个进程（替身 exec 成了真
+        # server），所以 kill -9 连收尾代码一起杀了，锁停在 held——真机上 Host
+        # 和服务端隔着一条 ssh，远端读到 EOF 自己收尾，锁是 released。两种结局
+        # 都要求"状态确定，且从这个状态往下走的路是通的"。
         crash = checks["host_crash"]
+        self.assertTrue(crash["guard_after_crash"].startswith("held "), crash)
         self.assertIn("left held by an interrupted process", crash["coding_refused"])
         self.assertTrue(crash["read_still_opens"])
         self.assertTrue(crash["manual_recovery"]["cleared"])

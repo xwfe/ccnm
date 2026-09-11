@@ -445,7 +445,14 @@ def check_cycle(args: argparse.Namespace, client: McpClient, seen: list) -> dict
             client, shlex.split(args.full_test_cmd), seen, timeout_ms=args.test_timeout_ms
         )
         cycle["full_test_exit"] = full["exit"]
-        cycle["full_test_tail"] = (full["stdout"] or full["stderr"]).splitlines()[-3:]
+        # 预览只有头尾，中间那些 `test result` 行看不见；所以这里记看得见的那
+        # 几行，真正的判据是退出码——任何一个测试红了 cargo 就非 0。
+        summaries = [
+            line
+            for line in f"{full['stdout']}\n{full['stderr']}".splitlines()
+            if line.startswith("test result")
+        ]
+        cycle["full_test_visible_summaries"] = summaries[-3:]
     return cycle
 
 
@@ -547,11 +554,28 @@ def clear_stale_guard(args: argparse.Namespace, seen: list) -> dict[str, Any]:
     return {"cleared": removed}
 
 
-def after_a_dead_writer(args: argparse.Namespace, seen: list, what: str) -> dict[str, Any]:
-    """一个 writer 非正常死掉之后，该是什么样子。
+def guard_state(args: argparse.Namespace) -> str:
+    """那把锁现在写着什么：`held <session> <workspace>`、`released` 或没有文件。"""
+    script = f'cat {args.guard_dir or args.remote_guard_dir}/*.lock 2>/dev/null || true'
+    if args.guard_dir:
+        out = subprocess.run(
+            ["/bin/sh", "-c", script], capture_output=True, text=True, check=False
+        )
+    elif args.ssh_alias:
+        out = ssh_run(args, script)
+    else:
+        return "unknown: neither --guard-dir nor --ssh-alias"
+    return out.stdout.strip() or "no lock file"
+
+
+def after_a_killed_server(args: argparse.Namespace, seen: list, what: str) -> dict[str, Any]:
+    """远端**服务端进程**被杀之后，该是什么样子。
 
     三件事一起看才有意义：coding 被明确拒绝（不自动接管）、read 照常开（读不
     受写锁影响）、人工恢复之后 coding 又能开（这条路不是死路）。
+
+    注意这只适用于"服务端自己被杀"：它没机会跑收尾代码，所以锁停在 held。Host
+    被杀是另一回事，见 check_host_crash。
     """
     refused = start_and_expect_refusal(args, "coding", args.workspace, seen)
     if not guard_is_stale(refused.stderr):
@@ -609,11 +633,24 @@ def check_remote_gone(args: argparse.Namespace, seen: list) -> dict[str, Any]:
     left = remote_servers(args)
     if left:
         raise Failure(f"远端还留着 mcp-serve：{left}")
-    return {"killed_pids": pids, "client_saw": verdict, **after_a_dead_writer(args, seen, "远端消失")}
+    return {
+        "killed_pids": pids,
+        "client_saw": verdict,
+        **after_a_killed_server(args, seen, "远端消失"),
+    }
 
 
 def check_host_crash(args: argparse.Namespace, seen: list) -> dict[str, Any]:
-    """P12.3：Host 被 kill -9 之后，远端不留孤儿 transport。"""
+    """P12.3：Host 被 kill -9 之后，远端不留孤儿，而且写锁**是放了的**。
+
+    这和"远端被杀"结局不同，区别在于谁还有机会跑收尾代码：
+
+    - Host（也就是 bridge，它 exec 成了 ssh）被杀 → 远端 mcp-serve 读到 EOF，
+      自己正常退出，Drop 把锁标成 released → 下一个 coding 直接能开，不需要人；
+    - 远端服务端被杀 → 没有 Drop → 锁停在 held → 必须人来清。
+        # 真机上这条先写错过一次：把两种结局当成一种，于是"Host 崩之后锁该留在
+        # held"这个判据要求了一件**不该发生**的事。磁盘上的锁说了实话。
+    """
     client = open_leg(args, "coding", args.workspace)
     pid = client.pid
     client.kill()
@@ -627,11 +664,27 @@ def check_host_crash(args: argparse.Namespace, seen: list) -> dict[str, Any]:
             time.sleep(1)
         if left:
             raise Failure(f"Host 被 kill 之后远端还留着：{left}")
+    lock = guard_state(args)
+    outcome: dict[str, Any] = {"guard_after_crash": lock}
+    if lock.startswith("held "):
+        # 远端没来得及跑收尾——在这个工具的离线自测里必然如此，因为那里"Host"和
+        # 服务端是同一个进程，kill -9 连收尾代码一起杀了。判据于是变成"锁的状态
+        # 是确定的，而从这个状态往下走的那条路是通的"，两种结局都不含糊。
+        outcome.update(after_a_killed_server(args, seen, "Host 崩"))
+    else:
+        again = open_leg(args, "coding", args.workspace)
+        try:
+            tools = again.tool_names()
+            if sorted(tools) != sorted(CODING_TOOLS):
+                raise Failure(f"Host 崩过之后工具表不对：{tools}")
+        finally:
+            again.close()
+        outcome["coding_without_recovery"] = "ok"
     return {
         "killed_bridge_pid": pid,
         "remote_orphans": left,
         "orphan_check": "done" if args.ssh_alias else "skipped: no --ssh-alias",
-        **after_a_dead_writer(args, seen, "Host 崩"),
+        **outcome,
     }
 
 

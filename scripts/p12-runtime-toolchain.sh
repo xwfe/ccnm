@@ -29,16 +29,26 @@
 set -euo pipefail
 umask 022
 
+usage='usage: p12-runtime-toolchain.sh --check|--apply|--revert
+           [--node-version vX.Y.Z] [--node-sha256 <hex>] [--node-base-url <url>]'
 action=
 node_version=
+node_sha256=
+# 为什么要能换源：真机上 nodejs.org 在这台 Runtime 的出口上会被 TLS reset
+# （`curl: (35) Recv failure`），而 static.rust-lang.org 不会。换源之后完整性
+# 由 --node-sha256 保证——那个哈希从**官方** SHASUMS256.txt 取，在能连上官方
+# 的那台机器上取，不信镜像自己给的清单。
+node_base_url=https://nodejs.org/dist
 while [[ $# -gt 0 ]]; do
     case $1 in
         --check|--apply|--revert) action=$1; shift ;;
         --node-version) node_version=${2:-}; shift 2 ;;
-        *) echo "usage: p12-runtime-toolchain.sh --check|--apply|--revert [--node-version vX.Y.Z]" >&2; exit 2 ;;
+        --node-sha256) node_sha256=${2:-}; shift 2 ;;
+        --node-base-url) node_base_url=${2:-}; shift 2 ;;
+        *) echo "$usage" >&2; exit 2 ;;
     esac
 done
-[[ -n $action ]] || { echo 'usage: p12-runtime-toolchain.sh --check|--apply|--revert [--node-version vX.Y.Z]' >&2; exit 2; }
+[[ -n $action ]] || { echo "$usage" >&2; exit 2; }
 [[ $(uname -s) == Linux ]] || { echo 'Linux required' >&2; exit 1; }
 [[ $EUID != 0 ]] || {
     echo 'Do NOT run this as root: it installs into the Runtime identity own home.' >&2
@@ -103,8 +113,8 @@ if [[ $action == --apply ]]; then
         tmp=$(mktemp -d)
         trap 'rm -rf "$tmp"' EXIT
         base=https://static.rust-lang.org/rustup/dist/$rust_arch
-        curl -fsSL --proto '=https' --tlsv1.2 -o "$tmp/rustup-init" "$base/rustup-init"
-        curl -fsSL --proto '=https' --tlsv1.2 -o "$tmp/rustup-init.sha256" "$base/rustup-init.sha256"
+        curl -fsSL --retry 3 --retry-delay 2 --retry-all-errors --proto '=https' --tlsv1.2 -o "$tmp/rustup-init" "$base/rustup-init"
+        curl -fsSL --retry 3 --retry-delay 2 --retry-all-errors --proto '=https' --tlsv1.2 -o "$tmp/rustup-init.sha256" "$base/rustup-init.sha256"
         # 官方 .sha256 的第二列是文件名，而它写的是发布路径，不是本地名字；只
         # 取哈希自己比，别让 sha256sum -c 去对那个名字。
         want=$(awk '{print $1}' "$tmp/rustup-init.sha256")
@@ -129,7 +139,7 @@ if [[ $action == --apply ]]; then
     else
         if [[ -z $node_version ]]; then
             have python3 || { echo 'need python3 (or --node-version) to resolve the LTS line' >&2; exit 1; }
-            node_version=$(curl -fsSL --proto '=https' https://nodejs.org/dist/index.json \
+            node_version=$(curl -fsSL --retry 3 --retry-delay 2 --retry-all-errors --proto '=https' https://nodejs.org/dist/index.json \
                 | python3 -c 'import json,sys
 releases = json.load(sys.stdin)
 lts = [r for r in releases if r.get("lts")]
@@ -142,12 +152,16 @@ print(lts[0]["version"])')
         tarball=$dir.tar.gz
         tmp=$(mktemp -d)
         trap 'rm -rf "$tmp"' EXIT
-        curl -fsSL --proto '=https' --tlsv1.2 -o "$tmp/$tarball" \
-            "https://nodejs.org/dist/$node_version/$tarball"
-        curl -fsSL --proto '=https' --tlsv1.2 -o "$tmp/SHASUMS256.txt" \
-            "https://nodejs.org/dist/$node_version/SHASUMS256.txt"
-        want=$(awk -v f="$tarball" '$2 == f {print $1}' "$tmp/SHASUMS256.txt")
-        [[ -n $want ]] || { echo "$tarball is not in SHASUMS256.txt" >&2; exit 1; }
+        curl -fsSL --retry 3 --retry-delay 2 --retry-all-errors --proto '=https' --tlsv1.2 -o "$tmp/$tarball" \
+            "$node_base_url/$node_version/$tarball"
+        if [[ -n $node_sha256 ]]; then
+            want=$node_sha256
+        else
+            curl -fsSL --retry 3 --retry-delay 2 --retry-all-errors --proto '=https' --tlsv1.2 \
+                -o "$tmp/SHASUMS256.txt" "$node_base_url/$node_version/SHASUMS256.txt"
+            want=$(awk -v f="$tarball" '$2 == f {print $1}' "$tmp/SHASUMS256.txt")
+        fi
+        [[ -n $want ]] || { echo "no published sha256 for $tarball" >&2; exit 1; }
         got=$(sha256sum "$tmp/$tarball" | awk '{print $1}')
         [[ $want == "$got" ]] || {
             echo "$tarball sha256 mismatch: got $got, published $want" >&2; exit 1; }

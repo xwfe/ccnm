@@ -52,7 +52,12 @@ impl WriteGuard {
             Ok(()) => {}
             Err(std::fs::TryLockError::WouldBlock) => {
                 return Err(Error::policy(
-                    "workspace write guard is busy; another managed session still owns this working tree",
+                    // Not "another managed session": this guard is shared with
+                    // the external MCP entry, and on the real-host round it was
+                    // an external coding session holding it. Naming one entry
+                    // sends whoever reads this looking for a session that does
+                    // not exist. The contract fixture never had the word.
+                    "workspace write guard is busy; another session still owns this working tree",
                 ));
             }
             Err(_) => {

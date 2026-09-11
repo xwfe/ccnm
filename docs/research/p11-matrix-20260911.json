@@ -1,0 +1,41 @@
+{
+  "tool": "p11_matrix_check",
+  "at": "2026-09-11T10:40:13+0800",
+  "workspace": "p11demo",
+  "token_file": "ccnm-p11-9a08a0d016c13dae.txt",
+  "checks": {
+    "coding": {
+      "tools": [
+        "apply_patch",
+        "exec_command",
+        "list_files",
+        "read_file",
+        "read_output",
+        "search_text",
+        "workspace_info"
+      ],
+      "artifact_owner": "ccrun",
+      "runtime_identity": "ccrun",
+      "second_coding_refused": "CCNM_E_POLICY:\nworkspace write guard is busy; another managed session still owns this working tree"
+    },
+    "read": {
+      "tools": [
+        "list_files",
+        "read_file",
+        "search_text",
+        "workspace_info"
+      ],
+      "refusals": {
+        "exec_command": "CCNM_E_POLICY: exec_command is not available: this workspace is open for external MCP in read mode",
+        "apply_patch": "CCNM_E_POLICY: apply_patch is not available: this workspace is open for external MCP in read mode",
+        "read_output": "CCNM_E_POLICY: read_output is not available: this workspace is open for external MCP in read mode"
+      }
+    },
+    "escalation": {
+      "refused": "CCNM_E_POLICY:\nworkspace p11read allows external MCP in read mode; coding was requested"
+    },
+    "leak_scan": "clean",
+    "cleanup": "removed"
+  },
+  "passed": true
+}

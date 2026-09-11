@@ -1,5 +1,7 @@
 # P11.3 真实 Host 会话计划
 
+> **这一轮已于 2026-09-11 执行完毕，结果见[真机记录](../research/p11-real-host-2026-09-11.md)。** 下面保留原计划，因为它仍是重跑同一轮的操作说明。有两处当时和现实对不上，重跑前先看第二节的更正：P7 那把公钥的私钥已经不存在，而专用主组早就在位。
+
 P11 的其余部分（P11.1、P11.2、P11.4）已经离线证完，记录见 [跨入口记录](../research/cross-entry-p11-2026-09-11.md)。**只剩这一件事需要真机**，而它需要用户逐项授权：重建 Runtime 身份与 SSH 准入、两端部署、用真实 Claude Code 连一次并消耗订阅额度。
 
 这份文件把那一轮的顺序、判据、资源和清理先定下来。**写下来不等于授权执行**；执行前用户要明确说可以，其中三条还必须由用户本人 sudo。
@@ -17,21 +19,24 @@ P11 的其余部分（P11.1、P11.2、P11.4）已经离线证完，记录见 [�
 
 ## 二、前置
 
-### 用户做的（三条要 sudo，都在本机 bing 的终端里）
+### 用户做的（要 sudo，都在本机 bing 的终端里）
+
+**2026-09-11 执行时的更正**：当时实际只需要两条，而且第一条换了脚本。每次重跑前都先用 `--check`（只读）核对现状，不要照抄。
 
 ```bash
-sudo /Users/bing/xdw/ccnm/scripts/p7-authorize-local-runtime.sh --apply
+sudo /Users/bing/xdw/ccnm/scripts/p11-authorize-local-runtime.sh --apply
 ```
 
 ```bash
 sudo /Users/bing/xdw/ccnm/scripts/p7-grant-local-ssh-access.sh --apply
 ```
 
-```bash
-sudo /Users/bing/xdw/ccnm/scripts/p7-isolate-local-runtime-group.sh --apply
-```
+为什么不是原来写的那三条：
 
-顺序不能换（清单先建、再给准入、最后换主组），三条都是 P7 用过并归零过的脚本，`--revert` 互逆。**密码不要发给我。**
+- **`p7-authorize-local-runtime.sh` 不能用了。** 它装的是 P7 那把公钥，而对应私钥在归零那轮已从 fodelf 删掉——装一把没人持有私钥的公钥等于什么也没授权。`p11-authorize-local-runtime.sh` 是同一个脚本换本轮的密钥对，并有自己的 root 清单和 `--revert`。重跑时要再换一对，公钥内嵌、指纹现算现比。
+- **`p7-isolate-local-runtime-group.sh` 不用跑。** ccrun 的专用主组（504）一直在位，脚本会拒绝——那是正确结果，不是一个步骤。撤销它会把 ccrun 放回 `staff`，重新打开 `/Users/bing` 的穿透口子。
+
+**密码不要发给我。**
 
 另外要用户确认的两件事：
 

@@ -179,8 +179,49 @@ git -C <项目> diff
 
 ---
 
+### Claude Code 说 `Connection closed`，再没别的话了
+
+**症状**：给 Claude Code 配了 `ccnm mcp bridge`，`/mcp` 里那个 server 是红的，全部信息只有一句：
+
+```text
+ccnm-xxx (CONNECTION_CLOSED): "Connection closed"
+```
+
+**其实是**：bridge 起不来，理由写在它的 stderr 上——但 Host 把子进程的 stderr 丢掉了。ccnm 这边按契约输出了 `CCNM_E_*` 和一句人话解释，只是**一个字都没到你面前**。2026-09-11 真机实测，Claude Code 2.1.268 就是这个行为；这是 Host 怎么处理 stderr 的问题，ccnm 单方面改不掉。
+
+**修**：把同一条命令手工跑一遍，理由就出来了：
+
+```bash
+ccnm mcp bridge <workspace> --node <node> --mode read < /dev/null
+```
+
+最常见的是那个 workspace 根本没开放给外部 MCP（`workspace X is not available to external MCP`，退出码 33）——`external_mcp` 默认就是 `disabled`，要在 **Runtime 的**配置里给它写 `read` 或 `coding`。
+
+### `exec_command is refused`，理由说有 SSH 私钥，可你明明一把都没有
+
+**症状**：外部 MCP 或受管会话里 `exec_command` 被拒：
+
+```text
+CCNM_E_POLICY: the runtime is running as ccrun and is not confined, so exec_command is refused:
+  - No SSH keys: a possible private SSH key is accessible or unknown (names and contents withheld)
+```
+
+去 `~/.ssh` 翻一遍，只有 `authorized_keys`、`config`、`known_hosts`，没有任何私钥。
+
+**其实是**：凭据审计查的是**两个**目录——`~/.ssh` 和 `~/.config/ccnm`。后者里除了 `*.toml` 和 `*.pub`，任何文件都算"排除不掉的凭据候选"。所以 `config.toml.bak`、`config.toml.pre-升级`、编辑器留下的 `config.toml~`，都会让这一行变红，而消息说的是 SSH key。
+
+这是**故意 fail-closed**：一个叫 `config.toml.pre-x` 的文件确实可能是私钥，检查不去读内容判断。代价就是消息把人指错地方。
+
+**修**：把备份挪出 `~/.config/ccnm/`，放家目录根下或别处都行。
+
+```bash
+mv ~/.config/ccnm/config.toml.bak ~/config.toml.bak
+```
+
+**不要**改成 `allow_unconfined_exec = true`——那是把整条隔离判定关掉，为了一个备份文件不值得。
+
 ### MCP 初始化报 `workspace write guard is busy` 或 `unknown`
 
-busy 表示仍有受管 writer 持锁；unknown 表示异常退出或 marker 不完整，不能证明旧执行者已经结束。不要循环删锁或按时间强制接管。
+busy 表示仍有 writer 持锁——**受管入口和外部 MCP 共用同一把锁**，所以持锁的可能是任一侧；unknown 表示异常退出或 marker 不完整，不能证明旧执行者已经结束。不要循环删锁或按时间强制接管。
 
 先在 Agent Node 用 `ccnm status <workspace> --agent <instance-id> --session <ccnm-session-id>` 定位会话，再由 Runtime 操作者确认旧 MCP 和子进程。完整人工恢复边界见[支持矩阵](support-matrix.md#runtime-单写-guard)。`doctor`/MCP probe 同样经过写 guard，活动 writer 下诊断被拒绝不等于 SSH 损坏。

@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-09-11T11:23:44+09:00",
-  "current_task": "P11",
+  "last_updated": "2026-09-11T11:47:38+09:00",
+  "current_task": "P12",
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
     "source": "docs/research/codex-internal-wiring-2026-09-07.md",
@@ -804,16 +804,17 @@
     {
       "id": "P11",
       "title": "跨入口安全、并发与真实 MCP Host",
-      "status": "blocked",
+      "status": "completed",
       "depends_on": [
         "P10"
       ],
       "owner": null,
       "started_at": "2026-09-11T10:15:00+09:00",
-      "last_updated": "2026-09-11T10:35:00+09:00",
+      "last_updated": "2026-09-11T11:47:38+09:00",
       "completed_criteria": [
         "P11.1",
         "P11.2",
+        "P11.3",
         "P11.4"
       ],
       "evidence": [
@@ -857,17 +858,17 @@
           ],
           "ref": "docs/plan/p11-real-host-session.md",
           "result": "为真实 Host 那一轮做的准备，本身不产生真机结论。scripts/p11_matrix_check.py 用中立 MCP 客户端走真实 bridge 的两种模式，判据全是 Runtime 侧副作用：coding 腿 apply_patch 真写一个带一次性 token 的文件、用 exec_command 在那台机器上 stat 出属主（必须等于期望的 Runtime 执行身份）、read 腿读到同一个 token（证明两个入口同一棵树）、read 腿按名字硬调三个未授予的工具（参数合法）全被拒、同一棵树的第二个 coding 起不来、Host 看到的全部文本扫私有标记、最后删掉产物并确认它没了；退出码只有全过才是 0，unknown 不算绿。tests/test_p11_matrix.py 5 条用例用 fake_bridge_ccnm.py（把 bridge 接到本机真实 server，真服务端真协议只少那段网络）覆盖成功路径，并证明它抓得住属主不对、私有路径泄漏、workspace 没 opt-in。docs/plan/p11-real-host-session.md 定下顺序、判据、资源清单与清理：三条 sudo 由用户执行，第 4 步（脚本，不花额度）必须先过才进第 5 步（真实 Claude Code，花额度）。全量 Python 161 passed。限制：一行真机结论都没有产生，写下计划不等于授权执行。"
-        }
-      ],
-      "blockers": [
+        },
         {
+          "kind": "real_nodes",
           "criteria": [
             "P11.3"
           ],
-          "reason": "真实 MCP Host 的允许矩阵必须在真机上跑：要重建 Runtime 账号、SSH 准入和两端部署，并用真实 Claude Code 的标准 mcpServers 配置消耗订阅额度。P7 的环境已按用户要求归零（scripts/p7-*.sh 可重跑），而创建账号/改准入/部署/跑真实 Agent 都属于需要用户逐项授权的动作，本轮授权不含这些。",
-          "unblock": "用户授权重建真机环境并允许消耗订阅额度后，按 docs/plan/p11-real-host-session.md 执行：三条 sudo（p7-authorize-local-runtime.sh --apply → p7-grant-local-ssh-access.sh --apply → p7-isolate-local-runtime-group.sh --apply）由用户跑；两端部署当前 build 并保留 .pre-p11 回退副本；建 p11demo/p11read 两个一次性 workspace；先跑 scripts/p11_matrix_check.py（不花额度，必须 0 退出）；再用真实 Claude Code 的 mcpServers 配 bridge 跑 read/coding 两轮并记下它实际显示了什么；验收看 Runtime 副作用与产物属主，不采信模型自述；最后按逆序脚本归零并逐条只读复核。"
+          "ref": "docs/research/p11-real-host-2026-09-11.md",
+          "result": "真机一轮：Host 是 fodelf（macOS 26.3，Claude Code 2.1.268），Runtime 是本机，执行身份 ccrun（uid 504、专用主组、不在 staff/admin），两端部署 sha256 93280d81… 的 release，走真 ssh。**没开 allow_unconfined_exec。** 机器可判部分 scripts/p11_matrix_check.py 退出码 0，证据 docs/research/p11-matrix-20260911.json：coding 七工具、apply_patch 真写、exec_command 在那台机器上 stat 出属主 ccrun、id -un 也是 ccrun；read 正好四工具、读到同一 token、三个未授予工具用合法参数硬调全被 CCNM_E_POLICY 拒；只读 workspace 上请求 coding 被拒且不降级；同一棵树第二个 coding 被写锁拒；Host 看到的全部文本无私有标记；产物删除并确认。真实 Claude Code 两轮：read 模式下它只拿到四个只读工具、连试都没试写（Runtime 侧复核那次写确实没发生）；coding 模式下它建的文件在 Runtime 上属主 ccrun、内容一字不差。两条真机才暴露的问题：(1) ~/.config/ccnm 里放一个非 .toml 的备份会让凭据审计判成「可能的私钥」并拒绝 exec_command，行为是对的（fail-closed）但消息把人指错方向，已写进 troubleshooting；(2) bridge 启动失败时 Claude Code 只显示 Connection closed，CCNM_E_* 诊断到不了用户面前——这是 Host 对 stderr 的处理，ccnm 单方面改不掉，已写进 troubleshooting 和支持矩阵。资源已归零，只剩两条 sudo 撤销待用户执行。限制：只验过 macOS→macOS、一个 Host 的一个版本、一棵一次性空树、print 模式而非交互 UI、没验 Codex、egress 不作声明。"
         }
-      ]
+      ],
+      "blockers": []
     },
     {
       "id": "P12",
@@ -907,8 +908,8 @@
     "部署环境的高权限风险：本轮 Agent Node 允许无传统凭据的 root 登录（Tailscale SSH 按 tailnet 身份放行，不要密码也不要密钥）。ccnm 造不成也管不了，但它足以让全部身份隔离失去意义。已按用户拍板列为部署环境风险、不计入 ccnm 安全保证，生产部署自己在 tailnet ACL 或 OS 层关掉；ccnm doctor 查不到它。"
   ],
   "handoff": {
-    "next_action": "**P11 仍然 blocked，卡的是授权不是活**：解锁动作见 P11 的 blocker，执行顺序见 docs/plan/p11-real-host-session.md（三条 sudo 由用户跑；第 4 步脚本不花额度且必须先过，第 5 步真实 Claude Code 才花额度）。本轮没有推进任何阶段编号，做的是 observed_gaps 里一条一直没解决的并发缺陷：64 线程压测下 exec 超时杀不到孙进程（实测 30.02s vs 0.49s），已修并补了会红的回归测试；另修两条因墙钟和文件竞争而假红的测试，并改掉一处从未存在过的常量注释（MAX_NEAR_MISS_LINES）。下一步仍然只有一个：用户授权重建真机环境并允许消耗订阅额度。push/tag/release 仍未授权。",
-    "scope": "本轮连做四段：P8（Orchestrator 交接件）、P9（Remote Workspace MCP 契约）、P10（bridge 实现）、P11 的离线部分。全部离线：没有系统变更、没有调用任何 Agent、没有拨真 ssh、没有部署、没有消耗订阅额度。P11.3 的真实 Host 与 P12 的远端真实项目都需要用户单独授权。",
+    "next_action": "**P11 已完成（四条验收都有证据），下一阶段是 P12。** 本轮把 P11.3 在真机上跑完了：真 ssh、真实 Claude Code 2.1.268、专用执行身份 ccrun，允许矩阵脚本退出码 0，记录见 docs/research/p11-real-host-2026-09-11.md。P12 要远端真实项目 dogfood（优先 Linux Runtime）并冻结 v1.x 契约，**同样需要真机和用户逐项授权**；开工前先看 P12.2 那条：Runtime 执行身份手上只有系统工具链，没有 cargo 也没有 node，「项目 toolchain 实际可用」这一条要先决定给执行身份装什么、由谁维护，产品文档目前对此只字未提（见 observed_gaps）。push/tag/release 仍未授权。",
+    "scope": "本轮两段：先修了 observed_gaps 里一条从 P3 挂到现在的并发缺陷（超时杀不到孙进程），再在用户授权下执行 P11.3 真机轮。真机部分有系统变更、有部署、消耗了订阅额度（三次 claude -p）。",
     "planning_validation": {
       "at": "2026-09-08T21:22:43+09:00",
       "commands": [
@@ -920,21 +921,20 @@
       "limits": "本轮离线门禁；fodelf SSH 建连失败，没有新增远端资源或运行真实模型，不替代 P3.5。"
     },
     "planning_validation_latest": {
-      "at": "2026-09-11T11:23:44+09:00",
+      "at": "2026-09-11T11:47:38+09:00",
       "commands": [
         "cargo fmt --all --check：通过",
         "cargo clippy --workspace --all-targets -- -D warnings：通过",
-        "cargo test --workspace：676 passed / 0 failed（本轮净 +2）",
-        "cargo test --workspace -- --test-threads=64：修复后连跑 6 轮全绿",
+        "cargo test --workspace：676 passed / 0 failed",
+        "cargo test --workspace -- --test-threads=64：并发修复后连跑 6 轮全绿（load 43，弱于首次复现的 159）",
         "PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p 'test_*.py' -q：161 passed",
-        "python3 scripts/check_protocol.py：通过（38 + 21 个 fixture）",
-        "python3 scripts/check_plan.py：通过",
-        "git diff --check：通过"
+        "scripts/p11_matrix_check.py（真机，真 ssh）：退出码 0，证据 docs/research/p11-matrix-20260911.json",
+        "python3 scripts/check_protocol.py / check_plan.py / git diff --check：通过"
       ],
-      "limits": "全部离线，没有系统变更、没有部署、没有消耗订阅额度。并发修复的证据是本机离线实测：只杀 leader 30.02s / 杀进程组 0.49s，以及把重试去掉后回归测试在 30.1s 变红。修复后 6 轮 64 线程全绿，但期间机器 load average 已从首次复现的 159 降到 43，不能读成「在同等压力下已证明不再复现」。真机那一侧（P11.3、P12）一行结论都没有新增。"
+      "limits": "真机结论只覆盖 macOS→macOS、Claude Code 2.1.268 的 print 模式、一棵一次性空树；Linux Runtime、远端真实项目、Codex Host、egress 都没验。证据 JSON 里的写锁拒绝措辞早于 commit 8c27aa5，与修好的实现差一个词（managed），不影响任何判据。"
     },
     "inherited_changes": [],
-    "authorization": "P3 的双机系统授权已执行完毕并归零，不再有效。P4 只写文档与 fixture，未做任何系统变更。P7.3 的授权已执行且**环境仍在运行、尚未清理**：本机 ccrun 主组仍是 ccrun(504)、仍在 com.apple.access_ssh、authorized_keys 里仍有本轮公钥，root 清单 /var/db/ccnm-p7-local-20260910 仍在，fodelf 的 ~/.ssh/config 仍有本轮 alias 区块。保留是为了等 Codex 额度回来接着用；要现在归零就按 scripts/p7-revoke-local-runtime-key.sh 逆序撤销，那需要用户执行 sudo。除此之外如需账号、ACL、防火墙、部署或替换二进制，必须重新逐项获得批准。 P7.4 Batch E 的部署与额度消耗已由用户逐项授权并执行完毕：三端 ccnm 换成 commit 9882938 的构建（sha256 d9c8c8cc…），旧构建（sha256 1c14492d…）留在各自 ~/.local/bin/ccnm.pre-batch-e 可回退；fodelf Controller 重启为 pid 1330；ccrun 的出站私钥 ~/.config/ccnm/transport/agent-key 已删除且不应还原。授权明确不含创建新账号、修改 ACL/防火墙、运行 Codex、push/tag/release。 P7.3 Codex 轮（用户选定复用 ccrun 的拓扑）新增这些可撤销资源，清理时逐条还原：本机 bing 的 ~/.ssh/ccnm-p7codex 密钥对、bing 与 ccrun 两侧 authorized_keys 各一行（备份分别在 ~/.ssh/authorized_keys.pre-p7codex 与 ccrun 家目录根下）、bing 的 ~/.ssh/config 中 ccnm-p7codex 标记块、bing 的 ~/.config/ccnm/config.toml 改为 Agent 侧（原件备份 config.toml.pre-p7codex）、新增 ~/.config/ccnm/p7codex-runtime.toml、bing 账号的 Controller LaunchAgent（ccnm controller uninstall 可撤）、工作树 /Users/Shared/ccnm-p7codex（ccrun 所有）、ccrun 配置里的 workspace p7codex 与 nodes.codex-agent（原件备份在 ccrun 家目录根下）。另注意：ccrun 的 SSH 准入在本轮被撤销后又按用户执行的 p7-grant-local-ssh-access.sh --apply 重新授予。 P7.3 Codex parity 轮（本轮）按用户授权执行并已完成：两端 ccnm 换成 sha256 e97a2ccd… 的构建，被替换的 d9c8c8cc… 留在各自 ~/.local/bin/ccnm.pre-codex（更早的 .pre-batch-e 原样保留）；bing 的 Controller 重启为 pid 31396；bing 的 [agents.codex-main] 加了 model = \"gpt-5.3-codex-spark\"（删掉该行即回默认模型）；工作树 /Users/Shared/ccnm-p7codex 里的两个 parity 产物已删、git status 干净。订阅消耗 Codex 4 次真实执行（两轮各两条腿，Codex 不报费用只有 token 数）。授权明确不含创建新账号、修改 ACL/防火墙、push/tag/release。 P7.5（本轮）按用户拍板执行并已完成：两端 ccnm 换成 sha256 51c5c73e…，被替换的 51…前那份留在各自 ~/.local/bin/ccnm.pre-p75；bing 的 Controller 重启为 pid 1531；一次真实 Codex --print 复验，产物已删、工作树干净。用户明确不授权在 P7.5 修改 Tailscale ACL、防火墙或 fodelf 的 root 策略——那两条只写进安全声明。用户明确要求**先不清理环境**：两个行为修正可能还要再做极小真机回归，等最终验收完成再按逆序脚本统一归零。",
+    "authorization": "P11.3 真机轮已由用户授权并执行完毕（2026-09-11）。用户本人 sudo 跑了 scripts/p11-authorize-local-runtime.sh --apply（把本轮公钥装进既有 ccrun，root 清单 /var/db/ccnm-p11-local-20260911）和 scripts/p7-grant-local-ssh-access.sh --apply（ccrun 临时进 com.apple.access_ssh，清单 /var/db/ccnm-p7-local-20260910/ssh-access-group.txt）。**这两条尚未撤销，要用户 sudo 跑 --revert。** 专用主组没有动，撤销它会把 ccrun 放回 staff 并重新打开 /Users/bing 的穿透口子。两端 ccnm 换成 sha256 93280d81… 的 release 并**按默认保留**，被替换的留在各自 ~/.local/bin/ccnm.pre-p11（fodelf d9c8c8cc…、ccrun 51c5c73e…）。其余一次性资源已归零：本轮密钥对已删（公钥因此已失效）、fodelf 的 ~/.ssh/config 标记区块已还原、~/ccnm-p11/ 已删、Runtime 配置与 /Users/Shared/ccnm-p11-20260911 已还原删除。订阅消耗：三次 claude -p。授权明确不含创建新账号、修改 ACL/防火墙/Tailscale 策略、push/tag/release。 历史授权记录（P3/P7 各轮）见 Git 历史，环境已分别归零或按上面所述保留。",
     "portability": "接续不依赖任何特定 MCP、任务管理器或 IDE 插件。任何模型只需 Git、仓库文件和项目命令即可按 current_task 继续；外部工具状态不作为产品阶段事实。"
   }
 }

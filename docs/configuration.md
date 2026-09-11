@@ -232,7 +232,9 @@ Runtime Node 上真实项目的绝对路径。
 claude_permission_mode = "bypassPermissions"
 ```
 
-**代价说清楚**：`bypassPermissions` 是"什么都不问直接跑"。如果这个 workspace 同时开了 `allow_unisolated_credentials`，那就是**模型跑的每一条命令都不经你确认，而且都能读到你的 Agent 登录**——两个开关叠在一起，中间没有任何人工环节。只在你自己的机器、你自己的项目上这么配。
+**它管不到 `exec_command`。** 交互式会话里那个工具带着 `anthropic/requiresUserInteraction`，Claude Code 在任何权限模式下都认，所以每次执行命令还是会问你一次——[故意的，理由在这里](troubleshooting.md#开了-bypasspermissionsexec_command-还是每次都问)。不想被问就走 `--print`，那条路上不带这个键。
+
+**代价说清楚**：`bypassPermissions` 是"什么都不问直接跑"。如果这个 workspace 同时开了 `allow_unisolated_credentials`，那就是**模型改文件、读你的 Agent 登录都不经你确认**——`exec_command` 那一问会是唯一还有人在场的环节。只在你自己的机器、你自己的项目上这么配。
 
 instance workspace（用 `agent` 而不是 `agent_node` 的）不接受这个字段，配了会被拒；instance 的策略在 Agent 端。
 

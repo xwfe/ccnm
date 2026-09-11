@@ -246,6 +246,32 @@ mv ~/.config/ccnm/config.toml.bak ~/config.toml.bak
 
 **不要**为了这个去开 `allow_unconfined_exec = true`——那是把这个账号的整套 confinement 判定都接受下来，为了一个备份文件不值得。
 
+### 开了 `bypassPermissions`，`exec_command` 还是每次都问
+
+**症状**：权限模式确实是 bypass（状态栏写着 `⏵⏵ bypass permissions on`），`workspace_info`、`read_file` 这些也确实不问了，但每次 `exec_command` 都还是弹：
+
+```text
+ Tool use
+   ccnm — Exec Command Tool: (MCP)
+ Do you want to proceed?
+ ❯ 1. Yes
+   2. No
+```
+
+**这是故意的，不是没配对。** ccnm 给 `exec_command` 挂了一个 `_meta` 键 `anthropic/requiresUserInteraction`，Claude Code **在任何权限模式下都认它，`bypassPermissions` 也不例外**——这正是它值得挂的理由：一个用户能关掉的闸门不叫闸门。
+
+只有 `exec_command` 带这个键。另外六个工具被路径策略框在 workspace 根目录里，而这一个是别人机器上的一个 shell，以 Runtime 那个账号的全部权限在跑。给只读工具也挂上只会制造提示疲劳。
+
+**想不被问，有一条正路**：用 `--print`。那条路上**不带**这个键（那是"一句问一个答、终端前没人"的模式，挂上只会让模型答"我没处可问"然后拒绝执行），边界回到 `exec_gate` 和 Runtime 执行身份本身：
+
+```bash
+ccnm my-project --print "跑一遍 cargo test，把失败的贴给我"
+```
+
+`ccnm mcp bridge` 也不带这个键——bridge 不知道 Host 那头有没有人，冒充知道比不说更糟。
+
+**开之前想一下**：如果这个 workspace 已经写了 `allow_unconfined_exec`、`allow_unisolated_credentials`，权限模式又是 `bypassPermissions`，那这个弹窗就是**最后一个还有人在场的环节**了。
+
 ### 自己的 settings.json 里写了 `bypassPermissions`，ccnm 会话里还是一个个问
 
 **症状**：Agent Node 的 `~/.claude/settings.json` 里明明有

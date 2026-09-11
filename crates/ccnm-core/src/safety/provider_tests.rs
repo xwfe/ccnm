@@ -248,3 +248,37 @@ fn ordinary_unconfined_acceptance_does_not_authorize_agent_credentials() {
     ));
     assert!(!report.exec_allowed(Accepted::unconfined(true)));
 }
+
+/// The bug this pins: `allow_unisolated_credentials` reached the handshake
+/// gate but not the one that runs again before each spawn. The session
+/// came up, listed its seven tools, and then refused every single
+/// `exec_command` with a message about credentials — on a workspace whose
+/// whole point was that it had accepted exactly that.
+///
+/// A home that does not exist makes every provider's credential check
+/// fail, which is the same severity the real situation produces.
+#[test]
+fn the_gate_before_spawn_honours_the_same_admission_the_handshake_did() {
+    let absent = std::env::temp_dir().join(format!("ccnm-absent-{}", uuid::Uuid::new_v4()));
+    let runner = FakeRunner::new();
+
+    assert!(
+        credentials_refuse(&absent, Accepted::NOTHING, &runner),
+        "default posture still refuses"
+    );
+    assert!(
+        credentials_refuse(&absent, Accepted::unconfined(true), &runner),
+        "the confinement switch says nothing about credentials"
+    );
+    assert!(
+        !credentials_refuse(
+            &absent,
+            Accepted {
+                unconfined_exec: true,
+                unisolated_credentials: true,
+            },
+            &runner
+        ),
+        "accepted at the handshake means accepted here too, or exec is refused forever"
+    );
+}

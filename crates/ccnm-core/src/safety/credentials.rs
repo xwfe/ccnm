@@ -110,17 +110,46 @@ pub fn findings_with(
     }).collect()
 }
 
-pub fn runtime_gate(home: &Path, runner: &dyn ProcessRunner) -> Result<()> {
+/// The last check before a command is spawned, re-run because what is on
+/// disk can change after the handshake.
+///
+/// `accepted` is the workspace's own admission, and it decides only the
+/// credential half: `allow_unisolated_credentials` waives a reachable
+/// Agent login, and nothing waives the environment check above it — an
+/// inherited `ANTHROPIC_*` is handed to every child whether or not
+/// anybody accepted anything.
+///
+/// It has to be passed in rather than read here, for the same reason the
+/// handshake gate takes it: the value comes from the Runtime's own
+/// config, never from the request.
+pub fn runtime_gate(
+    home: &Path,
+    accepted: super::Accepted,
+    runner: &dyn ProcessRunner,
+) -> Result<()> {
     super::environment::validate_runtime_names(std::env::vars_os().map(|(k, _)| k))?;
-    if findings(home, runner)
-        .iter()
-        .any(|f| f.severity == Severity::Fail)
-    {
+    if credentials_refuse(home, accepted, runner) {
         return Err(Error::policy(
             "Runtime Agent credential access is present or unknown; exec refused before spawn (private paths and values withheld)",
         ));
     }
     Ok(())
+}
+
+/// The credential half of [`runtime_gate`], separated so it can be tested.
+///
+/// Not testable through `runtime_gate` itself: that one reads this
+/// process's environment first, and an ordinary developer shell has names
+/// ending in `_TOKEN` in it, so the environment check answers before the
+/// credential logic is ever reached.
+pub(super) fn credentials_refuse(
+    home: &Path,
+    accepted: super::Accepted,
+    runner: &dyn ProcessRunner,
+) -> bool {
+    findings(home, runner)
+        .iter()
+        .any(|f| f.severity == Severity::Fail && !f.waived_by(accepted))
 }
 
 pub fn effective_uid(runner: &dyn ProcessRunner) -> Result<u32> {

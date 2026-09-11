@@ -610,11 +610,15 @@ impl Server {
                     .refusal(self.inner.exec_gate.accepted),
             )));
         }
-        // Credentials are non-waivable and may change after the handshake.
+        // Re-checked here because what is on disk can change after the
+        // handshake, and with the same admission the handshake used: a
+        // workspace that accepted a reachable Agent login must not be
+        // refused by the second check after passing the first.
         // Keep diagnostic/file work off the async IO thread.
-        let checked = tokio::task::spawn_blocking(|| {
+        let accepted = self.inner.exec_gate.accepted;
+        let checked = tokio::task::spawn_blocking(move || {
             let home = crate::paths::home_dir()?;
-            crate::safety::credentials::runtime_gate(&home, &SystemRunner)
+            crate::safety::credentials::runtime_gate(&home, accepted, &SystemRunner)
         })
         .await
         .map_err(|_| ErrorData::internal_error("Runtime credential check failed", None))?;

@@ -117,11 +117,13 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
-      # The failure goes into the job summary, not just the log. Logs on
-      # this repository need a token to read; the summary is part of the
-      # public run page, so "which test went red on Linux" is answerable
-      # by anyone looking at the run, including from a machine that has no
-      # gh login. `cargo test` is fail-fast, so the tail is the useful part.
+      # The failure goes into the job summary *and* an annotation, not just
+      # the log. Reading a job log needs a token; an annotation comes back
+      # from the public check-runs API and shows on the commit page. So
+      # "which test went red on Linux" is answerable without a gh login --
+      # which matters exactly when a red Linux job is the only thing
+      # standing between you and a release. `cargo test` is fail-fast, so
+      # the tail is the useful part.
       - name: Test
         run: |
           set -o pipefail
@@ -133,6 +135,11 @@ jobs:
               tail -n 60 /tmp/test.log
               echo '```'
             } >> "$GITHUB_STEP_SUMMARY"
+            # An annotation is one line: %0A is how a newline survives.
+            msg=$(tail -n 40 /tmp/test.log \
+              | sed -e 's/%/%25/g' -e 's/\r/%0D/g' \
+              | sed -e ':a' -e 'N' -e '$!ba' -e 's/\n/%0A/g')
+            echo "::error title=cargo test --workspace failed::${msg}"
             exit 1
           fi
 

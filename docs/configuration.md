@@ -232,7 +232,7 @@ allow_unconfined_exec = true
 
 这不是生产安全配置。真实项目应该在 Runtime Node 建 `ccrun` 之类的专用低权限账号，然后把它改回 `false`。
 
-### `external_mcp`（experimental）
+### `external_mcp`
 
 外部 MCP Host（你本机已经在跑的 Claude Code / Codex / 别的客户端）能不能把这个 workspace 当成远程项目工具用，以及最多能做什么：
 
@@ -250,7 +250,7 @@ external_mcp = "read"        # disabled（默认）| read | coding
 
 只给外部 MCP 用的 workspace **可以没有 Agent**：没有 `agent` 也没有 `agent_node` 时，只要 `external_mcp` 不是 `disabled` 就合法——那种项目从来不由 ccnm 启动 Agent。它必须定义在自己的 Runtime Node 上。
 
-用法和限制见 [Remote Workspace MCP 契约](protocol/remote-workspace-mcp-v1.md)。**目前是 experimental**：离线测试覆盖，但还没有真实 MCP Host 连过。
+用法和限制见 [Remote Workspace MCP 契约](protocol/remote-workspace-mcp-v1.md)，验收范围见[支持矩阵](support-matrix.md)。契约于 2026-09-11 冻结。
 
 ### `external_instructions`
 

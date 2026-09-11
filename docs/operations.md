@@ -163,7 +163,51 @@ git config --global user.name "<name>"
 git config --global user.email "<email>"
 ```
 
-不配也能干活——Agent 会退而用 `git -c user.name=… -c user.email=…` 传单次参数，但**下一个会话还会撞同一堵墙**。
+不配也能干活——Agent 会退而用 `git -c user.name=… -c user.email=…` 传单次参数，但**下一个会话还会撞同一堵墙**。（[P12 那一轮](research/p12-real-project-2026-09-11.md)里真实 Claude Code 就是这么干的：它没去改那台机器的 git 全局配置，只给自己那一次提交带上了身份。）
+
+## Runtime Node 的前置条件与项目工具链
+
+**ccnm 不装工具链，不升级它，也不代管版本。** 它不知道你的项目要什么。装什么、装在哪、谁维护，是 Runtime Node 管理员的事——这一节说的是怎么装得让工具**真的能被调用到**，因为这里有一脚很容易踩空。
+
+**ccnm 自己要两个程序**，两个入口都要：
+
+| 程序 | 谁要它 | 没有它会怎样 |
+| --- | --- | --- |
+| `git` | `list_files`、写 guard 的资源判定、项目自己 | 降级成非 git 视图；guard 按目录而不是按仓库互斥 |
+| `ripgrep`（`rg`） | `search_text`——它不自己扫文件 | 七工具少一个，报 `ripgrep is not installed on the Runtime Node` |
+
+剩下的是项目自己的：编译器、包管理器、测试运行器。
+
+**装在执行身份自己的 home 里，不要装成全机共享。** 这不是洁癖：Runtime Executor 的意义就是"除了这个项目什么都没有"，而一个装到 `/usr/local` 的工具链会同时属于机器上每个账号。[P12 那一轮](research/p12-real-project-2026-09-11.md)在 Debian 上的做法是：
+
+- 系统级只装 Rust 链接期要的 C 工具链（`gcc libc6-dev make`）和 `ripgrep`——rustc 自己不带 linker，这一步绕不开；
+- rustup（`~/.rustup`、`~/.cargo`）和官方 Node 二进制包（`~/.local/node-<版本>`）以**那个账号自己的身份**装进它的 home；
+- 两条命令写成了可重跑、可撤销的脚本：[建执行身份](../scripts/p12-provision-linux-runtime.sh)（要 root，清单先于变更、`--revert` 按清单精确撤销）和[装工具链](../scripts/p12-runtime-toolchain.sh)（**不要 root**）。它们是那一轮的实测做法，可以照抄，也可以只当参考。
+
+### 最容易踩的一脚：非交互 ssh 的 PATH
+
+`exec_command` 的命令跑在一条**非交互** ssh 会话里，而大多数工具链安装器写的 PATH 在那条会话里不生效：
+
+- Debian/Ubuntu 的 `~/.bashrc` 第 6 行就是 `case $- in *i*) ;; *) return;; esac`，非交互直接返回；
+- rustup 默认把 PATH **追加在文件末尾**（也就是那个 `return` 之后），另一份写在只有 login shell 才读的 `~/.profile`。
+
+照默认装完，ccnm 报的是
+
+```text
+cargo is not installed on the Runtime Node, or is not on its PATH
+```
+
+**看着像没装，其实是装了但 PATH 没到。** 做法是把 PATH 那一块写在那个 `return` **之前**（rustup 用 `--no-modify-path`，自己写），然后从客户端问一次——只有这一句话算数：
+
+```bash
+ssh <runtime-alias> 'command -v cargo node npm rg git'
+```
+
+在 Runtime 上 `echo $PATH` 不算：那是登录 shell 的答案，不是 `exec_command` 会看到的那一条。
+
+### 装工具链需要出站网络
+
+工具链要从网上下载，所以**装的时候** Runtime 得出得去；`exec_command` 之后能不能出去是另一个问题，ccnm 对此[不作保证](support-matrix.md#egress不作保证)。真机上还撞到过出口不均质：`static.rust-lang.org` 直连没问题，`nodejs.org` 会 TLS reset（`curl: (35) Recv failure`）。换镜像可以，但**完整性要用官方哈希校验**——在能连上官方的那台机器上取 `SHASUMS256.txt`，把哈希带过去固定，不要信镜像自己给的清单。
 
 ## 状态文件在哪，多大，怎么清
 

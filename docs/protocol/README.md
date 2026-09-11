@@ -9,7 +9,7 @@
 | [fixtures/](fixtures/) | 成功、拒绝、断线、未知终态、过期结果的样例消息 |
 | [../../clients/python/ccnm_machine_client.py](../../clients/python/ccnm_machine_client.py) | 可以直接抄走的单文件客户端，只用标准库 |
 
-第二套契约是给**已经在跑的外部 Agent** 用的。命令和权限模型已经实现（P10），但还没有真实 MCP Host 连过，属于 experimental：
+第二套契约是给**已经在跑的外部 Agent** 用的。`ccnm.workspace-mcp/1` **已于 2026-09-11 冻结**，依据是允许矩阵在真实 Claude Code 上跑过一次（[P11 记录](../research/p11-real-host-2026-09-11.md)）加一次 Linux Runtime 上的远端真实项目 dogfood（[P12 记录](../research/p12-real-project-2026-09-11.md)）；验收范围和不保证什么见[支持矩阵](../support-matrix.md)。往后加工具、加字段、加错误原因可以；删工具、改权限语义、改 `external_mcp` 三个值的含义要升到 `ccnm.workspace-mcp/2`。
 
 | 文件 | 是什么 |
 | --- | --- |

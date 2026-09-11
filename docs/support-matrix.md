@@ -12,13 +12,19 @@
 | Codex Agent Instance，remote SSH MCP | 预发布支持 | 仅接受实测的 Codex CLI `0.154.0`（见下方版本 pin）；公共入口已在授权双机真机验证。 |
 | Machine API（`ccnm rpc`），`print` 模式 | 预发布支持，协议已冻结 | `ccnm.machine/1` 于 2026-09-10 冻结。两个 provider 各跑通一次真机双机闭环并与人类 CLI 对照（[Claude](research/p7-real-machine-2026-09-10.md)、[Codex](research/p7-codex-parity-2026-09-10.md)）：两条腿产物属主相同，`usage` 端到端到达调用方（Codex 不报 `cost`，永远缺席）。实现仍比契约少四条，见[协议说明](protocol/README.md)。 |
 | Machine API 的 `interactive` 模式、输出分页、结果过期 | 未实现 | 都不在 `hello` 声明的能力里，调用会被明确拒绝，不静默降级。 |
-| Remote Workspace MCP（`ccnm mcp bridge`） | **experimental** | 允许矩阵已在真机上验过一次（[记录](research/p11-real-host-2026-09-11.md)、[证据](research/p11-matrix-20260911.json)）：真 ssh、真实 Claude Code 2.1.268、Runtime 执行身份是专用账号。coding 七工具、产物属主就是那个执行身份、read 正好四工具且硬调被收起来的工具（参数合法）全被拒、只读 workspace 上请求 coding 不降级、同一棵树第二个 coding 被写锁拒、Host 看到的文本无私有路径。跨入口部分另有离线证明（[记录](research/cross-entry-p11-2026-09-11.md)）：受管会话与外部 coding 抢同一把 write guard，两个方向都是启动失败而不是"连上了写不进去"；一个不 import ccnm 代码的中立 MCP 客户端重放同一套矩阵得出同一结论。**仍是 experimental**，因为只验过 macOS→macOS、一个 Host 的一个版本、一棵一次性空树；Linux Runtime 与远端真实项目 dogfood 是 P12。另有一条已知代价：bridge 启动失败时 Claude Code 只显示 `Connection closed`，`CCNM_E_*` 诊断到不了用户面前，要手工跑一遍命令才看得到（见[出错了怎么办](troubleshooting.md)）。不要按"已支持"部署到有价值的项目上。 |
+| Remote Workspace MCP（`ccnm mcp bridge`） | 预发布支持，契约已冻结 | `ccnm.workspace-mcp/1` 于 2026-09-11 冻结。允许矩阵在 macOS→macOS 上验过（[记录](research/p11-real-host-2026-09-11.md)、[证据](research/p11-matrix-20260911.json)）；远端真实项目 dogfood 在 **Debian 13 / x86_64 的 Linux Runtime** 上验过（[记录](research/p12-real-project-2026-09-11.md)、[证据](research/p12-dogfood-20260911.json)）：专用执行身份（uid 1002、只有自己的组、无 sudo、docker socket 不可写、`~/.ssh` 无私钥、无 `SSH_AUTH_SOCK`、读不到别人的 home），`cargo`/`rustc`/`node`/`npm`/`git` 由 `exec_command` 在那台机器上答出版本，read→search→patch→构建失败→`read_output` 分页→收回→**Runtime 侧 `git status` 为空**→测试通过，整套 Rust 测试在 Runtime 上绿。六条失败路径各有具名拒绝：writer busy、没 opt-in、read 请求 coding 不降级、协议号不认识（`CCNM_E_VERSION`，stdout 不说话）、远端进程被杀、Host 被杀。真实 Claude Code 2.1.268 在那棵远端树上完成了一次真改动（改文案、在远端跑测试、自己做了一个 commit），属主是执行身份。跨入口部分另有离线证明（[记录](research/cross-entry-p11-2026-09-11.md)）：受管会话与外部 coding 抢同一把 write guard，两个方向都是启动失败而不是"连上了写不进去"；一个不 import ccnm 代码的中立 MCP 客户端重放同一套矩阵得出同一结论。**边界**：只验过 Debian 13 / x86_64 与 macOS 两种 Runtime、一个 Host（Claude Code 2.1.268 的 `-p` 模式）、一棵中型 Rust 项目；Codex 当 Host、交互式 UI、arm64 Linux、非 Debian 系、monorepo 规模都没验。**egress 不作保证**（见下节）。已知代价：bridge 启动失败时 Claude Code 只显示 `Connection closed`，`CCNM_E_*` 诊断到不了用户面前，要手工跑一遍命令才看得到（见[出错了怎么办](troubleshooting.md)）。 |
 | Claude legacy colocated | 明确拒绝 | remote-only 启动参数已从 native 候选命令移除，但 installed Claude 尚未真实验收；本 build 在创建 session 前返回 `CCNM_E_NOT_READY`。 |
 | Claude/Codex Agent Instance colocated | 明确拒绝 | 没有可信 Runtime credential boundary 和真实验收，不自动降级为 legacy/native。 |
 | Codex legacy/internal protocol 2 | 兼容历史 fixture | 只用于保留已有内部测量与回归，不是新的公共配置入口。 |
 | `hybrid-smb`、第三 Provider、Browser/Git 专用 MCP、多 Agent/worktree 编排 | 未实现 | 不在当前范围内，不做隐式 fallback。 |
 
-当前目标平台是 **macOS，只有 macOS**。CI 也只跑 macOS，这不是"还没顾上 Linux"：Controller 是 launchd LaunchAgent，会话上下文检查直接问 `launchctl` 和 `security`，一个绿色的 Linux job 测的会是这个程序跑不了的东西。Linux Controller、Windows 和其他官方 CLI 版本均未验收。
+平台要分两件事说，因为 P12 之后它们不再是同一个答案。
+
+**Agent 那一侧只有 macOS。** Controller 是 launchd LaunchAgent，会话上下文检查直接问 `launchctl` 和 `security`；Linux Controller、Windows 和其他官方 CLI 版本均未验收。CI 也只跑 macOS，这不是"还没顾上 Linux"：一个绿色的 Linux job 测的会是这个程序在那儿跑不了的东西。
+
+**Runtime 那一侧（`internal mcp-serve` 与七工具）在 Debian 13 / x86_64 上验过一次**，作为 Remote Workspace MCP 的 dogfood（[记录](research/p12-real-project-2026-09-11.md)）：`cargo fmt`、严格 clippy 与全套测试在那台机器上 676 passed / 0 failed，与 macOS 同数。**那一次是从两个红开始的**，两个都真修了：`SystemRunner::run` 的超时只杀 leader（macOS 因为 bash 会 exec 而一直看不见），以及一个测试助手用了 BSD 语义的 `date -r`。Linux 上的 Managed 入口（Controller/session）仍未验收，Runtime 侧也只验过这一种发行版和架构。
+
+**Runtime Node 的前置条件**（Managed 与 Remote MCP 两个入口都要）：`git`、**`ripgrep`**（`search_text` 调 `rg`，没有它七工具就少一个），加上项目自己需要的工具链。装什么、谁维护，见[运维手册](operations.md#runtime-node-的前置条件与项目工具链)。
 
 ## Codex 版本 pin 与重新测量
 
@@ -87,6 +93,21 @@ ccnm session id 是生命周期主键；Claude/Codex 自己的 thread/resume id 
 - **外部 MCP 的 `coding` 会话抢同一把锁**，`read` 会话不碰它（没有能改东西的工具，让它等写者只会白等）。
 
 异常恢复必须由 Runtime 操作者完成：先按 session/status 和进程列表证明旧 supervisor、Agent、SSH MCP 及其子进程都已结束，再在 Runtime 的 `${XDG_STATE_HOME:-$HOME/.local/state}/ccnm/write-guards/` 中定位包含该 session id 的**单个** marker，备份后删除该文件。不要批量删除，也不要仅因时间过去就清理。删除前无法证明旧执行者结束时，保持 unknown 才是正确状态。
+
+**"崩了"有两种，结局不同**，两种都在真机上验过（[P12 记录](research/p12-real-project-2026-09-11.md)）：
+
+| 谁死了 | 锁的状态 | 下一个 coding 会话 |
+| --- | --- | --- |
+| Host / bridge（`kill -9` 客户端那一侧） | `released` | 直接能开，**不需要人工恢复**——远端读到 EOF 后自己跑完了收尾 |
+| 远端 `internal mcp-serve`（在 Runtime 上被杀） | `held <session> <workspace>` | 被拒，要按上一段做人工恢复 |
+
+两种情况下 `read` 会话都照常打开，而远端都没有留下孤儿进程。所以"Claude Code 崩了/被关掉"通常什么都不用做；要人动手的是 Runtime 侧的执行者被杀那一种。
+
+## egress：不作保证
+
+ccnm 不实现任何网络策略，**也不声明任何 egress 边界**。`exec_command` 能跑任意程序，任意程序能联网；真机上 Runtime 执行身份的出站是通的——项目工具链就是这么装上去的。本项目的"隔离"只覆盖 OS 身份、文件可达性和写互斥这三件事。
+
+需要限制出站的，在 tailnet ACL、防火墙或 OS 网络策略上做，并且不要拿 `ccnm doctor` 的输出当依据：它查不到网络策略。另外注意 `No SSH keys` 那一行的语义是"Runtime Executor 名下没有 ccnm 出站需要的私钥/agent"，不是"这个账号出不去"。
 
 ## P3 发布门禁结果
 

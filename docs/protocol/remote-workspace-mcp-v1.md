@@ -1,8 +1,9 @@
 # ccnm Remote Workspace MCP v1（契约）
 
-> **状态：命令和权限模型已经实现（P10），但没有任何真实 MCP Host 连过它。**
-> `ccnm mcp bridge`、`external_mcp` 和 `external_instructions` 现在真的存在，行为由离线测试覆盖：真实二进制、真实 MCP 消息、真实写入互斥锁，但走的是管道而不是 ssh，对面也不是 Claude Code 或 Codex。
-> 用真实 Host 跑允许矩阵是 P11，远端真实项目 dogfood 与 v1.x 冻结是 P12。**在那之前这个入口是 experimental**，不要按“已支持”对外描述。
+> **状态：`ccnm.workspace-mcp/1` 于 2026-09-11 冻结。**
+> 依据是两轮真机：允许矩阵在真实 Claude Code 2.1.268 上跑过（[P11 记录](../research/p11-real-host-2026-09-11.md)、[证据](../research/p11-matrix-20260911.json)），远端真实项目 dogfood 在 Debian 13 / x86_64 的 Runtime 上跑过（[P12 记录](../research/p12-real-project-2026-09-11.md)、[证据](../research/p12-dogfood-20260911.json)）。
+> **冻结的意思是**：往后加工具、加字段、加错误原因属于加法，可以；删工具、改 `disabled`/`read`/`coding` 三个值的含义、改权限判定或错误码语义要升到 `ccnm.workspace-mcp/2`。
+> 验收范围、已知代价和**不作保证的 egress** 见[支持矩阵](../support-matrix.md)；这一版明确不做的东西见第 12 节。
 
 面向的读者是**已经在本机跑着 Claude Code / Codex / 别的 MCP Host，但项目在另一台机器上的人**。它给你的不是一条裸 SSH 通道，而是一个绑定了 workspace 的远程项目工具集。
 
@@ -105,7 +106,7 @@ Claude Code 的 `mcpServers` 形状：
 }
 ```
 
-其他 Host 的配置格式各不相同（Codex 用 TOML），**本文不声称验证过任何一家**——那是 P11 的事。契约只保证：一个进程、stdin/stdout 说 MCP、参数如上。
+**实测过的只有 Claude Code**（2.1.268，上面这个形状，`-p` 模式）。其他 Host 的配置格式各不相同（Codex 用 TOML），本文不声称验证过它们。契约只保证：一个进程、stdin/stdout 说 MCP、参数如上。
 
 ### 3.4 stdio 的硬规矩
 
@@ -357,4 +358,4 @@ python3 scripts/check_protocol.py
 
 它检查 fixture 符合 schema、`CCNM_E_*` 名字和本文的表一致、每个写进表里的名字都有样例。
 
-**它证明的是这几份文件互相自洽，不证明任何实现的行为和它们一致——因为还没有实现。** 本文里标了"实测"的地方（MCP 版本协商、输出上限、工具描述、写入互斥行为）依据的是当前仓库里 Managed 路径的代码；标了契约的地方依据的是设计决定，一行代码都还没写。
+**它证明的是这几份文件互相自洽，不证明实现的行为和它们一致。** 那一半由别的东西证：Rust 集成测试（`cargo test -p ccnm-cli --test external_mcp`）、一个不 import ccnm 代码的中立 MCP 客户端（`python3 -m unittest tests.test_remote_workspace_mcp`），以及两轮真机（见页首）。本文里标"实测"的地方，依据是仓库代码或那两轮记录；标"契约"的地方是设计决定。

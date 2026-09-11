@@ -160,11 +160,20 @@ fn residual_exec_child_keeps_the_workspace_unknown_until_manual_recovery() {
     let mut server = fixture.start("one");
     writeln!(server.stdin.as_mut().unwrap(), "{}", json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"exec_command","arguments":{"cmd":[script.to_str().unwrap()]}}})).unwrap();
     server.stdin.as_mut().unwrap().flush().unwrap();
+    // Wait for a pid, not for the file: the shell's `>` creates it before
+    // `printf` writes into it, so on a busy machine `is_file` is true while
+    // the content is still empty and the parse below blows up on "".
     let deadline = Instant::now() + Duration::from_secs(5);
-    while !pid_file.is_file() && Instant::now() < deadline {
+    let pid: i32 = loop {
+        if let Some(pid) = std::fs::read_to_string(&pid_file)
+            .ok()
+            .and_then(|text| text.trim().parse::<i32>().ok())
+        {
+            break pid;
+        }
+        assert!(Instant::now() < deadline, "the child never wrote its pid");
         std::thread::sleep(Duration::from_millis(20));
-    }
-    let pid: i32 = std::fs::read_to_string(&pid_file).unwrap().parse().unwrap();
+    };
     server.kill();
     assert!(alive(pid));
     refused(&fixture, "two", "not transferred automatically");

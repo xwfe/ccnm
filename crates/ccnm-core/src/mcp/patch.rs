@@ -2415,15 +2415,51 @@ mod tests {
         assert!(message.contains("fn main() {"), "{message}");
     }
 
-    /// `near_miss` runs on a *failed* edit, where nothing about the
-    /// input has been vouched for: the file can be 16 MiB and `old` can
-    /// be a megabyte of it. Unbounded, the search is
-    /// candidates x wanted-lines, and there are two separate caps on it.
-    /// Both need their own case, because either one alone makes the
-    /// other's pathological input fast.
+    /// Where the cap actually is, measured without a clock.
     ///
-    /// This one is the `old`-length cap: an `old` far longer than
-    /// MAX_NEAR_MISS_LINES skips the block search entirely.
+    /// The two cases below time a pathological input, and a clock cannot
+    /// tell "the cap is gone" apart from "the machine is busy" -- one of
+    /// them failed at 3.7s against a 2s budget under `--test-threads=64`
+    /// while doing exactly the bounded 61ms of work it was supposed to.
+    /// This one has no such problem, because the cap changes the *answer*:
+    /// every `alpha` line is a candidate and only the last one is followed
+    /// by `beta`, so whether that real match is found says precisely
+    /// whether the search reached the 65th candidate.
+    #[test]
+    fn a_block_match_past_the_candidate_cap_is_not_looked_for() {
+        let old = "\talpha\n\tbeta\n";
+        let answer =
+            |candidates: usize| near_miss(&("    alpha\n".repeat(candidates) + "    beta\n"), old);
+
+        let last_one_in = answer(MAX_NEAR_MISS_CANDIDATES);
+        assert!(
+            last_one_in.contains(&format!(
+                "the same text is at line {MAX_NEAR_MISS_CANDIDATES}"
+            )),
+            "{last_one_in}"
+        );
+
+        let one_too_many = answer(MAX_NEAR_MISS_CANDIDATES + 1);
+        assert!(
+            one_too_many.contains("its first line is at line 1"),
+            "the search went past the cap: {one_too_many}"
+        );
+    }
+
+    /// `near_miss` runs on a *failed* edit, where nothing about the input
+    /// has been vouched for: the file can be 16 MiB and `old` a megabyte
+    /// of it. Unbounded, the search is candidates x wanted-lines -- around
+    /// 10^10 comparisons on those numbers, a tool call that never comes
+    /// back. MAX_NEAR_MISS_CANDIDATES is the one cap on it, and these two
+    /// cases are its two pathological shapes: a long `old`, and a file
+    /// where every line could start it.
+    ///
+    /// The budget is an anti-hang net, not a performance bound. Bounded,
+    /// this input measures 61ms; the same input without the cap walks 60k
+    /// candidates 3k lines each. In between there is a contended machine,
+    /// which stretched the bounded 61ms to 3.7s and made a 2s budget go
+    /// red for no defect at all -- so the number here is loose on purpose,
+    /// and the cap itself is pinned by the case above.
     #[test]
     fn a_hopeless_edit_with_an_enormous_old_answers_quickly() {
         let text = "    x = 1\n".repeat(60_000);
@@ -2432,17 +2468,17 @@ mod tests {
         let started = std::time::Instant::now();
         let answer = near_miss(&text, &old);
         assert!(
-            started.elapsed() < Duration::from_secs(2),
-            "near_miss took {:?}; it is bounded or it is a hang",
+            started.elapsed() < Duration::from_secs(30),
+            "near_miss took {:?}; that is not slow, that is a hang",
             started.elapsed()
         );
         // It still says something useful: the first line is everywhere.
         assert!(answer.contains("its first line is at line 1"), "{answer}");
     }
 
-    /// And this is the many-candidates shape: an `old` in a file where
-    /// every single line could start it. Without the cap this walks 200k
-    /// candidates about 199 lines each, measured at 57.7 seconds.
+    /// The many-candidates shape: an `old` in a file where every single
+    /// line could start it. Without the cap this walks 200k candidates
+    /// about 199 lines each, measured at 57.7 seconds; with it, 538ms.
     #[test]
     fn a_hopeless_edit_with_a_match_on_every_line_answers_quickly() {
         let text = "    x = 1\n".repeat(200_000);
@@ -2451,8 +2487,8 @@ mod tests {
         let started = std::time::Instant::now();
         let answer = near_miss(&text, &old);
         assert!(
-            started.elapsed() < Duration::from_secs(2),
-            "near_miss took {:?}; it is bounded or it is a hang",
+            started.elapsed() < Duration::from_secs(30),
+            "near_miss took {:?}; that is not slow, that is a hang",
             started.elapsed()
         );
         assert!(answer.contains("its first line is at line 1"), "{answer}");

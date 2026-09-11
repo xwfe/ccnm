@@ -120,7 +120,7 @@ exec_command            confinement 通过后才正常允许
 
 它不会让 Runtime 变安全，而且命令结果会明确标记为 unconfined。
 
-**这个开关不跳过身份未知、认证环境继承和 Agent 凭据隔离。** 同一物理机器可以有 Agent 和 Runtime 两种角色，但隔离 Runtime 的执行身份不能读取已知 Agent 认证文件/容器。失败会在 MCP 初始化、Git 探测前拒绝；exec 前再次检查。目录/ACL/symlink 不明不能报成“没有凭据”。SSH 检查不读取私钥内容，保留 `authorized_keys` 等已知公开文件，其余可疑候选保守拒绝。具体范围、环境来源及未证明的 OS credential service/其他目录见 [Provider 安全契约](provider-safety.md)。
+**这个开关不跳过身份未知、认证环境继承和 Agent 凭据隔离**——最后那一条要另一个开关，见下一节。同一物理机器可以有 Agent 和 Runtime 两种角色，但隔离 Runtime 的执行身份不能读取已知 Agent 认证文件/容器。失败会在 MCP 初始化、Git 探测前拒绝；exec 前再次检查。目录/ACL/symlink 不明不能报成“没有凭据”。SSH 检查不读取私钥内容，保留 `authorized_keys` 等已知公开文件，其余可疑候选保守拒绝。具体范围、环境来源及未证明的 OS credential service/其他目录见 [Provider 安全契约](provider-safety.md)。
 
 ## 凭据隔离那一条，怎么放开，代价是什么
 

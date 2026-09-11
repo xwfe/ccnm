@@ -31,7 +31,16 @@ Runtime 启动环境（包括 SSH 服务端 `AcceptEnv`）必须由 Runtime 运�
 
 Agent 的专用 Codex HOME 必须是当前有效 UID 所有、仅属主可访问、无符号链接的目录；不能把 HOME 目录的属主当执行 UID。认证文件同样要求私有、正规文件且非 symlink。官方 CLI 探测是受控诊断，政策失败不能拉起项目命令或 Agent 会话。
 
-Runtime 初始化先检查身份和凭据边界，失败时不进入 Git 等依赖项目的子进程；exec 前再复查凭据可访问性和环境，不能仅依赖 session 启动时的旧审计。即使 `allow_unconfined_exec=true`，已知 Agent 凭据可访问/未知、来源不明认证环境仍拒绝；这个选项只能接受既有账号 confinement 风险，不能授权共享 Agent 登录。OS 权限仍须阻止进程在检查后获得新权限：审计不是无竞态 sandbox。
+Runtime 初始化先检查身份和凭据边界，失败时不进入 Git 等依赖项目的子进程；exec 前再复查凭据可访问性和环境，不能仅依赖 session 启动时的旧审计。OS 权限仍须阻止进程在检查后获得新权限：审计不是无竞态 sandbox。
+
+两个逃生开关，各自只接受一件事，互不蕴含：
+
+| 开关 | 接受的是 | 不接受的 |
+| --- | --- | --- |
+| `allow_unconfined_exec` | 既有账号的 confinement 风险（sudo/admin/私钥等） | 凭据可访问或未知、来源不明的认证环境、身份未知 |
+| `allow_unisolated_credentials` | 已知 Agent 凭据**可访问或未知**（含 symlink/列不出来这种"说不清"） | 来源不明的认证环境、身份未知 |
+
+**`allow_unconfined_exec` 从来不授权共享 Agent 登录**，这一点没变；变的是现在有第二个开关专门干这件事，而它必须单独写出来。两条仍然任何开关都放不开：**身份未知**（没人能说清是谁接受了什么）和**继承来的认证环境**（凭证被塞进每个子进程，而修法只是别 export）。开关只从 Runtime 自己的配置读，请求里带不进来。代价和提示机制见[生产安全](production-safety.md#凭据隔离那一条怎么放开代价是什么)。
 
 ## 分层验收与兼容
 

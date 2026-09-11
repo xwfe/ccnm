@@ -84,6 +84,8 @@ ccnm stop my-project
 
 如果是有价值的真实项目，建议先完成 `ccrun` Runtime Service Account 隔离，再关闭 `allow_unconfined_exec`。见 [生产安全](docs/production-safety.md)。
 
+**项目和 Claude 的登录在同一个账号下怎么办。** 那种情况没有东西可隔离，ccnm 默认会在 MCP 握手之前直接拒绝——那条边界正是它存在的理由。要么建专用账号，要么在 Runtime 侧那个 workspace 上把 `allow_unconfined_exec` 和 `allow_unisolated_credentials` 都写上，**明确接受**模型跑的每条命令都能读到那份登录。开关会在第一次起会话时把风险讲一次，`ccnm doctor` 里那几行永远是 WARN 而不是 OK。代价见[生产安全](docs/production-safety.md#凭据隔离那一条怎么放开代价是什么)。
+
 ## 核心能力
 
 当前 MCP runtime 已经跑通完整编码闭环：

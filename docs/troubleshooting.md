@@ -197,6 +197,32 @@ ccnm mcp bridge <workspace> --node <node> --mode read < /dev/null
 
 最常见的是那个 workspace 根本没开放给外部 MCP（`workspace X is not available to external MCP`，退出码 33）——`external_mcp` 默认就是 `disabled`，要在 **Runtime 的**配置里给它写 `read` 或 `coding`。
 
+### 一台机器就能跑吗：`No Claude credential` 把整个会话挡在门外
+
+**症状**：项目和 Claude Code 在同一台机器、同一个账号下，`ccnm doctor` 一片红，MCP 握手根本起不来：
+
+```text
+No Claude credential    FAIL  the Runtime identity can access a known Agent credential file or container
+exec_command            FAIL  refused until the runtime account is confined
+Remote MCP handshake    FAIL  CCNM_E_RUNTIME_UNREACHABLE: connection closed: initialize response
+```
+
+**其实是**：跑项目命令的那个账号，家里有 `~/.claude` / `~/.codex`。ccnm 存在的理由就是把这两件事分开，所以它在 `initialize` 之前就拒了。**`allow_unconfined_exec` 救不了**，那个开关只接受 confinement 风险。
+
+**两条路，选一条：**
+
+1. **正路**：在 Runtime 上建一个专用低权限账号（`ccrun`），把项目目录按 ACL 授权给它，Agent 的 SSH 落到那个账号上。见[生产安全](production-safety.md)。代价是 Agent 建出来的文件属主是那个账号。
+2. **明确接受**：在 **Runtime 侧**那个 workspace 上把两个开关都写上：
+
+   ```toml
+   allow_unconfined_exec = true
+   allow_unisolated_credentials = true
+   ```
+
+   **先读一遍你接受了什么**：模型跑的每一条命令都能读到那份登录，而让它跑一条命令只需要一句 prompt——包括从它被要求读的文件里冒出来的那一句。第一次用它起会话时终端上会把这段讲一遍（只讲一次），`doctor` 里那几行会变成 WARN 并注明是接受的，**不会变 OK**。完整代价见[生产安全](production-safety.md#凭据隔离那一条怎么放开代价是什么)。
+
+**这两条放不开**，写什么开关都一样：执行身份未知（identity 探针答不出来），以及认证环境是继承来的（`ANTHROPIC_*` / `CLAUDE_*` 出现在 Runtime 的服务环境里）。后者的修法只是别 export 它。
+
 ### `exec_command is refused`，理由说有 SSH 私钥，可你明明一把都没有
 
 **症状**：外部 MCP 或受管会话里 `exec_command` 被拒：
@@ -218,7 +244,7 @@ CCNM_E_POLICY: the runtime is running as ccrun and is not confined, so exec_comm
 mv ~/.config/ccnm/config.toml.bak ~/config.toml.bak
 ```
 
-**不要**改成 `allow_unconfined_exec = true`——那是把整条隔离判定关掉，为了一个备份文件不值得。
+**不要**为了这个去开 `allow_unconfined_exec = true`——那是把这个账号的整套 confinement 判定都接受下来，为了一个备份文件不值得。
 
 ### MCP 初始化报 `workspace write guard is busy` 或 `unknown`
 

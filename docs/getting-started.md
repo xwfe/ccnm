@@ -109,6 +109,19 @@ ccnm doctor my-project
 
 `doctor` 是只读检查，不会替你创建系统账号、改 ACL 或登录 Claude。
 
+### 如果项目和 Claude 登录在同一个账号下
+
+`doctor` 会直接红掉、MCP 握手都起不来，报的是 `No Claude credential`。这不是配错了：跑项目命令的账号能读到 Agent 的登录，而把这两件事分开正是 ccnm 存在的理由。
+
+两条路——建专用账号（下一节），或者在 **Runtime 侧**那个 workspace 上明确接受：
+
+```toml
+allow_unconfined_exec = true
+allow_unisolated_credentials = true
+```
+
+开之前先看清代价：[生产安全](production-safety.md#凭据隔离那一条怎么放开代价是什么)。ccnm 会在你第一次用它起会话时把风险讲一次，`doctor` 里那几行会一直是 WARN。
+
 ## 5. 真实项目先配置 Runtime Service Account
 
 对于有价值的项目，不建议长期依赖：

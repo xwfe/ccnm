@@ -58,7 +58,7 @@ Host                     bridge                    Runtime Executor
  │ ────────────────────────>│ 关 SSH ──────────────────> │ server 退出，guard 释放
 ```
 
-**远端失败在 initialize 之前就发生了。** workspace 没开放、模式越权、写入互斥被占、远端 ccnm 太旧——这些都让连接**不回答 initialize 就结束**，退出码非 0，stderr 上是一条以 `CCNM_E_*` 开头的诊断。Host 那边看到的是"这个 MCP server 起不来"，而不是一个能连上却什么都做不了的 server。
+**远端失败在 initialize 之前就发生了。** workspace 没开放、模式越权、写入互斥被占、远端 ccnm 太旧、Runtime 执行身份没通过安全门禁——这些都让连接**不回答 initialize 就结束**，退出码非 0，stderr 上是一条以 `CCNM_E_*` 开头的诊断。Host 那边看到的是"这个 MCP server 起不来"，而不是一个能连上却什么都做不了的 server。
 
 ## 3. 入口形状
 

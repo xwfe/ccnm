@@ -139,7 +139,7 @@ Agent 和项目在同一台机器上，workspace 的 Agent Node 和 `runtime_nod
 
 ### 为什么不是"单 Node"
 
-安全边界是进程身份、文件权限和传输，不是物理机器的标签。同一机器可以承担多个角色，但 Runtime 执行身份不能访问 Agent 凭据；这种部署必须单独验收，不能靠跳过诊断来证明隔离。
+安全边界是进程身份、文件权限和传输，不是物理机器的标签。同一机器可以承担多个角色，但默认形态下 Runtime 执行身份不能访问 Agent 凭据；这种部署必须单独验收，不能靠跳过诊断来证明隔离。一台机器一个账号、项目和登录在同一个家目录的情况根本没有东西可隔离，要跑就得在那个 workspace 上写 `allow_unisolated_credentials` **明确接受边界不存在**——它不是把诊断关掉：那几行照旧显示，只是从 FAIL 变成注明了接受者的 WARN。代价见[生产安全](production-safety.md#凭据隔离那一条怎么放开代价是什么)。
 
 如果未来重新开放第 3 种拓扑，它只能作为显式受信任的 native 模式，不能冒充隔离 Runtime。当前准确结论见[支持矩阵](support-matrix.md)。
 
@@ -200,7 +200,7 @@ work machine ≈ Agent Node
 - `provider/claude/`：CLI 定位、version/auth 探测、配置目录环境变量、启动参数、交互/print 输入、MCP 配置和工具权限、结果解析，以及项目 instruction/context 规则。
 - `provider/codex/`：已实测的官方 CLI `0.153.4` 适配、Agent-local HOME、固定工具策略、JSONL 结果和 Runtime 根目录 AGENTS 上下文。未测版本和 colocated 模式拒绝启动。
 - `provider/types.rs`：Controller、work 和报告消费者使用的 Agent 观测/结果；保留 v1 字段形状。
-- `provider` 的凭据元数据声明环境前缀、已知目录/容器、文件名和 egress 检查目标。P1 由 `safety/` 统一执行所有已知 Provider 的可访问性检查和分来源环境策略，未知/认证失败不可由 unconfined 开关跳过；不读取或传递凭据内容。
+- `provider` 的凭据元数据声明环境前缀、已知目录/容器、文件名和 egress 检查目标。P1 由 `safety/` 统一执行所有已知 Provider 的可访问性检查和分来源环境策略。凭据可访问或未知**不可由 `allow_unconfined_exec` 跳过**——那个开关只接受 confinement 风险，要接受凭据这一条得单独写 `allow_unisolated_credentials`；身份未知和继承来的认证环境两个开关都放不开。不读取或传递凭据内容。
 - `session/transport.rs` 是两 Provider 共用的 Agent-side stdio wrapper；Claude MCP JSON 和 Codex 会话参数均指向它，再由它清理环境并执行 OpenSSH。SSH 与 Runtime child 的机制不放在 Codex 模块里；详情见 [安全契约](provider-safety.md)。
 - session/Controller 仍负责进程、tmux 和生命周期；launcher/work 仍负责 topology、OpenSSH alias 与 Runtime Node 握手。Runtime MCP 的 7 个工具和执行边界未变。
 

@@ -166,8 +166,10 @@ jobs:
             '' \
             'Both machines need the same ccnm version.' \
             '' \
+            'Take the one for that machine -- a glob here would match both:' \
+            '' \
             '```' \
-            'tar -xzf ccnm-*.tar.gz' \
+            'tar -xzf ccnm-<version>-<platform>.tar.gz' \
             'mv ccnm ~/.local/bin/ccnm.new && mv ~/.local/bin/ccnm.new ~/.local/bin/ccnm' \
             '```' \
             '' \

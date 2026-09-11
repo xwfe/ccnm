@@ -246,6 +246,29 @@ mv ~/.config/ccnm/config.toml.bak ~/config.toml.bak
 
 **不要**为了这个去开 `allow_unconfined_exec = true`——那是把这个账号的整套 confinement 判定都接受下来，为了一个备份文件不值得。
 
+### 自己的 settings.json 里写了 `bypassPermissions`，ccnm 会话里还是一个个问
+
+**症状**：Agent Node 的 `~/.claude/settings.json` 里明明有
+
+```json
+{ "permissions": { "defaultMode": "bypassPermissions" } }
+```
+
+但 ccnm 起的那个会话每调一次 ccnm 工具都要你按一次确认。
+
+**其实是**：ccnm 是用命令行参数起官方 CLI 的，`--permission-mode acceptEdits`（默认值）——**命令行赢设置文件**。你改 `~/.claude` 改不动它。
+
+**修**：改 **Runtime 侧**那个 workspace（workspace 定义在哪台机器上就改哪台）：
+
+```toml
+[workspaces.my-project]
+claude_permission_mode = "bypassPermissions"
+```
+
+**只对之后新起的会话生效**。正在跑的那个不会变，要 `ccnm stop <ws>` 再起一次。
+
+开之前看一眼[配置说明](configuration.md#claude_permission_mode)里那段代价——尤其是这个 workspace 还开着 `allow_unisolated_credentials` 的时候。
+
 ### 在受管会话里按了 Claude Code 的"后台"，工具全没了
 
 **症状**：会话一直好好的，某一刻屏幕上出现 `Backgrounding after the current tool finishes…`，紧接着每个工具都报：

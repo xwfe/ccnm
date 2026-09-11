@@ -221,7 +221,20 @@ Runtime Node 上真实项目的绝对路径。
 
 ### `claude_permission_mode`
 
-直接映射官方 Claude Code 的 `--permission-mode`。默认 `acceptEdits`。
+直接映射官方 Claude Code 的 `--permission-mode`。默认 `acceptEdits`。可写的值和官方一样：`acceptEdits`、`bypassPermissions`、`plan`、`manual`、`auto`、`dontAsk`。
+
+**它盖过你自己 `~/.claude/settings.json` 里的 `permissions.defaultMode`**，因为 ccnm 是把它当命令行参数传给官方 CLI 的，而命令行赢设置文件。所以你在 Agent Node 上写了 `"defaultMode": "bypassPermissions"`，ccnm 会话里照样一个个问你——要改得改这里。
+
+这个字段写在 **Runtime 侧**的配置里（workspace 定义在哪它就在哪），**只对之后新起的会话生效**，正在跑的会话不会变。
+
+```toml
+[workspaces.my-project]
+claude_permission_mode = "bypassPermissions"
+```
+
+**代价说清楚**：`bypassPermissions` 是"什么都不问直接跑"。如果这个 workspace 同时开了 `allow_unisolated_credentials`，那就是**模型跑的每一条命令都不经你确认，而且都能读到你的 Agent 登录**——两个开关叠在一起，中间没有任何人工环节。只在你自己的机器、你自己的项目上这么配。
+
+instance workspace（用 `agent` 而不是 `agent_node` 的）不接受这个字段，配了会被拒；instance 的策略在 Agent 端。
 
 ### `allow_unconfined_exec`
 

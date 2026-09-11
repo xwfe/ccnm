@@ -1162,7 +1162,16 @@ fn runtime_ccnm(r: &Resolved<'_>, env: &Env<'_>) -> Check {
             NAME,
             ErrorCode::Version,
             format!(
-                "{configured} is not an executable on this Runtime Node, but the Agent Node will invoke it over ssh\ninstall this build there: cp $(which ccnm) {}   (or set nodes.{}.ccnm_bin)",
+                // Who dials in depends on the entry: the Agent Node on the
+                // managed path, an external MCP client's bridge on the
+                // other. Naming the Agent Node on a workspace that has no
+                // Agent would send the reader looking for one.
+                "{configured} is not an executable on this Runtime Node, but {} will invoke it over ssh\ninstall this build there: cp $(which ccnm) {}   (or set nodes.{}.ccnm_bin)",
+                if r.agent.is_some() {
+                    "the Agent Node"
+                } else {
+                    "an external MCP client's bridge"
+                },
                 path.display(),
                 r.workspace.runtime_node
             ),

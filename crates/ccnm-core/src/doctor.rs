@@ -366,6 +366,15 @@ fn describe_workspace(r: &Resolved<'_>) -> String {
             ws.runtime_node,
         );
     }
+    if r.agent.is_none() {
+        // An empty `agent_node=` used to be printed here, which reads as a
+        // missing setting rather than as the shape this workspace is.
+        return format!(
+            "backend={} no agent (external MCP clients bring their own), runtime_node={}",
+            ws.backend.as_str(),
+            ws.runtime_node,
+        );
+    }
     format!(
         "backend={} agent_node={} (ssh {}), runtime_node={}",
         ws.backend.as_str(),
@@ -383,6 +392,14 @@ fn workspace_checks(r: &Resolved<'_>, agent: Option<&str>, env: &Env<'_>) -> Vec
             ErrorCode::Config,
             "backend = \"hybrid-smb\" is parsed but not implemented by this build\nsee design doc appendix A; use backend = \"mcp-ssh\"",
         )];
+    }
+    // A workspace with no Agent is not a broken workspace: it exists for
+    // external MCP clients, which bring their own. Everything below this
+    // point is about an Agent session, so reporting those rows as failures
+    // would be describing a correct configuration as an error -- which is
+    // what this did before P12, all the way down to CCNM_E_INTERNAL.
+    if r.agent.is_none() {
+        return external_only_checks(r, env);
     }
     let selected = match r.agent_reference(agent) {
         Ok(selected) => selected,
@@ -432,7 +449,7 @@ fn workspace_checks(r: &Resolved<'_>, agent: Option<&str>, env: &Env<'_>) -> Vec
     let ssh = match r.agent_ssh().and_then(|alias| {
         let ssh = Ssh::new(alias, &env.control_dir)?;
         ssh.check_control_path()?;
-        Ok(ssh.with_ccnm_bin(r.agent.ccnm_bin()))
+        Ok(ssh.with_ccnm_bin(r.require_agent()?.ccnm_bin()))
     }) {
         Ok(ssh) => ssh,
         Err(e) => {
@@ -467,8 +484,8 @@ fn workspace_checks(r: &Resolved<'_>, agent: Option<&str>, env: &Env<'_>) -> Vec
         provider_config_dir: selected
             .is_none()
             .then(|| {
-                AgentProvider::current()
-                    .config_dir(r.agent)
+                r.agent
+                    .and_then(|node| AgentProvider::current().config_dir(node))
                     .map(Path::to_path_buf)
             })
             .flatten(),
@@ -565,7 +582,9 @@ impl<'a> Subject<'a> {
             root: &r.workspace.root,
             runtime_node: &r.workspace.runtime_node,
             agent_node: r.agent_node(),
-            provider_config_dir: AgentProvider::current().config_dir(r.agent),
+            provider_config_dir: r
+                .agent
+                .and_then(|node| AgentProvider::current().config_dir(node)),
         }
     }
 }
@@ -981,6 +1000,65 @@ fn auth_row(r: &Subject<'_>, rep: &ProbeReport) -> Check {
 }
 
 /// Rows that depend on the probe, when the probe never happened.
+/// The rows for a workspace that only external MCP clients open.
+///
+/// It reports what this machine can prove — the policy, the project
+/// directory, the ccnm that will serve it — and skips the Agent half by
+/// name. Two of the skips are worth reading rather than glossing:
+///
+/// * the Runtime **safety** verdict has to come from the account the tools
+///   run as, and on the managed path it arrives with the Agent's probe.
+///   There is no Agent here, so this machine cannot answer it and must not
+///   answer it with its own audit: "is the operator confined?" is not the
+///   question.
+/// * the write guard is not checked either. Asking would mean taking it,
+///   and taking it is what a real session does.
+fn external_only_checks(r: &Resolved<'_>, env: &Env<'_>) -> Vec<Check> {
+    let ws = r.workspace;
+    let mut checks = vec![Check::ok(
+        "External MCP",
+        format!(
+            "external_mcp = \"{}\", instructions = \"{}\"; no Agent, so this workspace is opened by `ccnm mcp bridge {}` and never by ccnm itself",
+            ws.external_mcp.as_str(),
+            ws.external_instructions.as_str(),
+            r.name,
+        ),
+    )];
+    if r.topology() == Topology::FromRuntime {
+        checks.push(runtime_workspace(&ws.root));
+        checks.push(runtime_ccnm(r, env));
+    } else {
+        let why = format!("the project is on {}, not on this machine", ws.runtime_node);
+        checks.push(Check::skip("Runtime workspace", &why));
+        checks.push(Check::skip("Runtime ccnm", &why));
+    }
+    const NO_AGENT: &str =
+        "not checked: this workspace has no Agent, so there is no Agent session to diagnose";
+    const NO_TRANSPORT: &str = "not checked: the verdict belongs to the account the tools run as, and it arrives with an Agent probe this workspace has none of";
+    checks.extend(
+        [
+            "Agent SSH",
+            "Agent ccnm",
+            "Controller",
+            "Claude Code",
+            "Claude authentication",
+            "Reverse SSH",
+            "Remote MCP handshake",
+            "Terminal session",
+            "Project instructions",
+        ]
+        .into_iter()
+        .map(|name| Check::skip(name, NO_AGENT)),
+    );
+    checks.extend(
+        ["Runtime safety", "exec_command"]
+            .into_iter()
+            .map(|name| Check::skip(name, NO_TRANSPORT)),
+    );
+    checks.extend(not_yet_implemented());
+    checks
+}
+
 fn skipped_after_agent_ssh() -> Vec<Check> {
     const REASON: &str = "not checked: Agent SSH failed";
     [
@@ -1343,6 +1421,109 @@ mod tests {
             .iter()
             .find(|c| c.name == name)
             .unwrap_or_else(|| panic!("no row {name} in\n{}", report.render()))
+    }
+
+    /// A workspace that only external MCP clients open has no Agent, and
+    /// that is a legal shape `validate()` accepts on purpose. P12 found
+    /// doctor answering it with `CCNM_E_INTERNAL: workspace 'x' passed
+    /// validation but its Agent Node is missing` — an internal-bug message
+    /// for a correct configuration, which sends whoever reads it looking
+    /// for a config error that is not there.
+    ///
+    /// What it must do instead: report the policy and the rows this machine
+    /// can prove, skip the Agent half by name, and stay READY.
+    #[test]
+    fn an_external_mcp_only_workspace_is_diagnosed_not_called_a_bug() {
+        let dir = std::env::temp_dir().join(format!("ccnm-doctor-{}-extonly", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let root = dir.join("project");
+        std::fs::create_dir_all(&root).unwrap();
+        let bin_dir = dir.join("home/.local/bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        let bin = bin_dir.join("ccnm");
+        std::fs::write(&bin, format!("#!/bin/sh\necho ccnm {}\n", crate::VERSION)).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let config = dir.join("config.toml");
+        std::fs::write(
+            &config,
+            format!(
+                "this = \"runtime\"\n[nodes.runtime]\nruntime_user = \"ccrun\"\n\
+                 [workspaces.remote]\nroot = \"{}\"\nexternal_mcp = \"coding\"\n",
+                root.display()
+            ),
+        )
+        .unwrap();
+
+        let fake = FakeRunner::new();
+        // The one command this path runs: the local ccnm's own version.
+        fake.push(Output::exited(0, format!("ccnm {}\n", crate::VERSION)));
+        let report = run(&config, Some("remote"), &env(&fake, &dir));
+        let text = report.render();
+
+        assert!(!text.contains("CCNM_E_INTERNAL"), "{text}");
+        // Nothing failed. It is still NOT READY, and deliberately so: the
+        // Runtime's own verdict is not knowable from here, and an unknown
+        // never renders as green in this report.
+        assert!(
+            !report
+                .checks
+                .iter()
+                .any(|c| matches!(c.status, Status::Fail(_))),
+            "{text}"
+        );
+        assert_eq!(
+            report.exit_code(),
+            ErrorCode::NotReady.exit_code(),
+            "{text}"
+        );
+        assert!(text.contains("NOT READY (0 failed,"), "{text}");
+        let policy = row(&report, "External MCP");
+        assert_eq!(policy.status, Status::Ok);
+        assert!(
+            policy.detail.contains("external_mcp = \"coding\""),
+            "{text}"
+        );
+        assert!(policy.detail.contains("ccnm mcp bridge remote"), "{text}");
+        // The rows this machine can prove are answered, not skipped.
+        assert_eq!(row(&report, "Runtime workspace").status, Status::Ok);
+        assert_eq!(row(&report, "Runtime ccnm").status, Status::Ok);
+        // The Agent half is skipped, and the safety verdict stays unknown
+        // rather than being answered with an audit of whoever typed this.
+        for name in ["Agent SSH", "Controller", "Remote MCP handshake"] {
+            assert_eq!(row(&report, name).status, Status::Skip, "{name}: {text}");
+        }
+        assert!(
+            row(&report, "Runtime safety")
+                .detail
+                .contains("belongs to the account the tools run as"),
+            "{text}"
+        );
+        // Only the local version check ran: there is nowhere to dial.
+        let calls = fake.calls();
+        assert_eq!(calls.len(), 1, "{calls:?}");
+        assert!(calls[0].display().ends_with("ccnm --version"), "{calls:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The same config through a managed entry point: it needs an Agent and
+    /// now says so by name instead of failing as an internal error.
+    #[test]
+    fn a_managed_command_on_an_agentless_workspace_says_which_entry_to_use() {
+        let config = Config::parse(
+            "this = \"runtime\"\n[nodes.runtime]\n\
+             [workspaces.remote]\nroot = \"/tmp\"\nexternal_mcp = \"read\"\n",
+        )
+        .unwrap();
+        let resolved = config.workspace("remote").unwrap();
+        assert!(resolved.agent.is_none());
+        let error = resolved.agent_ssh().unwrap_err();
+        assert_eq!(error.code(), ErrorCode::Config);
+        assert!(error.message().contains("has no Agent"), "{error}");
+        assert!(
+            error.message().contains("ccnm mcp bridge remote"),
+            "{error}"
+        );
     }
 
     #[test]

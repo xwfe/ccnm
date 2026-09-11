@@ -158,17 +158,26 @@ def check_coding_leg(args: argparse.Namespace, token_file: str, token: str, seen
             raise Failure(f"coding 腿写不进去：{result_text(written)}")
 
         # 属主由 Runtime 自己报：这条命令就在那台机器上跑。
-        owner = client.call_tool(
-            "exec_command", {"cmd": ["/usr/bin/stat", "-f", "%Su", token_file]}
-        )
-        seen.append(result_text(owner))
-        if is_error(owner):
-            raise Failure(f"问不到产物属主：{result_text(owner)}")
-        who = exec_stdout(owner).strip()
+        #
+        # 两种 stat 都要试，而且要按顺序试：`-c %U` 是 GNU 的写法，`-f %Su` 是
+        # BSD 的。P12 之后 Runtime 可能是 Linux，写死任何一种都会在另一种上问
+        # 不出属主——而"问不出"和"属主不对"在这里是两个结论。
+        who = ""
+        for style in (["stat", "-c", "%U"], ["stat", "-f", "%Su"]):
+            owner = client.call_tool("exec_command", {"cmd": [*style, token_file]})
+            seen.append(result_text(owner))
+            if is_error(owner):
+                continue
+            candidate = exec_stdout(owner).strip()
+            if candidate:
+                who = candidate
+                break
+        if not who:
+            raise Failure("问不到产物属主：GNU 和 BSD 两种 stat 都没答上来")
         if args.runtime_user and who != args.runtime_user:
             raise Failure(f"产物属主是 {who}，期望 {args.runtime_user}")
 
-        whoami = client.call_tool("exec_command", {"cmd": ["/usr/bin/id", "-un"]})
+        whoami = client.call_tool("exec_command", {"cmd": ["id", "-un"]})
         seen.append(result_text(whoami))
 
         # 同一棵树的第二个 coding 必须起不来。这是两个入口能共存的硬条件。

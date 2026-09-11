@@ -168,7 +168,7 @@ runtime_node = "runtime"
 ```toml
 [nodes.some-node]
 ssh = "alias"                    # 从本机连它用的 alias
-ccnm_bin = "/absolute/path/ccnm" # 可选：它上面 ccnm 的路径，默认 ~/.local/bin/ccnm
+ccnm_bin = "~/.local/bin/ccnm"   # 可选：它上面 ccnm 的路径，这一行写的就是默认值
 claude_config_dir = "/path"      # 可选：Agent 角色用的 CLAUDE_CONFIG_DIR
 runtime_user = "ccrun"           # Runtime Executor 期望的系统账号
 ```
@@ -178,6 +178,8 @@ runtime_user = "ccrun"           # Runtime Executor 期望的系统账号
 - workspace 里除本机之外的每个 node 都要有 `ssh`；
 - 只有 Agent 角色用得上 Claude 相关配置；
 - 只有 Runtime 角色用得上 `runtime_user`。
+
+`ccnm_bin` 可以是绝对路径，也可以是 `~/` 开头——`~` 由**对面**的登录 shell 展开，这是每种 shell 都认的写法。别人的家目录（`~someone/...`）不行，`..` 也不行，路径里只能有 `[A-Za-z0-9._/-]`，因为它要出现在一条 ssh 命令行上而 ccnm 不给它加引号。
 
 `runtime_user` 说的是 **Agent 的 MCP transport 落到哪个账号上**，项目工具就以谁的身份执行。它不规定谁可以敲 `ccnm`——那是 Operator，通常就是你自己的账号。四种身份怎么分见[生产安全](production-safety.md)。
 

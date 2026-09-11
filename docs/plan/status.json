@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-09-11T14:50:00+09:00",
+  "last_updated": "2026-09-11T15:40:00+09:00",
   "current_task": null,
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
@@ -958,12 +958,12 @@
     "【P7.5 已修】ccnm stop 对已结束会话现在幂等（rc=0、killed=false）。保留为失败的两种情况是有意的：终端在跑但认不出是不是所选会话（不去杀别人的会话），以及 --session 指到本机没有记录的 id（\"不知道\"和\"已结束\"是两件事）。",
     "部署环境的高权限风险：本轮 Agent Node 允许无传统凭据的 root 登录（Tailscale SSH 按 tailnet 身份放行，不要密码也不要密钥）。ccnm 造不成也管不了，但它足以让全部身份隔离失去意义。已按用户拍板列为部署环境风险、不计入 ccnm 安全保证，生产部署自己在 tailnet ACL 或 OS 层关掉；ccnm doctor 查不到它。",
     "【P12 已修】SystemRunner::run 的超时只杀 leader：它是每条非交互 ccnm 命令走的路径（ssh transport、doctor 探针都在里面），超时时只 child.kill()，命令自己起的子进程继续占着管道，于是「超时」等到命令自然结束才返回。Debian 上 100ms 的超时量到 10.0 秒、五次五红；macOS 看不见是因为 sh -c 'sleep 10' 这个形状 bash 会 exec。现在它和另外两条路径共用同一个 watchdog（自己的进程组 + 杀到管道排空为止），回归测试用 sleep 30 & wait 把三个入口都跑一遍。代价写在代码注释里：这些子进程不再直接收到终端的 ctrl-c，它们本来就没有终端，兜底的是那个 deadline。",
-    "ccnm doctor 对一个只给外部 MCP 用的 workspace（没有 agent，配置校验明确允许的形状）回 CCNM_E_INTERNAL: workspace '<名字>' passed validation but its Agent Node is missing。它不挡任何事（P12 的判据都不经过 doctor），但把一个合法配置报成内部矛盾会让人去查不存在的错误。要修就得先想清楚「外部 MCP workspace 的诊断应该长什么样」，属于 Managed 入口的诊断语义，P12 没有顺手改。",
-    "nodes.<x>.ccnm_bin 的默认值 ~/.local/bin/ccnm **写不进配置文件**：默认值靠远端登录 shell 展开 ~，而配置校验要求这个字段是绝对路径，照抄默认值会被 CCNM_E_CONFIG 拒。省掉这一行就是默认，所以不影响使用，但「文档里的值填不进配置」会绊人。",
+    "【已修】ccnm doctor 对一个只给外部 MCP 用的 workspace（没有 agent，配置校验明确允许的形状）曾经回 CCNM_E_INTERNAL: workspace '<名字>' passed validation but its Agent Node is missing——把一个正确的配置报成内部矛盾。根因是 Resolved.agent 被当成必然存在；现在它是 Option，受管入口经 require_agent() 按名字拒绝并指向 `ccnm mcp bridge <workspace>`，doctor 则报出 external_mcp/external_instructions 策略和它真能证的那几行（Runtime workspace、Runtime ccnm），把 Agent 那一半逐行 SKIP。Runtime safety 和 exec_command 仍是 SKIP 而不是绿：那个判断属于工具真正跑起来的账号，没有 Agent 探针就问不到，**不能拿敲命令那个人的审计顶包**。两条回归测试：doctor 报告不含 CCNM_E_INTERNAL、没有 FAIL、但因为有 SKIP 仍然 NOT READY；以及受管入口在同一份配置上给出具名拒绝。",
+    "【已修】nodes.<x>.ccnm_bin 的默认值 ~/.local/bin/ccnm 曾经写不进配置文件：默认值靠远端登录 shell 展开 ~，而校验要求绝对路径，照抄默认值会被 CCNM_E_CONFIG 拒。现在该字段接受 `~/` 开头，并且仍然拒绝别人的家目录（~other/...）、`..` 和需要引号的字符——它要出现在一条 ccnm 不加引号的 ssh 命令行上。配置文档里的示例换成了默认值本身。",
     "P12 六次完整 dogfood 里有一次 transport 无线索地断了：ssh 退出 255、stderr 一个字没有、内核日志无 OOM、写锁按设计停在 held、远端没有孤儿进程。之后用同一条长命令（cargo test --workspace，12–17 秒）专门连跑三次没能复现，最后三次完整跑也都干净。没有解释就是没有解释，记在这里，不算进任何判据。"
   ],
   "handoff": {
-    "next_action": "**P12 完成，ROADMAP 的 P0–P12 全部完成，current_task 为 null。** 两个入口都有真机证据：Managed Agent Runtime（v1，协议 ccnm.machine/1 已冻结）和 Remote Workspace MCP（v1.x，ccnm.workspace-mcp/1 已于 2026-09-11 冻结）。**下一轮不要自动扩功能**：ROADMAP 到这里就没有下一阶段了，要做新东西得先立新阶段并说清它替换或扩展了哪条已冻结的契约。现成的、优先级最高的候选（都在 observed_gaps 里有依据）：(1) ccnm doctor 对只给外部 MCP 用的 workspace 回 CCNM_E_INTERNAL，要先定「外部入口的诊断长什么样」；(2) ccnm_bin 的默认值写不进配置文件；(3) Codex 当外部 MCP Host、交互式 UI、非 Debian/arm64 Linux Runtime 都没验过；(4) 真实 node 项目的 npm ci && npm test 没跑过，Node 只验到「叫得动」。hpsrv 上的 ccrun 账号和工具链按用户选择保留，但**这一轮的两把公钥已经删了**——要再用它当 Linux Runtime，得先装一把新的入站公钥（scripts/p12-provision-linux-runtime.sh 的做法，换本轮密钥对、指纹现算现比）。push/tag/release 仍未授权。",
+    "next_action": "**P12 完成，ROADMAP 的 P0–P12 全部完成，current_task 为 null。** 两个入口都有真机证据：Managed Agent Runtime（v1，协议 ccnm.machine/1 已冻结）和 Remote Workspace MCP（v1.x，ccnm.workspace-mcp/1 已于 2026-09-11 冻结）。**下一轮不要自动扩功能**：ROADMAP 到这里就没有下一阶段了，要做新东西得先立新阶段并说清它替换或扩展了哪条已冻结的契约。P12 自己暴露的两个离线可修项已经修掉（doctor 对外部 MCP workspace 的诊断、ccnm_bin 默认值写不进配置），剩下的候选都要真机或授权：(1) Codex 当外部 MCP Host、交互式 UI 怎么显示 bridge 的失败；(2) 非 Debian / arm64 的 Linux Runtime；(3) 真实 node 项目的 npm ci && npm test（Node 目前只验到「叫得动」）；(4) 协议里 -32008（busy）至今不可达，要不要补 session.start 的占用预检是待定的产品决定。hpsrv 上的 ccrun 账号和工具链按用户选择保留，但**这一轮的两把公钥已经删了**——要再用它当 Linux Runtime，得先装一把新的入站公钥（scripts/p12-provision-linux-runtime.sh 的做法，换本轮密钥对、指纹现算现比）。push/tag/release 仍未授权。",
     "scope": "本轮两段：先提交 P12 的离线准备（三件工具、7 条自测、会话计划），再在用户逐项授权下跑完真机轮（建专用账号、系统级装 4 个包、以执行身份装 rustup/Node、两端部署、脚本 dogfood、真实 Claude Code 一次真改动、逐条归零）。真机部分有系统变更、有部署、消耗了订阅额度（一次 LOGIN_OK 探测加一次真任务）。顺带修了 Linux 第一次跑门禁暴露的两个缺陷，并把两个入口的文档与冻结状态收敛。",
     "planning_validation": {
       "at": "2026-09-08T21:22:43+09:00",

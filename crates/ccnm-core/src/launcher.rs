@@ -44,8 +44,8 @@ pub fn run_print_with_agent(
 ) -> Result<RunReport> {
     check_local_root(resolved)?;
     let root = &resolved.workspace.root;
-    let ssh =
-        Ssh::new(resolved.agent_ssh()?, &env.control_dir)?.with_ccnm_bin(resolved.agent.ccnm_bin());
+    let ssh = Ssh::new(resolved.agent_ssh()?, &env.control_dir)?
+        .with_ccnm_bin(resolved.require_agent()?.ccnm_bin());
     ssh.check_control_path()?;
     let selected = resolved.agent_reference(agent)?;
     let req = RunRequest {
@@ -56,8 +56,9 @@ pub fn run_print_with_agent(
         workspace: resolved.name.to_string(),
         root: root.clone(),
         runtime_node: resolved.workspace.runtime_node.clone(),
-        provider_config_dir: AgentProvider::current()
-            .config_dir(resolved.agent)
+        provider_config_dir: resolved
+            .agent
+            .and_then(|node| AgentProvider::current().config_dir(node))
             .map(|dir| dir.to_path_buf()),
         permission_mode: AgentProvider::current().permission_mode(resolved.workspace),
         prompt: prompt.to_string(),
@@ -115,8 +116,9 @@ pub fn start_interactive_with_agent(
         workspace: resolved.name.to_string(),
         root: resolved.workspace.root.clone(),
         runtime_node: resolved.workspace.runtime_node.clone(),
-        provider_config_dir: AgentProvider::current()
-            .config_dir(resolved.agent)
+        provider_config_dir: resolved
+            .agent
+            .and_then(|node| AgentProvider::current().config_dir(node))
             .map(|dir| dir.to_path_buf()),
         permission_mode: AgentProvider::current().permission_mode(resolved.workspace),
         prompt: prompt.map(str::to_string),
@@ -385,8 +387,8 @@ fn check_local_root(resolved: &Resolved<'_>) -> Result<()> {
 /// The ssh to the Agent Node, with the project checked here first.
 fn agent_ssh(resolved: &Resolved<'_>, env: &Env<'_>) -> Result<Ssh> {
     check_local_root(resolved)?;
-    let ssh =
-        Ssh::new(resolved.agent_ssh()?, &env.control_dir)?.with_ccnm_bin(resolved.agent.ccnm_bin());
+    let ssh = Ssh::new(resolved.agent_ssh()?, &env.control_dir)?
+        .with_ccnm_bin(resolved.require_agent()?.ccnm_bin());
     ssh.check_control_path()?;
     Ok(ssh)
 }
@@ -421,8 +423,8 @@ pub fn mcp_probe_remote_selected(
     calls: u32,
     agent: Option<&str>,
 ) -> Result<ProbeReport> {
-    let ssh =
-        Ssh::new(resolved.agent_ssh()?, &env.control_dir)?.with_ccnm_bin(resolved.agent.ccnm_bin());
+    let ssh = Ssh::new(resolved.agent_ssh()?, &env.control_dir)?
+        .with_ccnm_bin(resolved.require_agent()?.ccnm_bin());
     ssh.check_control_path()?;
     let selected = resolved.agent_reference(agent)?;
     let req = ProbeRequest {
@@ -433,8 +435,9 @@ pub fn mcp_probe_remote_selected(
         workspace: resolved.name.to_string(),
         root: resolved.workspace.root.clone(),
         runtime_node: resolved.workspace.runtime_node.clone(),
-        provider_config_dir: AgentProvider::current()
-            .config_dir(resolved.agent)
+        provider_config_dir: resolved
+            .agent
+            .and_then(|node| AgentProvider::current().config_dir(node))
             .map(|dir| dir.to_path_buf()),
         mcp_calls: calls,
     };

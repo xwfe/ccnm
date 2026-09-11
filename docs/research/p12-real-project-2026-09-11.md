@@ -62,8 +62,8 @@ Runtime 侧复核（不采信自述）：磁盘上那一行就是它说的那一
 
 ## 四、真机才暴露的另外三件小事
 
-- **`ccnm doctor <只给外部 MCP 用的 workspace>` 回 `CCNM_E_INTERNAL`。** 一个没有 `agent` 的 workspace 是配置校验明确允许的形状（就是给外部 MCP client 用的），但 doctor 把它当成内部矛盾：`workspace 'p12rust' passed validation but its Agent Node is missing`。它不挡任何事（这一轮所有判据都不经过 doctor），但报成 INTERNAL 会让人去查一个不存在的配置错误。**没有在本轮改**，因为那属于 Managed 入口的诊断语义，改它要连着想清楚"外部 MCP workspace 的诊断应该长什么样"；已记进 [status.json](../plan/status.json) 的 `observed_gaps`。
-- **`ccnm_bin` 的默认值写不进配置文件。** 默认是 `~/.local/bin/ccnm`（注释说明了"`~` 由远端登录 shell 展开"），但配置校验要求这个字段是绝对路径，所以把默认值照抄进 `config.toml` 会被 `CCNM_E_CONFIG` 拒。不影响使用（省掉这一行就是默认），但"文档里的值不能填进配置"是会绊人的。同样记进了 `observed_gaps`。
+- **`ccnm doctor <只给外部 MCP 用的 workspace>` 回 `CCNM_E_INTERNAL`。** 一个没有 `agent` 的 workspace 是配置校验明确允许的形状（就是给外部 MCP client 用的），但 doctor 把它当成内部矛盾：`workspace 'p12rust' passed validation but its Agent Node is missing`。它不挡任何事（这一轮所有判据都不经过 doctor），但报成 INTERNAL 会让人去查一个不存在的配置错误。**已在随后一轮修掉**：`Resolved.agent` 变成 `Option`，受管入口经 `require_agent()` 按名字拒绝（并指向 `ccnm mcp bridge`），doctor 对这种 workspace 报 policy 与它能证的那几行、把 Agent 那一半逐行 SKIP。安全那一行仍然是 SKIP 而不是绿——它属于工具真正跑起来的那个账号，没有 Agent 探针就问不到。
+- **`ccnm_bin` 的默认值写不进配置文件。** 默认是 `~/.local/bin/ccnm`（注释说明了"`~` 由远端登录 shell 展开"），但配置校验要求这个字段是绝对路径，所以把默认值照抄进 `config.toml` 会被 `CCNM_E_CONFIG` 拒。不影响使用（省掉这一行就是默认），但"文档里的值不能填进配置"是会绊人的。**已在随后一轮修掉**：该字段接受 `~/` 开头，仍然拒绝别人的家目录、`..` 和需要引号的字符。
 - **一次没能复现的 transport 掉线。** 六次完整跑里有一次在 cycle 中途断了：ssh 退出 255、stderr 一个字没有、内核日志没有 OOM、写锁按设计停在 `held`、远端没有孤儿进程。之后专门用同一条长命令（`cargo test --workspace`，12–17 秒）连跑三次没有复现，最后三次完整跑也都干净。**没有解释就是没有解释**：记在这里，不算进任何判据。
 
 ## 五、工具链：装什么、装在哪、谁维护

@@ -420,7 +420,10 @@ pub fn resolve(config: &Config, request: &ResolveRequest) -> Result<ResolveRepor
         root: resolved.workspace.root.clone(),
         runtime_node: resolved.workspace.runtime_node.clone(),
         agent,
-        provider_config_dir: provider.config_dir(resolved.agent).map(Path::to_path_buf),
+        provider_config_dir: resolved
+            .agent
+            .and_then(|node| provider.config_dir(node))
+            .map(Path::to_path_buf),
         permission_mode: provider.permission_mode(resolved.workspace),
     })
 }

@@ -265,6 +265,17 @@ pub enum ExternalInstructions {
     None,
 }
 
+impl ExternalInstructions {
+    /// The value as written in config.toml.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ExternalInstructions::Generic => "generic",
+            ExternalInstructions::Project => "project",
+            ExternalInstructions::None => "none",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MountMode {
@@ -283,7 +294,17 @@ pub use crate::provider::PermissionMode;
 pub struct Resolved<'a> {
     pub name: &'a str,
     pub workspace: &'a Workspace,
-    pub agent: &'a Node,
+    /// `None` for a workspace that has no Agent at all, which
+    /// [`Config::validate`] allows for exactly one shape: it exists for
+    /// external MCP clients, which bring their own Agent.
+    ///
+    /// It is an `Option` rather than an assumed-present field because the
+    /// assumption was wrong and said so badly: `doctor` on such a
+    /// workspace reported `CCNM_E_INTERNAL: passed validation but its
+    /// Agent Node is missing`, sending whoever read it to look for a
+    /// config error that does not exist (P12). Managed entry points now
+    /// refuse by name through [`Resolved::require_agent`].
+    pub agent: Option<&'a Node>,
     pub runtime: &'a Node,
     /// The node this config belongs to, for deciding which role this
     /// machine plays in this workspace.
@@ -338,12 +359,28 @@ impl<'a> Resolved<'a> {
         }
     }
 
+    /// The Agent Node's config, for the Managed entry points.
+    ///
+    /// Every command that starts, observes or stops an Agent session needs
+    /// one; a workspace that only opted into external MCP has none, and
+    /// that is a configuration fact to state, not an internal error.
+    pub fn require_agent(&self) -> Result<&'a Node> {
+        self.agent.ok_or_else(|| {
+            Error::config(format!(
+                "workspace '{}' has no Agent: it is defined for external MCP clients, which bring their own\n\
+                 ccnm cannot start or observe an Agent session on it; open it with `ccnm mcp bridge {}` from the client machine,\n\
+                 or give the workspace an `agent` to use the managed entry",
+                self.name, self.name
+            ))
+        })
+    }
+
     /// The alias this machine dials to reach the Agent Node.
     ///
     /// An error only when this machine *is* the Agent Node, which the
     /// caller should have handled by delegating instead of dialling.
     pub fn agent_ssh(&self) -> Result<&'a str> {
-        self.agent.ssh.as_deref().ok_or_else(|| {
+        self.require_agent()?.ssh.as_deref().ok_or_else(|| {
             Error::config(format!(
                 "workspace '{}' runs the agent on '{}', which is this node, so there is nothing to ssh to",
                 self.name, self.agent_node()
@@ -471,10 +508,18 @@ impl Config {
             .agent
             .as_ref()
             .map_or(&workspace.agent_node, |reference| &reference.node);
-        let agent = self
-            .nodes
-            .get(agent_node)
-            .ok_or_else(|| bug("its Agent Node"))?;
+        // No Agent Node named at all is legal for an external-MCP-only
+        // workspace; a name that does not resolve is still a bug, because
+        // validate() checks every name it sees.
+        let agent = if agent_node.is_empty() {
+            None
+        } else {
+            Some(
+                self.nodes
+                    .get(agent_node)
+                    .ok_or_else(|| bug("its Agent Node"))?,
+            )
+        };
         let runtime = self
             .nodes
             .get(&workspace.runtime_node)
@@ -566,9 +611,9 @@ impl Config {
             }
             if let Some(bin) = &node.ccnm_bin {
                 let at = format!("{at}.ccnm_bin");
-                if check_absolute(&at, bin, &mut problems) && !is_remote_path(bin) {
+                if check_remote_bin(&at, bin, &mut problems) && !is_remote_path(bin) {
                     problems.push(format!(
-                        "{at} must contain only [A-Za-z0-9._/-] so the remote shell never has to quote it, got \"{}\"",
+                        "{at} must contain only [A-Za-z0-9._/-] and a leading ~ so the remote shell never has to quote it, got \"{}\"",
                         bin.display()
                     ));
                 }
@@ -720,9 +765,50 @@ fn check_token(at: &str, value: &str, problems: &mut Vec<String>) {
 /// A path that will appear verbatim as one word of a remote ssh command.
 fn is_remote_path(path: &Path) -> bool {
     path.to_str().is_some_and(|s| {
-        s.chars()
+        let rest = s.strip_prefix("~/").unwrap_or(s);
+        rest.chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '/'))
     })
+}
+
+/// Where a program lives on the **other** machine.
+///
+/// Absolute, or `~/`-relative — and the second half is not a loophole, it
+/// is the documented default: [`DEFAULT_CCNM_BIN`] is `~/.local/bin/ccnm`,
+/// expanded by the remote login shell because that is the one thing every
+/// POSIX shell and fish agree on. Until P12 this field took only absolute
+/// paths, which made **the default value itself unwritable**: copying it
+/// out of the documentation into config.toml was refused as "must be an
+/// absolute path". A value you are told to use and cannot write is a bug
+/// in the rule, not in the value.
+///
+/// `~` only as the whole first component: `~other/bin` is a different
+/// user's home, which no ccnm path should ever name.
+fn check_remote_bin(at: &str, path: &Path, problems: &mut Vec<String>) -> bool {
+    let text = path.to_string_lossy();
+    if let Some(rest) = text.strip_prefix("~/") {
+        if rest.is_empty() {
+            problems.push(format!("{at} must name a file, got \"{text}\""));
+            return false;
+        }
+        let dotty = Path::new(rest)
+            .components()
+            .any(|c| matches!(c, Component::CurDir | Component::ParentDir));
+        if dotty {
+            problems.push(format!(
+                "{at} must not contain \".\" or \"..\", got \"{text}\""
+            ));
+            return false;
+        }
+        return true;
+    }
+    if text.starts_with('~') {
+        problems.push(format!(
+            "{at} may start with \"~/\" for the remote user's own home, but not with another user's, got \"{text}\""
+        ));
+        return false;
+    }
+    check_absolute(at, path, problems)
 }
 
 /// Absolute and free of `.` / `..` so that lexical comparisons between
@@ -939,8 +1025,8 @@ mod tests {
         assert_eq!(config.version, Some(1));
         let r = config.workspace("xshun").unwrap();
         assert_eq!(r.agent_ssh().unwrap(), "agent-alias");
-        assert_eq!(r.agent.claude_config_dir, None);
-        assert_eq!(r.agent.ccnm_bin(), "~/.local/bin/ccnm");
+        assert_eq!(r.require_agent().unwrap().claude_config_dir, None);
+        assert_eq!(r.require_agent().unwrap().ccnm_bin(), "~/.local/bin/ccnm");
         assert_eq!(r.runtime.ccnm_bin(), "~/.local/bin/ccnm");
         assert_eq!(r.workspace.backend, Backend::McpSsh);
         assert_eq!(r.workspace.runtime_node, "runtime");
@@ -961,10 +1047,10 @@ mod tests {
         let config = Config::load(&fixture("config-custom-claude-dir.toml")).unwrap();
         let r = config.workspace("xshun").unwrap();
         assert_eq!(
-            r.agent.claude_config_dir,
+            r.require_agent().unwrap().claude_config_dir,
             Some(PathBuf::from("/Users/me/.ccnm/claude"))
         );
-        assert_eq!(r.agent.ccnm_bin(), "/Users/me/bin/ccnm");
+        assert_eq!(r.require_agent().unwrap().ccnm_bin(), "/Users/me/bin/ccnm");
         assert_eq!(r.runtime.ccnm_bin(), "/Users/ccrun/.local/bin/ccnm");
         assert_eq!(r.workspace.runtime_node, "runtime");
     }
@@ -1082,6 +1168,37 @@ mod tests {
         )
         .unwrap();
         assert_eq!(ok.nodes["agent"].ccnm_bin(), "/opt/ccnm-0.1/bin/ccnm");
+    }
+
+    /// The documented default has to be writable. P12 hit this on a real
+    /// machine: `ccnm_bin = "~/.local/bin/ccnm"` — the exact value
+    /// [`DEFAULT_CCNM_BIN`] uses and the docs print — was refused as "must
+    /// be an absolute path". Leaving the line out works, which is why it
+    /// went unnoticed, but a value nobody may write is not a default.
+    #[test]
+    fn the_default_ccnm_bin_can_be_written_out_in_full() {
+        let ok = Config::parse(&format!(
+            "this = \"runtime\"\n[nodes.agent]\nssh = \"work\"\nccnm_bin = \"{DEFAULT_CCNM_BIN}\"\n[nodes.runtime]\n"
+        ))
+        .unwrap();
+        assert_eq!(ok.nodes["agent"].ccnm_bin(), DEFAULT_CCNM_BIN);
+    }
+
+    /// `~/` is the remote user's own home and nothing else: no `..` out of
+    /// it, and not somebody else's home.
+    #[test]
+    fn a_tilde_ccnm_bin_is_still_checked() {
+        for (bin, expected) in [
+            ("~/../root/bin/ccnm", "must not contain"),
+            ("~other/bin/ccnm", "but not with another user's"),
+            ("~/", "must name a file"),
+            ("~/my tools/ccnm", "never has to quote"),
+        ] {
+            let err = parse_err(&format!(
+                "this = \"runtime\"\n[nodes.agent]\nssh = \"work\"\nccnm_bin = \"{bin}\"\n[nodes.runtime]\n"
+            ));
+            assert!(err.message().contains(expected), "{bin}: {err}");
+        }
     }
 
     #[test]

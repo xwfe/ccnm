@@ -590,15 +590,19 @@ fn exact_print_stop_verifies_the_supervisor_before_signalling_its_process_group(
     runner.push(Output::exited(0, "1 1\n"));
     let report = work::stop(&request, &f.tools(&runner)).unwrap();
     assert!(report.killed);
+    // The `--` is load-bearing, not punctuation: without it Linux `kill`
+    // reads `-4343` as a signal, signals nothing and exits 0 (see
+    // process::kill_group), so a stop would report success and leave the
+    // group running. Matched exactly so dropping it fails here.
     assert!(
         runner.calls()[2]
             .display()
-            .contains("/bin/kill -TERM -4343")
+            .contains("/bin/kill -TERM -- -4343")
     );
     assert!(
         runner.calls()[4]
             .display()
-            .contains("/bin/kill -TERM -4242")
+            .contains("/bin/kill -TERM -- -4242")
     );
     assert!(
         session::read_outcome(&dir)

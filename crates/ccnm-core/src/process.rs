@@ -186,6 +186,15 @@ pub trait ProcessRunner {
 /// The direct kill still runs afterwards: if `kill` is missing or the
 /// group is already gone, the leader is what matters.
 ///
+/// **The `--` is the whole fix on Linux.** GNU/procps `kill` reads a
+/// leading-dash argument as a signal, so `kill -KILL -8421` sets the
+/// signal twice, is left with no pid at all, and **exits 0 having
+/// signalled nothing**. The group survives, the grandchildren keep the
+/// pipes, and the timeout does not time out -- the exact defect P12
+/// fixed, back again and this time reporting success. BSD `kill` on
+/// macOS reads `-8421` as a process group either way, which is why this
+/// was invisible here. `--` ends the options on both.
+///
 /// The return value is about the *killer*, not the group: false means the
 /// `kill` could not be spawned or run, so only the leader was signalled.
 /// A `kill` that ran and reported "no such process group" is a success --
@@ -193,7 +202,7 @@ pub trait ProcessRunner {
 fn kill_group(killer: &OsStr, child: &mut std::process::Child) -> bool {
     let pid = child.id();
     let ran = Command::new(killer)
-        .args(["-KILL", &format!("-{pid}")])
+        .args(["-KILL", "--", &format!("-{pid}")])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
@@ -909,9 +918,14 @@ mod tests {
         std::fs::write(
             &killer,
             format!(
+                // `/bin/kill`, not a bare `kill`: this script runs under
+                // dash on Debian/Ubuntu, and dash's `kill` builtin rejects
+                // the `--` the real killer passes ("Illegal number: -").
+                // The product never goes through a shell, so the builtin is
+                // not what it would hit.
                 "#!/bin/sh\n\
                  if [ ! -e '{refused}' ]; then : > '{refused}'; exit 1; fi\n\
-                 kill \"$@\"\n",
+                 exec /bin/kill \"$@\"\n",
                 refused = refused.display()
             ),
         )
@@ -941,6 +955,57 @@ mod tests {
             refused.exists(),
             "the first attempt was supposed to fail; this proved nothing"
         );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The `--` is what makes the group kill work on Linux at all: GNU
+    /// `kill` reads a leading `-1234` as a signal, ends up with no pid,
+    /// and **exits 0 having signalled nothing**. macOS reads it as a
+    /// process group either way, so on this machine both spellings look
+    /// identical and only the argv can tell them apart. Found on a
+    /// GitHub ubuntu-24.04 runner, where the residual child outlived the
+    /// kill that was supposed to reach it.
+    #[test]
+    fn the_group_kill_ends_its_options_before_the_negative_pid() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("ccnm-killargv-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let argv = dir.join("argv");
+        let killer = dir.join("killer.sh");
+        std::fs::write(
+            &killer,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{argv}'\nexec /bin/kill \"$@\"\n",
+                argv = argv.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&killer, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let cmd = Cmd::new("sh")
+            .args(["-c", "sleep 30"])
+            .timeout(Duration::from_millis(200));
+        let captured = run_captured_killed_by(
+            &cmd,
+            std::io::sink(),
+            std::io::sink(),
+            |_| Ok(()),
+            killer.as_os_str(),
+        )
+        .unwrap();
+        assert!(captured.timed_out);
+
+        let recorded: Vec<String> = std::fs::read_to_string(&argv)
+            .unwrap()
+            .lines()
+            .map(str::to_string)
+            .collect();
+        assert_eq!(recorded[0], "-KILL", "{recorded:?}");
+        assert_eq!(
+            recorded[1], "--",
+            "without this the pid is read as a signal on Linux: {recorded:?}"
+        );
+        assert!(recorded[2].starts_with('-'), "{recorded:?}");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

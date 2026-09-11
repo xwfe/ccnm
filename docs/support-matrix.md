@@ -22,7 +22,9 @@
 
 **Agent 那一侧只有 macOS。** Controller 是 launchd LaunchAgent，会话上下文检查直接问 `launchctl` 和 `security`；Linux Controller、Windows 和其他官方 CLI 版本均未验收。CI 有一个 Linux job，但它是 **Runtime 门禁**：绿的意思是代码在 Linux 上编得过、测试过得去，不是说 Agent 那一半在那儿能跑。
 
-**Runtime 那一侧（`internal mcp-serve` 与七工具）在 Debian 13 / x86_64 上验过一次**，作为 Remote Workspace MCP 的 dogfood（[记录](research/p12-real-project-2026-09-11.md)）：`cargo fmt`、严格 clippy 与全套测试在那台机器上 676 passed / 0 failed，与 macOS 同数。**那一次是从两个红开始的**，两个都真修了：`SystemRunner::run` 的超时只杀 leader（macOS 因为 bash 会 exec 而一直看不见），以及一个测试助手用了 BSD 语义的 `date -r`。Linux 上的 Managed 入口（Controller/session）仍未验收，Runtime 侧也只验过这一种发行版和架构。发布前收口那一轮在同一台机器上按当时的 HEAD 又跑了一遍（历史真机记录不替代当前 build）：严格 clippy 干净、**680 passed / 0 failed**，与同一份源码在 macOS 上的数一样。
+**Runtime 那一侧（`internal mcp-serve` 与七工具）在 Debian 13 / x86_64 上验过一次**，作为 Remote Workspace MCP 的 dogfood（[记录](research/p12-real-project-2026-09-11.md)）：`cargo fmt`、严格 clippy 与全套测试在那台机器上 676 passed / 0 failed，与 macOS 同数。**那一次是从两个红开始的**，两个都真修了：`SystemRunner::run` 的超时只杀 leader（macOS 因为 bash 会 exec 而一直看不见），以及一个测试助手用了 BSD 语义的 `date -r`。Linux 上的 Managed 入口（Controller/session）仍未验收，Runtime 侧也只验过这一种发行版和架构。
+
+**第三个红是发布前收口那一轮、由 CI 自己照出来的，它证明 P12 那次只修了一半。** 杀进程组走的是 `kill -KILL -<pgid>`，而 GNU/procps 的 `kill` 把开头带减号的参数当成**信号**读：`-8421` 被读成信号号，命令最后一个 pid 都没有，**退出码 0，什么都没杀**。所以进程组还在、孙进程还占着管道、超时还是不超时——而且这次还报成功。macOS 的 BSD `kill` 两种写法都当进程组，本机永远看不见；Debian 13 上碰巧是绿的（孤儿被别的东西收走了），所以 P12 的真机轮也没照出来。**是 ubuntu-24.04 的 runner 照出来的**：`write_guard` 里那条"残留子进程要人工恢复"的测试红了，残留进程在本该杀掉它的 kill 之后还活着。修法是在负 pid 前加 `--`（macOS 和 Linux 都认），三处都改了。当前 HEAD 在 ubuntu-24.04 与 macOS 上都是 **681 passed / 0 failed**，严格 clippy 都干净。
 
 **发布物也是两个，对应上面这两件事。** 一个版本出两个下载：
 

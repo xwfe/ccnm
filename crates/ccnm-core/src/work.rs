@@ -1027,7 +1027,9 @@ fn stop_print_session(spec: &Spec, dir: &session::Dir, tools: &Tools<'_>) -> Res
         }
         std::fs::write(dir.stopping(), b"requested\n")?;
         let killed = tools.runner.run(
-            &crate::process::Cmd::new("/bin/kill").args(["-TERM", &format!("-{agent_pid}")]),
+            // `--` before the negative pid: see process::kill_group. Without
+            // it Linux `kill` reads it as a signal and signals nothing.
+            &crate::process::Cmd::new("/bin/kill").args(["-TERM", "--", &format!("-{agent_pid}")]),
         )?;
         if process_group_alive(agent_pid, tools)? {
             return Err(Error::new(
@@ -1048,7 +1050,7 @@ fn stop_print_session(spec: &Spec, dir: &session::Dir, tools: &Tools<'_>) -> Res
     std::fs::write(dir.stopping(), b"requested\n")?;
     let _ = tools
         .runner
-        .run(&crate::process::Cmd::new("/bin/kill").args(["-TERM", &format!("-{pid}")]))?;
+        .run(&crate::process::Cmd::new("/bin/kill").args(["-TERM", "--", &format!("-{pid}")]))?;
     if process_group_alive(pid, tools)? {
         return Err(Error::new(
             ErrorCode::NotReady,

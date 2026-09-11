@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-09-11T18:20:00+09:00",
+  "last_updated": "2026-09-11T21:30:00+09:00",
   "current_task": null,
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
@@ -962,7 +962,8 @@
     "【已修】nodes.<x>.ccnm_bin 的默认值 ~/.local/bin/ccnm 曾经写不进配置文件：默认值靠远端登录 shell 展开 ~，而校验要求绝对路径，照抄默认值会被 CCNM_E_CONFIG 拒。现在该字段接受 `~/` 开头，并且仍然拒绝别人的家目录（~other/...）、`..` 和需要引号的字符——它要出现在一条 ccnm 不加引号的 ssh 命令行上。配置文档里的示例换成了默认值本身。",
     "P12 六次完整 dogfood 里有一次 transport 无线索地断了：ssh 退出 255、stderr 一个字没有、内核日志无 OOM、写锁按设计停在 held、远端没有孤儿进程。之后用同一条长命令（cargo test --workspace，12–17 秒）专门连跑三次没能复现，最后三次完整跑也都干净。没有解释就是没有解释，记在这里，不算进任何判据。",
     "【已修】release workflow 会在 tag 已经推出去之后才失败：dc5f7db 那次整理把 scripts/dist.sh 的执行位从 100755 改成 100644，而 release.yml 里写的是 `run: scripts/dist.sh`，跑起来就是 Permission denied。v0.1.0/v0.2.0 那两次绿是在改之前跑的，之后再没推过 tag，所以一直没人撞到。**推 tag 是不可撤销的**，失败发生在 release 已经公开之后。现在两个打包脚本在 CI 里都写成 `bash scripts/…`，不依赖执行位；用户当初去掉执行位的那个决定保持不动。",
-    "Linux 的 CI job 和 release job 还没在 GitHub runner 上跑过。已经验过的是它们调用的东西：在一台真实 Debian 13 / x86_64（P12 留下的 ccrun 身份）上跑 clippy 严格模式干净、cargo test --workspace 680 passed / 0 failed（与同一 HEAD 的 macOS 同数）、scripts/dist-linux.sh 产出 ccnm-0.2.0-linux-x86_64.tar.gz + sha256，解出来是 rwxr-xr-x、`ccnm --version` 报 0.2.0、sha256 校验通过，glibc 下限从二进制里量出来是 2.39。workflow YAML 本身只做了结构校验（YAML 解析 + jobs 名），本机没有 actionlint。第一次 push 之后要确认两个 job 都绿，以及 ubuntu-24.04 上量出来的 glibc 下限是否仍是 2.39——那个数是下载物的运行下限，变了就要改 release notes。"
+    "Linux 的 CI job 和 release job 还没在 GitHub runner 上跑过。已经验过的是它们调用的东西：在一台真实 Debian 13 / x86_64（P12 留下的 ccrun 身份）上跑 clippy 严格模式干净、cargo test --workspace 680 passed / 0 failed（与同一 HEAD 的 macOS 同数）、scripts/dist-linux.sh 产出 ccnm-0.2.0-linux-x86_64.tar.gz + sha256，解出来是 rwxr-xr-x、`ccnm --version` 报 0.2.0、sha256 校验通过，glibc 下限从二进制里量出来是 2.39。workflow YAML 本身只做了结构校验（YAML 解析 + jobs 名），本机没有 actionlint。第一次 push 之后要确认两个 job 都绿，以及 ubuntu-24.04 上量出来的 glibc 下限是否仍是 2.39——那个数是下载物的运行下限，变了就要改 release notes。",
+    "【已修】P12 那个「超时只杀 leader」的修复在 Linux 上只修了一半，而且这次是报成功的。kill_group 跑的是 `kill -KILL -<pgid>`，GNU/procps 的 `kill` 把开头带减号的参数当**信号**读：`-8421` 被读成信号号，命令最后一个 pid 都没有，**退出码 0，什么都没杀**。于是进程组还在、孙进程还占着管道、超时还是不超时，而 kill_group 的返回值（它只看 killer 跑没跑起来）说一切正常。macOS 的 BSD `kill` 两种写法都当进程组，所以开发机上看不见；Debian 13 的真机轮也是绿的——那台机器上孤儿被别的东西收走了，绿得没有道理。**照出它的是 GitHub 的 ubuntu-24.04 runner**：write_guard 里「残留子进程要人工恢复」那条红了，残留进程在本该杀掉它的 kill 之后还活着。修法是在负 pid 前加 `--`（macOS 与 Linux 都认），三处都改：process::kill_group 的超时杀组，以及 work::stop 里 `ccnm stop` 的两处。回归测试两条：一条用记录 argv 的 killer 断言 `-KILL --` 的形状（macOS 上两种写法行为一样，只有 argv 能分辨），一条把 session_identity 的 golden 断言改成精确匹配 `/bin/kill -TERM -- -4343`。顺带一个坑：测试里那两个 killer 脚本原来写 `kill \"$@\"`，在 Debian/Ubuntu 上那是 **dash 的内建命令**，它不认 `--`（报 `Illegal number: -`）；产品从不经过 shell，所以改成 `/bin/kill` 才是它真正会碰到的东西。"
   ],
   "handoff": {
     "next_action": "**发布前收口已完成；ROADMAP 的 P0–P12 全部完成，current_task 为 null。** 两个入口都有真机证据：Managed Agent Runtime（ccnm.machine/1 于 2026-09-10 冻结）和 Remote Workspace MCP（ccnm.workspace-mcp/1 于 2026-09-11 冻结）。**下一轮不要自动扩功能**：ROADMAP 到这里就没有下一阶段了，要做新东西得先立新阶段并说清它替换或扩展了哪条已冻结的契约。这一轮（发布前收口）做了四件事：(1) 把外部规划工具 gld 的状态与 Git 对齐——结束停在 P7.4 的那个 durable task、按 status.json 把 P7.4→P12 与 P1–P8 两张计划的步骤标完成、把两张被替代的历史计划归档、Goal 转 awaiting_acceptance 等人工验收；(2) 文档按当前事实收敛——平台拆成「Agent 只有 macOS / Runtime 有 macOS 与 Debian 13 两种证据」，README 的「接下来做什么」不再说靠 dogfood 决定契约，observed_gaps 里已解决的条目标成已解决；(3) 补 Linux x86_64 的 Runtime 发布物（scripts/dist-linux.sh）与 Linux CI 门禁，并在真实 Debian 13 上验过它们调用的东西；(4) 复核 P11 那两条 macOS 临时授权，结论是**两条都已经不在了**（见 authorization 一节）。**当前挡在发布前面的，只有需要用户决定或授权的事**：(a) push/tag/release 仍未授权，而推 tag 不可撤销；(b) Linux 的两个 workflow job 还没在 GitHub runner 上跑过（见 observed_gaps）；(c) 三台机器上装着的 ccnm 还是 069fa68 的构建，不含 0f9e71c / 40085d0 两个修复，替换已安装二进制要单独授权。不需要授权就能做的候选都还需要真机或额度：(1) Codex 当外部 MCP Host、交互式 UI 怎么显示 bridge 的失败；(2) 非 Debian / arm64 的 Linux Runtime；(3) 真实 node 项目的 npm ci && npm test（Node 目前只验到「叫得动」）；(4) 协议里 -32008（busy）至今不可达，要不要补 session.start 的占用预检是待定的产品决定。hpsrv 上的 ccrun 账号和工具链按用户选择保留，**authorized_keys 仍然是 0 行**——要再用它当 Linux Runtime，得先装一把新的入站公钥（scripts/p12-provision-linux-runtime.sh 的做法，换本轮密钥对、指纹现算现比）。",
@@ -978,19 +979,19 @@
       "limits": "本轮离线门禁；fodelf SSH 建连失败，没有新增远端资源或运行真实模型，不替代 P3.5。"
     },
     "planning_validation_latest": {
-      "at": "2026-09-11T18:20:00+09:00",
+      "at": "2026-09-11T21:30:00+09:00",
       "commands": [
         "cargo fmt --all --check：通过",
-        "cargo clippy --workspace --all-targets -- -D warnings：通过（macOS 与 Debian 13 各一遍）",
-        "cargo test --workspace：macOS 680 passed / 0 failed；**Debian 13 / x86_64 680 passed / 0 failed**（同一份源码）",
+        "cargo clippy --workspace --all-targets -- -D warnings：通过（macOS 与 ubuntu-24.04 各一遍）",
+        "cargo test --workspace：macOS **681 passed / 0 failed**；ubuntu-24.04 容器 **681 passed / 0 failed**",
         "PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p 'test_*.py' -q：168 passed",
         "python3 scripts/check_protocol.py：38 + 21 个 fixture 通过",
         "python3 scripts/check_plan.py：13/13 阶段完成，下一阶段 None",
         "git diff --check：干净",
-        "bash scripts/dist-linux.sh（真实 Debian 13 / x86_64）：产出 ccnm-0.2.0-linux-x86_64.tar.gz（3.6 MB）+ sha256，解出来 rwxr-xr-x，`ccnm --version` 报 0.2.0，sha256 -c 通过，glibc 下限量出来 2.39",
-        "两个 workflow YAML：解析通过（ci.yml -> test / linux-runtime；release.yml -> macos / linux / publish）"
+        "bash scripts/dist-linux.sh（真实 Debian 13 / x86_64）：ccnm-0.2.0-linux-x86_64.tar.gz + sha256，解出来 rwxr-xr-x、版本对、sha256 -c 通过、glibc 下限量出来 2.39",
+        "GitHub Actions：macOS job 绿；Linux job 在 21d023a / b5d143e / ced86ee 三次都红（同一条 write_guard 测试），根因修掉之后重新推上去验证"
       ],
-      "limits": "两个 Linux workflow job 没在 GitHub runner 上跑过，只验了它们调用的脚本和门禁本身；本机没有 actionlint，YAML 只做了结构校验。macOS 的 release 路径这一轮没有重跑（没有授权推 tag）。真机结论仍只覆盖 Debian 13/x86_64 的 Runtime 与 macOS 的 Agent。"
+      "limits": "Linux 那一侧的证据现在有三处：真实 Debian 13 主机、ubuntu-24.04 容器、GitHub ubuntu-24.04 runner。release workflow 的两个 Linux job 仍然只在 tag 推出去时才会第一次运行。Agent 那一侧仍然只有 macOS。"
     },
     "inherited_changes": [],
     "authorization": "P12 真机轮已由用户授权并执行完毕（2026-09-11），三问三答：hpsrv 上按计划全做（建专用账号 ccrun、系统级装 gcc/libc6-dev/make/ripgrep、以 ccrun 身份装 rustup 与 Node）；花订阅额度做真实 Claude Code 那一腿；轮后**保留账号与工具链**、删一次性资源。特权命令由本会话经 root ssh 执行（该机 root 登录用的是用户自己的 key），没有要用户输密码。授权明确不含：改 ACL/防火墙/Tailscale 策略、动 bing 或 git 账号的任何东西、push/tag/release。保留物的撤销脚本仍在：scripts/p12-provision-linux-runtime.sh --revert（账号 + 按清单 purge 的 36 个包）、scripts/p12-runtime-toolchain.sh --revert（rustup/Node/PATH 块）；root 清单 /var/lib/ccnm-p12-20260911 为此保留。历史授权记录（P3/P7/P11 各轮）见 Git 历史；P11 那两条 macOS 的 sudo 授予（ccrun 的本轮公钥、临时进 com.apple.access_ssh）**仍未撤销**，要用户 sudo 跑对应的 --revert。 【2026-09-11 发布前收口复核】P11 那两条 macOS 临时授予**已经不在了**，只读证据：`dsmemberutil checkmembership -U ccrun -G com.apple.access_ssh` 和 `dseditgroup -o checkmember` 都说不是成员，该组 GroupMembership 键不存在（没有直接成员）；p11 那把公钥的清单目录 /var/db/ccnm-p11-local-20260911 不存在，而 --revert 的最后一步就是 rmdir 它。还留着的 /var/db/ccnm-p7-local-20260910 是更早 P7 轮的清单目录（root 0700），不是这两条要撤的东西，里面还有什么只有 sudo 看得到。要逐条确认，由用户在自己的终端跑两条只读命令：`sudo scripts/p11-authorize-local-runtime.sh --check` 和 `sudo scripts/p7-grant-local-ssh-access.sh --check`（两个脚本都要求 SUDO_USER 是 bing，--check 只读）。本会话没有也不会执行 sudo。",

@@ -177,8 +177,12 @@ fn residual_exec_child_keeps_the_workspace_unknown_until_manual_recovery() {
     server.kill();
     assert!(alive(pid));
     refused(&fixture, "two", "not transferred automatically");
+    // What the Runtime operator does by hand. `--` matters: without it
+    // Linux `kill` reads `-1234` as a signal, signals nothing and exits 0
+    // (see process::kill_group), so this step would quietly do nothing and
+    // the assertion below is what noticed.
     let _ = Command::new("/bin/kill")
-        .args(["-TERM", &format!("-{pid}")])
+        .args(["-TERM", "--", &format!("-{pid}")])
         .output();
     let deadline = Instant::now() + Duration::from_secs(3);
     while alive(pid) && Instant::now() < deadline {

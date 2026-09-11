@@ -171,7 +171,8 @@ pub trait ProcessRunner {
     fn run(&self, cmd: &Cmd) -> Result<Output>;
 }
 
-/// Kill a child *and everything it started*.
+/// Kill a child *and everything it started*, reporting whether the killer
+/// could be run at all.
 ///
 /// `Child::kill` signals one process. A command like `sh -c 'x & sleep 30'`
 /// leaves its own children holding the pipes, so killing only the leader
@@ -182,14 +183,103 @@ pub trait ProcessRunner {
 /// `kill(1)` rather than `libc::killpg` because this crate forbids unsafe.
 /// The direct kill still runs afterwards: if `kill` is missing or the
 /// group is already gone, the leader is what matters.
-fn kill_group(child: &mut std::process::Child) {
+///
+/// The return value is about the *killer*, not the group: false means the
+/// `kill` could not be spawned or run, so only the leader was signalled.
+/// A `kill` that ran and reported "no such process group" is a success --
+/// the group is gone, which is the point.
+fn kill_group(killer: &OsStr, child: &mut std::process::Child) -> bool {
     let pid = child.id();
-    let _ = Command::new("kill")
+    let ran = Command::new(killer)
         .args(["-KILL", &format!("-{pid}")])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .status();
+        .status()
+        .is_ok();
     let _ = child.kill();
+    ran
+}
+
+/// The program [`kill_group`] runs. Only tests pass anything else, and they
+/// pass a killer that fails on purpose.
+const KILLER: &str = "kill";
+
+/// How long to wait before killing the group again, and the ceiling on
+/// that wait.
+const KILL_RETRY_MIN: Duration = Duration::from_millis(100);
+const KILL_RETRY_MAX: Duration = Duration::from_secs(1);
+
+/// The thread that enforces a deadline: once it passes, kill the child's
+/// whole process group and *keep killing* until `finished` says the pipes
+/// are drained.
+///
+/// Killing once is not enough, and the reason is circular: [`kill_group`]
+/// has to spawn a process in order to reach a process group, and the moment
+/// a timeout fires under load is exactly the moment a spawn can fail. One
+/// failed attempt leaves only the leader dead, the grandchild goes on
+/// holding the pipes, and the drain threads wait for it. Measured with a
+/// `sleep 30` grandchild under a 400ms timeout: 30.0s when only the leader
+/// is killed, 0.5s when the group is. That is the 30.5s failure seen under
+/// `--test-threads=64`, and retrying is what turns a transient spawn
+/// failure back into a timeout.
+///
+/// It costs nothing when the first kill lands: the loop below waits on
+/// `finished`, not on a fixed delay, so the normal path spends no extra
+/// spawn at all.
+///
+/// Both spawn sites share this so the answer exists in one version.
+fn watchdog(
+    child: std::sync::Arc<Mutex<std::process::Child>>,
+    finished: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    deadline: Instant,
+    killer: OsString,
+    kind: &'static str,
+    shown: String,
+) -> JoinHandle<bool> {
+    thread::spawn(move || {
+        let mut poll = POLL_MIN;
+        loop {
+            if finished.load(std::sync::atomic::Ordering::SeqCst) {
+                return false;
+            }
+            if Instant::now() >= deadline {
+                tracing::warn!(cmd = %shown, kind, "timeout, killing");
+                break;
+            }
+            thread::sleep(poll);
+            poll = (poll * 2).min(POLL_MAX);
+        }
+        let mut backoff = KILL_RETRY_MIN;
+        let mut reported = false;
+        loop {
+            let Ok(mut locked) = child.lock() else {
+                // Nothing left to kill with; the caller will see the
+                // poisoned mutex too.
+                return true;
+            };
+            let ran = kill_group(&killer, &mut locked);
+            drop(locked);
+            if !ran && !reported {
+                tracing::warn!(
+                    cmd = %shown,
+                    killer = %killer.to_string_lossy(),
+                    "cannot run the killer, so only the leader was signalled; \
+                     anything it started still holds the pipes"
+                );
+                reported = true;
+            }
+            // Give the pipes a moment to reach EOF before spending another
+            // spawn on a group that is probably already gone.
+            let until = Instant::now() + backoff;
+            while Instant::now() < until {
+                if finished.load(std::sync::atomic::Ordering::SeqCst) {
+                    return true;
+                }
+                thread::sleep(POLL_MAX);
+            }
+            backoff = (backoff * 2).min(KILL_RETRY_MAX);
+        }
+    })
 }
 
 /// What [`stream_lines`] should do after handing over one line.
@@ -265,29 +355,14 @@ pub fn stream_lines(cmd: &Cmd, mut on_line: impl FnMut(&[u8]) -> Flow) -> Result
     // need libc, and this crate forbids unsafe.
     let child = std::sync::Arc::new(Mutex::new(child));
     let finished = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let watchdog = {
-        let child = std::sync::Arc::clone(&child);
-        let finished = std::sync::Arc::clone(&finished);
-        let deadline = started + cmd.timeout;
-        let shown = cmd.display();
-        thread::spawn(move || {
-            let mut poll = POLL_MIN;
-            loop {
-                if finished.load(std::sync::atomic::Ordering::SeqCst) {
-                    return false;
-                }
-                if Instant::now() >= deadline {
-                    tracing::warn!(cmd = %shown, "stream timeout, killing");
-                    if let Ok(mut child) = child.lock() {
-                        kill_group(&mut child);
-                    }
-                    return true;
-                }
-                thread::sleep(poll);
-                poll = (poll * 2).min(POLL_MAX);
-            }
-        })
-    };
+    let watchdog = watchdog(
+        std::sync::Arc::clone(&child),
+        std::sync::Arc::clone(&finished),
+        started + cmd.timeout,
+        KILLER.into(),
+        "stream",
+        cmd.display(),
+    );
 
     let mut reader = std::io::BufReader::new(stdout);
     let mut line = Vec::new();
@@ -304,7 +379,10 @@ pub fn stream_lines(cmd: &Cmd, mut on_line: impl FnMut(&[u8]) -> Flow) -> Result
         if on_line(&line) == Flow::Stop {
             stopped_early = true;
             if let Ok(mut child) = child.lock() {
-                kill_group(&mut child);
+                // One attempt, unlike the watchdog's: the only caller that
+                // stops early is search, and `rg` starts no children to
+                // outlive it.
+                kill_group(OsStr::new(KILLER), &mut child);
             }
             break;
         }
@@ -369,6 +447,24 @@ where
     O: Write + Send + 'static,
     E: Write + Send + 'static,
 {
+    run_captured_killed_by(cmd, out, err, observe, OsStr::new(KILLER))
+}
+
+/// The body of [`run_captured_observed`], with the killer as a parameter so
+/// a test can supply one that fails on its first attempt -- the case the
+/// watchdog's retry exists for, and one that cannot be provoked on demand
+/// with the real `kill`.
+fn run_captured_killed_by<O, E>(
+    cmd: &Cmd,
+    out: O,
+    err: E,
+    observe: impl FnOnce(u32) -> Result<()>,
+    killer: &OsStr,
+) -> Result<Captured>
+where
+    O: Write + Send + 'static,
+    E: Write + Send + 'static,
+{
     let started = Instant::now();
     let mut command = Command::new(&cmd.program);
     command
@@ -396,7 +492,7 @@ where
         Error::internal(format!("cannot spawn {}", cmd.program.to_string_lossy())).with_source(e)
     })?;
     if let Err(error) = observe(child.id()) {
-        kill_group(&mut child);
+        kill_group(killer, &mut child);
         let _ = child.wait();
         return Err(error);
     }
@@ -416,29 +512,14 @@ where
 
     let child = std::sync::Arc::new(Mutex::new(child));
     let finished = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let watchdog = {
-        let child = std::sync::Arc::clone(&child);
-        let finished = std::sync::Arc::clone(&finished);
-        let deadline = started + cmd.timeout;
-        let shown = cmd.display();
-        thread::spawn(move || {
-            let mut poll = POLL_MIN;
-            loop {
-                if finished.load(std::sync::atomic::Ordering::SeqCst) {
-                    return false;
-                }
-                if Instant::now() >= deadline {
-                    tracing::warn!(cmd = %shown, timeout = ?cmd_timeout(deadline, started), "capture timeout, killing");
-                    if let Ok(mut child) = child.lock() {
-                        kill_group(&mut child);
-                    }
-                    return true;
-                }
-                thread::sleep(poll);
-                poll = (poll * 2).min(POLL_MAX);
-            }
-        })
-    };
+    let watchdog = watchdog(
+        std::sync::Arc::clone(&child),
+        std::sync::Arc::clone(&finished),
+        started + cmd.timeout,
+        killer.to_os_string(),
+        "capture",
+        cmd.display(),
+    );
 
     // Both pipes reach EOF when the child exits, so waiting on the pumps
     // first means the wait below returns immediately.
@@ -517,10 +598,6 @@ pub fn run_attached_observed(
         stdout_bytes: 0,
         stderr_bytes: 0,
     })
-}
-
-fn cmd_timeout(deadline: Instant, started: Instant) -> Duration {
-    deadline.saturating_duration_since(started)
 }
 
 /// Copy a pipe into a sink, counting every byte the child produced even
@@ -788,6 +865,62 @@ mod tests {
                 started.elapsed()
             );
         }
+    }
+
+    /// The first kill is allowed to fail, and the timeout still has to
+    /// hold. `kill_group` spawns a process in order to reach a process
+    /// group, so the moment a timeout fires under load is the moment that
+    /// spawn can fail; one failed attempt kills only the leader and leaves
+    /// the grandchild holding the pipes. That is not theoretical -- it is
+    /// the 30.5s failure this suite showed under `--test-threads=64`, and
+    /// a bare `sleep 30` measures 30.0s that way against 0.5s when the
+    /// group is reached.
+    ///
+    /// The killer here refuses once and then works, so the only thing that
+    /// can keep this under five seconds is the watchdog trying again.
+    #[test]
+    fn a_kill_that_does_not_land_is_tried_again() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("ccnm-killer-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let refused = dir.join("refused-once");
+        let killer = dir.join("killer.sh");
+        std::fs::write(
+            &killer,
+            format!(
+                "#!/bin/sh\n\
+                 if [ ! -e '{refused}' ]; then : > '{refused}'; exit 1; fi\n\
+                 kill \"$@\"\n",
+                refused = refused.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&killer, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let cmd = Cmd::new("sh")
+            .args(["-c", "sleep 30 & echo started; wait"])
+            .timeout(Duration::from_millis(400));
+        let started = Instant::now();
+        let captured = run_captured_killed_by(
+            &cmd,
+            std::io::sink(),
+            std::io::sink(),
+            |_| Ok(()),
+            killer.as_os_str(),
+        )
+        .unwrap();
+
+        assert!(captured.timed_out);
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "waited {:?} for a grandchild the first kill did not reach",
+            started.elapsed()
+        );
+        assert!(
+            refused.exists(),
+            "the first attempt was supposed to fail; this proved nothing"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

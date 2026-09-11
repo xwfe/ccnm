@@ -1,0 +1,8 @@
+{
+  "$schema_ref": "#/$defs/startup_error",
+  "$note": "锁的状态证明不了。绝不自动接管写权限——代价是两个 Agent 同时改一棵树。",
+  "message": {
+    "exit_code": 1,
+    "stderr_last_line": "CCNM_E_POLICY: workspace write guard state is unknown; refusing to transfer write authority"
+  }
+}

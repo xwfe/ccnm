@@ -1,0 +1,16 @@
+{
+  "$schema_ref": "#/$defs/call_tool_result_ok",
+  "$note": "coding 模式下的一次命令：回来的只是头尾预览加一个 output_ref，长输出留在远端。",
+  "message": {
+    "jsonrpc": "2.0",
+    "id": 4,
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "exit 0 in 2.4s\nrunning 118 tests\n...\ntest result: ok. 118 passed; 0 failed\n[output_ref: r-7f3a, stdout 8213 bytes, stderr 0 bytes]"
+        }
+      ]
+    }
+  }
+}

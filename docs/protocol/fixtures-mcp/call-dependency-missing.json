@@ -1,0 +1,17 @@
+{
+  "$schema_ref": "#/$defs/call_tool_result_error",
+  "$note": "远端缺这次操作要用的程序。是远端机器的事实，不是调用方参数错。",
+  "message": {
+    "jsonrpc": "2.0",
+    "id": 8,
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "CCNM_E_DEPENDENCY:\ncargo is not installed on the runtime machine"
+        }
+      ],
+      "isError": true
+    }
+  }
+}

@@ -17,6 +17,19 @@ SCHEMA = "docs/protocol/schema/machine-protocol-v1.schema.json"
 FIXTURES = "docs/protocol/fixtures"
 SPEC = "docs/protocol/machine-protocol-v1.md"
 
+MCP_SCHEMA = "docs/protocol/schema/remote-workspace-mcp-v1.schema.json"
+MCP_FIXTURES = "docs/protocol/fixtures-mcp"
+MCP_SPEC = "docs/protocol/remote-workspace-mcp-v1.md"
+
+# 两套公开契约。错误的表达方式不同，所以对错误的检查方式也不同：
+#   jsonrpc —— 机器协议，错误是 JSON-RPC 的数字码，说明文档里有码表；
+#   ccnm    —— Remote Workspace MCP，错误是结果正文第一行的 CCNM_E_* 名字。
+# 两边的规矩一样：说明文档里写了的，必须有 fixture；fixture 里出现的，必须写在文档里。
+BUNDLES = (
+    {"spec": SPEC, "schema": SCHEMA, "fixtures": FIXTURES, "codes": "jsonrpc"},
+    {"spec": MCP_SPEC, "schema": MCP_SCHEMA, "fixtures": MCP_FIXTURES, "codes": "ccnm"},
+)
+
 # 本脚本实现的 JSON Schema 关键字。$schema/$id/title/description 只是文档。
 KEYWORDS = {
     "$ref", "$defs", "$schema", "$id", "title", "description",
@@ -128,20 +141,24 @@ def spec_error_codes(text: str) -> dict:
     return codes
 
 
+def spec_ccnm_codes(text: str) -> set:
+    """从说明文档的表里读出 CCNM_E_* 名字。只认表格首格，正文里提到的不算。"""
+    return set(re.findall(r"^\|\s*`(CCNM_E_[A-Z_]+)`\s*\|", text, re.M))
+
+
 def check(root_dir: Path) -> list:
     errors = []
-    schema = json.loads((root_dir / SCHEMA).read_text(encoding="utf-8"))
-    spec = (root_dir / SPEC).read_text(encoding="utf-8")
-    codes = spec_error_codes(spec)
-    if not codes:
-        return ["说明文档里没找到错误码表"]
+    for bundle in BUNDLES:
+        errors += check_bundle(root_dir, **bundle)
+    return errors
 
-    files = sorted((root_dir / FIXTURES).glob("*.json"))
-    if not files:
-        return ["没有 fixture 可校验"]
 
-    seen_codes = set()
-    for path in files:
+def each_fixture(root_dir: Path, schema: dict, fixtures: str, errors: list):
+    """逐个读 fixture 并按它自己声明的 $schema_ref 校验，产出 (名字, 内容)。
+
+    坏掉的那个只记错误、不产出，所以调用方不必再判断一次。
+    """
+    for path in sorted((root_dir / fixtures).glob("*.json")):
         name = path.relative_to(root_dir).as_posix()
         try:
             doc = json.loads(path.read_text(encoding="utf-8"))
@@ -159,22 +176,65 @@ def check(root_dir: Path) -> list:
             errors.append(f"{name}: {exc}")
             continue
         errors += [f"{name} {e}" for e in validate(doc["message"], target, schema, "message")]
+        yield name, doc
 
+
+def check_bundle(root_dir: Path, spec: str, schema: str, fixtures: str, codes: str) -> list:
+    # 每个 fixture 自身的错误进 errors（下面两个函数遍历时往里加），
+    # 码表层面的错误由它们返回。
+    errors = []
+    schema_doc = json.loads((root_dir / schema).read_text(encoding="utf-8"))
+    spec_text = (root_dir / spec).read_text(encoding="utf-8")
+    check_codes = check_ccnm_codes if codes == "ccnm" else check_jsonrpc_codes
+    table = check_codes(root_dir, spec, spec_text, schema_doc, fixtures, errors)
+    return errors + table
+
+
+def check_jsonrpc_codes(root_dir, spec, spec_text, schema_doc, fixtures, errors) -> list:
+    """机器协议：错误是数字码，文档里有码表。"""
+    codes = spec_error_codes(spec_text)
+    if not codes:
+        return ["说明文档里没找到错误码表"]
+    seen = set()
+    found = False
+    for name, doc in each_fixture(root_dir, schema_doc, fixtures, errors):
+        found = True
         error = doc["message"].get("error")
         if isinstance(error, dict) and isinstance(error.get("code"), int):
             code = error["code"]
-            seen_codes.add(code)
+            seen.add(code)
             if code not in codes:
                 errors.append(f"{name}: 错误码 {code} 不在说明文档的表里")
+    if not found:
+        return ["没有 fixture 可校验"]
 
     # 文档里的每个码都要有 fixture：写进表格却没有样例的码，等于没定义。JSON-RPC
     # 预定义的那五个也算——它们的触发条件（id 该填什么、连接断不断）同样要有样例。
+    out = []
     for code, code_name in sorted(codes.items()):
-        if code not in seen_codes:
+        if code not in seen:
             label = f"{code}（{code_name}）" if code_name else str(code)
-            errors.append(f"{SPEC}: 错误码 {label} 没有对应的 fixture")
+            out.append(f"{spec}: 错误码 {label} 没有对应的 fixture")
+    return out
 
-    return errors
+
+def check_ccnm_codes(root_dir, spec, spec_text, schema_doc, fixtures, errors) -> list:
+    """Remote Workspace MCP：错误是 CCNM_E_* 名字，出现在结果正文或启动诊断里。"""
+    documented = spec_ccnm_codes(spec_text)
+    if not documented:
+        return ["说明文档里没找到 CCNM_E_* 表"]
+    seen = set()
+    found = False
+    for name, doc in each_fixture(root_dir, schema_doc, fixtures, errors):
+        found = True
+        text = json.dumps(doc["message"], ensure_ascii=False)
+        for code in re.findall(r"CCNM_E_[A-Z_]+", text):
+            seen.add(code)
+            if code not in documented:
+                errors.append(f"{name}: {code} 不在说明文档的表里")
+    if not found:
+        return ["没有 fixture 可校验"]
+    return [f"{spec}: {code} 没有对应的 fixture" for code in sorted(documented - seen)]
 
 
 def main() -> int:
@@ -187,9 +247,11 @@ def main() -> int:
         for error in errors:
             print("协议错误：" + error, file=sys.stderr)
         return 1
-    total = len(list((root_dir / FIXTURES).glob("*.json")))
-    print(f"协议检查通过：{total} 个 fixture 符合 schema，错误码与说明文档一致。")
-    print("只是结构检查：证明这几份文件互相自洽，不证明 ccnm rpc 的行为与它们一致。")
+    counts = " + ".join(
+        str(len(list((root_dir / b["fixtures"]).glob("*.json")))) for b in BUNDLES
+    )
+    print(f"协议检查通过：{counts} 个 fixture 符合各自的 schema，错误码与说明文档一致。")
+    print("只是结构检查：证明这几份文件互相自洽，不证明任何实现的行为与它们一致。")
     return 0
 
 

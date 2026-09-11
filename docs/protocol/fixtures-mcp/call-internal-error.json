@@ -1,0 +1,17 @@
+{
+  "$schema_ref": "#/$defs/call_tool_result_error",
+  "$note": "没预料到的失败。不假装成功，也不把细节抖出来——正文只说发生在哪一步。",
+  "message": {
+    "jsonrpc": "2.0",
+    "id": 9,
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "CCNM_E_INTERNAL:\ncannot read retained output"
+        }
+      ],
+      "isError": true
+    }
+  }
+}

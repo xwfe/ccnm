@@ -1,0 +1,8 @@
+{
+  "$schema_ref": "#/$defs/startup_error",
+  "$note": "两端 ccnm 的内部 open 协议谈不拢。fail-closed，不静默回退到不检查 root 的老路径。",
+  "message": {
+    "exit_code": 1,
+    "stderr_last_line": "CCNM_E_VERSION: the runtime speaks open protocol 3; this build requires 4"
+  }
+}

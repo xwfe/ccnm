@@ -1,0 +1,8 @@
+{
+  "$schema_ref": "#/$defs/startup_error",
+  "$note": "SSH 到 Runtime 不通。到不了就直接失败，不回答 initialize。",
+  "message": {
+    "exit_code": 1,
+    "stderr_last_line": "CCNM_E_RUNTIME_UNREACHABLE: cannot open an ssh transport to node runtime"
+  }
+}

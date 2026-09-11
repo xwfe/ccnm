@@ -1,0 +1,17 @@
+{
+  "$schema_ref": "#/$defs/call_tool_result_error",
+  "$note": "路径在 workspace 之外。这是模型必须读到并据此改做法的事，所以是 isError 结果而不是 JSON-RPC 错误。",
+  "message": {
+    "jsonrpc": "2.0",
+    "id": 6,
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "CCNM_E_POLICY:\n../../etc/passwd is outside the workspace\nevery path is relative to the workspace root"
+        }
+      ],
+      "isError": true
+    }
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "$schema_ref": "#/$defs/call_tool_result_error",
+  "$note": "参数用不了：行号从 1 开始。和 CCNM_E_POLICY 分开是因为反应不同——这个改参数再来，那个别再试了。",
+  "message": {
+    "jsonrpc": "2.0",
+    "id": 7,
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "CCNM_E_INVALID_ARGS:\nstart_line is 0; lines are numbered from 1"
+        }
+      ],
+      "isError": true
+    }
+  }
+}

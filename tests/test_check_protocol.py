@@ -161,5 +161,75 @@ class ProtocolTests(unittest.TestCase):
         self.assertTrue(check_protocol.validate(True, schema, root, "x"))
 
 
+class RemoteWorkspaceMcpTests(unittest.TestCase):
+    """第二套契约（Remote Workspace MCP）的错误表达方式不同：没有数字码表，
+    错误是结果正文第一行的 `CCNM_E_*` 名字。这里证明那套检查也抓得住错。"""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="ccnm-mcp-protocol-")
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        (self.root / "docs").mkdir()
+        shutil.copytree(ROOT / "docs/protocol", self.root / "docs/protocol")
+
+    def fixture(self, name):
+        return self.root / check_protocol.MCP_FIXTURES / (name + ".json")
+
+    def load(self, name):
+        return json.loads(self.fixture(name).read_text(encoding="utf-8"))
+
+    def save(self, name, doc):
+        self.fixture(name).write_text(
+            json.dumps(doc, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def errors(self):
+        return check_protocol.check(self.root)
+
+    def test_a_code_that_is_not_in_the_table_is_rejected(self):
+        doc = self.load("call-invalid-args")
+        doc["message"]["result"]["content"][0]["text"] = "CCNM_E_MADE_UP:\nnope"
+        self.save("call-invalid-args", doc)
+        self.assertTrue(any("CCNM_E_MADE_UP 不在说明文档的表里" in e for e in self.errors()))
+
+    def test_a_documented_code_without_a_fixture_is_rejected(self):
+        # 写进表格却没有样例的名字等于没定义：没人知道它长什么样、什么时候出现。
+        self.fixture("call-dependency-missing").unlink()
+        self.assertTrue(any("CCNM_E_DEPENDENCY 没有对应的 fixture" in e for e in self.errors()))
+
+    def test_a_failed_result_must_lead_with_the_code(self):
+        # 第一行就是 CCNM_E_*，模型据此决定是改参数还是别再试了。
+        doc = self.load("call-outside-workspace")
+        doc["message"]["result"]["content"][0]["text"] = "that path is outside the workspace"
+        self.save("call-outside-workspace", doc)
+        self.assertTrue(any("不匹配" in e for e in self.errors()))
+
+    def test_read_mode_cannot_advertise_a_write_tool(self):
+        # 契约里 read 模式没有 exec_command。这条不是靠约定，是靠 schema 拦住：
+        # 白名单之外的名字在 read 的工具表里直接不合法。
+        doc = self.load("tools-list-read")
+        doc["message"]["result"]["tools"].append({
+            "name": "exec_command",
+            "description": "run something",
+            "inputSchema": {"type": "object"},
+            "annotations": {"readOnlyHint": False, "openWorldHint": True},
+        })
+        self.save("tools-list-read", doc)
+        self.assertTrue(any("tools-list-read" in e for e in self.errors()))
+
+    def test_a_startup_failure_cannot_exit_zero(self):
+        # 起不来却以 0 退出，Host 会以为 server 正常结束了。
+        doc = self.load("start-refused-busy")
+        doc["message"]["exit_code"] = 0
+        self.save("start-refused-busy", doc)
+        self.assertTrue(any("小于最小值 1" in e for e in self.errors()))
+
+    def test_both_contracts_are_checked(self):
+        # 一个 bundle 坏掉不能被另一个的通过掩盖。
+        doc = self.load("initialize-ok")
+        doc["message"]["result"]["serverInfo"]["name"] = "not-ccnm"
+        self.save("initialize-ok", doc)
+        self.assertTrue(any("initialize-ok" in e for e in self.errors()))
+
+
 if __name__ == "__main__":
     unittest.main()

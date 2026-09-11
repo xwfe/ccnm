@@ -1,0 +1,8 @@
+{
+  "$schema_ref": "#/$defs/startup_error",
+  "$note": "workspace 没有 external_mcp，或者根本不存在。两种情况同一条错误、同一段文本：否则错误消息本身就成了探测远端有什么项目的工具。",
+  "message": {
+    "exit_code": 1,
+    "stderr_last_line": "CCNM_E_POLICY: workspace myproject is not available to external MCP"
+  }
+}

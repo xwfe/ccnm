@@ -1,0 +1,8 @@
+{
+  "$schema_ref": "#/$defs/startup_error",
+  "$note": "工作树被另一个 coding session 占着。改用 --mode read 可以连，写不了。",
+  "message": {
+    "exit_code": 1,
+    "stderr_last_line": "CCNM_E_POLICY: workspace write guard is busy; another session still owns this working tree"
+  }
+}

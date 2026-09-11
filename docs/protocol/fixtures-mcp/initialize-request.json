@@ -1,0 +1,17 @@
+{
+  "$schema_ref": "#/$defs/initialize_request",
+  "$note": "Host 发起握手。clientInfo 是对方自己填的字符串，ccnm 不拿它当身份，也不据此换行为。",
+  "message": {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "initialize",
+    "params": {
+      "protocolVersion": "2025-11-25",
+      "capabilities": {},
+      "clientInfo": {
+        "name": "example-mcp-host",
+        "version": "0.0.0"
+      }
+    }
+  }
+}

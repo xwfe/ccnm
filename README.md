@@ -136,6 +136,8 @@ read_output
 
 要写的是一个**编排项目**（决定谁做什么、验收和重试），先看[执行接口交接](docs/orchestrator-handoff.md)：哪份状态归你、哪份归 ccnm，以及一个最小的 `ExecutionBackend` 示例。ccnm 自己不做编排。
 
+如果你的 Claude Code / Codex 已经在本机跑着，只是项目在另一台机器上——那是另一个入口 **Remote Workspace MCP**：把远端项目作为一组绑定 workspace 的 MCP 工具给它用。**契约已定稿，但还没有实现**，命令和配置字段现在都不存在；契约见[协议说明](docs/protocol/README.md)。
+
 ## 接下来做什么
 
 暂时不继续堆功能，优先用真实项目 dogfood 决定后续契约。Git 专用 MCP 工具、后台长进程、Browser provider、Linux Controller 和多 Agent 编排都放到真实需求出现之后再做。

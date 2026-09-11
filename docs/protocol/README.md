@@ -9,6 +9,13 @@
 | [fixtures/](fixtures/) | 成功、拒绝、断线、未知终态、过期结果的样例消息 |
 | [../../clients/python/ccnm_machine_client.py](../../clients/python/ccnm_machine_client.py) | 可以直接抄走的单文件客户端，只用标准库 |
 
+第二套契约是给**已经在跑的外部 Agent** 用的，还没有实现：
+
+| 文件 | 是什么 |
+| --- | --- |
+| [remote-workspace-mcp-v1.md](remote-workspace-mcp-v1.md) | Remote Workspace MCP 契约：`ccnm mcp bridge`、read/coding 权限、七工具与 annotations、生命周期、错误边界。**契约阶段，命令和配置字段都还不存在** |
+| [schema/remote-workspace-mcp-v1.schema.json](schema/remote-workspace-mcp-v1.schema.json) + [fixtures-mcp/](fixtures-mcp/) | 它的消息形状与 21 个样例 |
+
 写编排项目的人还要看[执行接口交接](../orchestrator-handoff.md)：状态归属边界，以及建在这套协议上的最小 `ExecutionBackend` 示例。
 
 **当前状态：草案，有实现。** `ccnm rpc` 已经能说这套协议的 `print` 模式：
@@ -34,7 +41,7 @@ ccnm rpc
 python3 scripts/check_protocol.py
 ```
 
-只用 Python 标准库，不需要装任何东西。它检查 fixture 符合声明的 schema、错误码和说明文档一致、schema 自己没有拼错的关键字。
+只用 Python 标准库，不需要装任何东西。它一次检查两套契约：fixture 符合各自声明的 schema、错误码（机器协议是数字码，Remote MCP 是 `CCNM_E_*` 名字）和说明文档一致、schema 自己没有拼错的关键字。
 
 **它证明的是这几份文件互相自洽，不是 `ccnm rpc` 的行为和它们一致。** 那要靠 `tests/test_blackbox_client.py` 的契约测试（只走字节流）和上面那两次真机闭环。上面 `-32008` 那条就是这个区别的例子：fixture 和说明文档对得上，实现却从不发它。
 

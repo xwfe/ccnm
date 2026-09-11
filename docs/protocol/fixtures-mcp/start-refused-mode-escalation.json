@@ -1,0 +1,8 @@
+{
+  "$schema_ref": "#/$defs/startup_error",
+  "$note": "配置是 read，请求 coding。拒绝启动，不降级——降级会让模型一路调 apply_patch 一路碰壁，最后编一个“已经改好了”。",
+  "message": {
+    "exit_code": 1,
+    "stderr_last_line": "CCNM_E_POLICY: workspace myproject allows external MCP in read mode; coding was requested"
+  }
+}

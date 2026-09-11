@@ -1,0 +1,19 @@
+{
+  "$schema_ref": "#/$defs/initialize_result",
+  "$note": "远端 server 回答握手。instructions 默认只有 ccnm 自己那段（external_instructions = generic）。",
+  "message": {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "result": {
+      "protocolVersion": "2025-11-25",
+      "capabilities": {
+        "tools": {}
+      },
+      "serverInfo": {
+        "name": "ccnm",
+        "version": "0.2.0"
+      },
+      "instructions": "You are working in the remote ccnm workspace \"myproject\". Every path you pass to these tools is relative to that workspace root; there is no way to reach outside it. This session is read-only: there is no tool that changes files or runs commands."
+    }
+  }
+}

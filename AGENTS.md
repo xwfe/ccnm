@@ -19,7 +19,7 @@
 
 只改计划：`python3 scripts/check_plan.py`、相关测试和 `git diff --check`。
 
-改 [公开协议](docs/protocol/README.md)（说明、schema 或 fixture）：另跑 `python3 scripts/check_protocol.py` 和 `python3 -m unittest tests.test_check_protocol -q`。
+改 [公开协议](docs/protocol/README.md)（两套契约的说明、schema 或 fixture）：另跑 `python3 scripts/check_protocol.py` 和 `python3 -m unittest tests.test_check_protocol -q`。[Remote Workspace MCP](docs/protocol/remote-workspace-mcp-v1.md) 还没有实现，改它只动文档与 fixture；但凡文中写"实测"的地方，依据必须是仓库代码或 SDK 源码，不能是记忆。
 
 改 `ccnm rpc` 或[黑盒客户端](clients/python/ccnm_machine_client.py)：另跑 `cargo test -p ccnm-core --lib rpc::`、`cargo test -p ccnm-cli --test rpc`，以及 `cargo build` 之后的 `python3 -m unittest tests.test_blackbox_client -q`。
 

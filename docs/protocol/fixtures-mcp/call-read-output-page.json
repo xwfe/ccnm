@@ -1,0 +1,16 @@
+{
+  "$schema_ref": "#/$defs/call_tool_result_ok",
+  "$note": "分页读保留输出：偏移是字节偏移且稳定，一次最多 32 KiB。output_ref 只在产生它的那个 session 里有意义。",
+  "message": {
+    "jsonrpc": "2.0",
+    "id": 5,
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "r-7f3a stdout bytes 0-4096 of 8213\nrunning 118 tests\n...\n[more: offset 4096]"
+        }
+      ]
+    }
+  }
+}

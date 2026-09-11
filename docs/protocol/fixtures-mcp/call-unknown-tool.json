@@ -1,0 +1,12 @@
+{
+  "$schema_ref": "#/$defs/jsonrpc_error",
+  "$note": "read 模式下 Host 硬调 apply_patch：工具表里没有这个名字，回的是 JSON-RPC 错误（SDK 实测 code -32602，message \"tool not found\"），不是 isError 结果。",
+  "message": {
+    "jsonrpc": "2.0",
+    "id": 10,
+    "error": {
+      "code": -32602,
+      "message": "tool not found"
+    }
+  }
+}

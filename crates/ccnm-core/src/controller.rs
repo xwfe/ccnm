@@ -447,9 +447,14 @@ fn start_session(
             ),
         ));
     }
-    let out = tools
-        .runner
-        .run(&tmux.new_session_cmd(&name, &spec.cwd, &spec.id, &supervisor))?;
+    let conf = write_tmux_conf(session_dir);
+    let out = tools.runner.run(&tmux.new_session_cmd(
+        &name,
+        &spec.cwd,
+        &spec.id,
+        conf.as_deref(),
+        &supervisor,
+    ))?;
     if !out.success() {
         return Err(Error::internal(format!(
             "tmux new-session failed (exit {:?}): {}",
@@ -497,6 +502,22 @@ fn resolve_profile(
     }
     resolved.profile().validate_private_directory()?;
     Ok(Some(resolved.profile().directory().to_path_buf()))
+}
+
+/// Put [`tmux::conf_text`] somewhere tmux can read it at server start.
+///
+/// In the session directory because that is a directory ccnm certainly
+/// owns and certainly exists. tmux reads the file only when it starts the
+/// server, so which session's copy did the starting does not matter, and
+/// removing it with the session breaks nothing.
+///
+/// Cosmetic like [`label_status_bar`]: a session that runs with tmux's
+/// own defaults is worth more than one refused because a file could not
+/// be written.
+fn write_tmux_conf(session_dir: &Path) -> Option<PathBuf> {
+    let path = session_dir.join("tmux.conf");
+    std::fs::write(&path, tmux::conf_text()).ok()?;
+    Some(path)
 }
 
 /// Tell the status bar how to leave without killing Claude.
@@ -1046,6 +1067,19 @@ mod tests {
         let calls = fake.calls();
         assert_eq!(calls.len(), 5);
         assert!(calls[0].display().contains("has-session -t ccnm-xshun"));
+        // The server gets ccnm's config, which is the only moment it can:
+        // tmux reads one when it starts, and this call is the start.
+        assert!(
+            calls[1].display().contains("-f") && calls[1].display().contains("tmux.conf"),
+            "{}",
+            calls[1].display()
+        );
+        assert!(
+            std::fs::read_to_string(dir.join("tmux.conf"))
+                .unwrap()
+                .contains("history-limit"),
+            "the file the command points at has to be there"
+        );
         // The way out is read from this machine's tmux, not assumed: a
         // user who rebound the prefix must not be told the wrong key.
         assert!(
@@ -1059,10 +1093,8 @@ mod tests {
             calls[4].display()
         );
         let new = calls[1].display();
-        assert!(
-            new.contains("-L ccnm new-session -d -s ccnm-xshun"),
-            "{new}"
-        );
+        assert!(new.contains("-L ccnm"), "{new}");
+        assert!(new.contains("new-session -d -s ccnm-xshun"), "{new}");
         assert!(new.contains("-e CCNM_SESSION=0b4c7a1e"), "{new}");
         assert!(
             new.contains("/Users/me/.local/bin/ccnm internal supervise --payload "),

@@ -246,8 +246,41 @@ mv ~/.config/ccnm/config.toml.bak ~/config.toml.bak
 
 **不要**为了这个去开 `allow_unconfined_exec = true`——那是把这个账号的整套 confinement 判定都接受下来，为了一个备份文件不值得。
 
+### 在受管会话里按了 Claude Code 的"后台"，工具全没了
+
+**症状**：会话一直好好的，某一刻屏幕上出现 `Backgrounding after the current tool finishes…`，紧接着每个工具都报：
+
+```text
+Error: No such tool available: mcp__ccnm__read_file. Its MCP server 'ccnm' has disconnected.
+```
+
+而且**连 `Read`/`Bash` 都没有**——受管会话本来就是用 `claude --tools ''` 起的，项目文件只能走 Runtime，MCP 一没就什么都不剩。
+
+**其实是**：Claude Code 的"后台"会把会话 **fork 成第二个进程**，那个进程照抄 ccnm 写的 `mcp.json`，于是**又去 Runtime 起了一个 MCP server**。同一棵工作树只允许一个写者，Runtime 当场拒了：
+
+```text
+CCNM_E_POLICY:
+workspace write guard is busy; another session still owns this working tree
+```
+
+server 退出，Claude Code 对这种情况只显示 `CONNECTION_CLOSED: Connection closed`，**不显示 server 的 stderr**，所以真实理由一个字都不会到你面前。
+
+不是链路断了，也不是闲置超时：原会话的那条 SSH MCP 连接**一直好好的**，fork 出来那个从来就没连上过。
+
+**修**：原会话还在，回去就行。
+
+```bash
+ccnm attach <workspace>
+```
+
+后台那个分身直接关掉——只要原会话还握着锁，它起一个被拒一个。
+
+**别做的事**：不要为了让分身能跑去删锁。那把锁挡住的正是"两个 Claude 同时改同一棵树"。
+
+**怎么不再踩**：受管会话里别用后台，要离开就 detach（状态栏右下角写着按键，默认 `C-b d`），回来用 `ccnm attach`。从 v0.4.0 起，每次 attach 时状态栏会把这句提示一遍。
+
 ### MCP 初始化报 `workspace write guard is busy` 或 `unknown`
 
-busy 表示仍有 writer 持锁——**受管入口和外部 MCP 共用同一把锁**，所以持锁的可能是任一侧；unknown 表示异常退出或 marker 不完整，不能证明旧执行者已经结束。不要循环删锁或按时间强制接管。
+如果 busy 是**你自己那个会话**的分身造成的，看上一条。其余情况：busy 表示仍有 writer 持锁——**受管入口和外部 MCP 共用同一把锁**，所以持锁的可能是任一侧；unknown 表示异常退出或 marker 不完整，不能证明旧执行者已经结束。不要循环删锁或按时间强制接管。
 
 先在 Agent Node 用 `ccnm status <workspace> --agent <instance-id> --session <ccnm-session-id>` 定位会话，再由 Runtime 操作者确认旧 MCP 和子进程。完整人工恢复边界见[支持矩阵](support-matrix.md#runtime-单写-guard)。`doctor`/MCP probe 同样经过写 guard，活动 writer 下诊断被拒绝不等于 SSH 损坏。

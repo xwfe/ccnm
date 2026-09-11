@@ -26,6 +26,26 @@ ccnm attach my-project
 
 SSH 断开、终端关闭或笔记本暂时离线，不等于结束 session。只要 Agent Node 上的 tmux/session 还活着，就可以重新 attach。
 
+### 会话在 tmux 里，所以滚屏和复制跟你平时不一样
+
+交互式会话跑在 Agent Node 的 tmux 里，你的终端只看到一帧画面。**滚上去的内容不在你本地终端的回滚里**，在对面 tmux 的缓冲里——这就是为什么有人只能截图。
+
+ccnm 给自己的 tmux server（`tmux -L ccnm`，跟你自己开的 tmux 完全无关）设了这些，让它像个正常终端：
+
+| 设置 | tmux 默认 | ccnm | 为什么 |
+| --- | --- | --- | --- |
+| `history-limit` | 2000 行 | 50000 | 一次 `cargo test` 就能冲掉 2000 行，冲掉就再也读不到了 |
+| `mouse` | off | on | 滚轮能滚历史；拖选即复制 |
+| `set-clipboard` | external | on | tmux 里选中的东西直接进**你坐的那台机器**的剪贴板（走 OSC 52，iTerm2 / Ghostty / WezTerm 支持，Terminal.app 不支持） |
+
+- 想用终端自己的原生选择（跨折行那种），macOS 上**按住 Option 拖选**，绕过 tmux 的鼠标捕获。
+- 这些值在 tmux server 启动时写入，**之后读一遍你的 `~/.tmux.conf`**——你自己写了什么就以你的为准。
+- 只想临时改回去：`ssh <agent> 'tmux -L ccnm set -g mouse off'`，改到 server 重启为止。
+
+**别在受管会话里用 Claude Code 的"后台"功能**：它会把会话 fork 成第二个进程，第二个进程拿不到 Runtime 工具（单写 guard 会拒），结果是一个什么都干不了的空会话。要离开就 detach，回来用 `ccnm attach`。详见[故障排查](troubleshooting.md#在受管会话里按了-claude-code-的后台工具全没了)。
+
+输出要能随手复制、不想进 tmux 的话，用[非交互 `--print`](#非交互---print)：结果直接打在你本机终端里。
+
 ## 选择 Agent Instance
 
 使用 `agent = { node = "worker", instance = "claude-main" }` 的 workspace 会默认选择该 instance。同一个 Agent Node 上可显式覆盖：

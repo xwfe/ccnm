@@ -223,6 +223,7 @@ sessions/<ccnm-session-id>/
 ├── stdout           官方 CLI 的 stdout（print 模式下是 JSON 结果）
 ├── stderr           官方 CLI 的 stderr
 ├── supervisor.log   supervisor 自己的诊断
+├── tmux.conf        ccnm 自己那个 tmux server 启动时读的配置（见下）
 └── exit             最后写的：它是怎么结束的
 workspaces/<name>/   官方 CLI 的工作目录
 controller.sock      controller 的监听 socket
@@ -237,6 +238,8 @@ rpc/sessions/<handle>.json           machine API 的会话记录
 rpc/keys/<workspace>/<start_key>     启动幂等键
 ssh/                                 ControlPath socket
 ```
+
+`tmux.conf` 写在会话目录里，是因为那是 ccnm 一定拥有、一定存在的目录。tmux **只在启动 server 的那一刻**读它，所以哪个会话的那份起的作用不重要，跟着会话一起被删也不影响任何东西。里面设了什么、怎么改回去，见[使用说明](usage.md#会话在-tmux-里所以滚屏和复制跟你平时不一样)。
 
 **没有自动清理，也没有保留期。** 会话记录一直留着，除非你删。这是刻意的：一个已经结束的会话，它的输出往往比它本身有价值。
 

@@ -109,6 +109,56 @@ pub fn missing() -> Error {
     )
 }
 
+/// The config ccnm's own tmux server starts with.
+///
+/// **Why a file.** tmux reads options when the server starts, and a
+/// server with no session does not stay up: `set-option` before
+/// `new-session` lands in a server that has already exited, and after it
+/// the pane exists with the old `history-limit` — that option only
+/// reaches panes made later. Measured on tmux 3.7c. So the values have to
+/// arrive as `-f` on the `new-session` that starts the server.
+///
+/// **Why ccnm sets them at all.** `-L ccnm` is a server nobody else uses,
+/// so none of this touches the tmux someone runs themselves, and what
+/// tmux ships makes a managed session hard to use:
+///
+/// - `history-limit` is 2000 lines. One test run prints more than that,
+///   and what falls off a tmux pane is not in the terminal's own
+///   scrollback either, so it cannot be read back at all.
+/// - `mouse` is off, so the wheel does nothing and the only way back
+///   through the history is copy-mode keys that someone who never asked
+///   for tmux will not guess. Native selection is still there under
+///   Option on macOS.
+/// - `set-clipboard` is `external`: tmux forwards what the program inside
+///   copies but never what tmux itself copies, so selecting in the pane
+///   puts nothing on the clipboard of the machine you are sitting at.
+///
+/// **Why the hook.** It is the only warning anyone can see. `ccnm run`
+/// prints to a terminal tmux takes over a moment later, and the status
+/// bar already carries the one thing it has room for. Backgrounding a
+/// managed session in Claude Code forks it, the fork opens a second MCP
+/// server for the same workspace, the Runtime's write guard refuses it,
+/// and the fork is left with no tools at all.
+///
+/// The person's own file is read last, so anything they set wins.
+pub fn conf_text() -> String {
+    format!(
+        "# ccnm's own tmux server. Written by ccnm at every session start;\n\
+         # put your own settings in ~/.tmux.conf, which is read last and wins.\n\
+         set -g history-limit 50000\n\
+         set -g mouse on\n\
+         set -g display-time 4000\n\
+         set -s set-clipboard on\n\
+         set-hook -g client-attached 'display-message \"{ATTACH_NOTICE}\"'\n\
+         source-file -q ~/.tmux.conf\n"
+    )
+}
+
+/// Shown for a few seconds every time a terminal attaches. One line,
+/// because it shares the status line with tmux's own messages.
+const ATTACH_NOTICE: &str =
+    "ccnm: do not background this session; only this one has the Runtime tools";
+
 /// A located tmux binary. Every command goes to ccnm's own socket.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Tmux {
@@ -147,9 +197,23 @@ impl Tmux {
     /// The id rides in the session's own environment so that anything
     /// later — status, a second `ccnm run` — can get from a live tmux
     /// session back to its session directory without scanning for it.
-    pub fn new_session_cmd(&self, name: &str, cwd: &Path, ccnm_session: &str, inner: &Cmd) -> Cmd {
-        let mut cmd = self
-            .base()
+    ///
+    /// `conf` is [`conf_text`] on disk. It has to arrive here, before the
+    /// command word, because this is the call that starts the server and
+    /// tmux reads a config file only then.
+    pub fn new_session_cmd(
+        &self,
+        name: &str,
+        cwd: &Path,
+        ccnm_session: &str,
+        conf: Option<&Path>,
+        inner: &Cmd,
+    ) -> Cmd {
+        let mut cmd = self.base();
+        if let Some(conf) = conf {
+            cmd = cmd.arg("-f").arg(conf);
+        }
+        cmd = cmd
             .args(["new-session", "-d", "-s", name])
             .arg("-c")
             .arg(cwd)
@@ -321,9 +385,21 @@ mod tests {
         let inner = Cmd::new("/Users/me/.local/bin/ccnm")
             .args(["internal", "supervise", "--payload", "eyJ4IjoxfQ"])
             .env("CCNM_CONFIG", "/Users/me/.config/ccnm/config.toml");
-        let cmd = tmux.new_session_cmd("ccnm-xshun", Path::new("/tmp/ws"), "abc-123", &inner);
+        let cmd = tmux.new_session_cmd(
+            "ccnm-xshun",
+            Path::new("/tmp/ws"),
+            "abc-123",
+            Some(Path::new("/tmp/sess/tmux.conf")),
+            &inner,
+        );
         let line = cmd.display();
         assert!(line.contains("-L ccnm"), "{line}");
+        // Before the command word, or tmux treats it as an argument to
+        // new-session and the server starts with its own defaults.
+        assert!(
+            line.contains("-f /tmp/sess/tmux.conf new-session"),
+            "{line}"
+        );
         assert!(line.contains("new-session -d -s ccnm-xshun"), "{line}");
         assert!(line.contains("-c /tmp/ws"), "{line}");
         assert!(line.contains("-e CCNM_SESSION=abc-123"), "{line}");
@@ -337,6 +413,27 @@ mod tests {
             "{line}"
         );
         assert!(tmux.attach_cmd("ccnm-xshun").display().contains("-L ccnm"));
+    }
+
+    /// The values are the point, and so is the last line: someone who has
+    /// an opinion about tmux keeps it.
+    #[test]
+    fn the_server_config_raises_what_tmux_ships_and_still_lets_the_person_win() {
+        let text = conf_text();
+        assert!(text.contains("set -g history-limit 50000"), "{text}");
+        assert!(text.contains("set -g mouse on"), "{text}");
+        assert!(text.contains("set -s set-clipboard on"), "{text}");
+        assert!(text.contains("client-attached"), "{text}");
+        assert!(text.contains("do not background this session"), "{text}");
+        assert_eq!(
+            text.lines().last(),
+            Some("source-file -q ~/.tmux.conf"),
+            "the person's own file is read last, or ccnm overrides them"
+        );
+        // The notice shares the status line with tmux's own messages, and
+        // a status line is one line wide.
+        assert!(ATTACH_NOTICE.len() < 80, "{}", ATTACH_NOTICE.len());
+        assert!(!ATTACH_NOTICE.contains('"'), "quoting would end the hook");
     }
 
     #[test]

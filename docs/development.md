@@ -226,35 +226,81 @@ crate，38 个大约 15 分钟；新开的 `git worktree` 里 `target/` 是空�
 
 ### 打包
 
+一个版本出**两个下载**，因为 ccnm 的两半跑在不同的地方。
+
+在 macOS 上：
+
 ```bash
-scripts/dist.sh
+bash scripts/dist.sh
 ```
 
 产出 `dist/ccnm-<version>-macos-universal.tar.gz`（+ `.sha256`）。是 arm64 + x86_64 的通用
 二进制：16.9 MB 二进制，打包后 6.1 MB。做成通用的原因是两台机器可能一台 M 系列一台 Intel，
 让人自己挑架构下载迟早出事。
 
-版本号取自二进制自己（`ccnm --version`），不是从 Cargo.toml 抄的——文件名不可能跟里面的东西不一致。
+在 x86_64 的 Linux 上：
+
+```bash
+bash scripts/dist-linux.sh
+```
+
+产出 `dist/ccnm-<version>-linux-x86_64.tar.gz`（+ `.sha256`）。**这一个只是 Runtime 那一半**
+（`internal mcp-serve` 和七个工具）。Agent 那一半是 launchd LaunchAgent，在 Linux 上根本不跑；
+发这个包不等于说它跑。
+
+它是**本机构建，不交叉编译**：链接别人家的 glibc 要别人家的工具链，而一个本机跑不起来的
+二进制就是没人验过的二进制——release 里那一步 `ccnm --version` 正是在验它。
+
+它还会把 **glibc 下限从二进制里量出来**写进 `dist/glibc-floor.txt`（`objdump -T` 里最高的那个
+`GLIBC_x.y` 符号版本），release notes 引用的就是这个数。不量而是照着构建机的发行版猜，用户会在
+一台"看起来支持"的机器上撞到 `version GLIBC_2.39 not found`。
+
+两个脚本的版本号都取自二进制自己（`ccnm --version`），不是从 Cargo.toml 抄的——文件名不可能跟
+里面的东西不一致。
 
 **tar 保留执行位**，解出来就是 `rwxr-xr-x`，不像 `scp`（那个坑见上面 `permission denied`
 那一节）。所以走 release 下载装的人不需要再 `chmod +x`。
+
+**这两个脚本在 CI 里都写成 `bash scripts/…`**，不是直接 `scripts/…`：它们的执行位不保证在
+（`dist.sh` 就在一次整理提交里被去掉过）。一个因为 `Permission denied` 失败的 release，是在 tag
+已经推出去、撤不回来之后才失败的。
 
 ### GitHub 上的自动构建和发版
 
 `.github/workflows/` 里两个：
 
 ```text
-ci.yml       每次 push / PR：fmt + clippy + 全部测试 + 跑一下二进制
-release.yml  推 tag（v*）：过一遍同样的门禁 → dist.sh → 校验 tag 和版本号一致 → 建 release
+ci.yml       每次 push / PR：
+             test           (macos-latest)  fmt + clippy + 全部测试 + 跑一下二进制
+             linux-runtime  (ubuntu-24.04)  clippy + 全部测试 + 构建 Linux 发布物
+release.yml  推 tag（v*）：
+             macos    门禁 → dist.sh       → 校验 tag 和版本号一致 → 上传
+             linux    门禁 → dist-linux.sh → 校验 tag 和版本号一致 → 上传
+             publish  两个都绿之后，用两份产物建一个 release
 ```
 
-**两条都真跑过了（2026-09-05 第一次 push）**：`main` 上的 ci 绿，`v0.1.0` 和 `v0.2.0` 各触发
+**Linux job 那一栏绿了，意思是"代码在 Linux 上编得过、测试过得去"，不是"Agent 那一半支持
+Linux"。** 别因为这个 job 绿了就去改支持矩阵。它存在的理由很具体：P12 在真实 Debian 13 上第一次
+跑门禁就红了两条，其中一条是真缺陷（超时只杀进程组的 leader，因为 dash 会 fork 而 bash 会 exec），
+在 macOS 上五次五绿、在 Linux 上五次五红。没有这个 job，下一条这样的东西还是要等到有人去真机上
+跑才发现。
+
+**runner 上要 `ubuntu-24.04`，不是 `ubuntu-latest`**：构建机的 glibc 就是下载物的运行下限，这个
+数不能因为 GitHub 把标签滚到下一个 LTS 就悄悄变了。CI 和 release 用同一个镜像，否则门禁跑的地方
+和产物出的地方不是一台机器，门禁就管不着产物。
+
+**macOS 那两条真跑过（2026-09-05 第一次 push）**：`main` 上的 ci 绿，`v0.1.0` 和 `v0.2.0` 各触发
 一次 release，都绿，两个 release 建出来了、带 tar 和 sha256。下载回来验过：sha256 对得上、
 `lipo -info` 是 `x86_64 arm64`、解出来 `rwxr-xr-x`、`ccnm --version` 报的号跟 tag 一致。
-在此之前这两个 workflow 只在本机逐步验过，没在 runner 上跑过。
 
-**推 tag 就是发版，撤不回来**——GitHub release 建出来了，别人可能已经下过。所以推之前
-本机先把门禁和 `scripts/dist.sh` 跑一遍。
+**Linux 那两条还没在 runner 上跑过**：`scripts/dist-linux.sh` 和 Linux 门禁是在一台真实
+Debian 13 / x86_64 上验的（见[支持矩阵](support-matrix.md)），workflow 本身要等下一次 push 才
+有 runner 上的证据。
+
+**推 tag 就是发版，撤不回来**——GitHub release 建出来了，别人可能已经下过。所以推之前先把门禁
+和打包在本机跑一遍：macOS 上 `bash scripts/dist.sh`，Linux 那半要么找一台 x86_64 的 Linux 跑
+`bash scripts/dist-linux.sh`，要么接受"第一次在 runner 上跑"这个风险——它失败的时候 tag 已经推
+出去了。
 
 发一个版本：
 
@@ -269,11 +315,12 @@ git push origin v0.2.1
 
 几件要知道的：
 
-- **只用 GitHub 官方 action**（`actions/checkout`、`actions/cache`）。第三方 action 是拿着
+- **只用 GitHub 官方 action**（`actions/checkout`、`actions/cache`、`actions/upload-artifact`、
+  `actions/download-artifact`——后两个是给两个平台的产物在 job 之间传递用的）。第三方 action 是拿着
   token 在你仓库里跑的代码，对一个整篇都在小心"什么东西在哪台机器上跑"的项目来说，
   手写几行缓存比引入一个信任关系便宜。
-- **runner 上要 `brew install ripgrep tmux`**，否则 search 那组测试会因为缺依赖而不是因为
-  ccnm 有问题而失败。
+- **runner 上要装 ripgrep 和 tmux**（macOS 用 `brew install`，Linux 用
+  `sudo apt-get install -y`），否则 search 那组测试会因为缺依赖而不是因为 ccnm 有问题而失败。
 - **runner 编出来的二进制比本机的大一点**（18.4 MB vs 16.9 MB，打包后 6.2 vs 6.1 MB）。
   toolchain 版本不同而已，不是哪边出了问题；也因此**两边的 sha256 对不上是正常的**，
   校验和只用来验"下载到的那个文件没坏"，不是用来比对本机构建的。

@@ -1,9 +1,16 @@
 # Format, lint and the whole test suite, on every push and pull request.
 #
-# macOS only, and not because nobody got around to Linux: the work
-# controller is a launchd LaunchAgent and the session context checks ask
-# `launchctl` and `security` directly. A green Linux job would be testing
-# something this program cannot run on.
+# Two jobs, because ccnm has two halves that do not run in the same
+# places. The **Agent** half (Controller, sessions) is a launchd
+# LaunchAgent that asks `launchctl` and `security` directly -- macOS only,
+# and that is a property of the program, not a gap in the CI. The
+# **Runtime** half (`internal mcp-serve` and the seven tools) runs on
+# Linux too, and P12 proved it on a real Debian 13 / x86_64 machine.
+#
+# So the Linux job is a Runtime gate. A green one means the code builds
+# and its tests pass on Linux; it does **not** mean the Agent half is
+# supported there, and nothing in docs/support-matrix.md should start
+# saying so because this job went green.
 #
 # Only first-party actions are used (actions/checkout, actions/cache).
 # Every third-party action is a supply-chain dependency that runs with a
@@ -72,3 +79,50 @@ jobs:
           cargo build --release
           ./target/release/ccnm --version
           ./target/release/ccnm doctor --config tests/fixtures/config-valid.toml || true
+
+  linux-runtime:
+    # Pinned rather than `ubuntu-latest`, and the same image the release
+    # artifact is built on: a gate that runs somewhere other than where
+    # the download is produced is not a gate on the download.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy
+          rustup default stable
+          rustc --version && cargo --version
+
+      - name: Install what the tools shell out to
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ripgrep tmux
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-
+
+      # No `cargo fmt` here -- formatting is identical on every platform
+      # and the macOS job already checks it. clippy and the tests are not
+      # identical: the defect P12 found (a timeout that killed only the
+      # process leader, because dash forks where bash execs) was green on
+      # macOS and 10 seconds late on Linux, five times out of five.
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace
+
+      # The Linux download is built by this script; a release is a bad
+      # place to find out it does not run.
+      - name: The release artifact builds and reports its version
+        run: |
+          bash scripts/dist-linux.sh
+          dist/ccnm --version

@@ -152,6 +152,17 @@ sudo chmod 700 /Users/ccrun
 dscl . -read /Groups/admin GroupMembership
 ```
 
+## Linux 创建 Runtime Service Account
+
+用发行版自己的命令，原则和上面一样：**独立 UID、独立主组、不进 sudo/wheel/admin/adm/docker/staff、home 0700**。P12 在 Debian 13 上实际用的是一个可重跑、可撤销的脚本：[scripts/p12-provision-linux-runtime.sh](../scripts/p12-provision-linux-runtime.sh)（要 root；清单先于变更写入，`--revert` 只按清单撤销，不替既有环境做清理）。工具链装在这个身份自己的 home 里，见[运维手册](operations.md#runtime-node-的前置条件与项目工具链)。
+
+**`docker` 组要特别留意**：进了它等于 root，因为能挂载宿主任意路径进容器。检查一眼：
+
+```bash
+id ccrun            # groups 里只应该有它自己的组
+test -w /var/run/docker.sock && echo "可写 —— 这个身份等于 root"
+```
+
 ## SSH：只放公钥，不放私钥
 
 Agent Node 需要以 `ccrun` 身份进入 Runtime Node。

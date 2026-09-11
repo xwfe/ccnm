@@ -20,9 +20,18 @@
 
 平台要分两件事说，因为 P12 之后它们不再是同一个答案。
 
-**Agent 那一侧只有 macOS。** Controller 是 launchd LaunchAgent，会话上下文检查直接问 `launchctl` 和 `security`；Linux Controller、Windows 和其他官方 CLI 版本均未验收。CI 也只跑 macOS，这不是"还没顾上 Linux"：一个绿色的 Linux job 测的会是这个程序在那儿跑不了的东西。
+**Agent 那一侧只有 macOS。** Controller 是 launchd LaunchAgent，会话上下文检查直接问 `launchctl` 和 `security`；Linux Controller、Windows 和其他官方 CLI 版本均未验收。CI 有一个 Linux job，但它是 **Runtime 门禁**：绿的意思是代码在 Linux 上编得过、测试过得去，不是说 Agent 那一半在那儿能跑。
 
-**Runtime 那一侧（`internal mcp-serve` 与七工具）在 Debian 13 / x86_64 上验过一次**，作为 Remote Workspace MCP 的 dogfood（[记录](research/p12-real-project-2026-09-11.md)）：`cargo fmt`、严格 clippy 与全套测试在那台机器上 676 passed / 0 failed，与 macOS 同数。**那一次是从两个红开始的**，两个都真修了：`SystemRunner::run` 的超时只杀 leader（macOS 因为 bash 会 exec 而一直看不见），以及一个测试助手用了 BSD 语义的 `date -r`。Linux 上的 Managed 入口（Controller/session）仍未验收，Runtime 侧也只验过这一种发行版和架构。
+**Runtime 那一侧（`internal mcp-serve` 与七工具）在 Debian 13 / x86_64 上验过一次**，作为 Remote Workspace MCP 的 dogfood（[记录](research/p12-real-project-2026-09-11.md)）：`cargo fmt`、严格 clippy 与全套测试在那台机器上 676 passed / 0 failed，与 macOS 同数。**那一次是从两个红开始的**，两个都真修了：`SystemRunner::run` 的超时只杀 leader（macOS 因为 bash 会 exec 而一直看不见），以及一个测试助手用了 BSD 语义的 `date -r`。Linux 上的 Managed 入口（Controller/session）仍未验收，Runtime 侧也只验过这一种发行版和架构。发布前收口那一轮在同一台机器上按当时的 HEAD 又跑了一遍（历史真机记录不替代当前 build）：严格 clippy 干净、**680 passed / 0 failed**，与同一份源码在 macOS 上的数一样。
+
+**发布物也是两个，对应上面这两件事。** 一个版本出两个下载：
+
+| 下载 | 装在哪 | 是什么 |
+| --- | --- | --- |
+| `ccnm-<版本>-macos-universal.tar.gz` | Agent Node 或 Runtime Node | arm64 + x86_64 通用二进制，两个角色都能跑 |
+| `ccnm-<版本>-linux-x86_64.tar.gz` | **只能是 Runtime Node** | 只有 Runtime 那一半有证据；Agent 那一半是 launchd LaunchAgent，在 Linux 上不跑 |
+
+Linux 那个在 `ubuntu-24.04` 上本机构建，**glibc 下限是从二进制里量出来的**（`objdump -T` 里最高的 `GLIBC_x.y`），写在 release notes 里；Debian 13 的 glibc 是 2.41。**arm64 Linux 没有发布物**，因为没有证据。Linux 侧的 CI 门禁（clippy + 全套测试 + 构建发布物）和 macOS 一样每次 push 都跑，但那个 job 绿只说明代码在 Linux 上编得过、测试过得去，**不说明 Agent 那一半支持 Linux**。见[开发与发布](development.md)。
 
 **Runtime Node 的前置条件**（Managed 与 Remote MCP 两个入口都要）：`git`、**`ripgrep`**（`search_text` 调 `rg`，没有它七工具就少一个），加上项目自己需要的工具链。装什么、谁维护，见[运维手册](operations.md#runtime-node-的前置条件与项目工具链)。
 

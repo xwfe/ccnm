@@ -2,13 +2,22 @@
 #
 #   git tag -a v0.1.0 -m "…" && git push origin v0.1.0
 #
-# What comes out is one universal macOS binary in a tarball, its sha256,
-# and a GitHub release. The whole gate runs first: a tag is not a reason
-# to skip it, it is the reason to run it.
+# What comes out is two downloads -- one universal macOS binary and one
+# x86_64 Linux binary -- each in a tarball with its sha256, plus a GitHub
+# release. The whole gate runs first, on both platforms: a tag is not a
+# reason to skip it, it is the reason to run it.
+#
+# Why two, and what the Linux one is NOT: ccnm has two halves. The Agent
+# half (Controller, sessions) is a launchd LaunchAgent and is macOS only.
+# The Runtime half (`internal mcp-serve` and the seven tools) runs on
+# Linux too, and P12 proved it on a real Debian 13 / x86_64 machine. So
+# the Linux download is a **Runtime** binary. Publishing it is not a claim
+# that the Agent half runs there -- see docs/support-matrix.md.
 #
 # The tag has to match the version in the binary. A `v0.1.1` tag on a tree
 # that still says 0.1.0 would produce a download whose name lies about its
-# contents, and that is the kind of thing nobody notices for months.
+# contents, and that is the kind of thing nobody notices for months. Each
+# build job checks its own binary, because only that runner can run it.
 name: release
 
 on:
@@ -23,7 +32,7 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
-  release:
+  macos:
     # macos-latest is arm64; the x86_64 half of the universal binary is
     # cross-compiled from it, which is what scripts/dist.sh does locally
     # too.
@@ -46,8 +55,12 @@ jobs:
           cargo clippy --workspace --all-targets -- -D warnings
           cargo test --workspace
 
+      # `bash scripts/…` rather than `scripts/…`: the executable bit on
+      # these two is not guaranteed (it was dropped once in a housekeeping
+      # commit, and a release that fails on `Permission denied` fails
+      # after the tag is already public and cannot be taken back).
       - name: Build the universal binary
-        run: scripts/dist.sh
+        run: bash scripts/dist.sh
 
       - name: The tag and the binary must agree
         run: |
@@ -60,17 +73,101 @@ jobs:
           fi
           echo "$GITHUB_REF_NAME == ccnm $built"
 
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+          if-no-files-found: error
+
+  linux:
+    # Pinned, not `ubuntu-latest`: the runner's glibc is the floor of what
+    # the download will start on, and that number must not move because
+    # GitHub rolled the label forward.
+    runs-on: ubuntu-24.04
+    outputs:
+      glibc: ${{ steps.build.outputs.glibc }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy
+          rustup default stable
+
+      - name: Install what the tools shell out to
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ripgrep tmux
+
+      # No `cargo fmt` here: formatting is the same on every platform and
+      # the macOS job already ran it. clippy and the tests are not -- the
+      # one defect P12 found on Linux (a timeout that only killed the
+      # process leader) was invisible on macOS, which is the whole reason
+      # this job exists.
+      - name: Gate
+        run: |
+          cargo clippy --workspace --all-targets -- -D warnings
+          cargo test --workspace
+
+      - name: Build the Linux Runtime binary
+        id: build
+        run: |
+          bash scripts/dist-linux.sh
+          echo "glibc=$(cat dist/glibc-floor.txt)" >> "$GITHUB_OUTPUT"
+
+      - name: The tag and the binary must agree
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          built=$(dist/ccnm --version | awk '{print $2}')
+          if [ "$tag" != "$built" ]; then
+            echo "tag $GITHUB_REF_NAME says $tag, the binary says $built" >&2
+            echo "bump version in Cargo.toml, or tag the right commit" >&2
+            exit 1
+          fi
+          echo "$GITHUB_REF_NAME == ccnm $built"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+          if-no-files-found: error
+
+  publish:
+    # Only after both gates are green. One release, two downloads: a
+    # release that appears while the other platform is still building
+    # would be a release somebody downloads half of.
+    needs: [macos, linux]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: downloads
+
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
+          GLIBC: ${{ needs.linux.outputs.glibc }}
         run: |
+          ls -l downloads/macos downloads/linux
           # printf rather than a heredoc: a heredoc terminator indented to
           # match the YAML never terminates, and the failure is baffling.
           printf '%s\n' \
-            'macOS universal binary (arm64 + x86_64). Both machines need the same build.' \
+            'Two downloads, for the two halves of ccnm.' \
+            '' \
+            '* `macos-universal` — arm64 + x86_64. This is the one an **Agent Node**' \
+            '  needs, and it also works as a Runtime.' \
+            "* \`linux-x86_64\` — the **Runtime** half only (\`internal mcp-serve\` and the" \
+            '  seven tools). The Agent half is a launchd LaunchAgent and does not run on' \
+            "  Linux. Needs glibc >= $GLIBC; Debian 13 has 2.41." \
+            '' \
+            'Both machines need the same ccnm version.' \
             '' \
             '```' \
-            'tar -xzf ccnm-*-macos-universal.tar.gz' \
+            'tar -xzf ccnm-*.tar.gz' \
             'mv ccnm ~/.local/bin/ccnm.new && mv ~/.local/bin/ccnm.new ~/.local/bin/ccnm' \
             '```' \
             '' \
@@ -84,7 +181,8 @@ jobs:
             '' \
             'Setup, the doctor table and troubleshooting: README.md' > notes.md
           gh release create "$GITHUB_REF_NAME" \
-            dist/*.tar.gz dist/*.sha256 \
+            downloads/macos/* downloads/linux/* \
+            --repo "$GITHUB_REPOSITORY" \
             --title "ccnm $GITHUB_REF_NAME" \
             --generate-notes \
             --notes "$(cat notes.md)"

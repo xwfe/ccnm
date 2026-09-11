@@ -15,6 +15,14 @@
 //!          has explicitly said it accepts an unconfined runtime
 //! ```
 //!
+//! There are two such switches, and they are deliberately not one:
+//! `allow_unconfined_exec` accepts an account with more OS access than it
+//! should have, and `allow_agent_credentials_on_runtime` accepts one that
+//! can read the agent's own login. The second is the thing this program
+//! exists to prevent, so it is never implied -- it has to be written down
+//! by itself, on the machine taking the risk, and it is said out loud once
+//! and shown by `ccnm doctor` for as long as it is set.
+//!
 //! Every check is read-only and local. None of them makes the machine
 //! safer; they make its state legible, and they stop a real project being
 //! wired up to an account that can read the user's SSH key.
@@ -68,12 +76,40 @@ pub struct Finding {
 }
 
 impl Finding {
+    /// Findings no switch in any config waives, whatever it says.
+    ///
+    /// An unknown execution identity means nobody can say what was
+    /// accepted or on whose behalf. Inherited authentication environment
+    /// is worse than a credential sitting on disk: it is handed to every
+    /// child process, so a command does not even have to go looking. Both
+    /// also have ordinary fixes, which is the other half of why neither is
+    /// something a config file gets to take on your behalf.
     pub fn non_waivable(&self) -> bool {
-        self.check == "No authentication environment"
-            || self.check == "Runtime identity known"
-            || crate::provider::AgentProvider::ALL
-                .iter()
-                .any(|p| self.check == format!("No {} credential", p.credentials().agent_name))
+        self.check == "No authentication environment" || self.check == "Runtime identity known"
+    }
+
+    /// "This identity can reach a known Agent login."
+    ///
+    /// Waivable, but only by the switch that names it — see
+    /// [`Accepted::agent_credentials`] and the field it comes from,
+    /// `allow_agent_credentials_on_runtime`.
+    pub fn is_agent_credential(&self) -> bool {
+        crate::provider::AgentProvider::ALL
+            .iter()
+            .any(|p| self.check == format!("No {} credential", p.credentials().agent_name))
+    }
+
+    /// Has this workspace accepted *this* finding? Confinement findings
+    /// are not decided here — they are the `confined() || unconfined_exec`
+    /// half of [`Audit::exec_allowed`].
+    fn waived_by(&self, accepted: Accepted) -> bool {
+        if self.non_waivable() {
+            return false;
+        }
+        if self.is_agent_credential() {
+            return accepted.agent_credentials;
+        }
+        true
     }
     fn ok(check: &str, detail: impl Into<String>) -> Finding {
         Finding {
@@ -103,6 +139,94 @@ impl Finding {
     }
 }
 
+/// What one workspace's own config has accepted, as the **Runtime** reads
+/// it. Never what a caller asked for: the machine taking the risk decides.
+///
+/// Two switches rather than one, because they are two different
+/// admissions. "This account is not confined" says the model's commands
+/// have more OS access than they should. "This account can reach my agent
+/// login" says a prompt is enough to read it. Neither implies the other,
+/// and a workspace in the second situation needs both set before anything
+/// runs.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Accepted {
+    /// `allow_unconfined_exec`
+    pub unconfined_exec: bool,
+    /// `allow_agent_credentials_on_runtime`
+    pub agent_credentials: bool,
+}
+
+impl Accepted {
+    /// The default posture: nothing waived.
+    pub const NOTHING: Self = Self {
+        unconfined_exec: false,
+        agent_credentials: false,
+    };
+
+    /// Only the unconfined-exec switch, which is what most callers and
+    /// every pre-existing test mean.
+    pub fn unconfined(unconfined_exec: bool) -> Self {
+        Self {
+            unconfined_exec,
+            agent_credentials: false,
+        }
+    }
+
+    /// Is anything waived at all? Used to decide whether a session has to
+    /// carry a warning with its results.
+    pub fn any(&self) -> bool {
+        self.unconfined_exec || self.agent_credentials
+    }
+}
+
+/// Say once, out loud, what a workspace has accepted -- or return `None`
+/// because there is nothing to say or it has already been said.
+///
+/// **Once, not every time.** A warning on every command is a warning
+/// people stop reading, and `ccnm doctor` keeps the row for as long as the
+/// switch is set, so nothing is hidden by staying quiet afterwards. The
+/// marker sits beside the write guards in the state directory, so "once"
+/// means once per workspace on each machine you drive it from.
+///
+/// Turning the switch back off removes the marker, so deciding this again
+/// later is announced again. It is the decision that gets the warning, not
+/// the session.
+///
+/// A state directory that cannot be written is not an error: the warning
+/// is printed and simply may be printed again.
+pub fn warn_accepted_once(state_dir: &Path, workspace: &str, accepted: Accepted) -> Option<String> {
+    let marker = state_dir
+        .join("accepted-risks")
+        .join(format!("{workspace}.agent-credentials"));
+    if !accepted.agent_credentials {
+        let _ = std::fs::remove_file(&marker);
+        return None;
+    }
+    if marker.is_file() {
+        return None;
+    }
+    if let Some(parent) = marker.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(&marker, b"said\n");
+    Some(format!(
+        "!! ccnm: workspace \"{workspace}\" has allow_agent_credentials_on_runtime set.\n\
+         \n\
+         The account that runs this workspace's commands on the Runtime Node can\n\
+         read a known Agent login on that machine. So can every command the model\n\
+         runs -- and a prompt is all it takes to make it run one, including a\n\
+         prompt that arrives in a file it was asked to read.\n\
+         \n\
+         That separation is the one thing ccnm otherwise refuses to bend. This\n\
+         workspace has accepted losing it. Nothing else is standing in the way.\n\
+         \n\
+         To take it back: remove allow_agent_credentials_on_runtime from\n\
+         [workspaces.{workspace}] in the Runtime Node's config.toml.\n\
+         \n\
+         Said once. `ccnm doctor {workspace}` keeps showing it."
+    ))
+}
+
 /// The runtime account, as it is.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Audit {
@@ -112,14 +236,14 @@ pub struct Audit {
 }
 
 impl Audit {
-    pub fn agent_boundary_clear(&self) -> bool {
+    pub fn agent_boundary_clear(&self, accepted: Accepted) -> bool {
         !self
             .findings
             .iter()
-            .any(|f| f.severity == Severity::Fail && f.non_waivable())
+            .any(|f| f.severity == Severity::Fail && !f.waived_by(accepted))
     }
-    pub fn exec_allowed(&self, accepted: bool) -> bool {
-        self.agent_boundary_clear() && (self.confined() || accepted)
+    pub fn exec_allowed(&self, accepted: Accepted) -> bool {
+        self.agent_boundary_clear(accepted) && (self.confined() || accepted.unconfined_exec)
     }
     /// Is there anything that should stop a real project being run here?
     pub fn confined(&self) -> bool {
@@ -134,7 +258,7 @@ impl Audit {
 
     /// One line per problem, with the fix, for a refusal a person can act
     /// on without reading the source.
-    pub fn refusal(&self) -> String {
+    pub fn refusal(&self, accepted: Accepted) -> String {
         let mut text = format!(
             "the runtime is running as {} and is not confined, so exec_command is refused:",
             self.user
@@ -145,8 +269,18 @@ impl Audit {
                 text.push_str(&format!("\n    fix: {fix}"));
             }
         }
-        if !self.agent_boundary_clear() {
-            text.push_str("\nRuntime initialization is also refused: allow_unconfined_exec cannot waive unknown identity or Agent credential isolation.");
+        if !self.agent_boundary_clear(accepted) {
+            // Two different refusals, and saying the wrong one sends
+            // somebody looking for a switch that does not exist.
+            if self.failures().any(|f| f.non_waivable()) {
+                text.push_str(
+                    "\nRuntime initialization is also refused, and no workspace switch waives this: an unknown execution identity, or authentication inherited from the environment.",
+                );
+            } else {
+                text.push_str(
+                    "\nRuntime initialization is also refused: this identity can reach a known Agent login. To accept that for one workspace -- every command the model runs could then read it -- set allow_agent_credentials_on_runtime = true on it in config.toml.",
+                );
+            }
         }
         text.push_str(
             "\nSee docs/production-safety.md. To accept an unconfined runtime for one workspace anyway, set allow_unconfined_exec = true on it in config.toml.",
@@ -804,7 +938,11 @@ mod tests {
         runner.push(Output::exited(1, ""));
         let audit = audit(Some("ccrun"), &home, &runner);
         assert_eq!(audit.user, "bing");
-        assert!(audit.refusal().contains("bing"), "{}", audit.refusal());
+        assert!(
+            audit.refusal(Accepted::unconfined(true)).contains("bing"),
+            "{}",
+            audit.refusal(Accepted::unconfined(true))
+        );
         let finding = find(&audit, "Runtime user");
         assert!(finding.detail.contains("bing"), "{finding:?}");
         assert!(finding.detail.contains("ccrun"), "{finding:?}");
@@ -853,6 +991,115 @@ mod tests {
         assert!(finding.detail.contains("credential"), "{finding:?}");
     }
 
+    /// The escape hatch, and the shape of it.
+    ///
+    /// Somebody whose projects and whose agent login live in the same home
+    /// has nothing to separate, and ccnm refusing to start at all leaves
+    /// them with no way to use it. So there is a switch. What matters is
+    /// that it is *this* switch: `allow_unconfined_exec` still does not
+    /// open it, because "this account has more OS access than it should"
+    /// and "this account can read my agent login" are not the same
+    /// admission, and one of them is the thing this program exists to
+    /// prevent.
+    #[test]
+    fn a_credential_is_waived_only_by_the_switch_that_names_credentials() {
+        let home = empty_home("credential-waiver");
+        std::fs::create_dir_all(home.join(".claude")).unwrap();
+        std::fs::write(home.join(".claude/.credentials.json"), "{}\n").unwrap();
+        let runner = FakeRunner::new();
+        identity(&runner, "bing", "501", "20 80", "staff admin");
+        runner.push(Output::exited(1, ""));
+        let audit = audit(Some("bing"), &home, &runner);
+
+        assert!(!audit.agent_boundary_clear(Accepted::unconfined(true)));
+        assert!(!audit.exec_allowed(Accepted::unconfined(true)));
+        // Naming the credential switch alone is not enough either: the
+        // account is still unconfined, and that is a separate yes.
+        let credentials_only = Accepted {
+            unconfined_exec: false,
+            agent_credentials: true,
+        };
+        assert!(audit.agent_boundary_clear(credentials_only));
+        assert!(!audit.exec_allowed(credentials_only));
+
+        let both = Accepted {
+            unconfined_exec: true,
+            agent_credentials: true,
+        };
+        assert!(audit.exec_allowed(both));
+    }
+
+    /// The refusal has to point at the switch that would actually change
+    /// it. Sending somebody to `allow_unconfined_exec` when the blocker is
+    /// a credential is how an afternoon disappears.
+    #[test]
+    fn the_credential_refusal_names_the_switch_that_opens_it() {
+        let home = empty_home("credential-refusal");
+        std::fs::create_dir_all(home.join(".claude")).unwrap();
+        std::fs::write(home.join(".claude/.credentials.json"), "{}\n").unwrap();
+        let runner = FakeRunner::new();
+        identity(&runner, "bing", "501", "20 80", "staff admin");
+        runner.push(Output::exited(1, ""));
+        let audit = audit(Some("bing"), &home, &runner);
+        let text = audit.refusal(Accepted::unconfined(true));
+        assert!(
+            text.contains("allow_agent_credentials_on_runtime"),
+            "{text}"
+        );
+        assert!(text.contains("can reach a known Agent login"), "{text}");
+    }
+
+    /// Two findings no switch reaches, and the reason is different for
+    /// each: an unknown identity means nobody can say who accepted what,
+    /// and inherited authentication is handed to every child rather than
+    /// merely sitting on a disk somewhere.
+    #[test]
+    fn an_unknown_identity_is_not_waived_by_anything() {
+        let home = empty_home("unknown-identity");
+        let runner = FakeRunner::new(); // every probe fails
+        let audit = audit(Some("ccrun"), &home, &runner);
+        let everything = Accepted {
+            unconfined_exec: true,
+            agent_credentials: true,
+        };
+        assert_eq!(audit.user, "unknown");
+        assert!(
+            !audit.agent_boundary_clear(everything),
+            "{:?}",
+            audit.findings
+        );
+        assert!(!audit.exec_allowed(everything));
+        let text = audit.refusal(everything);
+        assert!(text.contains("no workspace switch waives this"), "{text}");
+    }
+
+    /// Once means once, and turning the switch off and on again is a new
+    /// decision that gets said again.
+    #[test]
+    fn the_accepted_risk_is_announced_once_per_decision() {
+        let state = std::env::temp_dir().join(format!("ccnm-accepted-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&state);
+        std::fs::create_dir_all(&state).unwrap();
+        let on = Accepted {
+            unconfined_exec: true,
+            agent_credentials: true,
+        };
+
+        let first = warn_accepted_once(&state, "xdo", on).expect("the first time says it");
+        assert!(
+            first.contains("allow_agent_credentials_on_runtime"),
+            "{first}"
+        );
+        assert!(first.contains("xdo"), "{first}");
+        assert!(warn_accepted_once(&state, "xdo", on).is_none());
+        // A different workspace is a different decision.
+        assert!(warn_accepted_once(&state, "gld", on).is_some());
+        // Off, then on again: said again.
+        assert!(warn_accepted_once(&state, "xdo", Accepted::unconfined(true)).is_none());
+        assert!(warn_accepted_once(&state, "xdo", on).is_some());
+        std::fs::remove_dir_all(&state).unwrap();
+    }
+
     #[test]
     fn the_refusal_names_every_problem_and_its_fix() {
         let home = empty_home("refusal");
@@ -860,7 +1107,7 @@ mod tests {
         identity(&runner, "root", "0", "0", "wheel");
         runner.push(Output::exited(0, ""));
         let audit = audit(None, &home, &runner);
-        let text = audit.refusal();
+        let text = audit.refusal(Accepted::unconfined(true));
         for expected in [
             "Runs as root",
             "No sudo",
@@ -883,7 +1130,7 @@ mod tests {
         // Not knowing must never read as confined.
         assert!(!audit.confined(), "{:?}", audit.findings);
         assert!(
-            !audit.exec_allowed(true),
+            !audit.exec_allowed(Accepted::unconfined(true)),
             "unknown identity cannot be waived"
         );
         assert_eq!(find(&audit, "Runs as root").severity, Severity::Fail);

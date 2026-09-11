@@ -145,8 +145,9 @@ impl WorkspaceInfo {
 struct ExecGate {
     audit: crate::safety::Audit,
     config: Option<crate::Config>,
-    /// The workspace said it accepts an unconfined runtime.
-    accepted: bool,
+    /// What this workspace's own config accepted -- an unconfined runtime,
+    /// an identity that can reach a known Agent login, or neither.
+    accepted: crate::safety::Accepted,
 }
 
 impl ExecGate {
@@ -197,10 +198,17 @@ impl ExecGate {
             let host = config.nodes.get(&workspace.runtime_node)?;
             host.runtime_user.clone()
         });
+        // Read off **this** machine's config, never the request: the
+        // account that runs the commands is the one entitled to say what
+        // it accepts.
         let accepted = config
             .as_ref()
             .and_then(|config| config.workspaces.get(&payload.workspace))
-            .is_some_and(|w| w.allow_unconfined_exec);
+            .map(|w| crate::safety::Accepted {
+                unconfined_exec: w.allow_unconfined_exec,
+                agent_credentials: w.allow_agent_credentials_on_runtime,
+            })
+            .unwrap_or(crate::safety::Accepted::NOTHING);
         let home = crate::paths::home_dir().unwrap_or_else(|_| PathBuf::from("/nonexistent"));
         Ok(ExecGate {
             audit: crate::safety::audit(expected.as_deref(), &home, &SystemRunner),
@@ -213,13 +221,23 @@ impl ExecGate {
         self.audit.exec_allowed(self.accepted)
     }
 
-    /// The line every result of an unconfined session carries.
+    /// The line every result of a session with a waiver carries.
+    ///
+    /// Two sentences rather than one because the second is a different
+    /// order of admission, and a reader skimming a result log should not
+    /// have to go and look up which switch was set.
     fn note(&self) -> Option<String> {
-        (!self.audit.confined() && self.accepted).then(|| {
-            format!(
+        (!self.audit.confined() && self.accepted.any()).then(|| {
+            let mut note = format!(
                 "this runtime is NOT confined (running as {}) and this workspace has allow_unconfined_exec set; a command here has the access that account has",
                 self.audit.user
-            )
+            );
+            if self.accepted.agent_credentials {
+                note.push_str(
+                    "; it also has allow_agent_credentials_on_runtime set, so that account can read a known Agent login and so can anything the model runs",
+                );
+            }
+            note
         })
     }
 }
@@ -285,8 +303,8 @@ impl Server {
     pub fn new(payload: &ServePayload) -> CcnmResult<Self> {
         let root = crate::runtime::canonical_root(&payload.root)?;
         let exec_gate = ExecGate::decide(payload)?;
-        if !exec_gate.audit.agent_boundary_clear() {
-            return Err(Error::policy(exec_gate.audit.refusal()));
+        if !exec_gate.audit.agent_boundary_clear(exec_gate.accepted) {
+            return Err(Error::policy(exec_gate.audit.refusal(exec_gate.accepted)));
         }
         // A session that cannot write does not take the workspace's write
         // guard: holding it would block a real writer for as long as
@@ -324,8 +342,8 @@ impl Server {
     ) -> CcnmResult<Self> {
         // Before any workspace-dependent subprocess (including Git), not just
         // exec_command. An unconfined opt-in cannot grant Agent credentials.
-        if write_guard.is_some() && !exec_gate.audit.agent_boundary_clear() {
-            return Err(Error::policy(exec_gate.audit.refusal()));
+        if write_guard.is_some() && !exec_gate.audit.agent_boundary_clear(exec_gate.accepted) {
+            return Err(Error::policy(exec_gate.audit.refusal(exec_gate.accepted)));
         }
         let (git, git_subdir) = git_facts(&root, &SystemRunner);
         // A CLAUDE.md that cannot be read does not stop the session: the
@@ -586,7 +604,10 @@ impl Server {
         // for that account to be a confined one, it does not run.
         if !self.inner.exec_gate.allowed() {
             return Ok(tool_error(&Error::policy(
-                self.inner.exec_gate.audit.refusal(),
+                self.inner
+                    .exec_gate
+                    .audit
+                    .refusal(self.inner.exec_gate.accepted),
             )));
         }
         // Credentials are non-waivable and may change after the handshake.
@@ -906,7 +927,7 @@ mod tests {
                     user: "fixture".into(),
                     findings: vec![],
                 },
-                accepted: false,
+                accepted: crate::safety::Accepted::NOTHING,
                 config: None,
             },
             None,

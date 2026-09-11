@@ -120,7 +120,41 @@ exec_command            confinement 通过后才正常允许
 
 它不会让 Runtime 变安全，而且命令结果会明确标记为 unconfined。
 
-**P1 后这个开关不能跳过身份未知或 Agent 凭据隔离失败。** 同一物理机器可以有 Agent 和 Runtime 两种角色，但隔离 Runtime 的执行身份不能读取已知 Agent 认证文件/容器。失败会在 MCP 初始化、Git 探测前拒绝；exec 前再次检查。目录/ACL/symlink 不明不能报成“没有凭据”。SSH 检查不读取私钥内容，保留 `authorized_keys` 等已知公开文件，其余可疑候选保守拒绝。具体范围、环境来源及未证明的 OS credential service/其他目录见 [Provider 安全契约](provider-safety.md)。
+**这个开关不跳过身份未知、认证环境继承和 Agent 凭据隔离。** 同一物理机器可以有 Agent 和 Runtime 两种角色，但隔离 Runtime 的执行身份不能读取已知 Agent 认证文件/容器。失败会在 MCP 初始化、Git 探测前拒绝；exec 前再次检查。目录/ACL/symlink 不明不能报成“没有凭据”。SSH 检查不读取私钥内容，保留 `authorized_keys` 等已知公开文件，其余可疑候选保守拒绝。具体范围、环境来源及未证明的 OS credential service/其他目录见 [Provider 安全契约](provider-safety.md)。
+
+## 凭据隔离那一条，怎么放开，代价是什么
+
+有一类人确实卡在这里：项目和 Claude 的登录在同一个家目录里——一台机器、一个账号、想先试试这东西。对他们来说没有东西可隔离，而 ccnm 直接拒绝启动，等于没法用。
+
+所以有第二个开关，写在 **Runtime 那一侧**那个 workspace 上：
+
+```toml
+[workspaces.demo]
+root = "/Users/me/code/demo"
+allow_unconfined_exec = true            # 这个账号没被约束
+allow_agent_credentials_on_runtime = true   # 这个账号能读到 Agent 的登录
+```
+
+**两个都要写，而且互不蕴含。** 它们是两件不同的事：前一句说"跑命令的账号 OS 权限比它该有的大"，后一句说"一句 prompt 就能把我的登录读出去"。后面这一件正是这个项目存在的理由，所以它绝不会被前一句顺带打开。
+
+**你接受的到底是什么，说清楚：** 跑这个 workspace 命令的那个账号能读到那台机器上已知的 Agent 登录（`~/.claude`、`~/.codex` 之类）。模型跑的每一条命令也能读到——**而让它跑一条命令只需要一句 prompt**，包括从它被要求读的文件里冒出来的那一句。装个依赖、看个 issue、读份 README，都算。
+
+这不是"风险提高了一点"，是这个程序唯一那条硬边界没了。**其他任何东西都没在挡着。**
+
+放开之后 ccnm 做三件事，一件不少：
+
+1. **开着的时候说一次。** 第一次用它启动会话时，终端上打一段话，讲清上面这些。只说一次——每条命令都喊的警告没人看。关掉再打开，算一次新的决定，会再说一次。
+2. **`ccnm doctor` 一直显示。** 那几行从 FAIL 变成 **WARN**，并注明是这个 workspace 自己接受的。**不会变成 OK**：那个性质并没有成立，只是有人说他能接受。
+3. **每条命令的结果都带着。** 会话产物里那行 unconfined 说明会同时写明凭据这一条。
+
+仍然不给放开的两条，任何开关都不行：
+
+- **执行身份未知**（identity 探针答不出来）——没人能说清是谁接受了什么；
+- **认证环境是继承来的**（`ANTHROPIC_*`、`CLAUDE_*` 之类在 Runtime 服务环境里）——那是把凭证直接塞进每一个子进程，比放在磁盘上等人去找严重一个量级，而且它的修法只是别 export。
+
+还有一条要知道：`No <Agent> credential` 里那种"**目录是 symlink / 列不出来，可达性未知**"的结论，也在这个开关的覆盖范围内。也就是说你接受的包括"说不清"。doctor 行里原话照旧，不会被改写成"没有凭据"。
+
+**真要长期用，还是去建一个专用账号。** 下面两节就是。这个开关是给"我知道我在做什么，我现在就想跑起来"的场景用的。
 
 ## macOS 创建 Runtime Service Account
 

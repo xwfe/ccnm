@@ -865,7 +865,7 @@ fn runtime_safety_rows(report: &crate::runtime::AuditReport) -> Vec<Check> {
     // table that says NOT READY about a session that works is a table
     // people learn to ignore. The value is the Runtime's own -- it is the
     // one `exec_command`'s gate reads, not this machine's copy of it.
-    let accepted = report.allow_unconfined_exec;
+    let accepted = report.accepted();
     let mut rows: Vec<Check> = audit
         .findings
         .iter()
@@ -878,7 +878,18 @@ fn runtime_safety_rows(report: &crate::runtime::AuditReport) -> Vec<Check> {
             match finding.severity {
                 safety::Severity::Ok => Check::ok(name, detail),
                 safety::Severity::Warn => Check::warn(name, detail),
-                safety::Severity::Fail if accepted && !finding.non_waivable() => {
+                // Accepted, so not a FAIL -- but never an OK either. The
+                // property does not hold; somebody said they can live
+                // with that, and the audit has to keep showing which.
+                safety::Severity::Fail if finding.is_agent_credential() && accepted.agent_credentials => Check::warn(
+                    name,
+                    format!("{detail}\naccepted: this workspace sets allow_agent_credentials_on_runtime"),
+                ),
+                safety::Severity::Fail
+                    if accepted.unconfined_exec
+                        && !finding.non_waivable()
+                        && !finding.is_agent_credential() =>
+                {
                     Check::warn(name, detail)
                 }
                 safety::Severity::Fail => Check::fail_with(name, ErrorCode::Policy, detail),
@@ -890,10 +901,15 @@ fn runtime_safety_rows(report: &crate::runtime::AuditReport) -> Vec<Check> {
     rows.push(if audit.confined() {
         Check::ok("exec_command", "the runtime account is confined")
     } else if audit.exec_allowed(accepted) {
-        Check::warn(
-            "exec_command",
+        let mut why = String::from(
             "allowed, but the runtime is NOT confined: this workspace sets allow_unconfined_exec",
-        )
+        );
+        if accepted.agent_credentials {
+            why.push_str(
+                "\nand allow_agent_credentials_on_runtime: this account can read a known Agent login, and so can every command run here",
+            );
+        }
+        Check::warn("exec_command", why)
     } else {
         Check::fail_with(
             "exec_command",
@@ -1304,6 +1320,7 @@ mod tests {
                 git: crate::runtime::GitStatus::Usable,
             },
             allow_unconfined_exec: false,
+            allow_agent_credentials_on_runtime: false,
         }
     }
 
@@ -1318,6 +1335,57 @@ mod tests {
                 fix: None,
             }],
         }
+    }
+
+    /// An accepted risk is a WARN, never an OK.
+    ///
+    /// The property does not hold. Somebody said they can live with that,
+    /// which is a reason not to refuse and never a reason to report green
+    /// -- the row is the only place the decision stays visible after the
+    /// one-time warning has scrolled away.
+    #[test]
+    fn an_accepted_credential_is_a_warning_that_says_so_not_a_pass() {
+        let credential = safety::Finding {
+            check: "No Claude credential".into(),
+            severity: safety::Severity::Fail,
+            detail: "the Runtime identity can access a known Agent credential".into(),
+            fix: Some("use a separate execution identity".into()),
+        };
+        let report = crate::runtime::AuditReport {
+            audit: safety::Audit {
+                user: "bing".into(),
+                findings: vec![credential.clone()],
+            },
+            allow_unconfined_exec: true,
+            allow_agent_credentials_on_runtime: true,
+            ..confined_report()
+        };
+        let rows = runtime_safety_rows(&report);
+        let row = rows
+            .iter()
+            .find(|r| r.name == "No Claude credential")
+            .expect("the row stays, under its own name");
+        assert_eq!(row.status, Status::Warn, "{row:?}");
+        assert!(
+            row.detail.contains("allow_agent_credentials_on_runtime"),
+            "{row:?}"
+        );
+        let exec = rows.iter().find(|r| r.name == "exec_command").unwrap();
+        assert_eq!(exec.status, Status::Warn, "{exec:?}");
+        assert!(exec.detail.contains("read a known Agent login"), "{exec:?}");
+
+        // Without the switch that names credentials it is still a FAIL,
+        // whatever else the workspace has accepted.
+        let refused = crate::runtime::AuditReport {
+            allow_agent_credentials_on_runtime: false,
+            ..report
+        };
+        let rows = runtime_safety_rows(&refused);
+        let row = rows
+            .iter()
+            .find(|r| r.name == "No Claude credential")
+            .unwrap();
+        assert!(matches!(row.status, Status::Fail(_)), "{row:?}");
     }
 
     fn unconfined_audit() -> safety::Audit {
@@ -1706,6 +1774,7 @@ mod tests {
             agent: None,
             provider_config_dir: None,
             permission_mode: Default::default(),
+            allow_agent_credentials_on_runtime: false,
         };
         let from_agent = from_agent(&config, "xshun", Ok((&authority, &probe)));
 

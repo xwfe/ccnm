@@ -153,8 +153,21 @@ fn both_providers_default_managed_and_local_override_paths_are_audited() {
     assert!(
         report
             .iter()
-            .all(|f| f.severity == Severity::Fail && f.non_waivable())
+            .all(|f| f.severity == Severity::Fail && f.is_agent_credential())
     );
+    // Which switch waives them, in both directions. `allow_unconfined_exec`
+    // never has: it says the account is not confined, not that it may read
+    // the agent's login, and conflating the two was the whole reason the
+    // second switch exists.
+    let audit = Audit {
+        user: "fixture".into(),
+        findings: report.clone(),
+    };
+    assert!(!audit.agent_boundary_clear(Accepted::unconfined(true)));
+    assert!(audit.agent_boundary_clear(Accepted {
+        unconfined_exec: true,
+        agent_credentials: true,
+    }));
     assert_eq!(runner.calls().len(), 6);
     let text = serde_json::to_string(&report).unwrap();
     assert!(!text.contains("SYNTHETIC_NEVER_READ_OR_LOG"));
@@ -162,7 +175,7 @@ fn both_providers_default_managed_and_local_override_paths_are_audited() {
 }
 
 #[test]
-fn invalid_local_references_and_unknown_access_are_non_waivable() {
+fn invalid_local_references_and_unknown_access_are_not_waived_by_unconfined_exec() {
     let f = Fixture::new();
     for refs in [
         vec![("CODEX_HOME".into(), Some("relative".into()))],
@@ -173,7 +186,7 @@ fn invalid_local_references_and_unknown_access_are_non_waivable() {
             user: "fixture".into(),
             findings,
         };
-        assert!(!report.exec_allowed(true));
+        assert!(!report.exec_allowed(Accepted::unconfined(true)));
     }
     assert!(
         findings_with(
@@ -190,8 +203,12 @@ fn invalid_local_references_and_unknown_access_are_non_waivable() {
         user: "fixture".into(),
         findings: findings_with(&f.0, &[], &FakeRunner::new()),
     };
-    assert!(!report.exec_allowed(true));
-    assert!(report.refusal().contains("unknown"));
+    assert!(!report.exec_allowed(Accepted::unconfined(true)));
+    assert!(
+        report
+            .refusal(Accepted::unconfined(true))
+            .contains("unknown")
+    );
 }
 
 #[test]
@@ -222,12 +239,12 @@ fn ordinary_unconfined_acceptance_does_not_authorize_agent_credentials() {
         user: "fixture".into(),
         findings: vec![Finding::fail("Runtime user", "not configured", "configure")],
     };
-    assert!(report.exec_allowed(true));
+    assert!(report.exec_allowed(Accepted::unconfined(true)));
     let mut report = report;
     report.findings.push(Finding::fail(
         "No authentication environment",
         "unknown",
         "remove inherited auth",
     ));
-    assert!(!report.exec_allowed(true));
+    assert!(!report.exec_allowed(Accepted::unconfined(true)));
 }

@@ -161,6 +161,28 @@ pub struct Workspace {
     /// result of such a session says so.
     #[serde(default)]
     pub allow_unconfined_exec: bool,
+    /// Open this workspace even though the Runtime execution identity can
+    /// reach a known Agent login on this machine.
+    ///
+    /// **This is the one guarantee ccnm otherwise never bends**, so it is a
+    /// separate switch from `allow_unconfined_exec` and neither implies the
+    /// other. The usual reason to set it is that the projects and the agent
+    /// login live in the same home -- one machine, one account, trying the
+    /// thing out. What you are accepting is concrete: every command the
+    /// model runs is a command that can read `~/.claude`, `~/.codex` and
+    /// whatever else that account can read, and a prompt is enough to make
+    /// it run one.
+    ///
+    /// It waives *only* the credential findings. An unknown execution
+    /// identity and inherited authentication environment stay refused: the
+    /// first means nobody can say what was accepted, and the second hands
+    /// the credential to every child process rather than merely leaving it
+    /// on disk.
+    ///
+    /// Runtime-side only, like every other workspace field -- the machine
+    /// taking the risk is the one that decides, not the caller.
+    #[serde(default)]
+    pub allow_agent_credentials_on_runtime: bool,
     /// The most an **external** MCP client may do with this workspace
     /// (docs/protocol/remote-workspace-mcp-v1.md section 4).
     ///

@@ -195,6 +195,7 @@ runtime_node = "runtime"     # 可省略，默认就是 "runtime"
 root = "/absolute/project/root"
 claude_permission_mode = "acceptEdits"
 allow_unconfined_exec = false
+allow_agent_credentials_on_runtime = false   # 默认值；开它之前先读下面那一节
 external_mcp = "disabled"    # 默认值，可省略
 ```
 
@@ -233,6 +234,27 @@ allow_unconfined_exec = true
 它允许 Runtime OS 账号没通过 confinement 检查时仍然执行 `exec_command`，但每条命令结果都会标记 runtime **未隔离**。
 
 这不是生产安全配置。真实项目应该在 Runtime Node 建 `ccrun` 之类的专用低权限账号，然后把它改回 `false`。
+
+**它waive不了凭据那一条**，那是下面那个开关的事。
+
+### `allow_agent_credentials_on_runtime`
+
+跑这个 workspace 命令的账号能读到本机已知的 Agent 登录（`~/.claude`、`~/.codex` 之类）时，仍然允许打开：
+
+```toml
+allow_unconfined_exec = true                 # 两个都要写
+allow_agent_credentials_on_runtime = true
+```
+
+**先读一遍你接受了什么**：模型跑的每一条命令都能读到那份登录，而让它跑一条命令只需要一句 prompt——包括从它被要求读的文件里冒出来的那一句。这是这个项目唯一那条硬边界，放开之后没有别的东西在挡着。完整说明和代价见[生产安全](production-safety.md#凭据隔离那一条怎么放开代价是什么)。
+
+**两个开关互不蕴含。** `allow_unconfined_exec` 说的是"这个账号 OS 权限比它该有的大"，这一个说的是"它能读我的 Agent 登录"，是两件事，所以要分别写。
+
+写在 **Runtime 那一侧**的配置里，跟其他 workspace 字段一样——承担风险的那台机器自己决定，调用方说了不算。
+
+ccnm 的反应：第一次用它启动会话时在终端上把风险讲一遍（**只讲一次**；关掉再打开算新决定，会再讲），`ccnm doctor` 里那几行永远显示为 **WARN 并注明是接受的**（不会变成 OK），每条命令结果里的 unconfined 说明也会写明这一条。
+
+**任何开关都放不开的两条**：执行身份未知，以及认证环境是继承来的（`ANTHROPIC_*` / `CLAUDE_*` 在 Runtime 服务环境里）。前者没人能说清是谁接受了什么，后者是把凭证直接塞给每一个子进程。
 
 ### `external_mcp`
 

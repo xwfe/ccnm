@@ -31,6 +31,8 @@
 
 改 [P7.3 对照工具](scripts/p7_parity_check.py)：另跑 `cargo build` 之后的 `python3 -m unittest tests.test_p7_parity -q`。它自己的成功路径由 `tests/fixtures/fake_ccnm.py` 离线覆盖，真机结论仍以 `--out` 写出的证据文件为准。
 
+改超时或进程组（`crates/ccnm-core/src/process.rs`）：另跑 `cargo test --workspace -- --test-threads=64`。这条压力路径专门抓只在 fork 压力下出现的问题——超时要 spawn 一个 `kill` 才能杀到整个进程组，那次 spawn 失败时只有 leader 会死，孙进程继续占着管道，表现是「超时了但过了 30 秒才回来」。默认线程数看不见它。
+
 修改 Rust：另跑 `cargo fmt --all --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace`；Python helper 改动另跑对应 unittest。真机、生产权限和断网验证分别记录，不能用离线测试数量替代。
 
 创建系统账号、ACL、防火墙、独立登录、部署或替换已安装二进制，必须有针对该动作的明确授权。只规划不代表授权执行这些动作。

@@ -12,7 +12,7 @@
 | Codex Agent Instance，remote SSH MCP | 预发布支持 | 仅接受实测的 Codex CLI `0.154.0`（见下方版本 pin）；公共入口已在授权双机真机验证。 |
 | Machine API（`ccnm rpc`），`print` 模式 | 预发布支持，协议已冻结 | `ccnm.machine/1` 于 2026-09-10 冻结。两个 provider 各跑通一次真机双机闭环并与人类 CLI 对照（[Claude](research/p7-real-machine-2026-09-10.md)、[Codex](research/p7-codex-parity-2026-09-10.md)）：两条腿产物属主相同，`usage` 端到端到达调用方（Codex 不报 `cost`，永远缺席）。实现仍比契约少四条，见[协议说明](protocol/README.md)。 |
 | Machine API 的 `interactive` 模式、输出分页、结果过期 | 未实现 | 都不在 `hello` 声明的能力里，调用会被明确拒绝，不静默降级。 |
-| Remote Workspace MCP（`ccnm mcp bridge`） | **experimental** | 命令、`external_mcp` 权限模型（disabled/read/coding）、两种工具表、写入互斥和 annotations 都已实现，由真实二进制 + 真实 MCP 消息的离线测试覆盖（`cargo test -p ccnm-cli --test external_mcp`）。**走的是管道不是 ssh，对面不是真实 Host**：Claude Code/Codex 的允许矩阵验证是 P11，远端真实项目 dogfood 是 P12。不要按"已支持"部署到有价值的项目上。 |
+| Remote Workspace MCP（`ccnm mcp bridge`） | **experimental** | 命令、`external_mcp` 权限模型（disabled/read/coding）、两种工具表、写入互斥和 annotations 都已实现，由真实二进制 + 真实 MCP 消息的离线测试覆盖（`cargo test -p ccnm-cli --test external_mcp`）。**走的是管道不是 ssh，对面不是真实 Host**：Claude Code/Codex 的允许矩阵验证是 P11 剩下的那一半，远端真实项目 dogfood 是 P12。跨入口部分已离线证明（[记录](research/cross-entry-p11-2026-09-11.md)）：受管会话与外部 coding 抢同一把 write guard，两个方向都是启动失败而不是"连上了写不进去"；忽略 annotations 的 Host 越权仍被拒；一个不 import ccnm 代码的中立 MCP 客户端重放同一套允许矩阵得出同一结论。不要按"已支持"部署到有价值的项目上。 |
 | Claude legacy colocated | 明确拒绝 | remote-only 启动参数已从 native 候选命令移除，但 installed Claude 尚未真实验收；本 build 在创建 session 前返回 `CCNM_E_NOT_READY`。 |
 | Claude/Codex Agent Instance colocated | 明确拒绝 | 没有可信 Runtime credential boundary 和真实验收，不自动降级为 legacy/native。 |
 | Codex legacy/internal protocol 2 | 兼容历史 fixture | 只用于保留已有内部测量与回归，不是新的公共配置入口。 |

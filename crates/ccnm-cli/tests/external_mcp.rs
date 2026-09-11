@@ -32,6 +32,16 @@ impl Fixture {
     /// `access` and `instructions` go into the workspace `demo`. A second
     /// workspace, `private`, never mentions external MCP.
     fn new(test: &str, access: &str, instructions: &str) -> Fixture {
+        Fixture::build(test, access, instructions, false)
+    }
+
+    /// Same, with `exec_command` allowed despite an unconfined runtime.
+    /// Only for the cases that must really run a command.
+    fn unconfined(test: &str, access: &str) -> Fixture {
+        Fixture::build(test, access, "generic", true)
+    }
+
+    fn build(test: &str, access: &str, instructions: &str, unconfined: bool) -> Fixture {
         let dir = std::env::temp_dir()
             .canonicalize()
             .unwrap()
@@ -57,11 +67,14 @@ this = "runtime"
 [nodes.agent]
 ssh = "agent-node.invalid"
 
-# Open to external clients, and nothing else about it differs.
+# Open to external clients, and managed by an Agent as well: the same
+# working tree reachable through both entries is what P11 is about.
 [workspaces.demo]
 root = "{}"
+agent = {{ node = "agent", instance = "claude-main" }}
 external_mcp = "{access}"
 external_instructions = "{instructions}"
+allow_unconfined_exec = {unconfined}
 
 # An ordinary managed workspace that never mentions external MCP. It is a
 # real, valid workspace here -- which is the point: being reachable is not
@@ -680,4 +693,184 @@ fn a_killed_session_is_eof_and_does_not_hand_over_the_guard() {
     // Reading is still fine: it never wanted the guard.
     let reader = fixture.open("demo", ExternalMode::Read, "bridge-dead-read");
     reader.shutdown();
+}
+
+// -- P11：两个入口，一棵工作树 --------------------------------------------
+//
+// 这一段证明的不是"外部入口能用"，而是"它没有把第一个入口已经建立的边界撑
+// 大"。真实 Host 的允许矩阵仍然是没做的那半边，见 status.json 的 blocker。
+
+impl Fixture {
+    /// A managed open: the shape `ccnm run` sends (internal protocol 4).
+    fn managed(&self, session: &str) -> Command {
+        let identity = ccnm_core::instance::AgentIdentity {
+            node: "agent".into(),
+            instance: "claude-main".into(),
+            provider: ccnm_core::provider::AgentProvider::Claude,
+            profile_ref: "default".into(),
+        };
+        let wire = payload::encode(&ccnm_core::runtime::OpenPayload::new(
+            "demo", identity, session,
+        ))
+        .unwrap();
+        self.serve(&wire)
+    }
+}
+
+/// The hard condition for two entries to coexist: they take the **same**
+/// lock on the same working tree. Whichever gets there first, the other
+/// waits — and "waits" means it does not start, rather than starting and
+/// writing anyway.
+#[test]
+fn a_managed_session_and_an_external_one_take_the_same_guard() {
+    let fixture = Fixture::new("crossguard", "coding", "generic");
+
+    // Managed first.
+    let managed = Session::start(fixture.managed("s-managed-1"));
+    let external = fixture.refused("demo", ExternalMode::Coding);
+    assert!(!external.status.success());
+    let said = stderr(&external);
+    assert!(said.starts_with("CCNM_E_POLICY:"), "{said}");
+    assert!(said.contains("write guard"), "{said}");
+    managed.shutdown();
+
+    // External first, managed second: same answer, other direction.
+    let holder = fixture.open("demo", ExternalMode::Coding, "bridge-cross");
+    let blocked = fixture
+        .managed("s-managed-2")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(!blocked.status.success());
+    let said = stderr(&blocked);
+    assert!(said.starts_with("CCNM_E_POLICY:"), "{said}");
+    assert!(said.contains("write guard"), "{said}");
+    holder.shutdown();
+}
+
+/// A read session takes no guard, so it is not a way to stall a managed
+/// writer — and not a way to sneak a writer in beside one either, because
+/// it has no tool that writes.
+#[test]
+fn a_read_session_coexists_with_a_managed_writer() {
+    let fixture = Fixture::new("crossread", "read", "generic");
+    let managed = Session::start(fixture.managed("s-managed-read"));
+    let mut reader = fixture.open("demo", ExternalMode::Read, "bridge-beside");
+    let read = reader.call("read_file", json!({"path": "hello.txt"}));
+    assert!(!is_error(&read), "{read}");
+    assert_eq!(reader.tools().len(), 4);
+    reader.shutdown();
+    managed.shutdown();
+}
+
+/// Annotations are hints; the Runtime is the gate. This checks both halves:
+/// that the hints are *accurate* (readOnlyHint is true for exactly the tools
+/// a read session gets), and that a Host which ignores them entirely gains
+/// nothing by calling what it was not offered.
+#[test]
+fn a_host_that_ignores_annotations_gains_nothing() {
+    let fixture = Fixture::new("ignore", "coding", "generic");
+    let mut coding = fixture.open("demo", ExternalMode::Coding, "bridge-hints");
+    let listed = coding.rpc("tools/list", json!({}));
+    let read_only: Vec<String> = listed["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|t| t["annotations"]["readOnlyHint"] == json!(true))
+        .map(|t| t["name"].as_str().unwrap().to_string())
+        .collect();
+    coding.shutdown();
+
+    // What a read session is actually given.
+    let mut reader = fixture.open("demo", ExternalMode::Read, "bridge-hints-read");
+    let offered = reader.tools();
+
+    // The hint is accurate for every tool but one, and that one is
+    // deliberate: read_output says readOnlyHint -- it reads -- yet a read
+    // session does not get it, because its references can only come from a
+    // tool that session does not have.
+    let mut hinted: Vec<String> = read_only
+        .iter()
+        .filter(|name| name.as_str() != "read_output")
+        .cloned()
+        .collect();
+    hinted.sort();
+    let mut given = offered.clone();
+    given.sort();
+    assert_eq!(hinted, given);
+
+    // Now behave like a Host that never read any of it.
+    for (tool, args) in [
+        ("exec_command", json!({"cmd": ["/bin/echo", "hi"]})),
+        (
+            "apply_patch",
+            json!({"files": [{"op": "add", "path": "sneaked.txt", "content": "x\n"}]}),
+        ),
+    ] {
+        let refused = reader.call(tool, args);
+        assert!(is_error(&refused), "{tool}: {refused}");
+        assert!(text(&refused).starts_with("CCNM_E_POLICY:"), "{tool}");
+    }
+    assert!(
+        !fixture.root.join("sneaked.txt").exists(),
+        "a refused write must not have happened"
+    );
+    reader.shutdown();
+}
+
+/// Retained output belongs to the session that produced it. Another
+/// session's reference resolves to nothing, whichever entry it came in
+/// through -- an output_ref is not a handle on the machine.
+#[test]
+fn an_output_ref_does_not_cross_sessions() {
+    let fixture = Fixture::unconfined("outputs", "coding");
+    let mut first = fixture.open("demo", ExternalMode::Coding, "bridge-out-1");
+    let ran = first.call("exec_command", json!({"cmd": ["/bin/echo", "hello"]}));
+    assert!(!is_error(&ran), "{}", text(&ran));
+    let said = text(&ran);
+    let marker = "output_ref ";
+    let start = said
+        .find(marker)
+        .unwrap_or_else(|| panic!("no ref in {said:?}"))
+        + marker.len();
+    let reference: String = said[start..]
+        .split([',', ']', ' ', '\n'])
+        .next()
+        .unwrap()
+        .to_string();
+    first.shutdown();
+
+    let mut second = fixture.open("demo", ExternalMode::Coding, "bridge-out-2");
+    let borrowed = second.call("read_output", json!({"output_ref": reference}));
+    assert!(is_error(&borrowed), "{borrowed}");
+    assert!(
+        text(&borrowed).starts_with("CCNM_E_"),
+        "{}",
+        text(&borrowed)
+    );
+    second.shutdown();
+}
+
+/// The credential boundary is not a property of the managed entry. A
+/// Runtime process holding something that looks like an Agent credential
+/// does not serve an external client either.
+#[test]
+fn agent_credentials_stop_the_external_entry_too() {
+    let fixture = Fixture::new("credentials", "read", "generic");
+    let out = fixture
+        .serve(&fixture.wire("demo", ExternalMode::Read, "bridge-creds"))
+        .env("ANTHROPIC_API_KEY", "not-a-real-key")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(out.stdout.is_empty(), "no handshake may happen");
+    let said = stderr(&out);
+    assert!(said.starts_with("CCNM_E_POLICY:"), "{said}");
+    // The finding names the check, never the value.
+    assert!(said.contains("authentication environment"), "{said}");
+    assert!(
+        !said.contains("not-a-real-key"),
+        "the value must not appear"
+    );
 }

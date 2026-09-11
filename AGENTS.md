@@ -19,7 +19,7 @@
 
 只改计划：`python3 scripts/check_plan.py`、相关测试和 `git diff --check`。
 
-改 [公开协议](docs/protocol/README.md)（两套契约的说明、schema 或 fixture）：另跑 `python3 scripts/check_protocol.py` 和 `python3 -m unittest tests.test_check_protocol -q`。[Remote Workspace MCP](docs/protocol/remote-workspace-mcp-v1.md) 的命令与权限模型已实现但没有真实 Host 验证（experimental）；改它的行为另跑 `cargo test -p ccnm-cli --test external_mcp`。文中写"实测"的地方，依据必须是仓库代码或 SDK 源码，不能是记忆。
+改 [公开协议](docs/protocol/README.md)（两套契约的说明、schema 或 fixture）：另跑 `python3 scripts/check_protocol.py` 和 `python3 -m unittest tests.test_check_protocol -q`。[Remote Workspace MCP](docs/protocol/remote-workspace-mcp-v1.md) 的命令与权限模型已实现但没有真实 Host 验证（experimental）；改它的行为另跑 `cargo test -p ccnm-cli --test external_mcp` 和 `python3 -m unittest tests.test_remote_workspace_mcp -q`——后者是一个不 import 任何 ccnm 代码的中立 MCP 客户端，两个独立实现都同意，结论才属于协议。文中写"实测"的地方，依据必须是仓库代码或 SDK 源码，不能是记忆。
 
 改 `ccnm rpc` 或[黑盒客户端](clients/python/ccnm_machine_client.py)：另跑 `cargo test -p ccnm-core --lib rpc::`、`cargo test -p ccnm-cli --test rpc`，以及 `cargo build` 之后的 `python3 -m unittest tests.test_blackbox_client -q`。
 

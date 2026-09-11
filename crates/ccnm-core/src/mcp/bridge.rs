@@ -223,6 +223,46 @@ runtime_user = "ccrun"
         assert_eq!(err.code(), ErrorCode::Config);
     }
 
+    /// What the transport must never bring along. A bridge runs on the
+    /// client's machine, where an ssh agent and a user's own ssh config
+    /// usually are; none of that may ride into the Runtime with it.
+    #[test]
+    fn the_transport_forwards_nothing_and_shares_no_connection() {
+        let cmd = command(
+            &config(ONE_NODE),
+            &request(None, ExternalMode::Read),
+            "bridge-hygiene",
+        )
+        .unwrap();
+        let args: Vec<String> = cmd
+            .args
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        for option in [
+            // No LocalForward from the user's own config comes along.
+            "ClearAllForwardings=yes",
+            // Not shared with, and not killed by, any other ssh this
+            // machine happens to be running.
+            "ControlMaster=no",
+            "ControlPath=none",
+            // No password prompt in a process a Host started.
+            "BatchMode=yes",
+            // The environment does not travel.
+            "SendEnv=-*",
+        ] {
+            assert!(
+                args.contains(&option.to_string()),
+                "{option} missing: {args:?}"
+            );
+        }
+        // And no agent forwarding was asked for anywhere.
+        assert!(
+            !args.iter().any(|a| a.contains("ForwardAgent=yes")),
+            "{args:?}"
+        );
+    }
+
     #[test]
     fn a_generated_session_id_is_a_valid_identifier() {
         crate::instance::identifier(&session_id()).unwrap();

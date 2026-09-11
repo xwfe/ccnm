@@ -20,7 +20,7 @@ from typing import Any
 class McpClient:
     """一条 stdio MCP 连接。"""
 
-    def __init__(self, argv: list[str], env: dict[str, str]):
+    def __init__(self, argv: list[str], env: dict[str, str] | None = None):
         self._proc = subprocess.Popen(
             argv,
             stdin=subprocess.PIPE,
@@ -34,6 +34,8 @@ class McpClient:
         self._next_id = 0
         #: stdout 上收到的每一行原文。用来证明那里除了协议什么都没有。
         self.lines: list[str] = []
+        #: `initialize.result.instructions`，握手之后才有。
+        self.instructions: str = ""
 
     # -- 底层 --
 
@@ -84,6 +86,7 @@ class McpClient:
                 "clientInfo": {"name": "provider-neutral-test-client", "version": "0"},
             },
         )
+        self.instructions = result.get("instructions", "")
         self.notify("notifications/initialized")
         return result
 

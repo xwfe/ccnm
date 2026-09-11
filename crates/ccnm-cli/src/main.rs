@@ -144,7 +144,8 @@ enum Command {
     /// people: stdout carries only protocol lines, logs go to stderr. The
     /// contract is in docs/protocol/
     Rpc,
-    /// MCP transport diagnostics
+    /// MCP transports: diagnose one, or serve a remote workspace to an
+    /// external MCP Host
     Mcp {
         #[command(subcommand)]
         command: McpCommand,

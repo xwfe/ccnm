@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-09-11T10:05:00+09:00",
+  "last_updated": "2026-09-11T10:15:00+09:00",
   "current_task": "P11",
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
@@ -804,12 +804,12 @@
     {
       "id": "P11",
       "title": "跨入口安全、并发与真实 MCP Host",
-      "status": "pending",
+      "status": "in_progress",
       "depends_on": [
         "P10"
       ],
-      "owner": null,
-      "started_at": null,
+      "owner": "claude-opus-5",
+      "started_at": "2026-09-11T10:15:00+09:00",
       "last_updated": "2026-09-10T18:19:30+09:00",
       "completed_criteria": [],
       "evidence": [],

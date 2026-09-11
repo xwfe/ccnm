@@ -147,7 +147,7 @@ pub fn search_text(root: &Path, args: &SearchTextArgs) -> Result<SearchResult> {
     let plan = Plan::new(root, args)?;
     let rg = locate_rg().ok_or_else(|| {
         Error::dependency(
-            "ripgrep is not installed on the Runtime Node, and ccnm searches with it rather than scanning files itself; install it (`brew install ripgrep`) and try again",
+            "ripgrep is not installed on the Runtime Node, and ccnm searches with it rather than scanning files itself; install it (`brew install ripgrep` on macOS, `apt install ripgrep` on Debian/Ubuntu) and try again",
         )
     })?;
 

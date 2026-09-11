@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-09-11T15:40:00+09:00",
+  "last_updated": "2026-09-11T18:20:00+09:00",
   "current_task": null,
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
@@ -940,18 +940,18 @@
     "macOS 上 /tmp 与 /var 都是符号链接，而凭据检查见到祖先目录是 symlink 即判 accessibility unknown——不可豁免，allow_unconfined_exec 无效，表现为 MCP 握手 connection closed: initialize response。任何把 Runtime 执行身份的 home 放在系统临时目录下的部署或测试都会踩到；已写进运维手册，采集脚本已改为对临时目录 resolve()。",
     "Codex 0.154.0 新增 stable 且默认开启的 unified_exec_tty，而 ccnm 的 DISABLED 列表只关 unified_exec——已补上并重测（这正是版本 pin 存在的理由，不是改个常量）。同版本还把 --enable code_mode_only 变成会发 item.completed/type=error 的告警，解析器本就认得。留下的一条事实：gpt-5.3-codex-spark 不宣称支持 Code Mode，而 ccnm 固定传 --enable code_mode_only，本轮跑通了但那是观察不是保证。",
     "ccnm 用 --ignore-user-config 启动 Codex，所以 CLI 配置文件里的 model 不生效；能选模型的唯一入口是 Agent 本机 instance 注册表里新加的 model 字段。它仅 Codex 可用、不上 wire，写错 provider 会被配置校验拒绝。Claude 的模型选择属于它自己的配置，ccnm 不传。",
-    "真机实测：删掉 ccrun 名下 ccnm 所需的出站私钥之后，该账号仍能连到 Agent Node——答话的是 Tailscale SSH，Authenticated using \"none\"，按 tailnet 身份授权不看密钥。所以 No SSH keys 那一行只能读作「ccnm 不要求这个身份出站，且它名下没有 ccnm 所需的私钥/agent」，不能读作「这个账号出不去」。要真的关掉得在 tailnet ACL、防火墙或 OS 网络策略上做，不属于 ccnm 的边界，P7.5 冻结前要在支持矩阵里说清楚。",
+    "【P7.5 已处理】真机实测：删掉 ccrun 名下 ccnm 所需的出站私钥之后，该账号仍能连到 Agent Node——答话的是 Tailscale SSH，Authenticated using \"none\"，按 tailnet 身份授权不看密钥。所以 No SSH keys 那一行只能读作「ccnm 不要求这个身份出站，且它名下没有 ccnm 所需的私钥/agent」，不能读作「这个账号出不去」。要真的关掉得在 tailnet ACL、防火墙或 OS 网络策略上做，不属于 ccnm 的边界。这条语义已经写进支持矩阵的「egress：不作保证」一节，冻结前的那次通查就是在补它。",
     "双机验收已改用专用隔离执行身份，凭据/sudo/特权 socket 均已实测；egress/网络策略仍未逐项验证，本轮只做 transport 进程故障注入，不等同物理断网。",
-    "旧 Runtime 拒绝 v2 时可能以退出码 0 结束；协议错误不能被退出码掩盖。",
-    "P1 安全检查已经进入后续构建并在 P3/P7 专用 Runtime 身份上得到真机证据；但 P7.4 将改变 public control path 和身份职责，旧链的真机结果不能自动证明新链仍满足相同边界，必须按新设计复验。",
-    "Claude v1 的 claude_config_dir 保留旧参数语义；P2 必须定义 Agent-local profile 引用与 legacy 冲突/迁移，不能把旧明文路径当新 profile 授权模型。",
+    "【P4/P5 已处理】旧 Runtime 拒绝不认识的内部协议时可能以退出码 0 结束，什么都没做；协议错误不能被退出码掩盖。现在服务端按协议结果判断成败，不因为子进程退出码是 0 就报成功，这种情况映射成 -32002（version_mismatch）。契约写在 docs/protocol/machine-protocol-v1.md 的「旧 peer 的退出码 0 不算数」一节；坏对端由 tests/fixtures/fake_rpc_peer.py --exit-zero-on-start 扮演，tests/test_check_protocol.py::test_a_startup_failure_cannot_exit_zero 和两份黑盒客户端测试各验一遍。",
+    "【P7.4 已处理】P1 安全检查已经进入后续构建并在 P3/P7 专用 Runtime 身份上得到真机证据；当时留下的顾虑是 P7.4 会改变 public control path 和身份职责，旧链的真机结果不能自动证明新链仍满足相同边界。P7.4 Batch A–E 已按新设计实现并完成最小真机复验（status.json 的 P7 证据、docs/plan/runtime-surfaces.md 的 Batch E），复验的是新链不是旧链。",
+    "【P2 已处理】Claude v1 的 claude_config_dir 保留旧参数语义；P2 已经定义了 Agent-local profile 引用与 legacy 的关系：profile 由 Agent Node 的 [agents.*] 解析、按 profile_ref 引用，文件必须归当前 Agent UID 且非 symlink，新目录要用户自己用官方 CLI 登录，ccnm 不创建、复制或链接 auth。迁移没有自动命令，只有库 API configedit::Edit::preview_instance 出候选 TOML；已有自定义 claude_config_dir、非默认权限或跨 Node 的情况**拒绝机械转换**，要先确定语义（docs/configuration.md、docs/agent-instance-config.md）。旧明文路径没有被当成新 profile 的授权模型。",
     "P3 公共链路已在当前 build 双机真机通过并完成资源归零；遗留两项未取得证据：Ctrl-D 因官方 CLI 无响应，egress 边界不作声明。",
     "Claude colocated 候选命令已定点修复，但未真机验收，当前公共启动明确拒绝。",
     "【已修】P3 记录的「64 线程压测下 exec timeout 单测 30.5s 失败」已定位并修复，根因不在测试而在产品：kill_group 必须 spawn 一个 `kill` 进程才能杀掉整个进程组，而超时触发的时刻恰好是 fork 压力最大、spawn 最容易失败的时刻；那次失败被 `let _ =` 吞掉，于是只杀掉 leader，孙进程继续占着管道，排水线程一直等到它自己结束。离线实测（同一个 `sleep 30` 孙进程、400ms 超时）：只杀 leader 30.02s，杀进程组 0.49s。watchdog 已改为一直杀到管道排空为止，并在完全跑不起 killer 时告警；回归测试用一个「第一次拒绝、之后正常」的 killer，把重试去掉它会在 30.1s 变红。同一轮压测还暴露两条与产品无关的测试写法问题（near_miss 用墙钟判上限、write guard 等文件存在而不是等内容），均已改掉。修完 6 轮 64 线程全绿，但那 6 轮的 load average 已从首次复现时的 159 降到 43，压力条件弱于首次复现。",
     "【P7.5 已冻结】Machine Protocol ccnm.machine/1 于 2026-09-10 冻结，依据是两个 provider 各一次真机双机闭环加 P7.5 最小复验。往后加字段/方法/非终态可以，删字段、改语义、加终态要升 ccnm.machine/2。实现比契约少的四条（interactive、输出分页、结果过期、-32008 从不返回）留在协议说明的清单里，补上属于加法、不违反冻结。",
     "ccnm rpc 已用两个 provider 各跑通一次真机双机闭环（Claude、Codex，对照七项均全过，usage 端到端确认；Codex 的 cost 永远缺席，它不报费用）。仍未验的是 interactive 输入形状，以及 Runtime 写互斥与取消在 RPC 层面的独立真机证据——那两条目前仍是结构上继承 launcher/Agent 侧实现。",
     "【P12 已处理】Runtime 执行身份的项目工具链：产品决定是**由 Runtime Node 管理员维护，ccnm 不装、不升级、不代管版本**，装在执行身份自己的 home 里（rustup → ~/.rustup + ~/.cargo，Node → ~/.local/node-<版本>），系统级只装绕不开的那几个（Rust 链接要的 gcc/libc6-dev/make，以及 ccnm 的 search_text 要的 ripgrep）。最容易踩空的一脚是 PATH：exec_command 跑在非交互 ssh 里，Debian 的 ~/.bashrc 第 6 行就 return，而 rustup 默认把 PATH 写在文件末尾和只有 login shell 才读的 ~/.profile，于是 ccnm 报「cargo is not installed on the Runtime Node, or is not on its PATH」——看着像没装。两条可重跑脚本（scripts/p12-provision-linux-runtime.sh、scripts/p12-runtime-toolchain.sh）和运维手册的对应一节把这些写下来了，P12 真机上 cargo/node/npm 都由 exec_command 答出了版本。",
-    "P7.3 已证明旧实现混淆 Operator 与 Runtime Executor：同一 workspace 以 ccrun 跑 doctor 为绿、个人账号为红，同时旧 Agent→Runtime→Agent 回跳迫使 ccrun 持出站 SSH key。Batch A–D 已修主体，但 Agent Node 上 doctor/mcp probe 仍会把整条 public 命令委托到 Runtime 后要求 ccrun 回拨 Agent。产品决定已写入 docs/plan/runtime-surfaces.md：保留 Agent 侧诊断，不直接拒绝；先做 P7.4 Batch D2，把它们改为 Agent 本地检查 + Agent→Runtime Executor 的 resolve/audit/MCP probe，确保 ccrun 全路径 inbound-only，然后才做 Batch E 真机复验。",
+    "【P7.4 已处理】P7.3 曾证明旧实现混淆 Operator 与 Runtime Executor：同一 workspace 以 ccrun 跑 doctor 为绿、个人账号为红，同时旧 Agent→Runtime→Agent 回跳迫使 ccrun 持出站 SSH key。产品决定写在 docs/plan/runtime-surfaces.md：保留 Agent 侧诊断、不直接拒绝，改为 Agent 本地检查 + Agent→Runtime Executor 的 resolve/audit/MCP probe。Batch D2 与 Batch E 都已完成，ccrun 全路径 inbound-only 已在真机复验（status.json 的 P7 证据）。",
     "【P12 已冻结】Remote Workspace MCP 契约 ccnm.workspace-mcp/1 于 2026-09-11 冻结，依据是 P11 的真实 Host 允许矩阵加 P12 在 Debian 13 Runtime 上的远端真实项目 dogfood。支持矩阵已从 experimental 改为预发布支持，边界写在那里：两种 Runtime（macOS、Debian 13/x86_64）、一个 Host（Claude Code 2.1.268 的 -p 模式）、一棵中型 Rust 项目；Codex 当 Host、交互式 UI、别的发行版、monorepo 规模都没验，egress 不作保证。不做的东西（raw ssh_exec、多租户、公网 gateway、自动部署 Agent）仍然不做。",
     "协议契约里的 -32008（busy）没有实现会返回：写入 guard 在会话跑起来之后才由 Runtime 侧 MCP 获取，session.start 不做工作树占用预检，被占的表现是会话失败而非启动被拒。文档已如实标注；要不要补预检使该码可达是待定的产品决定。同一窗口也影响连续执行：前一次 ccnm run --print 返回时 guard 可能尚未释放，紧接着启动下一个会话会撞上，实际窗口时长未在真机测过。",
     "【P7.5 已处理】Code Mode 改为按 model capability 开：只对实测过的模型开（默认模型即\"不写 model\"那个），因为它是 under-development 特性、模型可以不支持，而启动前问不到（codex doctor 只报开关不报模型能力）。留下的代价已量过并写进支持矩阵：关掉 Code Mode 后模型顶层能看见 Codex 自带的 functions.apply_patch，拦住它写 Agent 本机的只剩只读 sandbox 一层（真机上模型确实试了并被 sandbox 拒绝）；开着 Code Mode 时该工具不存在。要窄的那一栏就用默认模型。",
@@ -960,11 +960,13 @@
     "【P12 已修】SystemRunner::run 的超时只杀 leader：它是每条非交互 ccnm 命令走的路径（ssh transport、doctor 探针都在里面），超时时只 child.kill()，命令自己起的子进程继续占着管道，于是「超时」等到命令自然结束才返回。Debian 上 100ms 的超时量到 10.0 秒、五次五红；macOS 看不见是因为 sh -c 'sleep 10' 这个形状 bash 会 exec。现在它和另外两条路径共用同一个 watchdog（自己的进程组 + 杀到管道排空为止），回归测试用 sleep 30 & wait 把三个入口都跑一遍。代价写在代码注释里：这些子进程不再直接收到终端的 ctrl-c，它们本来就没有终端，兜底的是那个 deadline。",
     "【已修】ccnm doctor 对一个只给外部 MCP 用的 workspace（没有 agent，配置校验明确允许的形状）曾经回 CCNM_E_INTERNAL: workspace '<名字>' passed validation but its Agent Node is missing——把一个正确的配置报成内部矛盾。根因是 Resolved.agent 被当成必然存在；现在它是 Option，受管入口经 require_agent() 按名字拒绝并指向 `ccnm mcp bridge <workspace>`，doctor 则报出 external_mcp/external_instructions 策略和它真能证的那几行（Runtime workspace、Runtime ccnm），把 Agent 那一半逐行 SKIP。Runtime safety 和 exec_command 仍是 SKIP 而不是绿：那个判断属于工具真正跑起来的账号，没有 Agent 探针就问不到，**不能拿敲命令那个人的审计顶包**。两条回归测试：doctor 报告不含 CCNM_E_INTERNAL、没有 FAIL、但因为有 SKIP 仍然 NOT READY；以及受管入口在同一份配置上给出具名拒绝。",
     "【已修】nodes.<x>.ccnm_bin 的默认值 ~/.local/bin/ccnm 曾经写不进配置文件：默认值靠远端登录 shell 展开 ~，而校验要求绝对路径，照抄默认值会被 CCNM_E_CONFIG 拒。现在该字段接受 `~/` 开头，并且仍然拒绝别人的家目录（~other/...）、`..` 和需要引号的字符——它要出现在一条 ccnm 不加引号的 ssh 命令行上。配置文档里的示例换成了默认值本身。",
-    "P12 六次完整 dogfood 里有一次 transport 无线索地断了：ssh 退出 255、stderr 一个字没有、内核日志无 OOM、写锁按设计停在 held、远端没有孤儿进程。之后用同一条长命令（cargo test --workspace，12–17 秒）专门连跑三次没能复现，最后三次完整跑也都干净。没有解释就是没有解释，记在这里，不算进任何判据。"
+    "P12 六次完整 dogfood 里有一次 transport 无线索地断了：ssh 退出 255、stderr 一个字没有、内核日志无 OOM、写锁按设计停在 held、远端没有孤儿进程。之后用同一条长命令（cargo test --workspace，12–17 秒）专门连跑三次没能复现，最后三次完整跑也都干净。没有解释就是没有解释，记在这里，不算进任何判据。",
+    "【已修】release workflow 会在 tag 已经推出去之后才失败：dc5f7db 那次整理把 scripts/dist.sh 的执行位从 100755 改成 100644，而 release.yml 里写的是 `run: scripts/dist.sh`，跑起来就是 Permission denied。v0.1.0/v0.2.0 那两次绿是在改之前跑的，之后再没推过 tag，所以一直没人撞到。**推 tag 是不可撤销的**，失败发生在 release 已经公开之后。现在两个打包脚本在 CI 里都写成 `bash scripts/…`，不依赖执行位；用户当初去掉执行位的那个决定保持不动。",
+    "Linux 的 CI job 和 release job 还没在 GitHub runner 上跑过。已经验过的是它们调用的东西：在一台真实 Debian 13 / x86_64（P12 留下的 ccrun 身份）上跑 clippy 严格模式干净、cargo test --workspace 680 passed / 0 failed（与同一 HEAD 的 macOS 同数）、scripts/dist-linux.sh 产出 ccnm-0.2.0-linux-x86_64.tar.gz + sha256，解出来是 rwxr-xr-x、`ccnm --version` 报 0.2.0、sha256 校验通过，glibc 下限从二进制里量出来是 2.39。workflow YAML 本身只做了结构校验（YAML 解析 + jobs 名），本机没有 actionlint。第一次 push 之后要确认两个 job 都绿，以及 ubuntu-24.04 上量出来的 glibc 下限是否仍是 2.39——那个数是下载物的运行下限，变了就要改 release notes。"
   ],
   "handoff": {
-    "next_action": "**P12 完成，ROADMAP 的 P0–P12 全部完成，current_task 为 null。** 两个入口都有真机证据：Managed Agent Runtime（v1，协议 ccnm.machine/1 已冻结）和 Remote Workspace MCP（v1.x，ccnm.workspace-mcp/1 已于 2026-09-11 冻结）。**下一轮不要自动扩功能**：ROADMAP 到这里就没有下一阶段了，要做新东西得先立新阶段并说清它替换或扩展了哪条已冻结的契约。P12 自己暴露的两个离线可修项已经修掉（doctor 对外部 MCP workspace 的诊断、ccnm_bin 默认值写不进配置），剩下的候选都要真机或授权：(1) Codex 当外部 MCP Host、交互式 UI 怎么显示 bridge 的失败；(2) 非 Debian / arm64 的 Linux Runtime；(3) 真实 node 项目的 npm ci && npm test（Node 目前只验到「叫得动」）；(4) 协议里 -32008（busy）至今不可达，要不要补 session.start 的占用预检是待定的产品决定。hpsrv 上的 ccrun 账号和工具链按用户选择保留，但**这一轮的两把公钥已经删了**——要再用它当 Linux Runtime，得先装一把新的入站公钥（scripts/p12-provision-linux-runtime.sh 的做法，换本轮密钥对、指纹现算现比）。push/tag/release 仍未授权。",
-    "scope": "本轮两段：先提交 P12 的离线准备（三件工具、7 条自测、会话计划），再在用户逐项授权下跑完真机轮（建专用账号、系统级装 4 个包、以执行身份装 rustup/Node、两端部署、脚本 dogfood、真实 Claude Code 一次真改动、逐条归零）。真机部分有系统变更、有部署、消耗了订阅额度（一次 LOGIN_OK 探测加一次真任务）。顺带修了 Linux 第一次跑门禁暴露的两个缺陷，并把两个入口的文档与冻结状态收敛。",
+    "next_action": "**发布前收口已完成；ROADMAP 的 P0–P12 全部完成，current_task 为 null。** 两个入口都有真机证据：Managed Agent Runtime（ccnm.machine/1 于 2026-09-10 冻结）和 Remote Workspace MCP（ccnm.workspace-mcp/1 于 2026-09-11 冻结）。**下一轮不要自动扩功能**：ROADMAP 到这里就没有下一阶段了，要做新东西得先立新阶段并说清它替换或扩展了哪条已冻结的契约。这一轮（发布前收口）做了四件事：(1) 把外部规划工具 gld 的状态与 Git 对齐——结束停在 P7.4 的那个 durable task、按 status.json 把 P7.4→P12 与 P1–P8 两张计划的步骤标完成、把两张被替代的历史计划归档、Goal 转 awaiting_acceptance 等人工验收；(2) 文档按当前事实收敛——平台拆成「Agent 只有 macOS / Runtime 有 macOS 与 Debian 13 两种证据」，README 的「接下来做什么」不再说靠 dogfood 决定契约，observed_gaps 里已解决的条目标成已解决；(3) 补 Linux x86_64 的 Runtime 发布物（scripts/dist-linux.sh）与 Linux CI 门禁，并在真实 Debian 13 上验过它们调用的东西；(4) 复核 P11 那两条 macOS 临时授权，结论是**两条都已经不在了**（见 authorization 一节）。**当前挡在发布前面的，只有需要用户决定或授权的事**：(a) push/tag/release 仍未授权，而推 tag 不可撤销；(b) Linux 的两个 workflow job 还没在 GitHub runner 上跑过（见 observed_gaps）；(c) 三台机器上装着的 ccnm 还是 069fa68 的构建，不含 0f9e71c / 40085d0 两个修复，替换已安装二进制要单独授权。不需要授权就能做的候选都还需要真机或额度：(1) Codex 当外部 MCP Host、交互式 UI 怎么显示 bridge 的失败；(2) 非 Debian / arm64 的 Linux Runtime；(3) 真实 node 项目的 npm ci && npm test（Node 目前只验到「叫得动」）；(4) 协议里 -32008（busy）至今不可达，要不要补 session.start 的占用预检是待定的产品决定。hpsrv 上的 ccrun 账号和工具链按用户选择保留，**authorized_keys 仍然是 0 行**——要再用它当 Linux Runtime，得先装一把新的入站公钥（scripts/p12-provision-linux-runtime.sh 的做法，换本轮密钥对、指纹现算现比）。",
+    "scope": "发布前收口，不扩产品范围、不进新阶段、不改两个已冻结协议的语义。四件事：gld 状态对齐（外部工具，不是产品事实）、文档按当前事实收敛、补 Linux x86_64 Runtime 发布物与 Linux CI 门禁、复核 P11 遗留的 macOS 临时授权。产品代码一行没改。hpsrv 上只用 root 以既有 ccrun 身份跑了一次构建与门禁，跑完把构建树和 4261 个测试临时目录清掉了，账号、工具链、系统包、ACL、防火墙一律未动。",
     "planning_validation": {
       "at": "2026-09-08T21:22:43+09:00",
       "commands": [
@@ -976,21 +978,22 @@
       "limits": "本轮离线门禁；fodelf SSH 建连失败，没有新增远端资源或运行真实模型，不替代 P3.5。"
     },
     "planning_validation_latest": {
-      "at": "2026-09-11T14:50:00+09:00",
+      "at": "2026-09-11T18:20:00+09:00",
       "commands": [
-        "cargo fmt --all --check：通过（两端）",
-        "cargo clippy --workspace --all-targets -- -D warnings：通过（两端）",
-        "cargo test --workspace：macOS 676 passed / 0 failed；**Debian 13 / x86_64 676 passed / 0 failed**（修掉两个红之后）",
-        "cargo test --workspace -- --test-threads=64：macOS 全绿",
+        "cargo fmt --all --check：通过",
+        "cargo clippy --workspace --all-targets -- -D warnings：通过（macOS 与 Debian 13 各一遍）",
+        "cargo test --workspace：macOS 680 passed / 0 failed；**Debian 13 / x86_64 680 passed / 0 failed**（同一份源码）",
         "PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p 'test_*.py' -q：168 passed",
-        "scripts/p12_dogfood_check.py（真机，真 ssh，Linux Runtime）：退出码 0，证据 docs/research/p12-dogfood-20260911.json",
-        "真实 Claude Code 2.1.268 在远端项目上完成一次真改动并跑测试：Runtime 侧复核通过",
-        "python3 scripts/check_protocol.py / check_plan.py / git diff --check：通过"
+        "python3 scripts/check_protocol.py：38 + 21 个 fixture 通过",
+        "python3 scripts/check_plan.py：13/13 阶段完成，下一阶段 None",
+        "git diff --check：干净",
+        "bash scripts/dist-linux.sh（真实 Debian 13 / x86_64）：产出 ccnm-0.2.0-linux-x86_64.tar.gz（3.6 MB）+ sha256，解出来 rwxr-xr-x，`ccnm --version` 报 0.2.0，sha256 -c 通过，glibc 下限量出来 2.39",
+        "两个 workflow YAML：解析通过（ci.yml -> test / linux-runtime；release.yml -> macos / linux / publish）"
       ],
-      "limits": "真机结论只覆盖 Debian 13/x86_64 的 Runtime、macOS 的 Host 与客户端、Claude Code 2.1.268 的 print 模式、一棵中型 Rust 项目。Codex 当 Host、交互式 UI、别的发行版或架构、真实 node 项目、Linux 上的 Managed 入口都没验；egress 不作保证。"
+      "limits": "两个 Linux workflow job 没在 GitHub runner 上跑过，只验了它们调用的脚本和门禁本身；本机没有 actionlint，YAML 只做了结构校验。macOS 的 release 路径这一轮没有重跑（没有授权推 tag）。真机结论仍只覆盖 Debian 13/x86_64 的 Runtime 与 macOS 的 Agent。"
     },
     "inherited_changes": [],
-    "authorization": "P12 真机轮已由用户授权并执行完毕（2026-09-11），三问三答：hpsrv 上按计划全做（建专用账号 ccrun、系统级装 gcc/libc6-dev/make/ripgrep、以 ccrun 身份装 rustup 与 Node）；花订阅额度做真实 Claude Code 那一腿；轮后**保留账号与工具链**、删一次性资源。特权命令由本会话经 root ssh 执行（该机 root 登录用的是用户自己的 key），没有要用户输密码。授权明确不含：改 ACL/防火墙/Tailscale 策略、动 bing 或 git 账号的任何东西、push/tag/release。保留物的撤销脚本仍在：scripts/p12-provision-linux-runtime.sh --revert（账号 + 按清单 purge 的 36 个包）、scripts/p12-runtime-toolchain.sh --revert（rustup/Node/PATH 块）；root 清单 /var/lib/ccnm-p12-20260911 为此保留。历史授权记录（P3/P7/P11 各轮）见 Git 历史；P11 那两条 macOS 的 sudo 授予（ccrun 的本轮公钥、临时进 com.apple.access_ssh）**仍未撤销**，要用户 sudo 跑对应的 --revert。",
+    "authorization": "P12 真机轮已由用户授权并执行完毕（2026-09-11），三问三答：hpsrv 上按计划全做（建专用账号 ccrun、系统级装 gcc/libc6-dev/make/ripgrep、以 ccrun 身份装 rustup 与 Node）；花订阅额度做真实 Claude Code 那一腿；轮后**保留账号与工具链**、删一次性资源。特权命令由本会话经 root ssh 执行（该机 root 登录用的是用户自己的 key），没有要用户输密码。授权明确不含：改 ACL/防火墙/Tailscale 策略、动 bing 或 git 账号的任何东西、push/tag/release。保留物的撤销脚本仍在：scripts/p12-provision-linux-runtime.sh --revert（账号 + 按清单 purge 的 36 个包）、scripts/p12-runtime-toolchain.sh --revert（rustup/Node/PATH 块）；root 清单 /var/lib/ccnm-p12-20260911 为此保留。历史授权记录（P3/P7/P11 各轮）见 Git 历史；P11 那两条 macOS 的 sudo 授予（ccrun 的本轮公钥、临时进 com.apple.access_ssh）**仍未撤销**，要用户 sudo 跑对应的 --revert。 【2026-09-11 发布前收口复核】P11 那两条 macOS 临时授予**已经不在了**，只读证据：`dsmemberutil checkmembership -U ccrun -G com.apple.access_ssh` 和 `dseditgroup -o checkmember` 都说不是成员，该组 GroupMembership 键不存在（没有直接成员）；p11 那把公钥的清单目录 /var/db/ccnm-p11-local-20260911 不存在，而 --revert 的最后一步就是 rmdir 它。还留着的 /var/db/ccnm-p7-local-20260910 是更早 P7 轮的清单目录（root 0700），不是这两条要撤的东西，里面还有什么只有 sudo 看得到。要逐条确认，由用户在自己的终端跑两条只读命令：`sudo scripts/p11-authorize-local-runtime.sh --check` 和 `sudo scripts/p7-grant-local-ssh-access.sh --check`（两个脚本都要求 SUDO_USER 是 bing，--check 只读）。本会话没有也不会执行 sudo。",
     "portability": "接续不依赖任何特定 MCP、任务管理器或 IDE 插件。任何模型只需 Git、仓库文件和项目命令即可按 current_task 继续；外部工具状态不作为产品阶段事实。"
   }
 }

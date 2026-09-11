@@ -15,8 +15,8 @@
 
 ### Runtime Node
 
-- macOS
-- 与 Agent Node 完全相同的 ccnm build
+- macOS，或 **Debian 13 / x86_64 的 Linux**（Runtime 那一半在这两种上都有真机证据；别的发行版和 arm64 没验过，见[支持矩阵](support-matrix.md)）
+- 与 Agent Node **同一个版本**的 ccnm（跨平台时不可能是同一个文件；下载分 `macos-universal` 和 `linux-x86_64` 两个，Linux 那个只有 Runtime 那一半）
 - 真实项目 workspace
 - 项目所需 toolchain（`git`、Rust、Node、Python 等）
 - `search_text` 需要 `ripgrep`

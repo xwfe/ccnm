@@ -6,7 +6,7 @@ The current pre-release build runs official CLI agents on an **Agent Node** and 
 
 **No source sync. No remote AI credentials. No custom model API client.**
 
-> Status: release candidate, macOS only. Both provider chains have been exercised on real macOS nodes, and the machine API has now closed the loop against a real agent once per provider, compared against the human CLI by side effect. The `ccnm.machine/1` contract is frozen as of 2026-09-10. Not published yet.
+> Status: release candidate, not published yet. Platform support is two different answers: the **Agent side** (Controller, sessions) is **macOS only** — the Controller is a launchd LaunchAgent; the **Runtime side** (`internal mcp-serve` and the seven tools) has real evidence on **macOS and on Debian 13 / x86_64**. Both provider chains have been exercised on real macOS nodes, and the machine API has closed the loop against a real agent once per provider, compared against the human CLI by side effect. Both contracts are frozen: `ccnm.machine/1` on 2026-09-10, `ccnm.workspace-mcp/1` on 2026-09-11.
 
 ---
 
@@ -16,7 +16,12 @@ The current pre-release build runs official CLI agents on an **Agent Node** and 
 
 **不复制源码，不把 AI 凭证下放到 Runtime Node，也不实现私有模型 API Client。**
 
-> 当前是**发布候选**，**只支持 macOS**。Claude 和 Codex 两个方向的公共入口都已在授权真机上跑通；给外部程序用的 machine API 也已用两个 provider 各跑通一次真机闭环并与人类 CLI 做过副作用对照，协议 `ccnm.machine/1` **已于 2026-09-10 冻结**。准确范围和未验证项见[支持矩阵](docs/support-matrix.md)。
+> 当前是**发布候选**，尚未发布。平台支持要分两件事说，因为它们不是同一个答案：
+>
+> - **Agent 那一侧（Controller、会话管理）只支持 macOS**——Controller 是 launchd LaunchAgent，会话上下文检查直接问 `launchctl` 和 `security`；Linux/Windows Controller 均未验收。
+> - **Runtime 那一侧（`internal mcp-serve` 与七个工具）在 macOS 和 Debian 13 / x86_64 上都有真机证据**；其他发行版和 arm64 Linux 没验过。
+>
+> Claude 和 Codex 两个方向的公共入口都已在授权真机上跑通；给外部程序用的 machine API 也已用两个 provider 各跑通一次真机闭环并与人类 CLI 做过副作用对照。两个协议都已冻结：`ccnm.machine/1` 于 2026-09-10，`ccnm.workspace-mcp/1` 于 2026-09-11。准确范围和未验证项见[支持矩阵](docs/support-matrix.md)。
 
 ## 角色模型
 
@@ -123,12 +128,21 @@ read_output
 - 专用低权限执行身份：能正常用项目，读不到任何已知 Agent 凭据和 SSH 私有状态，没有 sudo/admin，特权 socket 不可写
 - 项目 `CLAUDE.md` 投影；任一 Node 发起 prompt，包括多行 stdin
 
+在一台真实 **Debian 13 / x86_64** 机器上跑通的（Runtime 那一侧，[记录](docs/research/p12-real-project-2026-09-11.md)）：
+
+- 本机的 Claude Code 经 `ccnm mcp bridge` 在那棵远端树上完成了一次真改动：改文案、在远端跑测试、自己做了一个 commit，产物属主是 Runtime 执行身份
+- 专用执行身份（uid 1002、只有自己的组、无 sudo、docker socket 不可写、`~/.ssh` 无私钥、读不到别人的 home）；`cargo`/`rustc`/`node`/`npm`/`git` 由 `exec_command` 在那台机器上答出版本
+- 整套 Rust 测试在那台机器上绿，与 macOS 同数——**那一次是从两个红开始的**，两个都是真问题，都修了
+- 六条失败路径各有具名拒绝：writer busy、没 opt-in、read 请求 coding 不降级、协议号不认识、远端进程被杀、Host 被杀
+
 ## 还没验证的
 
 - **egress / 网络策略没有逐项验证。** 因此这个项目**不声明任何出口边界**，需要这种保证的场景由 OS 和网络层自己落实。
 - **Ctrl-D 没有证据**：官方 CLI 对该键无响应，只用 `/exit` 覆盖了同一条自然退出路径，两者不等价。
 - **machine API 的 `interactive` 模式没有实现**，输出不分页、结果不过期、`-32008` 从不返回。协议 `ccnm.machine/1` 已冻结，但冻结的是契约，不是说这些已经补上——补它们属于加法。
 - colocated 模式没有真实验收，因此明确拒绝，不静默降级。
+- **Linux 只验过 Runtime 那一侧**，而且只验过 Debian 13 / x86_64 一种。Linux 上的 Agent/Controller 没有实现也没有验收；arm64 Linux、别的发行版都没验过。
+- Remote Workspace MCP 只验过**一个 Host**（Claude Code 2.1.268 的 `-p` 模式）和**一棵中型 Rust 项目**：Codex 当 Host、交互式 UI 里 bridge 启动失败怎么显示、monorepo 规模、真实 node 项目的 `npm ci && npm test` 都没验过（Node 目前只验到"叫得动"）。
 
 ## 给程序用的接口
 
@@ -140,7 +154,11 @@ read_output
 
 ## 接下来做什么
 
-暂时不继续堆功能，优先用真实项目 dogfood 决定后续契约。Git 专用 MCP 工具、后台长进程、Browser provider、Linux Controller 和多 Agent 编排都放到真实需求出现之后再做。
+两个协议都已经冻结（`ccnm.machine/1` 2026-09-10、`ccnm.workspace-mcp/1` 2026-09-11），**真实项目 dogfood 那一轮已经结束**，契约不再等它来决定：往后加字段、加方法属于加法，删字段、改语义、加终态要升大版本号。
+
+现在是发布前收口，不继续堆功能。Git 专用 MCP 工具、后台长进程、Browser provider、Linux Controller 和多 Agent 编排仍然放到真实需求出现之后再做；编排（谁做什么、怎么验收、什么时候重试）是[独立项目](docs/orchestrator-handoff.md)的事，不进 ccnm。
+
+真正要补的是上一节"还没验证的"那几条——它们需要的是真机、额度和一次产品决定，不需要改设计。
 
 ## 许可证
 

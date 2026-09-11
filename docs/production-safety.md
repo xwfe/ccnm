@@ -112,7 +112,7 @@ No Docker socket        当前账号不应能写 Docker socket
 exec_command            confinement 通过后才正常允许
 ```
 
-`allow_unconfined_exec = true` 是发布前 dogfood 逃生开关。
+`allow_unconfined_exec = true` 是逃生开关，不是生产配置。
 
 它的含义只是：
 

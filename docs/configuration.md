@@ -238,7 +238,7 @@ instance workspace（用 `agent` 而不是 `agent_node` 的）不接受这个字
 
 ### `allow_unconfined_exec`
 
-发布前 dogfood 逃生开关：
+逃生开关，不是生产配置：
 
 ```toml
 allow_unconfined_exec = true
@@ -246,7 +246,7 @@ allow_unconfined_exec = true
 
 它允许 Runtime OS 账号没通过 confinement 检查时仍然执行 `exec_command`，但每条命令结果都会标记 runtime **未隔离**。
 
-这不是生产安全配置。真实项目应该在 Runtime Node 建 `ccrun` 之类的专用低权限账号，然后把它改回 `false`。
+真实项目应该在 Runtime Node 建 `ccrun` 之类的专用低权限账号，然后把它改回 `false`。
 
 **它waive不了凭据那一条**，那是下面那个开关的事。
 
@@ -329,7 +329,7 @@ SSH private key     由 OpenSSH 管
 
 ## 为什么不保留旧配置兼容层
 
-项目尚未发布，所以直接移除了旧的：
+这些字段是在项目第一次发布之前移除的，没有兼容层：
 
 ```text
 [hosts.*]        work_host        runtime_host

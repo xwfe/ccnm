@@ -295,7 +295,7 @@ Linux"。** 别因为这个 job 绿了就去改支持矩阵。它存在的理由
 
 **`ci.yml` 的 Linux job 也真跑过了，而且它第一次跑就抓到一个真缺陷**：`kill -KILL -<pgid>`
 在 Linux 上从来没杀成过进程组，还报成功（见[支持矩阵](support-matrix.md)那一段）。修掉之后
-clippy 干净、681 passed / 0 failed、`scripts/dist-linux.sh` 在 runner 上产出了包。
+clippy 干净、681 passed / 0 failed（当时的数字）、`scripts/dist-linux.sh` 在 runner 上产出了包。
 
 **`release.yml` 的 Linux job 还没在 runner 上跑过**——它只在推 tag 时触发，第一次运行就是
 第一次发版。它调用的东西（同一套门禁、同一个打包脚本）已经在 `ci.yml` 的 Linux job 和一台真实

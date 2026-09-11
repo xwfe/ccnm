@@ -198,7 +198,7 @@ work machine ≈ Agent Node
 `crates/ccnm-core/src/provider/` 通过明确的 `AgentProvider::{Claude, Codex}` enum 分发；没有插件注册或动态加载。公开入口只接受已配置的 instance id，不能直接注入 Provider、路径或官方 CLI argv；Agent Node 本机 registry 决定实际 Provider/profile。
 
 - `provider/claude/`：CLI 定位、version/auth 探测、配置目录环境变量、启动参数、交互/print 输入、MCP 配置和工具权限、结果解析，以及项目 instruction/context 规则。
-- `provider/codex/`：已实测的官方 CLI `0.153.4` 适配、Agent-local HOME、固定工具策略、JSONL 结果和 Runtime 根目录 AGENTS 上下文。未测版本和 colocated 模式拒绝启动。
+- `provider/codex/`：已实测的官方 CLI `0.154.0` 适配（唯一接受的版本，见[支持矩阵](support-matrix.md)）、Agent-local HOME、固定工具策略、JSONL 结果和 Runtime 根目录 AGENTS 上下文。未测版本和 colocated 模式拒绝启动。
 - `provider/types.rs`：Controller、work 和报告消费者使用的 Agent 观测/结果；保留 v1 字段形状。
 - `provider` 的凭据元数据声明环境前缀、已知目录/容器、文件名和 egress 检查目标。P1 由 `safety/` 统一执行所有已知 Provider 的可访问性检查和分来源环境策略。凭据可访问或未知**不可由 `allow_unconfined_exec` 跳过**——那个开关只接受 confinement 风险，要接受凭据这一条得单独写 `allow_unisolated_credentials`；身份未知和继承来的认证环境两个开关都放不开。不读取或传递凭据内容。
 - `session/transport.rs` 是两 Provider 共用的 Agent-side stdio wrapper；Claude MCP JSON 和 Codex 会话参数均指向它，再由它清理环境并执行 OpenSSH。SSH 与 Runtime child 的机制不放在 Codex 模块里；详情见 [安全契约](provider-safety.md)。

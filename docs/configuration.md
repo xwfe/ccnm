@@ -196,6 +196,7 @@ root = "/absolute/project/root"
 claude_permission_mode = "acceptEdits"
 allow_unconfined_exec = false
 allow_unisolated_credentials = false   # 默认值；开它之前先读下面那一节
+allow_unattended_exec = false          # 默认值：每条命令执行前问你一次
 external_mcp = "disabled"    # 默认值，可省略
 ```
 
@@ -232,7 +233,7 @@ Runtime Node 上真实项目的绝对路径。
 claude_permission_mode = "bypassPermissions"
 ```
 
-**它管不到 `exec_command`。** 交互式会话里那个工具带着 `anthropic/requiresUserInteraction`，Claude Code 在任何权限模式下都认，所以每次执行命令还是会问你一次——[故意的，理由在这里](troubleshooting.md#开了-bypasspermissionsexec_command-还是每次都问)。不想被问就走 `--print`，那条路上不带这个键。
+**它管不到 `exec_command`。** 交互式会话里那个工具带着 `anthropic/requiresUserInteraction`，Claude Code 在任何权限模式下都认，所以每次执行命令还是会问你一次——[故意的，理由在这里](troubleshooting.md#开了-bypasspermissionsexec_command-还是每次都问)。要关掉它得单独写 [`allow_unattended_exec`](#allow_unattended_exec)，或者走 `--print`（那条路上本来就不带这个键）。
 
 **代价说清楚**：`bypassPermissions` 是"什么都不问直接跑"。如果这个 workspace 同时开了 `allow_unisolated_credentials`，那就是**模型改文件、读你的 Agent 登录都不经你确认**——`exec_command` 那一问会是唯一还有人在场的环节。只在你自己的机器、你自己的项目上这么配。
 
@@ -270,6 +271,26 @@ allow_unisolated_credentials = true
 ccnm 的反应：第一次用它启动会话时在终端上把风险讲一遍（**只讲一次**；关掉再打开算新决定，会再讲），`ccnm doctor` 里那几行永远显示为 **WARN 并注明是接受的**（不会变成 OK），每条命令结果里的 unconfined 说明也会写明这一条。
 
 **任何开关都放不开的两条**：执行身份未知，以及认证环境是继承来的（`ANTHROPIC_*` / `CLAUDE_*` 在 Runtime 服务环境里）。前者没人能说清是谁接受了什么，后者是把凭证直接塞给每一个子进程。
+
+### `allow_unattended_exec`
+
+交互式会话执行命令前不再问你：
+
+```toml
+allow_unattended_exec = true
+```
+
+**默认是会问的，而且任何权限模式都关不掉。** ccnm 给 `exec_command` 挂了 `anthropic/requiresUserInteraction`，Claude Code 在每一种权限模式下都认它——`bypassPermissions` 也一样。理由很直接：一个调用方能关掉的闸门不叫闸门。这个开关是**承担风险的那台机器**把它关掉的唯一入口。
+
+只有 `exec_command` 会问。另外六个工具被路径策略框在 workspace 根目录里，这一个是别人机器上的一个 shell。
+
+**它跟前两个开关不是一类东西：它不授权任何事。** 命令能做什么由 `exec_gate` 和 Runtime 执行身份决定，这个开关一点都动不了；它只决定中间还有没有人。所以：
+
+- `ccnm doctor` 里那行 `Command approval` 会变成 WARN，**永远不会是 OK**；
+- 第一次用它起会话时终端上讲一次风险（只讲一次，关掉再打开算新决定）；
+- `--print` 和 `ccnm mcp bridge` **完全不受影响**——那两条路上本来就不问，因为两边都没人在等。
+
+**想要"不被打断"，先考虑 `--print`。** 一问一答、不常驻、输出直接落在你本机终端，边界还是执行身份本身。见[使用说明](usage.md#不想被打断先想想---print)。
 
 ### `external_mcp`
 

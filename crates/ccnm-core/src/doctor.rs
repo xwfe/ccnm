@@ -923,6 +923,20 @@ fn runtime_safety_rows(report: &crate::runtime::AuditReport) -> Vec<Check> {
             "refused until the runtime account is confined; see docs/production-safety.md",
         )
     });
+    // Whether a session stops and asks. Shown both ways because "will this
+    // interrupt me?" is a question with two useful answers, and because a
+    // warning nobody ever sees the other half of reads like noise.
+    rows.push(if accepted.unattended_exec {
+        Check::warn(
+            "Command approval",
+            "this workspace sets allow_unattended_exec: interactive sessions run every command without asking\nthe runtime account's own permissions and the workspace root are what still bound them",
+        )
+    } else {
+        Check::ok(
+            "Command approval",
+            "interactive sessions ask before each exec_command, in every permission mode\n--print and ccnm mcp bridge never ask: nobody is waiting at either",
+        )
+    });
     rows
 }
 
@@ -1327,6 +1341,7 @@ mod tests {
             },
             allow_unconfined_exec: false,
             allow_unisolated_credentials: false,
+            allow_unattended_exec: false,
         }
     }
 
@@ -1341,6 +1356,48 @@ mod tests {
                 fix: None,
             }],
         }
+    }
+
+    /// The approval row answers "will this stop and ask me?", and it has to
+    /// answer both ways: a warning whose opposite nobody ever sees reads
+    /// like noise, and after the one-time notice has scrolled away this row
+    /// is the only place the decision is still visible.
+    #[test]
+    fn the_approval_row_says_which_way_this_workspace_set_it() {
+        let asking = runtime_safety_rows(&confined_report());
+        let row = asking
+            .iter()
+            .find(|r| r.name == "Command approval")
+            .expect("shown even when nothing was accepted");
+        assert_eq!(row.status, Status::Ok, "{row:?}");
+        assert!(
+            row.detail.contains("ask before each exec_command"),
+            "{row:?}"
+        );
+
+        let unattended = runtime_safety_rows(&crate::runtime::AuditReport {
+            allow_unattended_exec: true,
+            ..confined_report()
+        });
+        let row = unattended
+            .iter()
+            .find(|r| r.name == "Command approval")
+            .unwrap();
+        assert_eq!(
+            row.status,
+            Status::Warn,
+            "accepted is never a pass: {row:?}"
+        );
+        assert!(row.detail.contains("allow_unattended_exec"), "{row:?}");
+        // It is not an authorization, so it must not move the exec verdict.
+        let exec = |rows: &[Check]| {
+            rows.iter()
+                .find(|r| r.name == "exec_command")
+                .unwrap()
+                .status
+                .clone()
+        };
+        assert_eq!(exec(&asking), exec(&unattended));
     }
 
     /// An accepted risk is a WARN, never an OK.
@@ -1781,6 +1838,7 @@ mod tests {
             provider_config_dir: None,
             permission_mode: Default::default(),
             allow_unisolated_credentials: false,
+            allow_unattended_exec: false,
         };
         let from_agent = from_agent(&config, "xshun", Ok((&authority, &probe)));
 

@@ -156,6 +156,18 @@ allow_unisolated_credentials = true   # 这个账号能读到 Agent 的登录
 
 **真要长期用，还是去建一个专用账号。** 下面两节就是。这个开关是给"我知道我在做什么，我现在就想跑起来"的场景用的。
 
+### 还有第三个开关，但它不是这一类
+
+`allow_unattended_exec` 也写在同一张 workspace 表里，形状也一样，但**它不授权任何事**：它只决定交互式会话执行 `exec_command` 之前要不要问你一次。命令能做什么，仍然由 `exec_gate` 和 Runtime 执行身份决定，这个开关一点都动不了。
+
+```toml
+allow_unattended_exec = true            # 交互式会话不再问我
+```
+
+值得单独说的是**三个都开是什么局面**：模型跑的任何命令都不经你确认、都能读到你的 Agent 登录、账号本身也没受限。这时候还站着的只剩两样——那个账号自己的 OS 权限，和工具够不到 workspace 根目录外面这件事。
+
+它对 `--print` 和 `ccnm mcp bridge` 没有任何影响：那两条路上本来就不问，因为两边都没人在等。细节见[配置说明](configuration.md#allow_unattended_exec)。
+
 ## macOS 创建 Runtime Service Account
 
 下面这些命令会修改主机安全模型，所以 ccnm **不会自动执行**。应由你自己在 Runtime Node 上完成。

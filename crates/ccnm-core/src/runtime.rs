@@ -392,6 +392,8 @@ pub struct ResolveReport {
     /// wherever the session was started from. Absent means not accepted.
     #[serde(default)]
     pub allow_unisolated_credentials: bool,
+    #[serde(default)]
+    pub allow_unattended_exec: bool,
 }
 
 impl Protocol for ResolveReport {
@@ -433,6 +435,7 @@ pub fn resolve(config: &Config, request: &ResolveRequest) -> Result<ResolveRepor
             .map(Path::to_path_buf),
         permission_mode: provider.permission_mode(resolved.workspace),
         allow_unisolated_credentials: resolved.workspace.allow_unisolated_credentials,
+        allow_unattended_exec: resolved.workspace.allow_unattended_exec,
     })
 }
 
@@ -569,6 +572,8 @@ pub struct AuditReport {
     /// report: absent means "not accepted", which is the safe reading.
     #[serde(default)]
     pub allow_unisolated_credentials: bool,
+    #[serde(default)]
+    pub allow_unattended_exec: bool,
 }
 
 impl AuditReport {
@@ -577,6 +582,7 @@ impl AuditReport {
         crate::safety::Accepted {
             unconfined_exec: self.allow_unconfined_exec,
             unisolated_credentials: self.allow_unisolated_credentials,
+            unattended_exec: self.allow_unattended_exec,
         }
     }
 }
@@ -619,6 +625,7 @@ pub fn audit(
         root: RootStatus::of(&resolved.workspace.root, runner),
         allow_unconfined_exec: resolved.workspace.allow_unconfined_exec,
         allow_unisolated_credentials: resolved.workspace.allow_unisolated_credentials,
+        allow_unattended_exec: resolved.workspace.allow_unattended_exec,
     })
 }
 

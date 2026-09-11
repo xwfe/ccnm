@@ -207,6 +207,7 @@ impl ExecGate {
             .map(|w| crate::safety::Accepted {
                 unconfined_exec: w.allow_unconfined_exec,
                 unisolated_credentials: w.allow_unisolated_credentials,
+                unattended_exec: w.allow_unattended_exec,
             })
             .unwrap_or(crate::safety::Accepted::NOTHING);
         let home = crate::paths::home_dir().unwrap_or_else(|_| PathBuf::from("/nonexistent"));
@@ -418,6 +419,7 @@ impl Server {
                 // let a Host skip the approval it would otherwise ask for.
                 if self.inner.interactive
                     && !self.inner.entry.is_external()
+                    && !self.inner.exec_gate.accepted.unattended_exec
                     && tool.name == INTERACTION_TOOL
                 {
                     tool.with_meta(requires_user_interaction())
@@ -923,6 +925,13 @@ mod tests {
     use super::*;
 
     fn fixture_server(payload: &ServePayload) -> CcnmResult<Server> {
+        fixture_server_accepting(payload, crate::safety::Accepted::NOTHING)
+    }
+
+    fn fixture_server_accepting(
+        payload: &ServePayload,
+        accepted: crate::safety::Accepted,
+    ) -> CcnmResult<Server> {
         Server::with_gate(
             payload,
             crate::runtime::canonical_root(&payload.root)?,
@@ -931,7 +940,7 @@ mod tests {
                     user: "fixture".into(),
                     findings: vec![],
                 },
-                accepted: crate::safety::Accepted::NOTHING,
+                accepted,
                 config: None,
             },
             None,
@@ -1025,6 +1034,37 @@ mod tests {
         let server = fixture_server(&ServePayload::new("xshun", dir, "s")).unwrap();
         assert!(!server.tools().iter().any(asks_the_user));
         assert!(!asks_the_user(&server.get_tool("exec_command").unwrap()));
+    }
+
+    /// The one way the asking stops, and it comes from the Runtime's own
+    /// config -- never from the payload, because a caller that could turn
+    /// off the step that audits it is not being audited.
+    ///
+    /// Nothing else about the tool changes: this is not an authorization,
+    /// and `exec_gate` is untouched by it.
+    #[test]
+    fn a_workspace_that_accepted_unattended_exec_stops_the_client_asking() {
+        let dir = temp("meta-unattended");
+        let payload = ServePayload::new("xshun", dir, "s").with_interactive(true);
+        let accepted = crate::safety::Accepted {
+            unconfined_exec: false,
+            unisolated_credentials: false,
+            unattended_exec: true,
+        };
+        let server = fixture_server_accepting(&payload, accepted).unwrap();
+        let tools = server.tools();
+        assert_eq!(tools.len(), crate::session::MCP_TOOLS.len());
+        assert!(
+            !tools.iter().any(asks_the_user),
+            "allow_unattended_exec is set, so nothing asks"
+        );
+        // Same answer from both sides, as above.
+        assert!(!asks_the_user(&server.get_tool("exec_command").unwrap()));
+
+        // And without it, on the same payload, it still asks -- otherwise
+        // this test would pass for the wrong reason.
+        let server = fixture_server(&payload).unwrap();
+        assert!(asks_the_user(&server.get_tool("exec_command").unwrap()));
     }
 
     #[test]

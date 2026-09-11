@@ -2003,6 +2003,7 @@ mod tests {
             },
             allow_unconfined_exec: false,
             allow_unisolated_credentials: false,
+            allow_unattended_exec: false,
         })
         .unwrap()
     }

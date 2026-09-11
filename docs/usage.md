@@ -123,6 +123,35 @@ ccnm result my-project --session <id>
 
 Agent Instance 建议同时带 `--agent <instance-id>`；不带 session 的“最近一次”只保留给人类兼容使用，不是稳定机器接口。
 
+### 不想被打断：先想想 `--print`
+
+交互式会话每次执行命令都会停下来问你一次，而且**任何权限模式都关不掉**（[为什么](troubleshooting.md#开了-bypasspermissionsexec_command-还是每次都问)）。被问烦了有两条路，先想想哪条更合适：
+
+| | `--print` | `allow_unattended_exec = true` |
+| --- | --- | --- |
+| 形态 | 一问一答，跑完就结束 | 常驻会话，一直不问 |
+| 输出在哪 | **直接打在你本机终端**，随手复制 | 在对面 tmux 里，要滚要选 |
+| 中间有没有人 | 没有，但每次是你亲手发起的 | 没有，而且会话会自己连着做下去 |
+| 适合 | 明确的一件事：跑测试、查状态、改一处 | 长时间结对，你在旁边看着 |
+
+大部分"它老问我"的场景其实是第一种——你想让它做一件明确的事，不需要一个常驻会话：
+
+```bash
+ccnm my-project --print "跑 cargo test，把失败的贴给我"
+ccnm my-project --print "把 README 里的版本号改成 0.5.0，然后 git diff 给我看"
+```
+
+**长任务不怕断线**：结果写在 Agent Node 的会话目录里，ssh 断了也还在，用 `ccnm result` 捞。默认 600 秒超时，长的用 `--timeout`：
+
+```bash
+ccnm my-project --print "跑完整测试套件" --timeout 1800
+ccnm result my-project          # 断线之后回来捞
+```
+
+多行、带引号的 prompt 走 stdin，见上面的 [Prompt](#prompt) 一节。
+
+真的需要常驻会话又不想被问，再去开 [`allow_unattended_exec`](configuration.md#allow_unattended_exec)——那是把最后一个有人在场的环节去掉，`ccnm doctor` 会一直提醒你它开着。
+
 ## MCP 诊断
 
 本地 Runtime 诊断：

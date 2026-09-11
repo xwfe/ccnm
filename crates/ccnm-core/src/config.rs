@@ -189,6 +189,29 @@ pub struct Workspace {
     /// taking the risk is the one that gets to decide, not the caller.
     #[serde(default)]
     pub allow_unisolated_credentials: bool,
+    /// Stop telling the Agent's Host that `exec_command` needs a person to
+    /// approve it.
+    ///
+    /// Interactive managed sessions normally publish the tool with
+    /// `anthropic/requiresUserInteraction`, which Claude Code honours in
+    /// every permission mode including `bypassPermissions` -- see
+    /// [`crate::mcp::server`]. That is deliberate: a gate the caller can
+    /// switch off is not a gate. This switch is how the Runtime, and only
+    /// the Runtime, switches it off anyway.
+    ///
+    /// Third of three, and like the other two it names the property it
+    /// gives up. Confinement, isolation, and now attendance: somebody is
+    /// at the terminal and sees each command before it runs. `attended` is
+    /// exactly the condition the key is already attached under -- the code
+    /// calls it `interactive` -- so this says "a person is there, do not
+    /// ask them".
+    ///
+    /// It changes nothing for `--print` or `ccnm mcp bridge`: neither ever
+    /// carries the key, because nobody is waiting at either. And it is not
+    /// an authorization: `exec_gate` and the account the runtime runs as
+    /// decide what a command may do, and no switch here moves them.
+    #[serde(default)]
+    pub allow_unattended_exec: bool,
     /// The most an **external** MCP client may do with this workspace
     /// (docs/protocol/remote-workspace-mcp-v1.md section 4).
     ///

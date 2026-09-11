@@ -167,6 +167,7 @@ fn both_providers_default_managed_and_local_override_paths_are_audited() {
     assert!(audit.agent_boundary_clear(Accepted {
         unconfined_exec: true,
         unisolated_credentials: true,
+        unattended_exec: false,
     }));
     assert_eq!(runner.calls().len(), 6);
     let text = serde_json::to_string(&report).unwrap();
@@ -276,9 +277,77 @@ fn the_gate_before_spawn_honours_the_same_admission_the_handshake_did() {
             Accepted {
                 unconfined_exec: true,
                 unisolated_credentials: true,
+                unattended_exec: false,
             },
             &runner
         ),
         "accepted at the handshake means accepted here too, or exec is refused forever"
     );
+}
+
+/// It is a second lock, not a key. Whether a command may run is decided
+/// by the findings and the account; `allow_unattended_exec` only decides
+/// whether a person is asked first, and must never widen the first answer.
+#[test]
+fn accepting_unattended_exec_authorizes_nothing() {
+    let report = Audit {
+        user: "fixture".into(),
+        findings: vec![Finding::fail(
+            "No Claude credential",
+            "reachable",
+            "use a separate identity",
+        )],
+    };
+    let unattended_only = Accepted {
+        unconfined_exec: false,
+        unisolated_credentials: false,
+        unattended_exec: true,
+    };
+    assert!(!report.agent_boundary_clear(unattended_only));
+    assert!(!report.exec_allowed(unattended_only));
+    // And it does not take anything away either: the same posture with the
+    // credential switch set stays allowed with it on.
+    let both = Accepted {
+        unconfined_exec: true,
+        unisolated_credentials: true,
+        unattended_exec: true,
+    };
+    assert!(report.exec_allowed(both));
+}
+
+/// Two switches, two markers, and each said once on its own. A workspace
+/// that turns on the second later must still hear about the second.
+#[test]
+fn each_accepted_risk_is_announced_once_and_separately() {
+    let dir = std::env::temp_dir().join(format!("ccnm-once-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let credentials = Accepted {
+        unconfined_exec: true,
+        unisolated_credentials: true,
+        unattended_exec: false,
+    };
+    let first = warn_accepted_once(&dir, "xshun", credentials).expect("said once");
+    assert!(first.contains("allow_unisolated_credentials"), "{first}");
+    assert!(
+        warn_accepted_once(&dir, "xshun", credentials).is_none(),
+        "not twice"
+    );
+
+    let both = Accepted {
+        unattended_exec: true,
+        ..credentials
+    };
+    let second = warn_accepted_once(&dir, "xshun", both).expect("the new decision is said");
+    assert!(second.contains("allow_unattended_exec"), "{second}");
+    assert!(
+        !second.contains("allow_unisolated_credentials"),
+        "the one already said is not repeated: {second}"
+    );
+    assert!(warn_accepted_once(&dir, "xshun", both).is_none());
+
+    // Turning one back off forgets it, so deciding it again is announced.
+    assert!(warn_accepted_once(&dir, "xshun", credentials).is_none());
+    let again = warn_accepted_once(&dir, "xshun", both).expect("off then on is a new decision");
+    assert!(again.contains("allow_unattended_exec"), "{again}");
+    std::fs::remove_dir_all(&dir).unwrap();
 }

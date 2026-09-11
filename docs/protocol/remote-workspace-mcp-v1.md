@@ -205,7 +205,7 @@ transport 的认证边界是 **OpenSSH identity + 独立的 Runtime OS 账号**�
 2. **`exec_command` 永远按 destructive + open-world 处理。** 不因为这次的命令"看起来只是 `ls`"就动态改注解。注解是工具的属性，不是某次调用的属性。
 3. `apply_patch` 不是 open-world：它只能改这个 workspace 里的文件。但它是 destructive——update 会替换内容，delete 会删文件。
 
-另外，Managed 路径上 `exec_command` 会带一个 `_meta` 键 `anthropic/requiresUserInteraction`（只在有人坐在终端前的交互式 session 里带）。**外部 MCP 不发这个键**：bridge 不知道 Host 那头有没有人，冒充知道比不说更糟。
+另外，Managed 路径上 `exec_command` 会带一个 `_meta` 键 `anthropic/requiresUserInteraction`（只在有人坐在终端前的交互式 session 里带，而且该 workspace 没有写 `allow_unattended_exec`）。**外部 MCP 永远不发这个键**：bridge 不知道 Host 那头有没有人，冒充知道比不说更糟，所以那个开关对 bridge 没有任何影响。
 
 ## 6. 连接生命周期
 

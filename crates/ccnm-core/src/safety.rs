@@ -154,6 +154,11 @@ pub struct Accepted {
     pub unconfined_exec: bool,
     /// `allow_unisolated_credentials`
     pub unisolated_credentials: bool,
+    /// `allow_unattended_exec`. Unlike the other two this waives no
+    /// finding: it decides whether the Host is told to ask a person
+    /// before each `exec_command`, which is a second lock on top of
+    /// whatever the findings allow, never a replacement for one.
+    pub unattended_exec: bool,
 }
 
 impl Accepted {
@@ -161,6 +166,7 @@ impl Accepted {
     pub const NOTHING: Self = Self {
         unconfined_exec: false,
         unisolated_credentials: false,
+        unattended_exec: false,
     };
 
     /// Only the unconfined-exec switch, which is what most callers and
@@ -169,13 +175,14 @@ impl Accepted {
         Self {
             unconfined_exec,
             unisolated_credentials: false,
+            unattended_exec: false,
         }
     }
 
     /// Is anything waived at all? Used to decide whether a session has to
     /// carry a warning with its results.
     pub fn any(&self) -> bool {
-        self.unconfined_exec || self.unisolated_credentials
+        self.unconfined_exec || self.unisolated_credentials || self.unattended_exec
     }
 }
 
@@ -195,10 +202,41 @@ impl Accepted {
 /// A state directory that cannot be written is not an error: the warning
 /// is printed and simply may be printed again.
 pub fn warn_accepted_once(state_dir: &Path, workspace: &str, accepted: Accepted) -> Option<String> {
+    let said: Vec<String> = RISKS
+        .iter()
+        .filter_map(|risk| say_once(state_dir, workspace, (risk.set)(accepted), risk))
+        .collect();
+    (!said.is_empty()).then(|| said.join("\n\n"))
+}
+
+/// One accepted risk: its marker file, whether this workspace set it, and
+/// what to say the first time it does.
+struct Risk {
+    marker: &'static str,
+    set: fn(Accepted) -> bool,
+    text: fn(&str) -> String,
+}
+
+/// Every risk that announces itself. Adding a switch means adding a row
+/// here, not another copy of the marker logic.
+const RISKS: [Risk; 2] = [
+    Risk {
+        marker: "agent-credentials",
+        set: |a| a.unisolated_credentials,
+        text: credentials_text,
+    },
+    Risk {
+        marker: "unattended-exec",
+        set: |a| a.unattended_exec,
+        text: unattended_text,
+    },
+];
+
+fn say_once(state_dir: &Path, workspace: &str, set: bool, risk: &Risk) -> Option<String> {
     let marker = state_dir
         .join("accepted-risks")
-        .join(format!("{workspace}.agent-credentials"));
-    if !accepted.unisolated_credentials {
+        .join(format!("{workspace}.{}", risk.marker));
+    if !set {
         let _ = std::fs::remove_file(&marker);
         return None;
     }
@@ -209,7 +247,11 @@ pub fn warn_accepted_once(state_dir: &Path, workspace: &str, accepted: Accepted)
         let _ = std::fs::create_dir_all(parent);
     }
     let _ = std::fs::write(&marker, b"said\n");
-    Some(format!(
+    Some((risk.text)(workspace))
+}
+
+fn credentials_text(workspace: &str) -> String {
+    format!(
         "!! ccnm: workspace \"{workspace}\" has allow_unisolated_credentials set.\n\
          \n\
          The account that runs this workspace's commands on the Runtime Node can\n\
@@ -224,7 +266,28 @@ pub fn warn_accepted_once(state_dir: &Path, workspace: &str, accepted: Accepted)
          [workspaces.{workspace}] in the Runtime Node's config.toml.\n\
          \n\
          Said once. `ccnm doctor {workspace}` keeps showing it."
-    ))
+    )
+}
+
+fn unattended_text(workspace: &str) -> String {
+    format!(
+        "!! ccnm: workspace \"{workspace}\" has allow_unattended_exec set.\n\
+         \n\
+         Interactive sessions here no longer ask you before running a command.\n\
+         Every exec_command goes straight through, on the Runtime Node, as the\n\
+         account that runtime runs as -- and a prompt is all it takes to make the\n\
+         model run one, including a prompt that arrives in a file it was asked to\n\
+         read.\n\
+         \n\
+         That question was the last step with a person in it. What still stands is\n\
+         what always stood: the runtime account's own OS permissions, and the\n\
+         workspace root the tools cannot reach past.\n\
+         \n\
+         To take it back: remove allow_unattended_exec from\n\
+         [workspaces.{workspace}] in the Runtime Node's config.toml.\n\
+         \n\
+         Said once. `ccnm doctor {workspace}` keeps showing it."
+    )
 }
 
 /// The runtime account, as it is.
@@ -1018,6 +1081,7 @@ mod tests {
         let credentials_only = Accepted {
             unconfined_exec: false,
             unisolated_credentials: true,
+            unattended_exec: false,
         };
         assert!(audit.agent_boundary_clear(credentials_only));
         assert!(!audit.exec_allowed(credentials_only));
@@ -1025,6 +1089,7 @@ mod tests {
         let both = Accepted {
             unconfined_exec: true,
             unisolated_credentials: true,
+            unattended_exec: false,
         };
         assert!(audit.exec_allowed(both));
     }
@@ -1058,6 +1123,7 @@ mod tests {
         let everything = Accepted {
             unconfined_exec: true,
             unisolated_credentials: true,
+            unattended_exec: false,
         };
         assert_eq!(audit.user, "unknown");
         assert!(
@@ -1080,6 +1146,7 @@ mod tests {
         let on = Accepted {
             unconfined_exec: true,
             unisolated_credentials: true,
+            unattended_exec: false,
         };
 
         let first = warn_accepted_once(&state, "xdo", on).expect("the first time says it");

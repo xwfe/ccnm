@@ -57,7 +57,18 @@ impl WriteGuard {
                     // an external coding session holding it. Naming one entry
                     // sends whoever reads this looking for a session that does
                     // not exist. The contract fixture never had the word.
-                    "workspace write guard is busy; another session still owns this working tree",
+                    //
+                    // The lines after the first one point at the owner,
+                    // because the Host shows none of this: Claude Code
+                    // renders a closed stdio server as CONNECTION_CLOSED and
+                    // drops the stderr that says why. Whoever does see this
+                    // reached it through `ccnm doctor`, and the next thing
+                    // they need is where to look.
+                    "workspace write guard is busy; another session still owns this working tree\n\
+                     who holds it, on the Runtime Node: the `held <session> <workspace>` file in\n\
+                     ${XDG_STATE_HOME:-~/.local/state}/ccnm/write-guards/\n\
+                     `ccnm status` alone does not prove nobody is using it: a --print run holds\n\
+                     this guard and never appears there",
                 ));
             }
             Err(_) => {
@@ -70,8 +81,20 @@ impl WriteGuard {
         file.read_to_string(&mut state_text)?;
         if state_text.starts_with("held ") {
             let _ = file.unlock();
+            // The first line keeps its wording: `scripts/p12_dogfood_check.py`
+            // and `tests/test_p12_dogfood.py` both match "left held by an
+            // interrupted process" to prove this refusal happened on a real
+            // machine, and re-proving that costs a paid round. The recovery
+            // steps are appended, never spliced into it.
             return Err(Error::policy(
-                "workspace write guard was left held by an interrupted process; old children may still exist, so authority is not transferred automatically",
+                "workspace write guard was left held by an interrupted process; old children may still exist, so authority is not transferred automatically\n\
+                 recover on the Runtime Node, in this order:\n\
+                 1. prove the old ones are gone: `ccnm status <workspace>` AND a process list\n\
+                    (look for `ccnm internal mcp-serve` for this workspace)\n\
+                 2. find the single marker naming that session id in\n\
+                    ${XDG_STATE_HOME:-~/.local/state}/ccnm/write-guards/\n\
+                 3. back it up, then delete that one file\n\
+                 never clear it just because time passed; see docs/operations.md, 「写入 guard 残留」",
             ));
         }
         if !state_text.is_empty() && state_text != RELEASED {

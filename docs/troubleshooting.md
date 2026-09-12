@@ -320,9 +320,13 @@ Error: No such tool available: mcp__ccnm__read_file. Its MCP server 'ccnm' has d
 ```text
 CCNM_E_POLICY:
 workspace write guard is busy; another session still owns this working tree
+who holds it, on the Runtime Node: the `held <session> <workspace>` file in
+${XDG_STATE_HOME:-~/.local/state}/ccnm/write-guards/
+`ccnm status` alone does not prove nobody is using it: a --print run holds
+this guard and never appears there
 ```
 
-server 退出，Claude Code 对这种情况只显示 `CONNECTION_CLOSED: Connection closed`，**不显示 server 的 stderr**，所以真实理由一个字都不会到你面前。
+server 退出，Claude Code 对这种情况只显示 `CONNECTION_CLOSED: Connection closed`，**不显示 server 的 stderr**，所以上面这几行一个字都不会到你面前。要看见它们，在 Runtime Node 上跑 `ccnm doctor <workspace>`——那条 `Remote MCP handshake` 会把 server 的 stderr 原样带出来。
 
 不是链路断了，也不是闲置超时：原会话的那条 SSH MCP 连接**一直好好的**，fork 出来那个从来就没连上过。
 

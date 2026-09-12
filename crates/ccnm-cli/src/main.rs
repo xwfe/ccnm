@@ -470,9 +470,9 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
 
     match &cli.command {
         Command::Init { agent, runtime } => {
-            init(&config_path()?, agent.as_deref(), runtime.as_deref())
+            init(&config_path()?, agent.as_deref(), runtime.as_deref(), lang)
         }
-        Command::Workspace { command } => workspace_command(&config_path()?, command),
+        Command::Workspace { command } => workspace_command(&config_path()?, command, lang),
         Command::Doctor { workspace, agent } => {
             let path = config_path()?;
             if let Some(workspace) = workspace {
@@ -538,7 +538,13 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
                 let report = work::start(&start_request(&authority, opening), &tools)?;
                 eprintln!("{}", report.summary());
                 if *detached {
-                    eprintln!("\nattach when you want it: ccnm attach {workspace}");
+                    eprintln!(
+                        "\n{}",
+                        lang.pick(
+                            format!("想接上的时候：ccnm attach {workspace}"),
+                            format!("attach when you want it: ccnm attach {workspace}"),
+                        )
+                    );
                     return Ok(0);
                 }
                 return work::attach(&attach_request(workspace, selected, None), &tools);
@@ -569,10 +575,16 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
             )?;
             eprintln!("{}", rep.summary());
             if *detached {
-                eprintln!("\nattach when you want it: ccnm attach {workspace}");
+                eprintln!(
+                    "\n{}",
+                    lang.pick(
+                        format!("想接上的时候：ccnm attach {workspace}"),
+                        format!("attach when you want it: ccnm attach {workspace}"),
+                    )
+                );
                 return Ok(0);
             }
-            attach_selected(&resolved, &env, workspace, agent.as_deref(), None)
+            attach_selected(&resolved, &env, workspace, agent.as_deref(), None, lang)
         }
         Command::Attach {
             workspace,
@@ -597,6 +609,7 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
                 workspace,
                 agent.as_deref(),
                 session.as_deref(),
+                lang,
             )
         }
         Command::Status {
@@ -704,10 +717,20 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
                 agent.as_deref(),
                 session.as_deref(),
             )?;
+            let session = &rep.tmux_session;
             if rep.killed {
-                println!("stopped {}", rep.tmux_session);
+                println!(
+                    "{}",
+                    lang.pick(format!("停了 {session}"), format!("stopped {session}"))
+                );
             } else {
-                println!("nothing to stop: {} was not running", rep.tmux_session);
+                println!(
+                    "{}",
+                    lang.pick(
+                        format!("没什么可停的：{session} 本来就没在跑"),
+                        format!("nothing to stop: {session} was not running"),
+                    )
+                );
             }
             Ok(0)
         }
@@ -958,7 +981,12 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
 /// Everything else has a default. Running it again is not an error and
 /// not a rewrite: it reports what it changed, or that there was nothing
 /// to change.
-fn init(path: &std::path::Path, agent: Option<&str>, runtime: Option<&str>) -> Result<i32> {
+fn init(
+    path: &std::path::Path,
+    agent: Option<&str>,
+    runtime: Option<&str>,
+    lang: Lang,
+) -> Result<i32> {
     let mut edit = configedit::Edit::open(path)?;
     let existed = edit.existed();
     let mut changes = configedit::Changes::default();
@@ -974,14 +1002,16 @@ fn init(path: &std::path::Path, agent: Option<&str>, runtime: Option<&str>) -> R
         // unreachable from the CLI; the arms exist so the function is
         // total for callers that are not clap.
         (Some(_), Some(_)) => {
-            return Err(ccnm_core::Error::invalid_args(
+            return Err(ccnm_core::Error::invalid_args(lang.pick(
+                "--agent 和 --runtime 各自说明这台机器是谁，所以只能给一个\n  放项目的那台：      ccnm init --agent <别名>\n  跑 Claude 的那台：  ccnm init --runtime <别名>",
                 "--agent and --runtime each say which node this machine is, so only one of them can be true here\n  on the machine holding the projects:  ccnm init --agent <alias>\n  on the machine running Claude:        ccnm init --runtime <alias>",
-            ));
+            )));
         }
         (None, None) => {
-            return Err(ccnm_core::Error::invalid_args(
+            return Err(ccnm_core::Error::invalid_args(lang.pick(
+                "要给出另一台机器的别名：\n  放项目的那台：      ccnm init --agent <别名>\n  跑 Claude 的那台：  ccnm init --runtime <别名>",
                 "give the alias for the other node:\n  on the machine holding the projects:  ccnm init --agent <alias>\n  on the machine running Claude:        ccnm init --runtime <alias>",
-            ));
+            )));
         }
     };
     edit.set_this(this, &mut changes);
@@ -1000,35 +1030,77 @@ fn init(path: &std::path::Path, agent: Option<&str>, runtime: Option<&str>) -> R
     edit.save(&changes)?;
 
     if !existed {
-        println!("wrote {}", path.display());
+        let path = path.display();
+        println!(
+            "{}",
+            lang.pick(format!("写好了 {path}"), format!("wrote {path}"))
+        );
     }
-    report_changes(&changes, path);
+    report_changes(&changes, path, lang);
     if !existed || changes.lines().iter().any(|l| l.contains("workspaces")) {
         println!();
     }
     let config = Config::load(path)?;
     if this == "agent" {
-        println!("this Agent Node will ask Runtime Node {alias} for a workspace it does not know");
-        println!("next, from here:");
-        println!("  ccnm <workspace>       start it there, attach here");
+        println!(
+            "{}",
+            lang.pick(
+                format!("这台是 Agent Node：碰到不认识的 workspace，它会去问 Runtime Node {alias}"),
+                format!(
+                    "this Agent Node will ask Runtime Node {alias} for a workspace it does not know"
+                ),
+            )
+        );
+        println!("{}", lang.pick("接着在这台上：", "next, from here:"));
+        println!(
+            "  {}",
+            lang.pick(
+                "ccnm <workspace>       在那边起会话，在这边接上",
+                "ccnm <workspace>       start it there, attach here",
+            )
+        );
     } else if config.workspaces.is_empty() {
-        println!("next: cd to a project on this machine and run");
+        println!(
+            "{}",
+            lang.pick(
+                "接着：cd 到这台机器上的一个项目里，然后",
+                "next: cd to a project on this machine and run",
+            )
+        );
         println!("  ccnm workspace add <name>");
     }
     // ssh has to work before anything else can; say so plainly rather than
     // testing it here, where a slow or absent network would turn `init`
     // into something that hangs.
-    println!("\nthis must work without a password:");
+    println!(
+        "\n{}",
+        lang.pick(
+            "下面这条必须不用输密码就能过：",
+            "this must work without a password:",
+        )
+    );
     println!("  ssh {alias} true");
     if this == "runtime" {
-        println!("\nand the Agent Node must be able to reach back, which is its own");
-        println!("config, written there:");
-        println!("  ssh {alias} ccnm init --runtime <this machine's alias>");
+        println!(
+            "\n{}",
+            lang.pick(
+                "反过来 Agent Node 也得够得到这台。那是它自己的配置，要在那边写：",
+                "and the Agent Node must be able to reach back, which is its own\nconfig, written there:",
+            )
+        );
+        println!(
+            "  ssh {alias} ccnm init --runtime {}",
+            lang.pick("<这台机器的别名>", "<this machine's alias>")
+        );
     }
     Ok(0)
 }
 
-fn workspace_command(path: &std::path::Path, command: &WorkspaceCommand) -> Result<i32> {
+fn workspace_command(
+    path: &std::path::Path,
+    command: &WorkspaceCommand,
+    lang: Lang,
+) -> Result<i32> {
     match command {
         WorkspaceCommand::Add {
             name,
@@ -1081,31 +1153,56 @@ fn workspace_command(path: &std::path::Path, command: &WorkspaceCommand) -> Resu
                     ))
                 }
             })?;
-            report_changes(&changes, path);
-            println!("\ncheck it: ccnm doctor {name}");
-            println!("use it:   ccnm {name}");
+            report_changes(&changes, path, lang);
+            // Two labels padded to the same column, so the commands line
+            // up. `pad` rather than hand-counted spaces, because the
+            // Chinese labels are not the width their character count says.
+            let (check, use_) = lang.pick(("查一下：", "开始用："), ("check it:", "use it:  "));
+            println!("\n{} ccnm doctor {name}", crate::pad_label(check));
+            println!("{} ccnm {name}", crate::pad_label(use_));
             Ok(0)
         }
         WorkspaceCommand::List => {
             let config = Config::load(path)?;
             if config.workspaces.is_empty() {
-                println!("no workspaces in {}", path.display());
-                println!("add one: cd to a project and run `ccnm workspace add <name>`");
+                let path = path.display();
+                println!(
+                    "{}",
+                    lang.pick(
+                        format!("{path} 里一个 workspace 都没有"),
+                        format!("no workspaces in {path}"),
+                    )
+                );
+                println!(
+                    "{}",
+                    lang.pick(
+                        "加一个：cd 到项目目录里，然后 `ccnm workspace add <name>`",
+                        "add one: cd to a project and run `ccnm workspace add <name>`",
+                    )
+                );
                 return Ok(0);
             }
+            // Workspace names are ASCII (paths::safe_name filters them),
+            // so `{name:width$}` is still right here.
             let width = config.workspaces.keys().map(String::len).max().unwrap_or(0);
             for (name, workspace) in &config.workspaces {
                 let here = if workspace.root.is_dir() {
                     ""
                 } else {
-                    "   (not on this machine)"
+                    lang.pick("   （不在这台机器上）", "   (not on this machine)")
                 };
                 println!("{name:width$}  {}{here}", workspace.root.display());
             }
             Ok(0)
         }
-        WorkspaceCommand::Remove { name, purge } => remove_workspace(path, name, *purge),
+        WorkspaceCommand::Remove { name, purge } => remove_workspace(path, name, *purge, lang),
     }
+}
+
+/// Pad a short label to a fixed column by display width, so the commands
+/// after it line up whichever language the label is in.
+fn pad_label(label: &str) -> String {
+    ccnm_core::lang::pad(label, 9)
 }
 
 /// Forget a workspace, after ending anything of it that is still running.
@@ -1114,25 +1211,46 @@ fn workspace_command(path: &std::path::Path, command: &WorkspaceCommand) -> Resu
 /// config, so a workspace removed while one is up would leave a Claude
 /// running against a project nothing points at any more, and no command
 /// left that names it.
-fn remove_workspace(path: &std::path::Path, name: &str, purge: bool) -> Result<i32> {
+fn remove_workspace(path: &std::path::Path, name: &str, purge: bool, lang: Lang) -> Result<i32> {
     // Best effort, and in this order: the session belongs to the config
     // entry that is about to go.
     if let Ok(config) = Config::load(path)
         && let Ok(resolved) = config.workspace(name)
     {
         match launcher::stop(&resolved, &launch_env()?) {
-            Ok(rep) if rep.killed => println!("stopped {}", rep.tmux_session),
+            Ok(rep) if rep.killed => {
+                let session = &rep.tmux_session;
+                println!(
+                    "{}",
+                    lang.pick(format!("停了 {session}"), format!("stopped {session}"))
+                );
+            }
             Ok(_) => {}
-            Err(e) => eprintln!("could not reach the Agent Node to stop it: {e}"),
+            Err(e) => eprintln!(
+                "{}",
+                lang.pick(
+                    format!("够不到 Agent Node，没能把会话停掉：{e}"),
+                    format!("could not reach the Agent Node to stop it: {e}"),
+                )
+            ),
         }
         if purge {
             match launcher::purge(&resolved, &launch_env()?) {
                 Ok(rep) => {
                     for line in rep.removed {
-                        println!("removed {line}");
+                        println!(
+                            "{}",
+                            lang.pick(format!("删了 {line}"), format!("removed {line}"))
+                        );
                     }
                 }
-                Err(e) => eprintln!("could not clean up on the Agent Node: {e}"),
+                Err(e) => eprintln!(
+                    "{}",
+                    lang.pick(
+                        format!("够不到 Agent Node，那边没清理：{e}"),
+                        format!("could not clean up on the Agent Node: {e}"),
+                    )
+                ),
             }
         }
     }
@@ -1140,11 +1258,18 @@ fn remove_workspace(path: &std::path::Path, name: &str, purge: bool) -> Result<i
     let mut edit = configedit::Edit::open(path)?;
     let mut changes = configedit::Changes::default();
     if !edit.remove_workspace(name, &mut changes) {
-        println!("{name} is not in {}", path.display());
+        let where_ = path.display();
+        println!(
+            "{}",
+            lang.pick(
+                format!("{where_} 里没有 {name}"),
+                format!("{name} is not in {where_}"),
+            )
+        );
         return Ok(0);
     }
     edit.save(&changes)?;
-    report_changes(&changes, path);
+    report_changes(&changes, path, lang);
     Ok(0)
 }
 
@@ -1238,11 +1363,21 @@ fn parse_permission_mode(raw: &str) -> Result<ccnm_core::config::PermissionMode>
     AgentProvider::current().parse_permission_mode(raw)
 }
 
-fn report_changes(changes: &configedit::Changes, path: &std::path::Path) {
+fn report_changes(changes: &configedit::Changes, path: &std::path::Path, lang: Lang) {
     if changes.is_empty() {
-        println!("{} already says that", path.display());
+        let path = path.display();
+        println!(
+            "{}",
+            lang.pick(
+                format!("{path} 里已经是这么写的了"),
+                format!("{path} already says that"),
+            )
+        );
         return;
     }
+    // Not translated: each line is `added workspaces.demo` or
+    // `nodes.agent.ssh = work-alias`. The words are config keys, and a
+    // key rendered in Chinese is a key nobody can find in the file.
     for line in changes.lines() {
         println!("{line}");
     }
@@ -1470,18 +1605,33 @@ fn attach_selected(
     workspace: &str,
     agent: Option<&str>,
     session: Option<&str>,
+    lang: Lang,
 ) -> Result<i32> {
     let cmd = launcher::attach_cmd_selected(resolved, env, agent, session)?;
     let captured = ccnm_core::process::run_attached(&cmd)?;
     let code = captured.exit_code.unwrap_or(1);
     match launcher::status_selected(resolved, env, false, agent, session) {
         Ok(rep) if !rep.sessions.is_empty() => {
-            eprintln!("\nstill running on the Agent Node; back in with: ccnm attach {workspace}");
+            eprintln!(
+                "\n{}",
+                lang.pick(
+                    format!("会话还在 Agent Node 上跑着，回去：ccnm attach {workspace}"),
+                    format!(
+                        "still running on the Agent Node; back in with: ccnm attach {workspace}"
+                    ),
+                )
+            );
         }
-        Ok(_) => eprintln!("\nthe session has ended"),
+        Ok(_) => eprintln!("\n{}", lang.pick("会话结束了", "the session has ended")),
         // The session's own exit code is worth more than a failure to look
         // it up afterwards.
-        Err(e) => eprintln!("\ncannot tell whether the session is still running: {e}"),
+        Err(e) => eprintln!(
+            "\n{}",
+            lang.pick(
+                format!("说不好会话还在不在跑：{e}"),
+                format!("cannot tell whether the session is still running: {e}"),
+            )
+        ),
     }
     Ok(code)
 }

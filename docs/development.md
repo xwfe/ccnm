@@ -14,10 +14,22 @@
 ### 本地跑测试
 
 ```bash
-cargo test --workspace        # 595 个测试，不需要第二台机器，不启动真实 Agent
+cargo test --workspace        # 702 个测试，不需要第二台机器，不启动真实 Agent
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 ```
+
+### 改到给人看的输出时
+
+ccnm 默认说中文（0.6.0 起）。三条规矩，违反哪条都不会编译失败，所以写在这里：
+
+1. **翻译只在渲染出口做。** 字段存的、比较的仍然是英文。`Check.name` 是最典型的：45 处测试拿它查行，`safety_row_name` 还拿同样的字符串判断哪条 finding 是哪条——而那份报告是从另一台机器传回来的。中文只在 `Report::render_in(lang)` 里查 `row_label` 得到。**加了检查项忘了填 `row_label` 的表，只是多一行英文，不会 panic**，这是故意的。
+2. **`ccnm-core` 的默认是 `Lang::En`。** 所以几百条断言渲染文本的单测继续断它们本来断的。要中文的调用点自己传 `Lang`——只有 CLI 入口决定语言，core 不存全局状态（`cargo test` 单进程多线程跑，而 `set_var` 既 `unsafe`、workspace 又 `forbid`）。
+3. **列对齐用 `lang::pad`，别用 `{:<N}`。** 后者按 `char` 数补，中文一个字占两列。`Ambiguous` 类标点（`——`、`…`、`·`）按 1 列算，所以它们可以出现在句子里，但**不能进补齐列**。
+
+哪些**绝不能**翻，以及为什么不能拿 `LANG`/`LC_ALL` 当开关，见 `crates/ccnm-core/src/lang.rs` 的模块文档。简版：MCP 面的文本给模型读、契约字符串给程序读、还有一类是 ccnm 自己要去匹配的**别人的**英文（git 的 `dubious ownership`、ssh 的 `permission denied`）——最后这类正是 locale 开关会静默破坏的东西。
+
+集成测试统一在 helper 里设 `CCNM_LANG=en`（`crates/ccnm-cli/tests/cli.rs`），因为那些 helper 调了 `env_clear()`，CI 里 export 的传不进去。中文路径有自己的用例，其中一条断言**英文页面不含任何 CJK 字符**——加了新 doc comment 而忘了在 `zh_help` 里翻的话，是它拦下来。
 
 Agent Provider 第一阶段的兼容回归可单独跑：
 

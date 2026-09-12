@@ -651,7 +651,7 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
                 );
                 let tools = agent_tools(config_path().ok().as_deref())?;
                 let report = work::start(&start_request(&authority, opening), &tools)?;
-                eprintln!("{}", report.summary());
+                eprintln!("{}", report.summary_in(lang));
                 if *detached {
                     eprintln!(
                         "\n{}",
@@ -679,7 +679,7 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
                     std::time::Duration::from_secs(*timeout),
                     agent.as_deref(),
                 )?;
-                return print_run_report(&rep);
+                return print_run_report(&rep, lang);
             }
             let opening = opening_prompt(prompt.as_deref(), *prompt_stdin)?;
             let rep = launcher::start_interactive_with_agent(
@@ -688,7 +688,7 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
                 opening.as_deref(),
                 agent.as_deref(),
             )?;
-            eprintln!("{}", rep.summary());
+            eprintln!("{}", rep.summary_in(lang));
             if *detached {
                 eprintln!(
                     "\n{}",
@@ -749,7 +749,7 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
                 print!(
                     "{}",
                     work::status_checked(&req, &agent_tools(config_path().ok().as_deref())?)?
-                        .render()
+                        .render_in(lang)
                 );
                 return Ok(0);
             }
@@ -761,7 +761,7 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
                 agent.as_deref(),
                 session.as_deref(),
             )?;
-            print!("{}", rep.render());
+            print!("{}", rep.render_in(lang));
             Ok(0)
         }
         Command::Result {
@@ -782,10 +782,10 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
                     agent: selected,
                     session: session.clone(),
                 };
-                return print_result_report(&work::result(
-                    &req,
-                    &agent_tools(config_path().ok().as_deref())?,
-                )?);
+                return print_result_report(
+                    &work::result(&req, &agent_tools(config_path().ok().as_deref())?)?,
+                    lang,
+                );
             }
             let resolved = config.workspace(workspace)?;
             let rep = launcher::result_selected(
@@ -794,7 +794,7 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
                 session.as_deref(),
                 agent.as_deref(),
             )?;
-            print_result_report(&rep)
+            print_result_report(&rep, lang)
         }
         Command::Stop {
             workspace,
@@ -1753,8 +1753,8 @@ fn attach_selected(
 
 /// The summary, then Claude's answer, then whatever went wrong. Exit 0
 /// only when Claude ran to completion and did not report an error itself.
-fn print_run_report(rep: &RunReport) -> Result<i32> {
-    println!("{}", rep.summary());
+fn print_run_report(rep: &RunReport, lang: Lang) -> Result<i32> {
+    println!("{}", rep.summary_in(lang));
     match &rep.result {
         Some(r) => {
             println!("\n--- result ---");
@@ -1789,8 +1789,8 @@ fn print_run_report(rep: &RunReport) -> Result<i32> {
 /// Always exit 0: this reports on a session, it does not run one, and a
 /// non-zero exit here would say "the lookup failed" about a lookup that
 /// worked.
-fn print_result_report(rep: &ccnm_core::protocol::run::ResultReport) -> Result<i32> {
-    println!("{}", rep.summary());
+fn print_result_report(rep: &ccnm_core::protocol::run::ResultReport, lang: Lang) -> Result<i32> {
+    println!("{}", rep.summary_in(lang));
     match &rep.result {
         Some(r) => {
             println!("\n--- result ---");

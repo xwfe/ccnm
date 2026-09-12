@@ -18,6 +18,7 @@ use super::payload::Protocol;
 use crate::config::PermissionMode;
 use crate::controller::Context;
 use crate::instance::{AgentIdentity, InstanceRef};
+use crate::lang::Lang;
 use crate::provider::AgentResult;
 use crate::session::Outcome;
 
@@ -102,18 +103,33 @@ impl RunReport {
     /// What worked and what it cost, in the order someone reading a
     /// terminal wants them.
     pub fn summary(&self) -> String {
+        self.summary_in(Lang::En)
+    }
+
+    pub fn summary_in(&self, lang: Lang) -> String {
         let mut lines = vec![
-            format!("session   {}", self.session),
-            format!("started   by {}", self.controller.describe()),
+            format!("{}{}", label(lang.pick("会话", "session")), self.session),
             format!(
-                "{:<10}{}",
-                self.provider.cli_name(),
+                "{}{}{}",
+                label(lang.pick("起于", "started")),
+                lang.pick("", "by "),
+                self.controller.describe()
+            ),
+            // The provider's own name is the label here, and it is never
+            // translated: `claude` and `codex` are the binaries.
+            format!(
+                "{}{}",
+                label(self.provider.cli_name()),
                 self.outcome.describe()
             ),
         ];
+        let run = label(lang.pick("结果", "run"));
         match &self.result {
-            Some(r) => lines.push(format!("run       {}", r.summary())),
-            None => lines.push("run       no result document on stdout".to_string()),
+            Some(r) => lines.push(format!("{run}{}", r.summary())),
+            None => lines.push(format!(
+                "{run}{}",
+                lang.pick("stdout 上没有结果文档", "no result document on stdout")
+            )),
         }
         lines.join("\n")
     }
@@ -212,36 +228,65 @@ impl Protocol for StartReport {
 
 impl StartReport {
     pub fn summary(&self) -> String {
+        self.summary_in(Lang::En)
+    }
+
+    pub fn summary_in(&self, lang: Lang) -> String {
         let what = if self.already_running {
-            "already running"
+            lang.pick("本来就在跑", "already running")
         } else {
-            "started"
+            lang.pick("起好了", "started")
         };
         let mut lines = vec![format!(
-            "session   {} ({what}, tmux server pid {})",
-            self.tmux_session, self.server_pid
+            "{}{} ({what}, tmux server pid {})",
+            label(lang.pick("会话", "session")),
+            self.tmux_session,
+            self.server_pid
         )];
         if let Some(old) = &self.replaced {
+            let old = old.display();
             lines.push(format!(
-                "replaced  a session working in {} -- this workspace does not point there any more",
-                old.display()
+                "{}{}",
+                label(lang.pick("替掉了", "replaced")),
+                lang.pick(
+                    format!("一个在 {old} 里干活的会话 —— 这个 workspace 已经不指那儿了"),
+                    format!(
+                        "a session working in {old} -- this workspace does not point there any more"
+                    ),
+                )
             ));
         }
         if let Some(id) = &self.session {
-            lines.push(format!("id        {id}"));
+            lines.push(format!("{}{id}", label("id")));
         }
         if let Some(ctx) = &self.controller {
-            lines.push(format!("started   by {}", ctx.describe()));
+            lines.push(format!(
+                "{}{}{}",
+                label(lang.pick("起于", "started")),
+                lang.pick("", "by "),
+                ctx.describe()
+            ));
         }
         if let Some(context) = &self.context {
             lines.push(format!(
-                "{} in {}",
+                "{} {} {}",
                 self.provider.cli_name(),
+                lang.pick("在", "in"),
                 context.describe()
             ));
         }
         lines.join("\n")
     }
+}
+
+/// A report's left-hand label, padded to a fixed column by display width.
+///
+/// The labels used to be written with the spaces counted by hand, which
+/// only works while every label is ASCII: `会话` is two characters and
+/// four columns, so a hand-counted `会话      ` would be two columns too
+/// wide and every value after it would sit in a different place.
+fn label(text: &str) -> String {
+    crate::lang::pad(text, 10)
 }
 
 /// `ccnm internal attach`: hand this terminal to the workspace's session.
@@ -371,16 +416,29 @@ impl Protocol for ResultReport {
 
 impl ResultReport {
     pub fn summary(&self) -> String {
+        self.summary_in(Lang::En)
+    }
+
+    pub fn summary_in(&self, lang: Lang) -> String {
         let state = match &self.outcome {
-            None => "still running".to_string(),
+            None => lang.pick("还在跑", "still running").to_string(),
             Some(o) => o.describe(),
         };
         let mut lines = vec![
-            format!("session   {} ({})", self.session, self.mode),
-            format!("{:<10}{state}", self.provider.cli_name()),
+            format!(
+                "{}{} ({})",
+                label(lang.pick("会话", "session")),
+                self.session,
+                self.mode
+            ),
+            format!("{}{state}", label(self.provider.cli_name())),
         ];
         if let Some(r) = &self.result {
-            lines.push(format!("run       {}", r.summary()));
+            lines.push(format!(
+                "{}{}",
+                label(lang.pick("结果", "run")),
+                r.summary()
+            ));
         }
         lines.join("\n")
     }
@@ -549,12 +607,26 @@ impl LiveSession {
 
 impl StatusReport {
     pub fn render(&self) -> String {
+        self.render_in(Lang::En)
+    }
+
+    pub fn render_in(&self, lang: Lang) -> String {
         let mut out = match &self.tmux {
-            Ok(v) => format!("tmux {v} on the Agent Node\n"),
+            Ok(v) => lang.pick(
+                format!("Agent Node 上的 tmux {v}\n"),
+                format!("tmux {v} on the Agent Node\n"),
+            ),
             Err(e) => format!("tmux: {}\n", e.message),
         };
         if self.sessions.is_empty() {
-            out.push_str("no live sessions\n");
+            // Worth reading twice before trusting: this counts tmux
+            // sessions on the Agent Node, and a `--print` run is not one
+            // of them even though it holds the workspace's write guard.
+            // See docs/operations.md.
+            out.push_str(lang.pick(
+                "没有在跑的会话（--print 的运行不算在内）\n",
+                "no live sessions\n",
+            ));
         }
         for s in &self.sessions {
             out.push_str(&s.describe());

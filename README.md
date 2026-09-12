@@ -73,6 +73,17 @@ ccnm my-project --print "修复 parser 测试"   # 一问一答，不进 tmux，
 
 Codex、Agent Instance、多行 prompt 这些见[快速开始](docs/getting-started.md)和[使用说明](docs/usage.md)。
 
+**ccnm 跟你说话默认用中文**。要英文就加 `--lang en`，或者设 `CCNM_LANG=en`，或者在 config.toml 里写：
+
+```toml
+[ui]
+lang = "en"
+```
+
+只管给人看的那些字。错误码（`CCNM_E_*`）、协议字段、给模型的 MCP 文本，还有 ccnm 自己要去匹配的 git/ssh/tmux 英文输出，都不跟着变——所以照着错误码搜文档、写脚本判断退出码，两种语言下都一样。文档里贴的 `ccnm doctor` 样本是英文那版（`--lang en`）。
+
+一处翻不动：命令行参数写错时，clap 报的 `Usage:` / `error:` 还是英文，它没给任何接口改。
+
 ## 跑通之后马上要做的一件事
 
 默认配置里，模型的命令是用**你自己的账号**跑的——那样 ccnm 只帮你分开了机器，没帮你分开权限。真实项目应该在 Runtime Node 建一个专用低权限账号：

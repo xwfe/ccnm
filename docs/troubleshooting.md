@@ -3,6 +3,21 @@
 每一条都是真撞过的：先写**你看到的现象**，再写它其实是什么、怎么办。
 按现象找，不用按功能找。
 
+**这页里的 `ccnm doctor` 样本是英文那版**（`ccnm doctor <workspace> --lang en`）。ccnm 默认说中文，所以你屏幕上的行名跟这里贴的不一样。排查时最省事的办法是加 `--lang en` 跑一遍，跟这里逐行对上；要按中文找，常见的几行是这个对应关系：
+
+| 中文 | 英文 | 中文 | 英文 |
+|---|---|---|---|
+| 配置文件 | Config | Runtime 执行身份 | Runtime user |
+| workspace 配置 | Workspace config | 够不到 Claude 凭据 | No Claude credential |
+| workspace 根目录 | Workspace root | Runtime 安全 | Runtime safety |
+| 远端 MCP 握手 | Remote MCP handshake | 不在 admin 组 | Not an admin |
+| 连 Agent 的 SSH | Agent SSH | 没有 SSH 私钥 | No SSH keys |
+| 终端会话 | Terminal session | 命令审批 | Command approval |
+
+状态词：`正常`=OK、`注意`=WARN、`没查`=SKIP、`不行`=FAIL。结论行 `可以用了`=READY、`还不能用`=NOT READY。
+
+**错误码不跟着变。** `CCNM_E_*` 两种语言下都一样，所以拿错误码搜这一页永远搜得到。
+
 ### `TOOLS DOWN` —— 会话看着在跑，模型却什么都够不着
 
 ```text

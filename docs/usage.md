@@ -2,6 +2,34 @@
 
 `ccnm doctor <workspace>` 的基础链路确认正常后，同一个 workspace 可以从 Runtime Node 或 Agent Node 发起。
 
+## 说什么语言
+
+默认中文。要英文，三条路，从先到后谁先给算谁：
+
+```bash
+ccnm --lang en doctor my-project    # 只这一次
+export CCNM_LANG=en                 # 这个 shell 里都用
+```
+
+```toml
+# config.toml，这台机器长期用英文
+[ui]
+lang = "en"
+```
+
+**只管给人看的字。** 这些一律不跟着变，两种语言下一模一样：
+
+- 错误码 `CCNM_E_*` 和退出码——脚本按它们判断，翻了就没法判断了
+- 协议字段、`ccnm rpc` 的 JSON、MCP 工具名和参数名
+- 给模型看的 MCP 文本（工具说明、报错正文）——那是模型据以改做法的指令，已经按英文验过
+- 命令、配置键名、路径、SSH alias
+
+`--lang` 也管 `--help`。但**不读系统的 `LANG`/`LC_ALL`**：ccnm 要去匹配 git、ssh、tmux、Codex 的英文输出（比如 git 的 `dubious ownership`、ssh 的 `permission denied`），拿 locale 当语言开关会让这些匹配悄悄失效，而且不报错。
+
+两台机器各说各的：语言不跨 SSH 传，`doctor` 表里那些从 Runtime 传回来的 detail 仍是英文。
+
+翻不动的一处：参数写错时 clap 报的 `Usage:` / `error:` 还是英文。
+
 ## 交互式会话
 
 ```bash

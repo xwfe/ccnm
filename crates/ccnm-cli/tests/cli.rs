@@ -26,7 +26,21 @@ fn ccnm() -> Command {
         .env("PATH", std::env::var_os("PATH").unwrap_or_default())
         .env("USER", std::env::var_os("USER").unwrap_or_default())
         .env("HOME", &home)
-        .env("XDG_CONFIG_HOME", home.join("config"));
+        .env("XDG_CONFIG_HOME", home.join("config"))
+        // ccnm speaks Chinese to a person by default. These tests assert
+        // on the English wording because that is what the rest of this
+        // file was written against; the Chinese path has its own tests
+        // below. It has to be set here rather than exported by CI: the
+        // `env_clear` above would drop it.
+        .env("CCNM_LANG", "en");
+    cmd
+}
+
+/// `ccnm()` with no language forced, for the tests that are *about* the
+/// default. Everything else about it is identical.
+fn ccnm_default_lang() -> Command {
+    let mut cmd = ccnm();
+    cmd.env_remove("CCNM_LANG");
     cmd
 }
 
@@ -117,6 +131,79 @@ fn doctor_config_only_is_ready() {
         "{text}"
     );
     assert!(text.ends_with("\nREADY\n"), "{text}");
+}
+
+/// Chinese is what someone who installed ccnm and typed a command gets,
+/// so it is the path that has to be proven, not the one the rest of this
+/// file asserts on.
+#[test]
+fn doctor_speaks_chinese_unless_told_otherwise() {
+    let out = ccnm_default_lang()
+        .args(["doctor", "--config"])
+        .arg(fixture("config-valid.toml"))
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let text = stdout(&out);
+    assert!(text.contains("workspace 列表"), "{text}");
+    assert!(text.ends_with("\n可以用了\n"), "{text}");
+    // The status column still lines up, which is the whole reason
+    // `lang::pad` exists: a name of four CJK characters is eight columns
+    // wide, and padding it by `char` count would shift this right.
+    assert!(
+        text.contains("workspace 列表          正常   xshun"),
+        "{text}"
+    );
+}
+
+/// Both switches reach the same place, and the flag wins. The variable
+/// matters on its own: `ccnm` is often run from a script that cannot
+/// easily add a flag to every line.
+#[test]
+fn the_language_can_be_set_by_flag_or_variable_and_the_flag_wins() {
+    let english = |extra: &[&str]| {
+        let mut cmd = ccnm_default_lang();
+        cmd.args(["doctor", "--config"])
+            .arg(fixture("config-valid.toml"))
+            .args(extra);
+        stdout(&cmd.output().unwrap())
+    };
+    assert!(english(&["--lang", "en"]).ends_with("\nREADY\n"));
+
+    let mut cmd = ccnm_default_lang();
+    cmd.env("CCNM_LANG", "en")
+        .args(["doctor", "--config"])
+        .arg(fixture("config-valid.toml"));
+    assert!(stdout(&cmd.output().unwrap()).ends_with("\nREADY\n"));
+
+    // Flag over variable.
+    let mut cmd = ccnm_default_lang();
+    cmd.env("CCNM_LANG", "en")
+        .args(["doctor", "--lang", "zh", "--config"])
+        .arg(fixture("config-valid.toml"));
+    assert!(stdout(&cmd.output().unwrap()).ends_with("\n可以用了\n"));
+}
+
+/// A language ccnm cannot speak is refused rather than silently answered
+/// in English: the person asked for something that is not there.
+#[test]
+fn an_unknown_language_is_an_error_not_a_fallback() {
+    let out = ccnm_default_lang()
+        .args(["--lang", "de", "doctor", "--config"])
+        .arg(fixture("config-valid.toml"))
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(ccnm_core::ErrorCode::InvalidArgs.exit_code()),
+        "{}",
+        stderr(&out)
+    );
+    assert!(
+        stderr(&out).contains("CCNM_E_INVALID_ARGS"),
+        "{}",
+        stderr(&out)
+    );
 }
 
 #[test]

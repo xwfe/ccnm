@@ -73,6 +73,36 @@ pub struct Config {
     /// Definitions belong only to `this` node. Other nodes hold references.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub agents: BTreeMap<String, crate::instance::AgentInstance>,
+    /// How this machine talks to the person sitting at it. Local and
+    /// cosmetic: nothing under it crosses to the other node.
+    #[serde(default, skip_serializing_if = "Ui::is_default")]
+    pub ui: Ui,
+}
+
+/// Presentation settings, which belong to the machine somebody types on
+/// rather than to any workspace.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Ui {
+    /// `zh` or `en`. Absent means ccnm's default, which is Chinese.
+    ///
+    /// A persistent preference for this machine; `--lang` and `CCNM_LANG`
+    /// both win over it. It is deliberately not sent to the other node:
+    /// each machine renders its own output, and an operator reading a
+    /// doctor table wants it in the language *they* chose, not in the
+    /// language whoever set up the far end chose.
+    ///
+    /// A string rather than an enum so an unreadable value is a clear
+    /// complaint about this one line instead of a parse failure that
+    /// takes the whole config down with it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lang: Option<String>,
+}
+
+impl Ui {
+    fn is_default(&self) -> bool {
+        self == &Ui::default()
+    }
 }
 
 /// One physical or virtual machine. A node may carry one or more roles.

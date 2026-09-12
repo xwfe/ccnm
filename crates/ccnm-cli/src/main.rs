@@ -17,7 +17,7 @@ use ccnm_core::protocol::run::{
 };
 use ccnm_core::provider::AgentProvider;
 use ccnm_core::{
-    Config, Error, Result, configedit, controller, doctor, launchagent, launcher, mcp, paths,
+    Config, Error, Lang, Result, configedit, controller, doctor, launchagent, launcher, mcp, paths,
     session, tmux, work,
 };
 
@@ -32,6 +32,16 @@ struct Cli {
     /// Debug logging on stderr (same as CCNM_LOG=debug)
     #[arg(short, long, global = true)]
     verbose: bool,
+
+    /// 说给人听的那些话用什么语言：zh（默认）或 en。
+    ///
+    /// 也可以写在 config.toml 里：`[ui]` 下面 `lang = "en"`。命令行
+    /// 优先于 CCNM_LANG，CCNM_LANG 优先于配置。
+    ///
+    /// 只管给人看的输出。错误码、协议字段、给模型的 MCP 文本，以及
+    /// ccnm 自己要去匹配的 git/ssh/tmux 英文，都跟它无关。
+    #[arg(long, global = true, env = "CCNM_LANG", value_name = "LANG")]
+    lang: Option<String>,
 
     #[command(subcommand)]
     command: Command,
@@ -338,12 +348,56 @@ enum InternalCommand {
 fn main() -> ExitCode {
     let cli = Cli::parse_from(with_default_subcommand(std::env::args_os().collect()));
     init_logging(cli.verbose);
-    match run(cli) {
+    let lang = match ui_lang(&cli) {
+        Ok(lang) => lang,
+        Err(err) => {
+            eprintln!("{err}");
+            return exit_code(err.exit_code());
+        }
+    };
+    match run(cli, lang) {
         Ok(code) => exit_code(code),
         Err(err) => {
             eprintln!("{err}");
             exit_code(err.exit_code())
         }
+    }
+}
+
+/// The language this machine says things to a person in.
+///
+/// `--lang` and `CCNM_LANG` are the same clap argument, so the flag
+/// already wins over the variable; the config file is consulted only when
+/// neither is set. The default is Chinese, which is the only place in
+/// ccnm where that default lives.
+///
+/// A config that cannot be read is not an error here. `ccnm init` exists
+/// precisely for the machine that has no config yet, and refusing to
+/// print its guidance because the file that guidance creates is missing
+/// would be a poor trade for one preference.
+///
+/// `LANG`/`LC_ALL` are deliberately not consulted — see the module docs
+/// of [`ccnm_core::lang`]: ccnm parses English from `git`, `ssh`, `tmux`
+/// and Codex, so locale must keep meaning what those programs mean by it.
+fn ui_lang(cli: &Cli) -> Result<Lang> {
+    if let Some(text) = &cli.lang {
+        return Lang::parse(text).ok_or_else(|| {
+            Error::invalid_args(format!(
+                "--lang {text}: ccnm 只会说 zh（中文）和 en（English）"
+            ))
+        });
+    }
+    let from_config = config_path_for(cli)
+        .and_then(|path| Config::load(&path))
+        .ok()
+        .and_then(|config| config.ui.lang);
+    match from_config {
+        Some(text) => Lang::parse(&text).ok_or_else(|| {
+            Error::config(format!(
+                "config.toml 里 [ui] lang = \"{text}\"：ccnm 只会说 zh（中文）和 en（English）"
+            ))
+        }),
+        None => Ok(Lang::Zh),
     }
 }
 
@@ -401,13 +455,18 @@ fn warn_accepted_risk(workspace: &str, unisolated_credentials: bool, unattended_
     }
 }
 
-fn run(cli: Cli) -> Result<i32> {
-    let config_path = || -> Result<PathBuf> {
-        match &cli.config {
-            Some(path) => Ok(path.clone()),
-            None => paths::config_path(),
-        }
-    };
+/// Which config file this invocation means: `--config` if given, else
+/// the standard location. Shared with [`ui_lang`], which has to answer
+/// the same question before `run` starts.
+fn config_path_for(cli: &Cli) -> Result<PathBuf> {
+    match &cli.config {
+        Some(path) => Ok(path.clone()),
+        None => paths::config_path(),
+    }
+}
+
+fn run(cli: Cli, lang: Lang) -> Result<i32> {
+    let config_path = || -> Result<PathBuf> { config_path_for(&cli) };
 
     match &cli.command {
         Command::Init { agent, runtime } => {
@@ -426,7 +485,7 @@ fn run(cli: Cli) -> Result<i32> {
                 if let Some((runtime, node)) = agent_side(&config, workspace) {
                     let report =
                         agent_side_doctor(&path, workspace, agent.as_deref(), runtime, node)?;
-                    print!("{}", report.render());
+                    print!("{}", report.render_in(lang));
                     return Ok(report.exit_code());
                 }
             }
@@ -436,7 +495,7 @@ fn run(cli: Cli) -> Result<i32> {
                 home: paths::home_dir()?,
             };
             let report = doctor::run_selected(&path, workspace.as_deref(), agent.as_deref(), &env);
-            print!("{}", report.render());
+            print!("{}", report.render_in(lang));
             Ok(report.exit_code())
         }
         Command::Run {

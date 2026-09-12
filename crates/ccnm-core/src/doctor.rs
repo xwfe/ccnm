@@ -38,6 +38,7 @@ use std::time::Duration;
 
 use crate::config::{Backend, Config, Resolved, Topology};
 use crate::error::{Error, ErrorCode, ErrorReport};
+use crate::lang::Lang;
 use crate::mcp::context;
 use crate::paths;
 use crate::process::{Cmd, ProcessRunner};
@@ -71,12 +72,12 @@ pub enum Status {
 }
 
 impl Status {
-    fn label(&self) -> &'static str {
+    fn label_in(&self, lang: Lang) -> &'static str {
         match self {
-            Status::Ok => "OK",
-            Status::Warn => "WARN",
-            Status::Skip => "SKIP",
-            Status::Fail(_) => "FAIL",
+            Status::Ok => lang.pick("正常", "OK"),
+            Status::Warn => lang.pick("注意", "WARN"),
+            Status::Skip => lang.pick("没查", "SKIP"),
+            Status::Fail(_) => lang.pick("不行", "FAIL"),
         }
     }
 
@@ -174,7 +175,22 @@ impl Report {
     }
 
     /// The table from design doc section 4, ending in READY or NOT READY.
+    ///
+    /// English, which is what every caller inside this crate wants: the
+    /// tests assert on it, and core has no business deciding what a person
+    /// reads. The CLI picks the language and calls [`Report::render_in`].
     pub fn render(&self) -> String {
+        self.render_in(Lang::En)
+    }
+
+    /// The same table, in `lang`.
+    ///
+    /// Only names, status words and the verdict line are translated. The
+    /// detail column is not: it carries paths, versions, `ssh` command
+    /// lines, config keys and text generated on the *other* machine, and
+    /// half-translating a line like that produces something that is
+    /// neither copy-pasteable nor readable.
+    pub fn render_in(&self, lang: Lang) -> String {
         const NAME_WIDTH: usize = 24;
         const STATUS_WIDTH: usize = 7;
 
@@ -185,13 +201,13 @@ impl Report {
             // Padded by terminal columns, not by `char` count: a CJK name
             // is two columns per character, and `{:<24}` would pad it as
             // if it were half as wide, shifting every later column right.
-            // Identical to `{:<24}` for ASCII, so this row is unchanged
-            // until something here is translated.
+            // Identical to `{:<24}` for ASCII, so an English table is
+            // byte-for-byte what it always was.
             let _ = writeln!(
                 out,
                 "{}{}{first}",
-                crate::lang::pad(check.name, NAME_WIDTH),
-                crate::lang::pad(check.status.label(), STATUS_WIDTH)
+                crate::lang::pad(row_label(lang, check.name), NAME_WIDTH),
+                crate::lang::pad(check.status.label_in(lang), STATUS_WIDTH)
             );
             for line in lines {
                 let _ = writeln!(
@@ -207,7 +223,9 @@ impl Report {
         let skipped = self.count(|s| matches!(s, Status::Skip));
         out.push('\n');
         if self.ready() {
-            out.push_str("READY\n");
+            out.push_str(lang.pick("可以用了\n", "READY\n"));
+        } else if lang == Lang::Zh {
+            let _ = writeln!(out, "还不能用（{failed} 项不行，{skipped} 项没查）");
         } else {
             let _ = writeln!(out, "NOT READY ({failed} failed, {skipped} not checked)");
         }
@@ -948,6 +966,55 @@ fn runtime_safety_rows(report: &crate::runtime::AuditReport) -> Vec<Check> {
 /// `Check::name` is `&'static str` because every other row's name is a
 /// literal. The audit's names are literals too, so they are mapped back
 /// rather than leaked.
+/// A check's name as a person reads it, for display only.
+///
+/// [`Check::name`] itself stays English wherever it is stored: 45 tests
+/// look rows up by it, and [`safety_row_name`] decides which finding is
+/// which by comparing the same strings — against a report that came off
+/// the wire from the other machine. Translating here, at the one place
+/// the table is drawn, keeps both of those working.
+///
+/// Names with no entry render as themselves, so adding a check and
+/// forgetting this table costs one English row in a Chinese table rather
+/// than a panic. Three kinds are left alone on purpose: product names
+/// (`Claude Code`, `Codex CLI`), the MCP tool name `exec_command`, and
+/// `ccnm`'s own words — translating those would send someone searching
+/// the docs for a term that appears nowhere.
+fn row_label(lang: Lang, name: &str) -> &str {
+    if lang == Lang::En {
+        return name;
+    }
+    match name {
+        "Config" => "配置文件",
+        "Workspaces" => "workspace 列表",
+        "Workspace config" => "workspace 配置",
+        "Workspace root" => "workspace 根目录",
+        "Runtime workspace" => "Runtime 上的项目",
+        "Project instructions" => "项目指令",
+        "Runtime ccnm" => "Runtime 的 ccnm",
+        "Agent ccnm" => "Agent 的 ccnm",
+        "Agent SSH" => "连 Agent 的 SSH",
+        "Agent selection" => "选哪个 Agent",
+        "Reverse SSH" => "反向 SSH",
+        "Controller" => "Controller",
+        "Runtime user" => "Runtime 执行身份",
+        "Runs as root" => "是不是 root 在跑",
+        "No sudo" => "不能 sudo",
+        "Not an admin" => "不在 admin 组",
+        "No SSH keys" => "没有 SSH 私钥",
+        "No Claude credential" => "够不到 Claude 凭据",
+        "No Docker socket" => "够不到 Docker socket",
+        "Anthropic egress" => "Anthropic 出口",
+        "Runtime safety" => "Runtime 安全",
+        "Command approval" => "命令审批",
+        "Remote MCP handshake" => "远端 MCP 握手",
+        "Terminal session" => "终端会话",
+        "Native tool policy" => "本机工具策略",
+        "Network isolation" => "网络隔离",
+        other => other,
+    }
+}
+
 fn safety_row_name(check: &str) -> &'static str {
     match check {
         "Runs as root" => "Runs as root",

@@ -558,14 +558,20 @@ fn with_default_subcommand(args: Vec<std::ffi::OsString>) -> Vec<std::ffi::OsStr
 /// Best effort by design. A state directory this account cannot write is a
 /// reason to say it again next time -- the marker never exists, so the
 /// warning always prints -- and never a reason to fail a session over.
-fn warn_accepted_risk(workspace: &str, unisolated_credentials: bool, unattended_exec: bool) {
+fn warn_accepted_risk(
+    workspace: &str,
+    unisolated_credentials: bool,
+    unattended_exec: bool,
+    lang: Lang,
+) {
     let state = ccnm_core::paths::state_dir().unwrap_or_else(|_| PathBuf::from("/nonexistent"));
     let accepted = ccnm_core::safety::Accepted {
         unconfined_exec: false,
         unisolated_credentials,
         unattended_exec,
     };
-    if let Some(text) = ccnm_core::safety::warn_accepted_once(&state, workspace, accepted) {
+    if let Some(text) = ccnm_core::safety::warn_accepted_once_in(&state, workspace, accepted, lang)
+    {
         eprintln!("\n{text}\n");
     }
 }
@@ -648,6 +654,7 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
                     workspace,
                     authority.allow_unisolated_credentials,
                     authority.allow_unattended_exec,
+                    lang,
                 );
                 let tools = agent_tools(config_path().ok().as_deref())?;
                 let report = work::start(&start_request(&authority, opening), &tools)?;
@@ -669,6 +676,7 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
                 workspace,
                 resolved.workspace.allow_unisolated_credentials,
                 resolved.workspace.allow_unattended_exec,
+                lang,
             );
             let env = launch_env()?;
             if let Some(prompt) = print {

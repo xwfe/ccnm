@@ -202,9 +202,20 @@ impl Accepted {
 /// A state directory that cannot be written is not an error: the warning
 /// is printed and simply may be printed again.
 pub fn warn_accepted_once(state_dir: &Path, workspace: &str, accepted: Accepted) -> Option<String> {
+    warn_accepted_once_in(state_dir, workspace, accepted, crate::Lang::En)
+}
+
+/// The same, in `lang`. This is what the CLI calls; the English-only
+/// [`warn_accepted_once`] stays for the tests that assert on the wording.
+pub fn warn_accepted_once_in(
+    state_dir: &Path,
+    workspace: &str,
+    accepted: Accepted,
+    lang: crate::Lang,
+) -> Option<String> {
     let said: Vec<String> = RISKS
         .iter()
-        .filter_map(|risk| say_once(state_dir, workspace, (risk.set)(accepted), risk))
+        .filter_map(|risk| say_once(state_dir, workspace, (risk.set)(accepted), risk, lang))
         .collect();
     (!said.is_empty()).then(|| said.join("\n\n"))
 }
@@ -214,7 +225,7 @@ pub fn warn_accepted_once(state_dir: &Path, workspace: &str, accepted: Accepted)
 struct Risk {
     marker: &'static str,
     set: fn(Accepted) -> bool,
-    text: fn(&str) -> String,
+    text: fn(&str, crate::Lang) -> String,
 }
 
 /// Every risk that announces itself. Adding a switch means adding a row
@@ -232,7 +243,13 @@ const RISKS: [Risk; 2] = [
     },
 ];
 
-fn say_once(state_dir: &Path, workspace: &str, set: bool, risk: &Risk) -> Option<String> {
+fn say_once(
+    state_dir: &Path,
+    workspace: &str,
+    set: bool,
+    risk: &Risk,
+    lang: crate::Lang,
+) -> Option<String> {
     let marker = state_dir
         .join("accepted-risks")
         .join(format!("{workspace}.{}", risk.marker));
@@ -247,46 +264,80 @@ fn say_once(state_dir: &Path, workspace: &str, set: bool, risk: &Risk) -> Option
         let _ = std::fs::create_dir_all(parent);
     }
     let _ = std::fs::write(&marker, b"said\n");
-    Some((risk.text)(workspace))
+    Some((risk.text)(workspace, lang))
 }
 
-fn credentials_text(workspace: &str) -> String {
-    format!(
-        "!! ccnm: workspace \"{workspace}\" has allow_unisolated_credentials set.\n\
-         \n\
-         The account that runs this workspace's commands on the Runtime Node can\n\
-         read a known Agent login on that machine. So can every command the model\n\
-         runs -- and a prompt is all it takes to make it run one, including a\n\
-         prompt that arrives in a file it was asked to read.\n\
-         \n\
-         That separation is the one thing ccnm otherwise refuses to bend. This\n\
-         workspace has accepted losing it. Nothing else is standing in the way.\n\
-         \n\
-         To take it back: remove allow_unisolated_credentials from\n\
-         [workspaces.{workspace}] in the Runtime Node's config.toml.\n\
-         \n\
-         Said once. `ccnm doctor {workspace}` keeps showing it."
+fn credentials_text(workspace: &str, lang: crate::Lang) -> String {
+    lang.pick(
+        format!(
+            "!! ccnm：workspace「{workspace}」开了 allow_unisolated_credentials。\n\
+             \n\
+             在 Runtime Node 上跑这个 workspace 命令的那个账号，能读到那台机器上\n\
+             的 Agent 登录凭据。模型跑的每一条命令也一样能读——而让它跑一条命令\n\
+             只需要一句 prompt，包括藏在某个它被要求读的文件里的 prompt。\n\
+             \n\
+             这道分隔是 ccnm 唯一不肯让步的东西。这个 workspace 已经接受了失去它，\n\
+             再没有别的东西挡在中间。\n\
+             \n\
+             想收回：在 Runtime Node 的 config.toml 里，把 [workspaces.{workspace}]\n\
+             下面的 allow_unisolated_credentials 删掉。\n\
+             \n\
+             这话只说一次。`ccnm doctor {workspace}` 里一直看得到。"
+        ),
+        format!(
+            "!! ccnm: workspace \"{workspace}\" has allow_unisolated_credentials set.\n\
+             \n\
+             The account that runs this workspace's commands on the Runtime Node can\n\
+             read a known Agent login on that machine. So can every command the model\n\
+             runs -- and a prompt is all it takes to make it run one, including a\n\
+             prompt that arrives in a file it was asked to read.\n\
+             \n\
+             That separation is the one thing ccnm otherwise refuses to bend. This\n\
+             workspace has accepted losing it. Nothing else is standing in the way.\n\
+             \n\
+             To take it back: remove allow_unisolated_credentials from\n\
+             [workspaces.{workspace}] in the Runtime Node's config.toml.\n\
+             \n\
+             Said once. `ccnm doctor {workspace}` keeps showing it."
+        ),
     )
 }
 
-fn unattended_text(workspace: &str) -> String {
-    format!(
-        "!! ccnm: workspace \"{workspace}\" has allow_unattended_exec set.\n\
-         \n\
-         Interactive sessions here no longer ask you before running a command.\n\
-         Every exec_command goes straight through, on the Runtime Node, as the\n\
-         account that runtime runs as -- and a prompt is all it takes to make the\n\
-         model run one, including a prompt that arrives in a file it was asked to\n\
-         read.\n\
-         \n\
-         That question was the last step with a person in it. What still stands is\n\
-         what always stood: the runtime account's own OS permissions, and the\n\
-         workspace root the tools cannot reach past.\n\
-         \n\
-         To take it back: remove allow_unattended_exec from\n\
-         [workspaces.{workspace}] in the Runtime Node's config.toml.\n\
-         \n\
-         Said once. `ccnm doctor {workspace}` keeps showing it."
+fn unattended_text(workspace: &str, lang: crate::Lang) -> String {
+    lang.pick(
+        format!(
+            "!! ccnm：workspace「{workspace}」开了 allow_unattended_exec。\n\
+             \n\
+             这里的交互式会话，跑命令之前不再问你了。每一条 exec_command 都直接\n\
+             过，在 Runtime Node 上，以 runtime 那个账号的身份——而让模型跑一条\n\
+             命令只需要一句 prompt，包括藏在某个它被要求读的文件里的 prompt。\n\
+             \n\
+             那一问是最后一道有人在场的关卡。剩下的还是原来那些：runtime 账号自己\n\
+             的系统权限，以及工具够不出去的 workspace 根目录。\n\
+             \n\
+             想收回：在 Runtime Node 的 config.toml 里，把 [workspaces.{workspace}]\n\
+             下面的 allow_unattended_exec 删掉。\n\
+             \n\
+             这话只说一次。`ccnm doctor {workspace}` 里一直看得到。"
+        ),
+        format!(
+            "!! ccnm: workspace \"{workspace}\" has allow_unattended_exec set.\n\
+             \n\
+             Interactive sessions here no longer ask you before running a command.\n\
+             Every exec_command goes straight through, on the Runtime Node, as the\n\
+             account that runtime runs as -- and a prompt is all it takes to make the\n\
+             model run one, including a prompt that arrives in a file it was asked to\n\
+             read.\n\
+             \n\
+             That question was the last step with a person in it. What still stands is\n\
+             what always stood: the runtime account's own OS permissions, and the\n\
+             workspace root the tools cannot reach past.\n\
+             \n\
+             To take it back: remove allow_unattended_exec from\n\
+             [workspaces.{workspace}] in the Runtime Node's config.toml.\n\
+             \n\
+             Said once. `ccnm doctor {workspace}` keeps showing it."
+        ),
     )
 }
 

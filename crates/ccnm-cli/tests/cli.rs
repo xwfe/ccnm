@@ -184,6 +184,47 @@ fn the_language_can_be_set_by_flag_or_variable_and_the_flag_wins() {
     assert!(stdout(&cmd.output().unwrap()).ends_with("\n可以用了\n"));
 }
 
+/// `--help` is answered by clap before ccnm's own code runs, so the
+/// language has to be decided from the raw arguments. This is the test
+/// that the pre-scan doing that actually works, in both directions.
+#[test]
+fn help_is_in_the_ui_language_too() {
+    let zh = stdout(&ccnm_default_lang().arg("--help").output().unwrap());
+    assert!(
+        zh.contains("把 AI coding agent 和真实项目放在两台机器上跑"),
+        "{zh}"
+    );
+    assert!(zh.contains("只读，不改任何东西"), "{zh}");
+
+    for english in [
+        stdout(
+            &ccnm_default_lang()
+                .args(["--lang", "en", "--help"])
+                .output()
+                .unwrap(),
+        ),
+        stdout(&ccnm().arg("--help").output().unwrap()),
+    ] {
+        assert!(
+            english.contains("Terminal-native remote workspace runtime"),
+            "{english}"
+        );
+        assert!(!english.contains("只读"), "{english}");
+    }
+
+    // Subcommand help too, and the command names themselves are never
+    // translated: they are what somebody types.
+    let zh = stdout(
+        &ccnm_default_lang()
+            .args(["workspace", "--help"])
+            .output()
+            .unwrap(),
+    );
+    assert!(zh.contains("加、列、删 workspace"), "{zh}");
+    assert!(zh.contains("add"), "{zh}");
+    assert!(zh.contains("remove"), "{zh}");
+}
+
 /// A language ccnm cannot speak is refused rather than silently answered
 /// in English: the person asked for something that is not there.
 #[test]

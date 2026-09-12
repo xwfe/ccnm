@@ -346,7 +346,8 @@ enum InternalCommand {
 }
 
 fn main() -> ExitCode {
-    let cli = Cli::parse_from(with_default_subcommand(std::env::args_os().collect()));
+    let args = with_default_subcommand(std::env::args_os().collect());
+    let cli = parse_in_ui_lang(args);
     init_logging(cli.verbose);
     let lang = match ui_lang(&cli) {
         Ok(lang) => lang,
@@ -362,6 +363,60 @@ fn main() -> ExitCode {
             exit_code(err.exit_code())
         }
     }
+}
+
+/// Parse the command line with the help text already in the right
+/// language.
+///
+/// `--help` is answered by clap during parsing, so the language has to be
+/// settled *before* that — which is why this reads the argument itself
+/// instead of taking it off the parsed [`Cli`]. The same narrow scan the
+/// repository already does for the default subcommand, for the same
+/// reason.
+///
+/// Only the descriptions are swapped. Command names, flags and value
+/// names stay as they are: they are what someone types.
+fn parse_in_ui_lang(args: Vec<std::ffi::OsString>) -> Cli {
+    use clap::{CommandFactory as _, FromArgMatches as _};
+    let mut command = Cli::command();
+    if help_lang(&args) == Lang::Zh {
+        command = zh_help(command);
+    }
+    let matches = command.get_matches_from(args);
+    match Cli::from_arg_matches(&matches) {
+        Ok(cli) => cli,
+        Err(err) => err.exit(),
+    }
+}
+
+/// The language for help text, read straight off the command line.
+///
+/// Deliberately not the full resolution [`ui_lang`] does: the config file
+/// is not consulted here, because reaching it means resolving `--config`
+/// and loading a file before clap has validated anything, and a broken
+/// config would then break `--help` — the one command someone runs *when*
+/// things are broken. A config-set language still applies to everything
+/// ccnm prints itself; only `--help` falls back to the default.
+fn help_lang(args: &[std::ffi::OsString]) -> Lang {
+    let mut chosen = std::env::var("CCNM_LANG")
+        .ok()
+        .and_then(|value| Lang::parse(&value));
+    let mut rest = args.iter();
+    while let Some(arg) = rest.next() {
+        let Some(text) = arg.to_str() else { continue };
+        if let Some(value) = text.strip_prefix("--lang=") {
+            chosen = Lang::parse(value);
+        } else if text == "--lang"
+            && let Some(value) = rest.next().and_then(|v| v.to_str())
+        {
+            chosen = Lang::parse(value);
+        }
+    }
+    // An unparseable value is not settled here: clap has not run yet, so
+    // complaining now would pre-empt its own error for the same argument.
+    // `ui_lang` refuses it a moment later, with the code and wording
+    // every other bad argument gets.
+    chosen.unwrap_or(Lang::Zh)
 }
 
 /// The language this machine says things to a person in.
@@ -399,6 +454,66 @@ fn ui_lang(cli: &Cli) -> Result<Lang> {
         }),
         None => Ok(Lang::Zh),
     }
+}
+
+/// The same command tree with Chinese descriptions.
+///
+/// A table rather than a second set of doc comments on [`Cli`]: doc
+/// comments are what `clap` derives from, and there is only one of them
+/// per item. Anything not named here keeps the English from the derive,
+/// so a subcommand added without a line in this function shows up in
+/// English rather than disappearing.
+fn zh_help(command: clap::Command) -> clap::Command {
+    command
+        .about("把 AI coding agent 和真实项目放在两台机器上跑")
+        .mut_arg("config", |a| {
+            a.help("用别的配置文件，而不是 ~/.config/ccnm/config.toml")
+        })
+        .mut_arg("verbose", |a| {
+            a.help("往 stderr 打调试日志（等同 CCNM_LOG=debug）")
+        })
+        // 只能到这里为止。`--help`/`--version` 这两个参数是 clap 在
+        // build 时才加进去的，这会儿 mut_arg 还找不到它们（试过，会
+        // panic）；"Usage:"、"Options:"、"error:" 这些更是写死在 clap
+        // 里的，4.x 没给任何接口。所以参数写错时，那句报错仍然是英文。
+        .mut_subcommand("init", |c| {
+            c.about("写配置：这台机器是谁，以及它用哪个 SSH alias 找到对面那台。可以重复跑")
+        })
+        .mut_subcommand("workspace", |c| {
+            c.about("加、列、删 workspace，不用手改配置文件")
+                .mut_subcommand("add", |c| c.about("把一个名字指到这台机器上的某个项目目录"))
+                .mut_subcommand("list", |c| {
+                    c.about("配置里有哪些 workspace，以及它们的目录在不在这台机器上")
+                })
+                .mut_subcommand("remove", |c| {
+                    c.about("删掉一个 workspace。它要是还有会话在跑，先停掉")
+                })
+        })
+        .mut_subcommand("doctor", |c| {
+            c.about("检查这台机器和某个 workspace 能不能用（只读，不改任何东西）")
+        })
+        .mut_subcommand("run", |c| {
+            c.about("在 Agent Node 上给这个 workspace 起一个 Agent 会话，然后把这个终端接上去")
+        })
+        .mut_subcommand("attach", |c| c.about("把这个终端接到某个 workspace 正在跑的会话上"))
+        .mut_subcommand("status", |c| c.about("Agent Node 上现在跑着什么"))
+        .mut_subcommand("result", |c| {
+            c.about("某次会话产出了什么——给那种 --print 跑完、终端没一直连着的情况")
+        })
+        .mut_subcommand("stop", |c| {
+            c.about("结束一个 workspace 的会话：Agent、终端和 MCP 通道一起没")
+        })
+        .mut_subcommand("rpc", |c| {
+            c.about(
+                "在 stdin/stdout 上说机器协议，给程序用不是给人用：stdout 上只有协议行，日志走 stderr。契约在 docs/protocol/",
+            )
+        })
+        .mut_subcommand("mcp", |c| {
+            c.about("MCP 通道：诊断一条，或者把远端 workspace 交给外部 MCP Host")
+        })
+        .mut_subcommand("controller", |c| {
+            c.about("登录会话里的 controller。这几条要在 Agent Node 上跑，或者 ssh 过去跑：`ssh work ccnm controller install`")
+        })
 }
 
 /// `ccnm xshun` means `ccnm run xshun`.

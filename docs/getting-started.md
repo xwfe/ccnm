@@ -109,9 +109,11 @@ ccnm doctor my-project
 
 `doctor` 是只读检查，不会替你创建系统账号、改 ACL 或登录 Claude。
 
+输出默认是中文。文档里贴的样本是英文那版，要逐行对上就加 `--lang en`，语言开关本身见[使用说明](usage.md#说什么语言)。
+
 ### 如果项目和 Claude 登录在同一个账号下
 
-`doctor` 会直接红掉、MCP 握手都起不来，报的是 `No Claude credential`。这不是配错了：跑项目命令的账号能读到 Agent 的登录，而把这两件事分开正是 ccnm 存在的理由。
+`doctor` 会直接红掉、MCP 握手都起不来，报的是 `Claude 凭据`（英文 `No Claude credential`）那一行。这不是配错了：跑项目命令的账号能读到 Agent 的登录，而把这两件事分开正是 ccnm 存在的理由。
 
 两条路——建专用账号（下一节），或者在 **Runtime 侧**那个 workspace 上明确接受：
 
@@ -153,11 +155,19 @@ ccnm my-project
 
 ## dogfood 期间升级
 
-两台 Node 必须部署**同一个二进制 build**。仅比较 Cargo 版本号不足以区分两个都叫 `0.2.0`、但代码不同的本地 build，因此开发阶段优先使用仓库的部署脚本：
+两台 Node 必须部署**同一个二进制 build**。仅比较 Cargo 版本号不足以区分两个都叫 `0.2.0`、但代码不同的本地 build，因此开发阶段优先使用仓库的部署脚本。
+
+**先把会话停掉**，再升级：
 
 ```bash
+ccnm stop <workspace>                      # 每个在跑的都停
+ps aux | grep 'ccnm internal mcp-serve'    # 确认真没了
 bash scripts/deploy.sh <other-node-ssh-alias>
 ```
+
+不停会怎样：会话本身不会被升级杀掉（tmux server 在自己的进程组里），但它连着的 `mcp-serve` 还在跑老代码、攥着工作树的写入 guard，于是**升完之后新会话起不来**，而在会话里看到的现象完全是另一回事——模型会把工具调用当成普通文本打出来。整段来龙去脉见[运维](operations.md#升级前先把会话停掉)。
+
+第二条命令不能省：`ccnm status` 只报 tmux 会话，`--print` 的运行和已经断开的 SSH MCP 都不在里面。
 
 脚本会使用新文件 + rename 的方式替换二进制，并按当前 `ccnm controller` 接口重启 Controller。
 

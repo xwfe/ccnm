@@ -136,6 +136,22 @@ ccnm session id 是生命周期主键；Claude/Codex 自己的 thread/resume id 
 
 这一段描述的是当前代码的行为。**下面"P3 发布门禁结果"第 2 条那个"读不到任何已知 Agent 凭据"是那次真机验收的事实**，它验的是默认形态，不因为存在开关而失效。
 
+## 界面语言：验到哪一步
+
+0.6.0 起 ccnm 对人说话默认中文，`--lang en` / `CCNM_LANG` / `[ui] lang` 切英文。
+
+**验过的**（2026-09-12，macOS 15 / Apple Silicon，Terminal.app + UTF-8 locale，Runtime 侧发起）：doctor 四个真实 workspace 的完整表在中英两种语言下逐行对照，detail 列对齐正确；`--help` 及子命令、`init`、`workspace add/list`、`status`、两段逃生开关风险警告，中英两版都实跑过；英文那版与 0.5.0 逐字一致。自动化那侧，702 个测试里 CLI 集成测试统一走 `CCNM_LANG=en`，另有专门钉住中文路径和"英文页面不含任何 CJK 字符"的用例。
+
+**没验的，按可能咬人的顺序**：
+
+- **非 UTF-8 locale 的终端**。中文会画成一串下划线或问号。ccnm 自己不设 `LANG`（那样会破坏它对 git/ssh/tmux 英文输出的匹配），所以这取决于你终端和 ssh 带过去的 locale。撞上了就 `--lang en`。
+- **Linux Runtime 上的中文输出**。Debian 13 那台只验过英文；`ccnm doctor` 在 Runtime 侧本地渲染，理论上一样，但没跑过。
+- **窄终端下的换行**。doctor 的表按 31 列缩进排，中文行名比英文短，实际更不容易折，但没在 80 列以下量过。
+
+**不受语言影响、两种语言下一模一样**：`CCNM_E_*` 错误码与退出码、`ccnm rpc` 的全部 JSON、七个 MCP 工具名与参数、给模型的 MCP 文本、write-guard 锁文件内容，以及 `--- stdout` 这类被脚本解析的锚点。p7/p11/p12 三套真机脚本都只认这些，因此中文化不需要重跑真机轮。
+
+**翻不动的**：clap 内置的 `Usage:` / `Options:` / `error:`（4.x 没有接口），参数写错时那句报错仍是英文。`Error` 消息这一版也没翻——它同时走终端、`ccnm.machine/1` 的 `error.message` 和 MCP 工具正文三条路。
+
 ## egress：不作保证
 
 ccnm 不实现任何网络策略，**也不声明任何 egress 边界**。`exec_command` 能跑任意程序，任意程序能联网；真机上 Runtime 执行身份的出站是通的——项目工具链就是这么装上去的。本项目的"隔离"只覆盖 OS 身份、文件可达性和写互斥这三件事。

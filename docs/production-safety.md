@@ -96,7 +96,7 @@ ccnm doctor <workspace>
 
 Agent 不通的时候这几行是 SKIP，不是 OK：问不到的 Runtime 必须读作"没查"，不能读作"没问题"。
 
-confinement gate 会检查 Runtime Executor 能在它本机可靠判断的性质：
+confinement gate 会检查 Runtime Executor 能在它本机可靠判断的性质（这一页用的是英文行名，也就是 `ccnm doctor <workspace> --lang en` 那版；ccnm 默认说中文，中英对照见[出错了怎么办](troubleshooting.md)开头那张表）：
 
 ```text
 Runs as root            Runtime 不能是 root

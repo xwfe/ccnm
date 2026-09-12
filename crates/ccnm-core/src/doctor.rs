@@ -182,11 +182,16 @@ impl Report {
         for check in &self.checks {
             let mut lines = check.detail.lines();
             let first = lines.next().unwrap_or("");
+            // Padded by terminal columns, not by `char` count: a CJK name
+            // is two columns per character, and `{:<24}` would pad it as
+            // if it were half as wide, shifting every later column right.
+            // Identical to `{:<24}` for ASCII, so this row is unchanged
+            // until something here is translated.
             let _ = writeln!(
                 out,
-                "{:<NAME_WIDTH$}{:<STATUS_WIDTH$}{first}",
-                check.name,
-                check.status.label()
+                "{}{}{first}",
+                crate::lang::pad(check.name, NAME_WIDTH),
+                crate::lang::pad(check.status.label(), STATUS_WIDTH)
             );
             for line in lines {
                 let _ = writeln!(

@@ -8,6 +8,7 @@ pub mod controller;
 pub mod doctor;
 pub mod error;
 pub mod instance;
+pub mod lang;
 pub mod launchagent;
 pub mod launcher;
 pub mod mcp;
@@ -25,6 +26,7 @@ pub mod work;
 
 pub use config::Config;
 pub use error::{Error, ErrorCode, Result};
+pub use lang::Lang;
 pub use process::{Cmd, Output, ProcessRunner, SystemRunner};
 
 /// Version of the ccnm binary, shared by all crates in the workspace.

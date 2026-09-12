@@ -149,9 +149,26 @@ pub fn conf_text() -> String {
          set -g mouse on\n\
          set -g display-time 4000\n\
          set -s set-clipboard on\n\
-         set-hook -g client-attached 'display-message \"{ATTACH_NOTICE}\"'\n\
-         source-file -q ~/.tmux.conf\n"
+         set-hook -g client-attached '{}'\n\
+         source-file -q ~/.tmux.conf\n",
+        attach_hook()
     )
+}
+
+/// The command the `client-attached` hook runs, in both places that
+/// install it: [`conf_text`] and [`Tmux::set_hook_cmd`].
+///
+/// **Why `-N`.** Without it tmux clears the message on the next key
+/// press and swallows that key. Someone who attaches and starts typing —
+/// which is everyone, the session is a coding agent — destroys the notice
+/// with their first keystroke, so the `display-time 4000` above almost
+/// never gets to mean four seconds. `-N` makes the message ignore keys
+/// and wait out the delay, which is the only way the one warning ccnm
+/// can show is actually readable. Measured on tmux 3.7c: `-N` is
+/// accepted, and the message still disappears on its own when
+/// `display-time` expires.
+pub fn attach_hook() -> String {
+    format!("display-message -N \"{ATTACH_NOTICE}\"")
 }
 
 /// Shown for a few seconds every time a terminal attaches. One line,
@@ -250,6 +267,22 @@ impl Tmux {
     pub fn status_right_cmd(&self, name: &str, text: &str) -> Cmd {
         self.base()
             .args(["set-option", "-t", name, "status-right", text])
+    }
+
+    /// Install a hook on one session, rather than on the server.
+    ///
+    /// [`conf_text`] carries the same hook, but only the `new-session`
+    /// that *starts the server* reads that file, and ccnm's server is
+    /// long-lived: it stays up as long as any workspace has a session. So
+    /// the second workspace to start — and every session after an edit to
+    /// [`attach_hook`] — runs under whatever config the first one
+    /// installed. Someone changing the notice sees no change and concludes
+    /// the code is wrong, when what is stale is a server from yesterday.
+    ///
+    /// Per-session (`-t`) rather than `-g`: a global hook set here would
+    /// also fire for every other workspace's session on this server.
+    pub fn set_hook_cmd(&self, name: &str, hook: &str, command: &str) -> Cmd {
+        self.base().args(["set-hook", "-t", name, hook, command])
     }
 
     /// `tmux has-session`: exit 0 when the session is live.

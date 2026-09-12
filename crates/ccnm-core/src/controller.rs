@@ -539,6 +539,15 @@ fn label_status_bar(tmux: &tmux::Tmux, tools: &Tools<'_>, name: &str) {
     let _ = tools
         .runner
         .run(&tmux.status_right_cmd(name, &format!(" ccnm · detach: {prefix} d ")));
+    // Install the attach notice on this session too, not only through the
+    // config file: tmux reads that file once, when the `new-session` that
+    // starts the server runs, and this server outlives every individual
+    // session. Without this line the notice a session shows is whichever
+    // one was current when the server started — possibly days ago, from a
+    // build before the text was last changed.
+    let _ = tools
+        .runner
+        .run(&tmux.set_hook_cmd(name, "client-attached", &tmux::attach_hook()));
 }
 
 /// The tmux server's pid: proof that the session is backed by a process,
@@ -1053,6 +1062,7 @@ mod tests {
         fake.push(Output::exited(0, "4242\n")); // display-message: server pid
         fake.push(Output::exited(0, "C-a\n")); // show-options: the prefix
         fake.push(Output::exited(0, "")); // set-option: status-right
+        fake.push(Output::exited(0, "")); // set-hook: client-attached
 
         let req = Request::new(RequestBody::Start {
             identity: None,
@@ -1065,7 +1075,7 @@ mod tests {
         assert_eq!(pid, 4242, "the tmux server's pid is what comes back");
 
         let calls = fake.calls();
-        assert_eq!(calls.len(), 5);
+        assert_eq!(calls.len(), 6);
         assert!(calls[0].display().contains("has-session -t ccnm-xshun"));
         // The server gets ccnm's config, which is the only moment it can:
         // tmux reads one when it starts, and this call is the start.
@@ -1092,6 +1102,18 @@ mod tests {
             "{}",
             calls[4].display()
         );
+        // The attach notice is installed on the live server as well, because
+        // the config file above is read only by the `new-session` that
+        // starts the server, and this server outlives its sessions. `-t`
+        // and not `-g`: it must not fire for other workspaces' sessions.
+        // `-N` is what makes the notice survive the first keystroke.
+        let hook = calls[5].display();
+        assert!(
+            hook.contains("set-hook -t ccnm-xshun client-attached"),
+            "{hook}"
+        );
+        assert!(hook.contains("display-message -N"), "{hook}");
+        assert!(hook.contains("do not background this session"), "{hook}");
         let new = calls[1].display();
         assert!(new.contains("-L ccnm"), "{new}");
         assert!(new.contains("new-session -d -s ccnm-xshun"), "{new}");

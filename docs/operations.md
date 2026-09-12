@@ -18,7 +18,39 @@
 bash scripts/deploy.sh <另一台的 ssh 别名> [workspace]
 ```
 
-在有 Rust toolchain 的那台上跑。它编译、装两边、重启 controller、最后跑一次 `ccnm doctor`。**正在跑的会话不受影响**——tmux server 在自己的进程组里。
+在有 Rust toolchain 的那台上跑。它编译、装两边、重启 controller、最后跑一次 `ccnm doctor`。
+
+### 升级前先把会话停掉
+
+**正在跑的会话不会被升级杀掉**——tmux server 在自己的进程组里。听起来是好事，实际是这一节存在的原因：那个活下来的会话，连着的 `ccnm internal mcp-serve` 还在用**老代码**跑，而且攥着这棵工作树的写入 guard 不放。
+
+于是升级之后：
+
+```text
+Remote MCP handshake    FAIL   CCNM_E_RUNTIME_UNREACHABLE: ...
+                               stderr: CCNM_E_POLICY:
+                               workspace write guard is busy; another session still owns this working tree
+```
+
+**在会话里看到的完全是另一回事**：Claude Code 对 stdio server 退出只显示 `CONNECTION_CLOSED`，不显示 stderr。所以模型手里一个 ccnm 工具都没有，而它自己机器上的文件工具本来就是关掉的——它会把工具调用**当成普通文本打出来**：
+
+```text
+<parameter name="command">ls -la ...</parameter>
+```
+
+看着像模型抽风，实际是它一个能用的工具都没有。2026-09-12 真撞过一次，查了半天才定位到是升级留下的孤儿进程。
+
+所以顺序是：
+
+```bash
+ccnm stop <workspace>                  # 每个在跑的 workspace 都停
+ps aux | grep 'ccnm internal mcp-serve'   # 确认真没了，别只看 ccnm status
+bash scripts/deploy.sh <另一台的 ssh 别名> [workspace]
+```
+
+第二条不能省：`ccnm status` 只报 Agent Node 上的 tmux 会话，`--print` 的运行和已经断开的 SSH MCP 都不在里面（见下面[状态文件](#状态文件在哪多大怎么清)那一节）。
+
+万一已经升完了才想起来，按[写入 guard 残留](#写入-guard-残留)清：杀掉那个 `mcp-serve`，确认没有残留子进程，再备份删掉那**一个** marker 文件。
 
 ### 升级完一定要核对 controller 的进程启动时间
 

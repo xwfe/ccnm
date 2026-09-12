@@ -309,21 +309,27 @@ Linux"。** 别因为这个 job 绿了就去改支持矩阵。它存在的理由
 在 Linux 上从来没杀成过进程组，还报成功（见[支持矩阵](support-matrix.md)那一段）。修掉之后
 clippy 干净、681 passed / 0 failed（当时的数字）、`scripts/dist-linux.sh` 在 runner 上产出了包。
 
-**`release.yml` 的 Linux job 还没在 runner 上跑过**——它只在推 tag 时触发，第一次运行就是
-第一次发版。它调用的东西（同一套门禁、同一个打包脚本）已经在 `ci.yml` 的 Linux job 和一台真实
-Debian 13 上各验过一遍。
+**`release.yml` 的 Linux job 从 v0.3.0 起每次发版都跑，到 v0.6.0 连着绿了 5 次**（0.3.0、
+0.4.0、0.4.1、0.5.0、0.6.0，每个 release 都带 4 个产物：两个 tar.gz 加两个 sha256）。v0.1.0 和
+v0.2.0 只有 macOS 那两个。
 
 **推 tag 就是发版，撤不回来**——GitHub release 建出来了，别人可能已经下过。所以推之前先把门禁
-和打包在本机跑一遍：macOS 上 `bash scripts/dist.sh`，Linux 那半要么找一台 x86_64 的 Linux 跑
-`bash scripts/dist-linux.sh`，要么接受"第一次在 runner 上跑"这个风险——它失败的时候 tag 已经推
-出去了。
+在本机跑一遍。macOS 那半还可以顺手 `bash scripts/dist.sh` 验打包；Linux 那半没有 x86_64 Linux
+就只能靠 runner，好在它现在有 5 次绿的记录，不再是"第一次在 runner 上跑"。
+
+**推 tag 之前先把两台机器上的会话停掉。** 这跟发版本身无关，是紧接着的那步升级会咬人：升级不会
+杀掉在跑的会话，但那个会话连着的 `mcp-serve` 还在跑老代码、攥着写入 guard，升完之后新会话起不来。
+见[运维](operations.md#升级前先把会话停掉)。
 
 发一个版本：
 
 ```bash
-# 先把 Cargo.toml 里的 version 改好并提交
-git tag -a v0.2.1 -m "..."
-git push origin v0.2.1
+ccnm stop <workspace>                   # 两台上在跑的会话都停，见上面
+# 把 Cargo.toml 里的 version 改好，cargo build 让 Cargo.lock 跟上，提交
+git push origin main                    # tag 要指向远端有的 commit
+git tag -a v0.2.1 -F -                  # 从 stdin 读 notes，历史几个版本都是这么写的
+git push origin v0.2.1                  # 这一下触发 release.yml
+bash scripts/deploy.sh <另一台的别名>    # 装到两台上
 ```
 
 `release.yml` 会在**版本号和 tag 对不上时直接失败**（`v0.2.1` 打在还写着 `0.2.0` 的树上，

@@ -8,13 +8,16 @@
 | 中文 | 英文 | 中文 | 英文 |
 |---|---|---|---|
 | 配置文件 | Config | Runtime 执行身份 | Runtime user |
-| workspace 配置 | Workspace config | 够不到 Claude 凭据 | No Claude credential |
+| workspace 配置 | Workspace config | Claude 凭据 | No Claude credential |
 | workspace 根目录 | Workspace root | Runtime 安全 | Runtime safety |
-| 远端 MCP 握手 | Remote MCP handshake | 不在 admin 组 | Not an admin |
-| 连 Agent 的 SSH | Agent SSH | 没有 SSH 私钥 | No SSH keys |
+| 远端 MCP 握手 | Remote MCP handshake | admin 组 | Not an admin |
+| 连 Agent 的 SSH | Agent SSH | SSH 私钥 | No SSH keys |
 | 终端会话 | Terminal session | 命令审批 | Command approval |
+| Runtime 上的项目 | Runtime workspace | sudo 权限 | No sudo |
 
-状态词：`正常`=OK、`注意`=WARN、`没查`=SKIP、`不行`=FAIL。结论行 `可以用了`=READY、`还不能用`=NOT READY。
+英文那几个 `No …` / `Not …` 开头的名字，中文用的是中性名词（`SSH 私钥` 而不是 `没有 SSH 私钥`）。原因是英文那种否定式当表头读得通，中文读起来却像一句陈述——`不在 admin 组｜注意｜this account is in admin` 会让人读到跟事实相反的结论。所以名字只说查了什么，结果全看状态那一列。
+
+状态词：`正常`=OK、`注意`=WARN、`没查`=SKIP、`失败`=FAIL。结论行 `可以用了`=READY、`还不能用`=NOT READY。
 
 **错误码不跟着变。** `CCNM_E_*` 两种语言下都一样，所以拿错误码搜这一页永远搜得到。
 

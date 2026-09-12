@@ -184,6 +184,12 @@ fn the_language_can_be_set_by_flag_or_variable_and_the_flag_wins() {
     assert!(stdout(&cmd.output().unwrap()).ends_with("\n可以用了\n"));
 }
 
+/// Han characters and the CJK punctuation ccnm writes. Enough to catch a
+/// Chinese string that reached a page that should be English.
+fn is_cjk(c: char) -> bool {
+    matches!(c as u32, 0x3000..=0x303F | 0x4E00..=0x9FFF | 0xFF00..=0xFF60)
+}
+
 /// `--help` is answered by clap before ccnm's own code runs, so the
 /// language has to be decided from the raw arguments. This is the test
 /// that the pre-scan doing that actually works, in both directions.
@@ -204,16 +210,34 @@ fn help_is_in_the_ui_language_too() {
                 .unwrap(),
         ),
         stdout(&ccnm().arg("--help").output().unwrap()),
+        // `init` is the one subcommand whose doc comment has a blank line,
+        // so clap derives a long_about that `--help` shows instead of the
+        // about. Translating only the about left this page English, and
+        // nothing caught it; the same trap is waiting for the next
+        // subcommand that grows a second paragraph.
+        stdout(&ccnm().args(["init", "--help"]).output().unwrap()),
     ] {
-        assert!(
-            english.contains("Terminal-native remote workspace runtime"),
-            "{english}"
-        );
-        assert!(!english.contains("只读"), "{english}");
+        // Not "does not contain <some Chinese phrase>": that only catches
+        // the phrase somebody thought to check. A `--help` in English has
+        // no business containing any Chinese at all, and asserting exactly
+        // that is what would have caught `--lang`'s own description being
+        // hardcoded Chinese for every reader.
+        let leaked: String = english.chars().filter(|c| is_cjk(*c)).collect();
+        assert!(leaked.is_empty(), "Chinese in English help: {leaked}");
     }
 
     // Subcommand help too, and the command names themselves are never
     // translated: they are what somebody types.
+    // The page `init --help` renders from a long_about, which is a
+    // separate string clap only uses here.
+    let zh = stdout(
+        &ccnm_default_lang()
+            .args(["init", "--help"])
+            .output()
+            .unwrap(),
+    );
+    assert!(zh.contains("只能给一个"), "{zh}");
+
     let zh = stdout(
         &ccnm_default_lang()
             .args(["workspace", "--help"])

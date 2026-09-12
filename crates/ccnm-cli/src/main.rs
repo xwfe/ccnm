@@ -33,13 +33,14 @@ struct Cli {
     #[arg(short, long, global = true)]
     verbose: bool,
 
-    /// 说给人听的那些话用什么语言：zh（默认）或 en。
+    /// What language ccnm says things to a person in: zh (the default) or en
     ///
-    /// 也可以写在 config.toml 里：`[ui]` 下面 `lang = "en"`。命令行
-    /// 优先于 CCNM_LANG，CCNM_LANG 优先于配置。
+    /// Also settable in config.toml, under `[ui]` as `lang = "en"`. The
+    /// flag wins over CCNM_LANG, which wins over the config.
     ///
-    /// 只管给人看的输出。错误码、协议字段、给模型的 MCP 文本，以及
-    /// ccnm 自己要去匹配的 git/ssh/tmux 英文，都跟它无关。
+    /// Only what a person reads. Error codes, protocol fields, the MCP text
+    /// the model reads, and the English ccnm itself matches in git/ssh/tmux
+    /// output are all unaffected.
     #[arg(long, global = true, env = "CCNM_LANG", value_name = "LANG")]
     lang: Option<String>,
 
@@ -472,36 +473,107 @@ fn zh_help(command: clap::Command) -> clap::Command {
         .mut_arg("verbose", |a| {
             a.help("往 stderr 打调试日志（等同 CCNM_LOG=debug）")
         })
+        // Both, because this one's doc comment has blank lines and clap
+        // therefore built a long_about from it: `-h` shows `help`,
+        // `--help` shows `long_help`, and setting only one leaves the
+        // other in English.
+        .mut_arg("lang", |a| {
+            a.help("说给人听的那些话用什么语言：zh（默认）或 en")
+                .long_help(
+                    "说给人听的那些话用什么语言：zh（默认）或 en\n\n\
+                     也可以写在 config.toml 里：`[ui]` 下面 `lang = \"en\"`。\n\
+                     命令行优先于 CCNM_LANG，CCNM_LANG 优先于配置。\n\n\
+                     只管给人看的输出。错误码、协议字段、给模型的 MCP 文本，\n\
+                     以及 ccnm 自己要去匹配的 git/ssh/tmux 英文，都跟它无关。",
+                )
+        })
         // 只能到这里为止。`--help`/`--version` 这两个参数是 clap 在
         // build 时才加进去的，这会儿 mut_arg 还找不到它们（试过，会
         // panic）；"Usage:"、"Options:"、"error:" 这些更是写死在 clap
         // 里的，4.x 没给任何接口。所以参数写错时，那句报错仍然是英文。
         .mut_subcommand("init", |c| {
             c.about("写配置：这台机器是谁，以及它用哪个 SSH alias 找到对面那台。可以重复跑")
+                // `init` is the only subcommand whose doc comment has a
+                // blank line, so clap derived a long_about for it -- and
+                // `--help` shows long_about while `-h` shows about. Set
+                // only one and `ccnm init --help`, the first command a new
+                // user runs, silently stays English.
+                .long_about(
+                    "写配置：这台机器是谁，以及它用哪个 SSH alias 找到对面那台。可以重复跑\n\n\
+                     --agent 和 --runtime 只能给一个，因为给哪个也就说明了这台机器是谁：\n\
+                     放项目的那台给 --agent，跑 Claude 的那台给 --runtime",
+                )
+                .mut_arg("agent", |a| {
+                    a.help("这台机器放项目；ALIAS 是它找到 Agent Node 的那个别名")
+                })
+                .mut_arg("runtime", |a| {
+                    a.help("这台机器跑 agent；ALIAS 是它找到 Runtime Node 的那个别名")
+                })
         })
         .mut_subcommand("workspace", |c| {
             c.about("加、列、删 workspace，不用手改配置文件")
-                .mut_subcommand("add", |c| c.about("把一个名字指到这台机器上的某个项目目录"))
+                .mut_subcommand("add", |c| {
+                    c.about("把一个名字指到这台机器上的某个项目目录")
+                        .mut_arg("name", |a| {
+                            a.help("叫它什么；之后每条命令都用这个名字。不给就用目录自己的名字")
+                        })
+                        .mut_arg("path", |a| a.help("项目目录。不给就是当前目录"))
+                        .mut_arg("replace", |a| {
+                            a.help("名字已经存在时，改指到这个目录，而不是报错")
+                        })
+                        .mut_arg("allow_unconfined_exec", |a| {
+                            a.help("允许 exec_command 在没有受限 runtime 账号的情况下跑（见 docs/production-safety.md）")
+                        })
+                        .mut_arg("permission_mode", |a| a.help("Claude 不用问就能做的事"))
+                })
                 .mut_subcommand("list", |c| {
                     c.about("配置里有哪些 workspace，以及它们的目录在不在这台机器上")
                 })
                 .mut_subcommand("remove", |c| {
                     c.about("删掉一个 workspace。它要是还有会话在跑，先停掉")
+                        .mut_arg("purge", |a| {
+                            a.help("连 ccnm 给它存的东西一起删：会话记录和官方 CLI 的工作目录。项目本身永远不碰")
+                        })
                 })
         })
         .mut_subcommand("doctor", |c| {
             c.about("检查这台机器和某个 workspace 能不能用（只读，不改任何东西）")
+                .mut_arg("workspace", |a| {
+                    a.help("config.toml 里的 workspace 名字；不给就只查配置本身")
+                })
+                .mut_arg("agent", |a| {
+                    a.help("用这个 workspace 的 Agent Node 上另一个配好的 instance")
+                })
         })
         .mut_subcommand("run", |c| {
             c.about("在 Agent Node 上给这个 workspace 起一个 Agent 会话，然后把这个终端接上去")
+                .mut_arg("workspace", |a| a.help("config.toml 里的 workspace 名字"))
+                .mut_arg("prompt", |a| a.help("Agent 开场读什么；不给就是空的"))
+                .mut_arg("agent", |a| {
+                    a.help("不用这个 workspace 的默认 Agent Instance，改用同一节点上的另一个")
+                })
+                .mut_arg("prompt_stdin", |a| {
+                    a.help("开场白从 stdin 读到结束。能带引号和换行，命令行上不行")
+                })
+                .mut_arg("print", |a| {
+                    a.help("非交互地跑一句，把结果打出来，不接终端")
+                })
+                .mut_arg("timeout", |a| a.help("多少秒之后杀掉 Agent（只对 --print 有效）"))
+                .mut_arg("detached", |a| a.help("把会话起起来，但不接上去"))
         })
-        .mut_subcommand("attach", |c| c.about("把这个终端接到某个 workspace 正在跑的会话上"))
-        .mut_subcommand("status", |c| c.about("Agent Node 上现在跑着什么"))
+        .mut_subcommand("attach", |c| {
+            workspace_args(c.about("把这个终端接到某个 workspace 正在跑的会话上"))
+        })
+        .mut_subcommand("status", |c| {
+            workspace_args(c.about("Agent Node 上现在跑着什么"))
+                .mut_arg("all", |a| a.help("那台机器上每一个 ccnm 会话，不只是这个 workspace 的"))
+        })
         .mut_subcommand("result", |c| {
-            c.about("某次会话产出了什么——给那种 --print 跑完、终端没一直连着的情况")
+            workspace_args(c.about("某次会话产出了什么——给那种 --print 跑完、终端没一直连着的情况"))
+                .mut_arg("session", |a| a.help("会话 id；不给就是这个 workspace 最近的那次"))
         })
         .mut_subcommand("stop", |c| {
-            c.about("结束一个 workspace 的会话：Agent、终端和 MCP 通道一起没")
+            workspace_args(c.about("结束一个 workspace 的会话：Agent、终端和 MCP 通道一起没"))
         })
         .mut_subcommand("rpc", |c| {
             c.about(
@@ -514,6 +586,11 @@ fn zh_help(command: clap::Command) -> clap::Command {
         .mut_subcommand("controller", |c| {
             c.about("登录会话里的 controller。这几条要在 Agent Node 上跑，或者 ssh 过去跑：`ssh work ccnm controller install`")
         })
+}
+
+/// The three arguments `attach`, `status`, `result` and `stop` all share.
+fn workspace_args(command: clap::Command) -> clap::Command {
+    command.mut_arg("workspace", |a| a.help("config.toml 里的 workspace 名字"))
 }
 
 /// `ccnm xshun` means `ccnm run xshun`.
@@ -1126,13 +1203,13 @@ fn init(
         // total for callers that are not clap.
         (Some(_), Some(_)) => {
             return Err(ccnm_core::Error::invalid_args(lang.pick(
-                "--agent 和 --runtime 各自说明这台机器是谁，所以只能给一个\n  放项目的那台：      ccnm init --agent <别名>\n  跑 Claude 的那台：  ccnm init --runtime <别名>",
+                "--agent 和 --runtime 各自说明这台机器是谁，所以只能给一个\n  放项目的那台：      ccnm init --agent <alias>\n  跑 Claude 的那台：  ccnm init --runtime <alias>",
                 "--agent and --runtime each say which node this machine is, so only one of them can be true here\n  on the machine holding the projects:  ccnm init --agent <alias>\n  on the machine running Claude:        ccnm init --runtime <alias>",
             )));
         }
         (None, None) => {
             return Err(ccnm_core::Error::invalid_args(lang.pick(
-                "要给出另一台机器的别名：\n  放项目的那台：      ccnm init --agent <别名>\n  跑 Claude 的那台：  ccnm init --runtime <别名>",
+                "要给出另一台机器的别名：\n  放项目的那台：      ccnm init --agent <alias>\n  跑 Claude 的那台：  ccnm init --runtime <alias>",
                 "give the alias for the other node:\n  on the machine holding the projects:  ccnm init --agent <alias>\n  on the machine running Claude:        ccnm init --runtime <alias>",
             )));
         }
@@ -1211,10 +1288,10 @@ fn init(
                 "and the Agent Node must be able to reach back, which is its own\nconfig, written there:",
             )
         );
-        println!(
-            "  ssh {alias} ccnm init --runtime {}",
-            lang.pick("<这台机器的别名>", "<this machine's alias>")
-        );
+        // Placeholders stay English wherever they sit inside a command
+        // somebody retypes. Mixing `<别名>` into one line and `<name>`
+        // into the next is worse than either choice on its own.
+        println!("  ssh {alias} ccnm init --runtime <this machine's alias>");
     }
     Ok(0)
 }
@@ -1305,8 +1382,9 @@ fn workspace_command(
                 );
                 return Ok(0);
             }
-            // Workspace names are ASCII (paths::safe_name filters them),
-            // so `{name:width$}` is still right here.
+            // Workspace names are `[A-Za-z0-9_-]+` (config::check_name,
+            // enforced when the config loads), so bytes, chars and columns
+            // are the same number and `{name:width$}` is still right.
             let width = config.workspaces.keys().map(String::len).max().unwrap_or(0);
             for (name, workspace) in &config.workspaces {
                 let here = if workspace.root.is_dir() {

@@ -100,10 +100,16 @@ impl fmt::Display for Lang {
 /// translation.
 ///
 /// The ranges below are the East Asian Wide and Fullwidth blocks, which
-/// is all ccnm can produce: labels are written in this repository, in
-/// Chinese or English. Combining marks and emoji are not handled, and a
-/// misjudged width there would cost one misaligned row in a table —
-/// which is why this does not justify a dependency.
+/// covers what goes into a padded column: Han characters and fullwidth
+/// punctuation, all of it written in this repository.
+///
+/// What it does *not* cover is the Ambiguous class — `—`, `…`, `·`, the
+/// curly quotes — which a CJK-configured terminal draws two columns wide
+/// and this counts as one. ccnm does print those (`——` appears in a
+/// couple of sentences), so the rule is: they are fine in running text,
+/// but a string that goes through [`pad`] must not contain them. Nothing
+/// enforces that; it is a one-row misalignment if broken, which is also
+/// why none of this justifies a dependency.
 pub fn display_width(text: &str) -> usize {
     text.chars().map(char_width).sum()
 }

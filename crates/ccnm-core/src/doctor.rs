@@ -77,7 +77,10 @@ impl Status {
             Status::Ok => lang.pick("正常", "OK"),
             Status::Warn => lang.pick("注意", "WARN"),
             Status::Skip => lang.pick("没查", "SKIP"),
-            Status::Fail(_) => lang.pick("不行", "FAIL"),
+            // "失败" and not "不行": the names next to it are nouns, and
+            // `sudo 权限 不行` reads as a sentence about sudo rather than
+            // as a verdict on the check.
+            Status::Fail(_) => lang.pick("失败", "FAIL"),
         }
     }
 
@@ -225,7 +228,7 @@ impl Report {
         if self.ready() {
             out.push_str(lang.pick("可以用了\n", "READY\n"));
         } else if lang == Lang::Zh {
-            let _ = writeln!(out, "还不能用（{failed} 项不行，{skipped} 项没查）");
+            let _ = writeln!(out, "还不能用（{failed} 项失败，{skipped} 项没查）");
         } else {
             let _ = writeln!(out, "NOT READY ({failed} failed, {skipped} not checked)");
         }
@@ -963,9 +966,6 @@ fn runtime_safety_rows(report: &crate::runtime::AuditReport) -> Vec<Check> {
     rows
 }
 
-/// `Check::name` is `&'static str` because every other row's name is a
-/// literal. The audit's names are literals too, so they are mapped back
-/// rather than leaked.
 /// A check's name as a person reads it, for display only.
 ///
 /// [`Check::name`] itself stays English wherever it is stored: 45 tests
@@ -998,12 +998,19 @@ fn row_label(lang: Lang, name: &str) -> &str {
         "Reverse SSH" => "反向 SSH",
         "Controller" => "Controller",
         "Runtime user" => "Runtime 执行身份",
-        "Runs as root" => "是不是 root 在跑",
-        "No sudo" => "不能 sudo",
-        "Not an admin" => "不在 admin 组",
-        "No SSH keys" => "没有 SSH 私钥",
-        "No Claude credential" => "够不到 Claude 凭据",
-        "No Docker socket" => "够不到 Docker socket",
+        // These six are the names of checks that pass when the answer is
+        // "no". In English the negative reads as a heading; in Chinese it
+        // reads as a statement of fact, and on a WARN row it would then
+        // contradict its own detail -- `不在 admin 组 | 注意 | this
+        // account is in admin` tells a reader the opposite of the truth
+        // about their own machine. Neutral nouns instead, so the name says
+        // what was looked at and the status says how it came out.
+        "Runs as root" => "root 身份",
+        "No sudo" => "sudo 权限",
+        "Not an admin" => "admin 组",
+        "No SSH keys" => "SSH 私钥",
+        "No Claude credential" => "Claude 凭据",
+        "No Docker socket" => "Docker socket",
         "Anthropic egress" => "Anthropic 出口",
         "Runtime safety" => "Runtime 安全",
         "Command approval" => "命令审批",
@@ -1015,6 +1022,9 @@ fn row_label(lang: Lang, name: &str) -> &str {
     }
 }
 
+/// `Check::name` is `&'static str` because every other row's name is a
+/// literal. The audit's names are literals too, so they are mapped back
+/// rather than leaked.
 fn safety_row_name(check: &str) -> &'static str {
     match check {
         "Runs as root" => "Runs as root",

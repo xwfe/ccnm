@@ -94,7 +94,8 @@ impl WriteGuard {
                  2. find the single marker naming that session id in\n\
                     ${XDG_STATE_HOME:-~/.local/state}/ccnm/write-guards/\n\
                  3. back it up, then delete that one file\n\
-                 never clear it just because time passed; see docs/operations.md, 「写入 guard 残留」",
+                 never clear it just because time passed\n\
+                 the full procedure is in docs/operations.md, under 写入 guard 残留 (\"write guard left held\")",
             ));
         }
         if !state_text.is_empty() && state_text != RELEASED {

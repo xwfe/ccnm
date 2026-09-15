@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-09-15T23:55:00+09:00",
-  "current_task": "P13",
+  "last_updated": "2026-09-16T00:11:00+09:00",
+  "current_task": null,
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
     "source": "docs/research/codex-internal-wiring-2026-09-07.md",
@@ -938,15 +938,41 @@
     {
       "id": "P13",
       "title": "MCP instructions 按 Host 实际上限投影",
-      "status": "in_progress",
+      "status": "completed",
       "depends_on": [
         "P12"
       ],
-      "owner": "claude-opus-5 (Claude Code desktop)",
+      "owner": null,
       "started_at": "2026-09-15T23:55:00+09:00",
-      "last_updated": "2026-09-15T23:55:00+09:00",
-      "completed_criteria": [],
-      "evidence": [],
+      "last_updated": "2026-09-16T00:11:00+09:00",
+      "completed_criteria": [
+        "P13.1",
+        "P13.2",
+        "P13.3",
+        "P13.4"
+      ],
+      "evidence": [
+        {
+          "kind": "offline",
+          "criteria": [
+            "P13.1",
+            "P13.2",
+            "P13.3"
+          ],
+          "ref": "docs/research/p13-instructions-host-cap-2026-09-16.md",
+          "commit": "60ad480",
+          "result": "provider/context.rs 新增 Cap（Utf16/Bytes 两种计量）：CLAUDE_CODE_CAP=Utf16(2048)、CODEX_CAP=Bytes(16 KiB)、EXTERNAL_CAP=CLAUDE_CODE_CAP，依据写在常量注释里一处。顺序改为 base → 标记行 → 其他说明文件清单（≤768 码元，放不下写 N of M listed，扫到上限 40 写 or more）→ 项目文件正文；正文按行截断。parse_marker 取第一条标记行。golden fixture 未重录：provider_compat 把旧文本拆四段按新顺序重拼后比对通过。doctor 的 Project instructions 行改说 Claude Code 保留 2048 UTF-16 code units。协议第 8/10 节、configuration、troubleshooting 同步。门禁：cargo fmt --check、clippy -D warnings 通过；cargo test --workspace 716 passed / 0 failed；tests.test_remote_workspace_mcp 10 passed；check_protocol 与 test_check_protocol 通过；Python 全量 168 passed。限制：超长 workspace 名（上千字符）会让 ccnm 自己那段就超限，未另加限制。"
+        },
+        {
+          "kind": "offline",
+          "criteria": [
+            "P13.4"
+          ],
+          "ref": "docs/research/p13-instructions-host-cap-2026-09-16.md",
+          "commit": "60ad480",
+          "result": "本机 macOS arm64 真实 Claude Code 2.1.269 连真实 ccnm internal mcp-serve（外部 read + external_instructions=project，项目文件为 ccnm 自己的 AGENTS.md 3806 码元）。改前（16a6991 构建）：握手 4600 码元、标记行在第 47 行，debug 日志 Server instructions truncated from 4600 to 2048 chars。改后（60ad480 构建）：2030 码元、标记行第 4 行，无截断行。两次都在认证阶段停下（本机 CLI loggedIn=false，input_tokens 0），不耗额度。复现要点：Claude Code 给 MCP 子进程注入 CLAUDE_CODE_MESSAGING_TOKEN，ccnm 会按设计拒绝，本地复现须 env -i 起 mcp-serve 模拟 ssh 落地环境。限制：不是双机、不证明模型实际看到的文本；Managed 路径没有真实 Host 连接，只有单元测试。"
+        }
+      ],
       "blockers": []
     }
   ],
@@ -984,11 +1010,12 @@
     "【产品决定，已实现】第三个逃生开关 allow_unattended_exec：交互式会话不再每次问「要不要执行这条命令」。背景：用户开了 claude_permission_mode = bypassPermissions，只读工具确实不问了，exec_command 还是每次弹窗。查下来不是 bug——ccnm 自己给 exec_command 挂了 anthropic/requiresUserInteraction，Claude Code 在任何权限模式下都认它，这正是 server.rs 里那段注释的理由（实测约 93% 的提示会被点同意，而且很多人干脆全关，所以能被调用方关掉的闸门不叫闸门）。现场证据：状态栏写着 ⏵⏵ bypass permissions on，同一个会话里 workspace_info 直接跑、exec_command 弹窗；--allowed-tools、settings 的 allow 列表、--dangerously-skip-permissions 都盖不过它。用户拍板「放开个口子，让用户自己设置、自己负责」。**设计上刻意不做命令行参数**：能关掉这一步的东西如果放在请求里，驱动 ccnm 的程序就能自己关掉自己被审计的那一步；已有两个开关的核心就是「只读 Runtime 自己的 config，请求里带不进来」，这条必须一致。做法照搬已有形状：per-workspace bool、只从 Runtime config 读、doctor 里 Command approval 那行开了永远 WARN（关着是 OK，两头都显示，因为「会不会打断我」两个答案都有用）、第一次用它起会话时讲一次（marker 拆成每个风险一个，两个开关各说各的，互不吞掉对方）。**它和前两个不是一类：不授权任何东西** —— exec_allowed 的答案完全不受它影响，有回归测试钉住。--print 和 mcp bridge 完全不受影响（那两条路本来就不挂这个键）。名字取 allow_unattended_exec：跟另外两个同形（allow un-X，说性质不说机器），而 attended 正好就是这个键现在的挂载条件（代码里叫 interactive，意思是有人在场）。跟 allow_unconfined_exec 长得像是唯一顾虑，但 workspace 表是 deny_unknown_fields，实测拼错直接 CCNM_E_CONFIG。文档同时补了 --print 的场景对照（usage.md「不想被打断：先想想 --print」），因为大部分「它老问我」其实是一次性任务，根本不需要常驻会话。",
     "【产品决定，已实现】ccnm 对人说话默认改成中文，--lang en / CCNM_LANG / config.toml 的 [ui] lang 切回英文（优先级就是这个顺序）。已翻：doctor 表（行名、状态词、结论行）、--help（含子命令和参数描述）、init 引导、workspace add/list/remove、stop、attach 收尾、run/status/result 三个报告、以及两段逃生开关风险警告。**做法**：不加 i18n 依赖，crates/ccnm-core/src/lang.rs 里一个 Lang 枚举 + lang.pick()，翻译只发生在渲染出口——Check.name 在存储和比较时仍是英文稳定 id（45 处测试拿它查行，safety_row_name 还拿同样的字符串判断哪条 finding 是哪条，而那份报告是跨 SSH 传回来的），只有 render_in(lang) 时才查表翻。core 层 Lang 默认 En，所以几百条断言渲染文本的单测一条没改；集成测试的 spawn helper 统一加 CCNM_LANG=en（helper 里有 env_clear，CI 导出的传不进去）。**对齐**：Rust 的 {:<24} 按 char 数补空格而中文一个字占两列，实测「配置文件」会把后面顶歪 4 格。自己写了 40 行的 display_width/pad 按显示宽度补，没引 unicode_width——需要的只有 CJK 和全角那几段。Ambiguous 标点（——、…、·）按 1 列算，所以不许进补齐列，这条只写在文档里没有强制。**三类绝不翻**，都核对过没被碰：冻结契约（CCNM_E_* 名、JSON-RPC 码、枚举词、七个工具名和参数名、held/released、[server pid N, call M] 这些解析锚点）、给模型看的 MCP 文本（P7/P11/P12 三轮真机都是拿英文跑的，翻了等于把已验收行为改成未验收而 CI 全绿）、以及 ccnm 自己要去匹配的 git/ssh/tmux/Codex 英文。最后一类正是**绝不能用 LANG/LC_ALL 当语言开关**的原因——那会让 ssh.rs 的 permission denied、runtime.rs 的 dubious ownership、codex 的 Logged in 全部静默失效，不报任何错。语言不跨 SSH 传，两台机器各说各的；doctor 里那些远端生成的 detail 因此仍是英文。**一轮独立校对（4 个维度并行）查出三条真问题，都已修**：(1) doctor 六个否定式检查项名中文读反了——「不在 admin 组｜注意｜this account is in admin」，只看中文得到的是相反的安全结论；改成中性名词（admin 组 / sudo 权限 / SSH 私钥 / Claude 凭据 / Docker socket / root 身份），名字只说查了什么，结果全看状态列。(2) --lang 自己的 doc comment 写成了中文，把英文 --help 也污染了（clap derive 一个参数只有一份说明）。(3) ccnm init --help 整页英文——init 是唯一 doc comment 带空行的子命令，clap 因此生成了 long_about，而 --help 显示 long_about、-h 显示 about，只翻 about 就成了「-h 中文 --help 英文」。三条原测试一条都抓不到，现在断言的是「英文 help 里不含任何 CJK 字符」。**已知限制**：clap 内置的 Usage:/Options:/error: 翻不动（4.x 没接口），参数写错时那句报错仍是英文；Error::message 这一轮没翻，它同时走终端、JSON-RPC error.message 和 MCP 工具正文三条路，剪绳是独立重构；doctor 的 detail 列仍是英文。",
     "【真机发现，已修】tmux attach 时那句「别把这个会话放后台」提示，第一个按键就没了——裸 display-message 会被下一个按键清掉，而且那个键还被吞掉。attach 进来的人马上就开始打字（里面是个 coding agent），所以 conf 里的 display-time 4000 基本没机会真的是 4 秒。加了 -N（忽略按键、等 delay 到期），tmux 3.7c 上实测 -N 被接受且消息仍会自己消失。第二个毛病更隐蔽：conf_text 只有启动 server 的那条 new-session 会读，而 ccnm 的 tmux server 是常驻的（只要还有任一 workspace 有会话就不退），于是第二个 workspace 起的会话用的是第一个装的 hook——改了 ATTACH_NOTICE 的人本机一测「没变化」，会以为代码没写对。所以 label_status_bar 里补了一条 set-hook 直接下到活着的 server 上，用 -t 不用 -g（全局 hook 会对同一 server 上别的 workspace 的会话也触发）。真机验过：server 先起着、事后 set-hook 补装，attach 那个会话提示出现；attach 同一 server 的另一个会话不出现。**提示文本保持英文**（用户明确要求）。**还没解决**：起会话时打的那两段风险警告在交互式会话里仍然看不见——它打在终端上，紧接着 tmux attach 就把整屏换掉了（alternate screen，不是滚上去是盖住）。--print 和 --detached 看得见。现在的兜底是警告最后那句「ccnm doctor 里一直看得到」。要真正解决得把风险摘要跨 SSH 传到 Agent 侧（session Spec 加字段），是一笔独立的改动。",
-    "【真机发现，已修】「ccnm 不支持多个项目？」——不是。现场：Runtime=bing@xdwmbp（MacBook，会睡眠）、Agent=fodelf，ghostty 里同时开 xdo 和 gld，gld 新会话（95d6516e）工具连不上。根因（两台机器上逐项取证）：gld 前一晚的会话 402638ca 在 fodelf 上 08:58 已正常退出（exit 文件 exit_code 0），但 xdwmbp 上它的 mcp-serve（pid 28398）还活着、握着 gld 的写锁（锁文件 `held 402638ca… gld`，lsof 显示被 28398 持有），新会话被拒成 busy，Claude Code 只显示连不上。它不退是因为连接半开：xdwmbp 夜里睡眠，fodelf 那头的 transport ssh 等不到回应关掉了，FIN 丢在睡眠里；xdwmbp 醒来后 sshd-session 的 socket 仍是 ESTABLISHED（100.79.121.33:49731），而 fodelf 上 netstat 已没有这个端口；MCP 里 server 只回答不发问，没人调用就不写，永远发现不了。xdo 和 gld 是两把不同的锁，互不影响。**修法**：mcp-serve 空闲每 30 秒发一次 MCP ping（server.rs HEARTBEAT）；写失败即 cancel，走正常收尾、锁变 released；ping 无回应**不**断（对面只是睡着时 TCP 还活着）。真实 Claude Code 2.1.269（xdwmbp，未登录也完成握手）和 2.1.272（fodelf）用不含 ccnm 代码的探针 server 验过：两次 ping 都回 {\"result\":{}}，一次在 tools/call 进行中；Codex 的 rmcp 客户端按 SDK 源码自动回应。回归测试用两条独立管道模拟「stdin 开着、stdout 没人读」，去掉 cancel 会红。**没验到的**：半开→RST→sshd 退出→EOF 这整条链没在真机复现（需要丢包手段）；那个孤儿在本轮中途自己没了（锁变 released，推测是 sshd 的 TCP keepalive 终于探到），所以 `ccnm status` 的「孤儿」行也只有单元测试。**同一场景的第二个问题，已修**：合盖掐断 `ccnm <ws>` 的 attach ssh 后，本机 shell 鼠标一动就打印坐标（ccnm 的 tmux 开着 mouse on，远端 tmux 来不及发关闭序列）。现在 ssh 返回后补发 tmux tty_stop_tty 里那组关闭序列；?1049l（退出备用屏）只在 255/信号 且已连超过 30 秒时发，因为 Ghostty 照抄 xterm，在主屏上收到它也会恢复光标、覆盖输出（已查 Ghostty Terminal.zig），而连不上同样是 255。script 造的 pty 里两条路径都验过；Ghostty 收到后是否真的停止上报没有自动化验证。**顺带做的**：`ccnm ls`、不带项目名的 `ccnm status`（Runtime 上把 mcp-serve 进程和 Agent 会话对账，标孤儿）、`ccnm log`（新内部命令 agent-history，旧 Agent 报 CCNM_E_VERSION），以及简写 a/st/ls/logs/dr/res、ws ls/rm。**两台机器装的仍是 v0.6.0**，以上修复都要替换已安装二进制才生效，替换需要单独授权；未发布版本号。"
+    "【真机发现，已修】「ccnm 不支持多个项目？」——不是。现场：Runtime=bing@xdwmbp（MacBook，会睡眠）、Agent=fodelf，ghostty 里同时开 xdo 和 gld，gld 新会话（95d6516e）工具连不上。根因（两台机器上逐项取证）：gld 前一晚的会话 402638ca 在 fodelf 上 08:58 已正常退出（exit 文件 exit_code 0），但 xdwmbp 上它的 mcp-serve（pid 28398）还活着、握着 gld 的写锁（锁文件 `held 402638ca… gld`，lsof 显示被 28398 持有），新会话被拒成 busy，Claude Code 只显示连不上。它不退是因为连接半开：xdwmbp 夜里睡眠，fodelf 那头的 transport ssh 等不到回应关掉了，FIN 丢在睡眠里；xdwmbp 醒来后 sshd-session 的 socket 仍是 ESTABLISHED（100.79.121.33:49731），而 fodelf 上 netstat 已没有这个端口；MCP 里 server 只回答不发问，没人调用就不写，永远发现不了。xdo 和 gld 是两把不同的锁，互不影响。**修法**：mcp-serve 空闲每 30 秒发一次 MCP ping（server.rs HEARTBEAT）；写失败即 cancel，走正常收尾、锁变 released；ping 无回应**不**断（对面只是睡着时 TCP 还活着）。真实 Claude Code 2.1.269（xdwmbp，未登录也完成握手）和 2.1.272（fodelf）用不含 ccnm 代码的探针 server 验过：两次 ping 都回 {\"result\":{}}，一次在 tools/call 进行中；Codex 的 rmcp 客户端按 SDK 源码自动回应。回归测试用两条独立管道模拟「stdin 开着、stdout 没人读」，去掉 cancel 会红。**没验到的**：半开→RST→sshd 退出→EOF 这整条链没在真机复现（需要丢包手段）；那个孤儿在本轮中途自己没了（锁变 released，推测是 sshd 的 TCP keepalive 终于探到），所以 `ccnm status` 的「孤儿」行也只有单元测试。**同一场景的第二个问题，已修**：合盖掐断 `ccnm <ws>` 的 attach ssh 后，本机 shell 鼠标一动就打印坐标（ccnm 的 tmux 开着 mouse on，远端 tmux 来不及发关闭序列）。现在 ssh 返回后补发 tmux tty_stop_tty 里那组关闭序列；?1049l（退出备用屏）只在 255/信号 且已连超过 30 秒时发，因为 Ghostty 照抄 xterm，在主屏上收到它也会恢复光标、覆盖输出（已查 Ghostty Terminal.zig），而连不上同样是 255。script 造的 pty 里两条路径都验过；Ghostty 收到后是否真的停止上报没有自动化验证。**顺带做的**：`ccnm ls`、不带项目名的 `ccnm status`（Runtime 上把 mcp-serve 进程和 Agent 会话对账，标孤儿）、`ccnm log`（新内部命令 agent-history，旧 Agent 报 CCNM_E_VERSION），以及简写 a/st/ls/logs/dr/res、ws ls/rm。**两台机器装的仍是 v0.6.0**，以上修复都要替换已安装二进制才生效，替换需要单独授权；未发布版本号。",
+    "【P13 发现，未处理】Codex 0.154 延迟加载 MCP 工具时，instructions 只以首行前 250 个字符进上下文（core/src/context/world_state/tools.rs 的 MAX_NAMESPACE_DESCRIPTION_CHARS）；ccnm 的首行约 390 个字符，那种模式下标记行和项目文件都看不到。ccnm 启动 Codex 走 code-mode，整段放进 exec 工具描述，所以 Managed Codex 当前不受影响；Codex 作为外部 MCP Host 时未验证。同轮另一条事实：Claude Code 2.1.269 会给每个 MCP 子进程注入 CLAUDE_CODE_MESSAGING_TOKEN，本机直接起 ccnm internal mcp-serve 会被 Runtime 的认证环境检查拒绝（Host 只显示 Connection closed）；经 ssh 的真实部署不带环境，不受影响。"
   ],
   "handoff": {
-    "next_action": "P13 进行中：先用改前的二进制让本机 Claude Code 连真实 ccnm internal mcp-serve（外部 read 模式、external_instructions=project、AGENTS.md 用 3806 码元的真实文件），记下 debug 日志里的 Server instructions truncated 行；再按 ROADMAP P13.1–P13.3 改 provider/context.rs 的预算单位与顺序，最后同法取改后证据（P13.4）。\n\nP13 之前的发布前收口交接仍然有效，原文如下：\n**发布前收口已完成；ROADMAP 的 P0–P12 全部完成，current_task 为 null。** 两个入口都有真机证据：Managed Agent Runtime（ccnm.machine/1 于 2026-09-10 冻结）和 Remote Workspace MCP（ccnm.workspace-mcp/1 于 2026-09-11 冻结）。**下一轮不要自动扩功能**：ROADMAP 到这里就没有下一阶段了，要做新东西得先立新阶段并说清它替换或扩展了哪条已冻结的契约。这一轮（发布前收口）做了四件事：(1) 把外部规划工具 gld 的状态与 Git 对齐——结束停在 P7.4 的那个 durable task、按 status.json 把 P7.4→P12 与 P1–P8 两张计划的步骤标完成、把两张被替代的历史计划归档、Goal 转 awaiting_acceptance 等人工验收；(2) 文档按当前事实收敛——平台拆成「Agent 只有 macOS / Runtime 有 macOS 与 Debian 13 两种证据」，README 的「接下来做什么」不再说靠 dogfood 决定契约，observed_gaps 里已解决的条目标成已解决；(3) 补 Linux x86_64 的 Runtime 发布物（scripts/dist-linux.sh）与 Linux CI 门禁，并在真实 Debian 13 上验过它们调用的东西；(4) 复核 P11 那两条 macOS 临时授权，结论是**两条都已经不在了**（见 authorization 一节）。**当前挡在发布前面的，只有需要用户决定或授权的事**：(a) push/tag/release 仍未授权，而推 tag 不可撤销；(b) Linux 的两个 workflow job 还没在 GitHub runner 上跑过（见 observed_gaps）；(c) 三台机器上装着的 ccnm 还是 069fa68 的构建，不含 0f9e71c / 40085d0 两个修复，替换已安装二进制要单独授权。不需要授权就能做的候选都还需要真机或额度：(1) Codex 当外部 MCP Host、交互式 UI 怎么显示 bridge 的失败；(2) 非 Debian / arm64 的 Linux Runtime；(3) 真实 node 项目的 npm ci && npm test（Node 目前只验到「叫得动」）；(4) 协议里 -32008（busy）至今不可达，要不要补 session.start 的占用预检是待定的产品决定。hpsrv 上的 ccrun 账号和工具链按用户选择保留，**authorized_keys 仍然是 0 行**——要再用它当 Linux Runtime，得先装一把新的入站公钥（scripts/p12-provision-linux-runtime.sh 的做法，换本轮密钥对、指纹现算现比）。",
-    "scope": "发布前收口，不扩产品范围、不进新阶段、不改两个已冻结协议的语义。四件事：gld 状态对齐（外部工具，不是产品事实）、文档按当前事实收敛、补 Linux x86_64 Runtime 发布物与 Linux CI 门禁、复核 P11 遗留的 macOS 临时授权。产品代码一行没改。hpsrv 上只用 root 以既有 ccrun 身份跑了一次构建与门禁，跑完把构建树和 4261 个测试临时目录清掉了，账号、工具链、系统包、ACL、防火墙一律未动。",
+    "next_action": "**P13 已完成，current_task 为 null。** instructions 现在按 Host 实际保留的长度投影（Claude/外部 2048 个 UTF-16 码元，Codex 16 KiB 字节），标记行在正文之前；证据见 docs/research/p13-instructions-host-cap-2026-09-16.md。下一轮不要自动扩功能。可做的后续（都要先立阶段或用户决定）：(1) 用登录后的真实 Claude Code 回合确认模型看到的文本（耗额度，需用户在自己终端登录）；(2) Codex 延迟加载工具时首行 250 字符的问题（observed_gaps）；(3) 已安装的 ccnm 仍是旧构建，替换二进制要单独授权。\n\nP13 之前的发布前收口交接仍然有效，原文如下：\n**发布前收口已完成；ROADMAP 的 P0–P12 全部完成，current_task 为 null。** 两个入口都有真机证据：Managed Agent Runtime（ccnm.machine/1 于 2026-09-10 冻结）和 Remote Workspace MCP（ccnm.workspace-mcp/1 于 2026-09-11 冻结）。**下一轮不要自动扩功能**：ROADMAP 到这里就没有下一阶段了，要做新东西得先立新阶段并说清它替换或扩展了哪条已冻结的契约。这一轮（发布前收口）做了四件事：(1) 把外部规划工具 gld 的状态与 Git 对齐——结束停在 P7.4 的那个 durable task、按 status.json 把 P7.4→P12 与 P1–P8 两张计划的步骤标完成、把两张被替代的历史计划归档、Goal 转 awaiting_acceptance 等人工验收；(2) 文档按当前事实收敛——平台拆成「Agent 只有 macOS / Runtime 有 macOS 与 Debian 13 两种证据」，README 的「接下来做什么」不再说靠 dogfood 决定契约，observed_gaps 里已解决的条目标成已解决；(3) 补 Linux x86_64 的 Runtime 发布物（scripts/dist-linux.sh）与 Linux CI 门禁，并在真实 Debian 13 上验过它们调用的东西；(4) 复核 P11 那两条 macOS 临时授权，结论是**两条都已经不在了**（见 authorization 一节）。**当前挡在发布前面的，只有需要用户决定或授权的事**：(a) push/tag/release 仍未授权，而推 tag 不可撤销；(b) Linux 的两个 workflow job 还没在 GitHub runner 上跑过（见 observed_gaps）；(c) 三台机器上装着的 ccnm 还是 069fa68 的构建，不含 0f9e71c / 40085d0 两个修复，替换已安装二进制要单独授权。不需要授权就能做的候选都还需要真机或额度：(1) Codex 当外部 MCP Host、交互式 UI 怎么显示 bridge 的失败；(2) 非 Debian / arm64 的 Linux Runtime；(3) 真实 node 项目的 npm ci && npm test（Node 目前只验到「叫得动」）；(4) 协议里 -32008（busy）至今不可达，要不要补 session.start 的占用预检是待定的产品决定。hpsrv 上的 ccrun 账号和工具链按用户选择保留，**authorized_keys 仍然是 0 行**——要再用它当 Linux Runtime，得先装一把新的入站公钥（scripts/p12-provision-linux-runtime.sh 的做法，换本轮密钥对、指纹现算现比）。",
+    "scope": "P13：只改 initialize.result.instructions 的预算单位、上限和段落顺序；工具、权限、错误码、wire 版本不变，不部署、不替换已安装二进制、不耗模型额度。上一轮（发布前收口）的范围见 next_action 附的原文。",
     "planning_validation": {
       "at": "2026-09-08T21:22:43+09:00",
       "commands": [
@@ -1000,19 +1027,19 @@
       "limits": "本轮离线门禁；fodelf SSH 建连失败，没有新增远端资源或运行真实模型，不替代 P3.5。"
     },
     "planning_validation_latest": {
-      "at": "2026-09-11T21:30:00+09:00",
+      "at": "2026-09-16T00:11:00+09:00",
       "commands": [
         "cargo fmt --all --check：通过",
-        "cargo clippy --workspace --all-targets -- -D warnings：通过（macOS 与 ubuntu-24.04 各一遍）",
-        "cargo test --workspace：macOS **681 passed / 0 failed**；ubuntu-24.04 容器 **681 passed / 0 failed**",
-        "PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p 'test_*.py' -q：168 passed",
-        "python3 scripts/check_protocol.py：38 + 21 个 fixture 通过",
-        "python3 scripts/check_plan.py：13/13 阶段完成，下一阶段 None",
+        "cargo clippy --workspace --all-targets -- -D warnings：通过（macOS）",
+        "cargo test --workspace：macOS 716 passed / 0 failed",
+        "python3 -m unittest tests.test_remote_workspace_mcp -q：10 passed",
+        "PYTHONDONTWRITEBYTECODE=1 python3 -B -m unittest discover -s tests -p 'test_*.py' -q：168 passed",
+        "python3 scripts/check_protocol.py 与 python3 -m unittest tests.test_check_protocol -q：通过",
+        "python3 scripts/check_plan.py：14/14 阶段完成，下一阶段 None",
         "git diff --check：干净",
-        "bash scripts/dist-linux.sh（真实 Debian 13 / x86_64）：ccnm-0.2.0-linux-x86_64.tar.gz + sha256，解出来 rwxr-xr-x、版本对、sha256 -c 通过、glibc 下限量出来 2.39",
-        "GitHub Actions（真 runner）：commit 580a4b6 上 test(macos-latest) 与 linux-runtime(ubuntu-24.04) **两个 job 都绿**，Linux 那个包含 clippy 严格模式、cargo test --workspace 和 scripts/dist-linux.sh 产包；在此之前同一个 job 在 21d023a / b5d143e / ced86ee 三次都红，红的都是同一条 write_guard 测试（根因见上一条 gap）"
+        "真实 Claude Code 2.1.269 连真实 mcp-serve：改前 truncated from 4600 to 2048，改后 2030 码元无截断（未登录，无模型请求）"
       ],
-      "limits": "Linux 那一侧现在有四处证据：真实 Debian 13 主机、ubuntu-24.04 容器、GitHub 的 ubuntu-24.04 runner（ci.yml），以及在前两处产出的发布包。**release.yml 的两个 job 仍然没在 runner 上跑过**——它只在推 tag 时触发，第一次运行就是第一次发版；它调用的门禁和打包脚本都已另行验过。Agent 那一侧仍然只有 macOS。"
+      "limits": "只在 macOS 上跑；这一轮没有 Linux 容器或 GitHub runner 复跑（改动不涉及平台相关代码）。上一轮的 Linux/CI 证据见 git 历史中 planning_validation_latest 的 2026-09-11 版本。"
     },
     "inherited_changes": [],
     "authorization": "P12 真机轮已由用户授权并执行完毕（2026-09-11），三问三答：hpsrv 上按计划全做（建专用账号 ccrun、系统级装 gcc/libc6-dev/make/ripgrep、以 ccrun 身份装 rustup 与 Node）；花订阅额度做真实 Claude Code 那一腿；轮后**保留账号与工具链**、删一次性资源。特权命令由本会话经 root ssh 执行（该机 root 登录用的是用户自己的 key），没有要用户输密码。授权明确不含：改 ACL/防火墙/Tailscale 策略、动 bing 或 git 账号的任何东西、push/tag/release。保留物的撤销脚本仍在：scripts/p12-provision-linux-runtime.sh --revert（账号 + 按清单 purge 的 36 个包）、scripts/p12-runtime-toolchain.sh --revert（rustup/Node/PATH 块）；root 清单 /var/lib/ccnm-p12-20260911 为此保留。历史授权记录（P3/P7/P11 各轮）见 Git 历史；P11 那两条 macOS 的 sudo 授予（ccrun 的本轮公钥、临时进 com.apple.access_ssh）**仍未撤销**，要用户 sudo 跑对应的 --revert。 【2026-09-11 发布前收口复核】P11 那两条 macOS 临时授予**已经不在了**，只读证据：`dsmemberutil checkmembership -U ccrun -G com.apple.access_ssh` 和 `dseditgroup -o checkmember` 都说不是成员，该组 GroupMembership 键不存在（没有直接成员）；p11 那把公钥的清单目录 /var/db/ccnm-p11-local-20260911 不存在，而 --revert 的最后一步就是 rmdir 它。还留着的 /var/db/ccnm-p7-local-20260910 是更早 P7 轮的清单目录（root 0700），不是这两条要撤的东西，里面还有什么只有 sudo 看得到。要逐条确认，由用户在自己的终端跑两条只读命令：`sudo scripts/p11-authorize-local-runtime.sh --check` 和 `sudo scripts/p7-grant-local-ssh-access.sh --check`（两个脚本都要求 SUDO_USER 是 bing，--check 只读）。本会话没有也不会执行 sudo。",

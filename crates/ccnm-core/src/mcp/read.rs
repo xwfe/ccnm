@@ -293,17 +293,20 @@ impl Scan {
         let mut raw = Vec::new();
         let mut line_no: u32 = 0;
         let mut scanned: u64 = 0;
+        // More of one line than this is never shown: the byte budget, a BOM
+        // that gets stripped, and the rest of a character cut at the edge.
+        // Keeping the whole line instead is what let one 2 GB line allocate
+        // 2 GB before the scan limit was even looked at.
+        let keep = self.limits.max_bytes + 8;
 
         loop {
             raw.clear();
-            let read = reader
-                .read_until(b'\n', &mut raw)
-                .map_err(|e| open_error(rel, e))?;
-            if read == 0 {
+            let Some(ending) = next_line(&mut reader, &mut raw, keep, &mut scanned)
+                .map_err(|e| open_error(rel, e))?
+            else {
                 self.total_lines = Some(line_no);
                 break;
-            }
-            scanned += read as u64;
+            };
             if scanned > MAX_SCAN_BYTES {
                 return Err(Error::invalid_args(format!(
                     "{rel}: reading line {} would mean walking more than {} MiB; use search_text to find the part you want",
@@ -313,7 +316,7 @@ impl Scan {
             }
             line_no = line_no.saturating_add(1);
 
-            let body = self.classify(&raw);
+            let body = self.classify(&raw, ending);
             if line_no < self.limits.start {
                 continue;
             }
@@ -335,20 +338,15 @@ impl Scan {
         Ok(())
     }
 
-    /// Strip the line terminator, remembering which kind it was.
-    fn classify<'a>(&mut self, raw: &'a [u8]) -> &'a [u8] {
-        if let Some(body) = raw.strip_suffix(b"\r\n") {
-            self.crlf = true;
-            self.last_line_terminated = true;
-            body
-        } else if let Some(body) = raw.strip_suffix(b"\n") {
-            self.lf = true;
-            self.last_line_terminated = true;
-            body
-        } else {
-            self.last_line_terminated = false;
-            raw
+    /// Remember which terminator the line had; `raw` never includes it.
+    fn classify<'a>(&mut self, raw: &'a [u8], ending: Ending) -> &'a [u8] {
+        match ending {
+            Ending::Crlf => self.crlf = true,
+            Ending::Lf => self.lf = true,
+            Ending::None => {}
         }
+        self.last_line_terminated = ending != Ending::None;
+        raw
     }
 
     /// Add one line to the answer. Returns false when the byte budget ran
@@ -452,6 +450,79 @@ impl Scan {
             final_newline,
             notes,
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Ending {
+    Crlf,
+    Lf,
+    /// The last line of a file without a final newline.
+    None,
+}
+
+/// Read one line into `raw`, keeping at most `keep` bytes of its body and
+/// counting every byte walked into `scanned`. `None` at end of file.
+///
+/// Stops early, with the line unfinished, once `scanned` passes the scan
+/// limit: the caller refuses the read then, so reading to the end of a line
+/// that may never end would only cost time. The terminator is left out of
+/// `raw` and reported instead, since it may be megabytes past what is kept.
+/// A kept prefix never ends in half a character, so a cut line is not
+/// mistaken for invalid UTF-8.
+fn next_line<R: BufRead>(
+    reader: &mut R,
+    raw: &mut Vec<u8>,
+    keep: usize,
+    scanned: &mut u64,
+) -> std::io::Result<Option<Ending>> {
+    let mut started = false;
+    let mut last = None;
+    let mut cut = false;
+    loop {
+        let chunk = reader.fill_buf()?;
+        if chunk.is_empty() {
+            if !started {
+                return Ok(None);
+            }
+            trim_cut(raw, cut);
+            return Ok(Some(Ending::None));
+        }
+        started = true;
+        let newline = chunk.iter().position(|&b| b == b'\n');
+        let body = &chunk[..newline.unwrap_or(chunk.len())];
+        let room = keep.saturating_sub(raw.len());
+        cut |= body.len() > room;
+        raw.extend_from_slice(&body[..body.len().min(room)]);
+        // The byte before the newline may have come in the previous chunk.
+        let before_newline = body.last().copied().or(last);
+        last = before_newline;
+        let used = newline.map_or(chunk.len(), |at| at + 1);
+        reader.consume(used);
+        *scanned += used as u64;
+        if newline.is_some() {
+            let crlf = before_newline == Some(b'\r');
+            if crlf && !cut {
+                raw.pop();
+            }
+            trim_cut(raw, cut);
+            return Ok(Some(if crlf { Ending::Crlf } else { Ending::Lf }));
+        }
+        if *scanned > MAX_SCAN_BYTES {
+            return Ok(Some(Ending::None));
+        }
+    }
+}
+
+/// Drop a character left incomplete by the `keep` cut.
+fn trim_cut(raw: &mut Vec<u8>, cut: bool) {
+    if !cut {
+        return;
+    }
+    if let Err(e) = std::str::from_utf8(raw)
+        && e.error_len().is_none()
+    {
+        raw.truncate(e.valid_up_to());
     }
 }
 
@@ -1068,5 +1139,137 @@ mod tests {
         );
         assert_eq!(c.lines, 0);
         assert_eq!(c.total_lines, Some(2));
+    }
+
+    /// A line that never ends, served in 64 KiB pieces, that refuses to be
+    /// read past the scan limit plus one piece. `read_until` would keep
+    /// asking until the whole line was in memory; a bounded reader stops at
+    /// the limit and never trips this.
+    struct EndlessLine {
+        served: u64,
+        piece: Vec<u8>,
+        pending: usize,
+    }
+
+    impl EndlessLine {
+        const PIECE: usize = 64 * 1024;
+
+        fn new() -> Self {
+            EndlessLine {
+                served: 0,
+                piece: vec![b'a'; Self::PIECE],
+                pending: 0,
+            }
+        }
+    }
+
+    impl std::io::Read for EndlessLine {
+        fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+            unreachable!("Scan reads through BufRead")
+        }
+    }
+
+    impl BufRead for EndlessLine {
+        fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+            if self.served > MAX_SCAN_BYTES + Self::PIECE as u64 {
+                return Err(std::io::Error::other("read past the scan limit"));
+            }
+            if self.pending == 0 {
+                self.pending = Self::PIECE;
+            }
+            Ok(&self.piece[Self::PIECE - self.pending..])
+        }
+
+        fn consume(&mut self, amount: usize) {
+            self.pending -= amount;
+            self.served += amount as u64;
+        }
+    }
+
+    fn limits(max_bytes: usize) -> Limits {
+        Limits {
+            start: 1,
+            end: None,
+            max_lines: DEFAULT_MAX_LINES,
+            max_bytes,
+        }
+    }
+
+    #[test]
+    fn an_endless_line_stops_at_the_scan_limit_instead_of_filling_memory() {
+        let mut scan = Scan::new(limits(DEFAULT_MAX_BYTES));
+        let e = scan.run(EndlessLine::new(), "endless.txt").unwrap_err();
+        assert!(
+            e.message().contains("more than 64 MiB"),
+            "stopped for the wrong reason: {e}"
+        );
+    }
+
+    /// The cut edge of a kept line lands in the middle of a character and
+    /// its terminator is megabytes away, past every buffer boundary: the
+    /// answer must be what reading the whole line would have given.
+    #[test]
+    fn a_long_line_is_cut_the_same_way_it_was_when_it_was_read_whole() {
+        let root = workspace("long-crlf");
+        // 3-byte characters, so max_bytes = 100 lands inside one.
+        let long = "中".repeat(400_000);
+        write(&root, "a.txt", format!("{long}\r\nshort\r\n"));
+        let c = read(
+            &root,
+            &ReadFileArgs {
+                max_bytes: Some(100),
+                ..args("a.txt")
+            },
+        );
+        assert_eq!(c.lines, 1);
+        assert_eq!(c.bytes, 99);
+        assert_eq!(c.next_start_line, Some(2));
+        assert_eq!(c.truncated_by, Some(Truncation::MaxBytes));
+        assert_eq!(c.line_ending, LineEnding::Crlf);
+        assert!(
+            c.notes.iter().all(|n| !n.contains("not valid UTF-8")),
+            "{:?}",
+            c.notes
+        );
+        assert!(
+            c.text
+                .starts_with(&format!("1\u{2192}{}\n", "中".repeat(33))),
+            "{}",
+            c.text
+        );
+
+        // The line after a long one still reads, and the long one still
+        // counts toward the line ending.
+        let c = read(
+            &root,
+            &ReadFileArgs {
+                start_line: Some(2),
+                ..args("a.txt")
+            },
+        );
+        assert_eq!(c.lines, 1);
+        assert_eq!(c.text.lines().next(), Some("2\u{2192}short"));
+        assert_eq!(c.line_ending, LineEnding::Crlf);
+        assert_eq!(c.total_lines, Some(2));
+    }
+
+    /// A long line whose `\r` and `\n` arrive in different buffers.
+    #[test]
+    fn a_crlf_split_across_buffers_is_still_crlf() {
+        let root = workspace("split-crlf");
+        let long = "x".repeat(8 * 1024 - 1);
+        write(&root, "a.txt", format!("{long}\r\nnext\n"));
+        let c = read(
+            &root,
+            &ReadFileArgs {
+                max_bytes: Some(10),
+                ..args("a.txt")
+            },
+        );
+        assert_eq!(c.bytes, 10);
+        assert_eq!(c.next_start_line, Some(2));
+        let whole = read(&root, &args("a.txt"));
+        assert_eq!(whole.line_ending, LineEnding::Mixed);
+        assert_eq!(whole.text.lines().nth(1), Some("2\u{2192}next"));
     }
 }

@@ -38,7 +38,7 @@ ccnm 不需要安装 Orchestrator 也能独立使用。Orchestrator 核心不链
 
 ## 二、顺序和基线
 
-`P0 → P1 → P2 → P3 → P4 → P5 → P6 → P7 → P8 → P9 → P10 → P11 → P12 → P13`。默认每轮只执行一个阶段。P0–P8 是 ccnm v1 收口和独立 Orchestrator 的接口交接；P9–P12 是 ccnm v1.x 的 Remote Workspace MCP 扩展；P13 是按真实 Host 行为修正两个入口共用的 instructions 投影。完整边界见 [双执行入口方案](runtime-surfaces.md)。
+`P0 → P1 → P2 → P3 → P4 → P5 → P6 → P7 → P8 → P9 → P10 → P11 → P12 → P13 → P14`。默认每轮只执行一个阶段。P0–P8 是 ccnm v1 收口和独立 Orchestrator 的接口交接；P9–P12 是 ccnm v1.x 的 Remote Workspace MCP 扩展；P13 是按真实 Host 行为修正两个入口共用的 instructions 投影。完整边界见 [双执行入口方案](runtime-surfaces.md)。
 
 ### P0 — 已有内部验证基线
 
@@ -227,3 +227,13 @@ worktree **分配、调度、合并策略**在 Orchestrator；受管 workspace �
 ## 三、首次规划提交的范围（历史说明）
 
 首次规划提交 `7c41f6f` 只落地计划、状态、模型入口与检查工具；当时不执行 P1…P8 的产品改动、不创建 Orchestrator、不部署/登录/更改 OS 策略，P1 保持 pending。之后按用户请求与 `status.json.current_task` 逐阶段执行，不能用这段历史说明覆盖当前状态，也不能把“规划已提交”当作“产品验收已完成”。系统与部署动作仍需逐项授权，不恢复用户已删除的历史文档。
+
+### P14 — read_file 读超长单行时内存有界
+
+**依赖 P13。用户 2026-09-16 要求在共享内核大改前先修已知缺陷。**`read_file` 用 `read_until(b'\n')` 先把整行读进内存，读完才检查 64 MiB 扫描上限：一个 2 GB 的单行文件（压缩过的 JS、一行 JSON 导出）会先分配 2 GB 再报错，Runtime 可能先被 OOM 杀掉。输出契约不变，只改读法。
+
+- **P14.1** 一行最多保留 `max_bytes` 加少量余量（BOM、被切开的多字节字符），其余只计数不存；扫描上限在读的过程中检查，越过 64 MiB 立即停，不再读完整行。测试用一个越界即报错的生成式读取器证明：修前会读穿、修后在上限处停。
+- **P14.2** 输出与修前一致：部分行截断、`next_start_line`、CRLF/LF/混合、无尾换行、BOM、非法 UTF-8、范围读取的既有测试不改断言；新增超长行跨缓冲区边界的 CRLF 与多字节字符用例。
+- **P14.3** Rust 门禁、`external_mcp` 与中立 MCP 客户端测试通过；`read_file` 不是 schema 或文档层面的变化，不改协议文档。
+
+停止点：只修这一处读法，不做 V2-K 的共享文本原语抽取。

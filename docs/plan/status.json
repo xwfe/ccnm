@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-09-16T00:11:00+09:00",
-  "current_task": null,
+  "last_updated": "2026-09-16T00:25:00+09:00",
+  "current_task": "P14",
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
     "source": "docs/research/codex-internal-wiring-2026-09-07.md",
@@ -974,6 +974,20 @@
         }
       ],
       "blockers": []
+    },
+    {
+      "id": "P14",
+      "title": "read_file 读超长单行时内存有界",
+      "status": "in_progress",
+      "depends_on": [
+        "P13"
+      ],
+      "owner": "claude-opus-5 (Claude Code desktop)",
+      "started_at": "2026-09-16T00:25:00+09:00",
+      "last_updated": "2026-09-16T00:25:00+09:00",
+      "completed_criteria": [],
+      "evidence": [],
+      "blockers": []
     }
   ],
   "observed_gaps": [
@@ -1014,7 +1028,7 @@
     "【P13 发现，未处理】Codex 0.154 延迟加载 MCP 工具时，instructions 只以首行前 250 个字符进上下文（core/src/context/world_state/tools.rs 的 MAX_NAMESPACE_DESCRIPTION_CHARS）；ccnm 的首行约 390 个字符，那种模式下标记行和项目文件都看不到。ccnm 启动 Codex 走 code-mode，整段放进 exec 工具描述，所以 Managed Codex 当前不受影响；Codex 作为外部 MCP Host 时未验证。同轮另一条事实：Claude Code 2.1.269 会给每个 MCP 子进程注入 CLAUDE_CODE_MESSAGING_TOKEN，本机直接起 ccnm internal mcp-serve 会被 Runtime 的认证环境检查拒绝（Host 只显示 Connection closed）；经 ssh 的真实部署不带环境，不受影响。"
   ],
   "handoff": {
-    "next_action": "**P13 已完成，current_task 为 null。** instructions 现在按 Host 实际保留的长度投影（Claude/外部 2048 个 UTF-16 码元，Codex 16 KiB 字节），标记行在正文之前；证据见 docs/research/p13-instructions-host-cap-2026-09-16.md。下一轮不要自动扩功能。可做的后续（都要先立阶段或用户决定）：(1) 用登录后的真实 Claude Code 回合确认模型看到的文本（耗额度，需用户在自己终端登录）；(2) Codex 延迟加载工具时首行 250 字符的问题（observed_gaps）；(3) 已安装的 ccnm 仍是旧构建，替换二进制要单独授权。\n\nP13 之前的发布前收口交接仍然有效，原文如下：\n**发布前收口已完成；ROADMAP 的 P0–P12 全部完成，current_task 为 null。** 两个入口都有真机证据：Managed Agent Runtime（ccnm.machine/1 于 2026-09-10 冻结）和 Remote Workspace MCP（ccnm.workspace-mcp/1 于 2026-09-11 冻结）。**下一轮不要自动扩功能**：ROADMAP 到这里就没有下一阶段了，要做新东西得先立新阶段并说清它替换或扩展了哪条已冻结的契约。这一轮（发布前收口）做了四件事：(1) 把外部规划工具 gld 的状态与 Git 对齐——结束停在 P7.4 的那个 durable task、按 status.json 把 P7.4→P12 与 P1–P8 两张计划的步骤标完成、把两张被替代的历史计划归档、Goal 转 awaiting_acceptance 等人工验收；(2) 文档按当前事实收敛——平台拆成「Agent 只有 macOS / Runtime 有 macOS 与 Debian 13 两种证据」，README 的「接下来做什么」不再说靠 dogfood 决定契约，observed_gaps 里已解决的条目标成已解决；(3) 补 Linux x86_64 的 Runtime 发布物（scripts/dist-linux.sh）与 Linux CI 门禁，并在真实 Debian 13 上验过它们调用的东西；(4) 复核 P11 那两条 macOS 临时授权，结论是**两条都已经不在了**（见 authorization 一节）。**当前挡在发布前面的，只有需要用户决定或授权的事**：(a) push/tag/release 仍未授权，而推 tag 不可撤销；(b) Linux 的两个 workflow job 还没在 GitHub runner 上跑过（见 observed_gaps）；(c) 三台机器上装着的 ccnm 还是 069fa68 的构建，不含 0f9e71c / 40085d0 两个修复，替换已安装二进制要单独授权。不需要授权就能做的候选都还需要真机或额度：(1) Codex 当外部 MCP Host、交互式 UI 怎么显示 bridge 的失败；(2) 非 Debian / arm64 的 Linux Runtime；(3) 真实 node 项目的 npm ci && npm test（Node 目前只验到「叫得动」）；(4) 协议里 -32008（busy）至今不可达，要不要补 session.start 的占用预检是待定的产品决定。hpsrv 上的 ccrun 账号和工具链按用户选择保留，**authorized_keys 仍然是 0 行**——要再用它当 Linux Runtime，得先装一把新的入站公钥（scripts/p12-provision-linux-runtime.sh 的做法，换本轮密钥对、指纹现算现比）。",
+    "next_action": "P14 进行中：先写越界即报错的生成式读取器测试（修前应失败），再把 mcp/read.rs 的 Scan::run 改成有界逐块读，保留全部既有输出断言。之后按用户要求替换本机 ccnm、推 main 与 tag，再回到 workspace-kernel V2-Q2。\n\n**P13 已完成，current_task 为 null。** instructions 现在按 Host 实际保留的长度投影（Claude/外部 2048 个 UTF-16 码元，Codex 16 KiB 字节），标记行在正文之前；证据见 docs/research/p13-instructions-host-cap-2026-09-16.md。下一轮不要自动扩功能。可做的后续（都要先立阶段或用户决定）：(1) 用登录后的真实 Claude Code 回合确认模型看到的文本（耗额度，需用户在自己终端登录）；(2) Codex 延迟加载工具时首行 250 字符的问题（observed_gaps）；(3) 已安装的 ccnm 仍是旧构建，替换二进制要单独授权。\n\nP13 之前的发布前收口交接仍然有效，原文如下：\n**发布前收口已完成；ROADMAP 的 P0–P12 全部完成，current_task 为 null。** 两个入口都有真机证据：Managed Agent Runtime（ccnm.machine/1 于 2026-09-10 冻结）和 Remote Workspace MCP（ccnm.workspace-mcp/1 于 2026-09-11 冻结）。**下一轮不要自动扩功能**：ROADMAP 到这里就没有下一阶段了，要做新东西得先立新阶段并说清它替换或扩展了哪条已冻结的契约。这一轮（发布前收口）做了四件事：(1) 把外部规划工具 gld 的状态与 Git 对齐——结束停在 P7.4 的那个 durable task、按 status.json 把 P7.4→P12 与 P1–P8 两张计划的步骤标完成、把两张被替代的历史计划归档、Goal 转 awaiting_acceptance 等人工验收；(2) 文档按当前事实收敛——平台拆成「Agent 只有 macOS / Runtime 有 macOS 与 Debian 13 两种证据」，README 的「接下来做什么」不再说靠 dogfood 决定契约，observed_gaps 里已解决的条目标成已解决；(3) 补 Linux x86_64 的 Runtime 发布物（scripts/dist-linux.sh）与 Linux CI 门禁，并在真实 Debian 13 上验过它们调用的东西；(4) 复核 P11 那两条 macOS 临时授权，结论是**两条都已经不在了**（见 authorization 一节）。**当前挡在发布前面的，只有需要用户决定或授权的事**：(a) push/tag/release 仍未授权，而推 tag 不可撤销；(b) Linux 的两个 workflow job 还没在 GitHub runner 上跑过（见 observed_gaps）；(c) 三台机器上装着的 ccnm 还是 069fa68 的构建，不含 0f9e71c / 40085d0 两个修复，替换已安装二进制要单独授权。不需要授权就能做的候选都还需要真机或额度：(1) Codex 当外部 MCP Host、交互式 UI 怎么显示 bridge 的失败；(2) 非 Debian / arm64 的 Linux Runtime；(3) 真实 node 项目的 npm ci && npm test（Node 目前只验到「叫得动」）；(4) 协议里 -32008（busy）至今不可达，要不要补 session.start 的占用预检是待定的产品决定。hpsrv 上的 ccrun 账号和工具链按用户选择保留，**authorized_keys 仍然是 0 行**——要再用它当 Linux Runtime，得先装一把新的入站公钥（scripts/p12-provision-linux-runtime.sh 的做法，换本轮密钥对、指纹现算现比）。",
     "scope": "P13：只改 initialize.result.instructions 的预算单位、上限和段落顺序；工具、权限、错误码、wire 版本不变，不部署、不替换已安装二进制、不耗模型额度。上一轮（发布前收口）的范围见 next_action 附的原文。",
     "planning_validation": {
       "at": "2026-09-08T21:22:43+09:00",

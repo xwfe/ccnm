@@ -1,6 +1,7 @@
 use super::*;
 use crate::process::FakeRunner;
 use crate::protocol::payload;
+use crate::provider::context::Cap;
 use crate::provider::{AgentProvider, AgentResult, PermissionMode};
 use crate::session::{Mode, RuntimeLink};
 
@@ -508,11 +509,14 @@ fn root_context_follows_measured_override_priority_and_budget() {
     std::fs::create_dir_all(&root).unwrap();
     std::fs::write(root.join("AGENTS.md"), "base").unwrap();
     assert_eq!(
-        context::find(&root, 100).unwrap().unwrap().source,
+        context::find(&root, Cap::Bytes(100))
+            .unwrap()
+            .unwrap()
+            .source,
         "AGENTS.md"
     );
     std::fs::write(root.join("AGENTS.override.md"), "").unwrap();
-    let empty = context::find(&root, 100).unwrap().unwrap();
+    let empty = context::find(&root, Cap::Bytes(100)).unwrap().unwrap();
     assert_eq!(empty.source, "AGENTS.override.md");
     assert!(empty.text.is_empty());
     std::fs::write(root.join("AGENTS.override.md"), "中文\n".repeat(10000)).unwrap();
@@ -520,10 +524,9 @@ fn root_context_follows_measured_override_priority_and_budget() {
         .unwrap()
         .unwrap();
     assert!(doc.truncated());
-    assert!(
-        context::instructions("fixture", Some(&doc)).len()
-            <= super::super::context::MAX_INSTRUCTIONS_BYTES
-    );
+    // Codex keeps its byte budget: P13 changed Claude's, not this one.
+    assert_eq!(super::super::context::CODEX_CAP, Cap::Bytes(16 * 1024));
+    assert!(super::super::context::CODEX_CAP.fits(&context::instructions("fixture", Some(&doc))));
     std::fs::remove_dir_all(root).unwrap();
 }
 
@@ -602,6 +605,6 @@ fn context_does_not_follow_a_root_instruction_symlink() {
     std::fs::create_dir_all(root.join("project")).unwrap();
     std::fs::write(root.join("outside"), "not authorized project context").unwrap();
     symlink(root.join("outside"), root.join("project/AGENTS.md")).unwrap();
-    assert!(context::find(&root.join("project"), 1000).is_err());
+    assert!(context::find(&root.join("project"), Cap::Bytes(1000)).is_err());
     std::fs::remove_dir_all(root).unwrap();
 }

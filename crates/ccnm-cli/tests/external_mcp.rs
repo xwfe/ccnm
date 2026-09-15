@@ -414,6 +414,33 @@ fn project_instructions_prefer_agents_md_over_claude_md() {
     session.shutdown();
 }
 
+/// A bridge does not know its Host, so a long project file is cut to what
+/// the strictest known one keeps: Claude Code's 2048 UTF-16 code units.
+/// Before P13 this handshake was 4600 of them with the marker on the last
+/// line, and Claude Code cut exactly that line off.
+#[test]
+fn a_long_project_file_is_cut_to_what_claude_code_keeps_marker_first() {
+    let fixture = Fixture::new("project-long", "read", "project");
+    let body = "- 每条规则都写在根目录的说明文件里，写得很长。\n".repeat(300);
+    std::fs::write(fixture.root.join("AGENTS.md"), &body).unwrap();
+    let session = fixture.open("demo", ExternalMode::Read, "bridge-project-long");
+    let text = &session.instructions;
+    let units = text.encode_utf16().count();
+    assert!(units <= 2048, "{units} UTF-16 code units");
+    // Not wasted either: the file is what fills the rest.
+    assert!(units > 2000, "{units} UTF-16 code units");
+    let marker = text
+        .find(&format!(
+            "\n[project instructions: AGENTS.md, {} bytes, first ",
+            body.len()
+        ))
+        .unwrap_or_else(|| panic!("{text}"));
+    let file = text.find("--- AGENTS.md from the workspace root").unwrap();
+    assert!(marker < file, "{text}");
+    assert!(text.contains("read_file AGENTS.md for the rest"), "{text}");
+    session.shutdown();
+}
+
 /// An external client is never told a person is standing by: this server
 /// cannot know, and a Host that believes it may skip its own approval.
 #[test]

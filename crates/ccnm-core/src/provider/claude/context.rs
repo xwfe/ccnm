@@ -19,7 +19,7 @@
 //! model reads the ones it needs with `read_file`.
 //!
 //! That asymmetry is the whole design. Inlining everything would cost the
-//! same 16 KiB budget for every session whether or not any of it mattered,
+//! whole handshake budget for every session whether or not any of it mattered,
 //! and a project with more rules than budget would silently lose some. A
 //! list costs a few hundred bytes for any number of files and cannot
 //! overflow into the part that matters. The root `CLAUDE.md` is the
@@ -34,21 +34,23 @@
 //! architecture exists to prevent. The user's own Claude settings still
 //! load, from the Agent Node, which is where they belong.
 //!
-//! And at most [`MAX_INSTRUCTIONS_BYTES`] for the whole handshake text. A
-//! long `CLAUDE.md` is cut at a line boundary and the model is told, in
-//! the marker line, how much it is missing and how to read the rest.
-//! Silently stuffing a 200 KiB file into every session's context is the
-//! one thing this must not do.
+//! And at most [`CLAUDE_CODE_CAP`] for the whole handshake text -- 2048
+//! UTF-16 code units, because that is all Claude Code keeps. A long
+//! `CLAUDE.md` is cut at a line boundary by ccnm, before the Host gets to
+//! cut it anywhere, and the marker line ahead of it says how much is missing
+//! and how to read the rest. Silently stuffing a 200 KiB file into every
+//! session's context is the one thing this must not do.
 
 use std::path::Path;
 
 use crate::error::{Error, Result};
+use crate::provider::context::Cap;
 
 /// The one project file this build projects.
 pub const PROJECT_FILE: &str = "CLAUDE.md";
 
 /// Upper bound on `initialize.result.instructions`, everything included.
-pub const MAX_INSTRUCTIONS_BYTES: usize = crate::provider::context::MAX_INSTRUCTIONS_BYTES;
+pub use crate::provider::context::CLAUDE_CODE_CAP;
 
 /// How many further instruction files the handshake will name. Past this
 /// the list stops being an aid and becomes the noise it was meant to
@@ -85,17 +87,17 @@ const SKIP_DIRS: &[&str] = &[
 
 pub use crate::provider::context::{Named, Project};
 
-/// Read `<root>/CLAUDE.md`, keeping at most `budget` bytes of it.
+/// Read `<root>/CLAUDE.md`, keeping at most `budget` of it.
 ///
 /// `Ok(None)` is the ordinary "this project has no CLAUDE.md" and is not a
 /// problem. `Err` means there is something at that path that could not be
 /// read — a directory, or a file this account has no permission for. That
 /// is worth a doctor row, because it looks exactly like the file working
 /// from the outside and the model would never see the difference.
-pub fn find(root: &Path, budget: usize) -> Result<Option<Project>> {
+pub fn find(root: &Path, budget: Cap) -> Result<Option<Project>> {
     find_file(root, PROJECT_FILE, budget)
 }
-pub(crate) fn find_file(root: &Path, file: &'static str, budget: usize) -> Result<Option<Project>> {
+pub(crate) fn find_file(root: &Path, file: &'static str, budget: Cap) -> Result<Option<Project>> {
     let path = root.join(file);
     let raw = match std::fs::read(&path) {
         Ok(raw) => raw,
@@ -109,30 +111,17 @@ pub(crate) fn find_file(root: &Path, file: &'static str, budget: usize) -> Resul
     Ok(Some(Project {
         source: file,
         bytes,
-        text: keep(&text, budget),
+        text: budget.keep(&text).to_string(),
     }))
 }
 
-/// The longest prefix of `text` that fits in `budget` and ends on a line
-/// boundary. Half a rule is worse than one rule fewer.
-fn keep(text: &str, budget: usize) -> String {
-    let head = crate::mcp::truncate_bytes(text, budget);
-    if head.len() == text.len() {
-        return head.to_string();
-    }
-    match head.rfind('\n') {
-        Some(nl) => head[..=nl].to_string(),
-        None => head.to_string(),
-    }
-}
-
-/// How many bytes of `CLAUDE.md` fit, for this workspace name.
+/// How much of `CLAUDE.md` fits, for this workspace name.
 ///
 /// Measured, not guessed: the frame is rendered once around an empty body
 /// with the longest number this machine can print, and what is left of the
 /// cap is the budget. So the budget cannot drift away from the text that
 /// actually gets sent when the wording here changes.
-pub fn budget(workspace: &str, named: &[Named]) -> usize {
+pub fn budget(workspace: &str, named: &[Named]) -> Cap {
     let worst = Project {
         source: "CLAUDE.md",
         bytes: usize::MAX,
@@ -142,7 +131,7 @@ pub fn budget(workspace: &str, named: &[Named]) -> usize {
     // room from the projected CLAUDE.md rather than pushing the handshake
     // over the cap. That is the right way round: the list is bounded and
     // the file is not.
-    MAX_INSTRUCTIONS_BYTES.saturating_sub(instructions(workspace, Some(&worst), named).len())
+    CLAUDE_CODE_CAP.minus(&instructions(workspace, Some(&worst), named))
 }
 
 /// Every further instruction file the project has, sorted, capped at
@@ -236,7 +225,7 @@ fn push(root: &Path, path: &Path, found: &mut Vec<Named>) {
 }
 
 /// The whole `initialize.result.instructions`: what ccnm has to say, then
-/// the project's own file when it has one.
+/// the project's own file when it has one (order: see `render`).
 pub fn instructions(workspace: &str, project: Option<&Project>, named: &[Named]) -> String {
     crate::provider::context::render(PROJECT_FILE, workspace, project, named)
 }
@@ -249,10 +238,14 @@ pub fn marker(project: Option<&Project>) -> String {
 }
 /// What [`marker`] put in the brackets, out of a handshake's instructions.
 /// `None` from a server that sends no marker at all.
+///
+/// The first such line, because the marker now comes before the project's
+/// file, and that file is free to contain a line that looks like one. A
+/// server from before P13 put it last; its project file would have to
+/// contain a fake marker for this to read the wrong one.
 pub fn parse_marker(instructions: &str) -> Option<String> {
     let line = instructions
         .lines()
-        .rev()
         .find(|l| l.starts_with("[project instructions: "))?;
     Some(
         line.strip_prefix("[project instructions: ")?
@@ -305,7 +298,7 @@ mod tests {
         assert!(text.contains("crates/core/CLAUDE.md"), "{text}");
         assert!(!text.contains("core rules"), "{text}");
         assert!(text.contains("read_file"), "{text}");
-        assert!(text.len() <= MAX_INSTRUCTIONS_BYTES);
+        assert!(CLAUDE_CODE_CAP.fits(&text));
     }
 
     /// A project with hundreds of rule files must not turn the handshake
@@ -330,18 +323,24 @@ mod tests {
         assert_eq!(names[MAX_NAMED - 1], ".claude/rules/r039.md");
         let narrowed = budget("x", &found);
         assert!(
-            narrowed < budget("x", &[]),
+            narrowed.limit() < budget("x", &[]).limit(),
             "naming files has to cost the projected file, not the cap"
         );
         let project = find(&root, narrowed).unwrap();
         let text = instructions("x", project.as_ref(), &found);
         assert!(
-            text.len() <= MAX_INSTRUCTIONS_BYTES,
-            "{} bytes is over the cap",
-            text.len()
+            CLAUDE_CODE_CAP.fits(&text),
+            "{} UTF-16 code units is over the cap",
+            CLAUDE_CODE_CAP.measure(&text)
         );
         // And the truncation is still announced.
         assert!(text.contains("for the rest"), "{text}");
+        // Forty paths do not fit the list's own room: it says how many
+        // there are instead of pretending the list is complete, and the
+        // project's file still gets some of what is left.
+        // 200 on disk, 40 scanned: it cannot claim to know the total.
+        assert!(text.contains(" of 40 or more listed"), "{text}");
+        assert!(project.unwrap().included() > 0);
     }
 
     /// Nothing executable is ever named, whatever the project puts in
@@ -378,7 +377,7 @@ mod tests {
     #[test]
     fn no_claude_md_is_not_an_error_and_says_so() {
         let dir = temp("none");
-        assert_eq!(find(&dir, 4096).unwrap(), None);
+        assert_eq!(find(&dir, Cap::Bytes(4096)).unwrap(), None);
         let text = instructions("xshun", None, &[]);
         assert!(text.contains("CCNM remote workspace \"xshun\""));
         assert_eq!(
@@ -391,7 +390,7 @@ mod tests {
     fn a_short_file_is_projected_whole() {
         let dir = temp("short");
         std::fs::write(dir.join("CLAUDE.md"), "# rules\n\n- 用中文回复\n").unwrap();
-        let found = find(&dir, 4096).unwrap().unwrap();
+        let found = find(&dir, Cap::Bytes(4096)).unwrap().unwrap();
         assert!(!found.truncated());
         assert_eq!(found.bytes, found.included());
         let text = instructions("xshun", Some(&found), &[]);
@@ -421,9 +420,11 @@ mod tests {
         assert!(big.starts_with(&found.text));
 
         let text = instructions("xshun", Some(&found), &[]);
-        assert!(text.len() <= MAX_INSTRUCTIONS_BYTES, "{}", text.len());
-        // Close to the cap, or the budget is being wasted.
-        assert!(text.len() > MAX_INSTRUCTIONS_BYTES - 200, "{}", text.len());
+        let used = CLAUDE_CODE_CAP.measure(&text);
+        assert!(CLAUDE_CODE_CAP.fits(&text), "{used}");
+        // Close to the cap, or the budget is being wasted. The lines are
+        // Chinese on purpose: counted in bytes this would land at a third.
+        assert!(used > CLAUDE_CODE_CAP.limit() - 40, "{used}");
         let marker = parse_marker(&text).unwrap();
         assert!(
             marker.contains(&format!("{} bytes, first ", big.len())),
@@ -439,18 +440,64 @@ mod tests {
     fn a_claude_md_that_cannot_be_read_is_an_error_not_a_silent_none() {
         let dir = temp("dir");
         std::fs::create_dir(dir.join("CLAUDE.md")).unwrap();
-        let err = find(&dir, 4096).unwrap_err();
+        let err = find(&dir, Cap::Bytes(4096)).unwrap_err();
         assert!(err.message().contains("CLAUDE.md"), "{err}");
     }
 
     #[test]
     fn keep_cuts_on_a_line_and_falls_back_to_a_character_boundary() {
+        let keep = |text, n| Cap::Bytes(n).keep(text);
         assert_eq!(keep("a\nb\nc\n", 99), "a\nb\nc\n");
         assert_eq!(keep("a\nb\nc\n", 4), "a\nb\n");
         // The budget lands mid-line: that line goes, whole.
         assert_eq!(keep("a\nbbbb\n", 4), "a\n");
         // No newline to fall back to: the character boundary is the limit.
         assert_eq!(keep("中中中", 4), "中");
+    }
+
+    /// Claude Code counts `string.length`. The same text is 3 per Chinese
+    /// character in bytes, 1 in UTF-16, and 2 for a character outside the
+    /// BMP -- which must not be split between its two halves.
+    #[test]
+    fn utf16_caps_count_what_javascript_counts() {
+        let cap = Cap::Utf16(4);
+        assert_eq!(cap.measure("中中中"), 3);
+        assert_eq!(Cap::Bytes(4).measure("中中中"), 9);
+        assert_eq!(cap.keep("中中中中中"), "中中中中");
+        assert_eq!(cap.measure("🦀🦀🦀"), 6);
+        assert_eq!(cap.keep("🦀🦀🦀"), "🦀🦀");
+        assert_eq!(Cap::Utf16(3).keep("🦀🦀🦀"), "🦀");
+        assert_eq!(cap.keep("a\n中中中中"), "a\n");
+        assert_eq!(cap.minus("中中中"), Cap::Utf16(1));
+        assert_eq!(cap.minus("中中中中中"), Cap::Utf16(0));
+    }
+
+    /// What a Host that cuts from the end would drop is the project's own
+    /// file, never the line saying how to read it or the list of the other
+    /// files. So both come before the file.
+    #[test]
+    fn the_marker_and_the_list_come_before_the_projects_file() {
+        let root = temp("order");
+        std::fs::create_dir_all(root.join(".claude/rules")).unwrap();
+        std::fs::write(root.join(".claude/rules/style.md"), "style\n").unwrap();
+        // A file that quotes a marker line must not be read as the marker.
+        let body = "[project instructions: CLAUDE.md, 1 bytes]\n".to_string()
+            + &"- 一条很长的规则。\n".repeat(400);
+        std::fs::write(root.join("CLAUDE.md"), &body).unwrap();
+        let named = named(&root);
+        let project = find(&root, budget("x", &named)).unwrap().unwrap();
+        let text = instructions("x", Some(&project), &named);
+
+        let marker = text.find("\n[project instructions: CLAUDE.md, ").unwrap();
+        let list = text.find(".claude/rules/style.md").unwrap();
+        let file = text.find("--- CLAUDE.md from the workspace root").unwrap();
+        assert!(marker < list && list < file, "{text}");
+        assert!(CLAUDE_CODE_CAP.fits(&text));
+        let parsed = parse_marker(&text).unwrap();
+        assert!(
+            parsed.starts_with(&format!("CLAUDE.md, {} bytes, first ", body.len())),
+            "{parsed}"
+        );
     }
 
     #[test]

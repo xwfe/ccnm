@@ -1230,10 +1230,11 @@ fn project_instructions(r: &Resolved<'_>) -> Check {
         Ok(Some(p)) => Check::warn(
             NAME,
             format!(
-                "{file} is {} bytes and only its first {} reach the model: the MCP handshake is capped at {} bytes\nmove what the model does not need out of the root file; it can still read the whole thing with read_file {file}",
+                "{file} is {} bytes and only its first {} bytes reach the model: Claude Code keeps {} {} of the MCP handshake, and ccnm's own lines come first\nmove what the model does not need out of the root file; it can still read the whole thing with read_file {file}",
                 p.bytes,
                 p.included(),
-                context::MAX_INSTRUCTIONS_BYTES
+                context::CLAUDE_CODE_CAP.limit(),
+                context::CLAUDE_CODE_CAP.unit()
             ),
         ),
         Err(e) => Check::warn(

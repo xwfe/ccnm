@@ -50,10 +50,6 @@ type CcnmResult<T> = crate::error::Result<T>;
 /// `serverInfo.name` in the initialize response.
 pub const SERVER_NAME: &str = "ccnm";
 
-/// Upper bound on `initialize.result.instructions`, the project's
-/// CLAUDE.md included (design doc section 20).
-pub use crate::mcp::context::MAX_INSTRUCTIONS_BYTES;
-
 /// The `structuredContent` of `workspace_info`. Small on purpose: the
 /// model needs to know where it is, not the server's environment.
 /// `server_pid` and `calls_served` are the persistence evidence of design
@@ -455,7 +451,7 @@ impl Server {
 
     /// What goes into `initialize.result.instructions`: ccnm's own
     /// paragraph, then the project's CLAUDE.md, within
-    /// [`MAX_INSTRUCTIONS_BYTES`] (design doc section 20).
+    /// [`Server::instructions_cap`] (design doc section 20).
     ///
     /// An external client gets what the workspace configured instead, and
     /// never a provider's projection: which instruction file a managed
@@ -475,8 +471,18 @@ impl Server {
                 &self.inner.named,
             ),
         };
-        debug_assert!(text.len() <= MAX_INSTRUCTIONS_BYTES);
+        debug_assert!(self.instructions_cap().fits(&text));
         text
+    }
+
+    /// What the Host on the other end keeps of [`Server::instructions`].
+    /// A managed session knows which provider it started; an external one
+    /// does not, so it assumes the strictest Host.
+    pub fn instructions_cap(&self) -> context::Cap {
+        match self.inner.entry {
+            crate::protocol::mcp::Entry::External(_) => context::EXTERNAL_CAP,
+            crate::protocol::mcp::Entry::Managed => self.inner.provider.instructions_cap(),
+        }
     }
 
     /// The workspace's external instruction policy, read from the same
@@ -1234,7 +1240,7 @@ mod tests {
         assert_eq!(first.workspace, "xshun");
         assert!(first.platform.contains('/'));
         assert!(server.instructions().contains("\"xshun\""));
-        assert!(server.instructions().len() <= MAX_INSTRUCTIONS_BYTES);
+        assert!(server.instructions_cap().fits(&server.instructions()));
         // The absolute root never appears in what the model sees.
         let json = serde_json::to_string(&first).unwrap();
         assert!(!json.contains(&dir.display().to_string()), "{json}");
@@ -1254,14 +1260,15 @@ mod tests {
             crate::mcp::context::parse_marker(&text).as_deref(),
             Some("CLAUDE.md, 25 bytes")
         );
-        assert!(text.len() <= MAX_INSTRUCTIONS_BYTES);
+        assert!(server.instructions_cap().fits(&text));
         // Still no absolute path, project file or not.
         assert!(!text.contains(&dir.display().to_string()), "{text}");
     }
 
     /// The cap belongs to the server, not to whoever remembers to pass a
     /// budget: a project with a long CLAUDE.md must not be able to push
-    /// the handshake past [`MAX_INSTRUCTIONS_BYTES`].
+    /// the handshake past what Claude Code keeps -- 2048 UTF-16 code units,
+    /// which for this Chinese file is about a third of the bytes.
     #[test]
     fn a_long_claude_md_cannot_push_the_handshake_over_the_cap() {
         let dir = temp("bigproject");
@@ -1269,7 +1276,12 @@ mod tests {
         std::fs::write(dir.join("CLAUDE.md"), &big).unwrap();
         let server = fixture_server(&ServePayload::new("xshun", dir, "s")).unwrap();
         let text = server.instructions();
-        assert!(text.len() <= MAX_INSTRUCTIONS_BYTES, "{}", text.len());
+        assert_eq!(server.instructions_cap(), context::CLAUDE_CODE_CAP);
+        assert!(
+            server.instructions_cap().fits(&text),
+            "{} UTF-16 code units",
+            text.encode_utf16().count()
+        );
         let marker = crate::mcp::context::parse_marker(&text).unwrap();
         assert!(
             marker.contains(&format!("{} bytes, first ", big.len())),

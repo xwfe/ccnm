@@ -144,8 +144,13 @@ Agent Node没装 tmux。`brew install tmux`。或者用 `--print` 模式，那�
 
 ### `Project instructions ... WARN`
 
-项目的 `CLAUDE.md` 比 16 KiB 大，模型只读到前面一截。把模型用不上的东西挪出根文件——
-它随时可以 `read_file CLAUDE.md` 读全文，但**开场读到的**只有截断后的那部分。
+项目的 `CLAUDE.md` 放不进握手，模型只读到前面一截。上限是 Claude Code 定的：整段 instructions 只保留
+**2048 个 UTF-16 码元**（中文一个字算 1、英文一个字母算 1，不是按字节）。ccnm 自己的说明约占 700，
+其他说明文件清单最多再占 768，剩下的才给根文件：没有清单时根文件大约能放 1350 个字符，清单很长时只剩 600 左右。
+
+把模型用不上的东西挪出根文件，或者拆进 `.claude/rules/`（那里的文件只列路径、不占正文）。模型随时可以
+`read_file CLAUDE.md` 读全文，开场读到的那一行 `[project instructions: …, first N shown; read_file CLAUDE.md for the rest]`
+就是在告诉它这件事。
 
 ### `--print` 跑到一半 ssh 断了
 

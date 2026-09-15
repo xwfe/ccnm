@@ -321,7 +321,7 @@ external_instructions = "generic"   # generic（默认）| project | none
 ```
 
 - `generic`：只有 ccnm 自己那段（这是哪个 workspace、路径都是相对的、这次能不能写）。
-- `project`：再加上项目自己的说明文件。Runtime 按固定顺序找 `AGENTS.md` → `CLAUDE.md`，取第一个存在的——外部客户端的 provider 无从得知，也不能靠它自称的名字去猜。
+- `project`：再加上项目自己的说明文件。Runtime 按固定顺序找 `AGENTS.md` → `CLAUDE.md`，取第一个存在的——外部客户端的 provider 无从得知，也不能靠它自称的名字去猜。整段握手按 Claude Code 的上限 2048 个 UTF-16 码元投影，ccnm 自己的说明和模式句约占 850，项目文件大约能放 1200 个字符（中英文都按字符数算），放不下的部分按行截掉，模型会被告知用 `read_file` 读全文。
 - `none`：什么都不给。
 
 ## `[ui]`

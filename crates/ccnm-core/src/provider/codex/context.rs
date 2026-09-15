@@ -1,10 +1,10 @@
 //! Root-only projection. Override priority (including empty override files) was
 //! measured with Codex 0.153.4. Never copy local Agent config to the Runtime.
 use crate::error::{Error, Result};
-use crate::provider::context::{self as shared, MAX_INSTRUCTIONS_BYTES, Project};
+use crate::provider::context::{self as shared, CODEX_CAP, Cap, Project};
 use std::path::Path;
 
-pub fn find(root: &Path, budget: usize) -> Result<Option<Project>> {
+pub fn find(root: &Path, budget: Cap) -> Result<Option<Project>> {
     for file in ["AGENTS.override.md", "AGENTS.md"] {
         let path = root.join(file);
         let meta = match std::fs::symlink_metadata(&path) {
@@ -29,27 +29,21 @@ pub fn find(root: &Path, budget: usize) -> Result<Option<Project>> {
         }
         let bytes = std::fs::read(target)?;
         let text = String::from_utf8_lossy(&bytes);
-        let head = crate::mcp::truncate_bytes(&text, budget);
-        let kept = if head.len() == text.len() {
-            head
-        } else {
-            head.rfind('\n').map_or(head, |nl| &head[..=nl])
-        };
         return Ok(Some(Project {
             source: file,
             bytes: text.len(),
-            text: kept.into(),
+            text: budget.keep(&text).into(),
         }));
     }
     Ok(None)
 }
-pub fn budget(workspace: &str) -> usize {
+pub fn budget(workspace: &str) -> Cap {
     let worst = Project {
         source: "AGENTS.override.md",
         bytes: usize::MAX,
         text: String::new(),
     };
-    MAX_INSTRUCTIONS_BYTES.saturating_sub(instructions(workspace, Some(&worst)).len())
+    CODEX_CAP.minus(&instructions(workspace, Some(&worst)))
 }
 pub fn instructions(workspace: &str, project: Option<&Project>) -> String {
     shared::render(

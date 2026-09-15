@@ -166,6 +166,17 @@ fn claude_behavior_matches_snapshot_except_documented_safety_and_colocated_fixes
                 .drain(0..5);
         }
     }
+    // P13 moves the marker line and the list of further files ahead of the
+    // project's own file, so a Host that cuts from the end drops the file
+    // rather than the line saying how to read it. Same four pieces, same
+    // words; only their order and the newlines between them change.
+    let old = expected["instructions"].as_str().unwrap();
+    let (base, rest) = old.split_once("\n\n--- CLAUDE.md").unwrap();
+    let (file, rest) = rest.split_once("\n\nThis project has").unwrap();
+    let (list, marker) = rest.split_once("\n\n[project instructions:").unwrap();
+    expected["instructions"] = Value::from(format!(
+        "{base}\n[project instructions:{marker}\n\nThis project has{list}\n\n--- CLAUDE.md{file}"
+    ));
     assert_eq!(actual, expected);
 }
 

@@ -257,7 +257,7 @@ transport 的认证边界是 **OpenSSH identity + 独立的 Runtime OS 账号**�
 | `read_output` 一次最多 | 32 KiB（默认 16 KiB） |
 | `apply_patch` | 一次最多 50 个文件；一次请求里所有文件的新内容**合计** 1 MiB；被编辑的文件超过 16 MiB 直接拒绝 |
 | 保留输出 | 每个 session 最多 100 次运行 / 64 MiB，超了删最旧的 |
-| `instructions` | 16 KiB（含项目说明文件），超了按行切断 |
+| `instructions` | 2048 个 UTF-16 码元（含项目说明文件），超了由 ccnm 按行截断，见第 10 节 |
 
 保留的输出**留在远端**，只在这个 session 的目录里。session 结束后由 ccnm 原有的维护动作清理；契约不承诺任何保留时长。
 
@@ -292,6 +292,8 @@ external_instructions = "generic"   # generic（默认）| project | none
 | `generic`（默认） | 只有 ccnm 自己那段：这是哪个 workspace、路径都是相对的、有哪些工具 |
 | `project` | 上面那段 + 项目说明文件，Runtime 按固定顺序找：`AGENTS.md` → `CLAUDE.md`，取第一个存在的 |
 | `none` | 什么都不给 |
+
+**长度和顺序（P13，2026-09-16 起）。**整段按 2048 个 UTF-16 码元算——bridge 不知道对面是哪个 Host，只能按已知最严的 Claude Code 算（它按 JS 字符串长度截到 2048，多出的换成 `… [truncated]`）。顺序是：ccnm 自己那段 → 模式句 → `[project instructions: …]` 标记行 → 项目说明文件正文；正文放不下时 ccnm 按行截断，标记行写明文件多大、给了多少、用 `read_file` 读全文。改之前上限写的是 16 KiB 字节、标记行在最后，对 Claude Code 来说超过 2048 的部分连同标记行一起被 Host 截掉。这只改上下文文本的长度和位置，不涉及工具、权限和错误码，不升版本。
 
 固定顺序是因为外部 MCP 没有 provider 可依据；**不读调用方机器上的任何 Agent 配置**，也不把 Agent profile 当成 Runtime 的上下文来源。这个选项只影响上下文文本，**不影响权限**——给了 `project` 不等于多一分授权。
 

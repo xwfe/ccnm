@@ -249,13 +249,13 @@ transport 的认证边界是 **OpenSSH identity + 独立的 Runtime OS 账号**�
 
 | 位置 | 上限 |
 | --- | --- |
-| `read_file` 一次最多 | 2000 行（`max_lines`），超了给你续读的行号 |
+| `read_file` 一次最多 | 2000 行（`max_lines`）、64 KiB（`max_bytes`，默认 32 KiB），超了给你续读的行号 |
 | `list_files` 一次最多 | 1000 条（`max_entries`） |
 | `search_text` | 200 条结果、上下文 10 行、整体 32 KiB、单行 512 字节 |
 | `exec_command` 超时 | 最大 600000 ms（10 分钟） |
-| `exec_command` 回传 | 头尾各 16 KiB 预览 + 一个 `output_ref` |
-| `read_output` 一次最多 | 32 KiB |
-| `apply_patch` | 50 个文件、单文件内容 1 MiB、单次编辑 16 MiB |
+| `exec_command` 回传 | 预览总共默认 4 KiB，`preview_bytes` 最大 16 KiB；stderr 最多占一半，其余给 stdout，某个流超出时只留它的开头和结尾。完整输出用 `output_ref` 读 |
+| `read_output` 一次最多 | 32 KiB（默认 16 KiB） |
+| `apply_patch` | 一次最多 50 个文件；一次请求里所有文件的新内容**合计** 1 MiB；被编辑的文件超过 16 MiB 直接拒绝 |
 | 保留输出 | 每个 session 最多 100 次运行 / 64 MiB，超了删最旧的 |
 | `instructions` | 16 KiB（含项目说明文件），超了按行切断 |
 

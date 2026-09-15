@@ -1811,6 +1811,9 @@ fn attach_selected(
     let cmd = launcher::attach_cmd_selected(resolved, env, agent, session)?;
     let captured = ccnm_core::process::run_attached(&cmd)?;
     let code = captured.exit_code.unwrap_or(1);
+    // Before the status lookup below: that is another ssh and up to ten
+    // seconds, and every mouse move meanwhile would print as garbage.
+    restore_terminal(&captured);
     match launcher::status_selected(resolved, env, false, agent, session) {
         Ok(rep) if !rep.sessions.is_empty() => {
             eprintln!(
@@ -1835,6 +1838,30 @@ fn attach_selected(
         ),
     }
     Ok(code)
+}
+
+/// Switch off what the remote tmux client switched on, in case it never
+/// could (see [`tmux::client_terminal_reset`]).
+///
+/// ssh exits 255 when the connection failed, and with no code when a
+/// signal took it. But 255 also means it never connected, when tmux never
+/// took the screen -- and leaving an alternate screen nobody entered moves
+/// the cursor (Ghostty, like xterm, restores it unconditionally). So
+/// "lost" also needs time: a failed connect gives up within the attach
+/// ssh's `ConnectTimeout=10`, while an established one is not declared
+/// dead before `ServerAliveInterval=15` x `ServerAliveCountMax=3` = 45s
+/// (`Ssh::options`). A connection reset sooner than 30s leaves the
+/// alternate screen up; the mouse is switched off either way.
+fn restore_terminal(attach: &ccnm_core::process::Captured) {
+    use std::io::{IsTerminal as _, Write as _};
+    let mut out = std::io::stdout();
+    if !out.is_terminal() {
+        return;
+    }
+    let lost = matches!(attach.exit_code, None | Some(255))
+        && attach.duration >= std::time::Duration::from_secs(30);
+    let _ = out.write_all(tmux::client_terminal_reset(lost).as_bytes());
+    let _ = out.flush();
 }
 
 /// The summary, then Claude's answer, then whatever went wrong. Exit 0

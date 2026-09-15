@@ -176,6 +176,39 @@ pub fn attach_hook() -> String {
 const ATTACH_NOTICE: &str =
     "ccnm: do not background this session; only this one has the Runtime tools";
 
+/// What a tmux client says to the terminal on its way out, for when it
+/// never got to.
+///
+/// `ccnm <workspace>` hands this terminal to a tmux client on the far side
+/// of an ssh, and `mouse on` above makes that client switch mouse
+/// reporting on. On a clean detach tmux switches it back off. When the
+/// connection dies instead -- a lid closed, Wi-Fi gone -- ssh gives up
+/// and exits, and nothing ever sends the "off": the terminal keeps
+/// reporting every mouse move to a shell that prints it as `^[[<35;41;12M`
+/// until someone resets it. Ghostty's quick terminal keeps that state
+/// across hide and show, so it looks like the window itself is broken.
+///
+/// The sequences are the ones tmux's own `tty_stop_tty` writes (tmux
+/// master, checked 2026-09): mouse modes 1000/1002/1003/1006/1005,
+/// bracketed paste, focus events, extended keys, keypad mode, SGR reset,
+/// normal cursor, colour-scheme reports. All are safe to repeat on a
+/// terminal that already has them off, so a clean exit costs nothing.
+///
+/// Leaving the alternate screen is not: on a terminal already back on the
+/// main screen, `?1049l` restores a stale saved cursor and the next lines
+/// overwrite the scrollback. It is sent only when `connection_lost`, where
+/// tmux had entered the alternate screen and never left it.
+pub fn client_terminal_reset(connection_lost: bool) -> String {
+    let mut reset = String::from(
+        "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1005l\
+         \x1b[?2004l\x1b[?1004l\x1b[>4m\x1b[?1l\x1b>\x1b[0m\x1b[?12l\x1b[?25h\x1b[?2031l",
+    );
+    if connection_lost {
+        reset.push_str("\x1b[?1049l");
+    }
+    reset
+}
+
 /// A located tmux binary. Every command goes to ccnm's own socket.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Tmux {
@@ -399,6 +432,19 @@ pub fn check_name(name: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_lost_connection_also_leaves_the_alternate_screen_and_a_clean_one_does_not() {
+        for lost in [false, true] {
+            let reset = client_terminal_reset(lost);
+            // Every mouse mode `mouse on` can switch on, switched off.
+            for mode in ["1000", "1002", "1003", "1005", "1006"] {
+                assert!(reset.contains(&format!("\x1b[?{mode}l")), "{mode}");
+                assert!(!reset.contains(&format!("\x1b[?{mode}h")), "{mode}");
+            }
+            assert_eq!(reset.contains("\x1b[?1049l"), lost);
+        }
+    }
 
     #[test]
     fn session_names_are_derived_from_the_workspace_and_are_tmux_safe() {

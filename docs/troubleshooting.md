@@ -360,6 +360,29 @@ ccnm attach <workspace>
 
 **怎么不再踩**：受管会话里别用后台，要离开就 detach（状态栏右下角写着按键，默认 `C-b d`），回来用 `ccnm attach`。从 v0.4.0 起，每次 attach 时状态栏会把这句提示一遍。
 
+### 合上笔记本睡一觉，第二天某个项目的工具连不上
+
+**症状**：同时开着几个项目，其他都好，唯独一个 `ccnm <workspace>` 起来之后 Claude 里 MCP 显示连接失败，`ccnm status` 那一行是 `TOOLS DOWN`。
+
+**其实是**：那个项目**昨天那个会话**的 Runtime 端 `mcp-serve` 还活着，占着写锁，新会话被拒成 busy。它没退，是因为连接成了半开：Runtime（笔记本）睡着时，Agent 那头的 ssh 等不到回应就关了，关闭的包在睡眠中丢了；醒来后 Runtime 的 sshd 还以为连接在（`lsof` 显示 `ESTABLISHED`），而 `mcp-serve` 没人调用就从不往外写，也就永远发现不了。**不是 ccnm 不支持多个项目**——每个项目一把锁，互不影响。
+
+在 Runtime Node 上确认：
+
+```bash
+ccnm status                 # 不带项目名：会把"Agent 那头已经没有的会话"标成孤儿
+```
+
+**修**：v0.6.0 之后的 `mcp-serve` 空闲时每 30 秒 ping 一次客户端，半开的连接一写就断，锁自己释放。所以等半分钟，在 Claude 里 `/mcp` → `ccnm` → `Reconnect`。
+
+还在跑 v0.6.0 或更早的 Runtime：没有这个 ping，只能人工结束。**别直接 kill `mcp-serve`**——那会留下 `held` 标记，还得再做一遍[写入 guard 残留](operations.md#写入-guard-残留)。结束它背后那个 sshd 会话，`mcp-serve` 读到 EOF 会正常收尾、锁变 `released`：
+
+```bash
+ps -o pid,ppid,lstart,command -p <mcp-serve 的 pid>   # PPID 那列是 sshd-session
+kill <那个 sshd-session 的 pid>
+```
+
+动手前先确认 Agent Node 上那个会话确实结束了（会话目录里有 `exit` 文件，没有对应的 `ccnm internal supervise` 进程）。
+
 ### 开盖之后命令行不停打印 `^[[<35;41;12M` 这类字符
 
 **症状**：`ccnm <workspace>` 接着会话时合了盖，开盖后过半分钟左右 ssh 断开、回到本机 shell，接着**鼠标一动就冒出一串坐标字符**。Ghostty 的 quick terminal 收起再打开还在冒，看着像窗口坏了。

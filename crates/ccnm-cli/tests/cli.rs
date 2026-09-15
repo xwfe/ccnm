@@ -1299,12 +1299,38 @@ fn a_bare_workspace_name_means_run() {
     );
     assert!(err.contains("not defined"), "{err}");
     // A real subcommand still wins over a workspace of the same name.
-    let out = ccnm().arg("status").output().unwrap();
+    let out = ccnm().arg("attach").output().unwrap();
     assert!(
         stderr(&out).contains("required") || stderr(&out).contains("Usage"),
         "{}",
         stderr(&out)
     );
+}
+
+/// `ccnm st` is `status`, not `ccnm run st`. The default subcommand rule
+/// asks clap for aliases too; a short alias it did not know would turn
+/// into a session start for a workspace called `st`.
+#[test]
+fn short_aliases_are_subcommands_not_workspace_names() {
+    for (alias, command) in [
+        ("st", "status"),
+        ("ls", "list"),
+        ("a", "attach"),
+        ("dr", "doctor"),
+        ("logs", "log"),
+        ("res", "result"),
+    ] {
+        let out = ccnm()
+            .args(["--lang", "en", alias, "--help"])
+            .output()
+            .unwrap();
+        let text = stdout(&out);
+        assert!(out.status.success(), "{alias}: {}", stderr(&out));
+        assert!(
+            text.contains(&format!("Usage: ccnm {command}")),
+            "{alias} should be {command}:\n{text}"
+        );
+    }
 }
 
 /// Interactive and print mode share the local preflight, and it is the

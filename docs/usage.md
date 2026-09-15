@@ -109,6 +109,58 @@ EOF
 
 ## 查看状态和结束会话
 
+### 一次看全部项目
+
+```bash
+ccnm ls          # 一项目一行
+ccnm status      # 不带项目名：每个项目一块，细到进程
+ccnm log         # 会话历史，默认最近 20 条；ccnm log gld -n 5 只看 gld 的 5 条
+```
+
+`ccnm ls` 长这样：
+
+```text
+项目   状态               已运行       工具
+ccnm   没在跑
+gld    运行中 · 1 个终端  59 分钟      断了
+xdo    运行中 · 1 个终端  1 小时 2 分  通
+
+! gld：工具断了。在 Claude 里 /mcp → ccnm → Reconnect
+详情：ccnm status
+```
+
+在 **Runtime Node** 上跑时，`ccnm status` 除了 Agent Node 上的会话，还会列出本机的 `ccnm internal mcp-serve` 进程，并跟 Agent 那边对一遍：
+
+| 它说 | 意思 |
+| --- | --- |
+| 服务着上面这个会话 | 正常 |
+| --print 运行 | 一次 `--print` 正在跑，tmux 里看不到它，但它占着写锁 |
+| 诊断用 / 外部 MCP 客户端 | `ccnm doctor`、`mcp probe`，或 `ccnm mcp bridge` 连进来的 |
+| **孤儿** | Agent 那边这个会话已经结束，这个进程还占着写锁，新会话会被它挡住。后面会给出结束它的命令 |
+| 跟 Agent 对不上 | 问不到 Agent，或者 Agent 没有这个会话的记录——说不清，不当孤儿处理 |
+
+孤儿是怎么来的、为什么新版本基本不会再有，见[故障排查](troubleshooting.md#合上笔记本睡一觉第二天某个项目的工具连不上)。
+
+在 **Agent Node** 上跑时，只看得到本机的 tmux 会话和会话记录：项目列表和 `mcp-serve` 都在 Runtime 那边，ccnm 不会为了看状态反过来连 Runtime。
+
+`ccnm log` 的"开始"是**敲命令这台机器的本地时间**。它要求两台机器的 ccnm 都认识 `agent-history`；Agent Node 上还是旧版本时会报 `CCNM_E_VERSION`，让你把两台装成同一版本。
+
+### 简写
+
+| 完整 | 简写 |
+| --- | --- |
+| `ccnm attach` | `ccnm a` |
+| `ccnm status` | `ccnm st` |
+| `ccnm list` | `ccnm ls` |
+| `ccnm log` | `ccnm logs` |
+| `ccnm doctor` | `ccnm dr` |
+| `ccnm result` | `ccnm res` |
+| `ccnm workspace` / `list` / `remove` | `ccnm ws` / `ls` / `rm` |
+
+`ccnm <名字>` 等于 `ccnm run <名字>`，但子命令和简写优先：workspace 如果恰好叫 `ls`、`st`、`a` 这类名字，就只能写全 `ccnm run ls`。
+
+### 单个项目
+
 ```bash
 ccnm status my-project
 ccnm status my-project --all

@@ -12,8 +12,8 @@ use ccnm_core::protocol::hello::{self, HelloRequest};
 use ccnm_core::protocol::payload;
 use ccnm_core::protocol::probe::ProbeRequest;
 use ccnm_core::protocol::run::{
-    AttachRequest, PurgeRequest, ResultRequest, RunReport, RunRequest, StartRequest, StatusRequest,
-    StopRequest,
+    AttachRequest, HistoryRequest, PurgeRequest, ResultRequest, RunReport, RunRequest,
+    StartRequest, StatusRequest, StopRequest,
 };
 use ccnm_core::provider::AgentProvider;
 use ccnm_core::{
@@ -70,13 +70,14 @@ enum Command {
         runtime: Option<String>,
     },
     /// Add, list and remove workspaces without editing the config by hand
-    #[command(alias = "ws")]
+    #[command(visible_alias = "ws")]
     Workspace {
         #[command(subcommand)]
         command: WorkspaceCommand,
     },
     /// Check that this machine and a workspace are ready to use (read-only,
     /// never changes anything)
+    #[command(visible_alias = "dr")]
     Doctor {
         /// Workspace name from config.toml; omit to check only the config
         workspace: Option<String>,
@@ -110,6 +111,7 @@ enum Command {
         detached: bool,
     },
     /// Attach this terminal to a workspace's running session
+    #[command(visible_alias = "a")]
     Attach {
         /// Workspace name from config.toml
         workspace: String,
@@ -118,20 +120,41 @@ enum Command {
         #[arg(long, value_name = "ID")]
         session: Option<String>,
     },
-    /// What is running on the Agent Node
+    /// What is running on the Agent Node; without a workspace, every
+    /// managed project and the Runtime processes serving them
+    #[command(visible_alias = "st")]
     Status {
-        /// Workspace name from config.toml
-        workspace: String,
-        #[arg(long, value_name = "INSTANCE")]
+        /// Workspace name from config.toml; omit it for all of them
+        workspace: Option<String>,
+        #[arg(long, value_name = "INSTANCE", requires = "workspace")]
         agent: Option<String>,
-        #[arg(long, value_name = "ID", conflicts_with = "all")]
+        #[arg(
+            long,
+            value_name = "ID",
+            conflicts_with = "all",
+            requires = "workspace"
+        )]
         session: Option<String>,
         /// Every ccnm session on that machine, not just this workspace's
-        #[arg(long, conflicts_with = "agent")]
+        #[arg(long, conflicts_with = "agent", requires = "workspace")]
         all: bool,
+    },
+    /// Every managed project, one line each: running or not, for how long,
+    /// whether its tools are connected
+    #[command(visible_alias = "ls")]
+    List,
+    /// Past and present sessions, newest first
+    #[command(visible_alias = "logs")]
+    Log {
+        /// Only this workspace's sessions
+        workspace: Option<String>,
+        /// How many to show
+        #[arg(short = 'n', long, default_value_t = 20, value_name = "N")]
+        limit: u32,
     },
     /// What a session produced, for a `--print` run this terminal did not
     /// stay connected to
+    #[command(visible_alias = "res")]
     Result {
         /// Workspace name from config.toml
         workspace: String,
@@ -196,8 +219,10 @@ enum WorkspaceCommand {
         permission_mode: Option<String>,
     },
     /// Every workspace in the config, and whether its directory is here
+    #[command(visible_alias = "ls")]
     List,
     /// Forget a workspace. Ends its session first if one is running
+    #[command(visible_alias = "rm")]
     Remove {
         name: String,
         /// Also delete what ccnm kept for it on the Agent Node
@@ -315,6 +340,11 @@ enum InternalCommand {
     },
     /// Work-side list of live sessions
     AgentStatus {
+        #[arg(long)]
+        payload: String,
+    },
+    /// Work-side list of session records, finished ones included
+    AgentHistory {
         #[arg(long)]
         payload: String,
     },
@@ -565,8 +595,19 @@ fn zh_help(command: clap::Command) -> clap::Command {
             workspace_args(c.about("把这个终端接到某个 workspace 正在跑的会话上"))
         })
         .mut_subcommand("status", |c| {
-            workspace_args(c.about("Agent Node 上现在跑着什么"))
+            c.about("Agent Node 上现在跑着什么；不给项目名就看所有项目，连同 Runtime 上服务它们的进程")
+                .mut_arg("workspace", |a| {
+                    a.help("config.toml 里的 workspace 名字；不给就看全部")
+                })
                 .mut_arg("all", |a| a.help("那台机器上每一个 ccnm 会话，不只是这个 workspace 的"))
+        })
+        .mut_subcommand("list", |c| {
+            c.about("所有项目一项一行：在不在跑、跑了多久、工具通不通")
+        })
+        .mut_subcommand("log", |c| {
+            c.about("跑过的和正在跑的会话，最新的在前")
+                .mut_arg("workspace", |a| a.help("只看这个 workspace 的"))
+                .mut_arg("limit", |a| a.help("最多列几条"))
         })
         .mut_subcommand("result", |c| {
             workspace_args(c.about("某次会话产出了什么——给那种 --print 跑完、终端没一直连着的情况"))
@@ -819,6 +860,13 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
             all,
         } => {
             let config = Config::load(&config_path()?)?;
+            let Some(workspace) = workspace else {
+                print!(
+                    "{}",
+                    overview(&config, config_path()?.as_path())?.render_status(lang)
+                );
+                return Ok(0);
+            };
             if agent_side(&config, workspace).is_some() {
                 let selected = local_instance_ref(&config, agent.as_deref())?;
                 let req = StatusRequest {
@@ -847,6 +895,28 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
                 session.as_deref(),
             )?;
             print!("{}", rep.render_in(lang));
+            Ok(0)
+        }
+        Command::List => {
+            let config = Config::load(&config_path()?)?;
+            print!(
+                "{}",
+                overview(&config, config_path()?.as_path())?.render_list(lang)
+            );
+            Ok(0)
+        }
+        Command::Log { workspace, limit } => {
+            let config = Config::load(&config_path()?)?;
+            let entries = session_history(&config, workspace.as_deref(), *limit)?;
+            print!(
+                "{}",
+                ccnm_core::overview::render_history(
+                    &entries,
+                    ccnm_core::overview::now_secs(),
+                    ccnm_core::overview::utc_offset(&SystemRunner),
+                    lang,
+                )
+            );
             Ok(0)
         }
         Command::Result {
@@ -1154,6 +1224,13 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
             InternalCommand::AgentStatus { payload } => {
                 let req: StatusRequest = payload::decode(payload)?;
                 print_json(&work::status_checked(
+                    &req,
+                    &agent_tools(config_path().ok().as_deref())?,
+                )?)
+            }
+            InternalCommand::AgentHistory { payload } => {
+                let req: HistoryRequest = payload::decode(payload)?;
+                print_json(&work::history(
                     &req,
                     &agent_tools(config_path().ok().as_deref())?,
                 )?)
@@ -1759,6 +1836,76 @@ fn probe_request(authority: &ccnm_core::runtime::ResolveReport, mcp_calls: u32) 
         provider_config_dir: authority.provider_config_dir.clone(),
         mcp_calls,
     }
+}
+
+/// Is this the Agent Node's config: no workspaces of its own, and a
+/// Runtime Node to ask about them?
+fn is_agent_node(config: &Config) -> bool {
+    config.workspaces.is_empty() && config.runtime_from_agent().is_some()
+}
+
+/// Every managed project, from whichever machine this is.
+///
+/// On the Agent Node that is its own tmux sessions: the workspace list and
+/// the processes serving them are on the Runtime, and asking the Runtime
+/// to look at itself would have it dial back here (P7.4 Batch D2).
+fn overview(
+    config: &Config,
+    config_path: &std::path::Path,
+) -> Result<ccnm_core::overview::Overview> {
+    if is_agent_node(config) {
+        let req = StatusRequest {
+            protocol: ccnm_core::protocol::payload::PROTOCOL,
+            workspace: None,
+            agent: None,
+            session: None,
+        };
+        let report = work::status_checked(&req, &agent_tools(Some(config_path))?)?;
+        return Ok(ccnm_core::overview::from_agent_status(&report));
+    }
+    Ok(ccnm_core::overview::collect(
+        config,
+        &launch_env()?,
+        &paths::state_dir()?,
+    ))
+}
+
+/// Session records for `ccnm log`: one call per Agent Node, merged.
+fn session_history(
+    config: &Config,
+    workspace: Option<&str>,
+    limit: u32,
+) -> Result<Vec<ccnm_core::protocol::run::HistoryEntry>> {
+    let req = HistoryRequest {
+        protocol: ccnm_core::protocol::payload::PROTOCOL,
+        workspace: workspace.map(str::to_string),
+        limit,
+    };
+    if is_agent_node(config) {
+        return Ok(work::history(&req, &agent_tools(None)?)?.sessions);
+    }
+    let env = launch_env()?;
+    let names: Vec<&str> = match workspace {
+        Some(name) => vec![config.workspace(name)?.name],
+        None => config.workspaces.keys().map(String::as_str).collect(),
+    };
+    let mut asked = std::collections::BTreeSet::new();
+    let mut entries = Vec::new();
+    for name in names {
+        let resolved = config.workspace(name)?;
+        let Ok(alias) = resolved.agent_ssh() else {
+            continue;
+        };
+        if asked.insert(alias.to_string()) {
+            entries.extend(launcher::history(&resolved, &env, workspace, limit)?.sessions);
+        }
+    }
+    // An Agent Node can serve other Runtimes too; this lists what this
+    // config manages.
+    entries.retain(|e| config.workspaces.contains_key(&e.workspace));
+    entries.sort_by_key(|e| std::cmp::Reverse(e.started));
+    entries.truncate(limit as usize);
+    Ok(entries)
 }
 
 /// The Agent Node's own view of the world.

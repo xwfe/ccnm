@@ -13,8 +13,9 @@ use crate::protocol::mcp::{ProbeReport, ServePayload};
 use crate::protocol::payload;
 use crate::protocol::probe::{ProbeReport as WorkProbeReport, ProbeRequest};
 use crate::protocol::run::{
-    AttachRequest, PurgeReport, PurgeRequest, ResultReport, ResultRequest, RunReport, RunRequest,
-    StartReport, StartRequest, StatusReport, StatusRequest, StopReport, StopRequest,
+    AttachRequest, HistoryReport, HistoryRequest, PurgeReport, PurgeRequest, ResultReport,
+    ResultRequest, RunReport, RunRequest, StartReport, StartRequest, StatusReport, StatusRequest,
+    StopReport, StopRequest,
 };
 use crate::provider::AgentProvider;
 use crate::ssh::{Master, Ssh};
@@ -342,6 +343,43 @@ pub fn status_selected(
     )?;
     verify_identity(selected.as_ref(), report.agent_identity.as_ref())?;
     Ok(report)
+}
+
+/// The Agent Node's session records, for `ccnm log`.
+pub fn history(
+    resolved: &Resolved<'_>,
+    env: &Env<'_>,
+    workspace: Option<&str>,
+    limit: u32,
+) -> Result<HistoryReport> {
+    let ssh = agent_ssh(resolved, env)?;
+    let req = HistoryRequest {
+        protocol: PROTOCOL,
+        workspace: workspace.map(str::to_string),
+        limit,
+    };
+    ssh.call_ccnm(
+        env.runner,
+        Master::Reuse,
+        &["internal", "agent-history"],
+        &req,
+        Duration::from_secs(60),
+        ErrorCode::AgentUnreachable,
+    )
+    .map_err(|e| {
+        // The one failure this command adds: an Agent from before it.
+        if e.message().contains("agent-history") {
+            Error::new(
+                ErrorCode::Version,
+                format!(
+                    "the ccnm on the Agent Node is too old for `ccnm log`; install the same version on both machines\n({})",
+                    e.message()
+                ),
+            )
+        } else {
+            e
+        }
+    })
 }
 
 fn verify_identity(

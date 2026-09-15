@@ -23,9 +23,9 @@ use crate::protocol::mcp::{ProbeReport as McpProbeReport, ServePayload};
 use crate::protocol::payload;
 use crate::protocol::probe::{ProbeReport, ProbeRequest};
 use crate::protocol::run::{
-    AttachRequest, PurgeReport, PurgeRequest, ResultReport, ResultRequest, RunReport, RunRequest,
-    SessionRecord, SessionState, StartReport, StartRequest, StatusReport, StatusRequest,
-    StopReport, StopRequest,
+    AttachRequest, HistoryEntry, HistoryReport, HistoryRequest, PurgeReport, PurgeRequest,
+    ResultReport, ResultRequest, RunReport, RunRequest, SessionRecord, SessionState, StartReport,
+    StartRequest, StatusReport, StatusRequest, StopReport, StopRequest,
 };
 use crate::protocol::{self};
 use crate::provider::{AgentProvider, AgentReport, AgentResult, Ask};
@@ -1244,40 +1244,7 @@ fn session_record(
         check_session_selection(&spec, workspace, reference, tools)?;
     }
     let outcome = session::read_outcome(&dir)?;
-    let state = match &outcome {
-        Some(outcome) if outcome.ok() => SessionState::Completed,
-        Some(_) => SessionState::Failed,
-        None => {
-            let interactive_live = tools.tmux().ok().is_some_and(|tmux| {
-                let name = tmux::session_name(&spec.workspace);
-                tools
-                    .runner
-                    .run(&tmux.has_session_cmd(&name))
-                    .is_ok_and(|out| out.success())
-                    && live_session_id(&tmux, tools, &name).as_deref() == Some(id)
-            });
-            let supervisor_live = session::read_supervisor_pid(&dir).is_some_and(|pid| {
-                tools
-                    .runner
-                    .run(&crate::process::Cmd::new("/bin/ps").args([
-                        "-p",
-                        &pid.to_string(),
-                        "-o",
-                        "pid=",
-                    ]))
-                    .is_ok_and(|out| out.success() && !out.stdout_lossy().trim().is_empty())
-            });
-            if dir.stopping().exists() {
-                SessionState::Stopping
-            } else if interactive_live || supervisor_live {
-                SessionState::Running
-            } else if session::read_supervisor_pid(&dir).is_none() {
-                SessionState::Starting
-            } else {
-                SessionState::Unknown
-            }
-        }
-    };
+    let state = session_state(&spec, &dir, outcome.as_ref(), tools);
     let result = match profile_for_spec(&spec, tools) {
         Ok(profile) => std::fs::read(dir.stdout()).ok().and_then(|stdout| {
             spec.provider()
@@ -1298,6 +1265,128 @@ fn session_record(
             .map(str::to_string),
         outcome,
     })
+}
+
+/// What a session record says about its session, asking tmux and `ps` only
+/// when the record alone cannot: an outcome file means it finished.
+fn session_state(
+    spec: &Spec,
+    dir: &session::Dir,
+    outcome: Option<&session::Outcome>,
+    tools: &Tools<'_>,
+) -> SessionState {
+    match outcome {
+        Some(outcome) if outcome.ok() => SessionState::Completed,
+        Some(_) => SessionState::Failed,
+        None => {
+            let interactive_live = tools.tmux().ok().is_some_and(|tmux| {
+                let name = tmux::session_name(&spec.workspace);
+                tools
+                    .runner
+                    .run(&tmux.has_session_cmd(&name))
+                    .is_ok_and(|out| out.success())
+                    && live_session_id(&tmux, tools, &name).as_deref() == Some(spec.id.as_str())
+            });
+            let supervisor_live = session::read_supervisor_pid(dir).is_some_and(|pid| {
+                tools
+                    .runner
+                    .run(&crate::process::Cmd::new("/bin/ps").args([
+                        "-p",
+                        &pid.to_string(),
+                        "-o",
+                        "pid=",
+                    ]))
+                    .is_ok_and(|out| out.success() && !out.stdout_lossy().trim().is_empty())
+            });
+            if dir.stopping().exists() {
+                SessionState::Stopping
+            } else if interactive_live || supervisor_live {
+                SessionState::Running
+            } else if session::read_supervisor_pid(dir).is_none() {
+                SessionState::Starting
+            } else {
+                SessionState::Unknown
+            }
+        }
+    }
+}
+
+/// Every session this machine kept a record of, newest first.
+///
+/// Reads only ccnm's own session directories. The state of the few that
+/// have no outcome yet is asked of tmux and `ps` after the list is cut to
+/// `limit`, so a long history costs file reads, not processes.
+pub fn history(req: &HistoryRequest, tools: &Tools<'_>) -> Result<HistoryReport> {
+    let mut found = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(paths::sessions_dir(&tools.state)) {
+        for entry in entries.flatten() {
+            let dir = session::Dir::at(entry.path());
+            let Ok(spec) = session::load(&dir) else {
+                continue;
+            };
+            if req.workspace.as_ref().is_some_and(|w| *w != spec.workspace) {
+                continue;
+            }
+            let started = modified_secs(&dir.meta()).unwrap_or(0);
+            found.push((started, spec, dir));
+        }
+    }
+    found.sort_by_key(|entry| std::cmp::Reverse(entry.0));
+    found.truncate(req.limit as usize);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let sessions = found
+        .into_iter()
+        .map(|(started, spec, dir)| {
+            let outcome = session::read_outcome(&dir).ok().flatten();
+            let mut state = session_state(&spec, &dir, outcome.as_ref(), tools);
+            // "Starting" means the supervisor has not written its pid yet.
+            // Ten minutes on, it is not going to: the record outlived a
+            // session that was killed before it could write an outcome.
+            if state == SessionState::Starting && now.saturating_sub(started) > 600 {
+                state = SessionState::Unknown;
+            }
+            let (mode, prompt) = match &spec.mode {
+                Mode::Print { prompt } => ("print", Some(prompt.as_str())),
+                Mode::Interactive { prompt } => ("interactive", prompt.as_deref()),
+            };
+            HistoryEntry {
+                session: spec.id.clone(),
+                workspace: spec.workspace.clone(),
+                instance: spec.agent_identity.as_ref().map(|id| id.instance.clone()),
+                mode: mode.to_string(),
+                prompt: prompt.and_then(prompt_preview),
+                started,
+                ended: outcome.as_ref().and_then(|_| modified_secs(&dir.exit())),
+                state,
+                outcome,
+            }
+        })
+        .collect();
+    Ok(HistoryReport {
+        protocol: PROTOCOL,
+        sessions,
+    })
+}
+
+/// The first non-empty line of a prompt, at most 60 characters.
+fn prompt_preview(prompt: &str) -> Option<String> {
+    let line = prompt.lines().map(str::trim).find(|l| !l.is_empty())?;
+    let mut preview: String = line.chars().take(60).collect();
+    if line.chars().count() > 60 {
+        preview.push('…');
+    }
+    Some(preview)
+}
+
+fn modified_secs(path: &Path) -> Option<u64> {
+    std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|d| d.as_secs())
 }
 
 fn live_sessions(

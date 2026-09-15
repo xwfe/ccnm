@@ -65,8 +65,10 @@ ccnm my-project             # 开始
 
 ```bash
 ccnm my-project                          # 起会话并接上
-ccnm attach my-project                   # 接回已有会话
-ccnm status my-project
+ccnm attach my-project                   # 接回已有会话（简写 ccnm a）
+ccnm ls                                  # 所有项目：在不在跑、跑了多久、工具通不通
+ccnm status                              # 同上，更细；不带项目名（简写 ccnm st）
+ccnm log                                 # 跑过的会话，最新的在前
 ccnm stop my-project
 ccnm my-project --print "修复 parser 测试"   # 一问一答，不进 tmux，输出直接打在本地终端
 ```

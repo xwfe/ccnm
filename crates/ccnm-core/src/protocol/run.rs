@@ -647,3 +647,61 @@ impl StatusReport {
         out
     }
 }
+
+/// `ccnm internal agent-history`: the sessions this Agent Node has kept a
+/// record of, finished ones included, newest first. What `ccnm log` shows.
+///
+/// A separate command rather than a field on [`StatusRequest`]: that one
+/// is `deny_unknown_fields`, so an older Agent would refuse the whole
+/// status call instead of only the part it does not know.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HistoryRequest {
+    pub protocol: u32,
+    /// Only this workspace's sessions; `None` for all of them.
+    #[serde(default)]
+    pub workspace: Option<String>,
+    /// At most this many, after sorting.
+    pub limit: u32,
+}
+
+impl Protocol for HistoryRequest {
+    fn protocol(&self) -> u32 {
+        self.protocol
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HistoryReport {
+    pub protocol: u32,
+    pub sessions: Vec<HistoryEntry>,
+}
+
+impl Protocol for HistoryReport {
+    fn protocol(&self) -> u32 {
+        self.protocol
+    }
+}
+
+/// One session record, as far as the files in its directory can tell.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HistoryEntry {
+    pub session: String,
+    pub workspace: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instance: Option<String>,
+    /// `interactive` or `print`.
+    pub mode: String,
+    /// The first line of what it opened with, cut short. `None` for a
+    /// session that opened empty.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<String>,
+    /// Unix seconds: when the session record was written.
+    pub started: u64,
+    /// Unix seconds: when the outcome was written; `None` while running.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ended: Option<u64>,
+    pub state: SessionState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<Outcome>,
+}

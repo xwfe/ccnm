@@ -167,7 +167,7 @@ bash scripts/deploy.sh <other-node-ssh-alias>
 
 不停会怎样：会话本身不会被升级杀掉（tmux server 在自己的进程组里），但它连着的 `mcp-serve` 还在跑老代码、攥着工作树的写入 guard，于是**升完之后新会话起不来**，而在会话里看到的现象完全是另一回事——模型会把工具调用当成普通文本打出来。整段来龙去脉见[运维](operations.md#升级前先把会话停掉)。
 
-第二条命令不能省：`ccnm status` 只报 tmux 会话，`--print` 的运行和已经断开的 SSH MCP 都不在里面。
+第二条命令不能省：`ccnm status <workspace>` 只报 tmux 会话，`--print` 的运行和已经断开的 SSH MCP 都不在里面。在 Runtime Node 上也可以跑不带项目名的 `ccnm status`，它会把本机的 `mcp-serve` 进程一起列出来。
 
 脚本会使用新文件 + rename 的方式替换二进制，并按当前 `ccnm controller` 接口重启 Controller。
 

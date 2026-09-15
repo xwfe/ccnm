@@ -213,6 +213,17 @@ worktree **分配、调度、合并策略**在 Orchestrator；受管 workspace �
 
 停止点：ccnm 拥有两个独立可用入口，但仍只有一个 Runtime 执行核心；不继续自动扩功能。
 
+### P13 — MCP instructions 按 Host 实际上限投影
+
+**依赖 P12。用户 2026-09-15 指定立项。**起因是跨仓计划 workspace-kernel v2 的 V2-Q1：Claude Code 2.1.269 把 MCP `instructions` 截到 **2048 个 UTF-16 码元**（打包代码 `FT=2048` 按 JS 字符串长度截，真实连接日志 `Server instructions truncated from 3018 to 2048 chars`）。ccnm 却按 16 KiB 字节做预算，还把其他说明文件清单和 `[project instructions: …]` 标记行放在正文后面——文件一长，Host 先截掉的正是告诉模型"少了多少、怎么读全文"的那两段。不改工具、权限、错误码语义，不升 `ccnm.workspace-mcp` 或内部 wire 版本。
+
+- **P13.1** 预算按 Host 的计量方式：Claude Managed 和外部 `external_instructions = "project"` 按 2048 个 UTF-16 码元（bridge 不知道对面是哪个 Host，只能按已知最严的算）；Codex Managed 保持 16 KiB 字节。上限、计量单位和依据的版本只写在一处；长清单、超长文件、多字节字符的最坏情况有测试证明不超限。
+- **P13.2** 顺序改为：基础说明（外部模式另有模式句）→ 标记行 → 其他说明文件清单 → 项目说明正文。正文由 ccnm 按行截断，标记行写明文件多大、给了多少、怎么读全文；清单自身有上限，不能把正文之前的部分挤出上限。
+- **P13.3** 兼容：不重录 golden fixture，测试里把旧文本按新顺序重排后比对，证明内容不变、只改位置；`parse_marker`、doctor 的 Project instructions 行和 probe 在新布局下结果正确；协议、配置、排障文档里"16 KiB"的说法按 Host 更正。
+- **P13.4** 证据：离线全量门禁；本机真实 Claude Code 连接真实 `ccnm internal mcp-serve`，改前 debug 日志出现 `Server instructions truncated`、改后不出现（连接阶段在模型认证之前完成，不耗模型额度，不代表模型行为已验）。
+
+停止点：只修 instructions 的预算和顺序。Codex 延迟加载工具时只显示说明首行前 250 个字符（Codex 0.154 源码），不在本阶段处理，记入 observed_gaps。
+
 ## 三、首次规划提交的范围（历史说明）
 
 首次规划提交 `7c41f6f` 只落地计划、状态、模型入口与检查工具；当时不执行 P1…P8 的产品改动、不创建 Orchestrator、不部署/登录/更改 OS 策略，P1 保持 pending。之后按用户请求与 `status.json.current_task` 逐阶段执行，不能用这段历史说明覆盖当前状态，也不能把“规划已提交”当作“产品验收已完成”。系统与部署动作仍需逐项授权，不恢复用户已删除的历史文档。

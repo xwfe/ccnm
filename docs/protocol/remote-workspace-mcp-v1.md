@@ -224,6 +224,7 @@ transport 的认证边界是 **OpenSSH identity + 独立的 Runtime OS 账号**�
 - **Host 关掉 bridge（EOF 或 SIGTERM）**：没有子进程要回收——bridge 做完本机检查就 `exec` 成那条 ssh，所以这个进程**就是** transport。EOF 和信号直接落在 ssh 上，远端 server 随之结束，锁随进程释放。**留不下孤儿 transport**，因为没有第二个进程可留。
 - **SSH 断了**：bridge 把这条连接当作结束，退出；**不自动重连**。重连意味着换一个远端 session，而调用方手里的 `output_ref` 属于旧 session——静默重连会让它们指向不存在的东西。
 - **bridge 自己崩了**：同一件事——崩的就是那条 ssh，远端 server 读到 EOF 后结束。
+- **连接半开（对面没了，Runtime 这边不知道）**：远端 server 空闲时**每 30 秒主动发一次 MCP `ping`**（MCP 规范允许任一方发）。Host 在就回一个空结果；Host 那头的连接已经不存在时，这一写会被对方内核 RST，sshd 退出，server 读到 EOF，照正常路径结束、锁变 `released`。**ping 没回应不会断开**——对面只是睡着的话 TCP 还活着，断了反而害人重连；只有写失败才结束。Host 必须按 MCP 规范回应 `ping`，至少不能因为收到它就关连接：实测 Claude Code 2.1.269 / 2.1.272 都回 `{"result":{}}`，工具调用进行中收到也一样；Codex 用的 rmcp 客户端在 SDK 源码里自动回应。
 - **MCP 的 `notifications/cancelled`**：转发给远端；但一次已经在跑的 `exec_command` 是否能立刻停下取决于那个进程，契约不承诺"取消返回 = 命令已停"。
 - **bridge 绝不影响 Managed session。** 它只管自己这一条 SSH 和这一个远端进程；不去枚举、不去清理别人的 session，哪怕它们属于同一个 workspace。
 

@@ -111,6 +111,7 @@ ccnm session id 是生命周期主键；Claude/Codex 自己的 thread/resume id 
 | --- | --- | --- |
 | Host / bridge（`kill -9` 客户端那一侧） | `released` | 直接能开，**不需要人工恢复**——远端读到 EOF 后自己跑完了收尾 |
 | 远端 `internal mcp-serve`（在 Runtime 上被杀） | `held <session> <workspace>` | 被拒，要按上一段做人工恢复 |
+| 连接半开：Agent 那头早断了，Runtime 的 sshd 没收到（典型是 Runtime 笔记本睡眠时断的） | 空闲 ≤30 秒后 server 主动 `ping`，写失败即正常结束，`released` | 过了这 30 秒直接能开；在这之前被拒成 busy。v0.6.0 及更早没有这个 ping，server 会一直占着锁（真机上占了 12 小时） |
 
 两种情况下 `read` 会话都照常打开，而远端都没有留下孤儿进程。所以"Claude Code 崩了/被关掉"通常什么都不用做；要人动手的是 Runtime 侧的执行者被杀那一种。
 

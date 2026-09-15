@@ -878,23 +878,96 @@ pub fn serve_external(request: &crate::runtime::ExternalOpenPayload) -> CcnmResu
     run(Server::open_external(request)?)
 }
 
+/// How long the server stays silent before it speaks first.
+///
+/// In MCP the client asks and the server answers, so a server nobody is
+/// calling never writes a byte -- and a transport that died without a FIN
+/// never reaches it. Seen on a real pair: the Runtime laptop slept, the
+/// Agent's ssh gave up and closed, the close was lost while the laptop was
+/// asleep, and on waking sshd still held an ESTABLISHED socket to a port
+/// nothing listened on. This process sat on stdin for twelve hours holding
+/// the workspace write guard, and every new session for that workspace was
+/// refused as busy -- which Claude Code shows only as "failed to connect".
+///
+/// A `ping` (MCP lets either side send one) puts bytes on that socket. A
+/// live peer answers; a vanished one's kernel answers with RST, sshd exits,
+/// and stdin reaches EOF like any other disconnect. An unanswered ping does
+/// **not** end the session: a peer that is only asleep keeps its TCP, and
+/// the Agent-side transport ssh is deliberately patient for the same reason
+/// (`Ssh::transport_options`). Only a write that fails does.
+///
+/// Lower costs a line of JSON each way more often; higher means a dead
+/// session keeps its workspace locked that much longer after a wake.
+pub const HEARTBEAT: Duration = Duration::from_secs(30);
+
 fn run(server: Server) -> CcnmResult<()> {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|e| Error::internal("cannot start tokio runtime").with_source(e))?;
-    rt.block_on(async {
-        let service = server
-            .serve(rmcp::transport::stdio())
+    rt.block_on(serve_until_gone(
+        server,
+        rmcp::transport::stdio(),
+        HEARTBEAT,
+    ))
+}
+
+/// Serve until the client closes the stream or can no longer be written to.
+async fn serve_until_gone<T, E, A>(
+    server: Server,
+    transport: T,
+    heartbeat: Duration,
+) -> CcnmResult<()>
+where
+    T: rmcp::transport::IntoTransport<rmcp::RoleServer, E, A>,
+    E: std::error::Error + Send + Sync + 'static,
+{
+    let service = server
+        .serve(transport)
+        .await
+        .map_err(|e| Error::internal("MCP initialize failed").with_source(e))?;
+    let pulse = tokio::spawn(heartbeat_until_unwritable(
+        service.peer().clone(),
+        service.cancellation_token(),
+        heartbeat,
+    ));
+    let reason = service
+        .waiting()
+        .await
+        .map_err(|e| Error::internal("MCP service task panicked").with_source(e));
+    pulse.abort();
+    tracing::info!(reason = ?reason?, "mcp server stopped");
+    Ok(())
+}
+
+async fn heartbeat_until_unwritable(
+    peer: rmcp::Peer<rmcp::RoleServer>,
+    stop: rmcp::service::RunningServiceCancellationToken,
+    every: Duration,
+) {
+    use rmcp::service::{PeerRequestOptions, ServiceError};
+    loop {
+        tokio::time::sleep(every).await;
+        let ping = rmcp::model::ServerRequest::PingRequest(Default::default());
+        let sent = match peer
+            .send_request_with_option(ping, PeerRequestOptions::with_timeout(every))
             .await
-            .map_err(|e| Error::internal("MCP initialize failed").with_source(e))?;
-        let reason = service
-            .waiting()
-            .await
-            .map_err(|e| Error::internal("MCP service task panicked").with_source(e))?;
-        tracing::info!(?reason, "mcp server stopped");
-        Ok(())
-    })
+        {
+            Ok(handle) => handle.await_response().await,
+            Err(e) => Err(e),
+        };
+        match sent {
+            // rmcp keeps serving after a failed write and waits for stdin
+            // instead, which is the very wait that never ends here.
+            Err(ServiceError::TransportSend(_) | ServiceError::TransportClosed) => {
+                tracing::warn!("MCP client can no longer be written to; closing the session");
+                stop.cancel();
+                return;
+            }
+            Err(error) => tracing::debug!(%error, "heartbeat ping unanswered"),
+            Ok(_) => {}
+        }
+    }
 }
 
 /// Is `root` inside a git work tree, and if so where relative to its top
@@ -952,6 +1025,82 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    /// A client on in-memory pipes that has finished `initialize`: what it
+    /// writes the server reads, and the server's lines come back on `from`.
+    async fn initialized_client(
+        test: &str,
+        heartbeat: Duration,
+    ) -> (
+        tokio::task::JoinHandle<CcnmResult<()>>,
+        tokio::io::DuplexStream,
+        tokio::io::Lines<tokio::io::BufReader<tokio::io::DuplexStream>>,
+    ) {
+        use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
+        let server = fixture_server(&ServePayload::new("x", temp(test), "s")).unwrap();
+        // Two pipes, not one duplex, so that dropping the reading end
+        // leaves the server's stdin open -- a real pipe's EPIPE on write
+        // with no EOF on read. (`simplex` halves share one buffer and
+        // never report the reader gone.)
+        let (server_in, mut to) = tokio::io::duplex(1 << 16);
+        let (from, server_out) = tokio::io::duplex(1 << 16);
+        let task = tokio::spawn(serve_until_gone(server, (server_in, server_out), heartbeat));
+        to.write_all(
+            br#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}
+"#,
+        )
+        .await
+        .unwrap();
+        let mut from = tokio::io::BufReader::new(from).lines();
+        let answer = from.next_line().await.unwrap().unwrap();
+        assert!(answer.contains(r#""id":1"#), "{answer}");
+        to.write_all(b"{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n")
+            .await
+            .unwrap();
+        (task, to, from)
+    }
+
+    /// The twelve-hour write guard of `HEARTBEAT`'s doc comment, in small:
+    /// stdin stays open forever and nobody reads what the server writes.
+    #[tokio::test]
+    async fn a_client_that_cannot_be_written_to_ends_the_session() {
+        let (task, _still_open, from) =
+            initialized_client("unwritable", Duration::from_millis(50)).await;
+        drop(from);
+        let ended = tokio::time::timeout(Duration::from_secs(10), task).await;
+        assert!(
+            ended.is_ok(),
+            "server still waiting on an open stdin nobody will write to"
+        );
+    }
+
+    /// A peer that is asleep keeps its TCP and answers nothing. Ending its
+    /// session for that would cost the person a reconnect for no reason.
+    #[tokio::test]
+    async fn an_unanswered_ping_does_not_end_the_session() {
+        let (task, to, mut from) = initialized_client("asleep", Duration::from_millis(50)).await;
+        let mut pings = 0;
+        while pings < 4 {
+            let line = tokio::time::timeout(Duration::from_secs(5), from.next_line())
+                .await
+                .expect("the server speaks first while idle")
+                .unwrap()
+                .unwrap();
+            // Each unanswered ping is followed by rmcp's own cancellation.
+            if line.contains(r#""method":"ping""#) {
+                pings += 1;
+            } else {
+                assert!(line.contains("notifications/cancelled"), "{line}");
+            }
+        }
+        assert!(!task.is_finished(), "unanswered pings ended the session");
+        drop(to);
+        tokio::time::timeout(Duration::from_secs(10), task)
+            .await
+            .expect("stdin EOF still ends it")
+            .unwrap()
+            .unwrap();
     }
 
     #[test]

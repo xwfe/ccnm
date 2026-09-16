@@ -11,7 +11,8 @@
 //! guard       the workspace write guard, shared with every MCP entry
 //! spawn       exec-server as a child -- never exec(): a replaced process
 //!             runs no Drop, and the guard would stay `held` for ever
-//! relay       every client line through native::policy
+//! relay       every client line through native::policy, and ask a silent
+//!             client whether it is still there (native::liveness)
 //! shutdown    close exec-server's stdin, wait, then prove every process it
 //!             started is gone before the guard is released
 //! ```
@@ -32,7 +33,7 @@
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::mpsc;
+use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -41,6 +42,7 @@ use serde_json::Value;
 use crate::error::{Error, ErrorCode, Result};
 use crate::mcp::server::ExecGate;
 use crate::mcp::write_guard::WriteGuard;
+use crate::native::liveness::{self, Heard, Step, Timing, Touching};
 use crate::native::policy::{Policy, Verdict};
 use crate::process::{Cmd, ProcessRunner, SystemRunner};
 use crate::runtime::NativeOpenPayload;
@@ -102,7 +104,7 @@ pub fn serve(request: &NativeOpenPayload) -> Result<()> {
         runtime_user = %gate.audit.user,
         "exec-server supervisor starting"
     );
-    let mut child = match spawn(&base) {
+    let child = match spawn(&base) {
         Ok(child) => child,
         // Nothing was started, so nothing can be left behind.
         Err(error) => {
@@ -110,23 +112,67 @@ pub fn serve(request: &NativeOpenPayload) -> Result<()> {
             return Err(error);
         }
     };
-    relay(&mut child, Policy::new(root, MARKER));
-    match shutdown(&mut child, &marker, &Sweeper::system()) {
-        Ok(()) => {
-            drop(guard);
-            drop(home);
-            tracing::info!(session = %request.session, "exec-server session ended; write guard released");
-            Ok(())
-        }
-        Err(error) => {
-            // Leave the marker `held`: the next session refuses this
-            // workspace as unknown until an operator has looked.
-            std::mem::forget(guard);
-            home.keep();
-            Err(error)
+    let session = Session {
+        child,
+        policy: Policy::new(root, MARKER),
+        marker,
+        guard,
+        home,
+    };
+    session.run(Client::stdio(), Timing::DEFAULT, &Sweeper::system())?;
+    tracing::info!(session = %request.session, "exec-server session ended; write guard released");
+    Ok(())
+}
+
+/// Everything a started session owns, from the running exec-server to the
+/// guard it may only give back once the sweep says so.
+struct Session {
+    child: Child,
+    policy: Policy,
+    marker: String,
+    guard: WriteGuard,
+    home: CodexHome,
+}
+
+impl Session {
+    /// Relay until either side ends, then shut down. The guard is released
+    /// only when the shutdown proved nothing of the session is left;
+    /// otherwise it stays `held` and the next session refuses this workspace
+    /// as unknown until an operator has looked.
+    fn run(mut self, client: Client, timing: Timing, sweeper: &Sweeper) -> Result<End> {
+        let end = relay(&mut self.child, self.policy, client, timing);
+        match shutdown(&mut self.child, &self.marker, sweeper) {
+            Ok(()) => {
+                drop(self.guard);
+                drop(self.home);
+                Ok(end)
+            }
+            Err(error) => {
+                std::mem::forget(self.guard);
+                self.home.keep();
+                Err(error)
+            }
         }
     }
 }
+
+/// The Codex side of the session. The process's own stdin and stdout, except
+/// in tests.
+struct Client {
+    input: Box<dyn Read + Send>,
+    output: Box<dyn Write + Send>,
+}
+
+impl Client {
+    fn stdio() -> Self {
+        Client {
+            input: Box::new(std::io::stdin()),
+            output: Box::new(std::io::stdout()),
+        }
+    }
+}
+
+type ClientOut = Mutex<Box<dyn Write + Send>>;
 
 /// `codex exec-server --listen stdio` with the Runtime child environment:
 /// the same cleaning `exec_command` gets, then a CODEX_HOME that ccnm made
@@ -169,59 +215,149 @@ fn spawn(base: &Cmd) -> Result<Child> {
         .map_err(|e| Error::internal("cannot start codex exec-server").with_source(e))
 }
 
-/// How the relay ended. Only for the log: every ending shuts down the same
-/// way.
-#[derive(Debug)]
+/// How the relay ended. Only for the log and tests: every ending shuts down
+/// the same way.
+#[derive(Debug, PartialEq, Eq)]
 enum End {
     ClientClosed,
     ClientTooLong,
     ClientUnreadable,
+    ClientUnwritable,
+    /// Nothing from the client for `give_up_after`, pings included.
+    ClientSilent,
     ExecutorClosed,
     ExecutorUnwritable,
 }
 
-/// Pump both directions until either side ends.
+/// Pump both directions until either side ends, asking a silent client
+/// whether it is still there.
 ///
-/// The client side runs on its own thread because a read on stdin cannot be
-/// interrupted: when exec-server is the one that goes away, this function
-/// has to return without waiting for the client to send another line. The
-/// process exits soon after, and that thread with it.
-fn relay(child: &mut Child, policy: Policy) {
-    let stdout = Arc::new(Mutex::new(std::io::stdout()));
+/// Every blocking read and write runs on its own thread, and this one only
+/// waits for an ending and looks at the clock: a read on stdin cannot be
+/// interrupted, and a write to a client that vanished without a word blocks
+/// once the connection's buffers are full -- neither may keep the session,
+/// and with it the write guard. The process exits soon after this returns,
+/// and those threads with it.
+fn relay(child: &mut Child, policy: Policy, client: Client, timing: Timing) -> End {
+    let heard = Heard::new();
+    let out: Arc<ClientOut> = Arc::new(Mutex::new(client.output));
     let child_in = Arc::new(Mutex::new(child.stdin.take()));
     let child_out = child.stdout.take();
     let (done, ended) = mpsc::channel();
 
-    let to_client = Arc::clone(&stdout);
+    let to_client = Arc::clone(&out);
+    let progress = Arc::clone(&heard);
     let executor_done = done.clone();
     std::thread::spawn(move || {
         let end = match child_out {
-            Some(out) => copy_executor(out, &to_client),
+            Some(output) => copy_executor(output, &to_client, &progress),
             None => End::ExecutorClosed,
         };
         let _ = executor_done.send(end);
     });
 
     let from_client = Arc::clone(&child_in);
+    let replies = Arc::clone(&out);
+    let input = Touching::new(client.input, Arc::clone(&heard));
+    let client_done = done.clone();
     std::thread::spawn(move || {
-        let end = read_client(std::io::stdin().lock(), &policy, &from_client, &stdout);
-        let _ = done.send(end);
+        let input = BufReader::with_capacity(64 * 1024, input);
+        let end = read_client(input, &policy, &from_client, &replies);
+        let _ = client_done.send(end);
     });
 
-    let end = ended.recv().unwrap_or(End::ClientClosed);
+    // One slot: while a ping is still queued behind a stuck write, asking
+    // again adds nothing.
+    let (ask, asks) = mpsc::sync_channel::<()>(1);
+    let pinger = Arc::clone(&out);
+    std::thread::spawn(move || {
+        let mut n = 0u64;
+        while asks.recv().is_ok() {
+            n += 1;
+            if write_line(&pinger, &liveness::ping(n)).is_err() {
+                let _ = done.send(End::ClientUnwritable);
+                return;
+            }
+        }
+    });
+
+    let mut last_ping = None;
+    let end = loop {
+        match ended.recv_timeout(timing.tick) {
+            Ok(end) => break end,
+            Err(RecvTimeoutError::Disconnected) => break End::ClientClosed,
+            Err(RecvTimeoutError::Timeout) => {}
+        }
+        let now = Instant::now();
+        match liveness::step(&timing, now, heard.at(), last_ping) {
+            Step::Wait => {}
+            Step::Ping => {
+                if ask.try_send(()).is_ok() {
+                    last_ping = Some(now);
+                }
+            }
+            Step::GiveUp => {
+                tracing::warn!(
+                    silent_seconds = timing.give_up_after.as_secs(),
+                    "nothing from the client, not even an answer to a liveness request; ending the exec-server session"
+                );
+                break End::ClientSilent;
+            }
+        }
+    };
     tracing::info!(?end, "exec-server relay ended");
-    // Closing exec-server's stdin is how it is told to stop: it exits and
-    // kills the processes it started (toexec G01).
-    if let Ok(mut stdin) = child_in.lock() {
-        stdin.take();
+    close_executor_input(&child_in);
+    end
+}
+
+/// Closing exec-server's stdin is how it is told to stop: it exits and kills
+/// the processes it started (toexec G01).
+///
+/// The client thread holds this lock while it forwards a line, and that
+/// write can block for good when exec-server has stopped reading -- which it
+/// does once its own output is stuck behind a client that vanished. Waiting
+/// for the lock would then keep the session, and the guard, for ever; not
+/// closing is fine, because the shutdown kills an exec-server that does not
+/// exit, and the sweep still has to prove the rest.
+fn close_executor_input(child_in: &Mutex<Option<ChildStdin>>) {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        match child_in.try_lock() {
+            Ok(mut stdin) => {
+                stdin.take();
+                return;
+            }
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => {
+                poisoned.into_inner().take();
+                return;
+            }
+            Err(std::sync::TryLockError::WouldBlock) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Err(std::sync::TryLockError::WouldBlock) => {
+                tracing::warn!(
+                    "a write to exec-server is stuck; its stdin stays open and the shutdown kills it"
+                );
+                return;
+            }
+        }
     }
+}
+
+/// One whole line to the client, under the lock that keeps lines whole.
+fn write_line(out: &ClientOut, line: &[u8]) -> std::io::Result<()> {
+    let mut client = out
+        .lock()
+        .map_err(|_| std::io::Error::other("client output lock poisoned"))?;
+    client.write_all(line)?;
+    client.flush()
 }
 
 fn read_client(
     input: impl BufRead,
     policy: &Policy,
     child_in: &Mutex<Option<ChildStdin>>,
-    stdout: &Mutex<std::io::Stdout>,
+    out: &ClientOut,
 ) -> End {
     let mut lines = BoundedLines::new(input, MAX_CLIENT_MESSAGE);
     loop {
@@ -241,6 +377,9 @@ fn read_client(
             continue;
         }
         let verdict = match serde_json::from_slice::<Value>(&line) {
+            // Asked by this supervisor, not by exec-server: hearing it was
+            // the point, and it has nowhere to go.
+            Ok(message) if liveness::is_answer(&message) => continue,
             Ok(message) => policy.decide(&message),
             Err(_) => Verdict::Reply(serde_json::json!({
                 "id": -1,
@@ -266,13 +405,10 @@ fn read_client(
             }
             Verdict::Reply(reply) => {
                 tracing::info!(reply = %reply, "exec-server request refused");
-                let Ok(mut out) = stdout.lock() else {
-                    return End::ClientUnreadable;
-                };
                 let mut text = reply.to_string().into_bytes();
                 text.push(b'\n');
-                if out.write_all(&text).and_then(|()| out.flush()).is_err() {
-                    return End::ClientUnreadable;
+                if write_line(out, &text).is_err() {
+                    return End::ClientUnwritable;
                 }
             }
             Verdict::Drop => {
@@ -283,11 +419,19 @@ fn read_client(
 }
 
 /// Copy exec-server's output to the client one whole line at a time, so a
-/// refusal written from the other thread never lands inside one. Lines are
-/// streamed rather than buffered: `fs/readFile` answers can be hundreds of
-/// megabytes.
-fn copy_executor(out: impl Read, stdout: &Mutex<std::io::Stdout>) -> End {
-    let mut reader = BufReader::with_capacity(64 * 1024, out);
+/// refusal or ping written from another thread never lands inside one.
+/// Lines are streamed rather than buffered: `fs/readFile` answers can be
+/// hundreds of megabytes.
+///
+/// A line that takes more than one chunk counts as hearing from the client
+/// each time a chunk is taken: the lock is held for the whole line, so no
+/// ping can be asked meanwhile, and a client reading a large answer slowly
+/// is still there. One that is not reading stops taking chunks once the
+/// connection's buffers are full, which is what lets the silence count run.
+/// A single-chunk line never counts -- small writes land in those buffers
+/// whether or not anyone is reading.
+fn copy_executor(output: impl Read, out: &ClientOut, heard: &Heard) -> End {
+    let mut reader = BufReader::with_capacity(64 * 1024, output);
     loop {
         // Wait for the next line *before* taking the lock. Holding it while
         // blocked here is a deadlock: a refusal from the client thread
@@ -297,8 +441,8 @@ fn copy_executor(out: impl Read, stdout: &Mutex<std::io::Stdout>) -> End {
             Ok([]) | Err(_) => return End::ExecutorClosed,
             Ok(_) => {}
         }
-        let Ok(mut client) = stdout.lock() else {
-            return End::ClientUnreadable;
+        let Ok(mut client) = out.lock() else {
+            return End::ClientUnwritable;
         };
         let mut first = true;
         loop {
@@ -310,12 +454,16 @@ fn copy_executor(out: impl Read, stdout: &Mutex<std::io::Stdout>) -> End {
                 Some(end) => (&chunk[..=end], true),
                 None => (chunk, false),
             };
-            if first && line_done {
+            let whole = first && line_done;
+            if whole {
                 log_handshake(part);
             }
             first = false;
             if client.write_all(part).is_err() {
-                return End::ClientUnreadable;
+                return End::ClientUnwritable;
+            }
+            if !whole {
+                heard.touch();
             }
             let used = part.len();
             reader.consume(used);
@@ -324,7 +472,7 @@ fn copy_executor(out: impl Read, stdout: &Mutex<std::io::Stdout>) -> End {
             }
         }
         if client.flush().is_err() {
-            return End::ClientUnreadable;
+            return End::ClientUnwritable;
         }
     }
 }

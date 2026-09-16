@@ -7,5 +7,6 @@
 //! request is checked here first ([`policy`]), and the process is run and
 //! outlived by a ccnm supervisor that holds the workspace write guard.
 
+pub mod liveness;
 pub mod policy;
 pub mod serve;

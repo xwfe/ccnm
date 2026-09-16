@@ -75,6 +75,30 @@
       ],
       "additionalProperties": false
     },
+    "input_schema": {
+      "description": "一个工具的参数表。这里只管形状：`properties` 必须在场，哪怕是空的——一个没有它的工具表等于没说这个工具收什么，而参数名正是 Host 照着实现的东西。**参数名本身这份 schema 证明不了**，它是手写的，和 fixture 一起漂也不会有人发现；对着真实 server 比名字的是 `cargo test -p ccnm-cli --test external_mcp`（`tool_arguments_match_the_running_server`）。",
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "object"
+        },
+        "properties": {
+          "type": "object"
+        },
+        "required": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "required": [
+        "type",
+        "properties"
+      ],
+      "additionalProperties": false
+    },
     "tool": {
       "type": "object",
       "properties": {
@@ -86,7 +110,7 @@
           "minLength": 1
         },
         "inputSchema": {
-          "type": "object"
+          "$ref": "#/$defs/input_schema"
         },
         "annotations": {
           "$ref": "#/$defs/annotations"
@@ -112,7 +136,7 @@
           "minLength": 1
         },
         "inputSchema": {
-          "type": "object"
+          "$ref": "#/$defs/input_schema"
         },
         "annotations": {
           "type": "object",

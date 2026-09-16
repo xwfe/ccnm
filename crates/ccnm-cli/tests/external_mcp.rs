@@ -497,6 +497,111 @@ fn every_tool_publishes_its_annotations() {
     session.shutdown();
 }
 
+/// The published tool tables name the arguments this server actually
+/// takes.
+///
+/// `scripts/check_protocol.py` cannot catch this. It validates the
+/// fixtures against a hand-written JSON Schema, and that schema calls
+/// `inputSchema` an object and stops there — so a fixture and the schema
+/// stay happily consistent with each other while both drift away from the
+/// binary. That is how `apply_patch` came to publish `changes` for an
+/// argument the wire has always called `files`: a Host written from the
+/// fixture sends `{"changes": [...]}` and every call is refused.
+///
+/// This test is the half that reads the code. It compares argument names
+/// and which of them are required, and **only** those. Not descriptions,
+/// types or bounds: those come out of `schemars` from the Rust types, so
+/// pinning them here would turn a crate upgrade or a reworded doc comment
+/// into a protocol failure. The fixtures' `$note` says the same split.
+#[test]
+fn tool_arguments_match_the_running_server() {
+    for (mode, access, fixture_file) in [
+        (ExternalMode::Read, "read", "tools-list-read.json"),
+        (ExternalMode::Coding, "coding", "tools-list-coding.json"),
+    ] {
+        let published = fixture_tools(fixture_file);
+        let fixture = Fixture::new(&format!("args-{access}"), access, "generic");
+        let mut session = fixture.open("demo", mode, "bridge-args");
+        let listed = session.rpc("tools/list", json!({}));
+        let served = listed["tools"].as_array().unwrap();
+
+        let mut served_names: Vec<&str> = served.iter().map(name_of).collect();
+        let mut published_names: Vec<&str> = published.iter().map(name_of).collect();
+        served_names.sort_unstable();
+        published_names.sort_unstable();
+        assert_eq!(
+            served_names, published_names,
+            "{fixture_file} lists different tools than a {access} session serves"
+        );
+
+        for tool in served {
+            let tool_name = name_of(tool);
+            let mine = published
+                .iter()
+                .find(|t| name_of(t) == tool_name)
+                .unwrap_or_else(|| panic!("{fixture_file} has no {tool_name}"));
+            assert_eq!(
+                arguments(mine),
+                arguments(tool),
+                "{fixture_file}: {tool_name} publishes different argument names than it takes"
+            );
+            assert_eq!(
+                required(mine),
+                required(tool),
+                "{fixture_file}: {tool_name} publishes a different required set"
+            );
+        }
+        session.shutdown();
+    }
+}
+
+/// The tools of one published `tools/list` fixture.
+fn fixture_tools(file: &str) -> Vec<Value> {
+    // From `crates/ccnm-cli` up to the repository root. The fixtures are
+    // part of the frozen contract, so they are read where they are
+    // published rather than copied next to this test.
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../docs/protocol/fixtures-mcp")
+        .join(file);
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    let doc: Value = serde_json::from_str(&text).unwrap();
+    doc["message"]["result"]["tools"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{file} has no message.result.tools"))
+        .clone()
+}
+
+fn name_of(tool: &Value) -> &str {
+    tool["name"].as_str().unwrap()
+}
+
+/// One tool's argument names, sorted. A tool that takes none has an empty
+/// `properties`, which is not the same as having no schema at all.
+fn arguments(tool: &Value) -> Vec<String> {
+    let mut names: Vec<String> = tool["inputSchema"]["properties"]
+        .as_object()
+        .unwrap_or_else(|| panic!("{}: inputSchema has no properties", name_of(tool)))
+        .keys()
+        .cloned()
+        .collect();
+    names.sort();
+    names
+}
+
+/// Which of them are required, sorted. Absent means none.
+fn required(tool: &Value) -> Vec<String> {
+    let mut names: Vec<String> = tool["inputSchema"]["required"]
+        .as_array()
+        .map(|list| {
+            list.iter()
+                .map(|n| n.as_str().unwrap().to_string())
+                .collect()
+        })
+        .unwrap_or_default();
+    names.sort();
+    names
+}
+
 /// A path outside the workspace is refused the same way it is on the
 /// managed path: the tools are the same code, and the boundary is not a
 /// property of who opened the session.

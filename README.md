@@ -108,7 +108,7 @@ workspace_info   read_file   list_files   search_text
 apply_patch      exec_command            read_output
 ```
 
-Codex 另有一条 opt-in 的路（workspace 写 `codex_exec_server = true`）：用它自带的执行工具，由 Runtime 上受 ccnm 监督和过滤的官方 `codex exec-server` 执行。只开交互模式，目前只有离线闭环、没有真机验收，见[配置说明](docs/configuration.md#codex_exec_server)。
+Codex 另有一条 opt-in 的路（workspace 写 `codex_exec_server = true`）：用它自带的执行工具，由 Runtime 上受 ccnm 监督和过滤的官方 `codex exec-server` 执行。只开交互模式；2026-09-16 在 macOS Agent + Debian 13 Runtime 上做过真机验收，平台和已知限制见[支持矩阵](docs/support-matrix.md)，开关见[配置说明](docs/configuration.md#codex_exec_server)。
 
 ## 另外两个入口
 

@@ -208,6 +208,15 @@ git config --global user.email "<email>"
 | `git` | `list_files`、写 guard 的资源判定、项目自己 | 降级成非 git 视图；guard 按目录而不是按仓库互斥 |
 | `ripgrep`（`rg`） | `search_text`——它不自己扫文件 | 七工具少一个，报 `ripgrep is not installed on the Runtime Node` |
 
+workspace 开了 [`codex_exec_server`](configuration.md#codex_exec_server) 时，Runtime 上还要：
+
+| 前提 | 为什么 | 没有它会怎样 |
+| --- | --- | --- |
+| 节点配置里的 `codex_bin` 指向 Codex 0.154.0 | 执行模型命令的是它的 `exec-server` | 会话启动前报 `CCNM_E_CONFIG` 或 `CCNM_E_VERSION` |
+| **Linux**：装 `bubblewrap`，并允许执行账号创建 user namespace（Debian 13 默认允许） | Codex 在 Linux 上用 bwrap 实现 workspace-write 沙箱 | 每条命令都失败、不执行（P21 容器实测） |
+
+Codex 的 Linux 沙箱会在真实的 `/tmp` 里留下几个空目录（`/tmp/.git`、`/tmp/.agents`、`/tmp/.codex`、`/tmp/codex-bwrap-synthetic-mount-targets-<uid>/`），属主是执行账号，用完不删；`/tmp` 是 tmpfs 的话重启就没了。这是 Codex 的行为，ccnm 不清理它们（P24 实测）。
+
 剩下的是项目自己的：编译器、包管理器、测试运行器。
 
 **装在执行身份自己的 home 里，不要装成全机共享。** 这不是洁癖：Runtime Executor 的意义就是"除了这个项目什么都没有"，而一个装到 `/usr/local` 的工具链会同时属于机器上每个账号。[P12 那一轮](research/p12-real-project-2026-09-11.md)在 Debian 上的做法是：
@@ -325,6 +334,21 @@ ccnm stop demo --agent codex-main --session <id>  # 精确停一个
 不要批量删，不要仅因为"过了很久"就清。**证明不了旧执行者结束时，保持 unknown 才是对的状态。**
 
 **占着锁的是 Codex exec-server 链时**（`codex_exec_server = true` 的 workspace），第 1 步要找的是 `ccnm internal exec-serve`、`codex exec-server` 和它们起的命令；Agent Node 那边对应的是 Codex 自己 spawn 的 `ccnm internal exec-transport`——它 exec 成了一条 `ssh … internal exec-serve`，`ps` 里看到的是 ssh。命令不一定还挂在这两个进程下面：exec-server 给每条命令单独开进程组，用 `setsid` 脱离的进程会被 init 收养。它们的环境变量里都有 `CCNM_EXEC_SESSION=<session id>-<随机串>`，按这个找（macOS 用 `ps -axEww -o pid,command`，Linux 看 `/proc/<pid>/environ`）。监督进程自己放不了锁时报的错里就带着这个值。
+
+### Agent 静默离网之后，exec-server 链的锁一直 held
+
+症状：Agent 那台机器断了网、睡着了或者直接关机，之后谁在这个 workspace 上开新会话都报 `workspace write guard is busy`，而 Agent 那边早就没有这个会话了。
+
+**原因**（P24 实测，5 轮都一样）：exec-server 链上 Runtime 不会主动探测对面还在不在——exec-server 的协议没有能发给 Codex 的 ping，sshd 默认 `ClientAliveInterval 0`，连接上没数据可发时内核的 TCP keepalive 要 2 小时才探测。于是 Runtime 上的 `ccnm internal exec-serve` 一直在等，锁一直是它的。**这是对的**：它证明不了对面已经结束，就不该放锁；而且断线之后没有任何命令会被执行。MCP 那两个入口不受影响，它们每 30 秒 ping 一次。
+
+**恢复**，在 Runtime 上以执行账号做，顺序不能反：
+
+1. 从 `write-guards/` 里那个 `held <session> <workspace>` 找到 session id，确认 Agent 那边这个会话确实已经不在了（`ccnm status` 或者 Agent 机器的进程表）。
+2. 找到这个会话的 `ccnm internal exec-serve`（`ps -u <执行账号> -o pid,ppid,args`，payload 里带 session id；看不出来就按 `CCNM_EXEC_SESSION` 环境变量找它起的进程），它的父进程是这条连接的 `sshd-session: <执行账号>@notty`。
+3. 给那个 `sshd-session` 发 TERM。`exec-serve` 读到 EOF，按正常路径关掉 exec-server、扫进程、写 `released`——**不用手工删锁标记**。
+4. 再看一眼 `write-guards/` 里是不是 `released`，带 `CCNM_EXEC_SESSION` 的进程是不是一个都没有。
+
+想让它自己更早发现：给 Runtime 的 sshd 配 `ClientAliveInterval`（系统配置变更，按你们的变更流程走），代价是网络短暂抖动更容易把正常会话断掉。ccnm 自己没有为这条链加空闲超时。
 
 ### 会话在 initialize 就断，报 "connection closed: initialize response"
 

@@ -42,6 +42,19 @@ Claude 不会自己重连。
 `ccnm status <ws>` 和 `ccnm doctor <ws>` 都会明说这个状态——**看着正常的会话是不会显示
 这行的**，所以看到了就是真断了。
 
+### `ccnm run` 报 `CCNM_E_RUNTIME_UNREACHABLE`，正文里却写着 `workspace write guard is busy`
+
+```text
+CCNM_E_RUNTIME_UNREACHABLE:
+MCP initialize failed over `/usr/bin/ssh … internal mcp-serve --payload …`: connection closed: initialize response
+stderr: CCNM_E_POLICY:
+workspace write guard is busy; another session still owns this working tree
+```
+
+**Runtime 其实连得上**，是这个 workspace 的写锁被别的会话占着。从 Agent Node 起会话时，ccnm 先做一次 MCP 握手预检，预检失败一律归成"Runtime 不可达"（退出码 21），真正的原因在 `stderr:` 后面那几行。按 `workspace write guard is busy` 去处理：看 Runtime 上 `write-guards/` 里是谁占着，见[写入 guard 残留](operations.md#写入-guard-残留)；占锁的是已经离网的 Codex exec-server 会话时，见[静默离网之后锁一直 held](operations.md#agent-静默离网之后exec-server-链的锁一直-held)。
+
+写脚本判断时**别只看错误码**，这里的码是错的（P24 真机撞到，另立阶段修）。
+
 ### Codex 会话里模型报 `tools.exec_command is not a function`，或 `exec-server transport disconnected`
 
 只出现在 workspace 写了 `codex_exec_server = true` 的 Codex 交互会话里（[配置说明](configuration.md#codex_exec_server)）。这条链上 Codex 用自带的执行工具，工具在 Runtime 上由 exec-server 执行，Codex 通过它自己 spawn 的 `ccnm internal exec-transport` → ssh → `ccnm internal exec-serve` 连过去。

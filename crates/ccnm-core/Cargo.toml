@@ -17,6 +17,7 @@ toml.workspace = true
 toml_edit.workspace = true
 tracing.workspace = true
 uuid.workspace = true
+toexec-fs.workspace = true
 toexec-text.workspace = true
 
 [dev-dependencies]

@@ -24,6 +24,9 @@ ccnm-core = { path = "crates/ccnm-core" }
 # 都不需要配凭据。本地开发那边的源码时，用 `cargo add --path` 或临时改成
 # path 依赖，**别提交**——提交了 CI 就又拉不到了。
 toexec-text = { git = "https://github.com/xwfe/toexec.git", tag = "toexec-text-v0.1.0" }
+# 同一个仓库的第二个 crate：原子文件替换。tag 各自独立，所以升级一个
+# 不会顺带把另一个也换掉。
+toexec-fs = { git = "https://github.com/xwfe/toexec.git", tag = "toexec-fs-v0.2.0" }
 base64 = "0.22"
 clap = { version = "4", features = ["derive", "env"] }
 serde = { version = "1", features = ["derive"] }

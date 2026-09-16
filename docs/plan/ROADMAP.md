@@ -38,7 +38,7 @@ ccnm 不需要安装 Orchestrator 也能独立使用。Orchestrator 核心不链
 
 ## 二、顺序和基线
 
-`P0 → P1 → P2 → P3 → P4 → P5 → P6 → P7 → P8 → P9 → P10 → P11 → P12 → P13 → P14 → P15 → P16`。默认每轮只执行一个阶段。P0–P8 是 ccnm v1 收口和独立 Orchestrator 的接口交接；P9–P12 是 ccnm v1.x 的 Remote Workspace MCP 扩展；P13 是按真实 Host 行为修正两个入口共用的 instructions 投影。完整边界见 [双执行入口方案](runtime-surfaces.md)。
+`P0 → P1 → P2 → P3 → P4 → P5 → P6 → P7 → P8 → P9 → P10 → P11 → P12 → P13 → P14 → P15 → P16 → P17`。默认每轮只执行一个阶段。P0–P8 是 ccnm v1 收口和独立 Orchestrator 的接口交接；P9–P12 是 ccnm v1.x 的 Remote Workspace MCP 扩展；P13 是按真实 Host 行为修正两个入口共用的 instructions 投影。完整边界见 [双执行入口方案](runtime-surfaces.md)。
 
 ### P0 — 已有内部验证基线
 
@@ -263,3 +263,15 @@ worktree **分配、调度、合并策略**在 Orchestrator；受管 workspace �
 - **P16.3** 离线全量门禁通过（fmt、严格 clippy、`cargo test --workspace`、`external_mcp` 与中立 MCP 客户端测试）；`read_file` 不是 schema 或文档层面的变化，不改协议文档。
 
 停止点：只搬这一个函数。原子写入与回滚是盘点认定收益最大的下一块，但它在写入路径上，等这次的跨仓联动被证明可用之后另立阶段；进程/输出不碰（gld 是 tokio async + 要支持 Windows，ccnm 是同步 + 只跑 Unix）。
+
+### P17 — 原子写入接共享库
+
+**依赖 P16。用户 2026-09-16 指定继续推进跨仓计划 toexec 的 V2-K。**盘点（toexec 仓库 `evidence/v2-k/duplication-audit.md`）认定这是收益最大的一块：两个产品都写过「临时文件 → rename → 失败回滚」，ccnm 这份 `sync_all()` 之后才 rename、保留原权限、回滚失败留 journal；gld 那份没有 fsync、不保留权限、备份是整个原文件读进内存。
+
+**只抽两步纯机制**：`write_durable`（落盘 + 权限）和 `replace`（一次 rename），共享 crate 是 `toexec-fs`。**临时文件命名、备份、回滚编排都不抽**——两边差得远（ccnm 按操作类型分并写 journal，gld 一刀切恢复），而且 ccnm 的 `TEMP_PREFIX` 是 `sweep_stale_temps` 的判据，改了会波及清理逻辑。
+
+- **P17.1** `write_atomic_temp` 的三步（create/write_all/sync_all + set_permissions）换成 `toexec_fs::write_durable`，`commit_one` 里的 `fs::rename` 换成 `toexec_fs::replace`。ccnm 自己的错误包装（哪个文件、哪一步）原样保留——共享库只回 `io::Error`，措辞是 ccnm 的对外契约。
+- **P17.2** 行为逐字节不变：`apply_patch` 的既有测试**一条断言都不改**，包括 journal、回滚、中途失败、权限保留、stale 版本这些。`TEMP_PREFIX` 和 `sweep_stale_temps` 不动。
+- **P17.3** 离线全量门禁通过（fmt、严格 clippy、`cargo test --workspace`、`external_mcp`、中立 MCP 客户端）；不改协议、schema 和 `ccnm.workspace-mcp` 版本。
+
+停止点：只换这两处调用。journal、备份策略、回滚编排、`apply_patch` 的语义都不动；父目录 fsync 是另一个决定（共享库文档里记了这个已知边界），本阶段不做。

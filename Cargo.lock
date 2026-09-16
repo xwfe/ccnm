@@ -130,6 +130,7 @@ dependencies = [
  "rmcp",
  "serde",
  "serde_json",
+ "toexec-fs",
  "toexec-text",
  "tokio",
  "toml",
@@ -850,6 +851,11 @@ checksum = "1ad99c4c6d32803332c548b1af0540b357b3f5fc0be8f6c6bfe8b2e6ae784070"
 dependencies = [
  "cfg-if",
 ]
+
+[[package]]
+name = "toexec-fs"
+version = "0.2.0"
+source = "git+https://github.com/xwfe/toexec.git?tag=toexec-fs-v0.2.0#e8da82a5411c4f5e95258a6bfce6aac14527b80b"
 
 [[package]]
 name = "toexec-text"

@@ -1272,29 +1272,42 @@ fn temp_beside(target: &Path) -> Result<PathBuf> {
     Ok(dir.join(format!("{TEMP_PREFIX}{}-{name}", &unique[..12])))
 }
 
+/// Shared with gld (cross-repo plan toexec, V2-K). The primitive does the
+/// four steps and says which one failed; the wording and the error code
+/// are ccnm's, and both are unchanged from when this function did the
+/// steps itself.
+///
+/// The split between the two codes is deliberate. A file that cannot be
+/// created or written is usually the caller's path or permissions, which
+/// the caller can do something about. A flush that fails, or permissions
+/// that cannot be set on a file this process just created, is the machine,
+/// and calling that an argument error sends the caller looking in the
+/// wrong place.
+///
+/// Without the flush the rename can be durable while the contents are not,
+/// which after a crash is a file of the right name and the wrong length.
+/// Carrying the original permissions over is what keeps a patched script
+/// executable.
 fn write_atomic_temp(
     temp: &Path,
     bytes: &[u8],
     mode: Option<&std::fs::Permissions>,
     rel: &str,
 ) -> Result<()> {
-    let mut file = std::fs::File::create(temp)
-        .map_err(|e| Error::invalid_args(format!("cannot write beside {rel}")).with_source(e))?;
-    file.write_all(bytes)
-        .map_err(|e| Error::invalid_args(format!("cannot write {rel}")).with_source(e))?;
-    // Without this the rename can be durable while the contents are not,
-    // which after a crash is a file of the right name and the wrong length.
-    file.sync_all()
-        .map_err(|e| Error::internal(format!("cannot flush {rel}")).with_source(e))?;
-    drop(file);
-    if let Some(mode) = mode {
-        // Carry the original permissions over: patching a script must not
-        // stop it being executable.
-        std::fs::set_permissions(temp, mode.clone()).map_err(|e| {
-            Error::internal(format!("cannot set permissions on {rel}")).with_source(e)
-        })?;
-    }
-    Ok(())
+    use toexec_fs::Step;
+    toexec_fs::write_durable(temp, bytes, mode).map_err(|e| {
+        let message = match e.step {
+            Step::Create => format!("cannot write beside {rel}"),
+            Step::Write => format!("cannot write {rel}"),
+            Step::Sync => format!("cannot flush {rel}"),
+            Step::Permissions => format!("cannot set permissions on {rel}"),
+        };
+        match e.step {
+            Step::Create | Step::Write => Error::invalid_args(message),
+            Step::Sync | Step::Permissions => Error::internal(message),
+        }
+        .with_source(e.source)
+    })
 }
 
 /// Throw away staged work that was never committed. The temp files go with
@@ -1359,8 +1372,10 @@ fn commit_one(one: &Staged) -> Result<Option<String>> {
                 .as_ref()
                 .ok_or_else(|| Error::internal("staged content is missing"))?;
             // One rename, so there is never a moment when the file is
-            // absent and never a partly written file at its name.
-            std::fs::rename(temp, &planned.abs).map_err(|e| {
+            // absent and never a partly written file at its name. Shared
+            // with gld, which needs the Windows path where a rename onto
+            // an existing file has to unlink first.
+            toexec_fs::replace(temp, &planned.abs).map_err(|e| {
                 Error::internal(format!("cannot replace {}", planned.rel)).with_source(e)
             })?;
             let meta = std::fs::metadata(&planned.abs)

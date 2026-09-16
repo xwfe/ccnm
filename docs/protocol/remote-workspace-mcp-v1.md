@@ -332,6 +332,8 @@ workspace myproject allows external MCP in read mode; coding was requested
 
 **远端拒绝和本机拒绝长得一样**，因为打印它们的是同一段代码：远端那份由 Runtime 打在自己的 stderr 上，ssh 原样带回来。要机器判断就看退出码和第一行的名字，不要解析后面的措辞。
 
+**但退出码能不能到你手上，是 SSH 服务端的事，不是 ccnm 的。** bridge 不是 ssh 的父进程，它 `exec` 成那条 ssh；远端的退出码要靠 SSH 的 exit-status 消息带回来，服务端不发，客户端就只能退 0。2026-09-16 在 Tailscale SSH 上实测到的就是这一种：远端 `mcp-serve` 自己退 33，`ccnm mcp bridge` 退 0，`ssh -T <host> "exit 33"` 同样退 0。**这条链路上退出码不可用**，判断只能靠 stderr 第一行的 `CCNM_E_*`；而有的 Host（实测 Claude Code 2.1.268）又会把子进程 stderr 丢掉，两样凑齐就什么都没有了——那时只能按[排错手册](../troubleshooting.md)手工跑一遍同一条命令。ccnm 这边没有可改的地方，记在这里是为了别把「退了 0」读成「起来了」。
+
 ### 11.3 可能出现的 `CCNM_E_*`
 
 | 名字 | 什么时候 | 到达方式 |

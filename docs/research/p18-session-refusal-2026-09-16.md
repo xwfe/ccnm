@@ -122,9 +122,86 @@ python3 scripts/check_plan.py                          通过
 git diff --check                                       通过
 ```
 
-## 七、没做的
+## 七、真机复验（2026-09-16 同日，用户授权传独立文件）
 
-- **没跑真机。** 上面那些复现都在本机用假 HOME 做的（`.claude/.credentials.json` 是空对象，`.ssh/id_ed25519` 是一行占位文本），没有连 fodelf、没有起官方 Agent、没有消耗订阅额度。原始现场记录在 gld 仓库 `docs/rfc/evidence/v2-h-read-chain.md`。
+上面第二、三节是本机假 HOME 做的。同日在真机上又跑了一遍完整的只读链。
+
+**现场**：Host 是这台 Mac（arm64 macOS），Runtime 是 fodelf（Mac mini，arm64 macOS 25.3.0），账号 `fodelf` 在 admin 组、有 SSH 私钥、能读 Claude 凭据——正是 audit 会红三行的那种身份。走的是既有的 gld 探针 workspace `gldprobe`（`external_mcp = "read"`，root 在 `~/gld-remote-probe`）。
+
+**边界**：用户批准的是"传独立文件，验完删"。fodelf 已装的 `~/.local/bin/ccnm`（sha256 `f3422ceb…`，Sep 16 00:37）**一个字节没动**，`config.toml`、`gldprobe.toml`、`ccnm-gldprobe` 也都没动；本轮新建 9 个文件（1 个二进制 `ccnm-p18-bin`、6 个包装脚本、3 份配置，配置里两个是新名字所以是 9 不是 10），跑完全删，删后逐项只读复核：残留为空、已装二进制哈希与时间戳不变、探针目录文件时间戳都早于本轮、无残留 `mcp-serve` 进程。
+
+### 7.1 旧构建逐字复现了原始现象
+
+fodelf 现装的 0.7.0（c720154 之前），配置两个开关都不写：
+
+```text
+CCNM_E_POLICY:
+the runtime is running as fodelf and is not confined, so exec_command is refused:
+  - Not an admin: this account is in admin, which is a route to root
+  - No SSH keys: a possible private SSH key is accessible or unknown (names and contents withheld)
+  - No Claude credential: the Runtime identity can access a known Agent credential file or container
+...
+See docs/production-safety.md. To accept an unconfined runtime for one workspace anyway,
+set allow_unconfined_exec = true on it in config.toml.
+```
+
+和报告里的一字不差，连账号名都一样。
+
+### 7.2 真机证明只读链只要一个开关
+
+**这一条用旧构建就能证**，因为本轮没改 `waived_by` 也没改 `agent_boundary_clear`——改的只有措辞。把探针配置里的 `allow_unconfined_exec` 去掉、只留 `allow_unisolated_credentials`，真机 bridge 照样跑通：
+
+```text
+initialize OK, serverInfo: {'name': 'ccnm', 'version': '0.7.0'}
+tools: ['list_files', 'read_file', 'search_text', 'workspace_info']
+workspace gldprobe (not a git repository, macos/aarch64); [server pid 1895, call 1]
+exec_command → CCNM_E_POLICY: exec_command is not available: this workspace is open for external MCP in read mode
+```
+
+也就是说 `gldprobe.toml` 里那句注释「这两个 opt-in」和 `troubleshooting.md` 原来那句「两个开关都写上」，在真机上是多签了一个。
+
+### 7.3 新构建的消息在真机上正确
+
+传上去的 `ccnm-p18-bin`（sha256 `92f1c02e…`，两端一致）：
+
+```text
+CCNM_E_POLICY:
+the runtime is running as fodelf and does not hold the Agent boundary, so no session is served here:
+  - No Claude credential: the Runtime identity can access a known Agent credential file or container (private paths withheld)
+    fix: use a separate execution identity with OS-denied access; ...
+This identity can reach a known Agent login. ... set allow_unisolated_credentials = true on it in
+config.toml. allow_unconfined_exec is a different admission and does not open this gate.
+See docs/production-safety.md.
+```
+
+`Not an admin` / `No SSH keys` 不再出现，抬头不再说 exec。**已经写了 `allow_unconfined_exec` 的那份配置**得到的是同一条消息——不再叫人去开他已经开了的那个开关。
+
+新构建 + 只写凭据开关，四个工具真机全部实跑：`workspace_info` 报 `macos/aarch64` 和远端 pid、`read_file README.md` 读到 fodelf 上的真实内容和版本号、`search_text` 命中两个文件、`list_files` 与 `ssh fodelf ls` 一致、越界 `../.config/ccnm/config.toml` 被拒且错误里不出现本机绝对路径。
+
+### 7.4 真机才暴露的：这条链上退出码恒为 0
+
+远端 `mcp-serve` 自己退 33（在 fodelf 上直接跑，`remote exit=33`），但 `ccnm mcp bridge` 退 0。
+
+**不是 ccnm 的缺陷**。分层测下来，`ssh -T fodelf "exit 33"` 也返回 0：
+
+```text
+debug1: Remote protocol version 2.0, remote software version Tailscale
+Authenticated to fodelf.taila864e6.ts.net ([100.79.121.33]:22) using "none".
+```
+
+答话的是 Tailscale SSH，按 tailnet 身份授权——`production-safety.md` 那节讲 egress 时记过同一个东西。它不把远端的 exit-status 透传回来，所以 bridge `exec` 成的那个 ssh 拿不到 33。ccnm 这边没有可改的地方：bridge 本来就是让自己*变成* ssh，退出码是 SSH 服务端发不发 exit-status 决定的。
+
+**但它影响怎么读契约。** 协议第 11.2 节说「要机器判断就看退出码和第一行的名字」。在这条链路上退出码不可用，Host 能拿到的只有 stderr 那段文字——而 `troubleshooting.md` 里已经记着 Claude Code 会把子进程 stderr 丢掉。两个凑一起，Host 就真的什么都没有了。这反过来说明本轮改的那段措辞比契约设想的更要紧：它可能是唯一到得了人眼前的东西。
+
+已把这条限制写进协议文档 11.2 和排错手册；**没有改 bridge 的行为**，那是 SSH 服务端的属性。
+
+顺带又印证一次：`search_text` 的参数是 `query` 不是 `pattern`，按 fixture 写会被参数检查挡掉。
+
+## 八、没做的
+
+- **没起官方 Agent，没消耗订阅额度。** 真机跑的全是 MCP 工具调用，没有模型请求。
+- **没替换 fodelf 已装的二进制**，所以那台机器上用户自己那条 Agent 链路仍然是 c720154 之前的行为；要让它带上这个修复得另外授权。
 - **没有改 audit 本身。** 哪些 finding 算 Fail、哪些可豁免，一条没动；改的只有怎么把结论讲给人听。
 - **没有按入口分开判。** 评估过按 `payload.entry` 让只读会话跳过凭据类 finding，结论是不做：见第四节。
 - **`doctor` 的输出没改。** 它本来就该把所有行都列出来，那是"这台机器什么状态"，不是"这次为什么被拒"。
+- **退出码那条只在 Tailscale SSH 上测过。** 没有在一台普通 OpenSSH 服务端上做对照（本机没开 sshd），所以"普通 sshd 会透传 33"是按 SSH 协议推的，不是本轮量出来的。

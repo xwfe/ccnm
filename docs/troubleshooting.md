@@ -222,6 +222,8 @@ ccnm mcp bridge <workspace> --node <node> --mode read < /dev/null
 
 第二常见的是 Runtime 那个账号家里就有 Agent 的登录（`does not hold the Agent boundary`，同样是 33）。**只读链也要过这道闸**，一行开关就能签，见下一节。
 
+**别拿退出码当判据，先看 stderr 第一行。** bridge 是 `exec` 成那条 ssh 的，远端的退出码要靠 SSH 的 exit-status 带回来；**服务端不发，你就只能看到 0**。2026-09-16 在 Tailscale SSH 上实测：远端 `mcp-serve` 自己退 33，`ccnm mcp bridge` 退 0，连 `ssh -T <host> "exit 33"` 都退 0。所以上面这条命令**退 0 不代表起来了**——看它有没有在 stderr 上打 `CCNM_E_*`，以及有没有真的回答 `initialize`。这是 SSH 服务端的属性，ccnm 改不了。
+
 ### 一台机器就能跑吗：`No Claude credential` 把整个会话挡在门外
 
 **症状**：项目和 Claude Code 在同一台机器、同一个账号下，`ccnm doctor` 一片红，MCP 握手根本起不来：

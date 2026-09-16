@@ -57,8 +57,19 @@ CRLF——都在 ccnm 这边原样保留并通过，所以搬家没有改变行�
 远端仓库。直接后果：GitHub Actions 的 runner 只 checkout ccnm 一个仓库，找不到
 `../workspace-kernel`，**`cargo` 在解析 manifest 阶段就会失败**，两个 job 都红。
 
-这不是可以绕过去的：optional 依赖也要求 path 存在（cargo 要读它的 manifest 才能
-生成 lock），vendor 进来等于又抄了一份。
+**实测过，不是推断**：把 ccnm clone 到一个旁边没有 workspace-kernel 的目录，
+`cargo metadata --no-deps` 就已经起不来——
+
+```text
+error: failed to load manifest for workspace member `.../crates/ccnm-cli`
+Caused by: failed to load manifest for dependency `ccnm-core`
+Caused by: failed to read `.../workspace-kernel/crates/wk-text/Cargo.toml`
+Caused by: No such file or directory (os error 2)
+```
+
+连依赖解析都到不了，所以任何 `cargo` 子命令都一样失败。这不是可以绕过去的：
+optional 依赖也要求 path 存在（cargo 要读它的 manifest 才能生成 lock），vendor
+进来等于又抄了一份。
 
 解除条件，二选一：
 

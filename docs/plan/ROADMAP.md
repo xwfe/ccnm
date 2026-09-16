@@ -38,7 +38,7 @@ ccnm 不需要安装 Orchestrator 也能独立使用。Orchestrator 核心不链
 
 ## 二、顺序和基线
 
-`P0 → P1 → P2 → P3 → P4 → P5 → P6 → P7 → P8 → P9 → P10 → P11 → P12 → P13 → P14`。默认每轮只执行一个阶段。P0–P8 是 ccnm v1 收口和独立 Orchestrator 的接口交接；P9–P12 是 ccnm v1.x 的 Remote Workspace MCP 扩展；P13 是按真实 Host 行为修正两个入口共用的 instructions 投影。完整边界见 [双执行入口方案](runtime-surfaces.md)。
+`P0 → P1 → P2 → P3 → P4 → P5 → P6 → P7 → P8 → P9 → P10 → P11 → P12 → P13 → P14 → P15`。默认每轮只执行一个阶段。P0–P8 是 ccnm v1 收口和独立 Orchestrator 的接口交接；P9–P12 是 ccnm v1.x 的 Remote Workspace MCP 扩展；P13 是按真实 Host 行为修正两个入口共用的 instructions 投影。完整边界见 [双执行入口方案](runtime-surfaces.md)。
 
 ### P0 — 已有内部验证基线
 
@@ -237,3 +237,15 @@ worktree **分配、调度、合并策略**在 Orchestrator；受管 workspace �
 - **P14.3** Rust 门禁、`external_mcp` 与中立 MCP 客户端测试通过；`read_file` 不是 schema 或文档层面的变化，不改协议文档。
 
 停止点：只修这一处读法，不做 V2-K 的共享文本原语抽取。
+
+### P15 — 外部入口配置示例启用 alwaysLoad
+
+**依赖 P14。用户 2026-09-16 指定立项。**起因是跨仓计划 workspace-kernel v2 的 V2-Q2：Claude Code 默认把 MCP 工具放进**延迟加载池**（工具表里只有名字，模型要先调一次 `ToolSearch` 才拿得到 schema）。外部入口（用户自己的 Claude Code 接 `ccnm mcp bridge`）因此每个任务多一个回合；那次 18 格模型对照里，加 `alwaysLoad` 的一组 `ToolSearch` 调用为 0、成功率不变、墙钟和 token 都不更差，结论是采纳。本阶段只把这个配置写进外部入口的示例和说明。
+
+**Managed 路径不受影响，也不改**：ccnm 启动 Claude Code 时传 `--tools ""`，`ToolSearch` 本身不可用，七个工具本来就全量加载。**也不在工具上加 `_meta["anthropic/alwaysLoad"]`**：两种写法对延迟加载效果相同，但只有服务器配置那条会让 Host 在首轮请求前等这台 server 连上，而且模型对照测的就是配置这条；`_meta` 没有实测数据。
+
+- **P15.1** 协议文档的 `mcpServers` 示例加 `"alwaysLoad": true`，并写明：这是 Claude Code 自己的配置键、不是 MCP 标准字段，实测生效的版本，不加会怎样（模型先调一次 `ToolSearch`），以及代价（首轮请求前会等 bridge 连上 Runtime，Runtime 不可达时启动更慢）。
+- **P15.2** 使用说明的外部入口一节指到这一条，不复制第二份说明；Managed 路径为什么不需要改，全仓只写一处。
+- **P15.3** 证据：本机零额度复现延迟池差异（`coding` 与 `read` 两种模式各一对），记录客户端与 ccnm 版本、复跑方式和未覆盖范围；模型侧收益引用 workspace-kernel 的 V2-Q2，不在本仓重跑、不再消耗订阅额度。
+
+停止点：只改文档与示例，不动 ccnm 代码、工具元数据和 `ccnm.workspace-mcp` 版本；其他 Host（Codex 等）没有对应机制，不替它们编配置。

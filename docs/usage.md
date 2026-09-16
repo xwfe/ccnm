@@ -276,8 +276,9 @@ ccnm mcp bridge my-project --mode read
 
 契约 `ccnm.workspace-mcp/1` **已于 2026-09-11 冻结**。验收范围：一台 Debian 13 / x86_64 的 Runtime、一棵中型 Rust 项目、官方 Claude Code 2.1.268 的 `-p` 模式各一次真机（[dogfood 记录](research/p12-real-project-2026-09-11.md)）；Codex 当 Host、交互式 UI、别的发行版都没验，**egress 不作保证**。
 
-两条上手就会遇到的：
+三条上手就会遇到的：
 
+- **给 Claude Code 配这个 server 时加一行 `"alwaysLoad": true`。**不加的话它会被延迟加载——模型每个任务得先花一个回合调 `ToolSearch`，才拿得到 ccnm 的工具。配置形状、实测数字和它的代价（首轮请求前会等 bridge 连上 Runtime）见[协议文档](protocol/remote-workspace-mcp-v1.md#alwaysload-是干什么的)。
 - **Runtime 上要有 `ripgrep`**，`search_text` 调它；项目要编译测试，那套工具链也得在 Runtime 上，而且要装在**执行身份自己的 home** 里、写进非交互 ssh 看得见的 PATH——照默认装 rustup 会得到"cargo 没装"的错，原因和做法见[运维手册](operations.md#runtime-node-的前置条件与项目工具链)。
 - **bridge 起不来时 Host 那边可能只显示 `Connection closed`**（Claude Code 就是这样）：`CCNM_E_*` 那行诊断留在 Host 丢掉的 stderr 上。在终端里手工跑一遍同一条 `ccnm mcp bridge …` 就能看到真正的原因。
 

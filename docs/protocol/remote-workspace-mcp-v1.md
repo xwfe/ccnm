@@ -100,13 +100,26 @@ Claude Code 的 `mcpServers` 形状：
   "mcpServers": {
     "ccnm-myproject": {
       "command": "ccnm",
-      "args": ["mcp", "bridge", "myproject", "--mode", "read"]
+      "args": ["mcp", "bridge", "myproject", "--mode", "read"],
+      "alwaysLoad": true
     }
   }
 }
 ```
 
-**实测过的只有 Claude Code**（2.1.268，上面这个形状，`-p` 模式）。其他 Host 的配置格式各不相同（Codex 用 TOML），本文不声称验证过它们。契约只保证：一个进程、stdin/stdout 说 MCP、参数如上。
+**实测过的只有 Claude Code**：`command`/`args` 这两行是 2.1.268 的 `-p` 模式验过的，`alwaysLoad` 是 2.1.269 上验的（见下一小节）。其他 Host 的配置格式各不相同（Codex 用 TOML），本文不声称验证过它们。契约只保证：一个进程、stdin/stdout 说 MCP、参数如上。
+
+#### `alwaysLoad` 是干什么的
+
+`alwaysLoad` 不是 MCP 标准字段，是 **Claude Code 自己的配置键**，写在 server 这一层，跟 ccnm 的协议无关——别的 Host 不认它。
+
+**不写它会怎样**：Claude Code 默认把 MCP 工具放进「延迟加载池」——工具表里只留名字，模型想用得先调一次内置的 `ToolSearch` 把 schema 取回来。看着是好的（省上下文），但 ccnm 这种「不用它就干不了活」的 server，结果是**每个任务白多一个回合**。写上 `"alwaysLoad": true`，七个（或只读模式下四个）工具首轮就在工具表里。
+
+**实测**（Claude Code 2.1.269 + ccnm 0.7.0，本机，未登录所以没发模型请求）：延迟池里的工具数 `coding` 模式 21 → 14、`read` 模式 18 → 14，少掉的正好是 ccnm 这一组。模型侧的收益是跨仓计划 workspace-kernel 的 V2-Q2 量的：3 个任务 × 2 组 × 3 次共 18 格，加了这个键的一组 `ToolSearch` 调用为 0、每个任务少一个回合，成功率、墙钟、token 都不更差。记录见 [P15 的实测](../research/p15-alwaysload-2026-09-16.md)。
+
+**代价**：Claude Code 会把带 `alwaysLoad` 的 server 排进「首轮请求前必须连上」的那一组。bridge 要 ssh 到 Runtime，正常是几百毫秒（doctor 记录 555–581 ms）；**Runtime 睡着或网络不通时，你的 Claude Code 启动会卡在这里**，而不是先跑起来再说工具不可用。想避开就删掉这一行，功能不受影响，只是回到延迟加载。
+
+Managed 路径（`ccnm` 自己启动的 Claude Code 会话）不需要也没有这个设置：那条路传 `--tools ""`，`ToolSearch` 本身就不可用，七个工具一直是全量加载的。
 
 ### 3.4 stdio 的硬规矩
 

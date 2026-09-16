@@ -425,3 +425,43 @@ ROADMAP 的 P9–P12 对应以下顺序；P8 仍先完成独立 Orchestrator 的
 7. P9–P12 是 ccnm 自己的 v1.x Remote Workspace MCP；逐阶段实施，不和 Orchestrator 并行改同一执行契约。
 
 如果真实代码证明某一批需要调整顺序，可以改计划，但必须先在 status blocker/evidence 写清楚“哪条已验证假设被推翻”，不能静默换架构。
+
+## 12. Codex 原生执行链（P21–P24，规划中，未实现）
+
+来自跨仓计划 toexec v2 的 V2-C。**现在的 Managed Codex 关掉自己的执行工具，改用 ccnm 的七个 MCP 工具**；原生链让 Codex 用它自带的执行工具，由官方 `codex exec-server` 在 Runtime 上执行。它是入口 A 在 Codex 上的一个 opt-in 变体，默认仍走 MCP，不影响 Claude 和入口 B。
+
+```text
+Agent Node（Agent Identity）                        Runtime Node（ccrun）
+Codex ── ws://127.0.0.1:<端口> ──> ccnm 网桥 ── SSH stdio ──> ccnm 受管入口 ── stdio ──> codex exec-server
+         URL 里没有秘密            按对端 uid 放行             解析 workspace / 审计
+                                   每会话只放一条连接          写锁 / 按方法过滤
+```
+
+### 12.1 谁负责什么
+
+| 位置 | 负责 | 不负责 |
+| --- | --- | --- |
+| Agent 侧网桥 | 只认与 Codex 同一 OS 用户的连接；每会话只放行一条；WebSocket 帧与逐行 JSON 互转 | 不解析方法、不做授权——授权只在 Runtime 做一次，避免两份规则漂开 |
+| Runtime 受管入口 | 按自己的配置解析 workspace、安全审计、取写锁、监督 exec-server、逐条过滤 JSON-RPC | 不信任客户端给的 root、sandbox 或版本声明 |
+| exec-server | 执行已放行的请求 | **不能当权限边界**：它完全信客户端传来的 sandbox |
+
+授权放在 Runtime，是因为路径要在项目所在的文件系统上解析 symlink 才判得准，root 也只有 Runtime 知道。
+
+依据（toexec 仓库，均为 Codex 0.154.0 实测、零模型额度）：[连接身份](https://github.com/xwfe/toexec/blob/main/evidence/v2-c/g05-peer/README.md)（URL 令牌方案否决；按 uid 放行通过；放行重连时 Codex 会自己 resume）、[协议](https://github.com/xwfe/toexec/blob/main/evidence/v2-c/g01/README.md)（没有版本协商；未知通知和超过 64 MiB 的帧直接断连）、[权限](https://github.com/xwfe/toexec/blob/main/evidence/v2-c/g06/README.md)（`sandbox: null` 就不受限；`http/request` 无限制；`environmentConfig/read` 返回服务端配置里的凭据）。
+
+### 12.2 原生读和 MCP 读同一个契约（用户 2026-09-16 决定）
+
+**exec-server 的文件读方法**（`fs/readFile`、`fs/open`/`readBlock`、`fs/readDirectory`、`fs/walk`、`fs/getMetadata`、`fs/canonicalize`）**按 ccnm `read_file` 的路径契约校验**：先查原始输入、拒绝 `..`，再解析 symlink，结果必须仍在 workspace 根内。不看请求里的 sandbox 是什么——Codex 自己发的这些请求本来就是 `sandbox: null`。
+
+Codex 启动时会从工作区一路往上查 `.git`（实测直到 `/`）。根以上的这类查询**不转给 exec-server**，由受管入口按"不存在"回答；回答的形状在 P21 实测固定，要让 Codex 的行为和目录里确实没有 `.git` 一样。代价：workspace 是某个 Git 仓库的子目录时，Codex 看不到上层仓库。
+
+没选的方案：让"能读的范围 = ccrun 账号能读的范围"。实现简单，但原生入口会比 MCP 入口宽，同一个 workspace 换个入口就能读到根外的文件。
+
+**命令执行不受这条约束**，与 MCP 的 `exec_command` 一样：命令能读 ccrun 能读的一切，写入受 Codex 发来的 sandbox 限制（受管入口要求 sandbox 存在且根钉在 workspace 上）。真正的上限仍是 ccrun 身份，见第 4 节。
+
+### 12.3 首版范围
+
+- **只开 coding 会话。**Codex 靠跑命令读文件，而只读会话不开任意命令（第 7.2 节同一理由），原生链开了也没法用；只读会话继续走 MCP。
+- **不 resume。**断线就结束会话，与 ccnm v1 一致；网桥只放行一条连接，受管入口拒绝带 `resumeSessionId` 的握手。
+- `http/request` 一律拒绝；exec-server 的环境按白名单构造，`CODEX_HOME` 由 ccnm 生成、不含凭据。
+- Claude 经 exec-server 是另一件事（toexec v2 的 V2-P 实验线），不在这里。

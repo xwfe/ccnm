@@ -38,7 +38,7 @@ ccnm 不需要安装 Orchestrator 也能独立使用。Orchestrator 核心不链
 
 ## 二、顺序和基线
 
-`P0 → P1 → P2 → P3 → P4 → P5 → P6 → P7 → P8 → P9 → P10 → P11 → P12 → P13 → P14 → P15 → P16 → P17 → P18 → P19 → P20`。默认每轮只执行一个阶段。P0–P8 是 ccnm v1 收口和独立 Orchestrator 的接口交接；P9–P12 是 ccnm v1.x 的 Remote Workspace MCP 扩展；P13 是按真实 Host 行为修正两个入口共用的 instructions 投影。完整边界见 [双执行入口方案](runtime-surfaces.md)。
+`P0 → P1 → P2 → P3 → P4 → P5 → P6 → P7 → P8 → P9 → P10 → P11 → P12 → P13 → P14 → P15 → P16 → P17 → P18 → P19 → P20 → P21 → P22 → P23 → P24`。默认每轮只执行一个阶段。P0–P8 是 ccnm v1 收口和独立 Orchestrator 的接口交接；P9–P12 是 ccnm v1.x 的 Remote Workspace MCP 扩展；P13 是按真实 Host 行为修正两个入口共用的 instructions 投影；P21–P24 是 Codex 原生执行链。完整边界见 [双执行入口方案](runtime-surfaces.md)。
 
 ### P0 — 已有内部验证基线
 
@@ -317,3 +317,49 @@ worktree **分配、调度、合并策略**在 Orchestrator；受管 workspace �
 - **P20.3** 文档写清楚两个开关各开哪道门、只读会话为什么也要过这道闸、操作员该怎么办；协议文档不改——第 11.2 节本来就写着「不要解析第一行之后的措辞」，退出码和 `CCNM_E_POLICY` 都没变。
 
 停止点：只改怎么把结论讲给人听。audit 判定、finding 分类、豁免规则、`doctor` 输出一律不动；不按入口分开判凭据类 finding（理由记在证据里）；不跑真机、不耗额度。
+
+### P21 — Codex 原生执行链：先测会推翻设计的事
+
+**依赖 P20。用户 2026-09-16 指定立项（跨仓计划 toexec v2 的 V2-C），同日决定原生读和 MCP 读同一契约。**链路、分工和读边界见[双执行入口方案](runtime-surfaces.md)第 12 节。连接身份、协议、权限三件事已在 toexec 测过；下面几件还没测，任何一件结果不对都要改设计，所以先测。全部零模型额度（本机假 Responses 接口 + 禁出站沙箱），不写 ccnm 代码。
+
+- **P21.1** 工作目录：Codex 把**自己本机**的工作目录原样发给 exec-server，而 Agent Node 上没有项目目录。按 0.154.0 源码，交互模式在默认环境是远端时不要求目录在本机存在（`tui/src/lib.rs` 的 `config_cwd_for_app_server_target`），`codex exec` 却先在本机 canonicalize 工作目录（`exec/src/lib.rs` 的 `canonicalize_existing_preserving_symlinks`）。两种模式各实测：exec-server 那一侧有该路径、Codex 这一侧没有。某个模式必须本机有同名目录时，写明 ccnm 的做法（只开另一种模式，或在 Agent 侧建同名空目录——后者要实测 Codex 会不会把本机那个空目录当项目读）。
+- **P21.2** 工具面与方法表：按 ccnm 会用的开关组合（Code Mode、已禁用的 feature），让假模型依次调 Codex 原生的命令执行、`apply_patch` 和其余会碰文件的工具，录下全部 JSON-RPC，得出"每个工具调哪些方法、带不带 sandbox、路径指向哪"；同时确认远端模式下 Codex 是否还在 Agent 本机访问项目路径，以及 `capabilityRoots/discoverV1`、`environmentConfig/read` 什么时候调、依赖返回里的哪些字段。
+- **P21.3** 读边界要用的错误形状：exec-server 对不存在路径、越界路径各回什么；受管入口替它回答"根以上的 `.git` 查询"时照哪个形状回，Codex 后续行为才和确实不存在一致（对照：同一目录真的没有 `.git` 时 Codex 发出的后续请求）。
+- **P21.4** Linux 沙箱：Runtime 是 Linux 时，Codex 发来的 workspace-write sandbox 是否同样挡住工作区外写入。toexec 的权限实测只在 macOS（Seatbelt）上做过。在本机容器里测，不动任何真实 Runtime。
+- **P21.5** 冻结方法规则表：每个方法写放行条件和拒绝时回什么，未列出的方法一律拒绝；P22 照表实现。实测与第 12 节设计不符的地方，在同一提交里改设计并写原因。
+
+停止点：只测和定表。不写 ccnm 代码、不在任何 Runtime 装 Codex、不跑真实模型。
+
+### P22 — Runtime 侧受管 exec-server
+
+**依赖 P21。**Runtime Executor 上新增一个内部入口（名字本阶段定）：按 Runtime 自己的配置打开 workspace、审计、取写锁，再以子进程启动固定版本的 `codex exec-server --listen stdio` 并一直监督它；SSH 进来的每条请求先过 P21.5 的规则表再转发。
+
+- **P22.1** 打开流程复用 `internal mcp-serve` 的权威解析：wire 不带 root 和任何路径，版本不认识就停（不回退）；安全审计用同一套 finding 与豁免。只接受 coding 权限的 workspace，只读请求在启动前拒绝，理由见第 12.3 节。
+- **P22.2** 写锁与监督：启动 exec-server **之前**取与 `mcp-serve` 同一资源的 writer guard，Managed、外部 MCP、原生链三者互斥。关闭顺序：停止转发新请求 → exec-server 退出且它起的进程确认结束 → 写 `released`。哪一步证明不了就保持 `held`/unknown，不按时间放锁。不用 `exec` 替换自身（Drop 不会跑，锁留在 `held`）。
+- **P22.3** exec-server 进程本身：二进制路径只来自 Runtime 本机配置；`--version` 和握手返回的 `executorVersion` 都必须等于 ccnm 钉的 Codex 版本，否则拒绝。环境按白名单构造——它给命令的环境策略是全继承，漏一个变量就等于发给每条命令。`CODEX_HOME` 由 ccnm 生成、里面没有任何凭据（`environmentConfig/read` 会把它的配置原样回给客户端）。
+- **P22.4** 按表过滤：握手带 `resumeSessionId` 就拒；`process/start` 必须带 sandbox，`cwd` 与 `workspaceRoots` 钉在 workspace 根，权限条目不宽于实测的 workspace-write 形状，网络为 restricted；文件写方法要求 sandbox 且根同上；**文件读方法不论 sandbox，按第 12.2 节的读契约校验路径**；`http/request` 一律拒；未知方法回 `-32601`，未知通知丢弃不转发（exec-server 收到会直接断连）；单帧上限定得比 exec-server 的 64 MiB 小，超限由 ccnm 回错误。
+- **P22.5** 离线测试：一个不 import ccnm 的中立 JSON-RPC 客户端经真实内部入口，逐行跑规则表的放行和拒绝，**看真实副作用**（文件写没写出、进程起没起来），不只看回包。写锁与 `mcp-serve` 互斥；exec-server、它的子进程、SSH 连接分别异常结束时锁状态正确，写锁移交相关的故障点各重复 20 次。CI 没有 Codex 二进制，规则层用假 exec-server 覆盖；接真 exec-server 的那组在本机跑并记录版本。Rust 全量门禁通过。
+
+停止点：Runtime 侧离线可验；还没有东西从 Agent 侧连它，Codex 的启动参数一行不改。
+
+### P23 — Agent 侧网桥与 Codex 启动接线
+
+**依赖 P22。**
+
+- **P23.1** 网桥：session supervisor 在 Agent Node 监听 `127.0.0.1` 的随机端口，accept 之后查对端 socket 属于哪个 uid（macOS 读 `net.inet.tcp.pcblist64`，Linux 用 sock_diag），只放行与 Codex 同一 uid 的连接，查不到就拒。**每个会话只放行一条连接**，断了就不再接受——否则 Codex 会自己 resume，把断线后的命令继续执行。带 Origin 头的升级请求拒绝。URL 里不放任何秘密。
+- **P23.2** 传输：WebSocket 文本帧与 SSH stdio 上的逐行 JSON 互转；SSH 复用 `session/transport.rs`（清环境、禁 agent forwarding、不复用个人 ControlMaster）。网桥不解析方法。
+- **P23.3** 启动接线：原生链是显式 opt-in 的配置项（名字和挂在 instance 还是 workspace 上，本阶段定），默认仍是 MCP 七工具，旧配置行为不变。打开后 Codex 带 `CODEX_EXEC_SERVER_URL` 启动，工具开关用 P21.2 实测过的组合；P21.1 判定不支持的模式在创建 session 前拒绝，不静默退回 MCP 或 Agent 本机执行。
+- **P23.4** 离线端到端（零额度）：真实 Codex + 本机假模型接口 + 禁出站沙箱，经网桥和本机内部入口完成读、改、跑命令；另一个 OS 用户连网桥被拒（Linux 容器）；断线后第二条命令哪里都没执行；Runtime 拒绝的请求在 Codex 里表现为工具失败，不退回本机执行。Rust 与 Python 门禁通过。
+
+停止点：离线闭环可复现。不部署、不跑真实模型、不改默认执行方式。
+
+### P24 — 原生链真机验收
+
+**依赖 P23。在 Runtime 上装 Codex、替换任何机器上已装的 ccnm、真实模型回合，都要针对该动作单独授权。**
+
+- **P24.1** 授权的双机环境里，Runtime 以 ccrun 运行 exec-server，Agent 侧真实 Codex 完成一次读 → 改 → 跑测试 → 看结果的小任务；进程属主是 ccrun，Runtime 执行身份上没有 Agent 凭据和出站私钥（沿用 P12.2 的检查）。
+- **P24.2** 跨入口：原生链 coding 会话与 Managed MCP、外部 MCP 的 coding 会话竞争同一把写锁，只有一个拿到。
+- **P24.3** 故障：Agent 侧断网、SSH 断开、exec-server 被杀、Runtime 上有子进程残留，写锁移交相关的各重复 20 次、其余各 5 次；未确认退出不放锁，断线不 resume、不重放。
+- **P24.4** 文档：支持矩阵、使用说明、运维手册写明原生链的平台、版本 pin、与 MCP 路径的区别和已知限制；模型回合计入 toexec v2 第 10.1 节的累计额度并记进 evidence。
+
+停止点：原生链成为 opt-in 的可用能力。要不要改成默认，另做决定。

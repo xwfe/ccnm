@@ -1,0 +1,17 @@
+{
+  "id": 1,
+  "method": "environmentConfig/read",
+  "params": {
+    "cwd": "file://{ROOT}",
+    "configPaths": [
+      [
+        "mcp_servers"
+      ]
+    ],
+    "requirementsPaths": [
+      [
+        "mcp_servers"
+      ]
+    ]
+  }
+}

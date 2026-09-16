@@ -1,0 +1,138 @@
+{
+  "id": 1,
+  "method": "process/start",
+  "params": {
+    "processId": "p1",
+    "metadata": {
+      "threadId": "<thread>",
+      "toolCallId": "call_0"
+    },
+    "argv": [
+      "/bin/sh",
+      "-lc",
+      "pwd; id -un; echo inside > inside.txt; echo outside > {OUTSIDE}/o.txt; echo rc=$?; ls -a"
+    ],
+    "cwd": "file://{ROOT}",
+    "envPolicy": {
+      "inherit": "all",
+      "ignoreDefaultExcludes": true,
+      "exclude": [
+        "CODEX_PERMISSION_PROFILE",
+        "CODEX_VERSION",
+        "CODEX_APPLY_PATCH_PRESERVE_LINE_ENDINGS",
+        "CODEX_PLUGIN_METRICS_OUTPUT"
+      ],
+      "set": {},
+      "includeOnly": []
+    },
+    "env": {
+      "CODEX_SESSION_ID": "<value>",
+      "LC_CTYPE": "<value>",
+      "PAGER": "<value>",
+      "TERM": "<value>",
+      "CODEX_THREAD_ID": "<value>",
+      "COLORTERM": "<value>",
+      "GIT_PAGER": "<value>",
+      "CODEX_CI": "<value>",
+      "GH_PAGER": "<value>",
+      "LANG": "<value>",
+      "CODEX_VERSION": "<value>",
+      "NO_COLOR": "<value>",
+      "LC_ALL": "<value>",
+      "CODEX_SANDBOX_NETWORK_DISABLED": "<value>"
+    },
+    "tty": false,
+    "pipeStdin": false,
+    "arg0": null,
+    "sandbox": {
+      "permissions": {
+        "type": "managed",
+        "file_system": {
+          "type": "restricted",
+          "entries": [
+            {
+              "path": {
+                "type": "special",
+                "value": {
+                  "kind": "root"
+                }
+              },
+              "access": "read"
+            },
+            {
+              "path": {
+                "type": "special",
+                "value": {
+                  "kind": "project_roots"
+                }
+              },
+              "access": "write"
+            },
+            {
+              "path": {
+                "type": "special",
+                "value": {
+                  "kind": "slash_tmp"
+                }
+              },
+              "access": "write"
+            },
+            {
+              "path": {
+                "type": "special",
+                "value": {
+                  "kind": "tmpdir"
+                }
+              },
+              "access": "write"
+            },
+            {
+              "path": {
+                "type": "special",
+                "value": {
+                  "kind": "project_roots",
+                  "subpath": ".git"
+                }
+              },
+              "access": "read",
+              "missing_path_behavior": "skip"
+            },
+            {
+              "path": {
+                "type": "special",
+                "value": {
+                  "kind": "project_roots",
+                  "subpath": ".agents"
+                }
+              },
+              "access": "read",
+              "missing_path_behavior": "skip"
+            },
+            {
+              "path": {
+                "type": "special",
+                "value": {
+                  "kind": "project_roots",
+                  "subpath": ".codex"
+                }
+              },
+              "access": "read",
+              "missing_path_behavior": "skip"
+            }
+          ]
+        },
+        "network": "restricted"
+      },
+      "cwd": "file://{ROOT}",
+      "workspaceRoots": [
+        "file://{ROOT}"
+      ],
+      "windowsSandboxLevel": "disabled",
+      "windowsSandboxPrivateDesktop": true,
+      "windowsSandboxProxySettingsMode": "reconcile",
+      "useLegacyLandlock": false
+    },
+    "enforceManagedNetwork": false,
+    "managedNetwork": null
+  }
+}

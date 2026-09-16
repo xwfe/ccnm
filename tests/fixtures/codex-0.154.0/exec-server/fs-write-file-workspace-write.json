@@ -1,0 +1,96 @@
+{
+  "id": 1,
+  "method": "fs/writeFile",
+  "params": {
+    "path": "file://{ROOT}/patched.txt",
+    "dataBase64": "aGVsbG8K",
+    "sandbox": {
+      "permissions": {
+        "type": "managed",
+        "file_system": {
+          "type": "restricted",
+          "entries": [
+            {
+              "path": {
+                "type": "special",
+                "value": {
+                  "kind": "root"
+                }
+              },
+              "access": "read"
+            },
+            {
+              "path": {
+                "type": "special",
+                "value": {
+                  "kind": "project_roots"
+                }
+              },
+              "access": "write"
+            },
+            {
+              "path": {
+                "type": "special",
+                "value": {
+                  "kind": "slash_tmp"
+                }
+              },
+              "access": "write"
+            },
+            {
+              "path": {
+                "type": "special",
+                "value": {
+                  "kind": "tmpdir"
+                }
+              },
+              "access": "write"
+            },
+            {
+              "path": {
+                "type": "special",
+                "value": {
+                  "kind": "project_roots",
+                  "subpath": ".git"
+                }
+              },
+              "access": "read",
+              "missing_path_behavior": "skip"
+            },
+            {
+              "path": {
+                "type": "special",
+                "value": {
+                  "kind": "project_roots",
+                  "subpath": ".agents"
+                }
+              },
+              "access": "read",
+              "missing_path_behavior": "skip"
+            },
+            {
+              "path": {
+                "type": "special",
+                "value": {
+                  "kind": "project_roots",
+                  "subpath": ".codex"
+                }
+              },
+              "access": "read",
+              "missing_path_behavior": "skip"
+            }
+          ]
+        },
+        "network": "restricted"
+      },
+      "cwd": "file://{ROOT}",
+      "workspaceRoots": [
+        "file://{ROOT}"
+      ],
+      "userHomeDir": "file://{SERVER_HOME}",
+      "windowsSandboxLevel": "disabled",
+      "windowsSandboxPrivateDesktop": true,
+      "useLegacyLandlock": false
+    }
+  }
+}

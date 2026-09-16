@@ -1,0 +1,8 @@
+{
+  "id": 1,
+  "method": "fs/getMetadata",
+  "params": {
+    "path": "file://{ROOT}/AGENTS.md",
+    "sandbox": null
+  }
+}

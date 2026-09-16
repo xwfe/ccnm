@@ -1,0 +1,51 @@
+{
+  "id": 1,
+  "method": "process/start",
+  "params": {
+    "processId": "p1",
+    "metadata": {
+      "threadId": "<thread>",
+      "toolCallId": "call_0"
+    },
+    "argv": [
+      "/bin/sh",
+      "-lc",
+      "echo escalated > {OUTSIDE}/esc.txt; echo rc=$?"
+    ],
+    "cwd": "file://{ROOT}",
+    "envPolicy": {
+      "inherit": "all",
+      "ignoreDefaultExcludes": true,
+      "exclude": [
+        "CODEX_PERMISSION_PROFILE",
+        "CODEX_VERSION",
+        "CODEX_APPLY_PATCH_PRESERVE_LINE_ENDINGS",
+        "CODEX_PLUGIN_METRICS_OUTPUT"
+      ],
+      "set": {},
+      "includeOnly": []
+    },
+    "env": {
+      "CODEX_SESSION_ID": "<value>",
+      "PAGER": "<value>",
+      "CODEX_SANDBOX_NETWORK_DISABLED": "<value>",
+      "CODEX_THREAD_ID": "<value>",
+      "COLORTERM": "<value>",
+      "CODEX_CI": "<value>",
+      "NO_COLOR": "<value>",
+      "GIT_PAGER": "<value>",
+      "LC_ALL": "<value>",
+      "CODEX_VERSION": "<value>",
+      "TERM": "<value>",
+      "LC_CTYPE": "<value>",
+      "LANG": "<value>",
+      "GH_PAGER": "<value>"
+    },
+    "tty": false,
+    "pipeStdin": false,
+    "arg0": null,
+    "sandbox": null,
+    "enforceManagedNetwork": false,
+    "managedNetwork": null
+  }
+}

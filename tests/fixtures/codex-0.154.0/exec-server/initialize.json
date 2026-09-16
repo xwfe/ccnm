@@ -1,0 +1,8 @@
+{
+  "id": 1,
+  "method": "initialize",
+  "params": {
+    "clientName": "codex-environment",
+    "resumeSessionId": null
+  }
+}

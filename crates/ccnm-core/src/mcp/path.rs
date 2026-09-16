@@ -94,6 +94,44 @@ pub fn resolve_read(root: &Path, raw: &str) -> Result<WorkspacePath> {
     }
 }
 
+/// Decide containment for a read that may name something not there yet,
+/// and return the normalized relative path.
+///
+/// [`resolve_read`] answers "missing" itself. The Codex exec-server chain
+/// (P22) has to let a missing path through instead, because the answer
+/// Codex relies on is exec-server's own not-found error: it probes
+/// `AGENTS.md`, `.agents/skills` and new patch targets that way. So this is
+/// the same rules with one difference -- the deepest part that exists
+/// decides, and nothing is said about existence. A symlink whose target is
+/// outside is still refused, whether or not that target exists.
+pub fn resolve_inside(root: &Path, raw: &str) -> Result<String> {
+    let rel = normalize(raw)?;
+    let joined = root.join(&rel);
+    let mut ancestor = joined.as_path();
+    let canonical = loop {
+        match std::fs::canonicalize(ancestor) {
+            Ok(canonical) => break canonical,
+            // A link whose target is missing cannot be canonicalized, and
+            // its parent is inside -- but where it points is not known to
+            // be. Refused rather than judged by its parent.
+            Err(_)
+                if std::fs::symlink_metadata(ancestor)
+                    .is_ok_and(|meta| meta.file_type().is_symlink()) =>
+            {
+                return Err(Error::policy(format!(
+                    "{rel} goes through a symlink whose target does not exist"
+                )));
+            }
+            Err(_) => match ancestor.parent() {
+                Some(parent) => ancestor = parent,
+                None => return Err(Error::invalid_args(format!("cannot resolve {rel}"))),
+            },
+        }
+    };
+    contained(root, &canonical, &rel)?;
+    Ok(rel)
+}
+
 /// A path `apply_patch` is allowed to create, change or remove.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WriteTarget {
@@ -547,5 +585,34 @@ mod tests {
             resolve_read(&root, ".git/config").unwrap().rel(),
             ".git/config"
         );
+    }
+
+    /// The exec-server chain's read check: a missing path is the executor's
+    /// to answer, an escape is still ccnm's to refuse -- including through
+    /// a link whose target does not exist, which `resolve_read` could only
+    /// call "missing".
+    #[test]
+    fn resolving_inside_lets_missing_paths_through_but_no_escape() {
+        let root = fixture("inside");
+        assert_eq!(resolve_inside(&root, "src/main.rs").unwrap(), "src/main.rs");
+        assert_eq!(
+            resolve_inside(&root, "src/new/deep.rs").unwrap(),
+            "src/new/deep.rs"
+        );
+        assert_eq!(resolve_inside(&root, "inside.txt").unwrap(), "inside.txt");
+        for raw in [
+            "escape.txt",
+            "up/outside.txt",
+            "up/nothing/deeper",
+            "dangling.txt",
+            "../ws",
+            "/etc",
+        ] {
+            assert_eq!(
+                resolve_inside(&root, raw).unwrap_err().code(),
+                ErrorCode::Policy,
+                "{raw}"
+            );
+        }
     }
 }

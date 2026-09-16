@@ -403,3 +403,26 @@ kill <那个 sshd-session 的 pid>
 如果 busy 是**你自己那个会话**的分身造成的，看上一条。其余情况：busy 表示仍有 writer 持锁——**受管入口和外部 MCP 共用同一把锁**，所以持锁的可能是任一侧；unknown 表示异常退出或 marker 不完整，不能证明旧执行者已经结束。不要循环删锁或按时间强制接管。
 
 先在 Agent Node 用 `ccnm status <workspace> --agent <instance-id> --session <ccnm-session-id>` 定位会话，再由 Runtime 操作者确认旧 MCP 和子进程。完整人工恢复边界见[支持矩阵](support-matrix.md#runtime-单写-guard)。`doctor`/MCP probe 同样经过写 guard，活动 writer 下诊断被拒绝不等于 SSH 损坏。
+
+### doctor 报 `ssh <别名>: connect to host ... port 22: Operation timed out`
+
+**症状**：`Runtime 安全`、`远端 MCP 握手` 两行失败，错误是 TCP 层超时；同一次 doctor 里
+`反向 SSH` 那行却正常。看着像配置写错了别名，其实多半是**那一刻连不上**——Tailscale 刚
+重连、对面刚从睡眠醒、或者网络切换。
+
+**别急着改配置。** 先在 **Agent Node** 上按这个顺序查（三条都不需要 ccnm）：
+
+```bash
+ssh -G <别名> | grep -E '^(hostname|user|port) '   # 别名解析成什么
+ping -c1 <别名>                                    # 名字解析得到哪个地址
+nc -z -w 8 <别名> 22                               # 22 端口这一刻通不通
+ssh <用户>@<别名> '~/.local/bin/ccnm --version'     # 真连一次
+```
+
+**Runtime 上 `lsof -iTCP:22 -sTCP:LISTEN` 是空的，不代表 22 不通。** Tailscale SSH 接管时
+本机不跑 sshd，端口由 Tailscale 应答，`nc -z` 照样通。反过来也成立：本机 sshd 开着，
+Tailscale 掉线时对面照样连不上。2026-09-16 真机上就是这样：先是超时，几分钟后同一个别名
+`nc` 通、`ssh` 也通，配置一个字没改。
+
+配置真写错的样子不一样：`ssh -G` 里 `hostname` 是个解析不了的名字，`ping` 直接报
+`cannot resolve`，而且**每次都失败**，不会自己好。

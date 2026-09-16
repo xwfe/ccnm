@@ -85,7 +85,7 @@ P22 照这张表实现。表里没列的方法一律拒。实现时补了几条�
 
 | 方法 | 放行条件 | 不满足时回 |
 | --- | --- | --- |
-| `initialize` | `resumeSessionId` 为 `null` | `-32600`，然后断开 |
+| `initialize` | `resumeSessionId` 为 `null` | `-32600`。连接不断（P22 实现如此）：被拒的握手没有到 exec-server，谈不上恢复旧会话 |
 | `initialized` | 转发 | — |
 | 其他客户端通知 | 不转发 | 丢弃（exec-server 收到未知通知会直接断连） |
 | `environmentConfig/read` | 放行；服务端 `CODEX_HOME` 由 ccnm 生成、不含凭据、不在临时目录 | — |

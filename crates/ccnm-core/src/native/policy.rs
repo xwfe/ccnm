@@ -71,6 +71,7 @@ const SANDBOX_KEYS: &[&str] = &[
     "useLegacyLandlock",
 ];
 
+#[derive(Debug, Clone)]
 pub struct Policy {
     /// Canonical. Codex is started with `-C` set to exactly this path, so
     /// every URI it sends is spelled against it.

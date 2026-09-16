@@ -171,6 +171,7 @@ ssh = "alias"                    # 从本机连它用的 alias
 ccnm_bin = "~/.local/bin/ccnm"   # 可选：它上面 ccnm 的路径，这一行写的就是默认值
 claude_config_dir = "/path"      # 可选：Agent 角色用的 CLAUDE_CONFIG_DIR
 runtime_user = "ccrun"           # Runtime Executor 期望的系统账号
+codex_bin = "/opt/codex/bin/codex"   # 可选：Codex exec-server 链用的 Codex 二进制，绝对路径
 ```
 
 哪些必填取决于这个 node 承担什么角色：
@@ -180,6 +181,8 @@ runtime_user = "ccrun"           # Runtime Executor 期望的系统账号
 - 只有 Runtime 角色用得上 `runtime_user`。
 
 `ccnm_bin` 可以是绝对路径，也可以是 `~/` 开头——`~` 由**对面**的登录 shell 展开，这是每种 shell 都认的写法。别人的家目录（`~someone/...`）不行，`..` 也不行，路径里只能有 `[A-Za-z0-9._/-]`，因为它要出现在一条 ssh 命令行上而 ccnm 不给它加引号。
+
+`codex_bin` 只有 Runtime 自己读，见下面的 [`codex_exec_server`](#codex_exec_server)。必须是绝对路径，不从 `PATH` 找：执行模型命令的那个程序不该取决于 Runtime 账号的 shell 配置。它的 `--version` 必须正好是 ccnm 实测过的 Codex 版本（现在是 0.154.0），否则会话启动前就被拒，报 `CCNM_E_VERSION`。
 
 `runtime_user` 说的是 **Agent 的 MCP transport 落到哪个账号上**，项目工具就以谁的身份执行。它不规定谁可以敲 `ccnm`——那是 Operator，通常就是你自己的账号。四种身份怎么分见[生产安全](production-safety.md)。
 
@@ -311,6 +314,24 @@ external_mcp = "read"        # disabled（默认）| read | coding
 只给外部 MCP 用的 workspace **可以没有 Agent**：没有 `agent` 也没有 `agent_node` 时，只要 `external_mcp` 不是 `disabled` 就合法——那种项目从来不由 ccnm 启动 Agent。它必须定义在自己的 Runtime Node 上。
 
 用法和限制见 [Remote Workspace MCP 契约](protocol/remote-workspace-mcp-v1.md)，验收范围见[支持矩阵](support-matrix.md)。契约于 2026-09-11 冻结。
+
+### `codex_exec_server`
+
+```toml
+codex_exec_server = true     # 默认 false
+```
+
+**当前状态：只有 Runtime 这一半（P22）。** Agent 侧还没有东西会连它（P23），所以现在写上这一行，Codex 会话仍然走 MCP 七工具。
+
+打开后，这个 workspace 的受管 Codex 会话可以改用 Codex **自带**的执行工具，由官方 `codex exec-server` 在这台 Runtime 上执行（设计见[双执行入口方案](plan/runtime-surfaces.md)第 12 节）。需要三样都在：这一行、Runtime node 上的 `codex_bin`、会话的 Agent 是 Codex。缺哪样就在启动前拒绝，不会退回别的执行方式。
+
+它不比 coding 会话多给任何权限，但也要满足 coding 会话的全部条件：
+
+- 执行身份的审计和 `exec_command` 一样——没确认隔离又没写 `allow_unconfined_exec`，就不开。
+- 和受管会话、外部 MCP 的 coding 会话抢**同一把**写入互斥锁。
+- Codex 发给 exec-server 的每条请求先过 ccnm 的规则表：读写路径和 MCP 工具同一套规则（只许工作区内，不写 `.git`，不写穿 symlink）；命令和写文件必须带 Codex 实测过的那种沙箱，**人在 Codex 里批准提权后发出的请求一律拒绝**；网络请求一律拒绝。规则表的依据见 [P21 记录](research/p21-codex-native-surface-2026-09-16.md)。
+
+会话结束时，ccnm 要先确认 exec-server 起过的进程都不在了才放锁。确认不了——比如有进程被杀后还在，或者列不出进程表——锁就保持 `held`，下一个会话按"状态未知"拒绝，恢复步骤和其他入口一样，见[运维手册](operations.md)。
 
 ### `external_instructions`
 

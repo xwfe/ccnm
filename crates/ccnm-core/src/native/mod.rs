@@ -8,3 +8,4 @@
 //! outlived by a ccnm supervisor that holds the workspace write guard.
 
 pub mod policy;
+pub mod serve;

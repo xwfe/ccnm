@@ -321,6 +321,8 @@ ccnm stop demo --agent codex-main --session <id>  # 精确停一个
 
 不要批量删，不要仅因为"过了很久"就清。**证明不了旧执行者结束时，保持 unknown 才是对的状态。**
 
+**占着锁的是 Codex exec-server 链时**（`codex_exec_server = true` 的 workspace），第 1 步要找的是 `ccnm internal exec-serve`、`codex exec-server` 和它们起的命令。命令不一定还挂在这两个进程下面：exec-server 给每条命令单独开进程组，用 `setsid` 脱离的进程会被 init 收养。它们的环境变量里都有 `CCNM_EXEC_SESSION=<session id>-<随机串>`，按这个找（macOS 用 `ps -axEww -o pid,command`，Linux 看 `/proc/<pid>/environ`）。监督进程自己放不了锁时报的错里就带着这个值。
+
 ### 会话在 initialize 就断，报 "connection closed: initialize response"
 
 先看 Runtime 执行身份的 home 路径上**有没有一层是符号链接**。macOS 的 `/tmp` 和 `/var` 都是，所以任何把 Runtime home 放在系统临时目录下的做法都会踩到：

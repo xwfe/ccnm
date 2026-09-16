@@ -134,20 +134,23 @@ impl WorkspaceInfo {
 
 /// Whether this session may run commands, and why.
 ///
+/// Shared with the Codex exec-server entry (`crate::native::serve`), so both
+/// are judged by one audit and one set of waivers.
+///
 /// The policy is read from *this* machine's config, not from the payload
 /// the other machine sent. The payload says which workspace and where;
 /// what the runtime account is allowed to do is a property of the machine
 /// being protected, and a caller must not be able to widen it.
-struct ExecGate {
-    audit: crate::safety::Audit,
-    config: Option<crate::Config>,
+pub(crate) struct ExecGate {
+    pub(crate) audit: crate::safety::Audit,
+    pub(crate) config: Option<crate::Config>,
     /// What this workspace's own config accepted -- an unconfined runtime,
     /// an identity that can reach a known Agent login, or neither.
-    accepted: crate::safety::Accepted,
+    pub(crate) accepted: crate::safety::Accepted,
 }
 
 impl ExecGate {
-    fn decide(payload: &ServePayload) -> CcnmResult<ExecGate> {
+    pub(crate) fn decide(payload: &ServePayload) -> CcnmResult<ExecGate> {
         // The runtime host's own config, found the same way every other
         // ccnm command finds it. A missing config is not an error here:
         // it just means nothing has been declared, and nothing declared
@@ -214,7 +217,7 @@ impl ExecGate {
         })
     }
 
-    fn allowed(&self) -> bool {
+    pub(crate) fn allowed(&self) -> bool {
         self.audit.exec_allowed(self.accepted)
     }
 

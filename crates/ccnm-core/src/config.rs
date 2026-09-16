@@ -152,6 +152,17 @@ pub struct Node {
     /// Hybrid only: account the Agent Node mounts the SMB share as.
     #[serde(default)]
     pub smb_user: Option<String>,
+    /// The Codex binary this node runs `codex exec-server` with, for
+    /// workspaces that set [`Workspace::codex_exec_server`]
+    /// (docs/plan/runtime-surfaces.md section 12).
+    ///
+    /// Read only by this node itself, never sent anywhere, and never looked
+    /// up on `PATH`: the Runtime Executor's `PATH` is whatever its shell
+    /// profile says, and the binary that executes the model's commands is
+    /// not something to leave to that. Its `--version` must be the one Codex
+    /// release ccnm has measured, or the session is refused.
+    #[serde(default)]
+    pub codex_bin: Option<PathBuf>,
 }
 
 impl Node {
@@ -259,6 +270,17 @@ pub struct Workspace {
     /// instruction file and grants nothing.
     #[serde(default)]
     pub external_instructions: ExternalInstructions,
+    /// Let a managed Codex session on this workspace run Codex's own
+    /// execution tools through `codex exec-server` on this Runtime, instead
+    /// of ccnm's seven MCP tools (P22).
+    ///
+    /// Off by default for the same reason [`external_mcp`](Self::external_mcp)
+    /// is: it is another way in, and each project says so for itself. It
+    /// grants nothing beyond a coding session -- the session takes the same
+    /// write guard, and every request is checked against the rule table in
+    /// `crate::native::policy` before exec-server sees it.
+    #[serde(default)]
+    pub codex_exec_server: bool,
     /// Hybrid only: where the restricted runner may write. Must not overlap
     /// `root`.
     #[serde(default)]
@@ -689,6 +711,9 @@ impl Config {
             }
             if let Some(dir) = &node.claude_config_dir {
                 check_absolute(&format!("{at}.claude_config_dir"), dir, &mut problems);
+            }
+            if let Some(bin) = &node.codex_bin {
+                check_absolute(&format!("{at}.codex_bin"), bin, &mut problems);
             }
             if let Some(bin) = &node.ccnm_bin {
                 let at = format!("{at}.ccnm_bin");

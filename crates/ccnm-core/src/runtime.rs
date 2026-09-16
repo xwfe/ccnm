@@ -329,6 +329,124 @@ pub fn open_external(config: &Config, request: &ExternalOpenPayload) -> Result<O
     })
 }
 
+/// The wire version of a **Codex exec-server** open (P22).
+///
+/// A fourth number, for the reason each of the others got one: what the
+/// caller receives is different again. Not seven MCP tools but a pipe to
+/// `codex exec-server`, filtered by `crate::native::policy`. A build that
+/// does not know 6 must stop with `CCNM_E_VERSION`, never read it as a
+/// managed open and start serving MCP to a client that speaks another
+/// protocol.
+pub const NATIVE_PROTOCOL: u32 = 6;
+
+/// A request to run a managed Codex session's execution tools here.
+///
+/// The same missing fields as [`OpenPayload`] -- no root, no paths, no
+/// binary. The Codex binary especially: the program that executes the
+/// model's commands is named by this machine's config, not by the machine
+/// asking.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeOpenPayload {
+    pub protocol: u32,
+    pub workspace: String,
+    pub agent: AgentIdentity,
+    pub session: String,
+}
+
+impl NativeOpenPayload {
+    pub fn new(workspace: &str, agent: AgentIdentity, session: &str) -> Self {
+        NativeOpenPayload {
+            protocol: NATIVE_PROTOCOL,
+            workspace: workspace.to_string(),
+            agent,
+            session: session.to_string(),
+        }
+    }
+}
+
+impl Protocol for NativeOpenPayload {
+    fn protocol(&self) -> u32 {
+        self.protocol
+    }
+    fn expected_protocol(&self) -> u32 {
+        NATIVE_PROTOCOL
+    }
+}
+
+/// What this Runtime decided for a Codex exec-server open.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenedNative {
+    pub opened: Opened,
+    /// From this node's own `codex_bin`.
+    pub codex_bin: PathBuf,
+}
+
+impl OpenedNative {
+    /// The shape the MCP server's safety gate reads, so this entry is judged
+    /// by exactly the same audit, binding re-check and waivers.
+    pub fn serve_payload(&self, request: &NativeOpenPayload) -> ServePayload {
+        ServePayload::new(
+            &self.opened.workspace,
+            self.opened.root.clone(),
+            &request.session,
+        )
+        .with_binding(self.opened.binding.clone())
+        .with_interactive(true)
+    }
+}
+
+/// Resolve a Codex exec-server open against this Runtime's config.
+///
+/// Everything [`open`] checks, and three things more: the Agent is Codex,
+/// this workspace opted in with `codex_exec_server`, and this node names the
+/// binary. The refusal for a workspace that did not opt in is the same text
+/// whether or not the workspace exists, as with external MCP.
+pub fn open_native(config: &Config, request: &NativeOpenPayload) -> Result<OpenedNative> {
+    if request.protocol != NATIVE_PROTOCOL {
+        return Err(Error::new(
+            ErrorCode::Version,
+            format!(
+                "exec-server open request is protocol {}, this Runtime opens protocol {NATIVE_PROTOCOL}",
+                request.protocol
+            ),
+        ));
+    }
+    let unavailable = || {
+        Error::policy(format!(
+            "workspace {} does not accept the Codex exec-server chain",
+            request.workspace
+        ))
+    };
+    if !config
+        .workspaces
+        .get(&request.workspace)
+        .is_some_and(|workspace| workspace.codex_exec_server)
+    {
+        return Err(unavailable());
+    }
+    if request.agent.provider != crate::provider::AgentProvider::Codex {
+        return Err(Error::policy(
+            "the exec-server chain runs Codex's own tools; this Agent is not Codex",
+        ));
+    }
+    let opened = open(
+        config,
+        &OpenPayload::new(&request.workspace, request.agent.clone(), &request.session),
+    )?;
+    let codex_bin = config
+        .nodes
+        .get(&opened.binding.runtime_node)
+        .and_then(|node| node.codex_bin.clone())
+        .ok_or_else(|| {
+            Error::config(format!(
+                "nodes.{}.codex_bin is not set; the exec-server chain needs this Runtime to name its Codex binary",
+                opened.binding.runtime_node
+            ))
+        })?;
+    Ok(OpenedNative { opened, codex_bin })
+}
+
 /// What the Agent Node asks the Runtime before starting a session on its
 /// own machine (P7.4 Batch C).
 ///
@@ -1048,9 +1166,10 @@ root = "{}"
     fn an_unknown_protocol_is_a_version_error_not_a_fallback() {
         // One past the highest number this build knows. It moves when a new
         // shape is added -- 5 stopped being "the future" when external
-        // opens got it -- and that is the point: the assertion is about a
-        // number nothing here serves, not about a particular integer.
-        let unknown = EXTERNAL_PROTOCOL + 1;
+        // opens got it, 6 when the exec-server chain did -- and that is the
+        // point: the assertion is about a number nothing here serves, not
+        // about a particular integer.
+        let unknown = NATIVE_PROTOCOL + 1;
         let json = serde_json::json!({"protocol": unknown, "workspace": "demo"});
         let wire = {
             use base64::Engine as _;
@@ -1063,6 +1182,114 @@ root = "{}"
             err.message().contains(&format!("protocol {unknown}")),
             "{err}"
         );
+    }
+
+    /// `mcp-serve` does not serve the exec-server chain's number either: a
+    /// caller that reached the wrong command stops on the version, instead
+    /// of being handed seven MCP tools while it speaks exec-server JSON-RPC.
+    #[test]
+    fn the_exec_server_protocol_is_not_an_mcp_serve_shape() {
+        let wire =
+            crate::protocol::payload::encode(&NativeOpenPayload::new("demo", identity(), "s-1"))
+                .unwrap();
+        assert_eq!(decode_serve(&wire).unwrap_err().code(), ErrorCode::Version);
+    }
+
+    fn native_config(root: &Path, opted_in: bool, bin: bool) -> Config {
+        let toml = format!(
+            r#"
+this = "runtime"
+
+[nodes.runtime]
+runtime_user = "ccrun"
+{}
+
+[nodes.agent]
+ssh = "agent-node"
+
+[workspaces.demo]
+root = "{}"
+agent = {{ node = "agent", instance = "codex-main" }}
+codex_exec_server = {opted_in}
+"#,
+            if bin {
+                "codex_bin = \"/opt/codex/bin/codex\""
+            } else {
+                ""
+            },
+            root.display()
+        );
+        toml::from_str(&toml).expect("test config")
+    }
+
+    fn codex() -> AgentIdentity {
+        AgentIdentity {
+            node: "agent".into(),
+            instance: "codex-main".into(),
+            provider: AgentProvider::Codex,
+            profile_ref: "default".into(),
+        }
+    }
+
+    #[test]
+    fn an_exec_server_open_needs_the_workspace_codex_and_this_nodes_binary() {
+        let dir = workspace_dir("native");
+        let root = dir.join("project");
+        let request = NativeOpenPayload::new("demo", codex(), "s-1");
+
+        let opened = open_native(&native_config(&root, true, true), &request).unwrap();
+        assert_eq!(opened.codex_bin, PathBuf::from("/opt/codex/bin/codex"));
+        assert_eq!(opened.opened.root, root.canonicalize().unwrap());
+        let payload = opened.serve_payload(&request);
+        assert_eq!(payload.binding.as_ref(), Some(&opened.opened.binding));
+        assert!(payload.interactive);
+
+        // Not opted in, and not there at all: one message, so the refusal
+        // does not say which projects exist.
+        let not_opted = open_native(&native_config(&root, false, true), &request).unwrap_err();
+        let absent = open_native(
+            &native_config(&root, true, true),
+            &NativeOpenPayload::new("elsewhere", codex(), "s-1"),
+        )
+        .unwrap_err();
+        assert_eq!(not_opted.code(), ErrorCode::Policy);
+        assert_eq!(
+            not_opted.message().replace("demo", "elsewhere"),
+            absent.message()
+        );
+
+        let claude = NativeOpenPayload::new("demo", identity(), "s-1");
+        let err = open_native(&native_config(&root, true, true), &claude).unwrap_err();
+        assert_eq!(err.code(), ErrorCode::Policy);
+
+        let err = open_native(&native_config(&root, true, false), &request).unwrap_err();
+        assert_eq!(err.code(), ErrorCode::Config);
+        assert!(err.message().contains("codex_bin"), "{err}");
+
+        let mut old = request.clone();
+        old.protocol = OPEN_PROTOCOL;
+        let err = open_native(&native_config(&root, true, true), &old).unwrap_err();
+        assert_eq!(err.code(), ErrorCode::Version);
+
+        let unsafe_session = NativeOpenPayload::new("demo", codex(), "../escape");
+        assert!(open_native(&native_config(&root, true, true), &unsafe_session).is_err());
+    }
+
+    /// The Runtime names the binary; a request that tries to is not decoded.
+    #[test]
+    fn an_exec_server_request_cannot_carry_a_root_or_a_binary() {
+        let mut json =
+            serde_json::to_value(NativeOpenPayload::new("demo", codex(), "s-1")).unwrap();
+        for (field, value) in [("root", "/etc"), ("codex_bin", "/tmp/evil")] {
+            let mut tampered = json.clone();
+            tampered[field] = serde_json::json!(value);
+            assert!(
+                serde_json::from_value::<NativeOpenPayload>(tampered).is_err(),
+                "{field}"
+            );
+        }
+        json["protocol"] = serde_json::json!(NATIVE_PROTOCOL);
+        assert!(serde_json::from_value::<NativeOpenPayload>(json).is_ok());
     }
 
     #[test]

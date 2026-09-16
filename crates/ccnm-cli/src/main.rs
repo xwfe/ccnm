@@ -302,6 +302,12 @@ enum InternalCommand {
         #[arg(long)]
         payload: String,
     },
+    /// Run `codex exec-server` for a managed Codex session, filtering every
+    /// request through the Runtime's rule table (P22)
+    ExecServe {
+        #[arg(long)]
+        payload: String,
+    },
     /// Answer what a workspace is, from this Runtime's own config. Read
     /// only: it starts nothing and creates no session
     RuntimeResolve {
@@ -1142,6 +1148,15 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
                         mcp::server::serve_external(&req)?
                     }
                 }
+                Ok(0)
+            }
+            InternalCommand::ExecServe { payload } => {
+                // Its own command rather than a sixth shape of mcp-serve: what
+                // comes back over this pipe is not MCP, and a caller that
+                // reached the wrong one must fail on the name, not halfway
+                // through a handshake in the other protocol.
+                let req: ccnm_core::runtime::NativeOpenPayload = payload::decode(payload)?;
+                ccnm_core::native::serve::serve(&req)?;
                 Ok(0)
             }
             InternalCommand::RuntimeResolve { payload } => {

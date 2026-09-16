@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 pub mod context;
+pub mod native;
 pub mod result;
 pub use crate::session::transport;
 
@@ -48,6 +49,12 @@ const DISABLED: &[&str] = &[
     "goals",
     "tool_suggest",
 ];
+
+/// The three of [`DISABLED`] an exec-server session keeps on: they are the
+/// execution tools the chain exists to route to the Runtime. Measured as
+/// this exact set in P21.2 (`docs/research/p21-codex-native-surface-2026-09-16.md`);
+/// the rest of the list stays off for the same reasons as over MCP.
+const NATIVE_KEEP: &[&str] = &["shell_tool", "unified_exec", "unified_exec_tty"];
 
 /// Models measured to advertise Code Mode under the pinned CLI version.
 ///
@@ -267,9 +274,20 @@ pub fn launch_cmd_at(
             "Codex workspace state cannot live in its private authentication directory",
         ));
     }
-    build_launch_cmd(bin, spec, dir, &home, &std::env::current_exe()?, model)
+    let exe = std::env::current_exe()?;
+    if spec.codex_exec_server {
+        // The profile stays what it is -- validated above, never written.
+        // Codex gets a home of this session's own, with the login linked
+        // in and the transport named (module doc of `native`).
+        let transport = transport::native_launcher_for(dir, &exe, spec.agent_identity.as_ref())?;
+        let session_home = native::prepare_home(dir, &home, &spec.root, &transport)?;
+        return build_launch_cmd(bin, spec, dir, &session_home, &exe, model);
+    }
+    build_launch_cmd(bin, spec, dir, &home, &exe, model)
 }
 
+/// `agent_home` is what `CODEX_HOME` will be: the profile for an MCP
+/// session, the session's own home for one on the exec-server chain.
 pub(crate) fn build_launch_cmd(
     bin: &Path,
     spec: &Spec,
@@ -278,6 +296,9 @@ pub(crate) fn build_launch_cmd(
     exe: &Path,
     model: Option<&str>,
 ) -> Result<Cmd> {
+    if spec.codex_exec_server {
+        return build_native_launch_cmd(bin, spec, agent_home, model);
+    }
     let mut cmd = isolated(Cmd::new(bin), agent_home)
         .cwd(&spec.cwd)
         .timeout(Duration::from_secs(spec.timeout_secs));
@@ -359,6 +380,69 @@ pub(crate) fn build_launch_cmd(
             prompt: Some(prompt),
         } => cmd = cmd.arg("--").arg(prompt),
         Mode::Interactive { prompt: None } => {}
+    }
+    Ok(cmd)
+}
+
+/// Codex with its own tools, executed on the Runtime (P23). The flag set
+/// is the one P21.2 measured the tool surface with, and it differs from
+/// the MCP launch in exactly the ways the chain needs:
+///
+/// - no `mcp_servers.ccnm.*`: there is no MCP server in this session;
+/// - the three execution features stay on ([`NATIVE_KEEP`]);
+/// - no Code Mode flags: `excluded_tool_namespaces=["functions", …]` is
+///   how the MCP launch hides Codex's own `apply_patch` from the model,
+///   which is the opposite of what this session is for, and P21 measured
+///   without it (the default model brings Code Mode by itself);
+/// - `--sandbox workspace-write` rather than `read-only`: the sandbox is
+///   what exec-server applies on the Runtime, and `read-only` would refuse
+///   every write there. What keeps Codex off the Agent's disk is that the
+///   home offers no local environment (`include_local = false`);
+/// - `-C <root>`: Codex sends its working directory to exec-server as is,
+///   and without this it would send the Agent's own (P21.1).
+///
+/// Interactive only. `codex exec` canonicalizes `-C` on this machine and
+/// exits when the directory is not here (P21.1); a print session of the
+/// chain is refused before it is created, and again here.
+fn build_native_launch_cmd(
+    bin: &Path,
+    spec: &Spec,
+    session_home: &Path,
+    model: Option<&str>,
+) -> Result<Cmd> {
+    let prompt = match &spec.mode {
+        Mode::Interactive { prompt } => prompt.as_deref(),
+        Mode::Print { .. } => {
+            return Err(Error::invalid_args(
+                "the exec-server chain runs interactive Codex only; codex exec needs the project on this machine",
+            ));
+        }
+    };
+    let mut cmd = isolated(Cmd::new(bin), session_home)
+        .cwd(&spec.cwd)
+        .timeout(Duration::from_secs(spec.timeout_secs))
+        .arg("--no-alt-screen");
+    if let Some(model) = model {
+        cmd = cmd.args(["--model", model]);
+    }
+    cmd = cmd.args([
+        "--sandbox",
+        "workspace-write",
+        "-c",
+        "approval_policy=\"on-request\"",
+        "-c",
+        "web_search=\"disabled\"",
+        "-c",
+        "agents.enabled=false",
+    ]);
+    for feature in DISABLED {
+        if !NATIVE_KEEP.contains(feature) {
+            cmd = cmd.args(["--disable", feature]);
+        }
+    }
+    cmd = cmd.arg("-C").arg(&spec.root);
+    if let Some(prompt) = prompt {
+        cmd = cmd.arg("--").arg(prompt);
     }
     Ok(cmd)
 }

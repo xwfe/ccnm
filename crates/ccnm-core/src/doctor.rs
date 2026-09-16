@@ -1922,6 +1922,7 @@ mod tests {
             permission_mode: Default::default(),
             allow_unisolated_credentials: false,
             allow_unattended_exec: false,
+            codex_exec_server: false,
         };
         let from_agent = from_agent(&config, "xshun", Ok((&authority, &probe)));
 

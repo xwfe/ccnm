@@ -1040,6 +1040,7 @@ mod tests {
             mode,
             timeout_secs: 0,
             cwd: dir.join("cwd"),
+            codex_exec_server: false,
         };
         std::fs::write(
             session::Dir::at(&dir).meta(),

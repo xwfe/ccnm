@@ -33,22 +33,46 @@ pub fn launcher_for(
     exe: &std::path::Path,
     identity: Option<&crate::instance::AgentIdentity>,
 ) -> Result<Cmd> {
+    launcher_named(dir, exe, identity, "agent-transport")
+}
+
+/// What Codex is told to spawn for an exec-server session (P23): the same
+/// record as the MCP transport's, because it is the same question -- which
+/// session -- and where that leads is the session's to say, not the
+/// caller's. A different verb, so a build that reached the wrong one fails
+/// on the name rather than halfway into the other protocol.
+pub fn native_launcher_for(
+    dir: &Dir,
+    exe: &std::path::Path,
+    identity: Option<&crate::instance::AgentIdentity>,
+) -> Result<Cmd> {
+    launcher_named(dir, exe, identity, "exec-transport")
+}
+
+fn launcher_named(
+    dir: &Dir,
+    exe: &std::path::Path,
+    identity: Option<&crate::instance::AgentIdentity>,
+    internal: &str,
+) -> Result<Cmd> {
     let request = Request {
         protocol: if identity.is_some() { 3 } else { 2 },
         identity: identity.cloned(),
         session_dir: dir.path().to_path_buf(),
     };
     Ok(Cmd::new(exe)
-        .args(["internal", "agent-transport", "--payload"])
+        .args(["internal", internal, "--payload"])
         .arg(payload::encode(&request)?))
 }
 
+/// The one connection this session's tools ride: MCP for most sessions,
+/// exec-server JSON-RPC for one on the chain. Same ssh either way.
 pub fn command(spec: &Spec) -> Result<Cmd> {
     spec.validate_identity()?;
-    let runtime = spec
-        .runtime
-        .as_ref()
-        .ok_or_else(|| Error::invalid_args("Agent transport needs a remote Runtime"))?;
+    if spec.codex_exec_server {
+        return native_command(spec);
+    }
+    let runtime = remote(spec)?;
     let ssh = Ssh::new(&runtime.alias, "/unused")?
         .with_ccnm_bin(&runtime.ccnm_bin)
         .for_provider(spec.provider());
@@ -82,15 +106,74 @@ pub fn command(spec: &Spec) -> Result<Cmd> {
     Ok(cmd)
 }
 
+/// The ssh an exec-server session rides (P23): the MCP transport's
+/// connection, carrying `ccnm internal exec-serve` for the workspace this
+/// session is bound to. The far side opens by workspace name and bound
+/// identity (wire protocol 6) and decides root and binary itself; nothing
+/// this machine holds crosses.
+pub fn native_command(spec: &Spec) -> Result<Cmd> {
+    spec.validate_identity()?;
+    if !spec.codex_exec_server {
+        return Err(Error::invalid_args(
+            "this session's tools are served over MCP, not exec-server",
+        ));
+    }
+    // validate_identity has already required an identity for the chain.
+    let identity = spec
+        .agent_identity
+        .clone()
+        .ok_or_else(|| Error::invalid_args("exec-server session has no bound Agent identity"))?;
+    spec.workspace_binding()?;
+    let runtime = remote(spec)?;
+    let ssh = Ssh::new(&runtime.alias, "/unused")?
+        .with_ccnm_bin(&runtime.ccnm_bin)
+        .for_provider(spec.provider());
+    let wire = payload::encode(&crate::runtime::NativeOpenPayload::new(
+        &spec.workspace,
+        identity,
+        &spec.id,
+    ))?;
+    let mut cmd = ssh.exec_transport_cmd(&wire)?;
+    cmd.program = session::SSH_BIN.into();
+    Ok(cmd)
+}
+
+fn remote(spec: &Spec) -> Result<&session::RuntimeLink> {
+    spec.runtime
+        .as_ref()
+        .ok_or_else(|| Error::invalid_args("Agent transport needs a remote Runtime"))
+}
+
 pub fn exec(request: &Request) -> Result<()> {
-    use std::os::unix::process::CommandExt;
+    let spec = load_for(request)?;
+    if spec.codex_exec_server {
+        return Err(Error::invalid_args(
+            "this session's tools ride exec-transport, not agent-transport",
+        ));
+    }
+    exec_ssh(command(&spec)?)
+}
+
+/// `ccnm internal exec-transport`: what Codex spawns from the session's
+/// `environments.toml`. Becomes the ssh to the Runtime's `exec-serve`;
+/// Codex holds both ends of the pipe from then on.
+pub fn exec_native(request: &Request) -> Result<()> {
+    let spec = load_for(request)?;
+    exec_ssh(native_command(&spec)?)
+}
+
+fn load_for(request: &Request) -> Result<Spec> {
     let spec = session::load(&Dir::at(&request.session_dir))?;
     if spec.agent_identity != request.identity {
         return Err(Error::invalid_args(
             "Agent transport identity does not match session",
         ));
     }
-    let cmd = command(&spec)?;
+    Ok(spec)
+}
+
+fn exec_ssh(cmd: Cmd) -> Result<()> {
+    use std::os::unix::process::CommandExt;
     let mut process = cmd.process();
     Err(Error::internal("cannot exec Agent-side SSH transport").with_source(process.exec()))
 }
@@ -131,6 +214,7 @@ mod tests {
             mode: Mode::Interactive { prompt: None },
             timeout_secs: 600,
             cwd: PathBuf::from("/Users/fodelf/.local/state/ccnm/workspaces/fixture"),
+            codex_exec_server: false,
         }
     }
 
@@ -141,6 +225,22 @@ mod tests {
             provider: AgentProvider::Claude,
             profile_ref: "default".into(),
         }
+    }
+
+    fn codex() -> AgentIdentity {
+        AgentIdentity {
+            node: "agent".into(),
+            instance: "codex-main".into(),
+            provider: AgentProvider::Codex,
+            profile_ref: "default".into(),
+        }
+    }
+
+    fn native_spec() -> Spec {
+        let mut spec = spec(Some(codex()));
+        spec.provider = AgentProvider::Codex;
+        spec.codex_exec_server = true;
+        spec
     }
 
     fn wire(cmd: &Cmd) -> String {
@@ -180,6 +280,59 @@ mod tests {
         assert_eq!(sent.root, PathBuf::from(ROOT));
         assert_eq!(sent.session, ID);
         assert!(sent.binding.is_none());
+    }
+
+    /// An exec-server session rides the identical ssh; what it carries is
+    /// the protocol-6 open, which names the workspace and the bound identity
+    /// and nothing this machine holds -- no root, no binary.
+    #[test]
+    fn an_exec_server_session_rides_the_same_ssh_to_exec_serve() {
+        let native = native_spec();
+        let cmd = native_command(&native).unwrap();
+        assert_eq!(cmd.program, session::SSH_BIN);
+        let args: Vec<String> = cmd
+            .args
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert!(args.iter().any(|a| a == "exec-serve"), "{args:?}");
+        assert!(!args.iter().any(|a| a == "mcp-serve"), "{args:?}");
+        assert!(args.iter().any(|a| a == "ForwardAgent=no"), "{args:?}");
+        let sent: crate::runtime::NativeOpenPayload = payload::decode(&wire(&cmd)).unwrap();
+        assert_eq!(sent.protocol, crate::runtime::NATIVE_PROTOCOL);
+        assert_eq!(sent.workspace, "fixture");
+        assert_eq!(sent.session, ID);
+        assert_eq!(sent.agent, codex());
+        for arg in &args {
+            assert!(!arg.contains(ROOT), "the root must not cross: {arg:?}");
+        }
+        // `command` is what status and the launcher ask; for a session on
+        // the chain it answers with this same connection.
+        assert_eq!(command(&native).unwrap(), cmd);
+        // And a session that is not on the chain cannot be handed it.
+        let err = native_command(&spec(Some(codex()))).unwrap_err();
+        assert_eq!(err.code(), crate::error::ErrorCode::InvalidArgs);
+    }
+
+    /// The record refuses to describe a session the chain cannot run:
+    /// Codex's tools, opened by bound identity, in front of a person.
+    #[test]
+    fn the_chain_needs_a_bound_interactive_codex() {
+        assert!(native_spec().validate_identity().is_ok());
+        let mut claude = native_spec();
+        claude.provider = AgentProvider::Claude;
+        claude.agent_identity = Some(identity());
+        assert!(claude.validate_identity().is_err());
+        let mut print = native_spec();
+        print.mode = Mode::Print {
+            prompt: "fix it".into(),
+        };
+        assert!(print.validate_identity().is_err());
+        let mut legacy = native_spec();
+        legacy.agent_identity = None;
+        legacy.runtime_node = None;
+        legacy.protocol = 2;
+        assert!(legacy.validate_identity().is_err());
     }
 
     /// The print half of the same decision: nobody is there to answer a

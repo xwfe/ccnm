@@ -512,6 +512,14 @@ pub struct ResolveReport {
     pub allow_unisolated_credentials: bool,
     #[serde(default)]
     pub allow_unattended_exec: bool,
+    /// The workspace's own `codex_exec_server` (P23). When set, `root`
+    /// above is canonical: Codex is started with `-C <root>` and spells
+    /// every URI against it, and the rule table on this Runtime judges
+    /// canonical paths, so a symlinked spelling from config.toml would have
+    /// every request refused. Absent means off, which is what an older
+    /// Runtime that does not know the field means too.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub codex_exec_server: bool,
 }
 
 impl Protocol for ResolveReport {
@@ -541,10 +549,20 @@ pub fn resolve(config: &Config, request: &ResolveRequest) -> Result<ResolveRepor
     let resolved = config.workspace(&request.workspace)?;
     let agent = resolved.agent_reference(request.agent.as_deref())?;
     let provider = crate::provider::AgentProvider::current();
+    let codex_exec_server = resolved.workspace.codex_exec_server;
+    // The exec-server chain needs the path as this host resolves it (see
+    // the field's doc). It also has to exist here for that chain to do
+    // anything at all, so refusing a missing root now says so one step
+    // earlier than the open would.
+    let root = if codex_exec_server {
+        canonical_root(&resolved.workspace.root)?
+    } else {
+        resolved.workspace.root.clone()
+    };
     Ok(ResolveReport {
         protocol: OPEN_PROTOCOL,
         workspace: request.workspace.clone(),
-        root: resolved.workspace.root.clone(),
+        root,
         runtime_node: resolved.workspace.runtime_node.clone(),
         agent,
         provider_config_dir: resolved
@@ -554,6 +572,7 @@ pub fn resolve(config: &Config, request: &ResolveRequest) -> Result<ResolveRepor
         permission_mode: provider.permission_mode(resolved.workspace),
         allow_unisolated_credentials: resolved.workspace.allow_unisolated_credentials,
         allow_unattended_exec: resolved.workspace.allow_unattended_exec,
+        codex_exec_server,
     })
 }
 
@@ -1229,6 +1248,44 @@ codex_exec_server = {opted_in}
             provider: AgentProvider::Codex,
             profile_ref: "default".into(),
         }
+    }
+
+    /// The Agent starts Codex with `-C <root>` and Codex spells every URI
+    /// against that string, while the rule table here judges canonical
+    /// paths. So the root a resolve reports for an exec-server workspace
+    /// is the one this host resolves, and a workspace that has not opted
+    /// in keeps reporting the spelling in its config, as it always has.
+    #[test]
+    fn an_exec_server_workspace_resolves_to_its_canonical_root() {
+        let dir = workspace_dir("resolve-native");
+        let link = dir.join("link");
+        std::os::unix::fs::symlink(dir.join("project"), &link).unwrap();
+        let request = ResolveRequest::new("demo", None);
+
+        let plain = resolve(&native_config(&link, false, true), &request).unwrap();
+        assert_eq!(plain.root, link, "not opted in: the config's own spelling");
+        assert!(!plain.codex_exec_server);
+        let json = serde_json::to_value(&plain).unwrap();
+        assert!(
+            json.get("codex_exec_server").is_none(),
+            "off is absent, so an older Agent reads the same report it always did"
+        );
+
+        let native = resolve(&native_config(&link, true, true), &request).unwrap();
+        assert_eq!(native.root, dir.join("project").canonicalize().unwrap());
+        assert!(native.codex_exec_server);
+        let json = serde_json::to_value(&native).unwrap();
+        assert_eq!(json["codex_exec_server"], serde_json::json!(true));
+
+        // The chain cannot run against a root this host does not have, and
+        // that is said here rather than when Codex is already up.
+        let missing = native_config(&dir.join("gone"), true, true);
+        let err = resolve(&missing, &request).unwrap_err();
+        assert_eq!(err.code(), ErrorCode::WrongWorkspace);
+        assert!(
+            resolve(&native_config(&dir.join("gone"), false, true), &request).is_ok(),
+            "a missing root is still only the open's business for the MCP chain"
+        );
     }
 
     #[test]

@@ -23,7 +23,181 @@ fn spec(mode: Mode) -> Spec {
         mode,
         timeout_secs: 90,
         cwd: "/agent/state/workspace".into(),
+        codex_exec_server: false,
     }
+}
+
+/// A bound, interactive Codex session on the exec-server chain.
+fn native_spec(mode: Mode) -> Spec {
+    let mut spec = spec(mode);
+    spec.protocol = 3;
+    spec.runtime_node = Some("runtime".into());
+    spec.agent_identity = Some(crate::instance::AgentIdentity {
+        node: "worker".into(),
+        instance: "codex-main".into(),
+        provider: AgentProvider::Codex,
+        profile_ref: "default".into(),
+    });
+    spec.codex_exec_server = true;
+    spec
+}
+
+fn strings(cmd: &Cmd) -> Vec<String> {
+    cmd.args
+        .iter()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect()
+}
+
+/// The chain's launch is the MCP launch with the execution tools left on
+/// and pointed at the Runtime: no MCP server, `-C <root>`, a writable
+/// sandbox for exec-server to apply there, and the session's own home.
+#[test]
+fn the_exec_server_launch_keeps_codex_own_tools_and_points_them_at_the_runtime() {
+    let spec = native_spec(Mode::Interactive {
+        prompt: Some("opening".into()),
+    });
+    let cmd = build_launch_cmd(
+        Path::new("/agent/codex"),
+        &spec,
+        &Dir::at("/agent/session"),
+        Path::new("/agent/session/codex-home"),
+        Path::new("/agent/ccnm"),
+        None,
+    )
+    .unwrap();
+    let args = strings(&cmd);
+    let text = cmd.display();
+    assert!(
+        cmd.env
+            .iter()
+            .any(|(k, v)| k == "CODEX_HOME" && v == "/agent/session/codex-home")
+    );
+    assert!(
+        !args.iter().any(|a| a.starts_with("mcp_servers.")),
+        "{text}"
+    );
+    assert!(!text.contains("code_mode"), "{text}");
+    let at = args.iter().position(|a| a == "-C").unwrap();
+    assert_eq!(args[at + 1], "/runtime/project");
+    let sandbox = args.iter().position(|a| a == "--sandbox").unwrap();
+    assert_eq!(args[sandbox + 1], "workspace-write");
+    assert!(text.contains("approval_policy=\"on-request\""), "{text}");
+    assert!(text.contains("agents.enabled=false"), "{text}");
+    let disabled: Vec<&str> = args
+        .iter()
+        .enumerate()
+        .filter(|(_, a)| *a == "--disable")
+        .map(|(i, _)| args[i + 1].as_str())
+        .collect();
+    for kept in NATIVE_KEEP {
+        assert!(!disabled.contains(kept), "{kept} is what the chain is for");
+        assert!(DISABLED.contains(kept), "{kept} is otherwise off");
+    }
+    for feature in DISABLED {
+        assert_eq!(disabled.contains(feature), !NATIVE_KEEP.contains(feature));
+    }
+    assert_eq!(args[args.len() - 2], "--");
+    assert_eq!(args.last().unwrap(), "opening");
+    assert!(cmd.stdin.is_none());
+
+    // `codex exec` cannot reach a project that is not on this machine.
+    let print = native_spec(Mode::Print {
+        prompt: "fix it".into(),
+    });
+    assert!(
+        build_launch_cmd(
+            Path::new("/agent/codex"),
+            &print,
+            &Dir::at("/agent/session"),
+            Path::new("/agent/session/codex-home"),
+            Path::new("/agent/ccnm"),
+            None,
+        )
+        .is_err()
+    );
+}
+
+/// The session's home: the login linked from the profile, this ccnm named
+/// as the transport, the Runtime root trusted -- and the profile untouched.
+#[test]
+fn the_session_home_links_the_login_and_names_this_ccnm_as_the_transport() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = std::env::temp_dir()
+        .canonicalize()
+        .unwrap()
+        .join(format!("ccnm-codex-native-{}", crate::session::new_id()));
+    let profile = root.join("private-codex");
+    let cwd = root.join("cwd");
+    std::fs::create_dir_all(&profile).unwrap();
+    std::fs::create_dir(&cwd).unwrap();
+    std::fs::set_permissions(&profile, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let login = profile.join("auth.json");
+    std::fs::write(&login, "synthetic-non-credential").unwrap();
+    std::fs::set_permissions(&login, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let profile_before: Vec<_> = std::fs::read_dir(&profile)
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+
+    let mut spec = native_spec(Mode::Interactive { prompt: None });
+    spec.cwd = cwd;
+    spec.root = root.join("project on the runtime");
+    let dir = Dir::at(root.join("session"));
+    std::fs::create_dir(dir.path()).unwrap();
+    let cmd = launch_cmd_at(Path::new("/agent/codex"), &spec, &dir, Some(&profile), None).unwrap();
+
+    let home = dir.codex_home();
+    assert!(
+        cmd.env
+            .iter()
+            .any(|(key, value)| key == "CODEX_HOME" && value == home.as_os_str())
+    );
+    assert!(!cmd.display().contains(profile.to_str().unwrap()));
+    assert_eq!(
+        std::fs::metadata(&home).unwrap().permissions().mode() & 0o777,
+        0o700
+    );
+    assert_eq!(std::fs::read_link(home.join("auth.json")).unwrap(), login);
+
+    // What Codex will parse, parsed the way Codex parses it.
+    let environments: native::Environments =
+        toml::from_str(&std::fs::read_to_string(home.join("environments.toml")).unwrap()).unwrap();
+    assert_eq!(environments.default, native::ENVIRONMENT_ID);
+    assert!(!environments.include_local, "nothing may land on this disk");
+    assert_eq!(environments.environments.len(), 1);
+    let env = &environments.environments[0];
+    assert_eq!(env.id, native::ENVIRONMENT_ID);
+    assert_eq!(
+        env.program,
+        std::env::current_exe().unwrap().to_str().unwrap()
+    );
+    assert_eq!(&env.args[..3], ["internal", "exec-transport", "--payload"]);
+    let request: transport::Request = payload::decode(&env.args[3]).unwrap();
+    assert_eq!(request.session_dir, dir.path());
+    assert_eq!(request.identity, spec.agent_identity);
+    let trust: native::TrustConfig =
+        toml::from_str(&std::fs::read_to_string(home.join("config.toml")).unwrap()).unwrap();
+    assert_eq!(
+        trust.projects[spec.root.to_str().unwrap()].trust_level,
+        "trusted"
+    );
+
+    // Again, for a supervisor started twice: same answer, still one link.
+    let again =
+        launch_cmd_at(Path::new("/agent/codex"), &spec, &dir, Some(&profile), None).unwrap();
+    assert_eq!(again.display(), cmd.display());
+    assert_eq!(std::fs::read_link(home.join("auth.json")).unwrap(), login);
+    let profile_after: Vec<_> = std::fs::read_dir(&profile)
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    assert_eq!(profile_after, profile_before, "the profile is not written");
+    assert_eq!(
+        std::fs::read_to_string(&login).unwrap(),
+        "synthetic-non-credential"
+    );
+    std::fs::remove_dir_all(root).unwrap();
 }
 
 /// The instance can name a model; without one the CLI keeps its own

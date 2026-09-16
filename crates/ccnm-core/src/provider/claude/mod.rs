@@ -424,6 +424,7 @@ mod tests {
             },
             timeout_secs: 600,
             cwd: PathBuf::from("/Users/me/.local/state/ccnm/workspaces/fixture"),
+            codex_exec_server: false,
         }
     }
 

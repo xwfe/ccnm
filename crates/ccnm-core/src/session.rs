@@ -115,10 +115,32 @@ pub struct Spec {
     /// `~/.claude/projects/` collects in one place instead of one
     /// directory per run.
     pub cwd: PathBuf,
+    /// Codex runs its own execution tools through the Runtime's
+    /// `exec-serve` (P23), not ccnm's MCP server. Only a bound, interactive
+    /// Codex session can be one; [`Spec::validate_identity`] says so. Absent
+    /// in every record written before the field existed, which is exactly
+    /// what those sessions were.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub codex_exec_server: bool,
 }
 
 impl Spec {
     pub fn validate_identity(&self) -> Result<()> {
+        if self.codex_exec_server {
+            // The chain runs Codex's tools, opens on the Runtime by bound
+            // identity, and `codex exec` cannot reach a project that is
+            // not on this machine (P21.1). Each of these is checked again
+            // where it matters; this is the record refusing to describe a
+            // session that cannot exist.
+            if self.provider != AgentProvider::Codex
+                || self.agent_identity.is_none()
+                || !self.mode.is_interactive()
+            {
+                return Err(Error::invalid_args(
+                    "the exec-server chain needs a bound, interactive Codex session",
+                ));
+            }
+        }
         if let Some(identity) = &self.agent_identity {
             identity.validate()?;
             crate::instance::identifier(&self.workspace)?;
@@ -293,6 +315,13 @@ impl Dir {
     /// written by the supervisor from inside it.
     pub fn context(&self) -> PathBuf {
         self.0.join("context")
+    }
+
+    /// The `CODEX_HOME` of an exec-server session (P23): Codex reads its
+    /// transport from `environments.toml` in there, so it is per session
+    /// rather than the shared profile. Made by the supervisor at launch.
+    pub fn codex_home(&self) -> PathBuf {
+        self.0.join("codex-home")
     }
 }
 
@@ -845,6 +874,7 @@ mod tests {
             },
             timeout_secs: 600,
             cwd: PathBuf::from("/Users/fodelf/.local/state/ccnm/workspaces/fixture"),
+            codex_exec_server: false,
         }
     }
 

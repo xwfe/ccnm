@@ -64,6 +64,7 @@ pub fn run_print_with_agent(
         permission_mode: AgentProvider::current().permission_mode(resolved.workspace),
         prompt: prompt.to_string(),
         timeout_secs: timeout.as_secs(),
+        codex_exec_server: resolved.workspace.codex_exec_server,
     };
     // The Agent side waits the session timeout plus its grace; this call
     // has to outlive both, plus the ssh itself.
@@ -123,6 +124,7 @@ pub fn start_interactive_with_agent(
             .map(|dir| dir.to_path_buf()),
         permission_mode: AgentProvider::current().permission_mode(resolved.workspace),
         prompt: prompt.map(str::to_string),
+        codex_exec_server: resolved.workspace.codex_exec_server,
     };
     let report: StartReport = ssh.call_ccnm(
         env.runner,

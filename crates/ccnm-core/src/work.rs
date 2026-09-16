@@ -270,6 +270,17 @@ pub fn run(req: &RunRequest, tools: &Tools<'_>) -> Result<RunReport> {
         req.permission_mode,
         tools,
     )?;
+    // The chain serves interactive Codex only: `codex exec` canonicalizes
+    // its working directory on this machine and exits when the project is
+    // not here (P21.1). Said before anything is dialled or created, and
+    // not answered by quietly starting an MCP session instead -- the
+    // workspace asked for one thing and cannot have it in this mode.
+    if req.codex_exec_server && selected.provider == AgentProvider::Codex {
+        return Err(Error::invalid_args(format!(
+            "workspace {} runs Codex through exec-server, which serves interactive sessions only: codex exec needs the project on this machine\nstart it interactively (ccnm run {}), or turn codex_exec_server off on the workspace to use the MCP tools",
+            req.workspace, req.workspace
+        )));
+    }
     require_remote_topology(&req.runtime_node, &selected, tools)?;
     let ctx = controller::context(&tools.controller)?;
     if !ctx.login_session() {
@@ -338,6 +349,7 @@ pub fn run(req: &RunRequest, tools: &Tools<'_>) -> Result<RunReport> {
         },
         timeout_secs: req.timeout_secs,
         cwd,
+        codex_exec_server: false,
     };
     let dir = session::create(&tools.state, &spec, ssh.as_ref())?;
     let pid = match controller::start_for_identity(
@@ -623,6 +635,16 @@ fn preflight(
             )
         })?;
         provider_runtime_preflight(selected, &req.workspace, &req.root, &req.runtime_node, ssh)?;
+        if req.codex_exec_server && selected.provider == AgentProvider::Codex {
+            native_runtime_preflight(
+                selected,
+                &req.workspace,
+                &req.root,
+                &req.runtime_node,
+                ssh,
+                tools.runner,
+            )?;
+        }
     }
 
     Ok((ctx, ssh))
@@ -672,6 +694,9 @@ fn start_fresh(
         // Not used interactively: nothing kills this session on a clock.
         timeout_secs: 0,
         cwd,
+        // The workspace's choice, and only Codex can take it up: a Claude
+        // session on the same workspace keeps its MCP tools.
+        codex_exec_server: req.codex_exec_server && selected.provider == AgentProvider::Codex,
     };
     let dir = session::create(&tools.state, &spec, ssh.as_ref())?;
     let server_pid = match controller::start_for_identity(
@@ -1964,6 +1989,33 @@ fn provider_runtime_preflight(
     Ok(())
 }
 
+/// The exec-server chain's own preflight (P23), after the MCP one has
+/// shown the Runtime is reachable and the workspace opens: one empty
+/// `exec-serve` session. What it catches before Codex is started: no
+/// `codex_exec_server` on the far side, no `codex_bin`, the wrong Codex
+/// version, an exec-server that does not start. Inside Codex all of those
+/// would read as "environment unavailable".
+fn native_runtime_preflight(
+    selected: &SelectedAgent,
+    workspace: &str,
+    root: &Path,
+    runtime_node: &str,
+    ssh: &Ssh,
+    runner: &dyn ProcessRunner,
+) -> Result<()> {
+    let binding = selected
+        .binding(workspace, root, runtime_node)?
+        .ok_or_else(|| {
+            Error::invalid_args("the exec-server chain needs an instance-bound Codex session")
+        })?;
+    let wire = payload::encode(&crate::runtime::NativeOpenPayload::new(
+        workspace,
+        binding.agent,
+        "provider-preflight",
+    ))?;
+    ssh.exec_transport_preflight(runner, &wire)
+}
+
 fn agent_readiness(selected: &SelectedAgent, tools: &Tools<'_>) -> Result<()> {
     let report = match selected.identity.as_ref() {
         Some(identity) => {
@@ -2298,7 +2350,42 @@ mod tests {
             permission_mode: crate::config::PermissionMode::AcceptEdits,
             prompt: prompt.into(),
             timeout_secs: 5,
+            codex_exec_server: false,
         }
+    }
+
+    /// The chain has no print mode (P21.1), and the answer is a refusal
+    /// before anything is dialled, asked or written -- not an MCP session
+    /// the workspace did not ask for.
+    #[test]
+    fn run_refuses_a_print_session_on_the_exec_server_chain_before_anything() {
+        let dir = temp("run-native-print");
+        let runner = FakeRunner::new();
+        let tools = Tools {
+            local: None,
+            config: agent_config(),
+            runner: &runner,
+            state: dir.clone(),
+            control_dir: control(&dir),
+            agents: crate::provider::AgentBinaries::with_claude(None),
+            tmux: None,
+            controller: absent_socket("run-native-print"),
+        };
+        let mut req = run_request("x");
+        req.provider = AgentProvider::Codex;
+        req.permission_mode = crate::config::PermissionMode::default();
+        req.codex_exec_server = true;
+        let err = run(&req, &tools).unwrap_err();
+        assert_eq!(err.code(), ErrorCode::InvalidArgs);
+        assert!(err.message().contains("interactive"), "{err}");
+        assert!(runner.calls().is_empty(), "nothing is dialled");
+        assert!(!dir.join("sessions").exists(), "no session may be created");
+        // The same word on a Claude request means nothing: Claude keeps
+        // its MCP tools, and this run fails for the usual reason instead.
+        req.provider = AgentProvider::Claude;
+        req.permission_mode = crate::config::PermissionMode::AcceptEdits;
+        let err = run(&req, &tools).unwrap_err();
+        assert_eq!(err.code(), ErrorCode::NotReady);
     }
 
     /// Two builds that still decode each other's control messages can
@@ -2368,6 +2455,7 @@ mod tests {
             mode: Mode::Interactive { prompt: None },
             timeout_secs: 0,
             cwd: dir.clone(),
+            codex_exec_server: false,
         };
         std::fs::write(sdir.meta(), serde_json::to_string(&spec).unwrap()).unwrap();
 
@@ -2459,6 +2547,7 @@ mod tests {
             provider_config_dir: None,
             permission_mode: crate::config::PermissionMode::default(),
             prompt: None,
+            codex_exec_server: false,
         }
     }
 
@@ -2556,6 +2645,7 @@ mod tests {
             mode: Mode::Interactive { prompt: None },
             timeout_secs: 0,
             cwd: dir.clone(),
+            codex_exec_server: false,
         };
         std::fs::write(sdir.meta(), serde_json::to_string(&spec).unwrap()).unwrap();
 
@@ -2785,6 +2875,7 @@ mod tests {
                 mode,
                 timeout_secs: 600,
                 cwd: dir.clone(),
+                codex_exec_server: false,
             };
             std::fs::write(sdir.meta(), serde_json::to_string(&spec).unwrap()).unwrap();
             if let Some(text) = stdout {

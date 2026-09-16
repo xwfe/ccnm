@@ -47,6 +47,13 @@ pub struct RunRequest {
     pub prompt: String,
     /// Claude is killed after this many seconds.
     pub timeout_secs: u64,
+    /// The workspace runs Codex through exec-server (P23). A print session
+    /// cannot (`codex exec` needs the project on the Agent Node, P21.1),
+    /// so the Agent refuses before creating anything rather than quietly
+    /// starting an MCP session instead. Sent only when true, so an Agent
+    /// that predates the field still reads every other request.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub codex_exec_server: bool,
 }
 
 impl Protocol for RunRequest {
@@ -161,6 +168,13 @@ pub struct StartRequest {
     /// What Claude opens with; `None` opens an empty prompt.
     #[serde(default)]
     pub prompt: Option<String>,
+    /// The workspace runs Codex through exec-server (P23): a Codex session
+    /// started for it gets Codex's own tools over the Runtime's
+    /// `exec-serve` instead of ccnm's MCP server. Says nothing to a Claude
+    /// session. Sent only when true, so an Agent that predates the field
+    /// still reads every other request.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub codex_exec_server: bool,
 }
 
 impl Protocol for StartRequest {

@@ -239,10 +239,23 @@ impl Ssh {
     /// stdin/stdout are the MCP stream. `payload` is the encoded
     /// [`crate::protocol::mcp::ServePayload`].
     pub fn mcp_transport_cmd(&self, payload: &str) -> Result<Cmd> {
+        self.transport_cmd("mcp-serve", payload)
+    }
+
+    /// The same connection carrying Codex's exec-server JSON-RPC instead of
+    /// MCP (P23): what `ccnm internal exec-transport` execs. `payload` is
+    /// the encoded [`crate::runtime::NativeOpenPayload`]. Every option is
+    /// the MCP transport's -- the isolation of this connection does not
+    /// depend on what protocol rides on it.
+    pub fn exec_transport_cmd(&self, payload: &str) -> Result<Cmd> {
+        self.transport_cmd("exec-serve", payload)
+    }
+
+    fn transport_cmd(&self, internal: &str, payload: &str) -> Result<Cmd> {
         let argv = [
             self.ccnm_bin.as_str(),
             "internal",
-            "mcp-serve",
+            internal,
             "--payload",
             payload,
         ];
@@ -373,41 +386,90 @@ impl Ssh {
         tracing::debug!(alias = %self.alias, sub = ?subcommand, "calling remote ccnm");
         let out = runner.run(&cmd)?;
         match classify(out) {
-            RemoteOutcome::Unreachable(why) => Err(Error::new(
-                unreachable,
-                format!("ssh {}: {why}", self.alias),
-            )),
-            RemoteOutcome::CommandNotFound => Err(Error::new(
-                ErrorCode::Version,
-                format!(
-                    "{ccnm_bin} not found on {} (the login shell exited 127)\ninstall the same ccnm build there, or set ccnm_bin for that host in config.toml",
-                    self.alias
-                ),
-            )),
-            RemoteOutcome::NotExecutable => Err(Error::new(
-                ErrorCode::Version,
-                format!(
-                    "{ccnm_bin} on {} is there but not executable (exit 126)\nssh {} 'chmod +x {ccnm_bin}'\nthis is what copying it over with `scp` and no -p leaves behind",
-                    self.alias, self.alias
-                ),
-            )),
-            RemoteOutcome::Completed(out) if !out.success() => {
-                Err(remote_failure(&self.alias, subcommand, &out))
-            }
             // Nothing on stdout but something on stderr, and an exit code
             // that claims success: a transport that does not carry the
             // status (see `shell_complaint`). The remote side did fail,
             // and what it said about it is on stderr.
             RemoteOutcome::Completed(out)
-                if out.stdout.iter().all(u8::is_ascii_whitespace)
-                    && !out.stderr.iter().all(u8::is_ascii_whitespace) =>
+                if out.success()
+                    && !(out.stdout.iter().all(u8::is_ascii_whitespace)
+                        && !out.stderr.iter().all(u8::is_ascii_whitespace)) =>
             {
-                Err(remote_failure(&self.alias, subcommand, &out))
+                payload::decode_json(&out.stdout)
             }
-            RemoteOutcome::Completed(out) => payload::decode_json(&out.stdout),
+            outcome => Err(self.failure(subcommand, outcome, unreachable)),
+        }
+    }
+
+    /// One empty exec-server session, the preflight before a session on
+    /// the chain is created (P23). stdin is closed at once, so the far side
+    /// opens the workspace, audits, checks its Codex binary, takes and
+    /// releases the guard, serves nothing and exits 0 -- or says on stderr
+    /// why not, here, before Codex is started, where the same failure would
+    /// only show as its "environment unavailable".
+    pub fn exec_transport_preflight(
+        &self,
+        runner: &dyn ProcessRunner,
+        payload: &str,
+    ) -> Result<()> {
+        let subcommand = ["internal", "exec-serve"];
+        let cmd = self
+            .exec_transport_cmd(payload)?
+            .stdin(Vec::new())
+            .timeout(EXEC_PREFLIGHT_TIMEOUT);
+        tracing::debug!(alias = %self.alias, "exec-server preflight");
+        match classify(runner.run(&cmd)?) {
+            RemoteOutcome::Completed(out) if out.success() => {
+                // A transport that does not carry the exit status reports
+                // 0 for a refusal too (see `shell_complaint`); the refusal
+                // is still on stderr, and it names itself. Anything else
+                // on stderr is exec-server's own chatter, not a failure.
+                if first_line_is_ccnm_code(out.stderr_lossy().trim()) {
+                    return Err(remote_failure(&self.alias, &subcommand, &out));
+                }
+                Ok(())
+            }
+            outcome => Err(self.failure(&subcommand, outcome, ErrorCode::RuntimeUnreachable)),
+        }
+    }
+
+    /// The error for a remote invocation that did not complete, or that
+    /// completed and failed. `unreachable` is the caller's, since which
+    /// side is unreachable depends on it.
+    fn failure(
+        &self,
+        subcommand: &[&str],
+        outcome: RemoteOutcome,
+        unreachable: ErrorCode,
+    ) -> Error {
+        let ccnm_bin = self.ccnm_bin.as_str();
+        match outcome {
+            RemoteOutcome::Unreachable(why) => {
+                Error::new(unreachable, format!("ssh {}: {why}", self.alias))
+            }
+            RemoteOutcome::CommandNotFound => Error::new(
+                ErrorCode::Version,
+                format!(
+                    "{ccnm_bin} not found on {} (the login shell exited 127)\ninstall the same ccnm build there, or set ccnm_bin for that host in config.toml",
+                    self.alias
+                ),
+            ),
+            RemoteOutcome::NotExecutable => Error::new(
+                ErrorCode::Version,
+                format!(
+                    "{ccnm_bin} on {} is there but not executable (exit 126)\nssh {} 'chmod +x {ccnm_bin}'\nthis is what copying it over with `scp` and no -p leaves behind",
+                    self.alias, self.alias
+                ),
+            ),
+            RemoteOutcome::Completed(out) => remote_failure(&self.alias, subcommand, &out),
         }
     }
 }
+
+/// How long the exec-server preflight may take end to end: the ssh, the
+/// Runtime's own `codex --version` (bounded at 20 s there), starting and
+/// stopping exec-server, and the process sweep (up to 5 s).
+const EXEC_PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(90);
 
 /// Characters that no POSIX shell treats specially, so a remote command
 /// line built from them means the same thing on every login shell. `~` is
@@ -692,6 +754,18 @@ mod tests {
         );
         assert!(cmd.stdin.is_none(), "the MCP client owns stdin, not Cmd");
         assert!(ssh().mcp_transport_cmd("has space").is_err());
+        // The exec-server chain rides the identical connection; only the
+        // far command differs.
+        let native = ssh()
+            .with_ccnm_bin("/Users/ccrun/.local/bin/ccnm")
+            .exec_transport_cmd("eyJwIjoxfQ")
+            .unwrap()
+            .display();
+        assert_eq!(
+            native,
+            text.replace("internal mcp-serve", "internal exec-serve")
+        );
+        assert!(ssh().exec_transport_cmd("has space").is_err());
         // The session's tools hang off this connection, so it waits five
         // minutes before giving up where a control command waits 45
         // seconds. Losing it costs the person a /mcp reconnect.

@@ -355,7 +355,7 @@ worktree **分配、调度、合并策略**在 Orchestrator；受管 workspace �
 
 ### P24 — 原生链真机验收
 
-**依赖 P23。在 Runtime 上装 Codex、替换任何机器上已装的 ccnm、真实模型回合，都要针对该动作单独授权。**
+**依赖 P23。在 Runtime 上装 Codex、替换任何机器上已装的 ccnm、真实模型回合，都要针对该动作单独授权。**拓扑、现场事实和逐项授权清单见[会话计划](p24-native-real-machine-session.md)。
 
 - **P24.1** 授权的双机环境里，Runtime 以 ccrun 运行 exec-server，Agent 侧真实 Codex 完成一次读 → 改 → 跑测试 → 看结果的小任务；进程属主是 ccrun，Runtime 执行身份上没有 Agent 凭据和出站私钥（沿用 P12.2 的检查）。Runtime 是 Linux 时先确认装了 bubblewrap、ccrun 能创建 user namespace（P21 实测缺任一项沙箱都起不来）。
 - **P24.2** 跨入口：原生链 coding 会话与 Managed MCP、外部 MCP 的 coding 会话竞争同一把写锁，只有一个拿到。

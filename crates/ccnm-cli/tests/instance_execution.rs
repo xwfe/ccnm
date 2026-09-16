@@ -581,6 +581,230 @@ fn actual_agent_work_path_resolves_profile_controller_binding_and_runtime_mcp() 
     );
 }
 
+/// A Runtime whose write guard another session holds, reached from the
+/// Agent Node through a fake `ssh` that runs the real binary under the
+/// Runtime's own config and state. The holder is a real `mcp-serve` that
+/// has answered `initialize`, so the guard is taken by the time a test
+/// dials in.
+struct BusyRuntime {
+    holder: std::process::Child,
+    holder_stdin: Option<std::process::ChildStdin>,
+    agent_home: PathBuf,
+    agent_config: PathBuf,
+    project: PathBuf,
+}
+
+impl BusyRuntime {
+    fn start(f: &Fixture) -> Self {
+        use std::io::{BufRead, BufReader, Write};
+        use std::process::Stdio;
+        let agent_home = f.0.join("agent-home");
+        let claude_home = agent_home.join(".claude");
+        std::fs::create_dir_all(&claude_home).unwrap();
+        std::fs::set_permissions(&claude_home, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let project = f.0.join("runtime-project");
+        let runtime_home = f.0.join("runtime-home");
+        let runtime_state = f.0.join("runtime-state");
+        std::fs::create_dir(&project).unwrap();
+        std::fs::create_dir(&runtime_home).unwrap();
+        let runtime_config = f.0.join("runtime.toml");
+        std::fs::write(
+            &runtime_config,
+            include_str!("../../../tests/fixtures/agent-instance/runtime.toml")
+                .replace("/runtime/project", project.to_str().unwrap())
+                .replace("root =", "allow_unconfined_exec=true\nroot ="),
+        )
+        .unwrap();
+        let agent_config = f.0.join("agent.toml");
+        std::fs::write(
+            &agent_config,
+            include_str!("../../../tests/fixtures/agent-instance/agent.toml"),
+        )
+        .unwrap();
+
+        let fake_ssh = f.0.join("bin/ssh");
+        std::fs::create_dir_all(fake_ssh.parent().unwrap()).unwrap();
+        std::fs::write(
+            &fake_ssh,
+            format!(
+                "#!/bin/sh\nfor last do :; done\ncase \"$*\" in *'internal hello'*) sub=hello ;; *'internal runtime-resolve'*) sub=runtime-resolve ;; *'internal mcp-serve'*) sub=mcp-serve ;; *) exit 97 ;; esac\nexec /usr/bin/env -i PATH=/usr/bin:/bin HOME='{home}' XDG_STATE_HOME='{state}' CCNM_CONFIG='{config}' '{ccnm}' internal \"$sub\" --payload \"$last\"\n",
+                home = runtime_home.display(),
+                state = runtime_state.display(),
+                config = runtime_config.display(),
+                ccnm = env!("CARGO_BIN_EXE_ccnm"),
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&fake_ssh, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+        let open = ccnm_core::runtime::OpenPayload::new(
+            "demo",
+            ccnm_core::instance::AgentIdentity {
+                node: "worker".into(),
+                instance: "claude-main".into(),
+                provider: AgentProvider::Claude,
+                profile_ref: "default".into(),
+            },
+            "holder",
+        );
+        let mut holder = Command::new(env!("CARGO_BIN_EXE_ccnm"))
+            .args([
+                "internal",
+                "mcp-serve",
+                "--payload",
+                &payload::encode(&open).unwrap(),
+            ])
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .env("HOME", &runtime_home)
+            .env("XDG_STATE_HOME", &runtime_state)
+            .env("CCNM_CONFIG", &runtime_config)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let mut stdin = holder.stdin.take().unwrap();
+        let mut stdout = BufReader::new(holder.stdout.take().unwrap());
+        writeln!(stdin, "{}", serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"busy-holder","version":"0"}}})).unwrap();
+        stdin.flush().unwrap();
+        let mut line = String::new();
+        stdout.read_line(&mut line).unwrap();
+        assert!(
+            line.contains("\"id\":1"),
+            "holder did not initialize: {line:?}"
+        );
+        Self {
+            holder,
+            holder_stdin: Some(stdin),
+            agent_home,
+            agent_config,
+            project,
+        }
+    }
+}
+
+impl Drop for BusyRuntime {
+    fn drop(&mut self) {
+        // EOF is the holder's clean shutdown; it releases the guard.
+        drop(self.holder_stdin.take());
+        let _ = self.holder.wait();
+    }
+}
+
+/// What a busy Runtime has to look like from the Agent Node: the Runtime's
+/// own refusal, with its own code, and the transport it came over still
+/// named. Reported as "cannot reach the Runtime" (P24), a caller keyed on
+/// the code goes to debug a network that is fine.
+fn assert_refused_as_busy(out: &std::process::Output) {
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(
+        out.status.code(),
+        Some(ccnm_core::ErrorCode::Policy.exit_code()),
+        "{err}"
+    );
+    assert!(err.starts_with("CCNM_E_POLICY:\n"), "{err}");
+    assert!(err.contains("MCP initialize failed over"), "{err}");
+    assert!(err.contains("internal mcp-serve"), "{err}");
+    assert!(err.contains("write guard is busy"), "{err}");
+}
+
+#[test]
+fn a_busy_write_guard_fails_the_run_preflight_as_policy_not_unreachable() {
+    use ccnm_core::instance::{AgentLocal, AgentProfiles};
+    use ccnm_core::process::{FakeRunner, Output};
+    use ccnm_core::protocol::run::RunRequest;
+    use ccnm_core::provider::AgentBinaries;
+    let f = Fixture::new();
+    let runtime = BusyRuntime::start(&f);
+
+    // The controller is asked twice -- its context, then whether the Agent
+    // is logged in -- and the MCP preflight comes next. A third request
+    // would mean the refusal did not stop the session from being created.
+    let socket = f.short_state().join("ccnm/controller.sock");
+    std::fs::create_dir_all(socket.parent().unwrap()).unwrap();
+    let listener = ccnm_core::controller::Listener::bind(&socket).unwrap();
+    let config = ccnm_core::Config::load(&runtime.agent_config).unwrap();
+    let local_home = runtime.agent_home.clone();
+    let config_path = runtime.agent_config.clone();
+    let served = std::thread::spawn(move || {
+        let runner = FakeRunner::new();
+        runner.push(Output::exited(0, "Aqua\n"));
+        runner.push(Output::exited(0, "2.1.260 (Claude Code)\n"));
+        runner.push(Output::exited(
+            0,
+            r#"{"loggedIn":true,"authMethod":"fixture"}"#,
+        ));
+        let tools = ccnm_core::controller::Tools {
+            runner: &runner,
+            agents: AgentBinaries::with_claude(Some("/synthetic/agent/claude".into())),
+            config,
+            local: Some(AgentLocal::new(AgentProfiles::default(), local_home, None).unwrap()),
+            config_path: Some(config_path),
+            tmux: None,
+            exe: PathBuf::from("/synthetic/never-started"),
+        };
+        for _ in 0..2 {
+            listener.serve_one(&tools).unwrap();
+        }
+    });
+
+    let request = RunRequest {
+        protocol: 3,
+        provider: AgentProvider::Claude,
+        agent: Some(ccnm_core::instance::InstanceRef {
+            node: "worker".into(),
+            instance: "claude-main".into(),
+        }),
+        workspace: "demo".into(),
+        root: runtime.project.clone(),
+        runtime_node: "runtime".into(),
+        provider_config_dir: None,
+        permission_mode: Default::default(),
+        prompt: "fixture".into(),
+        timeout_secs: 30,
+        codex_exec_server: false,
+    };
+    let out = f
+        .command()
+        .env("HOME", &runtime.agent_home)
+        .env("CCNM_CONFIG", &runtime.agent_config)
+        .args([
+            "internal",
+            "agent-run",
+            "--payload",
+            &payload::encode(&request).unwrap(),
+        ])
+        .output()
+        .unwrap();
+    // Asserted before the join: if the run got further than the preflight
+    // the thread is still serving, and a join would hang instead of fail.
+    assert_refused_as_busy(&out);
+    assert!(out.stdout.is_empty());
+    served.join().unwrap();
+    assert!(
+        !f.short_state().join("ccnm/sessions").exists(),
+        "a refused preflight must not create a session"
+    );
+}
+
+/// The same handshake is doctor's "Remote MCP handshake" row and
+/// `ccnm mcp probe` on the Agent Node.
+#[test]
+fn a_busy_write_guard_fails_the_agent_side_mcp_probe_as_policy() {
+    let f = Fixture::new();
+    let runtime = BusyRuntime::start(&f);
+    let out = f
+        .command()
+        .env("HOME", &runtime.agent_home)
+        .arg("--config")
+        .arg(&runtime.agent_config)
+        .args(["mcp", "probe", "demo", "--calls", "1"])
+        .output()
+        .unwrap();
+    assert_refused_as_busy(&out);
+}
+
 #[test]
 fn supervisor_re_resolves_named_profile_without_storing_it_in_public_identity() {
     let f = Fixture::new();

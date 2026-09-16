@@ -424,7 +424,7 @@ impl Ssh {
                 // 0 for a refusal too (see `shell_complaint`); the refusal
                 // is still on stderr, and it names itself. Anything else
                 // on stderr is exec-server's own chatter, not a failure.
-                if first_line_is_ccnm_code(out.stderr_lossy().trim()) {
+                if ErrorCode::from_first_line(&out.stderr_lossy()).is_some() {
                     return Err(remote_failure(&self.alias, &subcommand, &out));
                 }
                 Ok(())
@@ -570,7 +570,7 @@ fn shell_complaint(out: &Output) -> Option<RemoteOutcome> {
     }
     let stderr = out.stderr_lossy();
     let stderr = stderr.trim();
-    if stderr.is_empty() || first_line_is_ccnm_code(stderr) {
+    if stderr.is_empty() || ErrorCode::from_first_line(stderr).is_some() {
         return None;
     }
     let lower = stderr.to_lowercase();
@@ -583,31 +583,14 @@ fn shell_complaint(out: &Output) -> Option<RemoteOutcome> {
     None
 }
 
-/// Does this stderr begin with a `CCNM_E_*:` line? That means the remote
-/// ccnm ran and refused, which is a different thing from the shell
-/// refusing to run it.
-fn first_line_is_ccnm_code(stderr: &str) -> bool {
-    stderr
-        .lines()
-        .next()
-        .and_then(|first| first.trim().strip_suffix(':'))
-        .and_then(ErrorCode::from_name)
-        .is_some()
-}
-
 /// The remote ccnm printed `CCNM_E_X:` on its first stderr line if it
 /// failed for a known reason; keep that code instead of flattening
 /// everything to Internal.
 fn remote_failure(alias: &str, subcommand: &[&str], out: &Output) -> Error {
     let stderr = out.stderr_lossy();
     let stderr = stderr.trim();
-    let mut lines = stderr.lines();
-    let (code, rest) = match lines
-        .next()
-        .and_then(|first| first.strip_suffix(':'))
-        .and_then(ErrorCode::from_name)
-    {
-        Some(code) => (code, lines.collect::<Vec<_>>().join("\n")),
+    let (code, rest) = match ErrorCode::from_first_line(stderr) {
+        Some(code) => (code, stderr.lines().skip(1).collect::<Vec<_>>().join("\n")),
         None => (ErrorCode::Internal, stderr.to_string()),
     };
     // A transport that does not carry the exit status reports 0 for a

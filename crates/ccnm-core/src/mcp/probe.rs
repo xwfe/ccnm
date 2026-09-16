@@ -26,7 +26,8 @@ const STDERR_KEEP: usize = 4096;
 
 /// Spawn `transport`, speak MCP to it `calls` times, shut it down.
 /// `unreachable` is the code for a transport that never answered, since
-/// which side is unreachable depends on where this runs.
+/// which side is unreachable depends on where this runs. A server that
+/// refused with its own `CCNM_E_*` keeps that code instead.
 pub fn probe(
     transport: &Cmd,
     calls: u32,
@@ -88,12 +89,22 @@ async fn run(transport: &Cmd, calls: u32, unreachable: ErrorCode) -> Result<Prob
     let client = match ().serve(child).await {
         Ok(client) => client,
         Err(e) => {
-            let tail = stderr_tail(stderr_task).await;
+            let stderr = stderr_task.await.unwrap_or_default();
+            let stderr = String::from_utf8_lossy(&stderr);
+            // A ccnm on the far side that refused before answering -- the
+            // write guard is busy, the audit said no -- names its reason
+            // on the first stderr line, and that is the error: the
+            // transport only carried it. Reported as `unreachable`, a
+            // caller keyed on the code goes to debug a link that works
+            // (P24). Read from the whole stderr, not the kept tail, which
+            // a long explanation pushes that line out of.
+            let code = ErrorCode::from_first_line(&stderr).unwrap_or(unreachable);
             return Err(Error::new(
-                unreachable,
+                code,
                 format!(
-                    "MCP initialize failed over `{}`: {e}{tail}",
-                    transport.display()
+                    "MCP initialize failed over `{}`: {e}{}",
+                    transport.display(),
+                    stderr_tail(&stderr)
                 ),
             ));
         }
@@ -186,9 +197,7 @@ async fn run(transport: &Cmd, calls: u32, unreachable: ErrorCode) -> Result<Prob
 
 /// The last [`STDERR_KEEP`] bytes the transport wrote, formatted for an
 /// error message; empty when it wrote nothing.
-async fn stderr_tail(task: tokio::task::JoinHandle<Vec<u8>>) -> String {
-    let buf = task.await.unwrap_or_default();
-    let text = String::from_utf8_lossy(&buf);
+fn stderr_tail(text: &str) -> String {
     let text = text.trim();
     if text.is_empty() {
         return String::new();
@@ -255,6 +264,66 @@ mod tests {
         .unwrap_err();
         assert_eq!(err.code(), ErrorCode::RuntimeUnreachable);
         assert!(err.message().contains("stderr: nope"), "{err}");
+    }
+
+    #[test]
+    fn a_server_that_refused_keeps_its_code_and_the_transport_stays_in_the_message() {
+        let cmd = Cmd::new("sh").args([
+            "-c",
+            "printf 'CCNM_E_POLICY:\\nworkspace write guard is busy\\n' >&2; exit 33",
+        ]);
+        let err = probe(
+            &cmd,
+            1,
+            Duration::from_secs(5),
+            ErrorCode::RuntimeUnreachable,
+        )
+        .unwrap_err();
+        assert_eq!(err.code(), ErrorCode::Policy, "{err}");
+        let message = err.message();
+        assert!(
+            message.starts_with("MCP initialize failed over `sh "),
+            "{err}"
+        );
+        assert!(
+            message.contains("stderr: CCNM_E_POLICY:\nworkspace write guard is busy"),
+            "{err}"
+        );
+    }
+
+    /// The code is read from the first line the server wrote, not from the
+    /// tail kept for the message: a long explanation pushes that line out.
+    #[test]
+    fn the_code_survives_a_stderr_longer_than_the_kept_tail() {
+        let cmd = Cmd::new("sh").args([
+            "-c",
+            "printf 'CCNM_E_VERSION:\\n' >&2; i=0; while [ $i -lt 200 ]; do printf 'protocol detail line %s\\n' $i >&2; i=$((i+1)); done; exit 11",
+        ]);
+        let err = probe(&cmd, 1, Duration::from_secs(5), ErrorCode::Internal).unwrap_err();
+        assert_eq!(err.code(), ErrorCode::Version, "{err}");
+        let (_, tail) = err.message().split_once("\nstderr: ").unwrap();
+        assert!(
+            !tail.contains("CCNM_E_VERSION"),
+            "the line was in the tail: {err}"
+        );
+    }
+
+    /// ssh's own complaint, or anything not led by a ccnm code, is still the
+    /// caller's "unreachable".
+    #[test]
+    fn a_code_below_the_first_line_is_not_a_verdict() {
+        let cmd = Cmd::new("sh").args([
+            "-c",
+            "printf 'ssh: connect to host runtime port 22: Connection refused\\nCCNM_E_POLICY:\\n' >&2; exit 255",
+        ]);
+        let err = probe(
+            &cmd,
+            1,
+            Duration::from_secs(5),
+            ErrorCode::RuntimeUnreachable,
+        )
+        .unwrap_err();
+        assert_eq!(err.code(), ErrorCode::RuntimeUnreachable, "{err}");
     }
 
     #[test]

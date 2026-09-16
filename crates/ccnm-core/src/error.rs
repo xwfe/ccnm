@@ -105,6 +105,21 @@ impl ErrorCode {
         ErrorCode::ALL.into_iter().find(|c| c.name() == name)
     }
 
+    /// The code another ccnm's stderr opens with -- the `CCNM_E_X:` line
+    /// [`Error`]'s Display starts with -- or `None` when the first line is
+    /// anything else. `Some` means that ccnm ran and refused, which is a
+    /// different thing from ssh or a shell failing to run it. Only the
+    /// first line counts: a code quoted further down is part of somebody's
+    /// explanation, not a verdict.
+    pub fn from_first_line(stderr: &str) -> Option<ErrorCode> {
+        stderr
+            .trim_start()
+            .lines()
+            .next()
+            .and_then(|first| first.trim().strip_suffix(':'))
+            .and_then(ErrorCode::from_name)
+    }
+
     /// Process exit code. Grouped by tens: 1x setup, 2x transport,
     /// 3x workspace state. 0 is success and 2 is reserved for clap usage
     /// errors, so nothing here uses them. 3 sits next to 1 because
@@ -310,6 +325,28 @@ mod tests {
             assert_eq!(ErrorCode::from_name(code.name()), Some(code));
         }
         assert_eq!(ErrorCode::from_name("CCNM_E_FUTURE"), None);
+    }
+
+    #[test]
+    fn from_first_line_reads_only_the_first_line() {
+        let refusal = Error::new(ErrorCode::Policy, "workspace write guard is busy").to_string();
+        assert_eq!(
+            ErrorCode::from_first_line(&refusal),
+            Some(ErrorCode::Policy)
+        );
+        assert_eq!(
+            ErrorCode::from_first_line("\n  CCNM_E_VERSION: \nprotocol 9"),
+            Some(ErrorCode::Version)
+        );
+        for other in [
+            "",
+            "ssh: connect to host runtime port 22: Operation timed out",
+            "Warning: Permanently added 'runtime' to the list of known hosts.\nCCNM_E_POLICY:\nbusy",
+            "CCNM_E_FUTURE:\nnewer than this build",
+            "CCNM_E_POLICY busy",
+        ] {
+            assert_eq!(ErrorCode::from_first_line(other), None, "{other:?}");
+        }
     }
 
     #[test]

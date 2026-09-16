@@ -2,7 +2,7 @@
 
 计划和授权清单见 [P24 会话计划](../plan/p24-native-real-machine-session.md)，设计见[双执行入口方案](../plan/runtime-surfaces.md)第 12 节。脚本、每一轮的原始结果和复跑方法在 toexec 仓库的 [`evidence/v2-c/p24-real/`](https://github.com/xwfe/toexec/blob/main/evidence/v2-c/p24-real/README.md)。
 
-**一句话结论**：Codex 原生链在"macOS Agent + Linux Runtime"上真机可用。读、改、跑测试的改动和进程都在 Runtime 上、属主是专用执行身份；三个入口抢同一把写锁；七类故障（五类各 20 次，冻住和网络黑洞各 5 次）都没有越权副作用、没有重放、没有残留进程，未确认退出不放锁。**要知道的限制**：Agent 静默离网时 Runtime 察觉不到，锁会一直占着，要人工结束那条孤儿连接。模型额度用了 3 次。
+**一句话结论**：Codex 原生链在"macOS Agent + Linux Runtime"上真机可用。读、改、跑测试的改动和进程都在 Runtime 上、属主是专用执行身份；三个入口抢同一把写锁；七类故障（五类各 20 次，冻住和网络黑洞各 5 次）都没有越权副作用、没有重放、没有残留进程，未确认退出不放锁。**要知道的限制**：Agent 静默离网时 Runtime 察觉不到，锁会一直占着，要人工结束那条孤儿连接（P26 之后 Runtime 会探活、10 分钟无响应自己放锁，见 [P26 记录](p26-native-liveness-2026-09-17.md)；本文记的是 P24 构建的行为）。模型额度用了 3 次。
 
 ## 一、环境
 

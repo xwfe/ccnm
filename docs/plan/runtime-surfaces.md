@@ -472,4 +472,5 @@ Codex 启动时会从工作区一路往上查 `.git`（实测直到 `/`）。根
 - **只对 Codex Agent 生效。**同一 workspace 的 Claude 会话仍走 MCP 七工具；opt-in 的 workspace 起 Codex print 会话在创建 session 前拒绝，不退回 MCP。
 - `http/request` 一律拒绝；exec-server 的环境和 MCP `exec_command` 的子进程用同一套清理，`CODEX_HOME` 由 ccnm 生成、不含凭据。
 - **会话结束先证明进程都没了才放锁。**exec-server 给每条命令单独开进程组，`setsid` 脱离的进程它关 stdin 时也不清；ccnm 按每个会话独有的环境变量标记扫进程表，扫不干净锁就留在 `held`（P22）。
+- **静默的 Agent 由 Runtime 判定离开（P26）。**exec-server 协议没有给客户端的 ping，但 Codex 0.154.0 对不认识的服务端**请求**回 `-32601` 并照常工作（不认识的**通知**则会断连）。`exec-serve` 在客户端静默 30 秒时发 `ccnm/liveness` 请求，回答由 ccnm 吃掉、不转给 exec-server；连续 10 分钟没有任何客户端字节、也没有一条大消息在向客户端推进，就走上面那条正常收尾。和 MCP 入口的心跳不同，这里无响应会结束会话——用户选的取舍：离开超过 10 分钟的原生会话作废，换锁不再需要人工去杀 sshd（P24 黑洞 5/5 一直占锁）。
 - Claude 经 exec-server 是另一件事（toexec v2 的 V2-P 实验线），不在这里。

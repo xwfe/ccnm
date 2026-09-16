@@ -342,6 +342,8 @@ codex_exec_server = true     # 默认 false
 
 会话结束时，ccnm 要先确认 exec-server 起过的进程都不在了才放锁。确认不了——比如有进程被杀后还在，或者列不出进程表——锁就保持 `held`，下一个会话按"状态未知"拒绝，恢复步骤和其他入口一样，见[运维手册](operations.md)。
 
+**Agent 离开太久，会话会被 Runtime 结束**（P26）：Runtime 连续 30 秒收不到 Codex 的任何字节就发一个探活请求，Codex 回一个错误就算还在；连续 10 分钟一个字节都没有，就当 Agent 已经不在，按上面的正常收尾放锁。笔记本合盖、断网超过 10 分钟再回来，Codex 的下一条命令会报 `exec-server transport disconnected`，`/exit` 重开即可。这两个时间不能配置；为什么这样选、以及锁没释放时怎么办，见[运维手册](operations.md#agent-静默离网之后exec-server-链的锁一直-held)。
+
 ### `external_instructions`
 
 外部客户端在 MCP 握手里拿到什么项目说明。**只影响上下文，不影响权限**：

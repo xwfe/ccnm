@@ -339,16 +339,31 @@ ccnm stop demo --agent codex-main --session <id>  # 精确停一个
 
 症状：Agent 那台机器断了网、睡着了或者直接关机，之后谁在这个 workspace 上开新会话都报 `workspace write guard is busy`，而 Agent 那边早就没有这个会话了。
 
-**原因**（P24 实测，5 轮都一样）：exec-server 链上 Runtime 不会主动探测对面还在不在——exec-server 的协议没有能发给 Codex 的 ping，sshd 默认 `ClientAliveInterval 0`，连接上没数据可发时内核的 TCP keepalive 要 2 小时才探测。于是 Runtime 上的 `ccnm internal exec-serve` 一直在等，锁一直是它的。**这是对的**：它证明不了对面已经结束，就不该放锁；而且断线之后没有任何命令会被执行。MCP 那两个入口不受影响，它们每 30 秒 ping 一次。
+**先等：从 Agent 最后一次有动静算起，最多 10 分钟锁会自己释放**（P26 起的构建）。Runtime 上的 `ccnm internal exec-serve` 在连接上连续 30 秒收不到任何字节时，发一个探活请求 `ccnm/liveness`。Codex 不认识这个请求，按它的规矩回一个 `-32601` 错误，回了就说明它还在。**连续 10 分钟一个字节都没收到**（探活的回答也没有），`exec-serve` 就按正常路径收尾：关 exec-server、扫进程、写 `released`。Runtime 的 stderr 里是这三行（时间戳省略），第三行出现才说明锁真的放了：
 
-**恢复**，在 Runtime 上以执行账号做，顺序不能反：
+```text
+WARN nothing from the client, not even an answer to a liveness request; ending the exec-server session silent_seconds=600
+INFO exec-server relay ended end=ClientSilent
+INFO exec-server session ended; write guard released session=<session id>
+```
+
+为什么要等这么久、不是立刻判死：TCP 连接在网络抖一下、机器短暂睡眠时是会活过来的，30 秒没回答不代表人走了。10 分钟内回来的会话照常可用：本机把真实 Codex 冻住 2 分钟再恢复，积压的 4 个探活在恢复瞬间全部得到回答，下一条命令正常执行（[P26 记录](research/p26-native-liveness-2026-09-17.md)）。
+
+**代价**：Agent 机器睡眠或断网**超过 10 分钟**，原生会话会被 Runtime 结束。醒来之后 TUI 上**不会**先有任何提示，要等 Codex 的下一条命令报 `exec-server transport disconnected`（[排错手册](troubleshooting.md#codex-会话里模型报-toolsexec_command-is-not-a-function或-exec-server-transport-disconnected)症状 B），在 Codex 里 `/exit` 再起一个会话。结束前没跑完的命令已经被杀掉，不会在断线后继续改文件。
+
+**等了 10 分钟还是 held**，只有两种可能：
+
+- Runtime 上的 ccnm 早于 P26，没有探活。比如 P24 真机验收装在 hpsrv 上的那份（7ae2d4b）就没有。换成新构建，或者按下面的步骤手工结束。
+- 收尾时有进程没能证明已经结束，锁按设计留在 `held`。stderr 里会有 `the workspace write guard stays held`，按[写入 guard 残留](#写入-guard-残留)处理，**不要**用下面的步骤。
+
+**手工结束**（不想等，或者 Runtime 是旧构建），在 Runtime 上以执行账号做，顺序不能反：
 
 1. 从 `write-guards/` 里那个 `held <session> <workspace>` 找到 session id，确认 Agent 那边这个会话确实已经不在了（`ccnm status` 或者 Agent 机器的进程表）。
 2. 找到这个会话的 `ccnm internal exec-serve`（`ps -u <执行账号> -o pid,ppid,args`，payload 里带 session id；看不出来就按 `CCNM_EXEC_SESSION` 环境变量找它起的进程），它的父进程是这条连接的 `sshd-session: <执行账号>@notty`。
 3. 给那个 `sshd-session` 发 TERM。`exec-serve` 读到 EOF，按正常路径关掉 exec-server、扫进程、写 `released`——**不用手工删锁标记**。
 4. 再看一眼 `write-guards/` 里是不是 `released`，带 `CCNM_EXEC_SESSION` 的进程是不是一个都没有。
 
-想让它自己更早发现：给 Runtime 的 sshd 配 `ClientAliveInterval`（系统配置变更，按你们的变更流程走），代价是网络短暂抖动更容易把正常会话断掉。ccnm 自己没有为这条链加空闲超时。
+想比 10 分钟更早发现：给 Runtime 的 sshd 配 `ClientAliveInterval`（系统配置变更，按你们的变更流程走），代价是网络短暂抖动更容易把正常会话断掉。10 分钟这个值目前不能配置。
 
 ### 会话在 initialize 就断，报 "connection closed: initialize response"
 

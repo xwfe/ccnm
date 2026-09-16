@@ -16,6 +16,14 @@ repository = "https://github.com/xwfe/ccnm"
 
 [workspace.dependencies]
 ccnm-core = { path = "crates/ccnm-core" }
+# 跟 gld 共用的文本读取原语（跨仓计划 workspace-kernel 的 V2-K）。
+#
+# **这是本地路径依赖，所以 GitHub Actions 上构建不了**：runner 只
+# checkout 这一个仓库，找不到 ../workspace-kernel。用户 2026-09-16 决定
+# 先这样，不把那个仓库推成远端。要让 CI 重新变绿，二选一：把
+# workspace-kernel 推成远端仓库、这里改成 { git = ..., tag = ... }；或者
+# 撤回这次链接，把 next_line 搬回 mcp/read.rs。取舍见 ROADMAP 的 P16。
+wk-text = { path = "../workspace-kernel/crates/wk-text" }
 base64 = "0.22"
 clap = { version = "4", features = ["derive", "env"] }
 serde = { version = "1", features = ["derive"] }

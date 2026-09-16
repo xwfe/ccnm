@@ -37,6 +37,11 @@ use std::path::Path;
 
 use rmcp::schemars;
 use serde::{Deserialize, Serialize};
+// Shared with gld, which hit the same "one line at a time, but do not hold
+// the line" problem in its own search path. The scan ceiling below stays
+// ccnm's: the primitive takes it as an argument and has no policy of its
+// own (cross-repo plan workspace-kernel, V2-K).
+use wk_text::{LineLimits, Terminator, next_line};
 
 use crate::error::{Error, ErrorCode, Result};
 use crate::mcp::path;
@@ -299,9 +304,14 @@ impl Scan {
         // 2 GB before the scan limit was even looked at.
         let keep = self.limits.max_bytes + 8;
 
+        let limits = LineLimits {
+            keep,
+            scan_limit: Some(MAX_SCAN_BYTES),
+        };
+
         loop {
             raw.clear();
-            let Some(ending) = next_line(&mut reader, &mut raw, keep, &mut scanned)
+            let Some(ending) = next_line(&mut reader, &mut raw, limits, &mut scanned)
                 .map_err(|e| open_error(rel, e))?
             else {
                 self.total_lines = Some(line_no);
@@ -339,13 +349,13 @@ impl Scan {
     }
 
     /// Remember which terminator the line had; `raw` never includes it.
-    fn classify<'a>(&mut self, raw: &'a [u8], ending: Ending) -> &'a [u8] {
+    fn classify<'a>(&mut self, raw: &'a [u8], ending: Terminator) -> &'a [u8] {
         match ending {
-            Ending::Crlf => self.crlf = true,
-            Ending::Lf => self.lf = true,
-            Ending::None => {}
+            Terminator::Crlf => self.crlf = true,
+            Terminator::Lf => self.lf = true,
+            Terminator::None => {}
         }
-        self.last_line_terminated = ending != Ending::None;
+        self.last_line_terminated = ending != Terminator::None;
         raw
     }
 
@@ -450,79 +460,6 @@ impl Scan {
             final_newline,
             notes,
         }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Ending {
-    Crlf,
-    Lf,
-    /// The last line of a file without a final newline.
-    None,
-}
-
-/// Read one line into `raw`, keeping at most `keep` bytes of its body and
-/// counting every byte walked into `scanned`. `None` at end of file.
-///
-/// Stops early, with the line unfinished, once `scanned` passes the scan
-/// limit: the caller refuses the read then, so reading to the end of a line
-/// that may never end would only cost time. The terminator is left out of
-/// `raw` and reported instead, since it may be megabytes past what is kept.
-/// A kept prefix never ends in half a character, so a cut line is not
-/// mistaken for invalid UTF-8.
-fn next_line<R: BufRead>(
-    reader: &mut R,
-    raw: &mut Vec<u8>,
-    keep: usize,
-    scanned: &mut u64,
-) -> std::io::Result<Option<Ending>> {
-    let mut started = false;
-    let mut last = None;
-    let mut cut = false;
-    loop {
-        let chunk = reader.fill_buf()?;
-        if chunk.is_empty() {
-            if !started {
-                return Ok(None);
-            }
-            trim_cut(raw, cut);
-            return Ok(Some(Ending::None));
-        }
-        started = true;
-        let newline = chunk.iter().position(|&b| b == b'\n');
-        let body = &chunk[..newline.unwrap_or(chunk.len())];
-        let room = keep.saturating_sub(raw.len());
-        cut |= body.len() > room;
-        raw.extend_from_slice(&body[..body.len().min(room)]);
-        // The byte before the newline may have come in the previous chunk.
-        let before_newline = body.last().copied().or(last);
-        last = before_newline;
-        let used = newline.map_or(chunk.len(), |at| at + 1);
-        reader.consume(used);
-        *scanned += used as u64;
-        if newline.is_some() {
-            let crlf = before_newline == Some(b'\r');
-            if crlf && !cut {
-                raw.pop();
-            }
-            trim_cut(raw, cut);
-            return Ok(Some(if crlf { Ending::Crlf } else { Ending::Lf }));
-        }
-        if *scanned > MAX_SCAN_BYTES {
-            return Ok(Some(Ending::None));
-        }
-    }
-}
-
-/// Drop a character left incomplete by the `keep` cut.
-fn trim_cut(raw: &mut Vec<u8>, cut: bool) {
-    if !cut {
-        return;
-    }
-    if let Err(e) = std::str::from_utf8(raw)
-        && e.error_len().is_none()
-    {
-        raw.truncate(e.valid_up_to());
     }
 }
 

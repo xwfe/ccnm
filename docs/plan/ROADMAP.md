@@ -38,7 +38,7 @@ ccnm 不需要安装 Orchestrator 也能独立使用。Orchestrator 核心不链
 
 ## 二、顺序和基线
 
-`P0 → P1 → P2 → P3 → P4 → P5 → P6 → P7 → P8 → P9 → P10 → P11 → P12 → P13 → P14 → P15`。默认每轮只执行一个阶段。P0–P8 是 ccnm v1 收口和独立 Orchestrator 的接口交接；P9–P12 是 ccnm v1.x 的 Remote Workspace MCP 扩展；P13 是按真实 Host 行为修正两个入口共用的 instructions 投影。完整边界见 [双执行入口方案](runtime-surfaces.md)。
+`P0 → P1 → P2 → P3 → P4 → P5 → P6 → P7 → P8 → P9 → P10 → P11 → P12 → P13 → P14 → P15 → P16`。默认每轮只执行一个阶段。P0–P8 是 ccnm v1 收口和独立 Orchestrator 的接口交接；P9–P12 是 ccnm v1.x 的 Remote Workspace MCP 扩展；P13 是按真实 Host 行为修正两个入口共用的 instructions 投影。完整边界见 [双执行入口方案](runtime-surfaces.md)。
 
 ### P0 — 已有内部验证基线
 
@@ -249,3 +249,17 @@ worktree **分配、调度、合并策略**在 Orchestrator；受管 workspace �
 - **P15.3** 证据：本机零额度复现延迟池差异（`coding` 与 `read` 两种模式各一对），记录客户端与 ccnm 版本、复跑方式和未覆盖范围；模型侧收益引用 workspace-kernel 的 V2-Q2，不在本仓重跑、不再消耗订阅额度。
 
 停止点：只改文档与示例，不动 ccnm 代码、工具元数据和 `ccnm.workspace-mcp` 版本；其他 Host（Codex 等）没有对应机制，不替它们编配置。
+
+### P16 — 接入共享库的有界行读取
+
+**依赖 P15。用户 2026-09-16 指定推进跨仓计划 workspace-kernel 的 V2-K 主线。**开工前先做了重复度盘点（workspace-kernel 仓库 `evidence/v2-k/duplication-audit.md`）：两个产品的 `read_file` **契约不一样**（非法 UTF-8 一个报错一个有损替换、一个一定读到文件尾一个撞预算就停），不能也不该统一；真正共有的内核只有「读一行但不把整行读进内存」。P14 改出来的 `next_line` 就是它，gld 的搜索路径上还是 `reader.lines()`，同一个缺陷。
+
+本阶段只做 ccnm 这一侧：`next_line` 移到共享 crate `wk-text`，ccnm 改为调用它。**行为逐字节不变**——这是一次纯粹的搬家，不是重写。
+
+**依赖方式是本地 `path`（用户 2026-09-16 决定）**，workspace-kernel 目前没有 remote。已知代价：GitHub Actions 只 checkout 当前仓库，找不到 `../../workspace-kernel`，**ccnm 的 CI 会构建失败**。这不是 bug，是这个选择的直接后果；解除条件见 P16.2。
+
+- **P16.1** `mcp/read.rs` 用 `wk_text::next_line`，删掉本地那份；`Ending` 换成 `wk_text::Terminator`，写死的 `MAX_SCAN_BYTES` 作为 `scan_limit` 参数传进去，仍由 ccnm 决定它是多少。既有 24 个 `mcp::read` 测试**一条断言都不改**，包括 P14 新增的三条（扫描上限、超长行切法、跨缓冲区 CRLF）。
+- **P16.2** `Cargo.toml` 的 path 依赖旁边写清楚：为什么是 path、CI 因此会红、怎么解除（把 workspace-kernel 推成远端仓库改 git 依赖，或者撤回这次链接）。`rust-version` 已经是 1.89，与共享 crate 一致，本阶段不需要改。
+- **P16.3** 离线全量门禁通过（fmt、严格 clippy、`cargo test --workspace`、`external_mcp` 与中立 MCP 客户端测试）；`read_file` 不是 schema 或文档层面的变化，不改协议文档。
+
+停止点：只搬这一个函数。原子写入与回滚是盘点认定收益最大的下一块，但它在写入路径上，等这次的跨仓联动被证明可用之后另立阶段；进程/输出不碰（gld 是 tokio async + 要支持 Windows，ccnm 是同步 + 只跑 Unix）。

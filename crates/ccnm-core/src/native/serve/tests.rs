@@ -111,7 +111,7 @@ fn what_cannot_be_listed_or_killed_is_never_reported_clean() {
     assert!(error.message().contains("stays held"), "{error}");
 }
 
-// ---- Liveness (P25): the relay with timings a test can wait for ----
+// ---- Liveness (P26): the relay with timings a test can wait for ----
 
 const FAST: Timing = Timing {
     ping_after: Duration::from_millis(100),
@@ -200,7 +200,7 @@ fn send(stream: &UnixStream, message: &Value) {
 }
 
 /// Reads everything the supervisor sends and answers each liveness request
-/// the way Codex 0.154.0 did in P25.1. Returns how many it answered.
+/// the way Codex 0.154.0 did in P26.1. Returns how many it answered.
 fn answer_like_codex(stream: UnixStream) -> std::thread::JoinHandle<usize> {
     std::thread::spawn(move || {
         let mut answered = 0;

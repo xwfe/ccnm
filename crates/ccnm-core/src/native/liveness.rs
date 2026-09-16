@@ -1,5 +1,5 @@
 //! Noticing that the Codex on the other end of an exec-server chain is gone
-//! (P25).
+//! (P26).
 //!
 //! An Agent that drops off the network without closing anything leaves this
 //! side reading a stdin that never ends: no FIN, no RST, so sshd waits and
@@ -10,9 +10,9 @@
 //!
 //! What it has is Codex 0.154.0's client answering every server-to-client
 //! **request** it does not know with `-32601` and carrying on (its
-//! `exec-server/src/client_recovery.rs`; measured in P25.1: 155 requests
-//! idle and mid-command, every one answered within 2 ms, no reconnect, nothing
-//! shown in the TUI). An unknown **notification** would make it drop the
+//! `exec-server/src/client_recovery.rs`; measured in P26.1: 155 requests
+//! idle and mid-command, every one answered within 11 ms, no reconnect,
+//! nothing shown in the TUI). An unknown **notification** would make it drop the
 //! connection instead, so a liveness message here is always a request.
 //!
 //! The rule, and why it is not the MCP rule: after [`PING_AFTER`] of client

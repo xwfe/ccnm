@@ -101,7 +101,7 @@ fn only_answers_to_liveness_ids_are_taken_out_of_the_stream() {
     assert_eq!(request["method"], "ccnm/liveness");
     assert!(!is_answer(&request), "the request itself is not an answer");
 
-    // What Codex 0.154.0 sent back, measured in P25.1.
+    // What Codex 0.154.0 sent back, measured in P26.1.
     let answer = serde_json::json!({"id": request["id"], "error": {"code": -32601, "message": "exec-server client does not implement `ccnm/liveness` yet"}});
     assert!(is_answer(&answer));
     for other in [

@@ -38,7 +38,7 @@ ccnm 不需要安装 Orchestrator 也能独立使用。Orchestrator 核心不链
 
 ## 二、顺序和基线
 
-`P0 → P1 → P2 → P3 → P4 → P5 → P6 → P7 → P8 → P9 → P10 → P11 → P12 → P13 → P14 → P15 → P16 → P17`。默认每轮只执行一个阶段。P0–P8 是 ccnm v1 收口和独立 Orchestrator 的接口交接；P9–P12 是 ccnm v1.x 的 Remote Workspace MCP 扩展；P13 是按真实 Host 行为修正两个入口共用的 instructions 投影。完整边界见 [双执行入口方案](runtime-surfaces.md)。
+`P0 → P1 → P2 → P3 → P4 → P5 → P6 → P7 → P8 → P9 → P10 → P11 → P12 → P13 → P14 → P15 → P16 → P17 → P18`。默认每轮只执行一个阶段。P0–P8 是 ccnm v1 收口和独立 Orchestrator 的接口交接；P9–P12 是 ccnm v1.x 的 Remote Workspace MCP 扩展；P13 是按真实 Host 行为修正两个入口共用的 instructions 投影。完整边界见 [双执行入口方案](runtime-surfaces.md)。
 
 ### P0 — 已有内部验证基线
 
@@ -275,3 +275,17 @@ worktree **分配、调度、合并策略**在 Orchestrator；受管 workspace �
 - **P17.3** 离线全量门禁通过（fmt、严格 clippy、`cargo test --workspace`、`external_mcp`、中立 MCP 客户端）；不改协议、schema 和 `ccnm.workspace-mcp` 版本。
 
 停止点：只换这两处调用。journal、备份策略、回滚编排、`apply_patch` 的语义都不动；父目录 fsync 是另一个决定（共享库文档里记了这个已知边界），本阶段不做。
+
+### P18 — 冻结协议的工具表 fixture 由代码兜住
+
+**依赖 P17。用户 2026-09-16 报告，起因是给 gld 写远端工具白名单时逐条核对 fixture 与实现。**`fixtures-mcp/tools-list-coding.json` 里 `apply_patch` 的参数写的是 `changes`，实现（`ApplyPatchArgs`）在 wire 上叫 `files`，结构体没有 `serde(rename)` 也没有 `alias`——照 fixture 实现的 Host 发 `{"changes": [...]}` 会被直接拒。两份 fixture 另外漏了 6 个真实存在的参数（`read_file` 的 `end_line`/`max_bytes`、`list_files` 的 `include_hidden`、`search_text` 的 `glob`/`case_sensitive`/`context_lines`、`exec_command` 的 `preview_bytes`）和 `apply_patch` 的 `dry_run`。
+
+**`check_protocol.py` 拦不住，是设计如此**：它把 fixture 对着 `schema/` 里手写的 JSON Schema 校验，而那份 schema 把 `inputSchema` 写成"任意 object"。fixture 和 schema 互相一致，两边一起跟二进制不一致——冻结的是两份手写文件，不是实现。
+
+**fixture 的定位按证据判定为字面 wire 样本**：七个工具的 `description` 与 `mcp/server.rs` 的 `#[tool(description = ...)]` 逐字节相同，其余 fixture 也都是实测报文（`call-read-file-ok` 的 `$note` 记的就是 Claude Code 2.1.260 的实测行为）。而且**协议正文里没有任何参数表**——第 5 节只有 annotations，第 8 节只顺带提了 4 个上限参数，所以这两份 fixture 是参数名在文档侧的唯一记载。因此参数名和 `required` 必须完整且精确；每个参数的类型、上下界和说明仍写简写，因为它们是 schemars 从 Rust 类型生成的，把生成细节冻进来会制造假失败。
+
+- **P18.1** 两份 fixture 的参数名集合与 `required` 补齐到与实现一致：`changes` 改成 `files`，补上 `dry_run` 和那 6 个漏掉的参数。`$note` 写明哪部分是精确的（名字、必填）、哪部分是简写（类型与边界），以及以谁为准。
+- **P18.2** 加一道**从代码生成**的检查：`external_mcp` 里起真实 `internal mcp-serve`，两种模式各取一次 `tools/list`，与对应 fixture 逐工具比参数名集合和 `required` 集合，对不上就失败。这条只比名字和必填，不比 description、类型和数值边界——比多了会在升 schemars 或改一句说明时假红。
+- **P18.3** `schema/remote-workspace-mcp-v1.schema.json` 不再把 `inputSchema` 当任意 object，至少要求 `type` 和 `properties` 在场；协议文档第 13 节写明名字这道检查在哪条命令里，以及 `check_protocol.py` 为什么证明不了它。四条协议命令全过。
+
+停止点：只对齐工具表 fixture 的参数名并加这道检查。不改任何工具的行为、参数、默认值和 `ccnm.workspace-mcp` 版本——补的全是本来就在 wire 上的名字，属于修正记载而不是加字段；也不给别的 fixture（调用结果、启动诊断）加代码驱动检查，那些要对的是报文正文，是另一件事。

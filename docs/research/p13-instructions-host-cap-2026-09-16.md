@@ -77,6 +77,18 @@ Codex 0.154 源码（`codex-mcp/src/rmcp_client.rs`）把 instructions 作为工
 | `provider_compat::claude_behavior_matches_snapshot_…` | golden fixture **没有重录**：测试把旧文本拆成四段按新顺序重拼后比对，内容一字不差，只动位置和段间换行 |
 | `provider::codex::tests::root_context_follows_measured_override_priority_and_budget` | Codex 仍是 16 KiB 字节 |
 
+## 双机复查（2026-09-16，升级之后）
+
+Runtime（xdw_mbp）装上 0.7.0 后，在 Agent（fodelf，仍是 0.6.0）上跑 `ccnm doctor xdo`，远端 MCP 握手这一行：
+
+```text
+远端 MCP 握手  正常  initialize in 570 ms, tools/list (7 tools, 8852 B),
+                     instructions 3021 B (CLAUDE.md, 3370 bytes, first 2341 shown;
+                     read_file CLAUDE.md for the rest), workspace_info x1 …
+```
+
+这是真实双机、真实 SSH、真实项目文件（xdo 的 `CLAUDE.md` 3370 字节）下的新格式：标记行写明给了多少、怎么读全文。发起方是 ccnm 自己的 probe，不是 Claude Code，所以仍然不能由此推断模型看到了什么。旧 Agent 读新 Runtime 的握手没有问题——`parse_marker` 在 0.6.0 里是从后往前找，这段文本里只有一条标记行。
+
 ## 行为变化与兼容
 
 - 只改 `initialize.result.instructions` 的长度和段落顺序；工具、权限、错误码、wire 版本都不变。`ccnm.workspace-mcp/1` 冻结条款没有覆盖上下文文本长度，协议第 8、10 节已同步。

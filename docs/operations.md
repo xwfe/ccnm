@@ -27,7 +27,7 @@ bash scripts/deploy.sh <另一台的 ssh 别名> [workspace]
 于是升级之后：
 
 ```text
-Remote MCP handshake    FAIL   CCNM_E_RUNTIME_UNREACHABLE: ...
+Remote MCP handshake    FAIL   CCNM_E_POLICY: MCP initialize failed over ...
                                stderr: CCNM_E_POLICY:
                                workspace write guard is busy; another session still owns this working tree
 ```

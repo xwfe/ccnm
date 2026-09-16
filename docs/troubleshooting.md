@@ -42,18 +42,18 @@ Claude 不会自己重连。
 `ccnm status <ws>` 和 `ccnm doctor <ws>` 都会明说这个状态——**看着正常的会话是不会显示
 这行的**，所以看到了就是真断了。
 
-### `ccnm run` 报 `CCNM_E_RUNTIME_UNREACHABLE`，正文里却写着 `workspace write guard is busy`
+### `ccnm run` 报 `CCNM_E_POLICY`，第二行却是 `MCP initialize failed over …`
 
 ```text
-CCNM_E_RUNTIME_UNREACHABLE:
+CCNM_E_POLICY:
 MCP initialize failed over `/usr/bin/ssh … internal mcp-serve --payload …`: connection closed: initialize response
 stderr: CCNM_E_POLICY:
 workspace write guard is busy; another session still owns this working tree
 ```
 
-**Runtime 其实连得上**，是这个 workspace 的写锁被别的会话占着。从 Agent Node 起会话时，ccnm 先做一次 MCP 握手预检，预检失败一律归成"Runtime 不可达"（退出码 21），真正的原因在 `stderr:` 后面那几行。按 `workspace write guard is busy` 去处理：看 Runtime 上 `write-guards/` 里是谁占着，见[写入 guard 残留](operations.md#写入-guard-残留)；占锁的是已经离网的 Codex exec-server 会话时，见[静默离网之后锁一直 held](operations.md#agent-静默离网之后exec-server-链的锁一直-held)。
+**Runtime 连得上，是这个 workspace 的写锁被别的会话占着**（退出码 33）。起会话前，Agent Node 上的 ccnm 先经 ssh 跟 Runtime 做一次 MCP 握手预检；Runtime 在握手之前拒绝，第一行就是它给的理由。`MCP initialize failed over …` 那一行不是另一个错误，只是说明这个拒绝从哪条链路带回来的，看着像网络问题，其实不是。按 [MCP 初始化报 busy 或 unknown](#mcp-初始化报-workspace-write-guard-is-busy-或-unknown) 处理：看 Runtime 上 `write-guards/` 里是谁占着，见[写入 guard 残留](operations.md#写入-guard-残留)；占锁的是已经离网的 Codex exec-server 会话时，见[静默离网之后锁一直 held](operations.md#agent-静默离网之后exec-server-链的锁一直-held)。`ccnm doctor` 的 `Remote MCP handshake` 行和 `ccnm mcp probe` 走的是同一次握手，报法一样。
 
-写脚本判断时**别只看错误码**，这里的码是错的（P24 真机撞到，另立阶段修）。
+**旧版本的第一行是 `CCNM_E_RUNTIME_UNREACHABLE`（退出码 21），原因相同。** 已发布的 0.7.0 及更早版本把握手时 Runtime 的拒绝一律报成"连不上 Runtime"，真正的码只在 `stderr:` 后面（P24 真机撞到，P25 修）。预检在 Agent Node 上跑，所以看的是**Agent Node 上** ccnm 的版本；脚本按退出码判断时，那边还是旧版就得先看 `stderr:` 后面第一行。真连不上（ssh 超时、拒绝连接、认证失败）新旧版本都还是 `CCNM_E_RUNTIME_UNREACHABLE`。
 
 ### Codex 会话里模型报 `tools.exec_command is not a function`，或 `exec-server transport disconnected`
 
@@ -252,7 +252,7 @@ ccnm mcp bridge <workspace> --node <node> --mode read < /dev/null
 ```text
 No Claude credential    FAIL  the Runtime identity can access a known Agent credential file or container
 exec_command            FAIL  refused until the runtime account is confined
-Remote MCP handshake    FAIL  CCNM_E_RUNTIME_UNREACHABLE: connection closed: initialize response
+Remote MCP handshake    FAIL  CCNM_E_POLICY: MCP initialize failed over `…`: connection closed: initialize response
 ```
 
 **其实是**：跑项目命令的那个账号，家里有 `~/.claude` / `~/.codex`。ccnm 存在的理由就是把这两件事分开，所以它在 `initialize` 之前就拒了。**`allow_unconfined_exec` 救不了**，那个开关只接受 confinement 风险。

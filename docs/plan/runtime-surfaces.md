@@ -466,5 +466,6 @@ Codex 启动时会从工作区一路往上查 `.git`（实测直到 `/`）。根
 - **规则表只核对 sandbox 在不在是不够的。**人在 Codex 里批准提权后，命令会带 `sandbox: null`，越界 patch 会带一条多出来的路径写条目；逐方法的规则见 P21 记录的规则表。
 - **Linux Runtime 要装 bubblewrap，并允许执行账号创建 user namespace**，否则 Codex 发来的沙箱起不来（失败即拒，命令不执行）。
 - **不 resume。**断线就结束会话，与 ccnm v1 一致；网桥只放行一条连接，受管入口拒绝带 `resumeSessionId` 的握手。
-- `http/request` 一律拒绝；exec-server 的环境按白名单构造，`CODEX_HOME` 由 ccnm 生成、不含凭据。
+- `http/request` 一律拒绝；exec-server 的环境和 MCP `exec_command` 的子进程用同一套清理，`CODEX_HOME` 由 ccnm 生成、不含凭据。
+- **会话结束先证明进程都没了才放锁。**exec-server 给每条命令单独开进程组，`setsid` 脱离的进程它关 stdin 时也不清；ccnm 按每个会话独有的环境变量标记扫进程表，扫不干净锁就留在 `held`（P22）。
 - Claude 经 exec-server 是另一件事（toexec v2 的 V2-P 实验线），不在这里。

@@ -81,7 +81,7 @@ Linux musl 发行包 `codex --version` 是 `codex-cli 0.154.0`，握手返回的
 
 ## P21.5 冻结的方法规则表
 
-P22 照这张表实现。表里没列的方法一律拒。"在根内"指先查原始输入、拒绝 `..`，再解析 symlink 后仍在 workspace 根内（第 12.2 节）；原型只做了字符串前缀比较，symlink 部分由 P22 实现并测试。
+P22 照这张表实现。表里没列的方法一律拒。实现时补了几条，下表里标"（P22 补）"，原因见 [P22 记录](p22-exec-serve-2026-09-16.md)。"在根内"指先查原始输入、拒绝 `..`，再解析 symlink 后仍在 workspace 根内（第 12.2 节）；原型只做了字符串前缀比较，symlink 部分由 P22 实现并测试。
 
 | 方法 | 放行条件 | 不满足时回 |
 | --- | --- | --- |
@@ -91,9 +91,9 @@ P22 照这张表实现。表里没列的方法一律拒。"在根内"指先查�
 | `environmentConfig/read` | 放行；服务端 `CODEX_HOME` 由 ccnm 生成、不含凭据、不在临时目录 | — |
 | `environment/info`、`environment/status` | 放行（只返回服务端环境信息） | — |
 | `fs/getMetadata`、`fs/readFile`、`fs/readDirectory`、`fs/walk`、`fs/canonicalize`、`fs/open` | 路径在根内，不看 sandbox | 根以上的 `<祖先目录>/.git`：`-32004 No such file or directory (os error 2)`；其余 `-32600` |
-| `fs/readBlock`、`fs/close` | 放行；句柄只可能来自放行过的 `fs/open`——句柄是否按连接隔离由 P22 测 | — |
-| `fs/writeFile`、`fs/remove`、`fs/copy`、`fs/createDirectory` | 每个路径参数都在根内，且 sandbox 合规 | `-32600` |
-| `process/start` | `cwd` 在根内，sandbox 合规，`managedNetwork` 为 `null`，`enforceManagedNetwork` 为 `false` | `-32600` |
+| `fs/readBlock`、`fs/close` | 放行；句柄只可能来自放行过的 `fs/open`，而每个会话有自己的 exec-server 进程，句柄跨不了会话 | — |
+| `fs/writeFile`、`fs/remove`、`fs/copy`、`fs/createDirectory` | 每个路径参数都在根内，且 sandbox 合规；写入目标按 MCP `apply_patch` 的规则：不写 `.git`、不写穿 symlink、不写根本身（P22 补） | `-32600` |
+| `process/start` | `cwd` 在根内，sandbox 合规，`managedNetwork` 为 `null`，`enforceManagedNetwork` 为 `false`；`networkProxy`、`shellSnapshot` 为空；`envPolicy.inherit` 为 `all`、`includeOnly` 为空，且 `exclude`/`set`/`env` 不碰会话标记变量 `CCNM_EXEC_SESSION`（P22 补） | `-32600` |
 | `process/read`、`process/write`、`process/signal`、`process/terminate` | 放行 | — |
 | `http/request` | 一律拒 | `-32600` |
 | `capabilityRoots/discoverV1` 及其余方法 | 拒 | `-32601` |
@@ -105,6 +105,7 @@ P22 照这张表实现。表里没列的方法一律拒。"在根内"指先查�
 3. `workspaceRoots` 恰好是 `[workspace 根]`，`cwd` 在根内。
 4. `file_system.entries` 的每一条都在下面 7 条之内——这就是实测 workspace-write 的完整形状：根目录读；`project_roots` 写；`slash_tmp` 写；`tmpdir` 写；`project_roots` 下的 `.git`、`.agents`、`.codex` 读。**任何 `{"type": "path"}` 条目都拒**，Codex 批准越界写时加的就是它。
 5. `useLegacyLandlock` 为 `false`。Windows 相关字段不校验。
+6. （P22 补）`temporaryDirectories` 为空——`tmpdir` 条目按它解析，客户端填了就能指向任何地方；出现上面没列的 sandbox 字段就拒；条目的 `missing_path_behavior` 只接受 `skip`。
 
 **命令能读什么不归这张表管**：`process/start` 放行后，命令能读 ccrun 能读的一切，写入受上面这份 sandbox 限制，与 MCP 的 `exec_command` 一样（第 12.2 节）。
 

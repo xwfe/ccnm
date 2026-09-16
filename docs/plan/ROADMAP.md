@@ -38,7 +38,7 @@ ccnm 不需要安装 Orchestrator 也能独立使用。Orchestrator 核心不链
 
 ## 二、顺序和基线
 
-`P0 → P1 → P2 → P3 → P4 → P5 → P6 → P7 → P8 → P9 → P10 → P11 → P12 → P13 → P14 → P15 → P16 → P17 → P18 → P19 → P20 → P21 → P22 → P23 → P24 → P25`。默认每轮只执行一个阶段。P0–P8 是 ccnm v1 收口和独立 Orchestrator 的接口交接；P9–P12 是 ccnm v1.x 的 Remote Workspace MCP 扩展；P13 是按真实 Host 行为修正两个入口共用的 instructions 投影；P21–P24 是 Codex 原生执行链；P25 给 CI 补上声明的 rust-version 那一遍编译。完整边界见 [双执行入口方案](runtime-surfaces.md)。
+`P0 → P1 → P2 → P3 → P4 → P5 → P6 → P7 → P8 → P9 → P10 → P11 → P12 → P13 → P14 → P15 → P16 → P17 → P18 → P19 → P20 → P21 → P22 → P23 → P24 → P28`。默认每轮只执行一个阶段。P0–P8 是 ccnm v1 收口和独立 Orchestrator 的接口交接；P9–P12 是 ccnm v1.x 的 Remote Workspace MCP 扩展；P13 是按真实 Host 行为修正两个入口共用的 instructions 投影；P21–P24 是 Codex 原生执行链；P28 给 CI 补上声明的 rust-version 那一遍编译（P25–P27 在别的分支上，见 P28 的编号说明）。完整边界见 [双执行入口方案](runtime-surfaces.md)。
 
 ### P0 — 已有内部验证基线
 
@@ -364,12 +364,12 @@ worktree **分配、调度、合并策略**在 Orchestrator；受管 workspace �
 
 停止点：原生链成为 opt-in 的可用能力。要不要改成默认，另做决定。
 
-### P25 — CI 在声明的 rust-version 上编译一遍
+### P28 — CI 在声明的 rust-version 上编译一遍
 
-**依赖 P24。用户 2026-09-17 指定立项，起因是 toexec v2 计划第 11 节"对齐检查"第 5 行。**计划要求 ccnm、gld、toexec 统一 `rust-version` 时各加一个 MSRV（最低支持的 Rust 版本）CI 任务：`cargo +<版本> check --workspace --all-targets --locked`。三仓都已是 1.89，任务没加。ccnm 的 CI 只跑 stable，代码里用了比 1.89 更新的 std API 照样全绿，要等有人拿 1.89 编译才炸。gld 和 toexec 的对应改动记在各自仓库，这里只管 ccnm。
+**依赖 P24。用户 2026-09-17 指定立项，起因是 toexec v2 计划第 11 节"对齐检查"第 5 行。**（编号说明：P24 之后有四个阶段在不同分支上几乎同时开工，开发时都叫 P25。按 P20 的先例以开工先后排：握手错误码（23:58）、原生链探活（23:59）、doctor 探原生链（00:05）、本阶段（00:10），所以本阶段是 P28，提交 f8df7e4、2a4190b、31a2d28 消息里的 P25 指的就是它。合并前本分支上它直接跟在 P24 后面；合并进有 P27 的 main 时，depends_on 改成 P27。）计划要求 ccnm、gld、toexec 统一 `rust-version` 时各加一个 MSRV（最低支持的 Rust 版本）CI 任务：`cargo +<版本> check --workspace --all-targets --locked`。三仓都已是 1.89，任务没加。ccnm 的 CI 只跑 stable，代码里用了比 1.89 更新的 std API 照样全绿，要等有人拿 1.89 编译才炸。gld 和 toexec 的对应改动记在各自仓库，这里只管 ccnm。
 
-- **P25.1** CI 加 `msrv` job：版本从根 `Cargo.toml` 的 `rust-version` 读，不在 workflow 里再写一遍，读不到或读到不止一行就失败；装该版本后跑上面那条命令；缓存 key 与 stable 的 job 分开。只跑一个平台，前提是全仓按 OS 分支的代码只有 `native::serve::marked_processes`（Linux 读 `/proc`，其他平台调 `ps`），也没有按平台区分的依赖；以后加了平台专属代码或依赖，要重新判断。
-- **P25.2** 推送前本机验证：1.89 上 check 通过且没有警告，本机 macOS 目标和 Linux 目标各一遍；依赖闭包里没有声明高于 1.89 的 crate（有就停下报告，不悄悄升）；从全新 clone、空 `CARGO_HOME`、没有 git 凭据的环境匿名拉到 toexec 的 tag 并通过 check。
-- **P25.3** 推送后 GitHub Actions 上 `msrv` job 通过。推送要用户批准。
+- **P28.1** CI 加 `msrv` job：版本从根 `Cargo.toml` 的 `rust-version` 读，不在 workflow 里再写一遍，读不到或读到不止一行就失败；装该版本后跑上面那条命令；缓存 key 与 stable 的 job 分开。只跑一个平台，前提是全仓按 OS 分支的代码只有 `native::serve::marked_processes`（Linux 读 `/proc`，其他平台调 `ps`），也没有按平台区分的依赖；以后加了平台专属代码或依赖，要重新判断。
+- **P28.2** 推送前本机验证：1.89 上 check 通过且没有警告，本机 macOS 目标和 Linux 目标各一遍；依赖闭包里没有声明高于 1.89 的 crate（有就停下报告，不悄悄升）；从全新 clone、空 `CARGO_HOME`、没有 git 凭据的环境匿名拉到 toexec 的 tag 并通过 check。
+- **P28.3** 推送后 GitHub Actions 上 `msrv` job 通过。推送要用户批准。
 
 停止点：rust-version 有了 CI 门禁。以后升级仍按 toexec 计划第 11 节三仓同步，提交说明写明是哪个依赖或 std API 要求。

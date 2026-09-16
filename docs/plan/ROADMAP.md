@@ -342,14 +342,14 @@ worktree **分配、调度、合并策略**在 Orchestrator；受管 workspace �
 
 停止点：Runtime 侧离线可验；还没有东西从 Agent 侧连它，Codex 的启动参数一行不改。
 
-### P23 — Agent 侧网桥与 Codex 启动接线
+### P23 — Agent 侧接线：Codex 自带的 stdio 传输接 Runtime 的 exec-serve
 
-**依赖 P22。**
+**依赖 P22。立项时写的是"WebSocket 网桥 + 查对端 uid"。开工前核对 Codex 0.154.0 源码并零额度实测（[P23 记录](../research/p23-stdio-transport-2026-09-16.md)）：TUI 启动时读 `CODEX_HOME/environments.toml`，里面用 `program`/`args` 声明的 stdio 子进程就是 exec-server 传输——Codex 自己 spawn 它、自己持有两端管道，断线后不重启它、不 resume。于是监听端口、对端 uid、WebSocket 依赖都不需要了；P23.1/P23.2 按实测改写，toexec G05-peer 的 uid 方案留作对照，不进产品。**
 
-- **P23.1** 网桥：session supervisor 在 Agent Node 监听 `127.0.0.1` 的随机端口，accept 之后查对端 socket 属于哪个 uid（macOS 读 `net.inet.tcp.pcblist64`，Linux 用 sock_diag），只放行与 Codex 同一 uid 的连接，查不到就拒。**每个会话只放行一条连接**，断了就不再接受——否则 Codex 会自己 resume，把断线后的命令继续执行。带 Origin 头的升级请求拒绝。URL 里不放任何秘密。
-- **P23.2** 传输：WebSocket 文本帧与 SSH stdio 上的逐行 JSON 互转；SSH 复用 `session/transport.rs`（清环境、禁 agent forwarding、不复用个人 ControlMaster）。网桥不解析方法。
-- **P23.3** 启动接线：原生链是显式 opt-in 的配置项（名字和挂在 instance 还是 workspace 上，本阶段定），默认仍是 MCP 七工具，旧配置行为不变。打开后 Codex 以交互模式带 `CODEX_EXEC_SERVER_URL` 和 `-C <Runtime 根>` 启动（不带 `-C` 时它发的是 Agent 本机目录，全部失败）；工具开关用 P21.2 实测过的组合。**print 模式在创建 session 前拒绝**（P21.1：`codex exec` 要求 Agent 本机有同一路径），不静默退回 MCP 或 Agent 本机执行。
-- **P23.4** 离线端到端（零额度）：真实 Codex + 本机假模型接口 + 禁出站沙箱，经网桥和本机内部入口完成读、改、跑命令；另一个 OS 用户连网桥被拒（Linux 容器）；断线后第二条命令哪里都没执行；Runtime 拒绝的请求在 Codex 里表现为工具失败，不退回本机执行。Rust 与 Python 门禁通过。
+- **P23.1** 传输程序：`ccnm internal exec-transport --payload <session>`，由 Codex 按 environments.toml 启动，在 Agent Node 上 exec 成一条 `/usr/bin/ssh`（复用 `session/transport.rs` 那套：清环境、禁 agent forwarding、不复用个人 ControlMaster），远端命令是 `ccnm internal exec-serve --payload <NativeOpenPayload>`。没有监听端口，别的 OS 用户没有东西可连；每会话一条连接由 Codex 保证（实测传输程序死掉后它不再启动第二个，第二条命令报 `exec-server transport disconnected`）。传输程序不解析方法。
+- **P23.2** 每会话 CODEX_HOME：Codex 只从 `CODEX_HOME/environments.toml` 读传输配置，而 profile 目录是登录凭据所在、同一实例的多个会话共用，不能往里写会话相关文件。所以每个原生会话在 session 目录下生成自己的 `codex-home/`：`environments.toml`（`default = "ccnm"`、`include_local = false`、`program` 指向本机 ccnm）；`auth.json` 是指向 profile 里 `auth.json` 的 symlink（实测 Codex 读写都穿过 symlink：token 刷新写回 profile，0600 保留，symlink 不变）；`config.toml` 只写一条对 Runtime 根的 `trust_level = "trusted"`（不写的话每个会话都弹一次信任提示，`-c projects.<根>.trust_level` 命令行覆盖实测压不住它）。ccnm 不读、不复制凭据内容；profile 本身的校验不变。
+- **P23.3** 启动接线：opt-in 就是 Runtime 上已有的 `codex_exec_server = true`，Agent 从 `runtime-resolve` 得知（报告新增 `codex_exec_server` 字段；打开时 `root` 改报 canonical 路径——Codex 用 `-C` 拼出的每条 URI 都按它来，规则表按 canonical 判）。只对 Codex Agent 生效，同一 workspace 的 Claude 会话仍走 MCP，不打开时行为不变。打开后 Codex 以交互模式启动：`-C <Runtime 根>`、`--sandbox workspace-write`、不注入 ccnm MCP server，`shell_tool` / `unified_exec` / `unified_exec_tty` 三个 feature 保持打开（P21.2 实测的组合），其余仍关。**print 模式在创建 session 前拒绝**（P21.1：`codex exec` 要求 Agent 本机有同一路径），不静默退回 MCP 或 Agent 本机执行。创建会话前先经 `exec-serve` 做一次空会话预检：Runtime 没 opt-in、没 `codex_bin`、版本不对，都在起 Codex 之前报出来。
+- **P23.4** 离线端到端（零额度）：真实 Codex 0.154.0 + 本机假模型接口 + 禁出站沙箱，经 environments.toml → `ccnm internal exec-serve` → 真 exec-server 完成读、改、跑命令；Runtime 拒绝的请求（批准提权后的命令）在 Codex 里表现为工具失败、不退回本机执行；传输断线后第二条命令哪里都没执行、Codex 不重启传输程序；Runtime 连不上时同样只报失败；会话期间 Codex 进程树没有监听端口。SSH 那一跳用本机 TCP 管道代替，原因写在记录里。Rust 与 Python 门禁通过。
 
 停止点：离线闭环可复现。不部署、不跑真实模型、不改默认执行方式。
 

@@ -431,23 +431,25 @@ ROADMAP 的 P9–P12 对应以下顺序；P8 仍先完成独立 Orchestrator 的
 来自跨仓计划 toexec v2 的 V2-C。**现在的 Managed Codex 关掉自己的执行工具，改用 ccnm 的七个 MCP 工具**；原生链让 Codex 用它自带的执行工具，由官方 `codex exec-server` 在 Runtime 上执行。它是入口 A 在 Codex 上的一个 opt-in 变体，默认仍走 MCP，不影响 Claude 和入口 B。
 
 ```text
-Agent Node（Agent Identity）                        Runtime Node（ccrun）
-Codex ── ws://127.0.0.1:<端口> ──> ccnm 网桥 ── SSH stdio ──> ccnm 受管入口 ── stdio ──> codex exec-server
-         URL 里没有秘密            按对端 uid 放行             解析 workspace / 审计
-                                   每会话只放一条连接          写锁 / 按方法过滤
+Agent Node（Agent Identity）                                        Runtime Node（ccrun）
+Codex ── stdio（它自己 spawn 的子进程）──> ccnm exec-transport ── SSH stdio ──> ccnm exec-serve ── stdio ──> codex exec-server
+         按 CODEX_HOME/environments.toml 起      exec 成一条 ssh                 解析 workspace / 审计
+         没有端口、没有秘密                      每会话一条，Codex 保证            写锁 / 按方法过滤
 ```
 
 ### 12.1 谁负责什么
 
 | 位置 | 负责 | 不负责 |
 | --- | --- | --- |
-| Agent 侧网桥 | 只认与 Codex 同一 OS 用户的连接；每会话只放行一条；WebSocket 帧与逐行 JSON 互转 | 不解析方法、不做授权——授权只在 Runtime 做一次，避免两份规则漂开 |
+| Agent 侧传输程序 | 被 Codex 按每会话的 `environments.toml` 启动，exec 成一条到 Runtime 的 ssh；每会话一份 CODEX_HOME（`auth.json` symlink 到 profile，`environments.toml`，`config.toml` 只有信任条目） | 不解析方法、不做授权——授权只在 Runtime 做一次，避免两份规则漂开 |
 | Runtime 受管入口 | 按自己的配置解析 workspace、安全审计、取写锁、监督 exec-server、逐条过滤 JSON-RPC | 不信任客户端给的 root、sandbox 或版本声明 |
 | exec-server | 执行已放行的请求 | **不能当权限边界**：它完全信客户端传来的 sandbox |
 
 授权放在 Runtime，是因为路径要在项目所在的文件系统上解析 symlink 才判得准，root 也只有 Runtime 知道。
 
-依据（toexec 仓库，均为 Codex 0.154.0 实测、零模型额度）：[连接身份](https://github.com/xwfe/toexec/blob/main/evidence/v2-c/g05-peer/README.md)（URL 令牌方案否决；按 uid 放行通过；放行重连时 Codex 会自己 resume）、[协议](https://github.com/xwfe/toexec/blob/main/evidence/v2-c/g01/README.md)（没有版本协商；未知通知和超过 64 MiB 的帧直接断连）、[权限](https://github.com/xwfe/toexec/blob/main/evidence/v2-c/g06/README.md)（`sandbox: null` 就不受限；`http/request` 无限制；`environmentConfig/read` 返回服务端配置里的凭据）。
+**为什么不是 WebSocket 网桥。**立项时按 `CODEX_EXEC_SERVER_URL` 设计：ccnm 在 Agent 本机监听回环端口、按对端 uid 放行、每会话只放一条连接（toexec G05-peer 实测通过）。P23 开工前核对 0.154.0 源码：TUI 启动时先读 `CODEX_HOME/environments.toml`，里面每个环境要么写 `url`（WebSocket），要么写 `program`/`args`/`env`/`cwd`——后者由 Codex 自己 spawn 成子进程、拿它的 stdin/stdout 走同一套 JSON-RPC，客户端里这条传输没有 reconnect 策略。实测（[P23 记录](../research/p23-stdio-transport-2026-09-16.md)）：TUI 真的这样连；传输程序死掉后 Codex 不再起第二个，第二条命令报 `exec-server transport disconnected`；`--ignore-user-config` 会关掉 environments.toml，但交互模式本来就不传它。于是网桥要解决的三件事——连接身份、只放一条、不 resume——都由"Codex 自己 spawn、自己持有管道"直接给出，不需要监听端口，也不需要新依赖。
+
+依据（toexec 仓库，均为 Codex 0.154.0 实测、零模型额度）：[连接身份](https://github.com/xwfe/toexec/blob/main/evidence/v2-c/g05-peer/README.md)（URL 令牌方案否决；按 uid 放行通过；放行重连时 Codex 会自己 resume——这两条现在只作对照）、[协议](https://github.com/xwfe/toexec/blob/main/evidence/v2-c/g01/README.md)（没有版本协商；未知通知和超过 64 MiB 的帧直接断连）、[权限](https://github.com/xwfe/toexec/blob/main/evidence/v2-c/g06/README.md)（`sandbox: null` 就不受限；`http/request` 无限制；`environmentConfig/read` 返回服务端配置里的凭据）、[stdio 传输](https://github.com/xwfe/toexec/blob/main/evidence/v2-c/p23-stdio/README.md)（environments.toml 的 program 传输、断线不重连、symlink 的 auth.json 读写穿透）。
 
 ### 12.2 原生读和 MCP 读同一个契约（用户 2026-09-16 决定）
 
@@ -465,7 +467,9 @@ Codex 启动时会从工作区一路往上查 `.git`（实测直到 `/`）。根
 - **只开交互模式，启动时传 `-C <Runtime 根>`。**`codex exec`（print）会先在 Agent 本机检查这个目录，要求 Agent Node 上有同一绝对路径，而 Runtime 根常在 Agent 账号建不了的地方；交互模式不检查。代价是 Machine API（只有 print）起的 Codex 会话继续走 MCP。依据见 [P21 记录](../research/p21-codex-native-surface-2026-09-16.md)第 1 条。
 - **规则表只核对 sandbox 在不在是不够的。**人在 Codex 里批准提权后，命令会带 `sandbox: null`，越界 patch 会带一条多出来的路径写条目；逐方法的规则见 P21 记录的规则表。
 - **Linux Runtime 要装 bubblewrap，并允许执行账号创建 user namespace**，否则 Codex 发来的沙箱起不来（失败即拒，命令不执行）。
-- **不 resume。**断线就结束会话，与 ccnm v1 一致；网桥只放行一条连接，受管入口拒绝带 `resumeSessionId` 的握手。
+- **不 resume。**断线就结束会话，与 ccnm v1 一致；Codex 对 stdio 传输没有重连策略（实测传输死掉后不再起第二个），受管入口另外拒绝带 `resumeSessionId` 的握手。
+- **每个原生会话一份 CODEX_HOME。**Codex 只从 `CODEX_HOME/environments.toml` 读传输配置，profile 目录是凭据所在、多个会话共用，不能写会话文件进去。session 目录下的 `codex-home/` 放 `environments.toml`、指向 profile `auth.json` 的 symlink、只含信任条目的 `config.toml`；Codex 的会话记录、历史和缓存也落在这里，随 session 目录一起 purge。代价：profile 自己的 `config.toml` 在原生会话里不生效（print 模式本来就带 `--ignore-user-config`，MCP 交互会话仍读它），要改模型走实例注册表的 `model` 字段。
+- **只对 Codex Agent 生效。**同一 workspace 的 Claude 会话仍走 MCP 七工具；opt-in 的 workspace 起 Codex print 会话在创建 session 前拒绝，不退回 MCP。
 - `http/request` 一律拒绝；exec-server 的环境和 MCP `exec_command` 的子进程用同一套清理，`CODEX_HOME` 由 ccnm 生成、不含凭据。
 - **会话结束先证明进程都没了才放锁。**exec-server 给每条命令单独开进程组，`setsid` 脱离的进程它关 stdin 时也不清；ccnm 按每个会话独有的环境变量标记扫进程表，扫不干净锁就留在 `held`（P22）。
 - Claude 经 exec-server 是另一件事（toexec v2 的 V2-P 实验线），不在这里。

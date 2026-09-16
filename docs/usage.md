@@ -252,6 +252,23 @@ ccnm doctor my-project
 
 进行验证。
 
+### Codex 原生链那一行
+
+workspace 写了 [`codex_exec_server = true`](configuration.md#codex_exec_server)、选中的 Agent 又是 Codex 时，doctor 表里 `远端 MCP 握手` 下面那行 `Codex 原生链`（英文 `Codex exec-server`）才会给结论：Agent 替你做一次 `ccnm run` 起 Codex 之前的**同一个**预检——经 ssh 在 Runtime 上开一个空的 `exec-serve` 会话，stdin 立刻关掉。Runtime 侧、Agent 侧跑 doctor 都一样。
+
+| 状态 | 说明什么 |
+| --- | --- |
+| 正常 | Runtime 认这个 workspace 走原生链、审计放行命令执行、`codex_bin` 是 Codex 0.154.0、exec-server 起得来也停得掉，写锁取到又放回 |
+| 失败 | 带 Runtime 自己报的码：`CCNM_E_CONFIG`（没配 `codex_bin`）、`CCNM_E_VERSION`（Codex 版本不对）、`CCNM_E_POLICY`（审计不放行，或写锁被占），排查见[出错了怎么办](troubleshooting.md#doctor-里-codex-原生链那一行失败) |
+| 没查 | 没开 `codex_exec_server`、Agent 不是 Codex（Claude 照旧走 MCP 七工具），或前面的 SSH 已经失败——detail 写着是哪种 |
+
+所以**没开这条链的 workspace 表里也有这一行**，是 `没查`：结论行的"N 项没查"比以前多 1，退出码不变（本来就有两行固定的"没查"，结论一直是还不能用）。
+
+两件事要知道：
+
+- **它和 `远端 MCP 握手` 一样要取一次写锁再放掉。**这个 workspace 正有会话在写（受管会话、外部 MCP 的 coding 会话、原生链会话都算），两行都会报 `workspace write guard is busy`。那说明有人在用，不是链路坏了；别为了让 doctor 变绿去清锁。
+- **正常不代表 Linux 沙箱能用。**空会话一条命令都不跑，而 Codex 在 Linux 上靠 bubblewrap 和 user namespace 建沙箱，缺了要到第一条命令才报错（前提见[运维手册](operations.md#runtime-node-的前置条件与项目工具链)）。doctor 不去猜它：bwrap 的查找位置和 user namespace 的限制都读不准，读 sysctl 会在容器里报通过而沙箱实际起不来，理由记在 [ROADMAP P27.3](plan/ROADMAP.md)。
+
 ## 给程序用的接口
 
 上面这些命令是给人敲的。要让别的程序驱动 ccnm，用 machine API：

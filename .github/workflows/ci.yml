@@ -1,6 +1,6 @@
 # Format, lint and the whole test suite, on every push and pull request.
 #
-# Two jobs, because ccnm has two halves that do not run in the same
+# Two platform jobs, because ccnm has two halves that do not run in the same
 # places. The **Agent** half (Controller, sessions) is a launchd
 # LaunchAgent that asks `launchctl` and `security` directly -- macOS only,
 # and that is a property of the program, not a gap in the CI. The
@@ -11,6 +11,11 @@
 # and its tests pass on Linux; it does **not** mean the Agent half is
 # supported there, and nothing in docs/support-matrix.md should start
 # saying so because this job went green.
+#
+# A third job, msrv, only compiles, on the rust-version Cargo.toml declares.
+# Everything else runs on stable, where a std API newer than that
+# declaration stays green. ccnm, gld and toexec keep the same rust-version
+# (toexec docs/plan/implementation-plan-v2.md, section 11).
 #
 # Only first-party actions are used (actions/checkout, actions/cache).
 # Every third-party action is a supply-chain dependency that runs with a
@@ -149,3 +154,42 @@ jobs:
         run: |
           bash scripts/dist-linux.sh
           dist/ccnm --version
+
+  msrv:
+    # One platform is enough while the only OS-gated code is
+    # native::serve::marked_processes (/proc on Linux, `ps` elsewhere) and
+    # no dependency is platform-specific. Add either and this needs
+    # rethinking: the other platform's branch would never be compiled here.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      # Read, not repeated here: when the three repositories bump
+      # rust-version together, this job cannot be left testing the old one.
+      - name: Install the toolchain Cargo.toml declares
+        run: |
+          msrv=$(sed -n 's/^rust-version *= *"\([0-9.]*\)".*/\1/p' Cargo.toml)
+          case "$msrv" in
+            ''|*[!0-9.]*)
+              echo "::error::expected exactly one rust-version = \"x.y\" line in Cargo.toml, got: $msrv"
+              exit 1 ;;
+          esac
+          rustup toolchain install "$msrv" --profile minimal
+          echo "MSRV=$msrv" >> "$GITHUB_ENV"
+
+      # A key of its own: stable's target/ is of no use to another rustc
+      # and would only grow both caches.
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: cargo-msrv-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-msrv-${{ runner.os }}-
+
+      # toexec is a git dependency over https; the repository is public, so
+      # this needs no token.
+      - name: Check
+        run: cargo +"$MSRV" check --workspace --all-targets --locked

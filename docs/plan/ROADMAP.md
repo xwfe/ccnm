@@ -38,7 +38,7 @@ ccnm 不需要安装 Orchestrator 也能独立使用。Orchestrator 核心不链
 
 ## 二、顺序和基线
 
-`P0 → P1 → P2 → P3 → P4 → P5 → P6 → P7 → P8 → P9 → P10 → P11 → P12 → P13 → P14 → P15 → P16 → P17 → P18 → P19`。默认每轮只执行一个阶段。P0–P8 是 ccnm v1 收口和独立 Orchestrator 的接口交接；P9–P12 是 ccnm v1.x 的 Remote Workspace MCP 扩展；P13 是按真实 Host 行为修正两个入口共用的 instructions 投影。完整边界见 [双执行入口方案](runtime-surfaces.md)。
+`P0 → P1 → P2 → P3 → P4 → P5 → P6 → P7 → P8 → P9 → P10 → P11 → P12 → P13 → P14 → P15 → P16 → P17 → P18 → P19 → P20`。默认每轮只执行一个阶段。P0–P8 是 ccnm v1 收口和独立 Orchestrator 的接口交接；P9–P12 是 ccnm v1.x 的 Remote Workspace MCP 扩展；P13 是按真实 Host 行为修正两个入口共用的 instructions 投影。完整边界见 [双执行入口方案](runtime-surfaces.md)。
 
 ### P0 — 已有内部验证基线
 
@@ -303,3 +303,17 @@ worktree **分配、调度、合并策略**在 Orchestrator；受管 workspace �
 **故意不做自动重录。**加一个"跑一次就把 server 的输出写回 fixture"的开关能省掉维护成本，但 `AGENTS.md` 写着"不为通过测试重录 golden fixture"——那个开关会让下一个人把一次没想清楚的措辞改动一键洗成绿的，而冻结契约的意义恰恰是改它要费一点劲。改了说明就手动同步 fixture，失败信息里两段文本都会打出来，照着贴即可。
 
 停止点：只把 `description` 纳入。**annotations 不纳入**——它们已经被两处证明着：`every_tool_publishes_its_annotations` 对着硬编码期望比真实 server，schema 的 `read_tool` 又把 read 模式的 `readOnlyHint`/`openWorldHint` 钉成常量；再加一处比对是第三份说明，按"一件事只写一处"不加。每个参数的类型、上下界和说明仍然不比，理由与 P18 相同。调用结果和启动诊断那 19 份 fixture 仍只有 schema 层检查，要做另立阶段。
+
+### P20 — 会话拒绝消息不再冒充 exec 拒绝
+
+**实际只依赖 P17，按顺序规则记在 P19 之后。2026-09-16 在验证 gld 远端只读链（gld RFC-0002 的 H2）时撞到。**（编号说明：本阶段和 P18/P19 在两个分支上同时从 P17 开工，开发时也叫 P18，提交 c720154、721b1fb 消息里的 `p18` 指的就是它；合并时按开工先后顺延为 P20。）给 workspace 配 `external_mcp = "read"`，从另一台机器跑 `ccnm mcp bridge --mode read`，握手失败，消息说 `exec_command is refused`——而只读会话一共四个只读工具，根本没有 `exec_command`；结尾还无条件推荐 `allow_unconfined_exec`，把人推去为一条只读链签一个名字叫「允许不受限执行命令」的开关。
+
+**闸本身是对的，不动。** `Server::new` 无条件判 `agent_boundary_clear` 是有意的：`external_mcp.rs` 的 `agent_credentials_stop_the_external_entry_too` 用 read 模式 fixture 钉着它，P11.4 把它列为跨入口回归项。本阶段只改消息和文档。
+
+**真正的缺陷是消息在指错地方**（实测，见证据）：`refusal` 打印全部 Fail finding，而这道闸只读 `waived_by` 不豁免的那几条——`Not an admin`、`No SSH keys` 从来没参与判断；`allow_unconfined_exec` 在这道闸里**一个 finding 都不豁免**，只写它照样被拒。只写 `allow_unisolated_credentials = true` 就能开只读会话。
+
+- **P20.1** `Audit::refusal` 带上「在拒什么」：`Refused::Session` 用自己的抬头、只列真正挡住它的 finding、结尾只指 `allow_unisolated_credentials` 并说明另一个开关开不了这道门；`Refused::ExecCommand` 的措辞**一个字不改**。顺带把 `with_gate` 里 `write_guard.is_some() &&` 这个误导性条件去掉——它是 P3 遗留，对现有全部调用方是 no-op。
+- **P20.2** 回归：只读外部会话被拒时消息不出现 `exec_command`、不推荐 `allow_unconfined_exec`、不列没参与判断的行；只写 `allow_unisolated_credentials` 能开出四个只读工具并真的读到文件。exec 那条路径的既有断言一条不改。
+- **P20.3** 文档写清楚两个开关各开哪道门、只读会话为什么也要过这道闸、操作员该怎么办；协议文档不改——第 11.2 节本来就写着「不要解析第一行之后的措辞」，退出码和 `CCNM_E_POLICY` 都没变。
+
+停止点：只改怎么把结论讲给人听。audit 判定、finding 分类、豁免规则、`doctor` 输出一律不动；不按入口分开判凭据类 finding（理由记在证据里）；不跑真机、不耗额度。

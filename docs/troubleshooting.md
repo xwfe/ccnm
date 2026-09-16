@@ -220,6 +220,10 @@ ccnm mcp bridge <workspace> --node <node> --mode read < /dev/null
 
 最常见的是那个 workspace 根本没开放给外部 MCP（`workspace X is not available to external MCP`，退出码 33）——`external_mcp` 默认就是 `disabled`，要在 **Runtime 的**配置里给它写 `read` 或 `coding`。
 
+第二常见的是 Runtime 那个账号家里就有 Agent 的登录（`does not hold the Agent boundary`，同样是 33）。**只读链也要过这道闸**，一行开关就能签，见下一节。
+
+**别拿退出码当判据，先看 stderr 第一行。** bridge 是 `exec` 成那条 ssh 的，远端的退出码要靠 SSH 的 exit-status 带回来；**服务端不发，你就只能看到 0**。2026-09-16 在 Tailscale SSH 上实测：远端 `mcp-serve` 自己退 33，`ccnm mcp bridge` 退 0，连 `ssh -T <host> "exit 33"` 都退 0。所以上面这条命令**退 0 不代表起来了**——看它有没有在 stderr 上打 `CCNM_E_*`，以及有没有真的回答 `initialize`。这是 SSH 服务端的属性，ccnm 改不了。
+
 ### 一台机器就能跑吗：`No Claude credential` 把整个会话挡在门外
 
 **症状**：项目和 Claude Code 在同一台机器、同一个账号下，`ccnm doctor` 一片红，MCP 握手根本起不来：
@@ -235,16 +239,25 @@ Remote MCP handshake    FAIL  CCNM_E_RUNTIME_UNREACHABLE: connection closed: ini
 **两条路，选一条：**
 
 1. **正路**：在 Runtime 上建一个专用低权限账号（`ccrun`），把项目目录按 ACL 授权给它，Agent 的 SSH 落到那个账号上。见[生产安全](production-safety.md)。代价是 Agent 建出来的文件属主是那个账号。
-2. **明确接受**：在 **Runtime 侧**那个 workspace 上把两个开关都写上：
+2. **明确接受**：在 **Runtime 侧**那个 workspace 上写这一个开关：
 
    ```toml
-   allow_unconfined_exec = true
    allow_unisolated_credentials = true
    ```
 
    **先读一遍你接受了什么**：模型跑的每一条命令都能读到那份登录，而让它跑一条命令只需要一句 prompt——包括从它被要求读的文件里冒出来的那一句。第一次用它起会话时终端上会把这段讲一遍（只讲一次），`doctor` 里那几行会变成 WARN 并注明是接受的，**不会变 OK**。完整代价见[生产安全](production-safety.md#凭据隔离那一条怎么放开代价是什么)。
 
+**只有想让模型跑命令时才加第二个开关。** `allow_unisolated_credentials` 让会话起得来；`exec_command` 还要求这个账号本身是受限的，那一条由 `allow_unconfined_exec` 单独接受：
+
+```toml
+allow_unconfined_exec = true      # 只为 exec_command，跟上面那条无关
+```
+
+顺序别搞反：**先只写凭据那一条，看会话起不起得来。** 起得来就说明你不需要第二条——最典型的是 `ccnm mcp bridge --mode read`，它一共只有 `workspace_info` / `read_file` / `list_files` / `search_text` 四个工具，根本没有 `exec_command` 可跑。为了开一条只读链去签一个名字叫"允许不受限执行命令"的开关，是接受了比实际需要大得多的东西，而且它一个 finding 都不豁免，握手照样失败。
+
 **这两条放不开**，写什么开关都一样：执行身份未知（identity 探针答不出来），以及认证环境是继承来的（`ANTHROPIC_*` / `CLAUDE_*` 出现在 Runtime 的服务环境里）。后者的修法只是别 export 它。
+
+**看消息里列了哪几行。** 会话被拒时，错误里**只列真正挡住它的那几行**——通常就是 `No Claude credential` 一条。`ccnm doctor` 里同时红着的 `Not an admin`、`No SSH keys` 是真的，但它们拦的是 `exec_command`，不是这次握手；去修它们不会让握手过。
 
 ### `exec_command is refused`，理由说有 SSH 私钥，可你明明一把都没有
 

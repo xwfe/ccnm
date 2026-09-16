@@ -341,6 +341,22 @@ fn unattended_text(workspace: &str, lang: crate::Lang) -> String {
     )
 }
 
+/// Which of the two gates turned somebody down.
+///
+/// They are different events and one sentence cannot describe both. At
+/// startup nothing is served at all and `exec_command` has not been asked
+/// for — a read-only external session does not even have that tool, so
+/// naming it sends the reader looking for a switch that has no bearing on
+/// what stopped them. At exec time the session is already serving every
+/// other tool and only the shell is turned down.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Refused {
+    /// [`Audit::agent_boundary_clear`] in `Server::new`: no session.
+    Session,
+    /// [`Audit::exec_allowed`] in the `exec_command` tool: no shell.
+    ExecCommand,
+}
+
 /// The runtime account, as it is.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Audit {
@@ -372,12 +388,33 @@ impl Audit {
 
     /// One line per problem, with the fix, for a refusal a person can act
     /// on without reading the source.
-    pub fn refusal(&self, accepted: Accepted) -> String {
-        let mut text = format!(
-            "the runtime is running as {} and is not confined, so exec_command is refused:",
-            self.user
-        );
-        for finding in self.failures() {
+    ///
+    /// Only the findings that decided *this* refusal. The two gates do not
+    /// read the same rows: `exec_command` needs [`confined`](Self::confined),
+    /// which is "no Fail finding at all", so every failure is a reason there;
+    /// the session gate only reads the ones [`Finding::waived_by`] does not
+    /// waive, and printing the confinement rows beside them sends somebody
+    /// to `allow_unconfined_exec`, which cannot open that gate. That
+    /// happened: a read-only external session was refused over a reachable
+    /// Claude login and the message asked for a switch named "allow
+    /// unconfined exec" — a far bigger admission than the one being made,
+    /// and one that would not have helped.
+    pub fn refusal(&self, accepted: Accepted, refused: Refused) -> String {
+        let mut text = match refused {
+            Refused::Session => format!(
+                "the runtime is running as {} and does not hold the Agent boundary, so no session is served here:",
+                self.user
+            ),
+            Refused::ExecCommand => format!(
+                "the runtime is running as {} and is not confined, so exec_command is refused:",
+                self.user
+            ),
+        };
+        let deciding = self.failures().filter(|finding| match refused {
+            Refused::Session => !finding.waived_by(accepted),
+            Refused::ExecCommand => true,
+        });
+        for finding in deciding {
             text.push_str(&format!("\n  - {}: {}", finding.check, finding.detail));
             if let Some(fix) = &finding.fix {
                 text.push_str(&format!("\n    fix: {fix}"));
@@ -387,18 +424,23 @@ impl Audit {
             // Two different refusals, and saying the wrong one sends
             // somebody looking for a switch that does not exist.
             if self.failures().any(|f| f.non_waivable()) {
-                text.push_str(
-                    "\nRuntime initialization is also refused, and no workspace switch waives this: an unknown execution identity, or authentication inherited from the environment.",
-                );
+                text.push_str(if refused == Refused::Session {
+                    "\nNo workspace switch waives this: an unknown execution identity, or authentication inherited from the environment."
+                } else {
+                    "\nRuntime initialization is also refused, and no workspace switch waives this: an unknown execution identity, or authentication inherited from the environment."
+                });
             } else {
-                text.push_str(
-                    "\nRuntime initialization is also refused: this identity can reach a known Agent login. To accept that for one workspace -- every command the model runs could then read it -- set allow_unisolated_credentials = true on it in config.toml.",
-                );
+                text.push_str(if refused == Refused::Session {
+                    "\nThis identity can reach a known Agent login. To accept that for one workspace -- every command the model runs could then read it -- set allow_unisolated_credentials = true on it in config.toml. allow_unconfined_exec is a different admission and does not open this gate."
+                } else {
+                    "\nRuntime initialization is also refused: this identity can reach a known Agent login. To accept that for one workspace -- every command the model runs could then read it -- set allow_unisolated_credentials = true on it in config.toml."
+                });
             }
         }
-        text.push_str(
-            "\nSee docs/production-safety.md. To accept an unconfined runtime for one workspace anyway, set allow_unconfined_exec = true on it in config.toml.",
-        );
+        text.push_str(match refused {
+            Refused::Session => "\nSee docs/production-safety.md.",
+            Refused::ExecCommand => "\nSee docs/production-safety.md. To accept an unconfined runtime for one workspace anyway, set allow_unconfined_exec = true on it in config.toml.",
+        });
         text
     }
 }
@@ -1052,11 +1094,8 @@ mod tests {
         runner.push(Output::exited(1, ""));
         let audit = audit(Some("ccrun"), &home, &runner);
         assert_eq!(audit.user, "bing");
-        assert!(
-            audit.refusal(Accepted::unconfined(true)).contains("bing"),
-            "{}",
-            audit.refusal(Accepted::unconfined(true))
-        );
+        let text = audit.refusal(Accepted::unconfined(true), Refused::ExecCommand);
+        assert!(text.contains("bing"), "{text}");
         let finding = find(&audit, "Runtime user");
         assert!(finding.detail.contains("bing"), "{finding:?}");
         assert!(finding.detail.contains("ccrun"), "{finding:?}");
@@ -1157,9 +1196,54 @@ mod tests {
         identity(&runner, "bing", "501", "20 80", "staff admin");
         runner.push(Output::exited(1, ""));
         let audit = audit(Some("bing"), &home, &runner);
-        let text = audit.refusal(Accepted::unconfined(true));
+        let text = audit.refusal(Accepted::unconfined(true), Refused::ExecCommand);
         assert!(text.contains("allow_unisolated_credentials"), "{text}");
         assert!(text.contains("can reach a known Agent login"), "{text}");
+    }
+
+    /// The session gate and the exec gate refuse different things, so they
+    /// do not get to share a sentence.
+    ///
+    /// The session one is what a read-only external client hits, and that
+    /// client has no `exec_command` at all: naming it, listing rows the
+    /// gate never read, and closing with `allow_unconfined_exec` -- a
+    /// switch that waives nothing here -- is three ways of pointing at the
+    /// wrong thing. `allow_unisolated_credentials` is the whole fix.
+    #[test]
+    fn a_refused_session_does_not_talk_about_exec_command() {
+        let home = empty_home("session-refusal");
+        std::fs::create_dir_all(home.join(".claude")).unwrap();
+        std::fs::write(home.join(".claude/.credentials.json"), "{}\n").unwrap();
+        let runner = FakeRunner::new();
+        // In admin and with no runtime_user: two Fail rows that are real,
+        // and that this gate does not read.
+        identity(&runner, "bing", "501", "20 80", "staff admin");
+        runner.push(Output::exited(1, ""));
+        let audit = audit(None, &home, &runner);
+        assert!(!audit.agent_boundary_clear(Accepted::NOTHING));
+
+        let text = audit.refusal(Accepted::NOTHING, Refused::Session);
+        assert!(!text.contains("exec_command"), "{text}");
+        // The other switch is named once, to say it is not the answer --
+        // never offered as one.
+        assert!(!text.contains("set allow_unconfined_exec = true"), "{text}");
+        assert!(
+            text.contains("allow_unconfined_exec is a different admission"),
+            "{text}"
+        );
+        // Only the row that decided it.
+        assert!(text.contains("No Claude credential"), "{text}");
+        assert!(!text.contains("Not an admin"), "{text}");
+        assert!(!text.contains("Runtime user"), "{text}");
+        assert!(text.contains("allow_unisolated_credentials"), "{text}");
+        assert!(text.contains("docs/production-safety.md"), "{text}");
+
+        // The exec gate still reads every row: it needs `confined()`, and
+        // those two are exactly why this account is not confined.
+        let exec = audit.refusal(Accepted::NOTHING, Refused::ExecCommand);
+        assert!(exec.contains("exec_command is refused"), "{exec}");
+        assert!(exec.contains("Not an admin"), "{exec}");
+        assert!(exec.contains("allow_unconfined_exec"), "{exec}");
     }
 
     /// Two findings no switch reaches, and the reason is different for
@@ -1183,8 +1267,14 @@ mod tests {
             audit.findings
         );
         assert!(!audit.exec_allowed(everything));
-        let text = audit.refusal(everything);
+        let text = audit.refusal(everything, Refused::ExecCommand);
         assert!(text.contains("no workspace switch waives this"), "{text}");
+        // The session gate says the same thing without the "also".
+        let session = audit.refusal(everything, Refused::Session);
+        assert!(
+            session.contains("No workspace switch waives this"),
+            "{session}"
+        );
     }
 
     /// Once means once, and turning the switch off and on again is a new
@@ -1219,7 +1309,7 @@ mod tests {
         identity(&runner, "root", "0", "0", "wheel");
         runner.push(Output::exited(0, ""));
         let audit = audit(None, &home, &runner);
-        let text = audit.refusal(Accepted::unconfined(true));
+        let text = audit.refusal(Accepted::unconfined(true), Refused::ExecCommand);
         for expected in [
             "Runs as root",
             "No sudo",

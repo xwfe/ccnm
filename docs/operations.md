@@ -256,10 +256,13 @@ sessions/<ccnm-session-id>/
 ├── stderr           官方 CLI 的 stderr
 ├── supervisor.log   supervisor 自己的诊断
 ├── tmux.conf        ccnm 自己那个 tmux server 启动时读的配置（见下）
+├── codex-home/      只有 codex_exec_server 的 Codex 会话有：这个会话的 CODEX_HOME（见下）
 └── exit             最后写的：它是怎么结束的
 workspaces/<name>/   官方 CLI 的工作目录
 controller.sock      controller 的监听 socket
 ```
+
+`codex-home/` 是 exec-server 链（[配置说明](configuration.md#codex_exec_server)）给 Codex 的私有 `CODEX_HOME`：ccnm 写进去的只有 `environments.toml`、指向 profile 里 `auth.json` 的 **symlink** 和只含信任条目的 `config.toml`；其余（`sessions/`、`history.jsonl`、几个 sqlite）是 Codex 自己在会话里写的。symlink 指向的那个文件才是登录凭据，删这个目录不动 profile。
 
 **Runtime Node：**
 
@@ -321,7 +324,7 @@ ccnm stop demo --agent codex-main --session <id>  # 精确停一个
 
 不要批量删，不要仅因为"过了很久"就清。**证明不了旧执行者结束时，保持 unknown 才是对的状态。**
 
-**占着锁的是 Codex exec-server 链时**（`codex_exec_server = true` 的 workspace），第 1 步要找的是 `ccnm internal exec-serve`、`codex exec-server` 和它们起的命令。命令不一定还挂在这两个进程下面：exec-server 给每条命令单独开进程组，用 `setsid` 脱离的进程会被 init 收养。它们的环境变量里都有 `CCNM_EXEC_SESSION=<session id>-<随机串>`，按这个找（macOS 用 `ps -axEww -o pid,command`，Linux 看 `/proc/<pid>/environ`）。监督进程自己放不了锁时报的错里就带着这个值。
+**占着锁的是 Codex exec-server 链时**（`codex_exec_server = true` 的 workspace），第 1 步要找的是 `ccnm internal exec-serve`、`codex exec-server` 和它们起的命令；Agent Node 那边对应的是 Codex 自己 spawn 的 `ccnm internal exec-transport`——它 exec 成了一条 `ssh … internal exec-serve`，`ps` 里看到的是 ssh。命令不一定还挂在这两个进程下面：exec-server 给每条命令单独开进程组，用 `setsid` 脱离的进程会被 init 收养。它们的环境变量里都有 `CCNM_EXEC_SESSION=<session id>-<随机串>`，按这个找（macOS 用 `ps -axEww -o pid,command`，Linux 看 `/proc/<pid>/environ`）。监督进程自己放不了锁时报的错里就带着这个值。
 
 ### 会话在 initialize 就断，报 "connection closed: initialize response"
 

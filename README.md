@@ -108,6 +108,8 @@ workspace_info   read_file   list_files   search_text
 apply_patch      exec_command            read_output
 ```
 
+Codex 另有一条 opt-in 的路（workspace 写 `codex_exec_server = true`）：用它自带的执行工具，由 Runtime 上受 ccnm 监督和过滤的官方 `codex exec-server` 执行。只开交互模式，目前只有离线闭环、没有真机验收，见[配置说明](docs/configuration.md#codex_exec_server)。
+
 ## 另外两个入口
 
 **项目在远端，而 Claude Code 已经在你本机跑着**——用 `ccnm mcp bridge <workspace>`，把远端项目作为一组 MCP 工具交给它。权限由 Runtime 侧的 `external_mcp` 决定（默认关）。契约 `ccnm.workspace-mcp/1` 已于 2026-09-11 冻结。

@@ -321,15 +321,24 @@ external_mcp = "read"        # disabled（默认）| read | coding
 codex_exec_server = true     # 默认 false
 ```
 
-**当前状态：只有 Runtime 这一半（P22）。** Agent 侧还没有东西会连它（P23），所以现在写上这一行，Codex 会话仍然走 MCP 七工具。
+**当前状态：两半都有了，离线闭环已验（P22、P23），真机验收还没做（P24）。**在真机验收之前，把它当成实验特性：默认关着，打开只影响 Codex 会话。
 
-打开后，这个 workspace 的受管 Codex 会话可以改用 Codex **自带**的执行工具，由官方 `codex exec-server` 在这台 Runtime 上执行（设计见[双执行入口方案](plan/runtime-surfaces.md)第 12 节）。需要三样都在：这一行、Runtime node 上的 `codex_bin`、会话的 Agent 是 Codex。缺哪样就在启动前拒绝，不会退回别的执行方式。
+打开后，这个 workspace 的受管 **Codex 交互会话**改用 Codex **自带**的执行工具（它的 `exec_command`、`apply_patch` 等），由官方 `codex exec-server` 在这台 Runtime 上执行，不再注入 ccnm 的七个 MCP 工具（设计见[双执行入口方案](plan/runtime-surfaces.md)第 12 节）。需要三样都在：这一行、Runtime node 上的 `codex_bin`、会话的 Agent 是 Codex。缺哪样就在启动前拒绝，不会退回别的执行方式。
+
+**它管到谁、管不到谁：**
+
+- 同一 workspace 的 **Claude** 会话不受影响，照旧走 MCP 七工具。
+- Codex 的 **print 模式**（`ccnm run --print`、Machine API）在创建会话前拒绝，报 `CCNM_E_INVALID_ARGS`：`codex exec` 会先在 Agent 本机检查 `-C` 的目录，而项目不在那台机器上（[P21 记录](research/p21-codex-native-surface-2026-09-16.md)第 1 条）。要跑 print 就把这一行关掉。
+- 交互会话启动前，Agent 会先经 `exec-serve` 做一次空会话预检：Runtime 没 opt-in、没 `codex_bin`、Codex 版本不对，都在起 Codex 之前报出来，而不是等 Codex 里显示"environment unavailable"。
+
+**Agent 那一侧发生了什么**（[P23 记录](research/p23-stdio-transport-2026-09-16.md)）：Codex 0.154.0 从 `CODEX_HOME/environments.toml` 读它的 exec-server 传输，ccnm 给每个原生会话生成一份自己的 `CODEX_HOME`（session 目录下的 `codex-home/`），里面只有三样：`environments.toml`（让 Codex 自己 spawn `ccnm internal exec-transport`，那个进程再 exec 成到 Runtime 的 ssh）、指向 profile 里 `auth.json` 的 symlink（Codex 读写都穿过它，刷新的 token 落回 profile；ccnm 不读、不复制凭据）、只写了一条对 Runtime 根 `trust_level = "trusted"` 的 `config.toml`（否则每个会话都弹一次信任提示）。**代价**：profile 自己的 `config.toml` 在原生会话里不生效，模型要走实例注册表的 `model` 字段；Codex 的会话记录、历史和缓存也落在 `codex-home/`，随 session 目录一起 `purge`。没有监听端口，别的 OS 用户没有东西可连；Codex 对这种传输不重连、不 resume，断线后的命令哪里都不执行。
 
 它不比 coding 会话多给任何权限，但也要满足 coding 会话的全部条件：
 
 - 执行身份的审计和 `exec_command` 一样——没确认隔离又没写 `allow_unconfined_exec`，就不开。
 - 和受管会话、外部 MCP 的 coding 会话抢**同一把**写入互斥锁。
-- Codex 发给 exec-server 的每条请求先过 ccnm 的规则表：读写路径和 MCP 工具同一套规则（只许工作区内，不写 `.git`，不写穿 symlink）；命令和写文件必须带 Codex 实测过的那种沙箱，**人在 Codex 里批准提权后发出的请求一律拒绝**；网络请求一律拒绝。规则表的依据见 [P21 记录](research/p21-codex-native-surface-2026-09-16.md)。
+- Codex 发给 exec-server 的每条请求先过 ccnm 的规则表：读写路径和 MCP 工具同一套规则（只许工作区内，不写 `.git`，不写穿 symlink）；命令和写文件必须带 Codex 实测过的那种沙箱，**人在 Codex 里批准提权后发出的请求一律拒绝**——Codex 里表现为工具失败，比如 `exec-server rejected request (-32600): ccnm refused process/start: a sandbox is required`；网络请求一律拒绝。规则表的依据见 [P21 记录](research/p21-codex-native-surface-2026-09-16.md)。
+- Runtime 是 Linux 时要装 bubblewrap，并允许执行账号创建 user namespace，否则 Codex 发来的沙箱起不来，命令不执行。
 
 会话结束时，ccnm 要先确认 exec-server 起过的进程都不在了才放锁。确认不了——比如有进程被杀后还在，或者列不出进程表——锁就保持 `held`，下一个会话按"状态未知"拒绝，恢复步骤和其他入口一样，见[运维手册](operations.md)。
 

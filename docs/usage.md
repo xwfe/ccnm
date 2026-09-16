@@ -307,6 +307,8 @@ read_output
 - Claude 使用项目根 `CLAUDE.md` 上下文；Codex 使用根目录 `AGENTS.override.md`/`AGENTS.md` 的已测优先级；
 - remote session 使用对应 Provider 的已测工具策略，让项目访问统一走 Runtime Node。
 
+**Codex 还有一条 opt-in 的路**：workspace 写 `codex_exec_server = true` 后，Codex 交互会话不再拿这七个工具，而是用它自带的 `exec_command` / `apply_patch`，由 Runtime 上受 ccnm 监督和过滤的官方 `codex exec-server` 执行；模型看到的是 Codex 自己的工具面，读写边界和沙箱要求与七工具相同。只开交互模式，print 会被拒绝；Claude 不受影响。目前只有离线闭环、没有真机验收，开关和边界见[配置说明](configuration.md#codex_exec_server)。
+
 ## 同一工作树的单写限制
 
 Runtime MCP 在完整 session 生命周期持有独占写 guard。另一个 Agent Node、CLI 或后续 RPC 即使绕开上层协调，只要进入同一 Runtime workspace，也会在 MCP 初始化阶段得到 busy/unknown：

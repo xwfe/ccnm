@@ -42,6 +42,14 @@ Claude 不会自己重连。
 `ccnm status <ws>` 和 `ccnm doctor <ws>` 都会明说这个状态——**看着正常的会话是不会显示
 这行的**，所以看到了就是真断了。
 
+### Codex 会话里模型报 `tools.exec_command is not a function`，或 `exec-server transport disconnected`
+
+只出现在 workspace 写了 `codex_exec_server = true` 的 Codex 交互会话里（[配置说明](configuration.md#codex_exec_server)）。这条链上 Codex 用自带的执行工具，工具在 Runtime 上由 exec-server 执行，Codex 通过它自己 spawn 的 `ccnm internal exec-transport` → ssh → `ccnm internal exec-serve` 连过去。
+
+**症状 A**：一开始就没有工具——模型调 `exec_command` 时报 `TypeError: tools.exec_command is not a function`，TUI 上什么也不说。**原因**：Codex 起来时连不上 Runtime（ssh 失败、Runtime 那边拒绝了），于是它的"远端环境"不可用，`include_local = false` 又让它没有本地环境可退，工具表就是空的。Codex **不会**退回到本机执行，这是设计。**修**：在 Agent Node 上手工跑一遍会话目录里 `codex-home/environments.toml` 写的那条 `program`/`args`（就是 `ccnm internal exec-transport --payload …`），ssh 或 Runtime 的 `CCNM_E_*` 错误会直接打出来。正常情况下这一步在创建会话前的预检就会失败，走不到 Codex；走到了多半是会话启动之后网络或 Runtime 变了。
+
+**症状 B**：跑着跑着某条命令报 `exec_command failed: ProcessFailed { message: "exec-server transport disconnected" }`，之后每条都报 `Rejected("Failed to create unified exec process: exec-server transport disconnected")`。**原因**：那条 ssh 断了。Codex 对这种传输**不重连、不 resume**，断线之后的命令哪里都没执行；Runtime 侧的 `exec-serve` 看到 EOF 会关掉 exec-server、扫进程、放锁。**修**：`/exit` 结束会话再起一个。断线时若 Codex 正好有 patch 没写完，它会问"command failed; retry without sandbox?"——答"是"也到不了 Runtime（传输已经死了），到了也会被 ccnm 拒绝（`sandbox: null` 一律拒）。
+
 ### `Killed: 9` / exit 137 —— 升级完二进制就全炸
 
 **症状**：`ccnm --version` 直接被杀，doctor 走 ssh 拿到空回复报 `CCNM_E_VERSION`，

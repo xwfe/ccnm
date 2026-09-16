@@ -426,7 +426,7 @@ ROADMAP 的 P9–P12 对应以下顺序；P8 仍先完成独立 Orchestrator 的
 
 如果真实代码证明某一批需要调整顺序，可以改计划，但必须先在 status blocker/evidence 写清楚“哪条已验证假设被推翻”，不能静默换架构。
 
-## 12. Codex 原生执行链（P21–P24，规划中，未实现）
+## 12. Codex 原生执行链（P21–P24；P21–P23 已完成，离线可验，P24 真机验收待授权）
 
 来自跨仓计划 toexec v2 的 V2-C。**现在的 Managed Codex 关掉自己的执行工具，改用 ccnm 的七个 MCP 工具**；原生链让 Codex 用它自带的执行工具，由官方 `codex exec-server` 在 Runtime 上执行。它是入口 A 在 Codex 上的一个 opt-in 变体，默认仍走 MCP，不影响 Claude 和入口 B。
 

@@ -17,9 +17,13 @@
 
 标准库的 `BufRead::lines()` 会把一整行读进内存，一个 2 GB 的单行文件（压缩过的
 JS、一行导出的 JSON）因此先分配 2 GB。ccnm 在 P14 为此改了自己的 `read_file`
-（[记录](p14-read-long-line-2026-09-16.md)）。gld 的 `search_file_streaming` 现在
-还是 `reader.lines()`，是同一个缺陷——所以这个原语有两个真实消费者，不是为了
-"共享"而共享。
+（[记录](p14-read-long-line-2026-09-16.md)）。gld 的 `search_file_streaming` 也是
+`reader.lines()`，所以这个原语有两个真实消费者，不是为了"共享"而共享。
+
+**gld 那边严重程度低得多，别混为一谈**：它的 `search_text` 有 `max_file_bytes`
+（默认 2 MiB、最大 64 MiB），超过就整个文件跳过，所以最坏是 64 MiB 进内存，不是
+ccnm 当时那种无上限的 2 GB。gld 真正的内存放大器是 `context_lines` 的行克隆，那
+是它自己的缺陷，跟共享库无关，没有夹带进这一刀。
 
 ## 改了什么
 

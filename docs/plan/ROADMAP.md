@@ -252,7 +252,7 @@ worktree **分配、调度、合并策略**在 Orchestrator；受管 workspace �
 
 ### P16 — 接入共享库的有界行读取
 
-**依赖 P15。用户 2026-09-16 指定推进跨仓计划 workspace-kernel 的 V2-K 主线。**开工前先做了重复度盘点（workspace-kernel 仓库 `evidence/v2-k/duplication-audit.md`）：两个产品的 `read_file` **契约不一样**（非法 UTF-8 一个报错一个有损替换、一个一定读到文件尾一个撞预算就停），不能也不该统一；真正共有的内核只有「读一行但不把整行读进内存」。P14 改出来的 `next_line` 就是它，gld 的搜索路径上还是 `reader.lines()`，同一个缺陷。
+**依赖 P15。用户 2026-09-16 指定推进跨仓计划 workspace-kernel 的 V2-K 主线。**开工前先做了重复度盘点（workspace-kernel 仓库 `evidence/v2-k/duplication-audit.md`）：两个产品的 `read_file` **契约不一样**（非法 UTF-8 一个报错一个有损替换、一个一定读到文件尾一个撞预算就停），不能也不该统一；真正共有的内核只有「读一行但不把整行读进内存」。P14 改出来的 `next_line` 就是它，gld 的搜索路径上还是 `reader.lines()`，同一类问题——但它有 `max_file_bytes` 兜底（默认 2 MiB、最大 64 MiB），没有 ccnm 当时那种无上限的 2 GB 风险。
 
 本阶段只做 ccnm 这一侧：`next_line` 移到共享 crate `wk-text`，ccnm 改为调用它。**行为逐字节不变**——这是一次纯粹的搬家，不是重写。
 

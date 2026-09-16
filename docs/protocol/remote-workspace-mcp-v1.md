@@ -376,10 +376,18 @@ python3 scripts/check_protocol.py
 
 **它证明的是这几份文件互相自洽，不证明实现的行为和它们一致。** 那一半由别的东西证：Rust 集成测试（`cargo test -p ccnm-cli --test external_mcp`）、一个不 import ccnm 代码的中立 MCP 客户端（`python3 -m unittest tests.test_remote_workspace_mcp`），以及两轮真机（见页首）。本文里标"实测"的地方，依据是仓库代码或那两轮记录；标"契约"的地方是设计决定。
 
-### 工具的参数名以哪一份为准
+### 工具表以哪一份为准
 
-两份 `tools-list-*.json` 是**参数名在文档侧的唯一记载**——本文第 5 节只有 annotations，第 8 节只顺带提了几个上限参数。所以它们的参数名和 `required` 是精确的，由 `external_mcp` 的 `tool_arguments_match_the_running_server` 起一个真实 `internal mcp-serve`、两种模式各取一次 `tools/list` 比对，对不上就失败。
+两份 `tools-list-*.json` 是**工具名、说明文字和参数名在文档侧的唯一记载**——本文第 5 节只有 annotations，第 8 节只顺带提了几个上限参数。所以下面这些是精确的，由 `external_mcp` 的 `published_tool_tables_match_the_running_server` 起一个真实 `internal mcp-serve`、两种模式各取一次 `tools/list` 逐字节比对，对不上就失败：
 
-**`check_protocol.py` 证明不了这件事，别指望它。** 它把 fixture 对着 `schema/` 里手写的 JSON Schema 校验，两份都是手写的，一起漂走也照样通过——2026-09-16 发现的 `apply_patch` 就是这样：fixture 写着 `changes`，wire 上一直叫 `files`，照 fixture 实现的 Host 每次调用都被拒，而协议检查一直是绿的。
+| 比 | 为什么 |
+| --- | --- |
+| 工具名集合 | 模式的边界，Host 照着它决定有哪些工具 |
+| 每个工具的 `description` | 它是人手写进 `#[tool(description = ...)]` 的，**也是模型实际读到的那段文本** |
+| 参数名与 `required` | Host 照着它拼 `tools/call` 的 arguments，名字错一个字就每次都被拒 |
 
-fixture 里**不精确**的是每个参数的类型、上下界和说明：server 发的是 `schemars` 从 Rust 类型生成的完整 schema（带 `default`、`format`、`minimum` 这些），fixture 写的是简写。要这一份的准确内容，连上去读 `tools/list`，或者看 `crates/ccnm-core/src/mcp/` 里对应的 `*Args`。
+**`check_protocol.py` 证明不了这些，别指望它。** 它把 fixture 对着 `schema/` 里手写的 JSON Schema 校验，两份都是手写的，一起漂走也照样通过——2026-09-16 发现的 `apply_patch` 就是这样：fixture 写着 `changes`，wire 上一直叫 `files`，照 fixture 实现的 Host 每次调用都被拒，而协议检查一直是绿的。
+
+fixture 里**不精确的只剩每个参数内部**的类型、上下界和说明：server 发的是 `schemars` 从 Rust 类型生成的完整 schema（带 `default`、`format`、`minimum` 这些），fixture 写的是简写。要这一份的准确内容，连上去读 `tools/list`，或者看 `crates/ccnm-core/src/mcp/` 里对应的 `*Args`。
+
+**改了工具说明就手动同步 fixture。** 没有"跑一次把 server 输出写回 fixture"的开关，这是故意的：那种开关会让一次没想清楚的措辞改动被一键洗绿，而冻结契约的意义就是改它要费一点劲。失败信息里两段文本都会打出来，照着贴即可。

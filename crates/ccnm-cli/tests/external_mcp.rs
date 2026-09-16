@@ -497,10 +497,10 @@ fn every_tool_publishes_its_annotations() {
     session.shutdown();
 }
 
-/// The published tool tables name the arguments this server actually
-/// takes.
+/// The published tool tables say what this server actually serves: the
+/// same tools, the same descriptions, the same argument names.
 ///
-/// `scripts/check_protocol.py` cannot catch this. It validates the
+/// `scripts/check_protocol.py` cannot catch any of that. It validates the
 /// fixtures against a hand-written JSON Schema, and that schema calls
 /// `inputSchema` an object and stops there — so a fixture and the schema
 /// stay happily consistent with each other while both drift away from the
@@ -508,20 +508,32 @@ fn every_tool_publishes_its_annotations() {
 /// argument the wire has always called `files`: a Host written from the
 /// fixture sends `{"changes": [...]}` and every call is refused.
 ///
-/// This test is the half that reads the code. It compares argument names
-/// and which of them are required, and **only** those. Not descriptions,
-/// types or bounds: those come out of `schemars` from the Rust types, so
-/// pinning them here would turn a crate upgrade or a reworded doc comment
-/// into a protocol failure. The fixtures' `$note` says the same split.
+/// This test is the half that reads the code. What it compares:
+///
+/// - the set of tool names,
+/// - each tool's `description`, byte for byte — it is written by hand in
+///   `#[tool(description = ...)]` and copied into the fixture, and it is
+///   the text the model on the other side actually reads,
+/// - each tool's argument names and which of them are required.
+///
+/// What it deliberately does not compare is inside each argument: types,
+/// bounds, `format`, per-argument descriptions. Those are what `schemars`
+/// derives from the Rust types, so pinning them would turn a crate upgrade
+/// into a protocol failure. The fixtures' `$note` draws the same line.
+///
+/// There is no flag to rewrite the fixtures from a live server. Changing a
+/// description means editing the fixture by hand, which is the point:
+/// `AGENTS.md` does not allow re-recording a golden fixture to make a test
+/// pass. The failure prints both strings, so it is a copy away.
 #[test]
-fn tool_arguments_match_the_running_server() {
+fn published_tool_tables_match_the_running_server() {
     for (mode, access, fixture_file) in [
         (ExternalMode::Read, "read", "tools-list-read.json"),
         (ExternalMode::Coding, "coding", "tools-list-coding.json"),
     ] {
         let published = fixture_tools(fixture_file);
-        let fixture = Fixture::new(&format!("args-{access}"), access, "generic");
-        let mut session = fixture.open("demo", mode, "bridge-args");
+        let fixture = Fixture::new(&format!("published-{access}"), access, "generic");
+        let mut session = fixture.open("demo", mode, "bridge-published");
         let listed = session.rpc("tools/list", json!({}));
         let served = listed["tools"].as_array().unwrap();
 
@@ -540,6 +552,11 @@ fn tool_arguments_match_the_running_server() {
                 .iter()
                 .find(|t| name_of(t) == tool_name)
                 .unwrap_or_else(|| panic!("{fixture_file} has no {tool_name}"));
+            assert_eq!(
+                description(mine),
+                description(tool),
+                "{fixture_file}: {tool_name} publishes a description this server does not serve"
+            );
             assert_eq!(
                 arguments(mine),
                 arguments(tool),
@@ -573,6 +590,15 @@ fn fixture_tools(file: &str) -> Vec<Value> {
 
 fn name_of(tool: &Value) -> &str {
     tool["name"].as_str().unwrap()
+}
+
+/// The sentence a model reads before deciding to call the tool. Missing is
+/// not the same as empty: a tool with no description at all would be a
+/// different kind of wrong, so this panics rather than comparing `""`.
+fn description(tool: &Value) -> &str {
+    tool["description"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{}: no description", name_of(tool)))
 }
 
 /// One tool's argument names, sorted. A tool that takes none has an empty

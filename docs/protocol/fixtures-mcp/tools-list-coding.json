@@ -1,6 +1,6 @@
 {
   "$schema_ref": "#/$defs/tools_list_result",
-  "$note": "coding 模式的工具表：七个。exec_command 是 destructive + open-world，不因为某次命令看着安全就改注解。inputSchema 里的参数名和 required 是精确的、由 external_mcp 的 tool_arguments_match_the_running_server 对着真实 server 校验；每个参数的类型、上下界和说明是简写，server 发的是 schemars 从 Rust 类型生成的完整 schema。",
+  "$note": "coding 模式的工具表：七个。exec_command 是 destructive + open-world，不因为某次命令看着安全就改注解。工具名、description、inputSchema 里的参数名和 required 都是精确的，由 external_mcp 的 published_tool_tables_match_the_running_server 对着真实 server 逐字节校验；只有每个参数内部的类型、上下界和说明是简写，server 发的是 schemars 从 Rust 类型生成的完整 schema。",
   "message": {
     "jsonrpc": "2.0",
     "id": 2,

@@ -10,8 +10,10 @@
 - **两个产品的 `read_file` 没有、也不会统一**。它们的契约不一样（非法 UTF-8
   一个报错一个有损替换、一个一定读到文件尾一个撞预算就停），各自都是对外
   承诺。逐项对照在 workspace-kernel 仓库的 `evidence/v2-k/duplication-audit.md`。
-- **ccnm 的 CI 现在会构建失败**，这是本地 `path` 依赖的直接后果，不是 bug。
-  见下面「CI 怎么办」。
+- 共享 crate 按 tag 从 `https://github.com/xwfe/toexec.git` 拉（公开仓库，与 ccnm、
+  gld 一致）。**在一个旁边没有 workspace-kernel 的目录里构建通过**——那正是 CI
+  runner 的处境。中途一度用过本地 `path` 依赖，两边 CI 都因此构建不了，见下面
+  「依赖方式：从 path 到 git tag」。
 
 ## 为什么是这个函数
 
@@ -51,14 +53,11 @@ macOS arm64，Rust 1.98：
 P14 新增的三条最关键的用例——扫描上限处停下、超长行的切法、跨缓冲区的
 CRLF——都在 ccnm 这边原样保留并通过，所以搬家没有改变行为。
 
-## CI 怎么办
+## 依赖方式：从 path 到 git tag
 
-用户 2026-09-16 决定共享 crate 先走本地 `path` 依赖，不把 workspace-kernel 推成
-远端仓库。直接后果：GitHub Actions 的 runner 只 checkout ccnm 一个仓库，找不到
-`../workspace-kernel`，**`cargo` 在解析 manifest 阶段就会失败**，两个 job 都红。
-
-**实测过，不是推断**：把 ccnm clone 到一个旁边没有 workspace-kernel 的目录，
-`cargo metadata --no-deps` 就已经起不来——
+本阶段中途先用的是本地 `path` 依赖（`../workspace-kernel/crates/wk-text`），当时
+workspace-kernel 还没有 remote。**那让两边 CI 都构建不了**，而且是在解析 manifest
+的阶段就死，实测：
 
 ```text
 error: failed to load manifest for workspace member `.../crates/ccnm-cli`
@@ -67,21 +66,33 @@ Caused by: failed to read `.../workspace-kernel/crates/wk-text/Cargo.toml`
 Caused by: No such file or directory (os error 2)
 ```
 
-连依赖解析都到不了，所以任何 `cargo` 子命令都一样失败。这不是可以绕过去的：
-optional 依赖也要求 path 存在（cargo 要读它的 manifest 才能生成 lock），vendor
-进来等于又抄了一份。
+连依赖解析都到不了，所以任何 `cargo` 子命令都一样失败。也绕不过去：optional
+依赖同样要求 path 存在（cargo 要读它的 manifest 才能生成 lock），vendor 进来等于
+又抄了一份。
 
-解除条件，二选一：
+同日用户决定把 workspace-kernel 推上去，改成按 tag 的 git 依赖：
 
-1. 把 workspace-kernel 推成远端仓库（私有即可），两边改成 `{ git = ..., tag = ... }`，
-   本地开发用 `[patch]` 指回本地路径；
-2. 撤回这次链接——`git revert` 本阶段的提交，`next_line` 回到 `mcp/read.rs`。
+```toml
+wk-text = { git = "https://github.com/xwfe/toexec.git", tag = "wk-text-v0.1.0" }
+```
 
-在此之前，**ccnm 的门禁只能在本地跑**，绿的依据是上面那张表，不是 CI 徽章。
-发版前必须先解决其中之一：release 流程也在 Actions 上。
+三个选择，理由都写在 `Cargo.toml` 那一行旁边：
+
+- **按 tag，不跟 `main`**：共享库改了不会在某次 `cargo update` 之后突然改变 ccnm
+  的行为。升级是显式的一步——那边发新 tag，这边改这一行。
+- **https 不是 ssh**：`toexec` 是公开仓库（和 ccnm、gld 一样），匿名就能读，本地
+  和 CI 都不必配凭据。`github.com-xwfe` 那种 SSH 别名只存在于本机的 `~/.ssh/config`，
+  写进 `Cargo.toml` 的话 runner 上永远解析不了。
+- **本地开发那边的源码时临时改成 path，不提交**——提交了 CI 就又拉不到了。
+
+**验证方式就是 CI runner 的处境**：把 ccnm clone 到一个旁边没有 workspace-kernel
+的目录，`cargo check --workspace` 通过，cargo 自己从 GitHub 把 `wk-text v0.1.0
+(tag=wk-text-v0.1.0#e0ffc54c)` 拉了下来。gld 同样验过。
 
 ## 没验的
 
 - gld 那一侧还没接（另算一笔，在 gld 仓库记账）。
 - 这次没有跑真机、没有换已安装的二进制、没有消耗模型额度。
-- CI 没跑过，理由如上。
+- **GitHub Actions 上没有真跑过一次**。验的是同一件事的本地等价物（旁边没有
+  workspace-kernel 的目录里 `cargo check` 通过），推上去之前不知道 runner 上还有
+  没有别的问题。

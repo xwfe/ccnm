@@ -256,10 +256,10 @@ worktree **分配、调度、合并策略**在 Orchestrator；受管 workspace �
 
 本阶段只做 ccnm 这一侧：`next_line` 移到共享 crate `wk-text`，ccnm 改为调用它。**行为逐字节不变**——这是一次纯粹的搬家，不是重写。
 
-**依赖方式是本地 `path`（用户 2026-09-16 决定）**，workspace-kernel 目前没有 remote。已知代价：GitHub Actions 只 checkout 当前仓库，找不到 `../../workspace-kernel`，**ccnm 的 CI 会构建失败**。这不是 bug，是这个选择的直接后果；解除条件见 P16.2。
+**依赖方式：按 tag 固定的 git 依赖。**共享 crate 在 `https://github.com/xwfe/toexec.git`（公开仓库，与 ccnm、gld 一致），tag `wk-text-v0.1.0`。本阶段中途先用过本地 `path` 依赖，那让两边 CI 都构建不了；同日用户决定把仓库推上去，改成 git 依赖解决。
 
 - **P16.1** `mcp/read.rs` 用 `wk_text::next_line`，删掉本地那份；`Ending` 换成 `wk_text::Terminator`，写死的 `MAX_SCAN_BYTES` 作为 `scan_limit` 参数传进去，仍由 ccnm 决定它是多少。既有 24 个 `mcp::read` 测试**一条断言都不改**，包括 P14 新增的三条（扫描上限、超长行切法、跨缓冲区 CRLF）。
-- **P16.2** `Cargo.toml` 的 path 依赖旁边写清楚：为什么是 path、CI 因此会红、怎么解除（把 workspace-kernel 推成远端仓库改 git 依赖，或者撤回这次链接）。`rust-version` 已经是 1.89，与共享 crate 一致，本阶段不需要改。
+- **P16.2** `Cargo.toml` 按 tag 固定共享 crate，不跟 `main` 走——共享库改了不会在某次 `cargo update` 之后突然改变 ccnm 的行为，升级是显式的一步。旁边写清楚为什么用 https（公开仓库，本地和 CI 都不必配凭据）和本地开发怎么办（临时改 path，不提交）。`rust-version` 已经是 1.89，与共享 crate 一致，不需要改。验收要证明的是**在一个旁边没有 workspace-kernel 的目录里也能构建**，这正是 CI runner 的处境。
 - **P16.3** 离线全量门禁通过（fmt、严格 clippy、`cargo test --workspace`、`external_mcp` 与中立 MCP 客户端测试）；`read_file` 不是 schema 或文档层面的变化，不改协议文档。
 
 停止点：只搬这一个函数。原子写入与回滚是盘点认定收益最大的下一块，但它在写入路径上，等这次的跨仓联动被证明可用之后另立阶段；进程/输出不碰（gld 是 tokio async + 要支持 Windows，ccnm 是同步 + 只跑 Unix）。

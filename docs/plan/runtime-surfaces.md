@@ -453,7 +453,7 @@ Codex ── ws://127.0.0.1:<端口> ──> ccnm 网桥 ── SSH stdio ──
 
 **exec-server 的文件读方法**（`fs/readFile`、`fs/open`/`readBlock`、`fs/readDirectory`、`fs/walk`、`fs/getMetadata`、`fs/canonicalize`）**按 ccnm `read_file` 的路径契约校验**：先查原始输入、拒绝 `..`，再解析 symlink，结果必须仍在 workspace 根内。不看请求里的 sandbox 是什么——Codex 自己发的这些请求本来就是 `sandbox: null`。
 
-Codex 启动时会从工作区一路往上查 `.git`（实测直到 `/`）。根以上的这类查询**不转给 exec-server**，由受管入口按"不存在"回答；回答的形状在 P21 实测固定，要让 Codex 的行为和目录里确实没有 `.git` 一样。代价：workspace 是某个 Git 仓库的子目录时，Codex 看不到上层仓库。
+Codex 启动时会从工作区一路往上查 `.git`（实测直到 `/`）。根以上的这类查询**不转给 exec-server**，由受管入口照 exec-server 自己的"不存在"原样回答（`-32004`）；P21 实测这样回答后 Codex 的请求和"上面确实没有仓库"时一致。代价：workspace 是某个 Git 仓库的子目录时，Codex 看不到上层仓库——不拦的话，它找到上层 `.git` 后还会去那个仓库根读 `AGENTS.md`，那已经在根外了。
 
 没选的方案：让"能读的范围 = ccrun 账号能读的范围"。实现简单，但原生入口会比 MCP 入口宽，同一个 workspace 换个入口就能读到根外的文件。
 
@@ -462,6 +462,9 @@ Codex 启动时会从工作区一路往上查 `.git`（实测直到 `/`）。根
 ### 12.3 首版范围
 
 - **只开 coding 会话。**Codex 靠跑命令读文件，而只读会话不开任意命令（第 7.2 节同一理由），原生链开了也没法用；只读会话继续走 MCP。
+- **只开交互模式，启动时传 `-C <Runtime 根>`。**`codex exec`（print）会先在 Agent 本机检查这个目录，要求 Agent Node 上有同一绝对路径，而 Runtime 根常在 Agent 账号建不了的地方；交互模式不检查。代价是 Machine API（只有 print）起的 Codex 会话继续走 MCP。依据见 [P21 记录](../research/p21-codex-native-surface-2026-09-16.md)第 1 条。
+- **规则表只核对 sandbox 在不在是不够的。**人在 Codex 里批准提权后，命令会带 `sandbox: null`，越界 patch 会带一条多出来的路径写条目；逐方法的规则见 P21 记录的规则表。
+- **Linux Runtime 要装 bubblewrap，并允许执行账号创建 user namespace**，否则 Codex 发来的沙箱起不来（失败即拒，命令不执行）。
 - **不 resume。**断线就结束会话，与 ccnm v1 一致；网桥只放行一条连接，受管入口拒绝带 `resumeSessionId` 的握手。
 - `http/request` 一律拒绝；exec-server 的环境按白名单构造，`CODEX_HOME` 由 ccnm 生成、不含凭据。
 - Claude 经 exec-server 是另一件事（toexec v2 的 V2-P 实验线），不在这里。

@@ -38,7 +38,7 @@ ccnm 不需要安装 Orchestrator 也能独立使用。Orchestrator 核心不链
 
 ## 二、顺序和基线
 
-`P0 → P1 → P2 → P3 → P4 → P5 → P6 → P7 → P8 → P9 → P10 → P11 → P12 → P13 → P14 → P15 → P16 → P17 → P18 → P19 → P20 → P21 → P22 → P23 → P24`。默认每轮只执行一个阶段。P0–P8 是 ccnm v1 收口和独立 Orchestrator 的接口交接；P9–P12 是 ccnm v1.x 的 Remote Workspace MCP 扩展；P13 是按真实 Host 行为修正两个入口共用的 instructions 投影；P21–P24 是 Codex 原生执行链。完整边界见 [双执行入口方案](runtime-surfaces.md)。
+`P0 → P1 → P2 → P3 → P4 → P5 → P6 → P7 → P8 → P9 → P10 → P11 → P12 → P13 → P14 → P15 → P16 → P17 → P18 → P19 → P20 → P21 → P22 → P23 → P24 → P25`。默认每轮只执行一个阶段。P0–P8 是 ccnm v1 收口和独立 Orchestrator 的接口交接；P9–P12 是 ccnm v1.x 的 Remote Workspace MCP 扩展；P13 是按真实 Host 行为修正两个入口共用的 instructions 投影；P21–P24 是 Codex 原生执行链；P25 修 P24 真机轮发现的预检错误码。完整边界见 [双执行入口方案](runtime-surfaces.md)。
 
 ### P0 — 已有内部验证基线
 
@@ -363,3 +363,16 @@ worktree **分配、调度、合并策略**在 Orchestrator；受管 workspace �
 - **P24.4** 文档：支持矩阵、使用说明、运维手册写明原生链的平台、版本 pin、与 MCP 路径的区别和已知限制；模型回合计入 toexec v2 第 10.1 节的累计额度并记进 evidence。
 
 停止点：原生链成为 opt-in 的可用能力。要不要改成默认，另做决定。
+
+### P25 — MCP 握手失败时保留远端报的错误码
+
+**依赖 P24。用户 2026-09-16 指定立项，起因是 P24 真机轮（[记录](../research/p24-native-real-machine-2026-09-16.md)第五节）。**写锁被别的会话占着时，从 Agent Node 起会话，`ccnm run` 报 `CCNM_E_RUNTIME_UNREACHABLE`（退出码 21），真正的原因 `CCNM_E_POLICY` / `workspace write guard is busy` 只出现在正文的 `stderr:` 后面。人读得懂，按错误码判断的程序会误判成"连不上 Runtime"。根因在 `mcp::probe`：`initialize` 失败一律用调用方给的"不可达"码包起来，不看远端 stderr 第一行已经写明的 `CCNM_E_*`。P7 以来就这样，不是原生链引入的。
+
+两份冻结契约都已经写着正确答案，所以这是实现向契约靠拢，不改协议：机器协议 `-32005` 只表示"Agent 到 Runtime 的 SSH 不通"、`-32007` 是策略拒绝；Remote Workspace MCP 第 11.3 节把写入互斥 busy/unknown 列在 `CCNM_E_POLICY` 下。`ssh.rs` 的 `remote_failure` 对一次性远端命令早就按 stderr 首行保留错误码，握手这条路没跟上。
+
+- **P25.1** 先红：经真实二进制复现。Runtime 侧起一个真实 `internal mcp-serve` 握着写锁；Agent 侧真实 ccnm 经假 ssh 打到同一 Runtime 状态上的真实 `mcp-serve`，分别走 `internal agent-run`（与 `ccnm run` 同一个 `provider_runtime_preflight`）和 Agent 侧 `ccnm mcp probe`（doctor「远端 MCP 握手」行用的同一个 `mcp_handshake`）。断言退出码 33、stderr 首行 `CCNM_E_POLICY:`、正文同时带传输命令和 `write guard is busy`。修复前这组测试是红的，红的输出记进证据。
+- **P25.2** 修复：`initialize` 失败时，传输 stderr **首行**是已知 `CCNM_E_*` 名，错误就带这个码，消息仍保留传输命令、握手错误和 stderr 尾部；首行不是（ssh 自己的失败、不是 ccnm 的进程）、超时、spawn 失败，分类一律不变。"首行是不是错误码"只写一处，`ssh.rs` 与 `mcp::probe` 共用；按完整 stderr 的首行判，不按截到 4 KiB 的尾巴判。`probe()` 的三个调用方逐个核对：`mcp_probe_local`（Runtime 本机，原来归 `Internal`）、`mcp_handshake`（doctor 的远端 MCP 握手行、Agent 侧 `ccnm mcp probe`）、`provider_runtime_preflight`；`native_runtime_preflight` 经 `remote_failure` 本来就保留错误码，不改。
+- **P25.3** 文档：排错手册里"`ccnm run` 报 `CCNM_E_RUNTIME_UNREACHABLE`，正文里却写着 `workspace write guard is busy`"那一条按新行为改写；运维手册、排错手册里 doctor 示例中因远端拒绝而写成 `CCNM_E_RUNTIME_UNREACHABLE` 的握手行改成新码；删掉 `status.json` 里对应的 observed_gaps 条目。协议文档核对后不改，理由写进证据。
+- **P25.4** 门禁：`cargo fmt --all --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace`；`check_plan`、`check_protocol` 与其单测、`git diff --check`。
+
+停止点：只改握手失败时错误码怎么归类。不补 `session.start` 的占用预检（`-32008` 仍不可达，那是待定的产品决定）；RPC 后台运行失败仍只记消息不记码，不改；不改 doctor 行的结构和 ssh 失败、超时的分类；不跑真机——真机复验要替换已装二进制，需要单独授权。

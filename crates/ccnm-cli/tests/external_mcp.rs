@@ -41,6 +41,24 @@ impl Fixture {
         Fixture::build(test, access, "generic", true)
     }
 
+    /// A read-mode workspace whose Runtime home holds a Claude login: the
+    /// two things ccnm exists to keep apart are the same account. `waived`
+    /// writes the one switch that accepts that.
+    fn shared_home(test: &str, waived: bool) -> Fixture {
+        let fixture = Fixture::build(test, "read", "generic", false);
+        let claude = fixture.dir.join("home/.claude");
+        std::fs::create_dir_all(&claude).unwrap();
+        std::fs::write(claude.join(".credentials.json"), "{}\n").unwrap();
+        if waived {
+            let config = std::fs::read_to_string(&fixture.config).unwrap().replace(
+                "external_mcp = \"read\"",
+                "external_mcp = \"read\"\nallow_unisolated_credentials = true",
+            );
+            std::fs::write(&fixture.config, config).unwrap();
+        }
+        fixture
+    }
+
     fn build(test: &str, access: &str, instructions: &str, unconfined: bool) -> Fixture {
         let dir = std::env::temp_dir()
             .canonicalize()
@@ -900,4 +918,52 @@ fn agent_credentials_stop_the_external_entry_too() {
         !said.contains("not-a-real-key"),
         "the value must not appear"
     );
+}
+
+/// The boundary refusal is real, but it has to describe itself.
+///
+/// This session is refused before `initialize`, and it has no
+/// `exec_command` to refuse -- a read session is four read-only tools.
+/// Saying "exec_command is refused", listing confinement rows the gate
+/// never read, and closing with "set allow_unconfined_exec = true" sent a
+/// real operator to sign an opt-in named after unrestricted command
+/// execution, in order to open a read-only link. It would not even have
+/// worked: that switch waives nothing this gate reads.
+#[test]
+fn a_refused_read_session_names_only_the_switch_that_opens_it() {
+    let fixture = Fixture::shared_home("creds-read-message", false);
+    let out = fixture.refused("demo", ExternalMode::Read);
+    assert!(!out.status.success());
+    assert!(out.stdout.is_empty(), "no handshake may happen");
+
+    let said = stderr(&out);
+    assert!(said.starts_with("CCNM_E_POLICY:"), "{said}");
+    assert!(said.contains("No Claude credential"), "{said}");
+    assert!(said.contains("allow_unisolated_credentials"), "{said}");
+    assert!(!said.contains("exec_command"), "{said}");
+    assert!(!said.contains("set allow_unconfined_exec = true"), "{said}");
+    // The rows this gate does not read stay out of it. They are still real
+    // and `ccnm doctor` still shows them; they are not why this failed.
+    for unread in ["Not an admin", "No SSH keys", "No sudo", "Runtime user"] {
+        assert!(!said.contains(unread), "{unread} is not a reason: {said}");
+    }
+}
+
+/// And the switch the refusal names is the whole fix: one line, matching
+/// the one admission actually being made. Nothing here needs
+/// `allow_unconfined_exec`, because nothing here runs a command.
+#[test]
+fn the_credential_switch_alone_opens_a_read_session() {
+    let fixture = Fixture::shared_home("creds-read-waived", true);
+    let mut session = fixture.open("demo", ExternalMode::Read, "bridge-waived");
+
+    let mut tools = session.tools();
+    tools.sort();
+    let mut expected = READ_TOOLS.to_vec();
+    expected.sort();
+    assert_eq!(tools, expected);
+
+    let read = session.call("read_file", json!({"path": "hello.txt"}));
+    assert!(!is_error(&read), "{}", text(&read));
+    session.shutdown();
 }

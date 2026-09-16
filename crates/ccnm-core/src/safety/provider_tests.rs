@@ -207,7 +207,7 @@ fn invalid_local_references_and_unknown_access_are_not_waived_by_unconfined_exec
     assert!(!report.exec_allowed(Accepted::unconfined(true)));
     assert!(
         report
-            .refusal(Accepted::unconfined(true))
+            .refusal(Accepted::unconfined(true), super::Refused::ExecCommand)
             .contains("unknown")
     );
 }

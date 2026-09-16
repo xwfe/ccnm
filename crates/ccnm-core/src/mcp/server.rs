@@ -300,8 +300,22 @@ impl Server {
     pub fn new(payload: &ServePayload) -> CcnmResult<Self> {
         let root = crate::runtime::canonical_root(&payload.root)?;
         let exec_gate = ExecGate::decide(payload)?;
+        // Every entry, at every access level. The findings this gate reads
+        // are not about `exec_command`: an identity ccnm cannot name, an
+        // inherited authentication environment that every subprocess of
+        // this session gets handed (a read session still spawns git and
+        // ripgrep), and a runtime account that is also the account holding
+        // the Agent's login. The last one is the separation ccnm exists to
+        // keep, and it is a property of the machine, not of how much this
+        // particular client was granted -- so a read-only external session
+        // is refused here too, and takes the same one-line opt-in as any
+        // other. Tested by `agent_credentials_stop_the_external_entry_too`.
         if !exec_gate.audit.agent_boundary_clear(exec_gate.accepted) {
-            return Err(Error::policy(exec_gate.audit.refusal(exec_gate.accepted)));
+            return Err(Error::policy(
+                exec_gate
+                    .audit
+                    .refusal(exec_gate.accepted, crate::safety::Refused::Session),
+            ));
         }
         // A session that cannot write does not take the workspace's write
         // guard: holding it would block a real writer for as long as
@@ -337,10 +351,19 @@ impl Server {
         exec_gate: ExecGate,
         write_guard: Option<crate::mcp::write_guard::WriteGuard>,
     ) -> CcnmResult<Self> {
-        // Before any workspace-dependent subprocess (including Git), not just
-        // exec_command. An unconfined opt-in cannot grant Agent credentials.
-        if write_guard.is_some() && !exec_gate.audit.agent_boundary_clear(exec_gate.accepted) {
-            return Err(Error::policy(exec_gate.audit.refusal(exec_gate.accepted)));
+        // The same gate `Server::new` already applied, restated where the
+        // first workspace-dependent subprocess actually happens: `git_facts`
+        // is two lines below, and an unconfined opt-in cannot grant Agent
+        // credentials. It used to be skipped when there was no write guard,
+        // which since P10 reads as "a read-only session need not hold the
+        // boundary" -- it never meant that. The only caller that passes no
+        // guard is the test fixture, whose audit has no findings.
+        if !exec_gate.audit.agent_boundary_clear(exec_gate.accepted) {
+            return Err(Error::policy(
+                exec_gate
+                    .audit
+                    .refusal(exec_gate.accepted, crate::safety::Refused::Session),
+            ));
         }
         let (git, git_subdir) = git_facts(&root, &SystemRunner);
         // A CLAUDE.md that cannot be read does not stop the session: the
@@ -612,10 +635,10 @@ impl Server {
         // for that account to be a confined one, it does not run.
         if !self.inner.exec_gate.allowed() {
             return Ok(tool_error(&Error::policy(
-                self.inner
-                    .exec_gate
-                    .audit
-                    .refusal(self.inner.exec_gate.accepted),
+                self.inner.exec_gate.audit.refusal(
+                    self.inner.exec_gate.accepted,
+                    crate::safety::Refused::ExecCommand,
+                ),
             )));
         }
         // Re-checked here because what is on disk can change after the

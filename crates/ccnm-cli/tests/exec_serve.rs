@@ -613,6 +613,242 @@ fn an_executor_that_dies_releases_the_guard_after_the_sweep_twenty_times() {
     }
 }
 
+/// The Runtime half of `ccnm doctor`'s probe, reached the way the Agent
+/// Node reaches it, minus the network (P27).
+///
+/// The hop replaced is ssh itself. A Codex Agent's transport is the absolute
+/// `/usr/bin/ssh`, which no PATH entry can stand in for, so this runner takes
+/// each command the probe would send and runs what the far side would run:
+/// the real binary, the verb and payload after the alias, the same stdin and
+/// timeout, and this fixture's Runtime environment instead of the test's.
+/// `ssh -G` gets a canned answer. Anything else is a call the probe was not
+/// expected to make, and fails the test.
+struct RuntimeOverSsh<'a> {
+    fx: &'a Fixture,
+    env: Vec<(&'static str, &'static str)>,
+    verbs: std::sync::Mutex<Vec<String>>,
+}
+
+impl ccnm_core::ProcessRunner for RuntimeOverSsh<'_> {
+    fn run(&self, cmd: &ccnm_core::Cmd) -> ccnm_core::Result<ccnm_core::Output> {
+        let args: Vec<String> = cmd
+            .args
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        if args.iter().any(|a| a == "-G") {
+            return Ok(ccnm_core::Output::exited(
+                0,
+                "hostname runtime.invalid\nuser ccrun\nport 22\n",
+            ));
+        }
+        let at = args
+            .iter()
+            .position(|a| a == "internal")
+            .unwrap_or_else(|| panic!("unexpected command: {}", cmd.display()));
+        let verb = args[at + 1].clone();
+        assert!(
+            ["hello", "runtime-audit", "exec-serve"].contains(&verb.as_str()),
+            "the probe sent `{verb}`"
+        );
+        self.verbs.lock().unwrap().push(verb.clone());
+        let wire = args.last().unwrap();
+        let mut local = ccnm_core::Cmd::new(env!("CARGO_BIN_EXE_ccnm")).args([
+            "internal",
+            verb.as_str(),
+            "--payload",
+            wire.as_str(),
+        ]);
+        // Nothing of the test process's own environment: an inherited
+        // SSH_AUTH_SOCK is exactly what the Runtime's audit refuses.
+        for (key, _) in std::env::vars_os() {
+            if key != "PATH" {
+                local = local.env_remove(key);
+            }
+        }
+        local = local
+            .env("HOME", self.fx.dir.join("home"))
+            .env("XDG_STATE_HOME", self.fx.dir.join("state"))
+            .env("CCNM_CONFIG", &self.fx.config)
+            .env("FAKE_EXEC_LOG", &self.fx.log);
+        for (key, value) in &self.env {
+            local = local.env(key, value);
+        }
+        if let Some(stdin) = &cmd.stdin {
+            local = local.stdin(stdin.clone());
+        }
+        ccnm_core::SystemRunner.run(&local.timeout(cmd.timeout))
+    }
+}
+
+/// P27: the exec-server row of `ccnm doctor`, through the preflight `ccnm run`
+/// makes, against the real `exec-serve` and the fake executor.
+///
+/// The Agent side is `work::probe` in this process with a Codex instance;
+/// the table is `doctor::from_agent`, from the Runtime's own resolve answer.
+/// No MCP handshake (`mcp_calls: 0`): that transport is spawned directly,
+/// not through a runner, and it has its own tests.
+#[test]
+fn doctor_reports_the_exec_server_chain_through_the_real_preflight() {
+    use ccnm_core::doctor;
+    use ccnm_core::protocol::probe::ProbeRequest;
+    use ccnm_core::runtime::{ResolveReport, ResolveRequest};
+    use std::os::unix::fs::PermissionsExt;
+
+    let fx = Fixture::build("doctor");
+    let agent_home = fx.dir.join("agent-home");
+    let profile = agent_home.join(".config/ccnm/agents/codex");
+    std::fs::create_dir_all(&profile).unwrap();
+    std::fs::set_permissions(&profile, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let agent_config = fx.dir.join("agent.toml");
+    std::fs::write(
+        &agent_config,
+        "this = \"agent\"\nruntime_node = \"runtime\"\n[nodes.agent]\n[nodes.runtime]\nssh = \"runtime-alias\"\nccnm_bin = \"/opt/runtime/ccnm\"\n[agents.codex-main]\nprovider = \"codex\"\nprofile_ref = \"default\"\n",
+    )
+    .unwrap();
+
+    // The Runtime's answer, from the real binary.
+    let resolved = fx
+        .command(
+            "runtime-resolve",
+            &payload::encode(&ResolveRequest::new("demo", None)).unwrap(),
+        )
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(resolved.status.success(), "{}", stderr(&resolved));
+    let authority: ResolveReport = payload::decode_json(&resolved.stdout).unwrap();
+    assert!(authority.codex_exec_server);
+
+    let doctor_with = |env: Vec<(&'static str, &'static str)>| {
+        let runner = RuntimeOverSsh {
+            fx: &fx,
+            env,
+            verbs: Default::default(),
+        };
+        let tools = ccnm_core::work::Tools {
+            runner: &runner,
+            config: ccnm_core::Config::load(&agent_config).unwrap(),
+            local: Some(
+                ccnm_core::instance::AgentLocal::new(Default::default(), agent_home.clone(), None)
+                    .unwrap(),
+            ),
+            state: fx.dir.join("agent-state"),
+            // Checked for length only (macOS allows 103 bytes of socket
+            // path), never created: nothing on this path starts a master.
+            control_dir: PathBuf::from(format!("/tmp/ccnm-p27-{}", std::process::id())),
+            agents: ccnm_core::provider::AgentBinaries::with_claude(None),
+            controller: fx.dir.join("no-controller.sock"),
+            tmux: None,
+        };
+        let probe = ccnm_core::work::probe(
+            &ProbeRequest {
+                protocol: ccnm_core::instance::INSTANCE_SESSION_PROTOCOL,
+                provider: Default::default(),
+                agent: authority.agent.clone(),
+                workspace: authority.workspace.clone(),
+                root: authority.root.clone(),
+                runtime_node: authority.runtime_node.clone(),
+                provider_config_dir: authority.provider_config_dir.clone(),
+                mcp_calls: 0,
+                codex_exec_server: authority.codex_exec_server,
+            },
+            &tools,
+        );
+        let report = doctor::from_agent(&agent_config, "demo", Ok((&authority, &probe)));
+        let verbs = runner.verbs.lock().unwrap().clone();
+        (report, verbs)
+    };
+    let exec_row = |report: &doctor::Report| {
+        report
+            .checks
+            .iter()
+            .find(|c| c.name == "Codex exec-server")
+            .unwrap_or_else(|| panic!("no exec-server row in\n{}", report.render()))
+            .clone()
+    };
+
+    // A healthy chain: OK, one empty session, and nothing reached the
+    // executor -- the preflight opens and closes, it asks nothing.
+    let (report, verbs) = doctor_with(vec![]);
+    let row = exec_row(&report);
+    assert_eq!(row.status, doctor::Status::Ok, "{}", report.render());
+    assert_eq!(verbs, ["hello", "runtime-audit", "exec-serve"]);
+    assert!(fx.executor_saw().is_empty(), "{:?}", fx.executor_saw());
+    let zh = report.render_in(ccnm_core::Lang::Zh);
+    assert!(
+        zh.contains("Codex 原生链            正常   empty exec-serve session on runtime"),
+        "{zh}"
+    );
+    // The guard was taken and given back: a writer can start right after.
+    let guards: Vec<String> = std::fs::read_dir(fx.dir.join("state/ccnm/write-guards"))
+        .unwrap()
+        .map(|entry| std::fs::read_to_string(entry.unwrap().path()).unwrap())
+        .collect();
+    assert_eq!(guards, ["released\n"]);
+    let mut writer = fx.open("writer");
+    writer.handshake();
+
+    // A writer holds the guard: the row fails with the Runtime's own code
+    // and reason, not as an unreachable Runtime.
+    let (report, _) = doctor_with(vec![]);
+    let row = exec_row(&report);
+    assert_eq!(
+        row.status,
+        doctor::Status::Fail(ccnm_core::ErrorCode::Policy),
+        "{}",
+        report.render()
+    );
+    assert!(row.detail.contains("write guard is busy"), "{}", row.detail);
+    assert!(writer.close().status.success());
+
+    // The Codex binary is not the measured release.
+    let (report, _) = doctor_with(vec![("FAKE_CODEX_VERSION", "codex-cli 0.155.0")]);
+    let row = exec_row(&report);
+    assert_eq!(
+        row.status,
+        doctor::Status::Fail(ccnm_core::ErrorCode::Version),
+        "{}",
+        report.render()
+    );
+    assert!(row.detail.contains("Codex 0.155.0"), "{}", row.detail);
+    assert!(row.detail.contains("0.154.0"), "{}", row.detail);
+
+    // The Runtime names no Codex binary.
+    let text = std::fs::read_to_string(&fx.config).unwrap();
+    let without: String = text
+        .lines()
+        .filter(|l| !l.starts_with("codex_bin"))
+        .map(|l| format!("{l}\n"))
+        .collect();
+    std::fs::write(&fx.config, without).unwrap();
+    let (report, _) = doctor_with(vec![]);
+    let row = exec_row(&report);
+    assert_eq!(
+        row.status,
+        doctor::Status::Fail(ccnm_core::ErrorCode::Config),
+        "{}",
+        report.render()
+    );
+    assert!(
+        row.detail.contains("codex_bin is not set"),
+        "{}",
+        row.detail
+    );
+    let en = report.render_in(ccnm_core::Lang::En);
+    assert!(
+        en.contains("Codex exec-server       FAIL   CCNM_E_CONFIG: "),
+        "{en}"
+    );
+
+    // None of it left the guard held.
+    let guards: Vec<String> = std::fs::read_dir(fx.dir.join("state/ccnm/write-guards"))
+        .unwrap()
+        .map(|entry| std::fs::read_to_string(entry.unwrap().path()).unwrap())
+        .collect();
+    assert_eq!(guards, ["released\n"]);
+}
+
 /// The same table against the real executor, when one is available.
 #[test]
 fn against_the_real_codex_executor_when_configured() {

@@ -480,6 +480,8 @@ pub fn mcp_probe_remote_selected(
             .and_then(|node| AgentProvider::current().config_dir(node))
             .map(|dir| dir.to_path_buf()),
         mcp_calls: calls,
+        // An MCP probe: the exec-server chain has its own row in doctor.
+        codex_exec_server: false,
     };
     let rep: WorkProbeReport = ssh.call_ccnm(
         env.runner,

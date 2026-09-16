@@ -404,6 +404,10 @@ fn doctor_against_an_unreachable_agent_exits_agent_unreachable() {
         "{text}"
     );
     assert!(
+        text.contains("Codex exec-server       SKIP   not checked: Agent SSH failed"),
+        "{text}"
+    );
+    assert!(
         text.contains(
             "Native tool policy      SKIP   not checked: only a live selected Agent session"
         ),
@@ -426,7 +430,7 @@ fn doctor_against_an_unreachable_agent_exits_agent_unreachable() {
         "{text}"
     );
     assert!(
-        text.contains("NOT READY (1 failed, 12 not checked)"),
+        text.contains("NOT READY (1 failed, 13 not checked)"),
         "{text}"
     );
     // Read-only: nothing appeared in the root.

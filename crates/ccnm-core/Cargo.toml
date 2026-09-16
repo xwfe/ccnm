@@ -17,7 +17,7 @@ toml.workspace = true
 toml_edit.workspace = true
 tracing.workspace = true
 uuid.workspace = true
-wk-text.workspace = true
+toexec-text.workspace = true
 
 [dev-dependencies]
 # In-memory pipes to stand in for a client the MCP server outlives.

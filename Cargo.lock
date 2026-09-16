@@ -130,12 +130,12 @@ dependencies = [
  "rmcp",
  "serde",
  "serde_json",
+ "toexec-text",
  "tokio",
  "toml",
  "toml_edit",
  "tracing",
  "uuid",
- "wk-text",
 ]
 
 [[package]]
@@ -852,6 +852,11 @@ dependencies = [
 ]
 
 [[package]]
+name = "toexec-text"
+version = "0.1.0"
+source = "git+https://github.com/xwfe/toexec.git?tag=toexec-text-v0.1.0#25ef24a8b670c37dc05ce66d1a91caddfefb2657"
+
+[[package]]
 name = "tokio"
 version = "1.53.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1228,11 +1233,6 @@ name = "winnow"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "23b97319f7b8343df12cc98938e5c3eb436064524c8d2b4e30a1d3a36eecdf81"
-
-[[package]]
-name = "wk-text"
-version = "0.1.0"
-source = "git+https://github.com/xwfe/toexec.git?tag=wk-text-v0.1.0#e0ffc54cb0dd77278edb1c837f6ee2928854fcc0"
 
 [[package]]
 name = "zmij"

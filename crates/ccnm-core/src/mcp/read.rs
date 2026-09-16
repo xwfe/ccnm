@@ -40,8 +40,8 @@ use serde::{Deserialize, Serialize};
 // Shared with gld, which hit the same "one line at a time, but do not hold
 // the line" problem in its own search path. The scan ceiling below stays
 // ccnm's: the primitive takes it as an argument and has no policy of its
-// own (cross-repo plan workspace-kernel, V2-K).
-use wk_text::{LineLimits, Terminator, next_line};
+// own (cross-repo plan toexec, V2-K).
+use toexec_text::{LineLimits, Terminator, next_line};
 
 use crate::error::{Error, ErrorCode, Result};
 use crate::mcp::path;

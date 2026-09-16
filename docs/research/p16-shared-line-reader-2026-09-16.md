@@ -3,15 +3,15 @@
 ## 结论
 
 - `mcp/read.rs` 里的 `next_line` / `trim_cut` / `enum Ending` 移到共享 crate
-  `wk-text`（仓库 `workspace-kernel`），ccnm 改成调用它。**行为逐字节不变**，
+  `toexec-text`（仓库 `toexec`），ccnm 改成调用它。**行为逐字节不变**，
   既有 24 个 `mcp::read` 测试一条断言都没改。
 - 唯一的改动是把写死的 `MAX_SCAN_BYTES` 变成参数 `LineLimits::scan_limit`。
   64 MiB 这个数仍然由 ccnm 定，共享 crate 自己没有策略。
 - **两个产品的 `read_file` 没有、也不会统一**。它们的契约不一样（非法 UTF-8
   一个报错一个有损替换、一个一定读到文件尾一个撞预算就停），各自都是对外
-  承诺。逐项对照在 workspace-kernel 仓库的 `evidence/v2-k/duplication-audit.md`。
+  承诺。逐项对照在 toexec 仓库的 `evidence/v2-k/duplication-audit.md`。
 - 共享 crate 按 tag 从 `https://github.com/xwfe/toexec.git` 拉（公开仓库，与 ccnm、
-  gld 一致）。**在一个旁边没有 workspace-kernel 的目录里构建通过**——那正是 CI
+  gld 一致）。**在一个旁边没有 toexec 的目录里构建通过**——那正是 CI
   runner 的处境。中途一度用过本地 `path` 依赖，两边 CI 都因此构建不了，见下面
   「依赖方式：从 path 到 git tag」。
 
@@ -31,9 +31,9 @@ ccnm 当时那种无上限的 2 GB。gld 真正的内存放大器是 `context_li
 
 | | 改前 | 改后 |
 | --- | --- | --- |
-| `next_line` | `mcp/read.rs` 里的私有函数 | `wk_text::next_line` |
+| `next_line` | `mcp/read.rs` 里的私有函数 | `toexec_text::next_line` |
 | 扫描上限 | 函数里写死 `MAX_SCAN_BYTES` | `LineLimits { keep, scan_limit }` 参数，ccnm 传 `Some(MAX_SCAN_BYTES)` |
-| 行终结符 | 私有 `enum Ending` | `wk_text::Terminator`，变体同名 |
+| 行终结符 | 私有 `enum Ending` | `toexec_text::Terminator`，变体同名 |
 | `trim_cut` | `mcp/read.rs` 里的私有函数 | 共享 crate 的实现细节，不再导出 |
 
 `Scan`、`Limits`、`FileChunk`、`render` 和全部对外契约都没动。
@@ -55,14 +55,14 @@ CRLF——都在 ccnm 这边原样保留并通过，所以搬家没有改变行�
 
 ## 依赖方式：从 path 到 git tag
 
-本阶段中途先用的是本地 `path` 依赖（`../workspace-kernel/crates/wk-text`），当时
-workspace-kernel 还没有 remote。**那让两边 CI 都构建不了**，而且是在解析 manifest
+本阶段中途先用的是本地 `path` 依赖（`../toexec/crates/toexec-text`），当时
+toexec 还没有 remote。**那让两边 CI 都构建不了**，而且是在解析 manifest
 的阶段就死，实测：
 
 ```text
 error: failed to load manifest for workspace member `.../crates/ccnm-cli`
 Caused by: failed to load manifest for dependency `ccnm-core`
-Caused by: failed to read `.../workspace-kernel/crates/wk-text/Cargo.toml`
+Caused by: failed to read `.../toexec/crates/toexec-text/Cargo.toml`
 Caused by: No such file or directory (os error 2)
 ```
 
@@ -70,10 +70,10 @@ Caused by: No such file or directory (os error 2)
 依赖同样要求 path 存在（cargo 要读它的 manifest 才能生成 lock），vendor 进来等于
 又抄了一份。
 
-同日用户决定把 workspace-kernel 推上去，改成按 tag 的 git 依赖：
+同日用户决定把 toexec 推上去，改成按 tag 的 git 依赖：
 
 ```toml
-wk-text = { git = "https://github.com/xwfe/toexec.git", tag = "wk-text-v0.1.0" }
+toexec-text = { git = "https://github.com/xwfe/toexec.git", tag = "toexec-text-v0.1.0" }
 ```
 
 三个选择，理由都写在 `Cargo.toml` 那一行旁边：
@@ -85,14 +85,14 @@ wk-text = { git = "https://github.com/xwfe/toexec.git", tag = "wk-text-v0.1.0" }
   写进 `Cargo.toml` 的话 runner 上永远解析不了。
 - **本地开发那边的源码时临时改成 path，不提交**——提交了 CI 就又拉不到了。
 
-**验证方式就是 CI runner 的处境**：把 ccnm clone 到一个旁边没有 workspace-kernel
-的目录，`cargo check --workspace` 通过，cargo 自己从 GitHub 把 `wk-text v0.1.0
-(tag=wk-text-v0.1.0#e0ffc54c)` 拉了下来。gld 同样验过。
+**验证方式就是 CI runner 的处境**：把 ccnm clone 到一个旁边没有 toexec
+的目录，`cargo check --workspace` 通过，cargo 自己从 GitHub 把 `toexec-text v0.1.0
+(tag=toexec-text-v0.1.0#25ef24a8)` 拉了下来。gld 同样验过。
 
 ## 没验的
 
 - gld 那一侧还没接（另算一笔，在 gld 仓库记账）。
 - 这次没有跑真机、没有换已安装的二进制、没有消耗模型额度。
 - **GitHub Actions 上没有真跑过一次**。验的是同一件事的本地等价物（旁边没有
-  workspace-kernel 的目录里 `cargo check` 通过），推上去之前不知道 runner 上还有
+  toexec 的目录里 `cargo check` 通过），推上去之前不知道 runner 上还有
   没有别的问题。

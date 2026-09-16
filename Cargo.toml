@@ -16,14 +16,14 @@ repository = "https://github.com/xwfe/ccnm"
 
 [workspace.dependencies]
 ccnm-core = { path = "crates/ccnm-core" }
-# 跟 gld 共用的文本读取原语（跨仓计划 workspace-kernel 的 V2-K）。
+# 跟 gld 共用的文本读取原语（跨仓计划 toexec 的 V2-K）。
 #
 # 按 tag 固定，不跟着 main 走：共享库改了不会在某次 `cargo update` 之后
 # 突然改变这里的行为。升级是一次显式的改动——在那边发新 tag，再改这一行。
 # 用 https 而不是 ssh，是因为 toexec 是公开仓库，匿名就能读，本地和 CI
 # 都不需要配凭据。本地开发那边的源码时，用 `cargo add --path` 或临时改成
 # path 依赖，**别提交**——提交了 CI 就又拉不到了。
-wk-text = { git = "https://github.com/xwfe/toexec.git", tag = "wk-text-v0.1.0" }
+toexec-text = { git = "https://github.com/xwfe/toexec.git", tag = "toexec-text-v0.1.0" }
 base64 = "0.22"
 clap = { version = "4", features = ["derive", "env"] }
 serde = { version = "1", features = ["derive"] }

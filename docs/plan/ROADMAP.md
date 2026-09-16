@@ -215,7 +215,7 @@ worktree **分配、调度、合并策略**在 Orchestrator；受管 workspace �
 
 ### P13 — MCP instructions 按 Host 实际上限投影
 
-**依赖 P12。用户 2026-09-15 指定立项。**起因是跨仓计划 workspace-kernel v2 的 V2-Q1：Claude Code 2.1.269 把 MCP `instructions` 截到 **2048 个 UTF-16 码元**（打包代码 `FT=2048` 按 JS 字符串长度截，真实连接日志 `Server instructions truncated from 3018 to 2048 chars`）。ccnm 却按 16 KiB 字节做预算，还把其他说明文件清单和 `[project instructions: …]` 标记行放在正文后面——文件一长，Host 先截掉的正是告诉模型"少了多少、怎么读全文"的那两段。不改工具、权限、错误码语义，不升 `ccnm.workspace-mcp` 或内部 wire 版本。
+**依赖 P12。用户 2026-09-15 指定立项。**起因是跨仓计划 toexec v2 的 V2-Q1：Claude Code 2.1.269 把 MCP `instructions` 截到 **2048 个 UTF-16 码元**（打包代码 `FT=2048` 按 JS 字符串长度截，真实连接日志 `Server instructions truncated from 3018 to 2048 chars`）。ccnm 却按 16 KiB 字节做预算，还把其他说明文件清单和 `[project instructions: …]` 标记行放在正文后面——文件一长，Host 先截掉的正是告诉模型"少了多少、怎么读全文"的那两段。不改工具、权限、错误码语义，不升 `ccnm.workspace-mcp` 或内部 wire 版本。
 
 - **P13.1** 预算按 Host 的计量方式：Claude Managed 和外部 `external_instructions = "project"` 按 2048 个 UTF-16 码元（bridge 不知道对面是哪个 Host，只能按已知最严的算）；Codex Managed 保持 16 KiB 字节。上限、计量单位和依据的版本只写在一处；长清单、超长文件、多字节字符的最坏情况有测试证明不超限。
 - **P13.2** 顺序改为：基础说明（外部模式另有模式句）→ 标记行 → 其他说明文件清单 → 项目说明正文。正文由 ccnm 按行截断，标记行写明文件多大、给了多少、怎么读全文；清单自身有上限，不能把正文之前的部分挤出上限。
@@ -240,26 +240,26 @@ worktree **分配、调度、合并策略**在 Orchestrator；受管 workspace �
 
 ### P15 — 外部入口配置示例启用 alwaysLoad
 
-**依赖 P14。用户 2026-09-16 指定立项。**起因是跨仓计划 workspace-kernel v2 的 V2-Q2：Claude Code 默认把 MCP 工具放进**延迟加载池**（工具表里只有名字，模型要先调一次 `ToolSearch` 才拿得到 schema）。外部入口（用户自己的 Claude Code 接 `ccnm mcp bridge`）因此每个任务多一个回合；那次 18 格模型对照里，加 `alwaysLoad` 的一组 `ToolSearch` 调用为 0、成功率不变、墙钟和 token 都不更差，结论是采纳。本阶段只把这个配置写进外部入口的示例和说明。
+**依赖 P14。用户 2026-09-16 指定立项。**起因是跨仓计划 toexec v2 的 V2-Q2：Claude Code 默认把 MCP 工具放进**延迟加载池**（工具表里只有名字，模型要先调一次 `ToolSearch` 才拿得到 schema）。外部入口（用户自己的 Claude Code 接 `ccnm mcp bridge`）因此每个任务多一个回合；那次 18 格模型对照里，加 `alwaysLoad` 的一组 `ToolSearch` 调用为 0、成功率不变、墙钟和 token 都不更差，结论是采纳。本阶段只把这个配置写进外部入口的示例和说明。
 
 **Managed 路径不受影响，也不改**：ccnm 启动 Claude Code 时传 `--tools ""`，`ToolSearch` 本身不可用，七个工具本来就全量加载。**也不在工具上加 `_meta["anthropic/alwaysLoad"]`**：两种写法对延迟加载效果相同，但只有服务器配置那条会让 Host 在首轮请求前等这台 server 连上，而且模型对照测的就是配置这条；`_meta` 没有实测数据。
 
 - **P15.1** 协议文档的 `mcpServers` 示例加 `"alwaysLoad": true`，并写明：这是 Claude Code 自己的配置键、不是 MCP 标准字段，实测生效的版本，不加会怎样（模型先调一次 `ToolSearch`），以及代价（首轮请求前会等 bridge 连上 Runtime，Runtime 不可达时启动更慢）。
 - **P15.2** 使用说明的外部入口一节指到这一条，不复制第二份说明；Managed 路径为什么不需要改，全仓只写一处。
-- **P15.3** 证据：本机零额度复现延迟池差异（`coding` 与 `read` 两种模式各一对），记录客户端与 ccnm 版本、复跑方式和未覆盖范围；模型侧收益引用 workspace-kernel 的 V2-Q2，不在本仓重跑、不再消耗订阅额度。
+- **P15.3** 证据：本机零额度复现延迟池差异（`coding` 与 `read` 两种模式各一对），记录客户端与 ccnm 版本、复跑方式和未覆盖范围；模型侧收益引用 toexec 的 V2-Q2，不在本仓重跑、不再消耗订阅额度。
 
 停止点：只改文档与示例，不动 ccnm 代码、工具元数据和 `ccnm.workspace-mcp` 版本；其他 Host（Codex 等）没有对应机制，不替它们编配置。
 
 ### P16 — 接入共享库的有界行读取
 
-**依赖 P15。用户 2026-09-16 指定推进跨仓计划 workspace-kernel 的 V2-K 主线。**开工前先做了重复度盘点（workspace-kernel 仓库 `evidence/v2-k/duplication-audit.md`）：两个产品的 `read_file` **契约不一样**（非法 UTF-8 一个报错一个有损替换、一个一定读到文件尾一个撞预算就停），不能也不该统一；真正共有的内核只有「读一行但不把整行读进内存」。P14 改出来的 `next_line` 就是它，gld 的搜索路径上还是 `reader.lines()`，同一类问题——但它有 `max_file_bytes` 兜底（默认 2 MiB、最大 64 MiB），没有 ccnm 当时那种无上限的 2 GB 风险。
+**依赖 P15。用户 2026-09-16 指定推进跨仓计划 toexec 的 V2-K 主线。**开工前先做了重复度盘点（toexec 仓库 `evidence/v2-k/duplication-audit.md`）：两个产品的 `read_file` **契约不一样**（非法 UTF-8 一个报错一个有损替换、一个一定读到文件尾一个撞预算就停），不能也不该统一；真正共有的内核只有「读一行但不把整行读进内存」。P14 改出来的 `next_line` 就是它，gld 的搜索路径上还是 `reader.lines()`，同一类问题——但它有 `max_file_bytes` 兜底（默认 2 MiB、最大 64 MiB），没有 ccnm 当时那种无上限的 2 GB 风险。
 
-本阶段只做 ccnm 这一侧：`next_line` 移到共享 crate `wk-text`，ccnm 改为调用它。**行为逐字节不变**——这是一次纯粹的搬家，不是重写。
+本阶段只做 ccnm 这一侧：`next_line` 移到共享 crate `toexec-text`，ccnm 改为调用它。**行为逐字节不变**——这是一次纯粹的搬家，不是重写。
 
-**依赖方式：按 tag 固定的 git 依赖。**共享 crate 在 `https://github.com/xwfe/toexec.git`（公开仓库，与 ccnm、gld 一致），tag `wk-text-v0.1.0`。本阶段中途先用过本地 `path` 依赖，那让两边 CI 都构建不了；同日用户决定把仓库推上去，改成 git 依赖解决。
+**依赖方式：按 tag 固定的 git 依赖。**共享 crate 在 `https://github.com/xwfe/toexec.git`（公开仓库，与 ccnm、gld 一致），tag `toexec-text-v0.1.0`。本阶段中途先用过本地 `path` 依赖，那让两边 CI 都构建不了；同日用户决定把仓库推上去，改成 git 依赖解决。
 
-- **P16.1** `mcp/read.rs` 用 `wk_text::next_line`，删掉本地那份；`Ending` 换成 `wk_text::Terminator`，写死的 `MAX_SCAN_BYTES` 作为 `scan_limit` 参数传进去，仍由 ccnm 决定它是多少。既有 24 个 `mcp::read` 测试**一条断言都不改**，包括 P14 新增的三条（扫描上限、超长行切法、跨缓冲区 CRLF）。
-- **P16.2** `Cargo.toml` 按 tag 固定共享 crate，不跟 `main` 走——共享库改了不会在某次 `cargo update` 之后突然改变 ccnm 的行为，升级是显式的一步。旁边写清楚为什么用 https（公开仓库，本地和 CI 都不必配凭据）和本地开发怎么办（临时改 path，不提交）。`rust-version` 已经是 1.89，与共享 crate 一致，不需要改。验收要证明的是**在一个旁边没有 workspace-kernel 的目录里也能构建**，这正是 CI runner 的处境。
+- **P16.1** `mcp/read.rs` 用 `toexec_text::next_line`，删掉本地那份；`Ending` 换成 `toexec_text::Terminator`，写死的 `MAX_SCAN_BYTES` 作为 `scan_limit` 参数传进去，仍由 ccnm 决定它是多少。既有 24 个 `mcp::read` 测试**一条断言都不改**，包括 P14 新增的三条（扫描上限、超长行切法、跨缓冲区 CRLF）。
+- **P16.2** `Cargo.toml` 按 tag 固定共享 crate，不跟 `main` 走——共享库改了不会在某次 `cargo update` 之后突然改变 ccnm 的行为，升级是显式的一步。旁边写清楚为什么用 https（公开仓库，本地和 CI 都不必配凭据）和本地开发怎么办（临时改 path，不提交）。`rust-version` 已经是 1.89，与共享 crate 一致，不需要改。验收要证明的是**在一个旁边没有 toexec 的目录里也能构建**，这正是 CI runner 的处境。
 - **P16.3** 离线全量门禁通过（fmt、严格 clippy、`cargo test --workspace`、`external_mcp` 与中立 MCP 客户端测试）；`read_file` 不是 schema 或文档层面的变化，不改协议文档。
 
 停止点：只搬这一个函数。原子写入与回滚是盘点认定收益最大的下一块，但它在写入路径上，等这次的跨仓联动被证明可用之后另立阶段；进程/输出不碰（gld 是 tokio async + 要支持 Windows，ccnm 是同步 + 只跑 Unix）。

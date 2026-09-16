@@ -38,7 +38,7 @@ ccnm 不需要安装 Orchestrator 也能独立使用。Orchestrator 核心不链
 
 ## 二、顺序和基线
 
-`P0 → P1 → P2 → P3 → P4 → P5 → P6 → P7 → P8 → P9 → P10 → P11 → P12 → P13 → P14 → P15 → P16 → P17 → P18`。默认每轮只执行一个阶段。P0–P8 是 ccnm v1 收口和独立 Orchestrator 的接口交接；P9–P12 是 ccnm v1.x 的 Remote Workspace MCP 扩展；P13 是按真实 Host 行为修正两个入口共用的 instructions 投影。完整边界见 [双执行入口方案](runtime-surfaces.md)。
+`P0 → P1 → P2 → P3 → P4 → P5 → P6 → P7 → P8 → P9 → P10 → P11 → P12 → P13 → P14 → P15 → P16 → P17 → P18 → P19`。默认每轮只执行一个阶段。P0–P8 是 ccnm v1 收口和独立 Orchestrator 的接口交接；P9–P12 是 ccnm v1.x 的 Remote Workspace MCP 扩展；P13 是按真实 Host 行为修正两个入口共用的 instructions 投影。完整边界见 [双执行入口方案](runtime-surfaces.md)。
 
 ### P0 — 已有内部验证基线
 
@@ -289,3 +289,17 @@ worktree **分配、调度、合并策略**在 Orchestrator；受管 workspace �
 - **P18.3** `schema/remote-workspace-mcp-v1.schema.json` 不再把 `inputSchema` 当任意 object，至少要求 `type` 和 `properties` 在场；协议文档第 13 节写明名字这道检查在哪条命令里，以及 `check_protocol.py` 为什么证明不了它。四条协议命令全过。
 
 停止点：只对齐工具表 fixture 的参数名并加这道检查。不改任何工具的行为、参数、默认值和 `ccnm.workspace-mcp` 版本——补的全是本来就在 wire 上的名字，属于修正记载而不是加字段；也不给别的 fixture（调用结果、启动诊断）加代码驱动检查，那些要对的是报文正文，是另一件事。
+
+### P19 — 工具说明文字也纳入同一道检查
+
+**依赖 P18。用户 2026-09-16 指定立项。**P18 那道检查只比参数名和 `required`，把 `description` 划在外面，理由是"会在改一句措辞时假红"。**这个理由对类型和上下界成立，对 `description` 不成立**：类型和边界是 schemars 从 Rust 类型生成的副产品，而 `description` 是人手写进 `#[tool(description = ...)]` 的，fixture 里也是逐字节复制过去的。措辞漂开不是假红，是真漂——而且漂的正是**模型实际读到的那段文本**，比参数名更直接地决定 Host 那头的行为。
+
+七段说明当前与代码逐字节相同（P18 核对过），所以这一阶段是加一道拦住未来的检查，不是修一个现有缺陷。
+
+- **P19.1** 检查纳入 `description`，逐字节比。测试随之改名——它比的已经不只是参数——并同步四处引用：两份 fixture 的 `$note`、schema 里 `$defs/input_schema` 的说明、协议文档第 13 节那一小节。`docs/research/p18-*.md` 和 `status.json` 里 P18 的 evidence 是那一轮的历史记录，**不改**，由本阶段的记录说明改名。
+- **P19.2** 先红后绿：改掉一段 `description` 的措辞重跑，检查如期失败；改回后通过。证明它不是恒真断言。
+- **P19.3** 门禁全过（四条协议命令 + fmt/clippy/`cargo test --workspace` + Python 全量）；不改工具行为、参数、说明文字本身和 `ccnm.workspace-mcp` 版本。
+
+**故意不做自动重录。**加一个"跑一次就把 server 的输出写回 fixture"的开关能省掉维护成本，但 `AGENTS.md` 写着"不为通过测试重录 golden fixture"——那个开关会让下一个人把一次没想清楚的措辞改动一键洗成绿的，而冻结契约的意义恰恰是改它要费一点劲。改了说明就手动同步 fixture，失败信息里两段文本都会打出来，照着贴即可。
+
+停止点：只把 `description` 纳入。**annotations 不纳入**——它们已经被两处证明着：`every_tool_publishes_its_annotations` 对着硬编码期望比真实 server，schema 的 `read_tool` 又把 read 模式的 `readOnlyHint`/`openWorldHint` 钉成常量；再加一处比对是第三份说明，按"一件事只写一处"不加。每个参数的类型、上下界和说明仍然不比，理由与 P18 相同。调用结果和启动诊断那 19 份 fixture 仍只有 schema 层检查，要做另立阶段。

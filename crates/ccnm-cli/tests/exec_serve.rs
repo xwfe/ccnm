@@ -241,7 +241,11 @@ impl Session {
         std::thread::spawn(move || {
             for line in BufReader::new(stdout).lines() {
                 let Ok(line) = line else { break };
-                if tx.send(serde_json::from_str(&line).unwrap()).is_err() {
+                // A torn line is a finding, not a reason to lose the rest.
+                let message = serde_json::from_str(&line).unwrap_or_else(
+                    |_| json!({"torn": line.chars().take(200).collect::<String>()}),
+                );
+                if tx.send(message).is_err() {
                     break;
                 }
             }
@@ -478,6 +482,95 @@ fn a_message_too_long_ends_the_session_instead_of_reaching_the_executor() {
     let status = s.child.wait().unwrap();
     assert!(status.success());
     assert!(!fx.executor_saw().iter().any(|m| m["id"] == 5));
+}
+
+/// Three threads write to the client: the one reading it (refusals), the one
+/// copying the executor's output, and the liveness pinger. Codex does not
+/// wait for one answer before sending the next request, and a command's
+/// output keeps coming meanwhile. Under a burst of both, every line must
+/// arrive whole and every request be answered exactly once -- by ccnm or by
+/// the executor, never both (P29.2). The chatter lines are longer than the
+/// relay's 64 KiB buffer, so each one is copied in several pieces.
+#[test]
+fn a_burst_of_requests_during_executor_output_gets_whole_lines_and_one_answer_each() {
+    const EACH: u64 = 150;
+    const CHATTER: u64 = 200;
+    const CHATTER_SIZE: usize = 200_000;
+    let fx = Fixture::build("burst");
+    let wire = fx.native_wire("demo", AgentProvider::Codex, "burst");
+    let mut s = Session::start({
+        let mut cmd = fx.command("exec-serve", &wire);
+        cmd.env("FAKE_EXEC_CHATTER", format!("{CHATTER}:{CHATTER_SIZE}"));
+        cmd
+    });
+    s.handshake();
+
+    for i in 0..EACH {
+        s.send(&fx.write_file(
+            1000 + i,
+            &fx.root.join(format!("b{i}.txt")),
+            &format!("{i}\n"),
+        ));
+        s.send(&fx.write_file(2000 + i, &fx.outside.join(format!("x{i}.txt")), "x"));
+        s.send(&json!({"id": 3000 + i, "method": "http/request", "params": {"method": "GET", "url": "http://127.0.0.1:9/"}}));
+    }
+
+    let mut answers: std::collections::BTreeMap<u64, Vec<Value>> = Default::default();
+    let mut chatter = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while answers.len() < (3 * EACH) as usize || (chatter.len() as u64) < CHATTER {
+        let left = deadline.saturating_duration_since(Instant::now());
+        let line = s.lines.recv_timeout(left).unwrap_or_else(|_| {
+            panic!(
+                "stalled with {} answers and {} chatter lines",
+                answers.len(),
+                chatter.len()
+            )
+        });
+        assert!(line.get("torn").is_none(), "a torn line: {line}");
+        match (line["id"].as_u64(), line["method"].as_str()) {
+            (Some(id), None) => answers.entry(id).or_default().push(line),
+            (None, Some("process/output")) => chatter.push(line),
+            // The handshake reply was taken by handshake(); nothing else is sent.
+            _ => panic!("unexpected line: {line}"),
+        }
+    }
+    for (id, replies) in &answers {
+        assert_eq!(replies.len(), 1, "id {id} answered {} times", replies.len());
+        let reply = &replies[0];
+        if *id < 2000 {
+            assert!(reply.get("result").is_some(), "{reply}");
+        } else {
+            assert_eq!(error_code(reply), -32600, "{reply}");
+        }
+    }
+    let seqs: Vec<u64> = chatter
+        .iter()
+        .map(|c| c["params"]["seq"].as_u64().unwrap())
+        .collect();
+    assert_eq!(seqs, (0..CHATTER).collect::<Vec<_>>());
+    assert!(
+        chatter
+            .iter()
+            .all(|c| c["params"]["chunk"].as_str().unwrap().len() == CHATTER_SIZE)
+    );
+
+    let out = s.close();
+    assert!(out.status.success(), "{}", stderr(&out));
+    let forwarded: Vec<u64> = fx
+        .executor_saw()
+        .iter()
+        .filter_map(|m| m["id"].as_u64())
+        .filter(|id| *id != 1)
+        .collect();
+    assert_eq!(forwarded, (1000..1000 + EACH).collect::<Vec<_>>());
+    for i in 0..EACH {
+        assert_eq!(
+            std::fs::read_to_string(fx.root.join(format!("b{i}.txt"))).unwrap(),
+            format!("{i}\n")
+        );
+    }
+    assert_eq!(std::fs::read_dir(&fx.outside).unwrap().count(), 0);
 }
 
 /// One write guard for every way into a working tree.

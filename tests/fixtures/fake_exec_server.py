@@ -18,6 +18,10 @@ Knobs, all environment variables:
   FAKE_EXEC_LOG          append every message received, one JSON per line
   FAKE_CODEX_VERSION     what `--version` prints (default codex-cli 0.154.0)
   FAKE_EXEC_CRASH_ON     a method name; receiving it exits 7 at once
+  FAKE_EXEC_CHATTER      COUNT:SIZE; after `initialized`, another thread writes
+                         COUNT `process/output` notifications of SIZE chunk
+                         characters while requests are being answered, the
+                         way a command's output interleaves with replies
 """
 
 import base64
@@ -26,6 +30,7 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 from urllib.parse import unquote, urlparse
 
 
@@ -37,9 +42,20 @@ def path_of(uri):
     return unquote(urlparse(uri).path)
 
 
+STDOUT = threading.Lock()
+
+
 def send(message):
-    sys.stdout.write(json.dumps(message) + "\n")
-    sys.stdout.flush()
+    line = json.dumps(message) + "\n"
+    with STDOUT:
+        sys.stdout.write(line)
+        sys.stdout.flush()
+
+
+def chatter(count, size):
+    for seq in range(count):
+        send({"method": "process/output", "params": {
+            "processId": "chatter", "seq": seq, "stream": "stdout", "chunk": "A" * size}})
 
 
 def handle(method, params, children):
@@ -93,6 +109,9 @@ def main():
             os._exit(7)
         if mid is None:
             if method == "initialized":
+                if os.environ.get("FAKE_EXEC_CHATTER"):
+                    count, size = map(int, os.environ["FAKE_EXEC_CHATTER"].split(":"))
+                    threading.Thread(target=chatter, args=(count, size), daemon=True).start()
                 continue
             break
         try:

@@ -315,13 +315,15 @@ exec_command
 read_output
 load_skill
 view_image
+read_notebook
 ```
 
 主要行为：
 
 - `read_file`、`list_files`、`search_text` 都受 workspace 路径边界约束；
 - `search_text` 默认返回匹配行，也能只列文件（`output_mode: "files_with_matches"`）、按文件计数（`"count"`）、跨行匹配（`multiline`）、按文件类型过滤（`type: "rust"`）；dotfile 要写 `include_hidden: true` 才搜，`.git` 永远不搜；
-- `apply_patch` 是结构化写入路径：`add` 新建，`update` 精确替换片段，`write` 整体替换一个已存在的文件，`delete`、`move`；改已有文件都要带 `read_file` 给的版本号，一次调用里的所有文件要么全改、要么都不改；
+- `apply_patch` 是结构化写入路径：`add` 新建，`update` 精确替换片段，`write` 整体替换一个已存在的文件，`edit_notebook` 替换、插入、删除 Jupyter cell，`delete`、`move`；改已有文件都要带 `read_file`（或 `read_notebook`）给的版本号，一次调用里的所有文件要么全改、要么都不改；
+- `read_notebook` 按 cell 显示 Jupyter notebook：每个 cell 的 id、类型、源码，代码 cell 后面跟着输出，输出里的图作为图片。改 cell 用 `apply_patch` 的 `edit_notebook`，参数和 Claude Code 的 NotebookEdit 同名，见[协议第 5.4 节](protocol/remote-workspace-mcp-v1.md#54-read_notebook-与-edit_notebookjupyter-notebook-按-cell-读写p40-新增)。不执行 cell——要跑用 `exec_command` 调 `jupyter nbconvert --execute`；
 - `exec_command` 二选一：`cmd` 给程序和参数（argv，不经过 shell），`shell` 给一行命令、用 `bash -c` 跑（Runtime 上要有 bash，没有会报 `CCNM_E_DEPENDENCY`）。两种写法的权限和确认完全一样，它本质上就是命令执行能力；
 - 大输出由 `read_output` 分页读取，避免一次把全部输出塞进模型上下文；
 - `load_skill` 把项目自带的 skills 交给模型，见下一节；

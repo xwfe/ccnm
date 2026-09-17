@@ -7,6 +7,7 @@
 > **冻结之后的加法**：2026-09-17（P36）加了第八个工具 `load_skill` 和 `prompts` 能力，用来把项目自带的 skills 交给模型和人，见第 5.1 节。原来七个工具的名字、参数和语义没有动。
 > 2026-09-17（P37）给三个老工具加了可选参数：`search_text` 的输出模式、跨行、文件类型和 dotfile，`apply_patch` 的 op `write`，`exec_command` 的 `shell`，见第 5.2 节。不带新参数的调用和以前完全一样；`exec_command` 的 `required` 因此从 `["cmd"]` 变成空。同日修了两个行为缺陷：调用方的 `glob` 能把 dotfile 和 `.gitignore` 排除的文件带回搜索（同一节末尾，P37、P38）。
 > 2026-09-17（P39）加了第九个工具 `view_image`，只读，把 workspace 里的图片作为 MCP 图片块交给模型，见第 5.3 节。
+> 2026-09-17（P40）加了第十个工具 `read_notebook`（只读），`apply_patch` 多了 op `edit_notebook`，按 cell 读写 Jupyter notebook，见第 5.4 节。`read_file` 读 `.ipynb` 的结果不变，只多一条提示。
 
 面向的读者是**已经在本机跑着 Claude Code / Codex / 别的 MCP Host，但项目在另一台机器上的人**。它给你的不是一条裸 SSH 通道，而是一个绑定了 workspace 的远程项目工具集。
 
@@ -53,7 +54,7 @@ Host                     bridge                    Runtime Executor
  │  <── result（协议版本、工具能力、instructions）──────── │
  │  tools/list              │                            │
  │ ────────────────────────>│ ─────────────────────────> │
- │  <── 6 个或 9 个工具 ─────────────────────────────────│
+ │  <── 7 个或 10 个工具 ────────────────────────────────│
  │  tools/call              │                            │
  │ ────────────────────────>│ ─────────────────────────> │ 在项目目录里真的执行
  │  <── content / isError ───────────────────────────────│
@@ -175,6 +176,7 @@ external_mcp = "read"      # disabled | read | coding
 | `search_text` | ✅ | ✅ |
 | `load_skill` | ✅ | ✅ |
 | `view_image` | ✅ | ✅ |
+| `read_notebook` | ✅ | ✅ |
 | `read_output` | ❌ | ✅ |
 | `apply_patch` | ❌ | ✅ |
 | `exec_command` | ❌ | ✅ |
@@ -213,6 +215,7 @@ transport 的认证边界是 **OpenSSH identity + 独立的 Runtime OS 账号**�
 | `search_text` | read | `true` | — | — | `false` |
 | `load_skill` | read | `true` | — | — | `false` |
 | `view_image` | read | `true` | — | — | `false` |
+| `read_notebook` | read | `true` | — | — | `false` |
 | `read_output` | read | `true` | — | — | `false` |
 | `apply_patch` | write | `false` | `true` | `false` | `false` |
 | `exec_command` | exec | `false` | `true` | `false` | `true` |
@@ -346,6 +349,53 @@ transport 的认证边界是 **OpenSSH identity + 独立的 Runtime OS 账号**�
 
 **Codex Code Mode 的差别**：ccnm 受管的 Codex 会话默认开着 Code Mode，模型不直接调工具，而是写 JS 调；工具结果是个对象，模型要自己写 `image(result.content[1])` 才会看到图（实测过这一步确实生效）。工具说明里写了这一句；模型会不会照做没有验。
 
+### 5.4 `read_notebook` 与 `edit_notebook`：Jupyter notebook 按 cell 读写（P40 新增）
+
+**读**：`{"path": "analysis.ipynb", "start_cell": 0}`（`start_cell` 可省）。结果里文本块和图片块按 notebook 里的顺序交替出现，样例见 [`call-read-notebook-ok.json`](fixtures-mcp/call-read-notebook-ok.json)：
+
+```text
+[notebook analysis.ipynb: 5 cells, python]
+<cell id="b7d3a901" index="1" type="code" execution_count="1">
+print("rows:", len(df))
+</cell>
+<output cell="b7d3a901" type="stream" name="stdout">
+rows: 3
+</output>
+…
+[cells 0-4 of 5 shown, end of notebook; version 2396-…]
+```
+
+- 代码 cell 的输出跟在 cell 后面：`stream` 原文、`execute_result` / `display_data` 的 `text/plain`、`error` 的名字、消息和去掉终端颜色码的 traceback。输出里的 PNG / JPEG 作为 MCP `image` 块插在那个位置（形状同第 5.3 节）；HTML、LaTeX、SVG 输出不渲染。
+- 放不下时停在 cell 边界，页脚写 `continue with start_cell=N`。单个 cell 比整个预算还大时照样给出，但截断并说明；单个输出超过 4 KiB 截断，说明完整内容在 `read_file` 能看到的 JSON 里。
+- 页脚的 `version` 和 `read_file` 的是同一种，`edit_notebook` 要它。
+- 老 notebook（nbformat 4.5 之前）的 cell 没有 id，显示成 `cell-N`（N 是序号），编辑时照样能用。nbformat 3 及更早报 `CCNM_E_INVALID_ARGS`，消息里给转换命令。
+
+**改**：`apply_patch` 的一项文件变更：
+
+```json
+{"op": "edit_notebook", "path": "analysis.ipynb", "version": "<read_notebook 给的>",
+ "cells": [
+   {"cell_id": "c4e8f7aa", "new_source": "df.describe()"},
+   {"cell_id": "b7d3a901", "edit_mode": "insert", "cell_type": "markdown", "new_source": "## 数据概览"},
+   {"cell_id": "d0f19b3c", "edit_mode": "delete"}
+ ]}
+```
+
+| 字段 | 含义 |
+| --- | --- |
+| `edit_mode` | `replace`（默认）、`insert`、`delete` |
+| `cell_id` | `read_notebook` 显示的 id。`replace`、`delete` 必填；`insert` 时新 cell 放在它后面，不给就放在最前面 |
+| `new_source` | `replace`、`insert` 必填 |
+| `cell_type` | `code` 或 `markdown`。`insert` 必填；`replace` 时给了就改类型 |
+
+`cells` 按顺序应用，后一项看到的是前一项改完的 notebook（先删一个 cell，后面的 `cell-N` 序号跟着变）。任何一项出错，整个 `apply_patch` 什么都不写，错误消息指出是 `cells[i]` 哪一项、缺什么或者有哪些 id。和其他操作一样原子提交、带中断日志和回滚。
+
+语义照 Claude Code 2.1.273 的 NotebookEdit（读的是它的打包代码）：替换代码 cell 时清空 `outputs`、`execution_count` 置空；nbformat ≥ 4.5 时新 cell 得到一个 8 位十六进制 id。**两处不同**：改类型时去掉新类型不允许的键（nbformat 的 schema 不许 markdown cell 有 `outputs`，Claude Code 会留着）；`source` 按 nbformat 的习惯写成行数组，而不是一个长字符串。
+
+**写回的文件长什么样**：键按名字排序、非 ASCII 不转义，缩进宽度和结尾换行照原文件——和 nbformat（Jupyter 用它写文件）的写法一致。用 nbformat 5.11.1 核对过（[`check_with_nbformat.py`](../../tests/fixtures/notebook/check_with_nbformat.py)）：样例是 nbformat 自己的写法；经 `edit_notebook` 做五项编辑后的文件通过 nbformat 的 schema 校验，而且 nbformat 再写一遍和 ccnm 写的逐字节一致。已知差别：元数据里的浮点数，Python 写 `1e-05`，这里写 `1e-5`。
+
+**为什么不直接让 `read_file` 按 cell 显示**：`read_file` 返回 notebook 的 JSON 文本，已经有人照着这份文本用 `update` 改 notebook；换成 cell 视图，这些改动就对不上了——冻结契约下这算改语义。所以 `read_file` 的结果不变，只在末尾多一条提示，指向 `read_notebook` 和 `edit_notebook`。
+
 ## 6. 连接生命周期
 
 ### 6.1 正常路径
@@ -354,7 +404,7 @@ transport 的认证边界是 **OpenSSH identity + 独立的 Runtime OS 账号**�
 | --- | --- |
 | 启动 | Host 起 bridge 进程；bridge 立刻建 SSH，在 initialize 之前就完成远端打开 |
 | `initialize` | 由远端 server 回答：协议版本、`serverInfo`（name `ccnm`，version 是远端 ccnm 的版本）、tools 能力、`instructions` |
-| `tools/list` | 按模式返回 6 个或 9 个工具（冻结时是 4 个或 7 个，P36、P39 各加了一个只读工具） |
+| `tools/list` | 按模式返回 7 个或 10 个工具（冻结时是 4 个或 7 个，P36、P39、P40 各加了一个只读工具） |
 | `tools/call` | 在远端项目目录里真的执行 |
 | EOF | Host 关 stdin → bridge 关 SSH → 远端 server 退出 → 写入互斥释放 |
 
@@ -396,6 +446,7 @@ transport 的认证边界是 **OpenSSH identity + 独立的 Runtime OS 账号**�
 | `read_output` 一次最多 | 32 KiB（默认 16 KiB） |
 | `apply_patch` | 一次最多 50 个文件；一次请求里所有文件的新内容**合计** 1 MiB；被编辑的文件超过 16 MiB 直接拒绝 |
 | 保留输出 | 每次运行的 stdout、stderr **各自**最多落盘 64 MiB，超出的不再写，命令照常跑完、结果里带一条说明；每个 session 只留最新的 100 次运行，开始第 101 次前删最旧的；一个 session 已结束运行的输出**合计**最多 256 MiB，每次运行结束后从最旧的删。还在跑的运行不删，所以同一个 session 并发跑命令时可以暂时超过 256 MiB，超出部分不超过"进行中的运行数 × 128 MiB" |
+| `read_notebook` | 文件最多 16 MiB；一次最多 32 KiB 文本、单个输出 4 KiB、8 张图（合计不超过 `view_image` 的上限），放不下时停在 cell 边界 |
 | `view_image` | 文件最多 3932160 字节（base64 后 5 MiB，Claude Code 2.1.273 的上限）；只发 PNG、JPEG、GIF、WebP |
 | `instructions` | 2048 个 UTF-16 码元（含项目说明文件），超了由 ccnm 按行截断，见第 10 节 |
 

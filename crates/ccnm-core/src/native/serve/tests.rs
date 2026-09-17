@@ -450,6 +450,57 @@ fn output_to_a_client_that_never_reads_is_not_hearing_from_it() {
     drop(peer);
 }
 
+/// Run `work` on its own thread and give it `limit`. A step that hangs fails
+/// the test with its name and what the marked processes look like, instead of
+/// holding the CI job until its timeout with nothing to read (this test hung
+/// on the Linux runner and only there).
+fn within<T: Send + 'static>(
+    step: &str,
+    limit: Duration,
+    marker: &str,
+    work: impl FnOnce() -> T + Send + 'static,
+) -> T {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(work());
+    });
+    match rx.recv_timeout(limit) {
+        Ok(value) => value,
+        Err(_) => panic!(
+            "{step} did not finish within {limit:?}; processes with the marker: {}",
+            describe_marked(marker)
+        ),
+    }
+}
+
+/// pid, state and command line of every process carrying the marker, read
+/// on a thread of its own so a stuck /proc read cannot hang the report.
+fn describe_marked(marker: &str) -> String {
+    let marker = marker.to_string();
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let pids = marked_processes(&marker);
+        let text = match pids {
+            Err(e) => format!("listing failed: {e}"),
+            Ok(pids) => pids
+                .iter()
+                .map(|pid| {
+                    let out = Command::new("ps")
+                        .args(["-o", "pid=,ppid=,stat=,args=", "-p", &pid.to_string()])
+                        .output()
+                        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                        .unwrap_or_default();
+                    format!("[{out}]")
+                })
+                .collect::<Vec<_>>()
+                .join(" "),
+        };
+        let _ = tx.send(text);
+    });
+    rx.recv_timeout(Duration::from_secs(5))
+        .unwrap_or_else(|_| "listing the processes did not finish within 5 s".into())
+}
+
 /// The whole session, not just the relay: a client that falls silent with a
 /// command still running is given up on, the command is gone, and the guard
 /// says `released` -- the same ending as a client that closed its stdin.
@@ -462,12 +513,21 @@ fn a_session_given_up_on_shuts_down_and_releases_the_guard() {
         give_up_after: Duration::from_millis(1500),
         ..FAST
     };
+    let root = scratch.root();
+    let guard_state = state.clone();
+    let guard = within(
+        "acquiring the write guard",
+        Duration::from_secs(10),
+        &marker,
+        move || {
+            WriteGuard::acquire(&guard_state, &root, "demo", "s1", None, &SystemRunner).unwrap()
+        },
+    );
     let session = Session {
         child: scratch.executor(&marker),
         policy: Policy::new(scratch.root(), MARKER),
         marker: marker.clone(),
-        guard: WriteGuard::acquire(&state, &scratch.root(), "demo", "s1", None, &SystemRunner)
-            .unwrap(),
+        guard,
         home: CodexHome::create(&state, &marker).unwrap(),
     };
     let (client, peer) = client_pair();
@@ -483,23 +543,38 @@ fn a_session_given_up_on_shuts_down_and_releases_the_guard() {
     let received = drain(peer.try_clone().unwrap());
     let watcher_marker = marker.clone();
     let started = Instant::now();
-    let watcher = std::thread::spawn(move || {
+    let (seen, running_at) = mpsc::channel();
+    std::thread::spawn(move || {
         // The executor and its command both carry the marker.
         while marked_processes(&watcher_marker).unwrap().len() < 2 {
-            assert!(
-                started.elapsed() < Duration::from_secs(5),
-                "the command never started"
-            );
+            if started.elapsed() > Duration::from_secs(5) {
+                return;
+            }
             std::thread::sleep(Duration::from_millis(20));
         }
-        started.elapsed()
+        let _ = seen.send(started.elapsed());
     });
 
-    let end = session.run(client, timing, &Sweeper::system()).unwrap();
+    let end = within(
+        "Session::run",
+        Duration::from_secs(30),
+        &marker,
+        move || session.run(client, timing, &Sweeper::system()),
+    )
+    .unwrap();
     assert_eq!(end, End::ClientSilent);
-    let running_after = watcher.join().unwrap();
+    let running_after = running_at
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the command was never seen running");
     assert!(running_after < timing.give_up_after, "{running_after:?}");
-    assert!(marked_processes(&marker).unwrap().is_empty());
+    let left_marker = marker.clone();
+    let left = within(
+        "listing leftovers",
+        Duration::from_secs(10),
+        &marker,
+        move || marked_processes(&left_marker).unwrap(),
+    );
+    assert!(left.is_empty(), "{}", describe_marked(&marker));
     let locks: Vec<_> = std::fs::read_dir(state.join("write-guards"))
         .unwrap()
         .map(|entry| std::fs::read_to_string(entry.unwrap().path()).unwrap())
@@ -508,6 +583,11 @@ fn a_session_given_up_on_shuts_down_and_releases_the_guard() {
     assert!(!state.join("exec-server").join(&marker).exists());
     assert!(scratch.executor_saw().contains("process/start"));
     peer.shutdown(std::net::Shutdown::Both).unwrap();
-    let replies = received.join().unwrap();
+    let replies = within(
+        "draining the client side",
+        Duration::from_secs(10),
+        &marker,
+        move || received.join().unwrap(),
+    );
     assert!(replies.iter().any(|m| m["id"] == 2), "{replies:?}");
 }

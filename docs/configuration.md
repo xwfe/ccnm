@@ -344,6 +344,27 @@ codex_exec_server = true     # 默认 false
 
 **Agent 离开太久，会话会被 Runtime 结束**（P26）：Runtime 连续 30 秒收不到 Codex 的任何字节就发一个探活请求，Codex 回一个错误就算还在；连续 10 分钟一个字节都没有，就当 Agent 已经不在，按上面的正常收尾放锁。笔记本合盖、断网超过 10 分钟再回来，Codex 的下一条命令会报 `exec-server transport disconnected`，`/exit` 重开即可。这两个时间不能配置；为什么这样选、以及锁没释放时怎么办，见[运维手册](operations.md#agent-静默离网之后exec-server-链的锁一直-held)。
 
+### `exec_sandbox`
+
+```toml
+exec_sandbox = "codex"       # 默认 off
+```
+
+**把这个 workspace 的每条 `exec_command` 包进 Codex 自带的 workspace-write 沙箱里跑**（P33）：命令只能写工作区根目录以内（`.git` 除外）、`$TMPDIR` 和 `/tmp`，不能连网；读不受限。Claude、Codex 的受管会话和外部 MCP 客户端（gld hub）的 coding 会话都生效，因为它们跑命令走的是同一个 `exec_command`。`--print`、`ccnm mcp bridge` 也一样。
+
+**需要什么**：Runtime 节点写 [`codex_bin`](#node-的其他字段)（Codex 0.154.0，和 exec-server 链共用同一个版本 pin）；Linux 上装 bubblewrap 并允许执行账号创建 user namespace（[运维手册](operations.md#runtime-node-的前置条件与项目工具链)）。开了却给不了——没 `codex_bin`、版本不对、找不到状态目录——会话启动就失败（`CCNM_E_CONFIG` / `CCNM_E_VERSION`），**不会退回不带沙箱地跑**。
+
+**代价**（本机 macOS 和 Linux 容器实测，[P33 记录](research/p33-exec-sandbox-2026-09-17.md)）：
+
+- `git commit` 失败：`.git` 只读，和 `apply_patch` 一直以来的规则一样。`.git` 可写的话，命令能往 `.git/hooks` 放东西，人下次跑 git 时它在沙箱外执行。提交由人做，或者关掉开关。
+- 依赖下不了：没有网络；就算放开网络，`~/.cargo`、`~/.npm` 这类放在 HOME 下的缓存也写不了。先在沙箱外 `cargo fetch` / `npm install` 一遍再开。
+- 命令里跑不了 `ps`（macOS 的 Seatbelt 挡进程表，Linux 的 pid namespace 里没有 `/proc`）。
+- 每条命令多约 40 ms；编译、测试的耗时没有差别。
+
+**被挡住是什么样**：不是错误，是命令自己失败——退出码非 0，stderr 里是 `Operation not permitted`（macOS）或 `Read-only file system`（Linux），和命令本身写错了长得一样。ccnm 分不出来，Codex 自己也只能靠猜；所以每条结果末尾都带一行 `[sandboxed: …]`，模型看到 `Operation not permitted` 时知道那是沙箱，不会有"不带沙箱重试"的路——能让模型开的门不是门。
+
+**权限对象是 Codex 0.154.0 发给它自己命令的那一份，一字不改**（P21 录下的 workspace-write 沙箱，`crates/ccnm-core/src/mcp/sandbox.rs` 有测试钉着）。不放宽也不收紧，别的形状都没量过。它和上面三个 `allow_*` 开关方向相反——那三个是放开，这个是收紧——所以不影响 doctor 的审计行，也不改变 `exec_gate` 的判断：执行账号本身仍然是上限，沙箱只是在它里面再画一圈。
+
 ### `external_instructions`
 
 外部客户端在 MCP 握手里拿到什么项目说明。**只影响上下文，不影响权限**：

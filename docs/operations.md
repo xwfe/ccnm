@@ -208,11 +208,11 @@ git config --global user.email "<email>"
 | `git` | `list_files`、写 guard 的资源判定、项目自己 | 降级成非 git 视图；guard 按目录而不是按仓库互斥 |
 | `ripgrep`（`rg`） | `search_text`——它不自己扫文件 | 七工具少一个，报 `ripgrep is not installed on the Runtime Node` |
 
-workspace 开了 [`codex_exec_server`](configuration.md#codex_exec_server)（这条链已封存，默认关，新项目别开）时，Runtime 上还要：
+workspace 开了 [`exec_sandbox = "codex"`](configuration.md#exec_sandbox)（`exec_command` 包进 Codex 的 OS 沙箱）或 [`codex_exec_server`](configuration.md#codex_exec_server)（这条链已封存，默认关，新项目别开）时，Runtime 上还要：
 
 | 前提 | 为什么 | 没有它会怎样 |
 | --- | --- | --- |
-| 节点配置里的 `codex_bin` 指向 Codex 0.154.0 | 执行模型命令的是它的 `exec-server` | 会话启动前报 `CCNM_E_CONFIG` 或 `CCNM_E_VERSION`；`ccnm doctor` 的 `Codex 原生链` 一行提前报同一个错 |
+| 节点配置里的 `codex_bin` 指向 Codex 0.154.0 | 沙箱是它的 `codex sandbox`；封存的原生链用它的 `exec-server` | 会话启动前报 `CCNM_E_CONFIG` 或 `CCNM_E_VERSION`（沙箱：任何入口的会话都起不来，不会退回裸跑）；原生链另有 `ccnm doctor` 的 `Codex 原生链` 一行提前报同一个错 |
 | **Linux**：装 `bubblewrap`，并允许执行账号创建 user namespace（Debian 13 默认允许） | Codex 在 Linux 上用 bwrap 实现 workspace-write 沙箱 | 每条命令都失败、不执行（P21 容器实测）；**doctor 查不出来**，原因见[使用说明](usage.md#codex-原生链那一行) |
 
 Codex 的 Linux 沙箱会在真实的 `/tmp` 里留下几个空目录（`/tmp/.git`、`/tmp/.agents`、`/tmp/.codex`、`/tmp/codex-bwrap-synthetic-mount-targets-<uid>/`），属主是执行账号，用完不删；`/tmp` 是 tmpfs 的话重启就没了。这是 Codex 的行为，ccnm 不清理它们（P24 实测）。

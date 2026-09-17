@@ -88,6 +88,18 @@ Codex exec-server       FAIL   CCNM_E_POLICY: ccnm internal exec-serve on runtim
 
 **这一行正常，Codex 里第一条命令却报 `bubblewrap is unavailable: no system bwrap was found on PATH and no bundled codex-resources/bwrap binary`**（P21 容器实测的原文）：Linux Runtime 没装 bubblewrap。执行账号建不了 user namespace 时也是第一条命令才失败。空会话一条命令都不跑，doctor 看不出来，这是有意的（理由见上面那个链接）。按[运维手册](operations.md#runtime-node-的前置条件与项目工具链)补上前提。Codex 接着会问要不要不带沙箱重试，答"是"也会被 ccnm 拒掉。
 
+### 开了 `exec_sandbox` 之后命令报 `Operation not permitted`、`git commit` 失败、`cargo build` 下不了依赖
+
+只出现在 workspace 写了 [`exec_sandbox = "codex"`](configuration.md#exec_sandbox) 的会话里；每条 `exec_command` 结果末尾都有一行 `[sandboxed: …]`，看到它就知道命令跑在沙箱里。**这不是坏了，是沙箱在挡**：命令只能写工作区（`.git` 除外）、`$TMPDIR` 和 `/tmp`，不能连网。被挡的命令按普通失败报（退出码非 0，stderr 里 `Operation not permitted`，Linux 上是 `Read-only file system`），不会有"不带沙箱重试"的路。
+
+- `fatal: Unable to create '…/.git/index.lock': Operation not permitted`（Linux：`Read-only file system`）—— `git commit`、`git stash`、`git checkout` 这类要写 `.git` 的都会这样。提交由人在 Runtime 上做，或者这个 workspace 关掉开关。
+- `cargo build` 报 `Couldn't resolve host` / `Operation not permitted (os error 1)` 且路径在 `~/.cargo` 下 —— 没网络，而且 HOME 下的缓存写不了。先在沙箱外（关掉开关，或直接在 Runtime 上）`cargo fetch` 一遍，warm cache 的构建和测试在沙箱里是正常的。`npm install` 同理。
+- `sh: /bin/ps: Operation not permitted`（Linux：`fatal library error, lookup self`）—— 沙箱里看不到进程表。
+- 会话根本起不来，报 `CCNM_E_CONFIG: nodes.<runtime>.codex_bin is not set` 或 `CCNM_E_VERSION` —— 开了开关但 Runtime 给不了沙箱（没配 Codex、版本不是 0.154.0）。补上 [`codex_bin`](configuration.md#node-的其他字段) 或关掉开关；ccnm 不会退回裸跑。
+- Linux 上每条命令都失败、提 `bubblewrap` 或 `namespace` —— Runtime 没装 bubblewrap，或执行账号建不了 user namespace，见[运维手册](operations.md#runtime-node-的前置条件与项目工具链)。
+
+实测哪些能跑、哪些被挡，见 [P33 记录](research/p33-exec-sandbox-2026-09-17.md)。
+
 ### `Killed: 9` / exit 137 —— 升级完二进制就全炸
 
 **症状**：`ccnm --version` 直接被杀，doctor 走 ssh 拿到空回复报 `CCNM_E_VERSION`，

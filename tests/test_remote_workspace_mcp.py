@@ -97,7 +97,9 @@ class RemoteWorkspaceMcpTests(unittest.TestCase):
         self.config = self.dir / "config.toml"
         self.write_config("read")
 
-    def write_config(self, access: str) -> None:
+    def write_config(self, access: str, unconfined: bool = False) -> None:
+        # unconfined：这台测试机不是隔离的执行身份，不写它 exec_command 一律
+        # 被执行门拒绝，参数根本到不了检查那一步。
         self.config.write_text(
             f"""
 this = "runtime"
@@ -111,6 +113,7 @@ ssh = "agent-node.invalid"
 root = "{self.root}"
 agent = {{ node = "agent", instance = "claude-main" }}
 external_mcp = "{access}"
+allow_unconfined_exec = {"true" if unconfined else "false"}
 
 [workspaces.private]
 root = "{self.dir / "other"}"
@@ -265,6 +268,101 @@ agent_node = "agent"
         # 任意命令永远算 open-world，不看这次是什么命令。
         self.assertIs(hints["exec_command"]["openWorldHint"], True)
         self.assertIs(hints["exec_command"]["destructiveHint"], True)
+
+    # -- 执行面第一批（P37）：搜索模式、整文件覆盖、一行 shell --
+
+    def search_lines(self, client: McpClient, arguments: dict) -> list:
+        got = client.call_tool("search_text", arguments)
+        self.assertFalse(is_error(got), got)
+        # 去掉方括号里的页脚和说明，剩下的是结果行；rg 不保证文件顺序。
+        return sorted(line for line in result_text(got).splitlines() if not line.startswith("["))
+
+    def test_search_text_lists_files_or_counts_them(self):
+        (self.root / "src").mkdir()
+        (self.root / "src" / "a.rs").write_text("needle\nneedle needle\n", encoding="utf-8")
+        (self.root / "src" / "b.py").write_text("needle = 1\n", encoding="utf-8")
+        client = self.client("demo", "read", "neutral-search-modes")
+        self.assertEqual(
+            self.search_lines(client, {"query": "needle", "output_mode": "files_with_matches"}),
+            ["src/a.rs", "src/b.py"],
+        )
+        # 一行里两处算一行，和 rg --count 一样。
+        self.assertEqual(
+            self.search_lines(client, {"query": "needle", "output_mode": "count"}),
+            ["src/a.rs:2", "src/b.py:1"],
+        )
+        self.assertEqual(
+            self.search_lines(
+                client, {"query": "needle", "type": "py", "output_mode": "files_with_matches"}
+            ),
+            ["src/b.py"],
+        )
+        # type 和 glob 一起给，rg 会让 glob 盖过 type——宁可拒绝也不悄悄搜错。
+        got = client.call_tool("search_text", {"query": "needle", "type": "py", "glob": "**/*.rs"})
+        self.assertTrue(result_text(got).startswith("CCNM_E_INVALID_ARGS:"), result_text(got))
+
+    def test_search_text_spans_lines_only_when_asked(self):
+        (self.root / "call.rs").write_text("f(1,\n  2);\n", encoding="utf-8")
+        client = self.client("demo", "read", "neutral-search-multiline")
+        got = client.call_tool(
+            "search_text",
+            {"query": r"f\(1,.*?\);", "regex": True, "multiline": True, "context_lines": 0},
+        )
+        self.assertIn("call.rs\n1:f(1,\n2:  2);\n", result_text(got))
+        without = client.call_tool("search_text", {"query": "f(1,\n  2);"})
+        self.assertTrue(result_text(without).startswith("CCNM_E_INVALID_ARGS:"), result_text(without))
+
+    def test_dotfiles_are_opt_in_and_git_is_never_searched(self):
+        (self.root / ".env").write_text("needle=1\n", encoding="utf-8")
+        (self.root / ".git").mkdir()
+        (self.root / ".git" / "config").write_text("needle\n", encoding="utf-8")
+        client = self.client("demo", "read", "neutral-search-hidden")
+        base = {"query": "needle", "output_mode": "files_with_matches"}
+        # 一个能匹配目录的 glob 以前会把 dotfile 带回来（P37 修掉）。
+        for extra in ({}, {"glob": "**"}):
+            with self.subTest(extra=extra):
+                self.assertEqual(self.search_lines(client, {**base, **extra}), [])
+                self.assertEqual(
+                    self.search_lines(client, {**base, **extra, "include_hidden": True}), [".env"]
+                )
+
+    def version_of(self, client: McpClient, path: str) -> str:
+        footer = result_text(client.call_tool("read_file", {"path": path})).rsplit("; version ", 1)
+        self.assertEqual(len(footer), 2, footer)
+        return footer[1].rstrip("]")
+
+    def test_apply_patch_write_replaces_a_file_it_has_read(self):
+        self.write_config("coding")
+        client = self.client("demo", "coding", "neutral-write")
+        stale = {"op": "write", "path": "hello.txt", "content": "whole\n", "version": "0-0"}
+        got = client.call_tool("apply_patch", {"files": [stale]})
+        self.assertTrue(result_text(got).startswith("CCNM_E_STALE_EPOCH:"), result_text(got))
+
+        fresh = {**stale, "version": self.version_of(client, "hello.txt")}
+        got = client.call_tool("apply_patch", {"files": [fresh]})
+        self.assertFalse(is_error(got), got)
+        self.assertTrue(result_text(got).startswith("write  hello.txt (8 -> 6 bytes)"), result_text(got))
+        self.assertEqual((self.root / "hello.txt").read_text(encoding="utf-8"), "whole\n")
+
+        # write 不新建文件：那是 add。
+        new = {"op": "write", "path": "new.txt", "content": "x\n"}
+        got = client.call_tool("apply_patch", {"files": [new]})
+        self.assertIn('use op "add"', result_text(got))
+        self.assertFalse((self.root / "new.txt").exists())
+
+    def test_exec_command_takes_one_shell_line(self):
+        self.write_config("coding", unconfined=True)
+        client = self.client("demo", "coding", "neutral-shell")
+        got = client.call_tool("exec_command", {"shell": "cat hello.txt | wc -l && echo done > out.txt"})
+        self.assertFalse(is_error(got), got)
+        text = result_text(got)
+        self.assertTrue(text.startswith("$ cat hello.txt | wc -l && echo done > out.txt\nok in"), text)
+        self.assertEqual((self.root / "out.txt").read_text(encoding="utf-8"), "done\n")
+
+        for arguments in ({"cmd": ["true"], "shell": "true"}, {}):
+            with self.subTest(arguments=arguments):
+                got = client.call_tool("exec_command", arguments)
+                self.assertTrue(result_text(got).startswith("CCNM_E_INVALID_ARGS:"), result_text(got))
 
     # -- 拒绝 --
 

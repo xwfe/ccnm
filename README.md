@@ -2,7 +2,7 @@
 
 把 AI Coding Agent 和真实项目**放在两台机器上**。
 
-Agent Node 跑官方 Claude Code / Codex CLI，只有它持有 AI 登录凭证；Runtime Node 放源码、Git、构建和工具链，模型的每一次读写和命令执行都落在这里。两者之间是一条持久的 SSH stdio MCP 通道。
+Agent Node 跑官方 Claude Code / Codex CLI，只有它持有 AI 登录凭证；Runtime Node 放源码、Git、构建和工具链，模型的每一次读写和命令执行都落在这里。两者之间是一条持久的 SSH stdio MCP 通道（MCP 是 AI 客户端调用外部工具的通用协议）。
 
 **不复制源码，不把 AI 凭证下放到 Runtime Node，也不实现私有模型 API Client。**
 
@@ -16,6 +16,13 @@ Runtime Node                              Agent Node
 ```
 
 *Keep the AI coding agent and the real project runtime on separate machines. The agent runs on an **Agent Node** (macOS only) and reaches the project on a **Runtime Node** (macOS or Debian 13 / x86\_64) over a persistent SSH stdio MCP transport. Docs are in Chinese.*
+
+## 什么时候用
+
+- **项目在一台机器上，AI 订阅登录在另一台上，两边都不想挪。** 比如源码和工具链在工作机或服务器上，不能（或不想）在那里登录 Claude；而登录着 Claude 的那台 Mac 上又不该出现源码。
+- **不想让模型用你自己的账号跑命令。** Runtime 那边可以用一个专用的低权限账号执行，模型读不到你的 SSH 私钥和 AI 登录；还可以再给每条命令套一层 OS 沙箱。
+- **项目在远端，而 Claude Code 已经在你本机开着。** 不用 ccnm 启动 Agent，只把远端项目作为一组 MCP 工具交给它（见[另外两个入口](#另外两个入口)）。
+- **要让别的程序驱动这一切**（编排器、批处理）：stdio 上的 JSON-RPC，不开网络端口。
 
 **能不能在你的机器上跑**：Agent 那一侧只支持 **macOS**（Controller 是 launchd LaunchAgent，Linux/Windows 没实现）；Runtime 那一侧 **macOS** 和 **Debian 13 / x86_64** 都有真机证据。准确范围见[支持矩阵](docs/support-matrix.md)。
 
@@ -73,18 +80,7 @@ ccnm stop my-project
 ccnm my-project --print "修复 parser 测试"   # 一问一答，不进 tmux，输出直接打在本地终端
 ```
 
-Codex、Agent Instance、多行 prompt 这些见[快速开始](docs/getting-started.md)和[使用说明](docs/usage.md)。
-
-**ccnm 跟你说话默认用中文**。要英文就加 `--lang en`，或者设 `CCNM_LANG=en`，或者在 config.toml 里写：
-
-```toml
-[ui]
-lang = "en"
-```
-
-只管给人看的那些字。错误码（`CCNM_E_*`）、协议字段、给模型的 MCP 文本，还有 ccnm 自己要去匹配的 git/ssh/tmux 英文输出，都不跟着变——所以照着错误码搜文档、写脚本判断退出码，两种语言下都一样。文档里贴的 `ccnm doctor` 样本是英文那版（`--lang en`）。
-
-一处翻不动：命令行参数写错时，clap 报的 `Usage:` / `error:` 还是英文，它没给任何接口改。
+每一步的完整说明和 `doctor` 红了怎么办见[快速开始](docs/getting-started.md)；Codex、Agent Instance、多行 prompt 见[使用说明](docs/usage.md)。ccnm 默认说中文，要英文加 `--lang en`（细节见[使用说明](docs/usage.md#说什么语言)）。
 
 ## 跑通之后马上要做的一件事
 
@@ -97,7 +93,7 @@ runtime_user = "ccrun"
 
 意思是"Agent 连进来之后，项目命令以 `ccrun` 的身份跑"，不是"你要用 `ccrun` 敲 ccnm"。做法见[生产安全](docs/production-safety.md)。
 
-**如果项目和 Claude 登录本来就在同一台机器、同一个账号下**，那就没有东西可隔离，ccnm 默认会在 MCP 握手之前直接拒绝——那条边界正是它存在的理由。要么建专用账号，要么在 Runtime 侧那个 workspace 上把 `allow_unconfined_exec` 和 `allow_unisolated_credentials` 都写上，**明确接受**模型跑的每条命令都能读到那份登录。开关会在第一次起会话时把风险讲一次，`ccnm doctor` 里那几行永远是 WARN 而不是 OK。代价见[生产安全](docs/production-safety.md#凭据隔离那一条怎么放开代价是什么)。
+**如果项目和 Claude 登录本来就在同一台机器、同一个账号下**，那就没有东西可隔离，ccnm 默认在 MCP 握手之前直接拒绝，`doctor` 红在 `Claude 凭据` 那一行。这不是配错了；两条出路（建专用账号，或明确接受风险）见[快速开始](docs/getting-started.md#如果项目和-claude-登录在同一个账号下)。
 
 ## 会话里模型能用什么
 
@@ -108,13 +104,14 @@ workspace_info   read_file   list_files   search_text
 apply_patch      exec_command            read_output
 ```
 
-Codex 另有一条 opt-in 的路（workspace 写 `codex_exec_server = true`）：用它自带的执行工具，由 Runtime 上受 ccnm 监督和过滤的官方 `codex exec-server` 执行。**2026-09-17 已封存**：代码保留、只认 Codex 0.154.0、不再维护，默认路径就是上面的 MCP 七工具；原因见[双执行入口方案](docs/plan/runtime-surfaces.md)第 12.0 节，封存前的验收范围见[支持矩阵](docs/support-matrix.md)。
+两个按 workspace 打开的开关，默认都关：
 
-要给模型的命令加一层 OS 沙箱，用的是另一个开关：workspace 写 `exec_sandbox = "codex"`，这个 workspace 的每条 `exec_command`（Claude、Codex、外部 MCP 客户端都一样）就包进 Codex 自带的 workspace-write 沙箱——只能写工作区（`.git` 除外）、`$TMPDIR` 和 `/tmp`，不能连网。代价是 `git commit` 和依赖下载得在沙箱外做，见[配置说明](docs/configuration.md#exec_sandbox)。
+- `exec_sandbox = "codex"`：每条 `exec_command` 包进一层 OS 沙箱——只能写工作区（`.git` 除外）和临时目录，不能连网。代价是 `git commit` 和依赖下载得在沙箱外做，见[配置说明](docs/configuration.md#exec_sandbox)。
+- `codex_exec_server = true`：让 Codex 用它自带的执行工具。**2026-09-17 已封存**，代码保留但不再维护，别在新项目上用；原因见[双执行入口方案](docs/plan/runtime-surfaces.md)第 12.0 节。
 
 ## 另外两个入口
 
-**项目在远端，而 Claude Code 已经在你本机跑着**——用 `ccnm mcp bridge <workspace>`，把远端项目作为一组 MCP 工具交给它。权限由 Runtime 侧的 `external_mcp` 决定（默认关）。契约 `ccnm.workspace-mcp/1` 已于 2026-09-11 冻结。
+**项目在远端，而 Claude Code 已经在你本机跑着**——用 `ccnm mcp bridge <workspace>`，把远端项目作为一组 MCP 工具交给它。权限由 Runtime 侧的 `external_mcp` 决定（默认关）。契约 `ccnm.workspace-mcp/1` 已于 2026-09-11 冻结，上手步骤见[使用说明](docs/usage.md#把远端项目给已经在跑的-agent-用)。
 
 **要让别的程序驱动 ccnm**——用 `ccnm rpc`：stdio 上的 JSON-RPC 2.0，不开网络端口。契约 `ccnm.machine/1` 已于 2026-09-10 冻结，schema、fixture 和一个可以直接抄走的 Python 客户端见[协议说明](docs/protocol/README.md)。
 
@@ -137,14 +134,13 @@ Codex 另有一条 opt-in 的路（workspace 写 `codex_exec_server = true`）�
 
 ## 这个项目对"没验过"这件事很较真
 
-已经在真机上跑通的、以及明确**没有**验过的，逐条列在[支持矩阵](docs/support-matrix.md)里。几条最该先知道的：
+已经在真机上跑通的、以及明确**没有**验过的，逐条列在[支持矩阵](docs/support-matrix.md)里。最该先知道的三条：
 
-- **不声明任何网络出口边界**。egress 没有逐项验证，需要这种保证的场景由 OS 和网络层自己落实。
-- **Linux 只验过 Runtime 那一半**，而且只验过 Debian 13 / x86_64。Linux 上的 Agent/Controller 没有实现。
-- **machine API 的 `interactive` 模式没有实现**。协议冻结的是契约，不是说这些已经补上。
-- colocated（项目和 Agent 同机）没有真实验收，因此明确拒绝，不静默降级。
+- **不声明任何网络出口边界**。模型的命令能连到哪里没有逐项验证，需要这种保证就由 OS 和网络层自己落实。
+- **Linux 只验过 Runtime 那一半**，而且只验过 Debian 13 / x86_64。
+- 项目和 Agent 同机（colocated）没有真实验收，因此明确拒绝，不静默降级。
 
-仓库里的大型设计文档属于研发历史，部分旧章节仍会出现 `home`/`work`，那是历史术语；当前公开模型统一以 **Node + Agent / Runtime / Controller** 为准。
+旧设计文档里偶尔出现的 `home`/`work` 是历史叫法，对应关系见[架构说明](docs/architecture.md#历史术语)。
 
 ## 许可证
 

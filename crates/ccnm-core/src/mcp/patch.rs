@@ -1944,7 +1944,11 @@ mod tests {
 
     #[test]
     fn the_write_policy_is_the_one_the_read_tools_use() {
-        let root = workspace("policy");
+        // The root sits one level down so that `../outside.txt` lands in
+        // this test's own directory. Straight under `$TMPDIR` it is one
+        // file shared by every test process running at once, and they
+        // truncate it under each other.
+        let root = workspace("policy").join("ws");
         fs::create_dir_all(root.join(".git")).unwrap();
         fs::write(root.join(".git/config"), "[core]\n").unwrap();
         let outside = root.parent().unwrap().join("outside.txt");

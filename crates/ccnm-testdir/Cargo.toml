@@ -1,0 +1,18 @@
+[package]
+name = "ccnm-testdir"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Test-only: a scratch directory that is removed when the test ends"
+# Only ever a dev-dependency. It is its own crate because three kinds of test
+# need the same guard -- unit tests inside ccnm-core, ccnm-core/tests and
+# ccnm-cli/tests -- and the alternatives were three copies or a public module
+# in the product library.
+publish = false
+
+[dependencies]
+
+[lints]
+workspace = true

@@ -115,6 +115,7 @@ name = "ccnm-cli"
 version = "0.7.0"
 dependencies = [
  "ccnm-core",
+ "ccnm-testdir",
  "clap",
  "serde",
  "serde_json",
@@ -127,6 +128,7 @@ name = "ccnm-core"
 version = "0.7.0"
 dependencies = [
  "base64",
+ "ccnm-testdir",
  "rmcp",
  "serde",
  "serde_json",
@@ -138,6 +140,10 @@ dependencies = [
  "tracing",
  "uuid",
 ]
+
+[[package]]
+name = "ccnm-testdir"
+version = "0.7.0"
 
 [[package]]
 name = "cfg-if"

@@ -21,6 +21,7 @@ toexec-fs.workspace = true
 toexec-text.workspace = true
 
 [dev-dependencies]
+ccnm-testdir.workspace = true
 # In-memory pipes to stand in for a client the MCP server outlives.
 tokio = { workspace = true, features = ["io-util", "macros"] }
 

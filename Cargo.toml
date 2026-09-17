@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/ccnm-cli", "crates/ccnm-core"]
+members = ["crates/ccnm-cli", "crates/ccnm-core", "crates/ccnm-testdir"]
 
 [workspace.package]
 version = "0.7.0"
@@ -16,6 +16,8 @@ repository = "https://github.com/xwfe/ccnm"
 
 [workspace.dependencies]
 ccnm-core = { path = "crates/ccnm-core" }
+# Test-only (dev-dependency): scratch directories that delete themselves.
+ccnm-testdir = { path = "crates/ccnm-testdir" }
 # 跟 gld 共用的文本读取原语（跨仓计划 toexec 的 V2-K）。
 #
 # 按 tag 固定，不跟着 main 走：共享库改了不会在某次 `cargo update` 之后

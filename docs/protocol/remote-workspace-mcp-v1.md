@@ -269,10 +269,12 @@ transport 的认证边界是 **OpenSSH identity + 独立的 Runtime OS 账号**�
 | `exec_command` 回传 | 预览总共默认 4 KiB，`preview_bytes` 最大 16 KiB；stderr 最多占一半，其余给 stdout，某个流超出时只留它的开头和结尾。完整输出用 `output_ref` 读 |
 | `read_output` 一次最多 | 32 KiB（默认 16 KiB） |
 | `apply_patch` | 一次最多 50 个文件；一次请求里所有文件的新内容**合计** 1 MiB；被编辑的文件超过 16 MiB 直接拒绝 |
-| 保留输出 | 每个 session 最多 100 次运行 / 64 MiB，超了删最旧的 |
+| 保留输出 | 每次运行的 stdout、stderr **各自**最多落盘 64 MiB，超出的不再写，命令照常跑完、结果里带一条说明；每个 session 只留最新的 100 次运行，开始第 101 次前删最旧的。**没有整个 session 的字节总量上限**：一个 session 最坏留 100 × 2 × 64 MiB = 12800 MiB（12.5 GiB） |
 | `instructions` | 2048 个 UTF-16 码元（含项目说明文件），超了由 ccnm 按行截断，见第 10 节 |
 
-保留的输出**留在远端**，只在这个 session 的目录里。session 结束后由 ccnm 原有的维护动作清理；契约不承诺任何保留时长。
+保留的输出**留在远端**，只在这个 session 的目录里。session 结束时**不删**，100 次也只在一个 session 里计数，所以远端占用随 session 个数累加，没有总上限；怎么清见[运维手册](../operations.md#状态文件在哪多大怎么清)。契约不承诺任何保留时长。
+
+「保留输出」这一行和上一段 2026-09-17 按实现更正过，行为没变：原文写的「每个 session 最多 100 次运行 / 64 MiB」和「session 结束后清理」都与实现不符，而实现（`crates/ccnm-core/src/mcp/exec.rs` 的 `Sink`、`prune`）从 2026-09-03 起没变过，早于冻结。
 
 ## 9. 版本与不匹配
 

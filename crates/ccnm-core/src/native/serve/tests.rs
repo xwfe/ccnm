@@ -220,6 +220,30 @@ fn answer_like_codex(stream: UnixStream) -> std::thread::JoinHandle<usize> {
     })
 }
 
+/// Reads everything the supervisor sends; answers liveness requests the way
+/// Codex does while `answering` is set, and nothing once it is cleared.
+fn answer_while(
+    stream: UnixStream,
+    answering: Arc<std::sync::atomic::AtomicBool>,
+) -> std::thread::JoinHandle<Vec<Value>> {
+    std::thread::spawn(move || {
+        let mut out = stream.try_clone().unwrap();
+        let mut seen = Vec::new();
+        for line in BufReader::new(stream).lines() {
+            let Ok(line) = line else { break };
+            let message: Value = serde_json::from_str(&line).unwrap();
+            if message["method"] == "ccnm/liveness"
+                && answering.load(std::sync::atomic::Ordering::SeqCst)
+            {
+                let answer = serde_json::json!({"id": message["id"], "error": {"code": -32601, "message": "exec-server client does not implement `ccnm/liveness` yet"}});
+                let _ = writeln!(out, "{answer}");
+            }
+            seen.push(message);
+        }
+        seen
+    })
+}
+
 /// Reads and throws away everything, answering nothing: a Codex whose
 /// machine is asleep looks like this from here, until the buffers fill.
 fn drain(stream: UnixStream) -> std::thread::JoinHandle<Vec<Value>> {
@@ -450,16 +474,39 @@ fn output_to_a_client_that_never_reads_is_not_hearing_from_it() {
     drop(peer);
 }
 
-/// A progress line straight to file descriptor 2. libtest captures
-/// `eprintln!` until a test ends, so a test that never ends shows nothing;
-/// this does not go through the capture and lands in the CI log's tail.
+/// Where the session test is, for the watchdog below.
+static STAGE: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+
+/// Record progress and write it straight to file descriptor 2. libtest
+/// captures `eprintln!` until a test ends, so a test that never ends shows
+/// nothing; this line does not go through the capture.
 fn stage(step: &str) {
     use std::io::Write;
-    let _ = writeln!(
-        std::io::stderr(),
-        "[session-test {:?}] {step}",
-        std::time::SystemTime::now()
-    );
+    *STAGE.lock().unwrap_or_else(|e| e.into_inner()) = step.to_string();
+    let _ = writeln!(std::io::stderr(), "[session-test] {step}");
+}
+
+/// Every 15 seconds until `done`, say which stage the session test is in.
+/// On CI only the last 40 lines of the log reach the public annotation, and
+/// the stages of a test that hangs are printed long before those; this keeps
+/// repeating the one that matters at the bottom.
+fn stage_watchdog(done: Arc<std::sync::atomic::AtomicBool>) {
+    std::thread::spawn(move || {
+        use std::io::Write;
+        let started = Instant::now();
+        loop {
+            std::thread::sleep(Duration::from_secs(15));
+            if done.load(std::sync::atomic::Ordering::SeqCst) {
+                return;
+            }
+            let at = STAGE.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            let _ = writeln!(
+                std::io::stderr(),
+                "[session-test watchdog] {:?} in, still at: {at}",
+                started.elapsed()
+            );
+        }
+    });
 }
 
 /// Run `work` on its own thread and give it `limit`. A step that hangs fails
@@ -518,6 +565,8 @@ fn describe_marked(marker: &str) -> String {
 /// says `released` -- the same ending as a client that closed its stdin.
 #[test]
 fn a_session_given_up_on_shuts_down_and_releases_the_guard() {
+    let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    stage_watchdog(Arc::clone(&done));
     stage("start");
     let scratch = Scratch::new("session");
     let state = scratch.dir.join("state");
@@ -559,35 +608,48 @@ fn a_session_given_up_on_shuts_down_and_releases_the_guard() {
     stage("initialize and initialized sent");
     send(&peer, &scratch.start(2, "exec sleep 600"));
     stage("process/start sent");
-    let received = drain(peer.try_clone().unwrap());
-    let watcher_marker = marker.clone();
-    let started = Instant::now();
-    let (seen, running_at) = mpsc::channel();
-    std::thread::spawn(move || {
-        // The executor and its command both carry the marker.
-        while marked_processes(&watcher_marker).unwrap().len() < 2 {
-            if started.elapsed() > Duration::from_secs(5) {
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        let _ = seen.send(started.elapsed());
-    });
+    // Answer liveness requests until the command is seen running, then
+    // fall silent. Going silent right away raced the check: listing
+    // processes can take longer than the whole silence limit on a loaded
+    // machine, and the command was gone before anyone had looked.
+    let answering = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let received = answer_while(peer.try_clone().unwrap(), Arc::clone(&answering));
 
     stage("running the session");
-    let end = within(
-        "Session::run",
-        Duration::from_secs(30),
-        &marker,
-        move || session.run(client, timing, &Sweeper::system()),
-    )
-    .unwrap();
+    let (ended, end_rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = ended.send(session.run(client, timing, &Sweeper::system()));
+    });
+    let started = Instant::now();
+    while marked_processes(&marker).unwrap().len() < 2 {
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "the command was never seen running: {}",
+            describe_marked(&marker)
+        );
+        assert!(
+            end_rx.try_recv().is_err(),
+            "the session ended while the client was still answering"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    stage("command seen running; the client falls silent");
+    answering.store(false, std::sync::atomic::Ordering::SeqCst);
+    let silent_since = Instant::now();
+    let end = match end_rx.recv_timeout(Duration::from_secs(30)) {
+        Ok(end) => end.unwrap(),
+        Err(_) => panic!(
+            "Session::run did not return within 30 s of the client falling silent; {}",
+            describe_marked(&marker)
+        ),
+    };
     stage(&format!("session ended: {end:?}"));
     assert_eq!(end, End::ClientSilent);
-    let running_after = running_at
-        .recv_timeout(Duration::from_secs(10))
-        .expect("the command was never seen running");
-    assert!(running_after < timing.give_up_after, "{running_after:?}");
+    assert!(
+        silent_since.elapsed() >= timing.give_up_after - timing.ping_after,
+        "given up on {:?} after the client fell silent",
+        silent_since.elapsed()
+    );
     let left_marker = marker.clone();
     let left = within(
         "listing leftovers",
@@ -613,4 +675,5 @@ fn a_session_given_up_on_shuts_down_and_releases_the_guard() {
     );
     assert!(replies.iter().any(|m| m["id"] == 2), "{replies:?}");
     stage("done");
+    done.store(true, std::sync::atomic::Ordering::SeqCst);
 }

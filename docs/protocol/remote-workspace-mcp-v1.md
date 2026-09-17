@@ -269,12 +269,14 @@ transport 的认证边界是 **OpenSSH identity + 独立的 Runtime OS 账号**�
 | `exec_command` 回传 | 预览总共默认 4 KiB，`preview_bytes` 最大 16 KiB；stderr 最多占一半，其余给 stdout，某个流超出时只留它的开头和结尾。完整输出用 `output_ref` 读 |
 | `read_output` 一次最多 | 32 KiB（默认 16 KiB） |
 | `apply_patch` | 一次最多 50 个文件；一次请求里所有文件的新内容**合计** 1 MiB；被编辑的文件超过 16 MiB 直接拒绝 |
-| 保留输出 | 每次运行的 stdout、stderr **各自**最多落盘 64 MiB，超出的不再写，命令照常跑完、结果里带一条说明；每个 session 只留最新的 100 次运行，开始第 101 次前删最旧的。**没有整个 session 的字节总量上限**：一个 session 最坏留 100 × 2 × 64 MiB = 12800 MiB（12.5 GiB） |
+| 保留输出 | 每次运行的 stdout、stderr **各自**最多落盘 64 MiB，超出的不再写，命令照常跑完、结果里带一条说明；每个 session 只留最新的 100 次运行，开始第 101 次前删最旧的；一个 session 已结束运行的输出**合计**最多 256 MiB，每次运行结束后从最旧的删。还在跑的运行不删，所以同一个 session 并发跑命令时可以暂时超过 256 MiB，超出部分不超过"进行中的运行数 × 128 MiB" |
 | `instructions` | 2048 个 UTF-16 码元（含项目说明文件），超了由 ccnm 按行截断，见第 10 节 |
 
-保留的输出**留在远端**，只在这个 session 的目录里。session 结束时**不删**，100 次也只在一个 session 里计数，所以远端占用随 session 个数累加，没有总上限；怎么清见[运维手册](../operations.md#状态文件在哪多大怎么清)。契约不承诺任何保留时长。
+保留的输出**留在远端**，只在这个 session 的目录里。本入口的 session 在连接结束时删掉自己的输出：第 6 节说过，断了就是断了，重开是新 session，旧的 `output_ref` 本来就没人能再用。Managed 会话的输出不随连接删，它重连后沿用同一个 session，旧 ref 还要能读。不管哪个入口，最后一次运行过去 7 天、Runtime 上又没有进程在服务它的 session，输出会被删掉；运维上怎么看、怎么提前清见[运维手册](../operations.md#状态文件在哪多大怎么清)。
 
-「保留输出」这一行和上一段 2026-09-17 按实现更正过，行为没变：原文写的「每个 session 最多 100 次运行 / 64 MiB」和「session 结束后清理」都与实现不符，而实现（`crates/ccnm-core/src/mcp/exec.rs` 的 `Sink`、`prune`）从 2026-09-03 起没变过，早于冻结。
+契约不承诺任何保留时长。被删掉的 `output_ref` 再拿去读，报 `CCNM_E_INVALID_ARGS`（`no output kept for r-…`），和从没有过这个 ref 一样。
+
+「保留输出」这一行和上两段 2026-09-17 改过两次。先是按实现更正措辞：原文「每个 session 最多 100 次运行 / 64 MiB」和「session 结束后清理」都与当时的实现不符（实际是每流每次 64 MiB、没有 session 总量上限、从不清理）。同日 P29 加了 session 总量上限、本入口结束即删和 7 天过期，才是现在写的样子。两次都不升 `ccnm.workspace-mcp/2`：契约从没承诺保留时长，被删 ref 的错误码和消息不变，只是删得更早。
 
 ## 9. 版本与不匹配
 

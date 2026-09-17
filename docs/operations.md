@@ -276,7 +276,7 @@ controller.sock      controller 的监听 socket
 **Runtime Node：**
 
 ```text
-sessions/<ccnm-session-id>/output/   exec_command 留下的命令输出
+sessions/<ccnm-session-id>/output/   exec_command 留下的命令输出（会自己清，见下）
 write-guards/                        工作树级独占锁
 rpc/sessions/<handle>.json           machine API 的会话记录
 rpc/keys/<workspace>/<start_key>     启动幂等键
@@ -285,9 +285,24 @@ ssh/                                 ControlPath socket
 
 `tmux.conf` 写在会话目录里，是因为那是 ccnm 一定拥有、一定存在的目录。tmux **只在启动 server 的那一刻**读它，所以哪个会话的那份起的作用不重要，跟着会话一起被删也不影响任何东西。里面设了什么、怎么改回去，见[使用说明](usage.md#会话在-tmux-里所以滚屏和复制跟你平时不一样)。
 
-**没有自动清理，也没有保留期。** 会话记录一直留着，除非你删。这是刻意的：一个已经结束的会话，它的输出往往比它本身有价值。
+**Agent 上的会话记录没有自动清理，也没有保留期**，一直留着，除非你删。这是刻意的：一个已经结束的会话，它的输出往往比它本身有价值。单个会话通常几十 KB。
 
-单个会话通常几十 KB，`output/` 取决于命令打印了多少。它的上限按单次运行和运行次数算，**不按会话总量算**，一个会话最坏能到 GiB 级，具体数字见[协议第 8 节](protocol/remote-workspace-mcp-v1.md#8-输出预算与保留)。真占地方了按 workspace 清：
+**Runtime 上的 `output/` 例外，它自己清。**这是 `exec_command` 留下的完整输出，大小看命令打印了多少。规则（数字的出处和并发时的细节见[协议第 8 节](protocol/remote-workspace-mcp-v1.md#8-输出预算与保留)）：
+
+- 一个会话最多留 256 MiB 左右，满了从最旧的运行删。
+- 外部 MCP（`ccnm mcp bridge`）的会话，连接一断就删。
+- Managed 会话断开不删，`/mcp Reconnect` 回来还要读。它的输出在**最后一次运行过去 7 天、且这台机器上没有 `mcp-serve` 在服务它**之后删。
+- 过期检查在执行账号每次起 `mcp-serve` 时做（任何会话都算，包括 `ccnm doctor` 的握手），在后台跑，不拖慢连接。`ps` 跑不了时一个都不删。
+
+所以一台 Runtime 上 `output/` 的总量最多大约是"最近 7 天里跑过命令的 Managed 会话数 × 256 MiB"。想立刻腾地方，在 Runtime 上用**执行账号**删：
+
+```bash
+rm -rf "${XDG_STATE_HOME:-$HOME/.local/state}"/ccnm/sessions/*/output
+```
+
+删之前先在 Runtime 上跑 `ccnm status`，确认没有 `mcp-serve` 行。正在用的会话被删了输出，它已经拿到的 `output_ref` 再去 `read_output` 会报 `no output kept for r-…`。zsh 下一个都匹配不到时会报 `no matches found`，那是没东西可删，不是命令错了。
+
+要连 workspace 一起清：
 
 ```bash
 ccnm workspace remove demo --purge     # 先停会话，再删 ccnm 为它保存的东西
@@ -295,15 +310,9 @@ ccnm workspace remove demo --purge     # 先停会话，再删 ccnm 为它保存
 
 `--purge` 删的只有 ccnm 自己的记账：会话记录和官方 CLI 的工作目录。**永远不碰项目本身**——那是两台机器上唯一不是 ccnm 创建的东西，一个可能删掉别人源码树的清理命令不叫清理命令。
 
+**按推荐部署，`--purge` 删不到 Runtime 上的 `output/`。**它先让 Agent 删掉这个 workspace 的会话记录、报回会话 id，再删**敲命令这个账号自己**状态目录里同名的 `sessions/<id>/`。Operator 和 Runtime Executor 是两个账号时（推荐就是这样），输出在执行账号的目录里，这一步什么也删不到，只能等上面的 7 天过期或手动删。外部 MCP 会话 Agent 那边本来就没有记录，也不在 `--purge` 范围内，不过它们断开时已经删了。
+
 machine API 的记录（`rpc/`）不在 `--purge` 范围内，目前只能手动删。删之前确认没有正在跑的会话——记录没了，`session.status` 会回 `-32009`，而 Agent 那边可能还在跑。
-
-外部 MCP（`ccnm mcp bridge`）的会话也不在 `--purge` 范围内。`--purge` 先问 Agent 这个 workspace 有哪些会话记录，再删敲命令这台机器（定义 workspace 的一侧，通常就是 Runtime）上同名的 `sessions/<id>/`；bridge 会话在 Runtime 上叫 `sessions/bridge-<uuid>/`，Agent 那边没有记录，所以一个也删不到。在 Runtime 上用执行账号手动删：
-
-```bash
-rm -rf "${XDG_STATE_HOME:-$HOME/.local/state}"/ccnm/sessions/bridge-*
-```
-
-删之前先在 Runtime 上跑 `ccnm status`，确认没有标着「外部 MCP 客户端」的 `mcp-serve` 行。正在用的会话被删了目录，它已经拿到的 `output_ref` 再去 `read_output` 会报 `no output kept for r-…`。zsh 下一个 `bridge-*` 都没有时会报 `no matches found`，那是没东西可删，不是命令错了。
 
 ## 停止
 

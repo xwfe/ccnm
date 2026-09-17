@@ -18,21 +18,32 @@
 //! --no-follow     a symlink is how a search leaves the workspace
 //! --no-hidden     dotfiles stay out, .git among them
 //! -g !.* -g !.git and both again as the last globs: a caller's glob that
-//!                 matches a directory overrides --no-hidden, and of
-//!                 several matching globs rg lets the last one win
+//!                 matches a directory, or a --type, overrides --no-hidden,
+//!                 and of several matching globs rg lets the last one win
 //! cwd = root      rg is given a relative scope from the workspace root, so
 //!                 the paths it prints are relative and no absolute path of
 //!                 the Runtime Node can reach the model
 //! ```
 //!
-//! and then checks rg's output anyway: any hit whose path is absolute, has
-//! a `..`, or is under `.git/` is dropped. rg is a fast scanner, not the
-//! security boundary.
+//! `include_hidden` swaps the first line for `--hidden` and drops `!.*`;
+//! `!.git` stays whatever the caller asks. rg then gets checked anyway: any
+//! hit whose path is absolute, has a `..`, or is under `.git/` is dropped.
+//! rg is a fast scanner, not the security boundary.
 //!
 //! Both limits bound the *work*, not just the answer. `stream_lines` reads
 //! rg's JSON as it arrives and kills it the moment `max_results` or the byte
 //! budget is reached, so searching a monorepo for `e` costs fifty matches,
 //! not a full scan followed by a truncation.
+//!
+//! # Three output modes, one stream
+//!
+//! Claude Code's Grep offers the matching lines, only the file names, or a
+//! count per file (P37 checked 2.1.273). rg refuses `--json` together with
+//! `--files-with-matches` or `--count`, and the JSON stream is where the
+//! path checks above live, so every mode reads the same stream: file names
+//! come from `--max-count 1` (rg stops reading a file at its first match),
+//! counts from counting match events. A count therefore counts matching
+//! lines, like `rg --count`, and a multi-line match counts once.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -93,10 +104,41 @@ pub struct SearchTextArgs {
     #[serde(default)]
     #[schemars(range(min = 0, max = 10))]
     pub context_lines: Option<u32>,
-    /// Maximum matches to return. Default 50, capped at 200.
+    /// Maximum matches to return, or files in the other two output modes.
+    /// Default 50, capped at 200.
     #[serde(default)]
     #[schemars(range(min = 1, max = 200))]
     pub max_results: Option<u32>,
+    /// `content` (default): matching lines with context. `files_with_matches`:
+    /// only the paths. `count`: matching lines per file.
+    #[serde(default)]
+    pub output_mode: Option<OutputMode>,
+    /// Let the pattern span lines; in a regex `.` then matches a newline too.
+    /// Default false.
+    #[serde(default)]
+    pub multiline: Option<bool>,
+    /// Only search files of this ripgrep type, e.g. `rust`, `py`, `js`, `ts`.
+    #[serde(default, rename = "type")]
+    pub file_type: Option<String>,
+    /// Also search dotfiles and dot-directories. `.git` is never searched.
+    /// Default false.
+    #[serde(default)]
+    pub include_hidden: Option<bool>,
+}
+
+/// What a search returns.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum OutputMode {
+    /// Matching lines with their context.
+    #[default]
+    Content,
+    /// Only the paths of files with at least one match.
+    FilesWithMatches,
+    /// Matching lines per file.
+    Count,
 }
 
 /// Why a search stopped before rg ran out of files.
@@ -131,9 +173,13 @@ pub struct SearchResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub glob: Option<String>,
     pub regex: bool,
+    pub output_mode: OutputMode,
+    /// Match events rg reported: one per matching line (or per multi-line
+    /// match), and at most one per file in `files_with_matches`.
     pub matches: u32,
     pub files: u32,
-    /// Bytes of matched and context text in `text`, excluding line numbers.
+    /// Bytes of matched and context text in `text` excluding line numbers,
+    /// or of the listed paths in the other two modes.
     pub bytes: usize,
     pub truncated: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -169,6 +215,10 @@ struct Plan {
     case_sensitive: bool,
     context_lines: u32,
     max_results: u32,
+    mode: OutputMode,
+    multiline: bool,
+    file_type: Option<String>,
+    include_hidden: bool,
 }
 
 impl Plan {
@@ -192,6 +242,24 @@ impl Plan {
         // so an unsupported pattern is refused the same way list_files
         // refuses it instead of quietly meaning something else here.
         let glob = args.glob.as_deref().map(Glob::new).transpose()?;
+        // Whether rg knows the name is rg's to say (exit 2, mapped to
+        // invalid_args in `check`); this only keeps out what is not a name.
+        let file_type = match args.file_type.as_deref().map(str::trim) {
+            None => None,
+            Some("") => return Err(Error::invalid_args("type is empty")),
+            Some(name) if name.contains('\0') => {
+                return Err(Error::invalid_args("type contains a NUL byte"));
+            }
+            Some(name) => Some(name.to_string()),
+        };
+        // Refused rather than passed on: a file the glob matches is let in
+        // before rg ever looks at its type, so `glob: src/**, type: rust`
+        // quietly returns Python too (rg 15.2.0).
+        if file_type.is_some() && glob.is_some() {
+            return Err(Error::invalid_args(
+                "type and glob cannot be combined: ripgrep lets a matching glob override the type; use one of them, e.g. glob **/*.rs",
+            ));
+        }
 
         let rel_dir = match args.path.as_deref().map(str::trim) {
             None | Some("") | Some(".") | Some("./") => String::new(),
@@ -215,6 +283,10 @@ impl Plan {
             case_sensitive: args.case_sensitive.unwrap_or(true),
             context_lines,
             max_results,
+            mode: args.output_mode.unwrap_or_default(),
+            multiline: args.multiline.unwrap_or(false),
+            file_type,
+            include_hidden: args.include_hidden.unwrap_or(false),
         })
     }
 
@@ -222,9 +294,14 @@ impl Plan {
     /// glob are their own arguments and no shell ever sees them.
     fn command(&self, rg: &Path) -> Cmd {
         let mut cmd = Cmd::new(rg)
-            .args(["--json", "--no-config", "--no-follow", "--no-hidden"])
+            .args(["--json", "--no-config", "--no-follow"])
             .cwd(&self.root)
             .timeout(RG_TIMEOUT);
+        cmd = cmd.arg(if self.include_hidden {
+            "--hidden"
+        } else {
+            "--no-hidden"
+        });
         cmd = cmd.arg(if self.case_sensitive {
             "--case-sensitive"
         } else {
@@ -233,8 +310,21 @@ impl Plan {
         if !self.regex {
             cmd = cmd.arg("--fixed-strings");
         }
-        if self.context_lines > 0 {
-            cmd = cmd.args(["--context", &self.context_lines.to_string()]);
+        if self.multiline {
+            cmd = cmd.args(["--multiline", "--multiline-dotall"]);
+        }
+        match self.mode {
+            OutputMode::Content if self.context_lines > 0 => {
+                cmd = cmd.args(["--context", &self.context_lines.to_string()]);
+            }
+            OutputMode::Content | OutputMode::Count => {}
+            // The first match answers the question, so rg can stop reading
+            // the file there.
+            OutputMode::FilesWithMatches => cmd = cmd.args(["--max-count", "1"]),
+        }
+        if let Some(name) = &self.file_type {
+            // One argument with `=`: a type spelled `-x` stays a value.
+            cmd = cmd.arg(format!("--type={name}"));
         }
         if let Some(glob) = &self.glob {
             cmd = cmd.args(["--glob", glob.source()]);
@@ -242,8 +332,12 @@ impl Plan {
         // After the caller's glob, not before: when several globs match a
         // path rg lets the last one win, and a glob beats `--no-hidden`.
         // In the other order `*` or `**` matches `.github/` and `.git/`
-        // themselves and walks straight back into both (rg 15.2.0).
-        cmd = cmd.args(["--glob", "!.*", "--glob", "!.git"]);
+        // themselves and walks straight back into both (rg 15.2.0). A
+        // `--type` does the same for a dotfile of that type, `src/.x.rs`.
+        if !self.include_hidden {
+            cmd = cmd.args(["--glob", "!.*"]);
+        }
+        cmd = cmd.args(["--glob", "!.git"]);
         // `--` first: a query of `-i` is a query, not a flag.
         cmd.arg("--")
             .arg(&self.query)
@@ -273,11 +367,15 @@ struct Line {
 
 /// Reads rg's JSON stream and decides when to stop it.
 struct Collector {
+    mode: OutputMode,
     max_results: usize,
     scope: String,
-    /// `path -> lines`, in the order rg found them.
+    /// `path -> lines`, in the order rg found them. Content mode only.
     groups: Vec<(String, Vec<Line>)>,
     hits: Vec<Hit>,
+    /// `path -> match events`, in the order rg found them. The other two
+    /// modes only.
+    listed: Vec<(String, u32)>,
     bytes: usize,
     truncated_by: Option<Truncation>,
     notes: BTreeSet<String>,
@@ -288,10 +386,12 @@ struct Collector {
 impl Collector {
     fn new(plan: &Plan) -> Collector {
         Collector {
+            mode: plan.mode,
             max_results: plan.max_results as usize,
             scope: plan.scope().to_string(),
             groups: Vec::new(),
             hits: Vec::new(),
+            listed: Vec::new(),
             bytes: 0,
             truncated_by: None,
             notes: BTreeSet::new(),
@@ -328,82 +428,120 @@ impl Collector {
                 }
                 Flow::Continue
             }
+            "match" if self.mode != OutputMode::Content => self.list(data),
             "match" | "context" => self.line(kind == "match", data),
             _ => Flow::Continue,
         }
+    }
+
+    /// The path an event is about, if it may go back to the model.
+    fn event_path(&mut self, data: &Value) -> Option<String> {
+        let Some(path) = text_field(data.get("path")) else {
+            // A path that is not UTF-8 cannot be sent to a JSON client, and
+            // ccnm will not invent a name for it.
+            self.notes
+                .insert("a file whose name is not valid UTF-8 was skipped".into());
+            return None;
+        };
+        self.safe_path(&path)
+    }
+
+    /// A match in `files_with_matches` or `count`. Only the path goes back,
+    /// so the line itself is not looked at: a line content mode would skip
+    /// as binary or not UTF-8 still counts here.
+    fn list(&mut self, data: &Value) -> Flow {
+        let Some(path) = self.event_path(data) else {
+            return Flow::Continue;
+        };
+        // rg prints each file's events together, so a repeat is the last one.
+        if let Some((last, count)) = self.listed.last_mut()
+            && *last == path
+        {
+            *count += 1;
+            return Flow::Continue;
+        }
+        // Stopped at the next file rather than at the limit itself, so a
+        // search with exactly `max_results` files is not called truncated
+        // and the last file's count is whole.
+        if self.listed.len() >= self.max_results {
+            self.truncated_by = Some(Truncation::MaxResults);
+            return Flow::Stop;
+        }
+        if self.bytes + path.len() > MAX_RESPONSE_BYTES {
+            self.truncated_by = Some(Truncation::MaxBytes);
+            return Flow::Stop;
+        }
+        self.bytes += path.len();
+        self.listed.push((path, 1));
+        Flow::Continue
     }
 
     fn line(&mut self, is_match: bool, data: &Value) -> Flow {
         if is_match && self.full {
             return Flow::Stop;
         }
-        let Some(path) = text_field(data.get("path")) else {
-            // A path that is not UTF-8 cannot be sent to a JSON client, and
-            // ccnm will not invent a name for it.
-            self.notes
-                .insert("a file whose name is not valid UTF-8 was skipped".into());
+        let Some(path) = self.event_path(data) else {
             return Flow::Continue;
         };
-        let Some(path) = self.safe_path(&path) else {
-            return Flow::Continue;
-        };
-        let Some(raw_line) = text_field(data.get("lines")) else {
+        let Some(raw_lines) = text_field(data.get("lines")) else {
             self.notes
                 .insert("a matching line is not valid UTF-8 and was skipped".into());
             return Flow::Continue;
         };
-        if raw_line.contains('\0') {
+        if raw_lines.contains('\0') {
             self.notes
                 .insert("a matching line contains binary data and was skipped".into());
             return Flow::Continue;
         }
-        let number = data.get("line_number").and_then(Value::as_u64).unwrap_or(0) as u32;
+        let first = data.get("line_number").and_then(Value::as_u64).unwrap_or(0) as u32;
 
-        let trimmed = raw_line.trim_end_matches('\n').trim_end_matches('\r');
-        let text = truncate_bytes(trimmed, MAX_LINE_BYTES);
-        let cut = text.len() < trimmed.len();
-        let mut text = text.to_string();
-        if cut {
-            text.push('…');
-            self.notes
-                .insert(format!("lines longer than {MAX_LINE_BYTES} bytes are cut"));
-        }
-
-        if self.bytes + text.len() > MAX_RESPONSE_BYTES {
-            self.truncated_by = Some(Truncation::MaxBytes);
-            return Flow::Stop;
-        }
-        self.bytes += text.len();
-
-        if is_match {
-            self.hits.push(Hit {
-                path: path.clone(),
-                line: number,
-                column: column_of(data, trimmed),
-            });
-            if self.hits.len() >= self.max_results {
-                // Not a stop yet: the trailing context of this match is
-                // still coming, and cutting it off makes the last hit look
-                // like the end of the file.
-                self.truncated_by = Some(Truncation::MaxResults);
-                self.full = true;
+        // One event is one line, except a multiline match, which carries
+        // every line it spans and the number of the first. Each is shown,
+        // capped and budgeted as a line of its own.
+        let mut hit = false;
+        for (offset, raw) in raw_lines.split_inclusive('\n').enumerate() {
+            let number = first.saturating_add(offset as u32);
+            let trimmed = raw.trim_end_matches('\n').trim_end_matches('\r');
+            let text = truncate_bytes(trimmed, MAX_LINE_BYTES);
+            let cut = text.len() < trimmed.len();
+            let mut text = text.to_string();
+            if cut {
+                text.push('…');
+                self.notes
+                    .insert(format!("lines longer than {MAX_LINE_BYTES} bytes are cut"));
             }
-        }
 
-        match self.groups.last_mut() {
-            Some((last, lines)) if *last == path => lines.push(Line {
+            if self.bytes + text.len() > MAX_RESPONSE_BYTES {
+                self.truncated_by = Some(Truncation::MaxBytes);
+                return Flow::Stop;
+            }
+            self.bytes += text.len();
+
+            if is_match && !hit {
+                hit = true;
+                self.hits.push(Hit {
+                    path: path.clone(),
+                    line: number,
+                    column: column_of(data, trimmed),
+                });
+                if self.hits.len() >= self.max_results {
+                    // Not a stop yet: the trailing context of this match is
+                    // still coming, and cutting it off makes the last hit
+                    // look like the end of the file.
+                    self.truncated_by = Some(Truncation::MaxResults);
+                    self.full = true;
+                }
+            }
+
+            let line = Line {
                 number,
                 is_match,
                 text,
-            }),
-            _ => self.groups.push((
-                path,
-                vec![Line {
-                    number,
-                    is_match,
-                    text,
-                }],
-            )),
+            };
+            match self.groups.last_mut() {
+                Some((last, lines)) if *last == path => lines.push(line),
+                _ => self.groups.push((path.clone(), vec![line])),
+            }
         }
         Flow::Continue
     }
@@ -444,56 +582,84 @@ impl Collector {
             Some(0) | Some(1) => Ok(()),
             _ => {
                 let detail = sanitize(&String::from_utf8_lossy(&outcome.stderr), root);
-                // A bad regex is the caller's to fix; anything else is the
-                // machine's problem and keeps a code that stays visible.
-                let code =
-                    if detail.contains("regex parse error") || detail.contains("error parsing") {
-                        ErrorCode::InvalidArgs
-                    } else {
-                        ErrorCode::Internal
-                    };
+                // The caller's to fix: a bad regex, a type rg does not know,
+                // a newline in the query without `multiline`. Anything else
+                // is the machine's problem and keeps a code that stays
+                // visible. Wording as rg 15.2.0 prints it.
+                let caller = [
+                    "regex parse error",
+                    "error parsing",
+                    "unrecognized file type",
+                    "is not allowed in a regex",
+                ];
+                let code = if caller.iter().any(|needle| detail.contains(needle)) {
+                    ErrorCode::InvalidArgs
+                } else {
+                    ErrorCode::Internal
+                };
                 Err(Error::new(code, format!("ripgrep failed: {detail}")))
             }
         }
     }
 
     fn finish(self, plan: Plan) -> SearchResult {
-        let matches = self.hits.len() as u32;
-        let files = self.groups.len() as u32;
         let mut text = String::new();
-        for (path, lines) in &self.groups {
-            text.push_str(path);
-            text.push('\n');
-            let mut previous: Option<u32> = None;
-            for line in lines {
-                if previous.is_some_and(|p| line.number > p + 1) {
-                    text.push_str("--\n");
+        let (matches, files) = if self.mode == OutputMode::Content {
+            for (path, lines) in &self.groups {
+                text.push_str(path);
+                text.push('\n');
+                let mut previous: Option<u32> = None;
+                for line in lines {
+                    if previous.is_some_and(|p| line.number > p + 1) {
+                        text.push_str("--\n");
+                    }
+                    previous = Some(line.number);
+                    text.push_str(&format!(
+                        "{}{}{}\n",
+                        line.number,
+                        if line.is_match { ':' } else { '-' },
+                        line.text
+                    ));
                 }
-                previous = Some(line.number);
-                text.push_str(&format!(
-                    "{}{}{}\n",
-                    line.number,
-                    if line.is_match { ':' } else { '-' },
-                    line.text
-                ));
             }
-        }
+            (self.hits.len() as u32, self.groups.len() as u32)
+        } else {
+            for (path, count) in &self.listed {
+                text.push_str(path);
+                if self.mode == OutputMode::Count {
+                    text.push_str(&format!(":{count}"));
+                }
+                text.push('\n');
+            }
+            (
+                self.listed.iter().map(|(_, count)| count).sum(),
+                self.listed.len() as u32,
+            )
+        };
+        let what = if self.mode == OutputMode::Content {
+            "max_results"
+        } else {
+            "max_results files"
+        };
         let footer = if matches == 0 {
             format!("[no matches for {} under {}]", plan.query, self.scope)
         } else {
             match self.truncated_by {
                 Some(Truncation::MaxResults) => format!(
-                    "[stopped at max_results={}; narrow it with path, glob or a longer query]",
+                    "[stopped at {what}={}; narrow it with path, glob or a longer query]",
                     plan.max_results
                 ),
                 Some(Truncation::MaxBytes) => format!(
                     "[stopped at {} bytes of output; narrow it with path, glob or a longer query]",
                     MAX_RESPONSE_BYTES
                 ),
+                None if self.mode == OutputMode::FilesWithMatches => {
+                    format!("[{files} file{} with matches]", plural(files, "s"))
+                }
                 None => format!(
                     "[{matches} match{} in {files} file{}]",
-                    if matches == 1 { "" } else { "es" },
-                    if files == 1 { "" } else { "s" }
+                    plural(matches, "es"),
+                    plural(files, "s")
                 ),
             }
         };
@@ -511,6 +677,7 @@ impl Collector {
             path: self.scope,
             glob: plan.glob.map(|g| g.source().to_string()),
             regex: plan.regex,
+            output_mode: plan.mode,
             matches,
             files,
             bytes: self.bytes,
@@ -520,6 +687,10 @@ impl Collector {
             notes,
         }
     }
+}
+
+fn plural(n: u32, suffix: &str) -> &str {
+    if n == 1 { "" } else { suffix }
 }
 
 /// rg writes `{"text": "..."}` for valid UTF-8 and `{"bytes": "<base64>"}`
@@ -683,6 +854,200 @@ mod tests {
                 );
             }
             assert!(r.notes.is_empty(), "glob {glob}: {:?}", r.notes);
+        }
+    }
+
+    fn mode(query: &str, mode: OutputMode) -> SearchTextArgs {
+        SearchTextArgs {
+            output_mode: Some(mode),
+            ..args(query)
+        }
+    }
+
+    #[test]
+    fn files_with_matches_names_each_file_once() {
+        let root = workspace("fileslist");
+        let r = search(&root, &mode("needle", OutputMode::FilesWithMatches));
+        let mut listed: Vec<&str> = r.text.lines().filter(|l| !l.starts_with('[')).collect();
+        listed.sort();
+        assert_eq!(listed, ["src/lib.rs", "src/main.rs"], "{}", r.text);
+        assert_eq!(r.files, 2);
+        // rg stopped reading each file at its first match.
+        assert_eq!(r.matches, 2);
+        assert!(r.hits.is_empty());
+        assert!(r.text.ends_with("[2 files with matches]"), "{}", r.text);
+    }
+
+    #[test]
+    fn in_the_list_modes_max_results_counts_files() {
+        let root = workspace("fileslimit");
+        for n in 0..5 {
+            fs::write(root.join(format!("src/extra{n}.rs")), "needle\nneedle\n").unwrap();
+        }
+        let listed = |max: u32, m: OutputMode| {
+            search(
+                &root,
+                &SearchTextArgs {
+                    max_results: Some(max),
+                    ..mode("needle", m)
+                },
+            )
+        };
+        for m in [OutputMode::FilesWithMatches, OutputMode::Count] {
+            let r = listed(3, m);
+            assert_eq!(r.files, 3, "{}", r.text);
+            assert_eq!(r.truncated_by, Some(Truncation::MaxResults), "{}", r.text);
+            assert!(
+                r.text.contains("[stopped at max_results files=3"),
+                "{}",
+                r.text
+            );
+            // Exactly as many files as asked for is a whole answer.
+            let r = listed(7, m);
+            assert_eq!(r.files, 7, "{}", r.text);
+            assert!(!r.truncated, "{}", r.text);
+        }
+    }
+
+    #[test]
+    fn count_gives_matching_lines_per_file() {
+        let root = workspace("count");
+        fs::write(root.join("src/twice.rs"), "needle needle\nneedle\nnone\n").unwrap();
+        let r = search(&root, &mode("needle", OutputMode::Count));
+        let mut lines: Vec<&str> = r.text.lines().filter(|l| !l.starts_with('[')).collect();
+        lines.sort();
+        // Two on one line is one matching line, as `rg --count` says.
+        assert_eq!(
+            lines,
+            ["src/lib.rs:1", "src/main.rs:2", "src/twice.rs:2"],
+            "{}",
+            r.text
+        );
+        assert_eq!((r.matches, r.files), (5, 3));
+        assert!(r.text.ends_with("[5 matches in 3 files]"), "{}", r.text);
+        assert!(!r.text.contains("let needle"), "{}", r.text);
+    }
+
+    #[test]
+    fn a_multiline_match_is_shown_line_by_line() {
+        let root = workspace("multiline");
+        fs::write(
+            root.join("src/call.rs"),
+            "fn f() {\n    spanning(1,\n        2);\n}\n",
+        )
+        .unwrap();
+        let r = search(
+            &root,
+            &SearchTextArgs {
+                regex: Some(true),
+                multiline: Some(true),
+                context_lines: Some(1),
+                ..args(r"spanning\(1,.*?\);")
+            },
+        );
+        assert_eq!(r.matches, 1, "{}", r.text);
+        assert!(
+            r.text
+                .contains("src/call.rs\n1-fn f() {\n2:    spanning(1,\n3:        2);\n4-}\n"),
+            "{}",
+            r.text
+        );
+        assert_eq!((r.hits[0].line, r.hits[0].column), (2, 5));
+
+        // A literal with a newline in it, too.
+        let literal = search(
+            &root,
+            &SearchTextArgs {
+                multiline: Some(true),
+                context_lines: Some(0),
+                ..args("(1,\n        2)")
+            },
+        );
+        assert_eq!(literal.matches, 1, "{}", literal.text);
+
+        // Without multiline rg refuses the newline, and it is the caller's
+        // to fix.
+        let e = err(&root, &args("(1,\n        2)"));
+        assert_eq!(e.code(), ErrorCode::InvalidArgs, "{e}");
+    }
+
+    #[test]
+    fn type_narrows_to_one_kind_of_file() {
+        let root = workspace("type");
+        fs::write(root.join("src/tool.py"), "needle = 1\n").unwrap();
+        fs::write(root.join("src/.dot.rs"), "needle in a dot rust file\n").unwrap();
+        let r = search(
+            &root,
+            &SearchTextArgs {
+                file_type: Some("py".into()),
+                ..args("needle")
+            },
+        );
+        assert_eq!(
+            r.hits.iter().map(|h| h.path.as_str()).collect::<Vec<_>>(),
+            ["src/tool.py"],
+            "{}",
+            r.text
+        );
+        // A type lets a dotfile of that type past --no-hidden; the trailing
+        // exclusion keeps it out.
+        let rust = search(
+            &root,
+            &SearchTextArgs {
+                file_type: Some("rust".into()),
+                ..args("needle")
+            },
+        );
+        assert!(rust.hits.iter().all(|h| h.path.ends_with(".rs")));
+        assert!(!rust.text.contains(".dot.rs"), "{}", rust.text);
+
+        for (file_type, glob) in [("nosuchtype", None), ("-x", None), ("", None)] {
+            let e = err(
+                &root,
+                &SearchTextArgs {
+                    file_type: Some(file_type.into()),
+                    glob,
+                    ..args("needle")
+                },
+            );
+            assert_eq!(e.code(), ErrorCode::InvalidArgs, "{file_type}: {e}");
+        }
+        let e = err(
+            &root,
+            &SearchTextArgs {
+                file_type: Some("rust".into()),
+                glob: Some("src/**".into()),
+                ..args("needle")
+            },
+        );
+        assert_eq!(e.code(), ErrorCode::InvalidArgs);
+        assert!(e.message().contains("cannot be combined"), "{e}");
+    }
+
+    #[test]
+    fn include_hidden_reaches_dotfiles_but_never_git() {
+        let root = workspace("hidden");
+        fs::create_dir_all(root.join(".github")).unwrap();
+        fs::write(root.join(".github/ci.yml"), "needle in a dot dir\n").unwrap();
+        for glob in [None, Some("**")] {
+            let r = search(
+                &root,
+                &SearchTextArgs {
+                    include_hidden: Some(true),
+                    glob: glob.map(str::to_string),
+                    ..args("needle")
+                },
+            );
+            let paths: BTreeSet<&str> = r.hits.iter().map(|h| h.path.as_str()).collect();
+            assert!(paths.contains(".hidden"), "{glob:?}: {}", r.text);
+            assert!(paths.contains(".github/ci.yml"), "{glob:?}: {}", r.text);
+            assert!(
+                paths.iter().all(|p| !p.starts_with(".git/")),
+                "{glob:?}: {}",
+                r.text
+            );
+            // rg itself stayed out of .git: nothing had to be dropped.
+            assert!(r.notes.is_empty(), "{glob:?}: {:?}", r.notes);
         }
     }
 
@@ -1011,6 +1376,54 @@ mod tests {
         assert_eq!(argv[end + 2], "src");
         assert_eq!(cmd.cwd.as_deref(), Some(root.path()));
         assert!(!cmd.program.to_string_lossy().contains("sh"));
+    }
+
+    #[test]
+    fn the_new_options_map_to_the_flags_they_name() {
+        let root = workspace("argvmodes");
+        let argv = |a: SearchTextArgs| -> Vec<String> {
+            Plan::new(&root, &a)
+                .unwrap()
+                .command(Path::new("/opt/homebrew/bin/rg"))
+                .args
+                .iter()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect()
+        };
+        let files = argv(mode("x", OutputMode::FilesWithMatches));
+        assert!(files.windows(2).any(|w| w == ["--max-count", "1"]));
+        assert!(
+            !files.contains(&"--context".to_string()),
+            "context is for lines: {files:?}"
+        );
+        let count = argv(mode("x", OutputMode::Count));
+        assert!(!count.contains(&"--max-count".to_string()), "{count:?}");
+        assert!(!count.contains(&"--context".to_string()), "{count:?}");
+
+        let multi = argv(SearchTextArgs {
+            multiline: Some(true),
+            ..args("x")
+        });
+        assert!(multi.contains(&"--multiline".to_string()), "{multi:?}");
+        assert!(
+            multi.contains(&"--multiline-dotall".to_string()),
+            "{multi:?}"
+        );
+
+        let typed = argv(SearchTextArgs {
+            file_type: Some("-x".into()),
+            ..args("x")
+        });
+        assert!(typed.contains(&"--type=-x".to_string()), "{typed:?}");
+
+        let hidden = argv(SearchTextArgs {
+            include_hidden: Some(true),
+            ..args("x")
+        });
+        assert!(hidden.contains(&"--hidden".to_string()), "{hidden:?}");
+        assert!(!hidden.contains(&"--no-hidden".to_string()), "{hidden:?}");
+        assert!(!hidden.contains(&"!.*".to_string()), "{hidden:?}");
+        assert!(hidden.contains(&"!.git".to_string()), "{hidden:?}");
     }
 
     #[test]

@@ -648,7 +648,7 @@ impl Server {
 
     #[tool(
         name = "search_text",
-        description = "Search the remote workspace for a string, or a regex if you ask for one. The search runs where the files are and only the matching lines come back. Files that .gitignore rules out, dotfiles and .git are never searched."
+        description = "Search the remote workspace for a string, or a regex if you ask for one. The search runs where the files are and only the results come back: matching lines by default, or with output_mode just the file names or a count per file. Files that .gitignore rules out are never searched, dotfiles only with include_hidden, and .git never."
     )]
     async fn search_text(
         &self,

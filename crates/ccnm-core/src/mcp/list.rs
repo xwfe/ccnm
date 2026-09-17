@@ -486,9 +486,9 @@ fn finish(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ccnm_testdir::TestDir;
     use crate::error::ErrorCode;
     use crate::process::SystemRunner;
+    use ccnm_testdir::TestDir;
     use std::fs;
 
     /// A workspace that looks like a real project: sources, a build

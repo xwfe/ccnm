@@ -208,8 +208,8 @@ fn boundary_before(buf: &[u8]) -> usize {
 mod tests {
     use super::*;
     use crate::error::ErrorCode;
-    use std::fs;
     use ccnm_testdir::TestDir;
+    use std::fs;
 
     fn session(name: &str, stdout: &[u8], stderr: &[u8]) -> (TestDir, String) {
         let dir = std::env::temp_dir().join(format!("ccnm-output-{}-{name}", std::process::id()));

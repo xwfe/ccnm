@@ -554,3 +554,15 @@ P37 交接时建议的修法是"拒绝能匹配目录的 glob"。开工前实测
 - **P38.5** 文档与门禁：协议第 5.2 节、使用说明、支持矩阵、P37 记录加后续说明；门禁同 P37.6。
 
 停止点：不改 `list_files`（它走 `git ls-files`，没有这个问题）；不优化"文件名部分是 `**`、没法缩小范围"时的扫描量（这时 rg 扫全部未忽略的文件、ccnm 丢掉不匹配的，受 60 秒超时约束）；不耗模型额度；不发版。
+
+### P39 — `view_image`：把 Runtime 上的图片交给模型
+
+**依赖 P38。v3 方案第 5 节第 3 步的第一项**（图片；PDF 和 notebook 另立阶段）。现状：原生 Read 能直接看图，ccnm 的 `read_file` 遇到二进制文件就拒绝，模型看不到项目里的截图、设计稿、测试产出的图。
+
+- **P39.1** 实测，零额度（toexec `evidence/v3-parity/media-surface/`）：Codex 0.154.0 用本机假模型真的调一次返回图片的 MCP 工具，分别在不开 Code Mode 和 ccnm 受管会话用的 Code Mode 下看工具结果变成什么；Claude Code 2.1.273 读打包代码，看 MCP 图片块怎么转换、有没有缩放和上限；MCP `resource` blob 在两边的下场。结论决定用哪种内容块、上限多少、ccnm 要不要自己缩放。
+- **P39.2** 工具：新增只读工具 `view_image`（`read` 与 `coding` 都给），参数 `path`，走和 `read_file` 同一套读路径策略。按文件头认 PNG / JPEG / GIF / WebP，返回一段说明文本加一个 MCP `image` 内容块。超过上限、不是这四种格式、目录、特殊文件都报 `CCNM_E_INVALID_ARGS`，并说清楚下一步（SVG 用 `read_file`，其余先用 `exec_command` 转换或缩小）。`read_file` 拒绝二进制时，是这四种图片的顺带指向 `view_image`。
+- **P39.3** 接线：加一个工具要动的全部地方——`session::MCP_TOOLS`（Claude 放行清单、Codex `enabled_tools`）、两份 `tools-list-*.json` 与 schema 的工具名、`provider_compat` 记为有据可查的差异、P11/P12 脚本及其测试里的只读工具清单、`external_mcp` / `cli` / `mcp_read_file` 集成测试、中立客户端。
+- **P39.4** 契约与文档：协议文档加一节（内容块形状、上限、两个 Host 的差异——Codex Code Mode 下模型要自己调 `image()`）、新增 `call-view-image-ok.json` 样例；`usage.md`、`support-matrix.md` 写明验到哪一步。
+- **P39.5** 门禁：同 P37.6。
+
+停止点：不在 Runtime 上缩放或转码图片（不加图像处理依赖；Claude Code 自己会缩放，依据见 P39.1）；不做 SVG 渲染、HEIC/BMP/TIFF 转换；不做 PDF、notebook；不耗模型额度，所以"模型拿到图后看得对不对"没验；不发版。

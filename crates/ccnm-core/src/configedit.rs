@@ -412,16 +412,18 @@ fn implicit_table() -> Table {
 mod tests {
     use super::*;
 
-    fn temp(test: &str) -> PathBuf {
+    /// Where a test's config.toml goes, and the directory that holds it.
+    fn temp(test: &str) -> (ccnm_testdir::TestDir, PathBuf) {
         let dir = std::env::temp_dir().join(format!("ccnm-cfgedit-{}-{test}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        dir.join("config.toml")
+        let path = dir.join("config.toml");
+        (ccnm_testdir::TestDir::adopt(dir), path)
     }
 
     #[test]
     fn a_config_can_be_created_from_nothing_and_loads_back() {
-        let path = temp("create");
+        let (_dir, path) = temp("create");
         let mut edit = Edit::open(&path).unwrap();
         assert!(!edit.existed());
         let mut changes = Changes::default();
@@ -450,7 +452,7 @@ mod tests {
     /// one they stop trusting with the file.
     #[test]
     fn comments_and_unrelated_settings_survive_an_edit() {
-        let path = temp("comments");
+        let (_dir, path) = temp("comments");
         std::fs::write(
             &path,
             "this = \"runtime\"\n\
@@ -485,7 +487,7 @@ mod tests {
     /// the same thing twice.
     #[test]
     fn setting_what_is_already_set_changes_nothing() {
-        let path = temp("idempotent");
+        let (_dir, path) = temp("idempotent");
         let mut first = Edit::open(&path).unwrap();
         let mut changes = Changes::default();
         first.set_this("runtime", &mut changes);
@@ -509,7 +511,7 @@ mod tests {
 
     #[test]
     fn changing_a_setting_reports_both_values() {
-        let path = temp("change");
+        let (_dir, path) = temp("change");
         let mut edit = Edit::open(&path).unwrap();
         let mut changes = Changes::default();
         edit.set_this("runtime", &mut changes);
@@ -527,7 +529,7 @@ mod tests {
 
     #[test]
     fn removing_a_workspace_that_is_not_there_is_not_an_error() {
-        let path = temp("remove");
+        let (_dir, path) = temp("remove");
         let mut edit = Edit::open(&path).unwrap();
         let mut changes = Changes::default();
         edit.set_this("runtime", &mut changes);
@@ -551,7 +553,7 @@ mod tests {
     /// command.
     #[test]
     fn an_edit_that_breaks_the_config_writes_nothing() {
-        let path = temp("invalid");
+        let (_dir, path) = temp("invalid");
         let mut edit = Edit::open(&path).unwrap();
         let mut changes = Changes::default();
         // A workspace whose agent_node is not defined anywhere.

@@ -859,6 +859,7 @@ pub fn canonical_root(root: &Path) -> Result<PathBuf> {
 mod tests {
     use super::*;
     use crate::provider::AgentProvider;
+    use ccnm_testdir::TestDir;
 
     fn config(root: &Path) -> Config {
         let toml = format!(
@@ -893,14 +894,14 @@ agent = {{ node = "agent", instance = "claude-main" }}
         }
     }
 
-    fn workspace_dir(name: &str) -> PathBuf {
+    fn workspace_dir(name: &str) -> TestDir {
         let dir = std::env::temp_dir()
             .canonicalize()
             .unwrap()
             .join(format!("ccnm-runtime-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("project")).unwrap();
-        dir
+        TestDir::adopt(dir)
     }
 
     /// A workspace with an `external_mcp` line, and one without.

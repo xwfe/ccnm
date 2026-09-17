@@ -897,16 +897,20 @@ mod tests {
     use super::*;
     use crate::process::{FakeRunner, Output};
     use crate::session::RuntimeLink;
+    use ccnm_testdir::TestDir;
     use std::thread;
 
     /// Socket paths are length-limited, so tests stay under /tmp rather
     /// than in a long temp_dir() path.
-    fn socket(test: &str) -> PathBuf {
-        let dir = PathBuf::from(format!("/tmp/ccnm-ctl-{}", std::process::id()));
+    ///
+    /// One directory per test, not one per process: a directory the tests
+    /// share cannot be removed by whichever of them finishes first.
+    fn socket(test: &str) -> (TestDir, PathBuf) {
+        let dir = PathBuf::from(format!("/tmp/ccnm-ctl-{}-{test}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join(format!("{test}.sock"));
-        let _ = std::fs::remove_file(&path);
-        path
+        let path = dir.join("c.sock");
+        (TestDir::adopt(dir), path)
     }
 
     #[test]
@@ -1019,7 +1023,7 @@ mod tests {
     }
 
     /// A session directory with a real `session.json` in the given mode.
-    fn session_dir(test: &str, mode: session::Mode) -> PathBuf {
+    fn session_dir(test: &str, mode: session::Mode) -> TestDir {
         let dir = std::env::temp_dir().join(format!("ccnm-ctl-sess-{}-{test}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -1047,7 +1051,7 @@ mod tests {
             serde_json::to_string(&spec).unwrap(),
         )
         .unwrap();
-        dir
+        TestDir::adopt(dir)
     }
 
     /// An interactive session must be started *by tmux*, from here: a tmux
@@ -1068,7 +1072,7 @@ mod tests {
         let req = Request::new(RequestBody::Start {
             identity: None,
             provider: Default::default(),
-            session_dir: dir.clone(),
+            session_dir: dir.to_path_buf(),
         });
         let ReplyBody::Started { pid } = answer(&req, &tools(&fake, true)).body else {
             panic!("expected a started reply")
@@ -1134,7 +1138,7 @@ mod tests {
         fake.push(Output::exited(0, "")); // has-session: already there
         let req = Request::new(RequestBody::Start {
             identity: None,
-            session_dir: dir,
+            session_dir: dir.to_path_buf(),
             provider: Default::default(),
         });
         let ReplyBody::Error(report) = answer(&req, &tools(&fake, true)).body else {
@@ -1154,7 +1158,7 @@ mod tests {
         tools.tmux = None;
         let req = Request::new(RequestBody::Start {
             identity: None,
-            session_dir: dir,
+            session_dir: dir.to_path_buf(),
             provider: Default::default(),
         });
         let ReplyBody::Error(report) = answer(&req, &tools).body else {
@@ -1348,7 +1352,7 @@ mod tests {
     /// other, JSON both ways.
     #[test]
     fn a_request_and_its_reply_cross_the_socket() {
-        let path = socket("roundtrip");
+        let (_dir, path) = socket("roundtrip");
         let listener = Listener::bind(&path).unwrap();
         let mode = std::fs::metadata(&path).unwrap().permissions().mode();
         assert_eq!(
@@ -1372,7 +1376,7 @@ mod tests {
 
     #[test]
     fn a_stale_socket_is_reclaimed_but_a_live_one_is_not() {
-        let path = socket("stale");
+        let (_dir, path) = socket("stale");
         // What a SIGTERMed controller leaves behind: the file, no listener.
         std::fs::write(&path, b"").unwrap();
         let listener = Listener::bind(&path).expect("a corpse must not block a restart");
@@ -1386,7 +1390,7 @@ mod tests {
 
     #[test]
     fn a_dead_controller_and_a_missing_one_get_different_advice() {
-        let path = socket("absent");
+        let (_dir, path) = socket("absent");
         let err = context(&path).unwrap_err();
         assert_eq!(err.code(), ErrorCode::NotReady);
         assert!(err.message().contains("no socket at"), "{err}");
@@ -1404,7 +1408,7 @@ mod tests {
     /// survives to serve the next one.
     #[test]
     fn garbage_is_answered_with_an_error_and_does_not_kill_the_loop() {
-        let path = socket("garbage");
+        let (_dir, path) = socket("garbage");
         let listener = Listener::bind(&path).unwrap();
         let served = thread::spawn(move || {
             let fake = FakeRunner::new();
@@ -1430,7 +1434,7 @@ mod tests {
 
     #[test]
     fn an_oversized_message_is_refused_before_it_is_parsed() {
-        let path = socket("oversized");
+        let (_dir, path) = socket("oversized");
         let listener = Listener::bind(&path).unwrap();
         let served = thread::spawn(move || {
             let fake = FakeRunner::new();
@@ -1456,7 +1460,7 @@ mod tests {
 
     #[test]
     fn a_protocol_mismatch_is_a_version_error() {
-        let path = socket("protocol");
+        let (_dir, path) = socket("protocol");
         let listener = Listener::bind(&path).unwrap();
         let served = thread::spawn(move || {
             let fake = FakeRunner::new();

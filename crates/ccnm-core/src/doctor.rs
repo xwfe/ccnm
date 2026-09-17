@@ -1429,6 +1429,7 @@ mod tests {
     use super::*;
     use crate::error::Reported;
     use crate::process::{FakeRunner, Output};
+    use ccnm_testdir::TestDir;
 
     fn fixture(name: &str) -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -1439,7 +1440,7 @@ mod tests {
     /// A per-test directory with `root/` (created only if `with_root`), a
     /// fake `home/.local/bin/ccnm` (created only if `with_bin`) and a
     /// config pointing at them.
-    fn setup(test: &str, with_root: bool, with_bin: bool) -> (PathBuf, PathBuf) {
+    fn setup(test: &str, with_root: bool, with_bin: bool) -> (TestDir, PathBuf) {
         let dir = std::env::temp_dir().join(format!("ccnm-doctor-{}-{test}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(control(&dir));
@@ -1465,7 +1466,8 @@ mod tests {
             ),
         )
         .unwrap();
-        (dir, config)
+        let sockets = control(&dir);
+        (TestDir::adopt(dir).also(sockets), config)
     }
 
     /// ControlPath may expand to at most 103 bytes and macOS `temp_dir()`
@@ -1731,6 +1733,7 @@ mod tests {
     #[test]
     fn an_external_mcp_only_workspace_is_diagnosed_not_called_a_bug() {
         let dir = std::env::temp_dir().join(format!("ccnm-doctor-{}-extonly", std::process::id()));
+        let _cleanup = TestDir::adopt(&dir);
         let _ = std::fs::remove_dir_all(&dir);
         let root = dir.join("project");
         std::fs::create_dir_all(&root).unwrap();

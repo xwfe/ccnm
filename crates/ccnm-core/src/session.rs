@@ -786,6 +786,7 @@ mod tests {
     use super::*;
     use crate::process::{FakeRunner, Output};
     use crate::protocol::payload;
+    use ccnm_testdir::TestDir;
 
     /// The two facts are reported separately because they disagree: a
     /// tmux session that says `Background` can still reach the Keychain,
@@ -884,11 +885,11 @@ mod tests {
             .with_ccnm_bin("~/.local/bin/ccnm")
     }
 
-    fn temp(test: &str) -> PathBuf {
+    fn temp(test: &str) -> TestDir {
         let dir = std::env::temp_dir().join(format!("ccnm-session-{}-{test}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
-        dir
+        TestDir::adopt(dir)
     }
 
     #[test]
@@ -1095,7 +1096,7 @@ mod tests {
         fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
         // cwd in the spec does not exist on this machine; point it here.
         let mut spec = spec();
-        spec.cwd = state.clone();
+        spec.cwd = state.to_path_buf();
         fs::write(dir.meta(), pretty(&spec).unwrap()).unwrap();
 
         let req = SuperviseRequest::new(dir.path().to_path_buf(), fake);

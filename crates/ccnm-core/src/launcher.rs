@@ -557,12 +557,13 @@ mod tests {
     use crate::protocol::run::StartReport;
     use crate::session::{self, Mode};
     use crate::work;
+    use ccnm_testdir::TestDir;
 
-    fn temp(test: &str) -> PathBuf {
+    fn temp(test: &str) -> TestDir {
         let dir = std::env::temp_dir().join(format!("ccnm-launcher-{}-{test}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        dir
+        TestDir::adopt(dir)
     }
 
     /// ControlPath expands to at most 103 bytes and macOS `temp_dir()` is

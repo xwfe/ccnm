@@ -849,7 +849,7 @@ mod provider_tests;
 mod tests {
     use super::*;
     use crate::process::{FakeRunner, Output};
-    use std::path::PathBuf;
+    use ccnm_testdir::TestDir;
 
     fn audit(expected: Option<&str>, home: &Path, runner: &dyn ProcessRunner) -> Audit {
         audit_with_environment(expected, home, runner, &[], &[])
@@ -863,14 +863,14 @@ mod tests {
         runner.push(Output::exited(0, format!("{groups}\n")));
     }
 
-    fn empty_home(name: &str) -> PathBuf {
+    fn empty_home(name: &str) -> TestDir {
         let dir = std::env::temp_dir()
             .canonicalize()
             .unwrap()
             .join(format!("ccnm-safety-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join(".ssh")).unwrap();
-        dir
+        TestDir::adopt(dir)
     }
 
     fn find<'a>(audit: &'a Audit, check: &str) -> &'a Finding {

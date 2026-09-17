@@ -257,6 +257,7 @@ pub fn parse_marker(instructions: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ccnm_testdir::TestDir;
     use std::fs;
 
     /// The three places Claude Code itself keeps project instructions get
@@ -266,6 +267,7 @@ mod tests {
     #[test]
     fn the_projects_other_instruction_files_are_named_not_carried() {
         let root = std::env::temp_dir().join(format!("ccnm-named-{}", std::process::id()));
+        let _cleanup = TestDir::adopt(&root);
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join(".claude/rules")).unwrap();
         fs::create_dir_all(root.join(".claude/skills/deploy")).unwrap();
@@ -306,6 +308,7 @@ mod tests {
     #[test]
     fn naming_is_bounded_and_takes_its_room_from_the_projected_file() {
         let root = std::env::temp_dir().join(format!("ccnm-named-many-{}", std::process::id()));
+        let _cleanup = TestDir::adopt(&root);
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join(".claude/rules")).unwrap();
         for n in 0..200 {
@@ -349,6 +352,7 @@ mod tests {
     #[test]
     fn executable_project_config_is_never_mentioned() {
         let root = std::env::temp_dir().join(format!("ccnm-named-exec-{}", std::process::id()));
+        let _cleanup = TestDir::adopt(&root);
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join(".claude/hooks")).unwrap();
         fs::write(
@@ -367,11 +371,11 @@ mod tests {
         assert!(!text.contains("mcp.json"), "{text}");
     }
 
-    fn temp(test: &str) -> std::path::PathBuf {
+    fn temp(test: &str) -> TestDir {
         let dir = std::env::temp_dir().join(format!("ccnm-ctx-{}-{test}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        dir
+        TestDir::adopt(dir)
     }
 
     #[test]

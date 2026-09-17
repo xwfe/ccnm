@@ -2113,6 +2113,7 @@ mod tests {
     use super::*;
     use crate::process::{Cmd, FakeRunner, Output};
     use crate::protocol::hello::PathStatus;
+    use ccnm_testdir::TestDir;
 
     /// What an Agent Node has on disk: which node it is, and the one alias
     /// it dials the projects by. Every value is non-default, so a code
@@ -2131,12 +2132,13 @@ mod tests {
         Config::parse("this = \"agent\"\n[nodes.agent]\n").unwrap()
     }
 
-    fn temp(test: &str) -> PathBuf {
+    fn temp(test: &str) -> TestDir {
         let dir = std::env::temp_dir().join(format!("ccnm-work-{}-{test}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(control(&dir));
         std::fs::create_dir_all(&dir).unwrap();
-        dir
+        let sockets = control(&dir);
+        TestDir::adopt(dir).also(sockets)
     }
 
     /// ControlPath may expand to at most 103 bytes and macOS `temp_dir()`
@@ -2295,7 +2297,7 @@ mod tests {
             local: None,
             config: agent_config(),
             runner: &fake,
-            state: dir.clone(),
+            state: dir.to_path_buf(),
             control_dir: control(&dir),
             agents: crate::provider::AgentBinaries::with_claude(Some(PathBuf::from(
                 "/usr/local/bin/claude",
@@ -2400,7 +2402,7 @@ mod tests {
             local: None,
             config: agent_config(),
             runner: &fake,
-            state: dir.clone(),
+            state: dir.to_path_buf(),
             control_dir: control(&dir),
             agents: crate::provider::AgentBinaries::with_claude(None),
             tmux: None,
@@ -2434,7 +2436,7 @@ mod tests {
             local: None,
             config: agent_config(),
             runner: &fake,
-            state: dir.clone(),
+            state: dir.to_path_buf(),
             control_dir: control(&dir),
             agents: crate::provider::AgentBinaries::with_claude(None),
             tmux: None,
@@ -2473,7 +2475,7 @@ mod tests {
             local: None,
             config: agent_config(),
             runner: &runner,
-            state: dir.clone(),
+            state: dir.to_path_buf(),
             control_dir: control(&dir),
             agents: crate::provider::AgentBinaries::with_claude(None),
             tmux: None,
@@ -2522,7 +2524,7 @@ mod tests {
             local: None,
             config: agent_config(),
             runner: &fake,
-            state: dir.clone(),
+            state: dir.to_path_buf(),
             control_dir: control(&dir),
             agents: crate::provider::AgentBinaries::with_claude(None),
             tmux: None,
@@ -2562,7 +2564,7 @@ mod tests {
             permission_mode: crate::config::PermissionMode::default(),
             mode: Mode::Interactive { prompt: None },
             timeout_secs: 0,
-            cwd: dir.clone(),
+            cwd: dir.to_path_buf(),
             codex_exec_server: false,
         };
         std::fs::write(sdir.meta(), serde_json::to_string(&spec).unwrap()).unwrap();
@@ -2629,7 +2631,7 @@ mod tests {
             local: None,
             config: agent_config(),
             runner: &fake,
-            state: dir.clone(),
+            state: dir.to_path_buf(),
             control_dir: control(&dir),
             agents: crate::provider::AgentBinaries::with_claude(None),
             tmux: None,
@@ -2752,7 +2754,7 @@ mod tests {
             permission_mode: crate::config::PermissionMode::default(),
             mode: Mode::Interactive { prompt: None },
             timeout_secs: 0,
-            cwd: dir.clone(),
+            cwd: dir.to_path_buf(),
             codex_exec_server: false,
         };
         std::fs::write(sdir.meta(), serde_json::to_string(&spec).unwrap()).unwrap();
@@ -2982,7 +2984,7 @@ mod tests {
                 permission_mode: crate::config::PermissionMode::default(),
                 mode,
                 timeout_secs: 600,
-                cwd: dir.clone(),
+                cwd: dir.to_path_buf(),
                 codex_exec_server: false,
             };
             std::fs::write(sdir.meta(), serde_json::to_string(&spec).unwrap()).unwrap();
@@ -3177,7 +3179,7 @@ mod tests {
             local: None,
             config: colocated_config(),
             runner: &caller,
-            state: dir.clone(),
+            state: dir.to_path_buf(),
             control_dir: control(&dir),
             agents: crate::provider::AgentBinaries::with_claude(None),
             tmux: None,
@@ -3205,7 +3207,7 @@ mod tests {
             local: None,
             config: agent_config(),
             runner: &FakeRunner::new(),
-            state: dir.clone(),
+            state: dir.to_path_buf(),
             control_dir: control(&dir),
             agents: crate::provider::AgentBinaries::with_claude(None),
             tmux: None,
@@ -3242,7 +3244,7 @@ mod tests {
             local: None,
             config: agent_config(),
             runner: &FakeRunner::new(),
-            state: dir.clone(),
+            state: dir.to_path_buf(),
             control_dir: control(&dir),
             agents: crate::provider::AgentBinaries::with_claude(None),
             tmux: None,
@@ -3285,7 +3287,7 @@ mod tests {
             config: agent_config(),
             local: None,
             runner: &runner,
-            state: dir.clone(),
+            state: dir.to_path_buf(),
             control_dir: control(&dir),
             agents: crate::provider::AgentBinaries::with_claude(None),
             tmux: None,
@@ -3360,7 +3362,7 @@ mod tests {
             local: None,
             config: agent_config(),
             runner: &caller,
-            state: dir.clone(),
+            state: dir.to_path_buf(),
             control_dir: control(&dir),
             agents: crate::provider::AgentBinaries::with_claude(None),
             tmux: None,
@@ -3485,7 +3487,7 @@ mod tests {
             local: None,
             config: agent_config(),
             runner: &fake,
-            state: dir.clone(),
+            state: dir.to_path_buf(),
             control_dir: control(&dir),
             agents: crate::provider::AgentBinaries::with_claude(Some(PathBuf::from(
                 "/usr/local/bin/claude",

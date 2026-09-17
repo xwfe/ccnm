@@ -12,6 +12,7 @@ type Change<'a> = Box<dyn Fn(&mut Value) + 'a>;
 struct Ws {
     root: PathBuf,
     outside: PathBuf,
+    _dir: ccnm_testdir::TestDir,
 }
 
 fn ws(name: &str) -> Ws {
@@ -27,6 +28,7 @@ fn ws(name: &str) -> Ws {
     Ws {
         root: dir.join("ws"),
         outside: dir.join("outside"),
+        _dir: ccnm_testdir::TestDir::adopt(dir),
     }
 }
 

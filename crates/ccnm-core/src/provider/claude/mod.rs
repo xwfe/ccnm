@@ -510,6 +510,7 @@ mod tests {
     #[test]
     fn locate_prefers_path_then_known_dirs() {
         let dir = std::env::temp_dir().join(format!("ccnm-claude-locate-{}", std::process::id()));
+        let _cleanup = ccnm_testdir::TestDir::adopt(&dir);
         let _ = std::fs::remove_dir_all(&dir);
         let bin_dir = dir.join("bin");
         std::fs::create_dir_all(&bin_dir).unwrap();

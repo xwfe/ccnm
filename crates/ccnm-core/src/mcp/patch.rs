@@ -1,9 +1,12 @@
 //! `apply_patch`: the only way source in the workspace changes.
 //!
-//! There is deliberately no `write_file(full_content)`. A whole-file write
-//! costs the size of the file on every edit, which is the opposite of what
-//! this architecture is for, and it silently discards anything that changed
-//! since the model last looked.
+//! Edits are exact replacements, below. Replacing a whole file is the
+//! `write` op (P37, for parity with Claude Code's Write): it costs the size
+//! of the file, so it is for rewrites and generated files rather than
+//! everyday edits, and it carries a `version` like every other change to an
+//! existing file, so it cannot silently discard what changed since the
+//! model last looked. Before it the only way was `delete` then `add`, two
+//! calls with no file in between.
 //!
 //! # The patch is a list of exact replacements
 //!
@@ -115,6 +118,8 @@ pub enum Op {
     Add,
     /// Replace exact strings inside an existing file.
     Update,
+    /// Replace the whole content of an existing file.
+    Write,
     Delete,
     /// Rename. The content is untouched.
     Move,
@@ -125,6 +130,7 @@ impl Op {
         match self {
             Op::Add => "add",
             Op::Update => "update",
+            Op::Write => "write",
             Op::Delete => "delete",
             Op::Move => "move",
         }
@@ -152,11 +158,11 @@ pub struct FilePatch {
     /// Destination, for `move`.
     #[serde(default)]
     pub to: Option<String>,
-    /// The `version` `read_file` returned. Required for update, delete and
-    /// move; the patch is refused if the file has changed since.
+    /// The `version` `read_file` returned. Required for update, write,
+    /// delete and move; the patch is refused if the file has changed since.
     #[serde(default)]
     pub version: Option<String>,
-    /// Whole content, for `add`.
+    /// Whole content, for `add` and `write`.
     #[serde(default)]
     pub content: Option<String>,
     /// Replacements, for `update`. Order does not matter when each one
@@ -333,6 +339,7 @@ fn plan_one(root: &Path, file: &FilePatch) -> Result<Planned> {
     match op {
         Op::Add => plan_add(file, target, rel),
         Op::Update => plan_update(file, target, rel),
+        Op::Write => plan_write(file, target, rel),
         Op::Delete => plan_delete(file, target, rel),
         Op::Move => plan_move(root, file, target, rel),
     }
@@ -341,7 +348,7 @@ fn plan_one(root: &Path, file: &FilePatch) -> Result<Planned> {
 fn plan_add(file: &FilePatch, target: WriteTarget, rel: String) -> Result<Planned> {
     if target.exists() {
         return Err(Error::invalid_args(format!(
-            "{rel} already exists; use op \"update\" to change it"
+            "{rel} already exists; use op \"update\" to change part of it or \"write\" to replace all of it"
         )));
     }
     let content = file
@@ -382,7 +389,7 @@ fn plan_update(file: &FilePatch, target: WriteTarget, rel: String) -> Result<Pla
     }
     if file.content.is_some() {
         return Err(Error::invalid_args(format!(
-            "{rel}: op \"update\" takes edits, not content; apply_patch never writes a whole file"
+            "{rel}: op \"update\" takes edits, not content; to replace the whole file use op \"write\""
         )));
     }
     let text = String::from_utf8(original.clone()).map_err(|_| {
@@ -403,6 +410,44 @@ fn plan_update(file: &FilePatch, target: WriteTarget, rel: String) -> Result<Pla
         original: Some(original),
         mode: Some(meta.permissions()),
         edits: applied,
+        before_bytes,
+        after_bytes,
+        new_dirs: Vec::new(),
+    })
+}
+
+/// Only an existing file: creating one is `add`, and a `write` with a
+/// version for a file that is no longer there is a stale baseline, not a
+/// request to create it.
+fn plan_write(file: &FilePatch, target: WriteTarget, rel: String) -> Result<Planned> {
+    if !target.exists() {
+        return Err(Error::invalid_args(format!(
+            "{rel} does not exist; use op \"add\" to create it"
+        )));
+    }
+    let (original, meta) = read_existing(&target, &rel)?;
+    check_version(file, &meta, &rel)?;
+    let content = file
+        .content
+        .as_ref()
+        .ok_or_else(|| Error::invalid_args(format!("{rel}: op \"write\" needs content")))?;
+    if file.edits.is_some() {
+        return Err(Error::invalid_args(format!(
+            "{rel}: op \"write\" takes content, not edits; to change part of the file use op \"update\""
+        )));
+    }
+    let before_bytes = original.len() as u64;
+    let after_bytes = content.len() as u64;
+    Ok(Planned {
+        op: Op::Write,
+        rel,
+        abs: target.abs().to_path_buf(),
+        to_rel: None,
+        to_abs: None,
+        new_content: Some(content.as_bytes().to_vec()),
+        original: Some(original),
+        mode: Some(meta.permissions()),
+        edits: 0,
         before_bytes,
         after_bytes,
         new_dirs: Vec::new(),
@@ -1401,7 +1446,7 @@ fn commit(staged: &[Staged], journal: Option<&Journal>) -> Result<Vec<Option<Str
 fn commit_one(one: &Staged) -> Result<Option<String>> {
     let planned = &one.planned;
     match planned.op {
-        Op::Add | Op::Update => {
+        Op::Add | Op::Update | Op::Write => {
             let temp = one
                 .new_temp
                 .as_ref()
@@ -1446,7 +1491,7 @@ fn rollback(committed: &[Staged]) -> std::result::Result<(), String> {
         let outcome = match planned.op {
             // The file did not exist before; removing it restores that.
             Op::Add => std::fs::remove_file(&planned.abs).map_err(|e| e.to_string()),
-            Op::Update | Op::Delete => match &one.backup {
+            Op::Update | Op::Write | Op::Delete => match &one.backup {
                 Some(backup) => std::fs::rename(backup, &planned.abs).map_err(|e| e.to_string()),
                 None => Err("no backup was staged".to_string()),
             },
@@ -1499,6 +1544,10 @@ fn report<'a>(
                 if change.edits == 1 { "" } else { "s" },
                 change.before_bytes,
                 change.after_bytes
+            ),
+            "write" => format!(
+                "write  {} ({} -> {} bytes)",
+                change.path, change.before_bytes, change.after_bytes
             ),
             "delete" => format!("delete {}", change.path),
             _ => format!(
@@ -3586,6 +3635,163 @@ mod tests {
             .filter(|n| n.starts_with(".ccnm-"))
             .collect();
         assert!(leftovers.is_empty(), "{leftovers:?}");
+    }
+
+    fn write(path: &str, version: Option<&str>, content: &str) -> FilePatch {
+        FilePatch {
+            op: Some(Op::Write),
+            path: path.to_string(),
+            version: version.map(str::to_string),
+            content: Some(content.to_string()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn write_replaces_a_whole_file_and_keeps_its_permissions() {
+        let root = workspace("write");
+        let script = root.join("run.sh");
+        fs::write(&script, "#!/bin/sh\necho hi\n").unwrap();
+        let mut perms = fs::metadata(&script).unwrap().permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+        fs::set_permissions(&script, perms).unwrap();
+
+        let r = apply(
+            &root,
+            vec![write(
+                "run.sh",
+                Some(&version(&root, "run.sh")),
+                "#!/bin/sh\necho rewritten\n",
+            )],
+        );
+        assert_eq!(text(&root, "run.sh"), "#!/bin/sh\necho rewritten\n");
+        let mode =
+            std::os::unix::fs::PermissionsExt::mode(&fs::metadata(&script).unwrap().permissions());
+        assert_eq!(mode & 0o777, 0o755, "the script stopped being executable");
+        assert_eq!(r.files[0].op, "write");
+        assert_eq!((r.files[0].before_bytes, r.files[0].after_bytes), (18, 25));
+        // The version it hands back is the one the next change needs.
+        assert_eq!(r.files[0].version, Some(version(&root, "run.sh")));
+        assert!(
+            r.text
+                .starts_with("write  run.sh (18 -> 25 bytes) version "),
+            "{}",
+            r.text
+        );
+    }
+
+    #[test]
+    fn write_needs_a_version_that_is_still_current() {
+        let root = workspace("write-stale");
+        let before = text(&root, "src/main.rs");
+        let err = fails(&root, vec![write("src/main.rs", None, "x\n")]);
+        assert_eq!(err.code(), ErrorCode::InvalidArgs);
+        assert!(err.message().contains("version is required"), "{err}");
+
+        let seen = version(&root, "src/main.rs");
+        // Someone else writes after the model read it.
+        std::thread::sleep(Duration::from_millis(20));
+        fs::write(root.join("src/main.rs"), "fn main() { changed(); }\n").unwrap();
+        let err = fails(&root, vec![write("src/main.rs", Some(&seen), "x\n")]);
+        assert_eq!(err.code(), ErrorCode::StaleEpoch, "{err}");
+        assert_ne!(text(&root, "src/main.rs"), before);
+        assert_eq!(text(&root, "src/main.rs"), "fn main() { changed(); }\n");
+    }
+
+    #[test]
+    fn write_is_only_for_a_file_that_exists_and_only_takes_content() {
+        let root = workspace("write-shape");
+        let err = fails(&root, vec![write("src/new.rs", None, "x\n")]);
+        assert_eq!(err.code(), ErrorCode::InvalidArgs);
+        assert!(err.message().contains("use op \"add\""), "{err}");
+        assert!(!root.join("src/new.rs").exists());
+
+        let v = version(&root, "src/main.rs");
+        let err = fails(
+            &root,
+            vec![FilePatch {
+                content: None,
+                ..write("src/main.rs", Some(&v), "")
+            }],
+        );
+        assert!(err.message().contains("needs content"), "{err}");
+        let err = fails(
+            &root,
+            vec![FilePatch {
+                edits: Some(vec![Edit {
+                    old: "x".into(),
+                    new: "y".into(),
+                    replace_all: None,
+                }]),
+                ..write("src/main.rs", Some(&v), "whole\n")
+            }],
+        );
+        assert!(err.message().contains("not edits"), "{err}");
+        // And the hints the other ops give now point at it.
+        let err = fails(
+            &root,
+            vec![FilePatch {
+                op: Some(Op::Add),
+                path: "src/main.rs".into(),
+                content: Some("x\n".into()),
+                ..Default::default()
+            }],
+        );
+        assert!(err.message().contains("\"write\""), "{err}");
+    }
+
+    #[test]
+    fn a_failed_patch_puts_a_written_file_back() {
+        let root = workspace("write-rollback");
+        fs::create_dir(root.join("locked")).unwrap();
+        let main_before = text(&root, "src/main.rs");
+        let main_version = version(&root, "src/main.rs");
+        let lib_version = version(&root, "src/lib.rs");
+        lock(&root.join("locked"));
+        if !cannot_write_here(&root.join("locked")) {
+            unlock(&root.join("locked"));
+            return;
+        }
+        // Same trick as a_commit_failure_rolls_the_earlier_files_back: the
+        // move is the one change that gets past staging and then fails.
+        let err = fails(
+            &root,
+            vec![
+                write("src/main.rs", Some(&main_version), "replaced\n"),
+                FilePatch {
+                    op: Some(Op::Move),
+                    path: "src/lib.rs".into(),
+                    to: Some("locked/lib.rs".into()),
+                    version: Some(lib_version),
+                    ..Default::default()
+                },
+            ],
+        );
+        unlock(&root.join("locked"));
+        assert!(err.message().contains("rolled back"), "{err}");
+        assert_eq!(text(&root, "src/main.rs"), main_before);
+    }
+
+    #[test]
+    fn a_dry_run_write_changes_nothing() {
+        let root = workspace("write-dry");
+        let before = text(&root, "src/lib.rs");
+        let r = apply_patch(
+            &root,
+            None,
+            &ApplyPatchArgs {
+                files: vec![write(
+                    "src/lib.rs",
+                    Some(&version(&root, "src/lib.rs")),
+                    "gone\n",
+                )],
+                dry_run: Some(true),
+            },
+        )
+        .unwrap();
+        assert!(r.dry_run);
+        assert_eq!(r.files[0].op, "write");
+        assert_eq!(text(&root, "src/lib.rs"), before);
     }
 
     #[test]

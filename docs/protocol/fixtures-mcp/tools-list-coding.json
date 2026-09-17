@@ -158,7 +158,7 @@
         },
         {
           "name": "apply_patch",
-          "description": "Change files in the remote workspace: add, update, delete or move. This is the only way to write. An update replaces exact strings and must carry the version read_file returned, so an edit built on content that has since changed is refused. Either every file in the patch is applied or none is.",
+          "description": "Change files in the remote workspace: add, update, write, delete or move. This is the only way to write. An update replaces exact strings and a write replaces a whole existing file; like delete and move, both must carry the version read_file returned, so a change built on content that has since changed is refused. Either every file in the patch is applied or none is.",
           "inputSchema": {
             "type": "object",
             "properties": {

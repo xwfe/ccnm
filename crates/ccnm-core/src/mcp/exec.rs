@@ -63,6 +63,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::{Error, ErrorCode, Result};
 use crate::mcp::path;
 use crate::mcp::retention::{Output, Run};
+use crate::mcp::sandbox::{self, Sandbox};
 use crate::mcp::truncate_bytes;
 use crate::process::{Cmd, run_captured};
 
@@ -152,14 +153,19 @@ pub fn exec_command(
         root,
         &Output::new(state, session),
         args,
+        None,
     )
 }
 
+/// `sandbox` is the workspace's OS sandbox when its config asks for one
+/// (`exec_sandbox = "codex"`, P33); the command then runs behind
+/// [`Sandbox::wrap`] and the result says so.
 pub(crate) fn exec_command_in(
     provider: crate::provider::AgentProvider,
     root: &Path,
     output: &Output,
     args: &ExecCommandArgs,
+    sandbox: Option<&Sandbox>,
 ) -> Result<ExecResult> {
     if args.cmd.is_empty() {
         return Err(Error::invalid_args(
@@ -201,9 +207,35 @@ pub(crate) fn exec_command_in(
         .timeout(Duration::from_millis(timeout_ms));
     let _ = provider; // Runtime protection covers all known Agents, not this selection.
     cmd = crate::safety::environment::runtime_child(cmd);
+    if let Some(sandbox) = sandbox {
+        if !cwd_abs.is_dir() {
+            return Err(Error::new(
+                ErrorCode::WrongWorkspace,
+                workspace_gone(&cwd_rel),
+            ));
+        }
+        // Inside the wrapper a missing program fails in the sandbox
+        // launcher and would come back as a command result with exit 71;
+        // bare, it is a dependency error. Keep it the dependency error.
+        if sandbox::locate(&args.cmd[0], &cwd_abs, std::env::var_os("PATH").as_deref()).is_none() {
+            return Err(Error::dependency(format!(
+                "{} is not installed on the Runtime Node, or is not on its PATH",
+                args.cmd[0]
+            )));
+        }
+        cmd = sandbox.wrap(cmd, &cwd_abs);
+    }
     let captured = run_captured(&cmd, stdout, stderr).map_err(|e| {
         if !e.message().starts_with("cannot spawn") {
             return e;
+        }
+        // With the sandbox on, the program that failed to start is the
+        // wrapper: the command itself was located above.
+        if let Some(sandbox) = sandbox {
+            return Error::dependency(format!(
+                "the exec_command sandbox cannot start: codex_bin {} is not runnable on the Runtime Node",
+                sandbox.codex_bin().display()
+            ));
         }
         // `spawn` fails with the same ENOENT for two different reasons:
         // the program is not there, or the directory it would run in is
@@ -225,6 +257,9 @@ pub(crate) fn exec_command_in(
     })?;
 
     let mut notes = Vec::new();
+    if sandbox.is_some() {
+        notes.push(sandbox::NOTE.to_string());
+    }
     let per_stream = output.limits().per_stream;
     if captured.stdout_bytes > per_stream || captured.stderr_bytes > per_stream {
         notes.push(format!(
@@ -765,6 +800,7 @@ mod tests {
                 timeout_ms: Some(20_000),
                 ..Default::default()
             },
+            None,
         )
         .unwrap();
         assert_eq!(r.exit_code, Some(0), "{}", r.text);

@@ -42,6 +42,7 @@ use crate::mcp::output::{self, ReadOutputArgs};
 use crate::mcp::patch::{self, ApplyPatchArgs};
 use crate::mcp::read::{self, ReadFileArgs};
 use crate::mcp::retention;
+use crate::mcp::sandbox;
 use crate::mcp::search::{self, SearchTextArgs};
 use crate::process::{Cmd, ProcessRunner, SystemRunner};
 use crate::protocol::mcp::ServePayload;
@@ -260,6 +261,10 @@ struct Inner {
     /// cannot change while the process lives, and re-running `id` and
     /// `sudo -n` on every call would be latency for nothing.
     exec_gate: ExecGate,
+    /// The workspace's OS sandbox for `exec_command`, when its config asks
+    /// for one (P33). Resolved once at startup and refused then if this
+    /// Runtime cannot provide it.
+    sandbox: Option<Arc<sandbox::Sandbox>>,
     /// Canonical. Never sent to the client.
     root: PathBuf,
     /// The project's own CLAUDE.md, as much of it as the handshake can
@@ -392,6 +397,18 @@ impl Server {
             }
         };
         let state = crate::paths::state_dir().ok();
+        let sandbox = match exec_gate.config.as_ref() {
+            Some(config) => sandbox::Sandbox::resolve(
+                config,
+                &payload.workspace,
+                &root,
+                state.as_deref(),
+                &payload.session,
+                &SystemRunner,
+            )?
+            .map(Arc::new),
+            None => None,
+        };
         tracing::info!(
             workspace = %payload.workspace,
             root = %root.display(),
@@ -400,6 +417,7 @@ impl Server {
             runtime_user = %exec_gate.audit.user,
             confined = exec_gate.audit.confined(),
             exec_allowed = exec_gate.allowed(),
+            exec_sandbox = sandbox.is_some(),
             project_instructions = project.as_ref().map_or(0, context::Project::included),
             "mcp server starting"
         );
@@ -414,6 +432,7 @@ impl Server {
                     .as_deref()
                     .map(|state| Arc::new(retention::Output::new(state, &payload.session))),
                 exec_gate,
+                sandbox,
                 root,
                 project,
                 named,
@@ -674,8 +693,9 @@ impl Server {
         };
         let root = self.inner.root.clone();
         let provider = self.inner.provider;
+        let sandbox = self.inner.sandbox.clone();
         let ran = tokio::task::spawn_blocking(move || {
-            exec::exec_command_in(provider, &root, &output, &args)
+            exec::exec_command_in(provider, &root, &output, &args, sandbox.as_deref())
         })
         .await
         .map_err(|e| ErrorData::internal_error(format!("exec_command task failed: {e}"), None))?;

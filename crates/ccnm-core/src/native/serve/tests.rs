@@ -1,4 +1,5 @@
 use super::*;
+use crate::error::ErrorCode;
 use crate::process::{FakeRunner, Output};
 use std::os::unix::net::UnixStream;
 

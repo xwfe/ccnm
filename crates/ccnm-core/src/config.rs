@@ -281,6 +281,23 @@ pub struct Workspace {
     /// `crate::native::policy` before exec-server sees it.
     #[serde(default)]
     pub codex_exec_server: bool,
+    /// Run every `exec_command` of this workspace inside Codex's own
+    /// workspace-write OS sandbox (P33): the command can write only under
+    /// the workspace root (never `.git`), under `$TMPDIR` and `/tmp`, and
+    /// cannot open network connections. Reads are not restricted.
+    ///
+    /// Off by default. It needs a Codex 0.154.0 binary on this Runtime
+    /// (`nodes.<runtime>.codex_bin`) and, on Linux, bubblewrap with user
+    /// namespaces; a workspace that asks for a sandbox this Runtime cannot
+    /// provide is refused, not run bare. A command the sandbox refuses
+    /// simply fails, and there is no "retry without the sandbox": a gate the
+    /// model can ask to open is not a gate. What that costs, measured:
+    /// `git commit` fails (`.git` is read-only, the same rule `apply_patch`
+    /// applies), and dependency downloads fail (no network, and a cache
+    /// under HOME such as `~/.cargo` is not writable either) -- do those
+    /// with the switch off, or outside ccnm.
+    #[serde(default)]
+    pub exec_sandbox: ExecSandbox,
     /// Hybrid only: where the restricted runner may write. Must not overlap
     /// `root`.
     #[serde(default)]
@@ -338,6 +355,18 @@ pub enum ExternalAccess {
     /// All seven tools, holding the workspace's write guard for as long as
     /// the connection lives.
     Coding,
+}
+
+/// Which OS sandbox, if any, `exec_command` wraps a command in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecSandbox {
+    /// None: a command has whatever access the runtime account has.
+    #[default]
+    Off,
+    /// `codex sandbox`, with the workspace-write permission profile Codex
+    /// 0.154.0 sends for its own commands, verbatim (`crate::mcp::sandbox`).
+    Codex,
 }
 
 impl ExternalAccess {

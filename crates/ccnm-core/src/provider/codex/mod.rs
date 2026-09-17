@@ -26,6 +26,25 @@ pub const CREDENTIALS: super::CredentialMetadata = super::CredentialMetadata {
     egress_host: "api.openai.com",
 };
 pub const VERSION: &str = "0.154.0";
+
+/// Refuse any Codex binary on the Runtime other than the release ccnm has
+/// measured. `base` carries the cwd and environment the binary will run
+/// with; only its arguments are replaced. The exec-server chain (P22) and
+/// the `exec_command` sandbox (P33) both start `codex` on the Runtime, and
+/// `what` names which of them is asking, for the refusal.
+pub fn check_measured(base: &Cmd, runner: &dyn ProcessRunner, what: &str) -> Result<()> {
+    let mut cmd = base.clone();
+    cmd.args = vec!["--version".into()];
+    let out = runner.run(&cmd.timeout(Duration::from_secs(20)))?;
+    let version = parse_version(&out)?;
+    if version != VERSION {
+        return Err(Error::new(
+            ErrorCode::Version,
+            format!("codex_bin is Codex {version}; {what} has been measured only with {VERSION}"),
+        ));
+    }
+    Ok(())
+}
 const DISABLED: &[&str] = &[
     "shell_tool",
     "unified_exec",

@@ -45,7 +45,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
-use crate::error::{Error, ErrorCode, Result};
+use crate::error::{Error, Result};
 use crate::mcp::server::ExecGate;
 use crate::mcp::write_guard::WriteGuard;
 use crate::native::liveness::{self, Heard, Step, Timing, Touching};
@@ -191,20 +191,7 @@ fn executor_cmd(bin: &Path, root: &Path, home: &Path, marker: &str) -> Cmd {
 }
 
 fn check_version(base: &Cmd, runner: &dyn ProcessRunner) -> Result<()> {
-    let mut cmd = base.clone();
-    cmd.args = vec!["--version".into()];
-    let out = runner.run(&cmd.timeout(Duration::from_secs(20)))?;
-    let version = crate::provider::codex::parse_version(&out)?;
-    if version != crate::provider::codex::VERSION {
-        return Err(Error::new(
-            ErrorCode::Version,
-            format!(
-                "codex_bin is Codex {version}; the exec-server chain has been measured only with {}",
-                crate::provider::codex::VERSION
-            ),
-        ));
-    }
-    Ok(())
+    crate::provider::codex::check_measured(base, runner, "the exec-server chain")
 }
 
 fn spawn(base: &Cmd) -> Result<Child> {
@@ -730,27 +717,36 @@ fn stat_state_and_group(stat: &str) -> Option<(char, u32)> {
     Some((state, pgrp))
 }
 
-/// The CODEX_HOME exec-server runs with. Made by ccnm, empty, private, and
-/// under ccnm's state directory rather than the system temp dir, where
-/// exec-server refuses to create its helper links (P21).
-struct CodexHome {
+/// A CODEX_HOME for a `codex` that ccnm runs on the Runtime: exec-server
+/// here, `codex sandbox` for the `exec_command` sandbox
+/// (`crate::mcp::sandbox`). Made by ccnm, empty, private, and under ccnm's
+/// state directory rather than the system temp dir, where exec-server
+/// refuses to create its helper links (P21). Codex writes into it (session
+/// files, the sandbox's `tmp/arg0/` helpers), so it must be a real
+/// directory of its own, not the profile with the login in it.
+pub(crate) struct CodexHome {
     dir: PathBuf,
     keep: bool,
 }
 
 impl CodexHome {
     fn create(state: &Path, marker: &str) -> Result<Self> {
+        Self::create_in(state, "exec-server", marker)
+    }
+
+    /// `<state>/<parent>/<name>`, mode 0700 both levels.
+    pub(crate) fn create_in(state: &Path, parent: &str, name: &str) -> Result<Self> {
         use std::os::unix::fs::PermissionsExt;
-        let parent = state.join("exec-server");
+        let parent = state.join(parent);
         std::fs::create_dir_all(&parent)?;
         std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o700))?;
-        let dir = parent.join(marker);
+        let dir = parent.join(name);
         std::fs::create_dir(&dir)?;
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
         Ok(CodexHome { dir, keep: false })
     }
 
-    fn path(&self) -> &Path {
+    pub(crate) fn path(&self) -> &Path {
         &self.dir
     }
 

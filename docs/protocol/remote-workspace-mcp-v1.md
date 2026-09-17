@@ -5,6 +5,7 @@
 > **冻结的意思是**：往后加工具、加字段、加错误原因属于加法，可以；删工具、改 `disabled`/`read`/`coding` 三个值的含义、改权限判定或错误码语义要升到 `ccnm.workspace-mcp/2`。
 > 验收范围、已知代价和**不作保证的 egress** 见[支持矩阵](../support-matrix.md)；这一版明确不做的东西见第 12 节。
 > **冻结之后的加法**：2026-09-17（P36）加了第八个工具 `load_skill` 和 `prompts` 能力，用来把项目自带的 skills 交给模型和人，见第 5.1 节。原来七个工具的名字、参数和语义没有动。
+> 2026-09-17（P37）给三个老工具加了可选参数：`search_text` 的输出模式、跨行、文件类型和 dotfile，`apply_patch` 的 op `write`，`exec_command` 的 `shell`，见第 5.2 节。不带新参数的调用和以前完全一样；`exec_command` 的 `required` 因此从 `["cmd"]` 变成空。同日修了一个行为缺陷：调用方的 `glob` 能把 dotfile 带回搜索（同一节末尾）。
 
 面向的读者是**已经在本机跑着 Claude Code / Codex / 别的 MCP Host，但项目在另一台机器上的人**。它给你的不是一条裸 SSH 通道，而是一个绑定了 workspace 的远程项目工具集。
 
@@ -219,7 +220,7 @@ transport 的认证边界是 **OpenSSH identity + 独立的 Runtime OS 账号**�
 
 1. **annotations 只改善 Host 的审批 UX，不是门禁。** 一个完全忽略它们的 Host，得到的授权结果必须和尊重它们的 Host 一模一样——真正的门禁是 OS 身份、workspace 绑定、access mode 和写入互斥。
 2. **`exec_command` 永远按 destructive + open-world 处理。** 不因为这次的命令"看起来只是 `ls`"就动态改注解。注解是工具的属性，不是某次调用的属性。
-3. `apply_patch` 不是 open-world：它只能改这个 workspace 里的文件。但它是 destructive——update 会替换内容，delete 会删文件。
+3. `apply_patch` 不是 open-world：它只能改这个 workspace 里的文件。但它是 destructive——update、write 会替换内容，delete 会删文件。
 
 另外，Managed 路径上 `exec_command` 会带一个 `_meta` 键 `anthropic/requiresUserInteraction`（只在有人坐在终端前的交互式 session 里带，而且该 workspace 没有写 `allow_unattended_exec`）。**外部 MCP 永远不发这个键**：bridge 不知道 Host 那头有没有人，冒充知道比不说更糟，所以那个开关对 bridge 没有任何影响。
 
@@ -263,6 +264,35 @@ transport 的认证边界是 **OpenSSH identity + 独立的 Runtime OS 账号**�
 **prompts**：每个可由人启动的 skill / 命令同时登记成一个 MCP prompt（[`prompts-list-ok.json`](fixtures-mcp/prompts-list-ok.json)、[`prompts-get-ok.json`](fixtures-mcp/prompts-get-ok.json)），`prompts/get` 返回的就是 `load_skill` 会返回的那段文本。Claude Code 把它变成斜杠命令 `/mcp__ccnm__<名字>`（server 在 Host 配置里叫别的名字，中间那段就跟着变）。prompt 的参数是 skill 在 frontmatter 的 `arguments` 里声明的名字；一个都没声明时是单个 `arguments`。**Claude Code 把人敲的参数按空白切开、依次对应声明的参数，多出来的词被它丢掉**（2.1.273 实测）——要传多个词，skill 得声明多个参数。Codex 0.154.0 连上之后只调 `tools/list`，看不到 prompts，所以 prompts 是锦上添花，`load_skill` 才是主通道。
 
 **没做的**：MCP 官方的 skills 扩展（SEP-2640，`skills/list` / `skill://` 资源）。Claude Code 里它的客户端已经写好，但挂在一个默认关闭的开关后面，现在对哪个 Host 都不生效；它是另一个阶段。依据见 [P36 记录](../research/p36-skills-surface-2026-09-17.md)。
+
+### 5.2 搜索模式、整文件覆盖、一行 shell（P37 新增）
+
+对齐的是 Claude Code 2.1.273 的 Grep、Write、Bash（读的是它打包代码里的工具定义，依据见 [P37 记录](../research/p37-execution-surface-batch1-2026-09-17.md)）。三处都是可选参数或新操作，不带它们的调用和以前一模一样。
+
+**`search_text` 多了四个参数：**
+
+| 参数 | 取值 | 效果 |
+| --- | --- | --- |
+| `output_mode` | `content`（默认）、`files_with_matches`、`count` | 后两种只返回路径，或 `路径:匹配行数`。这时 `max_results` 数的是文件，`context_lines` 不起作用 |
+| `multiline` | 布尔，默认 `false` | 匹配可以跨行，正则里的 `.` 也匹配换行（`rg -U --multiline-dotall`）。跨行的结果按行展开，每行照样受单行 512 字节、总量 32 KiB 限制。query 里带换行却没开它，报 `CCNM_E_INVALID_ARGS` |
+| `type` | rg 的文件类型名，如 `rust`、`py`、`ts` | 只搜这类文件；rg 不认识的名字报 `CCNM_E_INVALID_ARGS`。**不能和 `glob` 同时给**，同时给报 `CCNM_E_INVALID_ARGS`：rg 里命中 glob 的文件根本不看类型，一起传会悄悄把别的类型也搜出来 |
+| `include_hidden` | 布尔，默认 `false` | 也搜 dotfile 和点开头的目录。`.git` 不管怎么设都不搜 |
+
+计数按"匹配的行"算，和 `rg --count` 一样：一行里出现两次算一行，一个跨行匹配算一次。
+
+和原生 Grep 不一样的地方：默认仍是 `content`（原生默认只列文件，但冻结时这里就是内容，改默认值要升版本）；dotfile 默认不搜（原生默认搜，只排除版本库目录）；没有分开的 `-A` / `-B`、`head_limit` / `offset` 分页和只输出匹配部分的 `-o`。
+
+**`apply_patch` 多了 op `write`**：`{"op": "write", "path": …, "version": …, "content": …}` 用 `content` 整体替换一个**已经存在**的文件。和 `update` 一样必须带 `read_file` 给的 `version`，过期报 `CCNM_E_STALE_EPOCH`；文件不存在时报 `CCNM_E_INVALID_ARGS` 并指向 `add`——一个带着版本号来的 `write` 碰上文件没了，说明有人删了它，不该当成"那就新建"。原子替换、中断日志、失败回滚、保留文件权限，和 `update` 走同一条路。原生 Write 不存在的文件也能写；这里新建仍然是 `add`。
+
+**`exec_command` 多了 `shell`**：一行命令，Runtime 用 `bash -c <这一行>` 执行，管道、重定向、`&&`、`cd sub && …` 都能用。和 `cmd` 二选一：都给或都不给报 `CCNM_E_INVALID_ARGS`；JSON Schema 的 `required` 表达不了"恰好一个"，所以 `required` 是空的，由 server 在调用时检查。
+
+- **不放宽任何东西。** 模型本来就能发 `{"cmd": ["bash", "-c", "…"]}`，`shell` 就是这条 argv：同一道执行门、同一个人工确认、开了 `exec_sandbox` 时同样被包起来。
+- **是 bash，不是 sh，也不退回 sh。** Runtime 上找不到 bash 报 `CCNM_E_DEPENDENCY`，消息里说改用 `cmd`。Debian 的 `sh` 是 dash，`[[ ]]`、`set -o pipefail` 在那里意思不同，悄悄换解释器比报错更糟。
+- 结果第一行 `$ …` 是原样的那一行。工作目录不跨调用保持（原生 Bash 会保持），每次用 `cwd` 指定。
+
+**同日修的行为缺陷（P37 实现时发现）。** 以前 `search_text` 的 `glob` 写成 `*`、`**`、`**/*` 这类能匹配目录的形状时，dotfile 会被搜出来发给模型，`.git/` 也会被 rg 扫一遍（那里的命中由事后检查丢掉，没有发出去）——和工具说明里"dotfile 和 .git 永远不搜"矛盾。原因是 rg 15.2.0 里 glob 优先于"不搜隐藏文件"，多个 glob 同时命中时最后一个说了算，而排除规则排在调用方 glob 前面。现在排除规则放在最后，模型看到的结果变少了，属于修正而不是加法，不升版本。
+
+**还没修的同类问题**：同样形状的 `glob` 也会让 rg 搜进 `.gitignore` 排除掉的目录（`glob: "**"` 会搜到 `target/`、`node_modules/`）。它和上一条是同一个优先级规则，但没法靠调整顺序修：rg 没有"只作用于文件的 glob"，要么由 ccnm 自己按 glob 过滤结果（`*.rs` 的含义会跟着变），要么拒绝能匹配目录的 glob，需要单独立项。原先就是这样，P37 没有让它变坏。
 
 ## 6. 连接生命周期
 
@@ -308,7 +338,7 @@ transport 的认证边界是 **OpenSSH identity + 独立的 Runtime OS 账号**�
 | --- | --- |
 | `read_file` 一次最多 | 2000 行（`max_lines`）、64 KiB（`max_bytes`，默认 32 KiB），超了给你续读的行号 |
 | `list_files` 一次最多 | 1000 条（`max_entries`） |
-| `search_text` | 200 条结果、上下文 10 行、整体 32 KiB、单行 512 字节 |
+| `search_text` | 200 条结果（只列文件、计数两种模式下是 200 个文件）、上下文 10 行、整体 32 KiB、单行 512 字节 |
 | `exec_command` 超时 | 最大 600000 ms（10 分钟） |
 | `exec_command` 回传 | 预览总共默认 4 KiB，`preview_bytes` 最大 16 KiB；stderr 最多占一半，其余给 stdout，某个流超出时只留它的开头和结尾。完整输出用 `output_ref` 读 |
 | `read_output` 一次最多 | 32 KiB（默认 16 KiB） |

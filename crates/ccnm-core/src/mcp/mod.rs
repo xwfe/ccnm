@@ -13,6 +13,7 @@ pub mod context;
 pub mod exec;
 pub mod glob;
 pub mod image;
+pub mod jobs;
 pub mod list;
 pub mod notebook;
 pub mod output;

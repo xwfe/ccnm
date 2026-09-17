@@ -208,7 +208,7 @@ agent_node = "agent"
         self.assertTrue(evidence["passed"], evidence)
         checks = evidence["checks"]
 
-        self.assertEqual(len(checks["tools"]), 10)  # 七个，加 P36 的 load_skill、P39 的 view_image、P40 的 read_notebook
+        self.assertEqual(len(checks["tools"]), 11)  # 七个，加 P36 的 load_skill、P39 的 view_image、P40 的 read_notebook、P41 的 stop_command
         self.assertIn("skipped", checks["identity"])
         self.assertIn("git version", checks["toolchain"]["git"])
 
@@ -225,7 +225,7 @@ agent_node = "agent"
         self.assertIn("CCNM_E_", checks["writer_busy"])
         self.assertEqual(len(checks["read_leg"]["tools"]), 7)  # 四个，加 P36 的 load_skill、P39 的 view_image、P40 的 read_notebook
         self.assertEqual(
-            sorted(checks["read_leg"]["refusals"]), ["apply_patch", "exec_command", "read_output"]
+            sorted(checks["read_leg"]["refusals"]), ["apply_patch", "exec_command", "read_output", "stop_command"]
         )
         self.assertIn("read mode", checks["escalation"])
         self.assertIn("CCNM_E_", checks["not_opted_in"])

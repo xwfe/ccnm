@@ -18,7 +18,7 @@ Claude Code 连一次才知道。这个脚本负责的是**同一条真实 trans
 - 用 `exec_command` 在 Runtime 上 `stat` 它，属主必须是期望的执行身份——
   这一条证明外部入口最终落在同一条隔离执行链上，而不是别的身份；
 - read 腿读同一个文件，内容必须一致：两个入口看的是同一棵树；
-- read 腿按名字硬调三个它没被给的工具（参数都合法），必须全部被拒，而且事后
+- read 腿按名字硬调四个它没被给的工具（参数都合法），必须全部被拒，而且事后
   磁盘上确实没有那次写。
 
 用法（在**客户端**机器上，也就是 bridge 跑的那台；配置里已有到 Runtime 的
@@ -57,14 +57,16 @@ from mcp_client import McpClient, is_error, result_text  # noqa: E402
 READ_TOOLS = [
     "list_files", "load_skill", "read_file", "read_notebook", "search_text", "view_image", "workspace_info",
 ]
-CODING_TOOLS = READ_TOOLS + ["apply_patch", "exec_command", "read_output"]
+# stop_command（P41）和 exec_command 一样只在 coding 模式有。
+CODING_TOOLS = READ_TOOLS + ["apply_patch", "exec_command", "read_output", "stop_command"]
 
-# read 腿要按名字硬调的三个，参数都合法——参数不合法会先被参数检查拦下，那
+# read 腿要按名字硬调的四个，参数都合法——参数不合法会先被参数检查拦下，那
 # 证明不了权限门禁。
 WITHHELD = {
     "exec_command": {"cmd": ["/bin/echo", "hi"]},
     "apply_patch": {"files": [{"op": "add", "path": "ccnm-p11-sneaked.txt", "content": "x\n"}]},
     "read_output": {"output_ref": "r-0000000000000000"},
+    "stop_command": {"output_ref": "r-0000000000000000"},
 }
 
 # Host 那边不该看到的东西。离线测试用合成数据查过同一条规则，但只有真机上才

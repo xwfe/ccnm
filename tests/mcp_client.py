@@ -39,15 +39,21 @@ class McpClient:
 
     # -- 底层 --
 
-    def call(self, method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
-        """发一个请求等它的响应；服务端在中间说的别的话按 MCP 规矩跳过。"""
+    def send(self, method: str, params: dict[str, Any] | None = None) -> int:
+        """发一个请求，不等响应，返回它的 id——用来在它还没回答时取消它或断开。"""
         self._next_id += 1
         request: dict[str, Any] = {"jsonrpc": "2.0", "id": self._next_id, "method": method}
         if params is not None:
             request["params"] = params
-        assert self._proc.stdin and self._proc.stdout
+        assert self._proc.stdin
         self._proc.stdin.write(json.dumps(request, ensure_ascii=False) + "\n")
         self._proc.stdin.flush()
+        return self._next_id
+
+    def call(self, method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        """发一个请求等它的响应；服务端在中间说的别的话按 MCP 规矩跳过。"""
+        request = {"id": self.send(method, params)}
+        assert self._proc.stdout
         while True:
             line = self._proc.stdout.readline()
             if not line:
@@ -69,9 +75,12 @@ class McpClient:
         said = self._proc.stderr.read() if self._proc.stderr else ""
         return f"退出码 {self._proc.returncode}；stderr：\n{said.strip()}"
 
-    def notify(self, method: str) -> None:
+    def notify(self, method: str, params: dict[str, Any] | None = None) -> None:
+        message: dict[str, Any] = {"jsonrpc": "2.0", "method": method}
+        if params is not None:
+            message["params"] = params
         assert self._proc.stdin
-        self._proc.stdin.write(json.dumps({"jsonrpc": "2.0", "method": method}) + "\n")
+        self._proc.stdin.write(json.dumps(message) + "\n")
         self._proc.stdin.flush()
 
     # -- MCP --

@@ -56,24 +56,36 @@
 //! machine. What comes back is a preview — the head and the tail, because
 //! the first compiler error and the final summary are both worth more than
 //! the middle — plus an `output_ref` for `read_output` to page through.
+//!
+//! # In the background
+//!
+//! `run_in_background` (P41) returns the `output_ref` at once and leaves the
+//! command to a thread that waits for it and then records how it ended
+//! ([`jobs::Status`]). Nothing else about the command differs: the same gate
+//! let it start, the same sandbox wraps it, the same retention keeps what it
+//! writes. What is new is that it has no deadline unless `timeout_ms` gives
+//! one, so something else has to end it -- `stop_command`, or the server
+//! when its session ends ([`jobs::Jobs::stop_all`]).
 
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
 
 use rmcp::schemars;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, ErrorCode, Result};
+use crate::mcp::jobs::{self, Jobs, Stop};
 use crate::mcp::path;
 use crate::mcp::retention::{Output, Run};
 use crate::mcp::sandbox::{self, Sandbox};
 use crate::mcp::truncate_bytes;
-use crate::process::{Cmd, run_captured};
+use crate::process::{Cmd, spawn_captured};
 
 /// Wall clock a command gets when the caller does not say.
 pub const DEFAULT_TIMEOUT_MS: u64 = 120_000;
 /// Ceiling on `timeout_ms`. Ten minutes is a long build; anything longer
-/// wants to be a background job, which this phase does not have.
+/// wants `run_in_background`.
 pub const MAX_TIMEOUT_MS: u64 = 600_000;
 /// Bytes of output returned inline when the caller does not say.
 pub const DEFAULT_PREVIEW_BYTES: usize = 4 * 1024;
@@ -94,7 +106,8 @@ pub struct ExecCommandArgs {
     /// Directory to run in, relative to the workspace root. Default: the root.
     #[serde(default)]
     pub cwd: Option<String>,
-    /// Kill the command after this long. Default 120000, max 600000.
+    /// Kill the command after this long. Default 120000, max 600000. In the
+    /// background there is no limit unless this is given.
     #[serde(default)]
     #[schemars(range(min = 1, max = 600_000))]
     pub timeout_ms: Option<u64>,
@@ -103,6 +116,11 @@ pub struct ExecCommandArgs {
     #[serde(default)]
     #[schemars(range(min = 0, max = 16_384))]
     pub preview_bytes: Option<u32>,
+    /// Return at once with the output_ref instead of waiting for the command
+    /// to end. read_output shows its output as it grows and can wait for it
+    /// to finish; stop_command stops it; it is stopped when the session ends.
+    #[serde(default)]
+    pub run_in_background: bool,
 }
 
 /// What one command did. No output beyond the preview, which is in
@@ -128,6 +146,9 @@ pub struct ExecResult {
     pub output_ref: String,
     /// The preview left something out.
     pub truncated: bool,
+    /// Still running in the background: none of the numbers above are final.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub background: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<String>,
 }
@@ -161,22 +182,40 @@ pub fn exec_command(
     exec_command_in(
         crate::provider::AgentProvider::Claude,
         root,
-        &Output::new(state, session),
+        &Arc::new(Output::new(state, session)),
         args,
-        None,
+        Running {
+            jobs: &Jobs::new(),
+            stop: Arc::default(),
+            sandbox: None,
+        },
     )
 }
 
-/// `sandbox` is the workspace's OS sandbox when its config asks for one
-/// (`exec_sandbox = "codex"`, P33); the command then runs behind
-/// [`Sandbox::wrap`] and the result says so.
+/// What a command runs under besides its arguments.
+pub(crate) struct Running<'a> {
+    /// The server's registry, which a command joins for as long as it runs.
+    pub jobs: &'a Arc<Jobs>,
+    /// How the call running it stops it when the client cancels.
+    pub stop: Arc<Stop>,
+    /// The workspace's OS sandbox when its config asks for one
+    /// (`exec_sandbox = "codex"`, P33); the command then runs behind
+    /// [`Sandbox::wrap`] and the result says so.
+    pub sandbox: Option<&'a Sandbox>,
+}
+
 pub(crate) fn exec_command_in(
     provider: crate::provider::AgentProvider,
     root: &Path,
-    output: &Output,
+    output: &Arc<Output>,
     args: &ExecCommandArgs,
-    sandbox: Option<&Sandbox>,
+    running: Running<'_>,
 ) -> Result<ExecResult> {
+    let Running {
+        jobs,
+        stop,
+        sandbox,
+    } = running;
     let (argv, command) = match (args.cmd.is_empty(), args.shell.as_deref()) {
         (false, Some(_)) => {
             return Err(Error::invalid_args(
@@ -205,10 +244,11 @@ pub(crate) fn exec_command_in(
             return Err(Error::invalid_args(format!("{field} contains a NUL byte")));
         }
     }
-    let timeout_ms = match args.timeout_ms {
-        Some(0) => return Err(Error::invalid_args("timeout_ms must be at least 1")),
-        Some(ms) => ms.min(MAX_TIMEOUT_MS),
-        None => DEFAULT_TIMEOUT_MS,
+    let timeout_ms = match (args.timeout_ms, args.run_in_background) {
+        (Some(0), _) => return Err(Error::invalid_args("timeout_ms must be at least 1")),
+        (Some(ms), _) => Some(ms.min(MAX_TIMEOUT_MS)),
+        (None, false) => Some(DEFAULT_TIMEOUT_MS),
+        (None, true) => None,
     };
     let preview_bytes = args.preview_bytes.map_or(DEFAULT_PREVIEW_BYTES, |n| {
         (n as usize).min(MAX_PREVIEW_BYTES)
@@ -228,11 +268,18 @@ pub(crate) fn exec_command_in(
         }
     };
 
+    let ticket = jobs.admit(args.run_in_background, Arc::clone(&stop))?;
+    if stop.reason().is_some() {
+        return Err(Error::invalid_args(
+            "the call was cancelled before the command started, so it was not run",
+        ));
+    }
     let (run, stdout, stderr) = output.begin()?;
+    ticket.name(&run.reference);
     let mut cmd = Cmd::new(&argv[0])
         .args(&argv[1..])
         .cwd(&cwd_abs)
-        .timeout(Duration::from_millis(timeout_ms));
+        .timeout(timeout_ms.map_or(Duration::MAX, Duration::from_millis));
     let _ = provider; // Runtime protection covers all known Agents, not this selection.
     cmd = crate::safety::environment::runtime_child(cmd);
     if let Some(sandbox) = sandbox {
@@ -250,7 +297,7 @@ pub(crate) fn exec_command_in(
         }
         cmd = sandbox.wrap(cmd, &cwd_abs);
     }
-    let captured = run_captured(&cmd, stdout, stderr).map_err(|e| {
+    let started = spawn_captured(&cmd, stdout, stderr).map_err(|e| {
         if !e.message().starts_with("cannot spawn") {
             return e;
         }
@@ -277,11 +324,18 @@ pub(crate) fn exec_command_in(
         }
         missing_program(&argv[0], args.shell.is_some())
     })?;
+    stop.attach(started.stopper());
 
     let mut notes = Vec::new();
     if sandbox.is_some() {
         notes.push(sandbox::NOTE.to_string());
     }
+    if args.run_in_background {
+        return background(
+            command, cwd_rel, timeout_ms, output, run, started, ticket, stop, notes,
+        );
+    }
+    let captured = started.wait()?;
     let per_stream = output.limits().per_stream;
     if captured.stdout_bytes > per_stream || captured.stderr_bytes > per_stream {
         notes.push(format!(
@@ -289,9 +343,94 @@ pub(crate) fn exec_command_in(
             bytes_label(per_stream)
         ));
     }
+    if captured.stopped {
+        notes.push(match stop.reason() {
+            Some(jobs::StopReason::SessionEnded) => {
+                "the command was stopped because its session ended".to_string()
+            }
+            _ => "the command was stopped because the call running it was cancelled".to_string(),
+        });
+    }
     let result = build(command, cwd_rel, &run, &captured, preview_bytes, notes);
     output.finish(&run);
+    drop(ticket);
     Ok(result)
+}
+
+/// Leave a started command to a thread that waits for it, and say so.
+///
+/// The thread keeps the run (so its lock says "in progress" for as long as
+/// the command lives) and the ticket (so the server, ending, waits until the
+/// final status is written). Its status is on disk before the reference is
+/// handed out, so no reader ever sees a background run without one.
+#[allow(clippy::too_many_arguments)]
+fn background(
+    command: String,
+    cwd: String,
+    timeout_ms: Option<u64>,
+    output: &Arc<Output>,
+    run: Run,
+    started: crate::process::Started,
+    ticket: jobs::Ticket,
+    stop: Arc<Stop>,
+    notes: Vec<String>,
+) -> Result<ExecResult> {
+    let mut status = jobs::Status::started(&command, timeout_ms);
+    let stopper = started.stopper();
+    let recorded = status.write(&run.dir);
+    let reference = run.reference.clone();
+    let output = Arc::clone(output);
+    let waiter = std::thread::Builder::new()
+        .name("ccnm-background".into())
+        .spawn(move || {
+            let captured = started.wait();
+            match captured {
+                Ok(captured) => {
+                    status.end(&captured, stop.reason());
+                    if let Err(error) = status.write(&run.dir) {
+                        tracing::warn!(%error, run = %run.reference, "cannot record how a background command ended");
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(%error, run = %run.reference, "cannot wait for a background command");
+                }
+            }
+            output.finish(&run);
+            drop(run);
+            drop(ticket);
+        });
+    if let Err(error) = recorded.and(waiter.map(drop).map_err(|e| {
+        Error::internal("cannot start a thread to wait for a background command").with_source(e)
+    })) {
+        // Nobody will report on it, so it must not run. One attempt: without
+        // a thread waiting, stopping cannot see it finish.
+        stopper.stop(Duration::ZERO, Duration::ZERO);
+        return Err(error);
+    }
+
+    let limit = timeout_ms.map_or(String::new(), |ms| format!("; it is killed after {ms} ms"));
+    let mut text = format!(
+        "$ {command}\nrunning in the background as output_ref {reference}{limit}\n[read_output with this output_ref shows what it has written so far, and with wait_ms waits for it to finish; stop_command stops it; it is stopped when this session ends]"
+    );
+    for note in &notes {
+        text.push_str("\n[");
+        text.push_str(note);
+        text.push(']');
+    }
+    Ok(ExecResult {
+        text,
+        command,
+        cwd,
+        exit_code: None,
+        timed_out: false,
+        duration_ms: 0,
+        stdout_bytes: 0,
+        stderr_bytes: 0,
+        output_ref: reference,
+        truncated: false,
+        background: true,
+        notes,
+    })
 }
 
 /// The program `shell` runs its line with. Found on PATH like any `cmd`.
@@ -401,6 +540,7 @@ fn build(
         stderr_bytes: captured.stderr_bytes,
         output_ref: retention.reference.clone(),
         truncated,
+        background: false,
         notes,
     }
 }
@@ -935,14 +1075,14 @@ mod tests {
     #[test]
     fn a_stream_past_its_limit_is_cut_and_the_command_still_finishes() {
         let f = fixture("per-stream");
-        let output = Output::with_limits(
+        let output = Arc::new(Output::with_limits(
             &f.state,
             "s-cut",
             Limits {
                 per_stream: 1024,
                 ..Limits::RUNTIME
             },
-        );
+        ));
         let r = exec_command_in(
             crate::provider::AgentProvider::Claude,
             &f.root,
@@ -956,7 +1096,11 @@ mod tests {
                 timeout_ms: Some(20_000),
                 ..Default::default()
             },
-            None,
+            Running {
+                jobs: &Jobs::new(),
+                stop: Arc::default(),
+                sandbox: None,
+            },
         )
         .unwrap();
         assert_eq!(r.exit_code, Some(0), "{}", r.text);

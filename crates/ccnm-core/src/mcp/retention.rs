@@ -352,7 +352,7 @@ fn runs_in(output: &Path) -> Vec<Retained> {
 /// that died. One whose lock cannot even be asked about is treated as
 /// running, because removing what cannot be judged is the one mistake here
 /// that loses data.
-fn in_progress(run: &Path) -> bool {
+pub(crate) fn in_progress(run: &Path) -> bool {
     let file = match File::open(run.join(RUNNING)) {
         Ok(file) => file,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return false,

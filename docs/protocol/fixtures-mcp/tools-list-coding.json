@@ -1,6 +1,6 @@
 {
   "$schema_ref": "#/$defs/tools_list_result",
-  "$note": "coding 模式的工具表：十个（P36 起多了只读的 load_skill，它的 description 见 read 那份样例的说明；P39、P40 起多了只读的 view_image、read_notebook）。exec_command 是 destructive + open-world，不因为某次命令看着安全就改注解；P37 起它没有 required——cmd 和 shell 二选一，JSON Schema 的 required 表达不了“恰好一个”，由 server 在调用时检查。工具名、description、inputSchema 里的参数名和 required 都是精确的，由 external_mcp 的 published_tool_tables_match_the_running_server 对着真实 server 逐字节校验；只有每个参数内部的类型、上下界和说明是简写，server 发的是 schemars 从 Rust 类型生成的完整 schema。",
+  "$note": "coding 模式的工具表：十一个（P36 起多了只读的 load_skill，它的 description 见 read 那份样例的说明；P39、P40 起多了只读的 view_image、read_notebook；P41 起多了 stop_command，和 exec_command、apply_patch、read_output 一样只在 coding 模式有）。exec_command 是 destructive + open-world，不因为某次命令看着安全就改注解；P37 起它没有 required——cmd 和 shell 二选一，JSON Schema 的 required 表达不了“恰好一个”，由 server 在调用时检查。工具名、description、inputSchema 里的参数名和 required 都是精确的，由 external_mcp 的 published_tool_tables_match_the_running_server 对着真实 server 逐字节校验；只有每个参数内部的类型、上下界和说明是简写，server 发的是 schemars 从 Rust 类型生成的完整 schema。",
   "message": {
     "jsonrpc": "2.0",
     "id": 2,
@@ -130,7 +130,7 @@
         },
         {
           "name": "read_output",
-          "description": "Page through what a command wrote, using the output_ref exec_command returned. Offsets are byte offsets and stable: a finished command's output does not change.",
+          "description": "Page through what a command wrote, using the output_ref exec_command returned. Offsets are byte offsets and stable: output only ever grows. For a command running in the background the result says whether it is still running, and wait_ms waits for it to finish.",
           "inputSchema": {
             "type": "object",
             "properties": {
@@ -144,6 +144,9 @@
                 "type": "integer"
               },
               "limit": {
+                "type": "integer"
+              },
+              "wait_ms": {
                 "type": "integer"
               }
             },
@@ -182,7 +185,7 @@
         },
         {
           "name": "exec_command",
-          "description": "Run a command in the remote workspace. Give either cmd, a program and its arguments with no shell involved, or shell, one line run with bash -c where pipes, redirection and && work. Long output stays on that machine; what comes back is the head and tail plus an output_ref. This runs with the full access of the account the runtime uses.",
+          "description": "Run a command in the remote workspace. Give either cmd, a program and its arguments with no shell involved, or shell, one line run with bash -c where pipes, redirection and && work. Long output stays on that machine; what comes back is the head and tail plus an output_ref. With run_in_background the call returns at once and the command keeps running: read_output shows its output as it grows and can wait for it to finish, and stop_command stops it. Commands are stopped when the session ends. This runs with the full access of the account the runtime uses.",
           "inputSchema": {
             "type": "object",
             "properties": {
@@ -200,6 +203,9 @@
               },
               "preview_bytes": {
                 "type": "integer"
+              },
+              "run_in_background": {
+                "type": "boolean"
               }
             }
           },
@@ -267,6 +273,27 @@
           },
           "annotations": {
             "readOnlyHint": true,
+            "openWorldHint": false
+          }
+        },
+        {
+          "name": "stop_command",
+          "description": "Stop a command started with exec_command run_in_background, by its output_ref. It and everything it started get TERM, then KILL two seconds later. Returns how it ended; what it wrote stays readable with read_output.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "output_ref": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "output_ref"
+            ]
+          },
+          "annotations": {
+            "readOnlyHint": false,
+            "destructiveHint": true,
+            "idempotentHint": false,
             "openWorldHint": false
           }
         }

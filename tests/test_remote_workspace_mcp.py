@@ -20,6 +20,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 
@@ -42,7 +43,7 @@ def ccnm_binary() -> Path | None:
 
 BINARY = ccnm_binary()
 
-# read 模式该有的全部工具，以及三个不该有的。load_skill（P36）、view_image
+# read 模式该有的全部工具，以及四个不该有的。load_skill（P36）、view_image
 # （P39）、read_notebook（P40）只读、什么都不执行，所以 read 模式也有。
 READ_TOOLS = [
     "list_files", "load_skill", "read_file", "read_notebook", "search_text", "view_image", "workspace_info",
@@ -66,6 +67,7 @@ WITHHELD = {
     "exec_command": {"cmd": ["/bin/echo", "hi"]},
     "apply_patch": {"files": [{"op": "add", "path": "sneaked.txt", "content": "x\n"}]},
     "read_output": {"output_ref": "r-0000000000000000"},
+    "stop_command": {"output_ref": "r-0000000000000000"},
 }
 
 
@@ -270,6 +272,9 @@ agent_node = "agent"
         # 任意命令永远算 open-world，不看这次是什么命令。
         self.assertIs(hints["exec_command"]["openWorldHint"], True)
         self.assertIs(hints["exec_command"]["destructiveHint"], True)
+        # 只停得到这个会话自己起的命令。
+        self.assertIs(hints["stop_command"]["readOnlyHint"], False)
+        self.assertIs(hints["stop_command"]["openWorldHint"], False)
 
     # -- 执行面第一批（P37）：搜索模式、整文件覆盖、一行 shell --
 
@@ -472,6 +477,116 @@ agent_node = "agent"
             "cells": [{"cell_id": "c4e8f7aa", "new_source": "again"}],
         }]})
         self.assertTrue(result_text(stale).startswith("CCNM_E_STALE_EPOCH:"), result_text(stale))
+
+    # -- 后台命令；取消和断开时停掉命令（P41） --
+
+    def background(self, client: McpClient, line: str) -> str:
+        got = client.call_tool("exec_command", {"shell": line, "run_in_background": True})
+        text = result_text(got)
+        self.assertFalse(is_error(got), text)
+        self.assertIn("\nrunning in the background as output_ref r-", text)
+        return text.split("output_ref ", 1)[1].split()[0]
+
+    def wait_pid(self, name: str) -> int:
+        path = self.root / name
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            if path.exists() and path.read_text().strip():
+                return int(path.read_text())
+            time.sleep(0.02)
+        self.fail(f"{name} never appeared")
+
+    def assert_gone(self, pid: int, within: float = 5) -> None:
+        deadline = time.monotonic() + within
+        while time.monotonic() < deadline:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return
+            time.sleep(0.05)
+        os.kill(pid, 9)
+        self.fail(f"进程 {pid} 还在")
+
+    def test_a_background_command_is_read_while_it_runs_and_waited_for(self):
+        self.write_config("coding", unconfined=True)
+        client = self.client("demo", "coding", "neutral-background")
+        started = time.monotonic()
+        ref = self.background(client, "echo first; sleep 1; echo second")
+        self.assertLess(time.monotonic() - started, 0.8)
+
+        now = result_text(client.call_tool("read_output", {"output_ref": ref}))
+        self.assertIn("\n[running for ", now)
+
+        started = time.monotonic()
+        done = result_text(client.call_tool("read_output", {"output_ref": ref, "wait_ms": 10000}))
+        self.assertLess(time.monotonic() - started, 5, "wait_ms 没在命令结束时提前返回")
+        self.assertTrue(done.startswith("first\nsecond\n[end of stdout at 13 bytes]\n[exited 0 after "), done)
+
+    def test_stop_command_stops_what_run_in_background_started(self):
+        self.write_config("coding", unconfined=True)
+        client = self.client("demo", "coding", "neutral-stop")
+        ref = self.background(client, "echo $$ > bg.pid; exec sleep 30")
+        pid = self.wait_pid("bg.pid")
+        got = client.call_tool("stop_command", {"output_ref": ref})
+        self.assertFalse(is_error(got), result_text(got))
+        self.assertIn("\nstopped by stop_command after ", result_text(got))
+        self.assert_gone(pid)
+        page = result_text(client.call_tool("read_output", {"output_ref": ref}))
+        self.assertIn("\n[stopped by stop_command after ", page)
+
+        foreground = result_text(client.call_tool("exec_command", {"shell": "true"}))
+        fg_ref = foreground.rsplit("output_ref ", 1)[1].rstrip("]")
+        refused = result_text(client.call_tool("stop_command", {"output_ref": fg_ref}))
+        self.assertTrue(refused.startswith("CCNM_E_INVALID_ARGS:"), refused)
+
+    def test_no_more_than_eight_run_in_the_background(self):
+        self.write_config("coding", unconfined=True)
+        client = self.client("demo", "coding", "neutral-eight")
+        for n in range(8):
+            self.background(client, f"echo $$ > bg{n}.pid; exec sleep 30")
+        pids = [self.wait_pid(f"bg{n}.pid") for n in range(8)]
+        ninth = client.call_tool("exec_command", {"shell": "sleep 30", "run_in_background": True})
+        self.assertTrue(result_text(ninth).startswith("CCNM_E_INVALID_ARGS:"), result_text(ninth))
+        self.assertIn("stop_command", result_text(ninth))
+
+        # 会话结束时八个全停，server 马上退出。
+        started = time.monotonic()
+        client.close()
+        self.assertLess(time.monotonic() - started, 8)
+        for pid in pids:
+            self.assert_gone(pid, within=1)
+
+    def test_a_cancelled_call_stops_its_command(self):
+        self.write_config("coding", unconfined=True)
+        client = self.client("demo", "coding", "neutral-cancel")
+        request = client.send("tools/call", {
+            "name": "exec_command",
+            "arguments": {"shell": "echo $$ > fg.pid; exec sleep 30", "timeout_ms": 60000},
+        })
+        pid = self.wait_pid("fg.pid")
+        client.notify("notifications/cancelled", {"requestId": request, "reason": "user pressed esc"})
+        self.assert_gone(pid)
+        # 连接还在，照常回答。
+        self.assertIn("workspace demo", result_text(client.call_tool("workspace_info", {})))
+
+    def test_disconnecting_stops_running_commands_and_the_server_exits_at_once(self):
+        self.write_config("coding", unconfined=True)
+        client = self.client("demo", "coding", "neutral-disconnect")
+        self.background(client, "echo $$ > bg.pid; exec sleep 30")
+        client.send("tools/call", {
+            "name": "exec_command",
+            "arguments": {"shell": "echo $$ > fg.pid; exec sleep 30", "timeout_ms": 60000},
+        })
+        pids = [self.wait_pid("bg.pid"), self.wait_pid("fg.pid")]
+        started = time.monotonic()
+        client.close()
+        # 改之前：server 等前台命令自己跑完（这里是 30 秒）才退出，一直占着写锁。
+        self.assertLess(time.monotonic() - started, 8)
+        for pid in pids:
+            self.assert_gone(pid, within=1)
+        # 写锁已经放了：同一个 workspace 马上能开新的 coding 会话。
+        again = self.client("demo", "coding", "neutral-disconnect-again")
+        self.assertIn("workspace demo", result_text(again.call_tool("workspace_info", {})))
 
     # -- 拒绝 --
 

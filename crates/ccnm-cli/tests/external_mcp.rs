@@ -261,7 +261,7 @@ const READ_TOOLS: [&str; 7] = [
     "view_image",
     "read_notebook",
 ];
-const WITHHELD: [&str; 3] = ["exec_command", "apply_patch", "read_output"];
+const WITHHELD: [&str; 4] = ["exec_command", "apply_patch", "read_output", "stop_command"];
 
 /// The read session's whole surface: four tools, and the ones it does not
 /// have are not merely missing from the list.
@@ -294,6 +294,7 @@ fn a_read_session_offers_four_tools_and_refuses_the_rest() {
             json!({"files": [{"op": "add", "path": "new.txt", "content": "x\n"}]}),
         ),
         ("read_output", json!({"output_ref": "r-0000"})),
+        ("stop_command", json!({"output_ref": "r-0000"})),
     ] {
         let refused = session.call(tool, args);
         assert!(is_error(&refused), "{tool} was not refused: {refused}");
@@ -523,6 +524,12 @@ fn every_tool_publishes_its_annotations() {
     assert_eq!(exec["readOnlyHint"], json!(false));
     assert_eq!(exec["destructiveHint"], json!(true));
     assert_eq!(exec["openWorldHint"], json!(true));
+
+    // Stopping only reaches a command this session started.
+    let stop = &by_name["stop_command"]["annotations"];
+    assert_eq!(stop["readOnlyHint"], json!(false));
+    assert_eq!(stop["destructiveHint"], json!(true));
+    assert_eq!(stop["openWorldHint"], json!(false));
     session.shutdown();
 }
 

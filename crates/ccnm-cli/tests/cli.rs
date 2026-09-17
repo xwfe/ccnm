@@ -509,6 +509,7 @@ fn mcp_probe_local_speaks_to_one_persistent_server() {
             "read_notebook",
             "read_output",
             "search_text",
+            "stop_command",
             "view_image",
             "workspace_info"
         ]

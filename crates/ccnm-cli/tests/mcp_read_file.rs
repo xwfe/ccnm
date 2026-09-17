@@ -280,6 +280,7 @@ fn read_file_serves_a_whole_session_over_one_process() {
             "read_notebook",
             "read_output",
             "search_text",
+            "stop_command",
             "view_image",
             "workspace_info"
         ]

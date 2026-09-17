@@ -61,14 +61,16 @@ from mcp_client import McpClient, is_error, result_text  # noqa: E402
 READ_TOOLS = [
     "list_files", "load_skill", "read_file", "read_notebook", "search_text", "view_image", "workspace_info",
 ]
-CODING_TOOLS = READ_TOOLS + ["apply_patch", "exec_command", "read_output"]
+# stop_command（P41）和 exec_command 一样只在 coding 模式有。
+CODING_TOOLS = READ_TOOLS + ["apply_patch", "exec_command", "read_output", "stop_command"]
 
-# read 腿要按名字硬调的三个，参数都合法——参数不合法会先被参数检查拦下，那证
+# read 腿要按名字硬调的四个，参数都合法——参数不合法会先被参数检查拦下，那证
 # 明不了权限门禁。
 WITHHELD = {
     "exec_command": {"cmd": ["/bin/echo", "hi"]},
     "apply_patch": {"files": [{"op": "add", "path": "ccnm-p12-sneaked.txt", "content": "x\n"}]},
     "read_output": {"output_ref": "r-0000000000000000"},
+    "stop_command": {"output_ref": "r-0000000000000000"},
 }
 
 # Host 那边不该看到的东西。
@@ -461,7 +463,7 @@ def check_cycle(args: argparse.Namespace, client: McpClient, seen: list) -> dict
 
 
 def check_read_leg(args: argparse.Namespace, seen: list) -> dict[str, Any]:
-    """read 腿：正好四个工具、真能读同一棵树、三个没给的工具硬调被拒。
+    """read 腿：正好七个工具、真能读同一棵树、四个没给的工具硬调被拒。
 
     这里开的是**同一个 workspace 的 read 模式**，不是另一个只读 workspace：客
     户端可以要得比配置少。两个 workspace 也不可能指同一棵树——Runtime 会以

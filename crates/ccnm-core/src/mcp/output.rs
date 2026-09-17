@@ -5,10 +5,14 @@
 //! all of it on the Runtime Node; this is how the middle is reached.
 //!
 //! Offsets are byte offsets into the retained file and they are stable,
-//! because the file is finished before the reference exists: a run's
-//! output never changes, so offset 4096 means the same thing an hour
-//! later. That is the property the design doc asks for, and it is what
-//! makes paging cheap — no cursor to keep, nothing re-sent.
+//! because the file is only ever appended to: offset 4096 means the same
+//! thing an hour later. That is the property the design doc asks for, and it
+//! is what makes paging cheap — no cursor to keep, nothing re-sent.
+//!
+//! A foreground command's file is finished before its reference exists. A
+//! background command's (P41) is not: reading up to the end of it while it
+//! runs is "so far", not the end, and the page says which, with a line on
+//! how the command is doing from its [`jobs::Status`].
 //!
 //! The reference is not a path. It is matched against the shape
 //! `exec_command` generates and then joined to *this session's* retention
@@ -22,11 +26,17 @@ use rmcp::schemars;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
+use crate::mcp::jobs;
+use crate::mcp::retention;
 
 /// Bytes returned when the caller does not say.
 pub const DEFAULT_LIMIT: usize = 16 * 1024;
 /// Ceiling on `limit` (design doc section 15).
 pub const MAX_LIMIT: usize = 32 * 1024;
+/// Ceiling on `wait_ms`: the same ten minutes a command may take in the
+/// foreground. Claude Code's MCP idle timeout for a stdio server is 30
+/// minutes (2.1.273) and Codex 0.154.0 waited a 75 s call out.
+pub const MAX_WAIT_MS: u64 = 600_000;
 
 /// Arguments of `read_output`.
 #[derive(Debug, Clone, Default, Deserialize, schemars::JsonSchema)]
@@ -44,6 +54,11 @@ pub struct ReadOutputArgs {
     #[serde(default)]
     #[schemars(range(min = 1, max = 32_768))]
     pub limit: Option<u32>,
+    /// For a command running in the background: wait up to this long for it
+    /// to finish before reading. Default 0, max 600000.
+    #[serde(default)]
+    #[schemars(range(min = 0, max = 600_000))]
+    pub wait_ms: Option<u64>,
 }
 
 #[derive(
@@ -79,7 +94,11 @@ pub struct OutputPage {
     /// Where to continue. Absent at the end of the stream.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_offset: Option<u64>,
+    /// At the end of the stream, and nothing more will be written to it.
     pub eof: bool,
+    /// A background command that is still running.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub running: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<String>,
 }
@@ -95,7 +114,19 @@ pub fn read_output(session_dir: &Path, args: &ReadOutputArgs) -> Result<OutputPa
     };
     let offset = args.offset.unwrap_or(0);
 
-    let path = session_dir.join(&reference).join(stream.file());
+    let run = session_dir.join(&reference);
+    let mut status = jobs::Status::read(&run);
+    let mut running = false;
+    if status.as_ref().is_some_and(|status| status.ended.is_none()) {
+        running = retention::in_progress(&run);
+        if !running {
+            // It may have ended between the two looks; its final status is
+            // written before it lets go of the run.
+            status = jobs::Status::read(&run);
+        }
+    }
+
+    let path = run.join(stream.file());
     let meta = std::fs::metadata(&path).map_err(|e| {
         Error::invalid_args(format!(
             "no output kept for {reference}; a command's output is kept for a while, not forever"
@@ -129,12 +160,14 @@ pub fn read_output(session_dir: &Path, args: &ReadOutputArgs) -> Result<OutputPa
     // on one too. Without this, paging a file with any non-ASCII in it
     // puts a replacement character at every page seam.
     let mut notes: Vec<String> = Vec::new();
-    let end = if offset + filled as u64 >= total_bytes {
+    let at_end = offset + filled as u64 >= total_bytes;
+    // A running command may be halfway through writing a character.
+    let end = if at_end && !running {
         filled
     } else {
         boundary_before(&buf)
     };
-    if end == 0 && filled > 0 {
+    if end == 0 && filled > 0 && !(at_end && running) {
         return Err(Error::invalid_args(format!(
             "limit {limit} is too small to hold one character at this offset"
         )));
@@ -147,10 +180,14 @@ pub fn read_output(session_dir: &Path, args: &ReadOutputArgs) -> Result<OutputPa
         }
     };
     let next = offset + end as u64;
-    let eof = next >= total_bytes;
+    let eof = next >= total_bytes && !running;
 
     let footer = if eof {
         format!("[end of {} at {total_bytes} bytes]", stream.file())
+    } else if next >= total_bytes {
+        format!(
+            "[{total_bytes} bytes so far and the command is still running; read again from offset={next}, with wait_ms to wait for it]"
+        )
     } else {
         format!("[{next} of {total_bytes} bytes; continue with offset={next}]")
     };
@@ -159,6 +196,9 @@ pub fn read_output(session_dir: &Path, args: &ReadOutputArgs) -> Result<OutputPa
         rendered.push('\n');
     }
     rendered.push_str(&footer);
+    if let Some(status) = &status {
+        rendered.push_str(&format!("\n[{}]", status.describe(running)));
+    }
     for note in &notes {
         rendered.push_str("\n[");
         rendered.push_str(note);
@@ -174,6 +214,7 @@ pub fn read_output(session_dir: &Path, args: &ReadOutputArgs) -> Result<OutputPa
         total_bytes,
         next_offset: (!eof).then_some(next),
         eof,
+        running,
         notes,
     })
 }
@@ -182,7 +223,7 @@ pub fn read_output(session_dir: &Path, args: &ReadOutputArgs) -> Result<OutputPa
 /// the shape rather than sanitizing means there is no path to traverse:
 /// a slash, a dot or a `..` never gets as far as being joined to
 /// anything.
-fn validate_ref(raw: &str) -> Result<String> {
+pub(crate) fn validate_ref(raw: &str) -> Result<String> {
     let reference = raw.trim();
     let ok = reference.len() == 18
         && reference.starts_with("r-")

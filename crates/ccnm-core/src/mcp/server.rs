@@ -2,7 +2,9 @@
 //! one ssh. Phase 2 fills in the bounded tools of design doc section 15
 //! one at a time; the set of section 14 is now complete:
 //! `workspace_info`, `read_file`, `list_files`, `search_text`,
-//! `apply_patch`, `exec_command` and `read_output`.
+//! `apply_patch`, `exec_command` and `read_output`. Later phases added
+//! `load_skill` (P36), `view_image` (P39), `read_notebook` (P40) and
+//! `stop_command` (P41).
 //!
 //! Two rules are enforced here because everything later depends on them.
 //! The workspace root is canonicalized once at startup, and every path
@@ -42,6 +44,7 @@ use crate::error::{Error, ErrorCode, ErrorReport};
 use crate::mcp::context;
 use crate::mcp::exec::{self, ExecCommandArgs};
 use crate::mcp::image::{self, ViewImageArgs};
+use crate::mcp::jobs::{self, Jobs, StopCommandArgs};
 use crate::mcp::list::{self, ListFilesArgs};
 use crate::mcp::notebook::{self, ReadNotebookArgs};
 use crate::mcp::output::{self, ReadOutputArgs};
@@ -252,6 +255,9 @@ impl ExecGate {
 }
 
 struct Inner {
+    /// Every command this server has running. [`run`] stops them all before
+    /// this struct -- and the write guard in it -- is let go.
+    jobs: Arc<Jobs>,
     /// Held for this MCP process's complete lifetime.
     _write_guard: Option<crate::mcp::write_guard::WriteGuard>,
     provider: crate::provider::AgentProvider,
@@ -439,6 +445,7 @@ impl Server {
         );
         Ok(Server {
             inner: Arc::new(Inner {
+                jobs: Jobs::new(),
                 _write_guard: write_guard,
                 provider: payload.provider,
                 workspace: payload.workspace.clone(),
@@ -671,11 +678,12 @@ impl Server {
 
     #[tool(
         name = "exec_command",
-        description = "Run a command in the remote workspace. Give either cmd, a program and its arguments with no shell involved, or shell, one line run with bash -c where pipes, redirection and && work. Long output stays on that machine; what comes back is the head and tail plus an output_ref. This runs with the full access of the account the runtime uses."
+        description = "Run a command in the remote workspace. Give either cmd, a program and its arguments with no shell involved, or shell, one line run with bash -c where pipes, redirection and && work. Long output stays on that machine; what comes back is the head and tail plus an output_ref. With run_in_background the call returns at once and the command keeps running: read_output shows its output as it grows and can wait for it to finish, and stop_command stops it. Commands are stopped when the session ends. This runs with the full access of the account the runtime uses."
     )]
     async fn exec_command(
         &self,
         Parameters(args): Parameters<ExecCommandArgs>,
+        context: rmcp::service::RequestContext<rmcp::RoleServer>,
     ) -> std::result::Result<CallToolResult, ErrorData> {
         self.count_call();
         if let Some(refusal) = self.refuse_withheld("exec_command") {
@@ -717,10 +725,27 @@ impl Server {
         let root = self.inner.root.clone();
         let provider = self.inner.provider;
         let sandbox = self.inner.sandbox.clone();
-        let ran = tokio::task::spawn_blocking(move || {
-            exec::exec_command_in(provider, &root, &output, &args, sandbox.as_deref())
-        })
-        .await
+        let jobs = Arc::clone(&self.inner.jobs);
+        let stop = Arc::new(jobs::Stop::default());
+        let running = Arc::clone(&stop);
+        let mut task = tokio::task::spawn_blocking(move || {
+            let running = exec::Running {
+                jobs: &jobs,
+                stop: running,
+                sandbox: sandbox.as_deref(),
+            };
+            exec::exec_command_in(provider, &root, &output, &args, running)
+        });
+        // A client that cancels the call wants the command gone, not just
+        // the answer: before P41 it ran on to its end or its timeout, up to
+        // ten minutes, after the person had pressed Esc.
+        let ran = tokio::select! {
+            ran = &mut task => ran,
+            () = context.ct.cancelled() => {
+                let _ = tokio::task::spawn_blocking(move || stop.stop(jobs::StopReason::Cancelled)).await;
+                task.await
+            }
+        }
         .map_err(|e| ErrorData::internal_error(format!("exec_command task failed: {e}"), None))?;
         match ran {
             Ok(mut ran) => {
@@ -820,11 +845,12 @@ impl Server {
 
     #[tool(
         name = "read_output",
-        description = "Page through what a command wrote, using the output_ref exec_command returned. Offsets are byte offsets and stable: a finished command's output does not change."
+        description = "Page through what a command wrote, using the output_ref exec_command returned. Offsets are byte offsets and stable: output only ever grows. For a command running in the background the result says whether it is still running, and wait_ms waits for it to finish."
     )]
     async fn read_output(
         &self,
         Parameters(args): Parameters<ReadOutputArgs>,
+        context: rmcp::service::RequestContext<rmcp::RoleServer>,
     ) -> std::result::Result<CallToolResult, ErrorData> {
         self.count_call();
         if let Some(refusal) = self.refuse_withheld("read_output") {
@@ -839,6 +865,16 @@ impl Server {
         // The session's own directory and no other: an output_ref is a
         // reference within this session, not a handle on the machine.
         let dir = output.dir().to_path_buf();
+        if let Some(wait) = args.wait_ms.filter(|ms| *ms > 0)
+            && let Ok(reference) = output::validate_ref(&args.output_ref)
+        {
+            wait_while_running(
+                dir.join(reference),
+                Duration::from_millis(wait.min(output::MAX_WAIT_MS)),
+                context.ct.cancelled(),
+            )
+            .await;
+        }
         let page = tokio::task::spawn_blocking(move || output::read_output(&dir, &args))
             .await
             .map_err(|e| {
@@ -846,6 +882,37 @@ impl Server {
             })?;
         match page {
             Ok(page) => Ok(text_only(page.text)),
+            Err(err) => Ok(tool_error(&err)),
+        }
+    }
+
+    #[tool(
+        name = "stop_command",
+        description = "Stop a command started with exec_command run_in_background, by its output_ref. It and everything it started get TERM, then KILL two seconds later. Returns how it ended; what it wrote stays readable with read_output."
+    )]
+    async fn stop_command(
+        &self,
+        Parameters(args): Parameters<StopCommandArgs>,
+    ) -> std::result::Result<CallToolResult, ErrorData> {
+        self.count_call();
+        if let Some(refusal) = self.refuse_withheld("stop_command") {
+            return Ok(refusal);
+        }
+        let Some(output) = self.inner.output.as_ref() else {
+            return Ok(tool_error(&Error::new(
+                ErrorCode::NotReady,
+                "ccnm cannot find a state directory on the Runtime Node, so no command can have been started in the background",
+            )));
+        };
+        let dir = output.dir().to_path_buf();
+        let jobs = Arc::clone(&self.inner.jobs);
+        let stopped = tokio::task::spawn_blocking(move || jobs::stop_command(&jobs, &dir, &args))
+            .await
+            .map_err(|e| {
+                ErrorData::internal_error(format!("stop_command task failed: {e}"), None)
+            })?;
+        match stopped {
+            Ok(text) => Ok(text_only(text)),
             Err(err) => Ok(tool_error(&err)),
         }
     }
@@ -909,10 +976,11 @@ impl Server {
 /// no client can talk its way past.
 const INTERACTION_TOOL: &str = "exec_command";
 
-/// The tools a session without write access does not get. Two of them
+/// The tools a session without write access does not get. Three of them
 /// change things; `read_output` is here because of session scoping, see
 /// [`Server::offers`].
-const WITHHELD_WITHOUT_WRITE: [&str; 3] = ["exec_command", "apply_patch", "read_output"];
+const WITHHELD_WITHOUT_WRITE: [&str; 4] =
+    ["exec_command", "apply_patch", "read_output", "stop_command"];
 
 /// The standard MCP annotations for one tool.
 ///
@@ -949,6 +1017,37 @@ fn requires_user_interaction() -> rmcp::model::MetaObject {
         serde_json::Value::Bool(true),
     );
     rmcp::model::MetaObject(meta)
+}
+
+/// Wait until a run is no longer in progress, `limit` passes, or the call is
+/// cancelled -- whichever is first.
+///
+/// Polled, not signalled: the run can belong to another server of the same
+/// session, and its lock is the only thing both can see. A tenth of a second
+/// is what Claude Code's own TaskOutput polls at (2.1.273). On the async side
+/// so that a client that disconnects mid-wait does not leave a blocking
+/// thread for the server to wait out on its way down.
+async fn wait_while_running(
+    run: PathBuf,
+    limit: Duration,
+    cancelled: impl std::future::Future<Output = ()>,
+) {
+    const POLL: Duration = Duration::from_millis(100);
+    let deadline = tokio::time::Instant::now() + limit;
+    tokio::pin!(cancelled);
+    loop {
+        let probe = run.clone();
+        let running = tokio::task::spawn_blocking(move || retention::in_progress(&probe))
+            .await
+            .unwrap_or(false);
+        if !running || tokio::time::Instant::now() >= deadline {
+            return;
+        }
+        tokio::select! {
+            () = tokio::time::sleep_until(deadline.min(tokio::time::Instant::now() + POLL)) => {}
+            () = &mut cancelled => return,
+        }
+    }
 }
 
 /// A successful tool call: one text block, and no `structuredContent`.
@@ -1179,6 +1278,10 @@ fn run(server: Server) -> CcnmResult<()> {
             .name("ccnm-output-expiry".into())
             .spawn(move || retention::sweep_expired(&state, &own, &SystemRunner));
     }
+    // Held past the end of serving, so the write guard inside is still ours
+    // while the commands this server started are stopped below: a new
+    // session must not get the workspace while one of them is still running.
+    let inner = Arc::clone(&server.inner);
     // Only an external client's session ends with this process; see
     // `Output::discard_started` for why a managed one must not.
     let discard = server
@@ -1196,12 +1299,19 @@ fn run(server: Server) -> CcnmResult<()> {
         rmcp::transport::stdio(),
         HEARTBEAT,
     ));
-    // Dropping the runtime waits for commands still running in
-    // `spawn_blocking`, so their runs are finished before they are removed.
+    // Every command this server started, background or not, is stopped and
+    // waited for before anything is let go. Before P41 this waited for them
+    // to end by themselves, up to their ten-minute timeout, holding the
+    // write guard all the while.
+    inner.jobs.stop_all();
+    // Dropping the runtime waits for what is left in `spawn_blocking`, which
+    // is now only results being written, so runs are finished before they
+    // are removed.
     drop(rt);
     if let Some(output) = discard {
         output.discard_started();
     }
+    drop(inner);
     served
 }
 

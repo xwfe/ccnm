@@ -178,8 +178,8 @@ fn claude_behavior_matches_snapshot_except_documented_safety_and_colocated_fixes
     expected["instructions"] = Value::from(format!(
         "{base}\n[project instructions:{marker}\n\nThis project has{list}\n\n--- CLAUDE.md{file}"
     ));
-    // P36 adds an eighth tool, `load_skill`, P39 a ninth, `view_image`, and
-    // P40 a tenth, `read_notebook`,
+    // P36 adds an eighth tool, `load_skill`, P39 a ninth, `view_image`,
+    // P40 a tenth, `read_notebook`, and P41 an eleventh, `stop_command`,
     // so the settings allow-list that lets the model call ccnm's tools
     // without a prompt names them too. The seven that were there are
     // unchanged and in the same order.
@@ -191,6 +191,7 @@ fn claude_behavior_matches_snapshot_except_documented_safety_and_colocated_fixes
             allow.push(Value::from("mcp__ccnm__load_skill"));
             allow.push(Value::from("mcp__ccnm__view_image"));
             allow.push(Value::from("mcp__ccnm__read_notebook"));
+            allow.push(Value::from("mcp__ccnm__stop_command"));
         }
     }
     assert_eq!(actual, expected);

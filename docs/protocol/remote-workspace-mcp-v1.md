@@ -5,7 +5,7 @@
 > **冻结的意思是**：往后加工具、加字段、加错误原因属于加法，可以；删工具、改 `disabled`/`read`/`coding` 三个值的含义、改权限判定或错误码语义要升到 `ccnm.workspace-mcp/2`。
 > 验收范围、已知代价和**不作保证的 egress** 见[支持矩阵](../support-matrix.md)；这一版明确不做的东西见第 12 节。
 > **冻结之后的加法**：2026-09-17（P36）加了第八个工具 `load_skill` 和 `prompts` 能力，用来把项目自带的 skills 交给模型和人，见第 5.1 节。原来七个工具的名字、参数和语义没有动。
-> 2026-09-17（P37）给三个老工具加了可选参数：`search_text` 的输出模式、跨行、文件类型和 dotfile，`apply_patch` 的 op `write`，`exec_command` 的 `shell`，见第 5.2 节。不带新参数的调用和以前完全一样；`exec_command` 的 `required` 因此从 `["cmd"]` 变成空。同日修了一个行为缺陷：调用方的 `glob` 能把 dotfile 带回搜索（同一节末尾）。
+> 2026-09-17（P37）给三个老工具加了可选参数：`search_text` 的输出模式、跨行、文件类型和 dotfile，`apply_patch` 的 op `write`，`exec_command` 的 `shell`，见第 5.2 节。不带新参数的调用和以前完全一样；`exec_command` 的 `required` 因此从 `["cmd"]` 变成空。同日修了两个行为缺陷：调用方的 `glob` 能把 dotfile 和 `.gitignore` 排除的文件带回搜索（同一节末尾，P37、P38）。
 
 面向的读者是**已经在本机跑着 Claude Code / Codex / 别的 MCP Host，但项目在另一台机器上的人**。它给你的不是一条裸 SSH 通道，而是一个绑定了 workspace 的远程项目工具集。
 
@@ -275,7 +275,7 @@ transport 的认证边界是 **OpenSSH identity + 独立的 Runtime OS 账号**�
 | --- | --- | --- |
 | `output_mode` | `content`（默认）、`files_with_matches`、`count` | 后两种只返回路径，或 `路径:匹配行数`。这时 `max_results` 数的是文件，`context_lines` 不起作用 |
 | `multiline` | 布尔，默认 `false` | 匹配可以跨行，正则里的 `.` 也匹配换行（`rg -U --multiline-dotall`）。跨行的结果按行展开，每行照样受单行 512 字节、总量 32 KiB 限制。query 里带换行却没开它，报 `CCNM_E_INVALID_ARGS` |
-| `type` | rg 的文件类型名，如 `rust`、`py`、`ts` | 只搜这类文件；rg 不认识的名字报 `CCNM_E_INVALID_ARGS`。**不能和 `glob` 同时给**，同时给报 `CCNM_E_INVALID_ARGS`：rg 里命中 glob 的文件根本不看类型，一起传会悄悄把别的类型也搜出来 |
+| `type` | rg 的文件类型名，如 `rust`、`py`、`ts` | 只搜这类文件；rg 不认识的名字报 `CCNM_E_INVALID_ARGS`。和 `glob` 同时给时两个条件都要满足（P37 曾经拒绝这种组合，P38 起不再拒绝） |
 | `include_hidden` | 布尔，默认 `false` | 也搜 dotfile 和点开头的目录。`.git` 不管怎么设都不搜 |
 
 计数按"匹配的行"算，和 `rg --count` 一样：一行里出现两次算一行，一个跨行匹配算一次。
@@ -290,9 +290,23 @@ transport 的认证边界是 **OpenSSH identity + 独立的 Runtime OS 账号**�
 - **是 bash，不是 sh，也不退回 sh。** Runtime 上找不到 bash 报 `CCNM_E_DEPENDENCY`，消息里说改用 `cmd`。Debian 的 `sh` 是 dash，`[[ ]]`、`set -o pipefail` 在那里意思不同，悄悄换解释器比报错更糟。
 - 结果第一行 `$ …` 是原样的那一行。工作目录不跨调用保持（原生 Bash 会保持），每次用 `cwd` 指定。
 
-**同日修的行为缺陷（P37 实现时发现）。** 以前 `search_text` 的 `glob` 写成 `*`、`**`、`**/*` 这类能匹配目录的形状时，dotfile 会被搜出来发给模型，`.git/` 也会被 rg 扫一遍（那里的命中由事后检查丢掉，没有发出去）——和工具说明里"dotfile 和 .git 永远不搜"矛盾。原因是 rg 15.2.0 里 glob 优先于"不搜隐藏文件"，多个 glob 同时命中时最后一个说了算，而排除规则排在调用方 glob 前面。现在排除规则放在最后，模型看到的结果变少了，属于修正而不是加法，不升版本。
+**同日修的两个行为缺陷。** 都是 `glob` 让结果多出了工具说明里写着"永远不搜"的东西，修完模型看到的结果只会变少，属于修正而不是加法，不升版本。
 
-**还没修的同类问题**：同样形状的 `glob` 也会让 rg 搜进 `.gitignore` 排除掉的目录（`glob: "**"` 会搜到 `target/`、`node_modules/`）。它和上一条是同一个优先级规则，但没法靠调整顺序修：rg 没有"只作用于文件的 glob"，要么由 ccnm 自己按 glob 过滤结果（`*.rs` 的含义会跟着变），要么拒绝能匹配目录的 glob，需要单独立项。原先就是这样，P37 没有让它变坏。
+1. **dotfile 和 `.git`（P37）**：`glob` 写成 `*`、`**`、`**/*` 这类能匹配目录的形状时，dotfile 会被搜出来发给模型，`.git/` 也会被 rg 扫一遍（那里的命中由事后检查丢掉，没有发出去）。原因是 rg 15.2.0 里 glob 优先于"不搜隐藏文件"，多个 glob 同时命中时最后一个说了算，而排除规则排在调用方 glob 前面。现在排除规则放在最后。
+2. **`.gitignore`（P38）**：给了 `glob` 就会搜 `.gitignore` 排除的东西——`**` 搜进 `target/`、`node_modules/`，只能匹配文件的 `**/*.yml` 也会搜到被忽略的 `secret.yml`。rg 里一个 glob 命中了路径，就不再看 `.gitignore`。现在调用方的 `glob` 不再作为 rg 的 `--glob`：文件名部分交给 rg 缩小范围（`--type-add`，这种过滤排在 `.gitignore` 之后），整条 glob 由 ccnm 按 rg 原来的规则过滤结果。
+
+**`glob` 的含义没有变**，仍是 rg（也就是 gitignore）的规则，和 `list_files` 的 `glob` 不一样：
+
+| 写法 | 匹配 |
+| --- | --- |
+| 不含 `/`，如 `*.rs` | 任意深度的文件名 |
+| 含 `/`，如 `src/*.rs` | 从 workspace 根算起的整条路径，`*` 不跨目录；`search_text` 的 `path` 不改变这个起点 |
+| 以 `/` 结尾，如 `src/` | 只匹配目录，所以什么文件都匹配不到 |
+| 以 `!` 开头，如 `!*.md` | 排除规则，其余文件照搜 |
+
+"含不含 `/`"看的是写出来的整条 glob：`{*.rs,src/*.py}` 里的 `*.rs` 也只匹配根目录下的文件。唯一有意变了的写法是 `./src/*.rs`：rg 当年匹配不到任何文件，现在和 `src/*.rs` 一样。
+
+代价：文件名部分是 `**` 的 glob（如 `src/**`）没法交给 rg 缩小范围，rg 会读所有没被忽略的文件、由 ccnm 丢掉不匹配的，慢一些，仍受 60 秒超时约束。依据见 [P38 记录](../research/p38-glob-gitignore-2026-09-17.md)。
 
 ## 6. 连接生命周期
 

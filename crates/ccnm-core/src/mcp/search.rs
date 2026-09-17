@@ -17,9 +17,9 @@
 //!                 to change what ccnm searches or how
 //! --no-follow     a symlink is how a search leaves the workspace
 //! --no-hidden     dotfiles stay out, .git among them
-//! -g !.* -g !.git and both again as the last globs: a caller's glob that
-//!                 matches a directory, or a --type, overrides --no-hidden,
-//!                 and of several matching globs rg lets the last one win
+//! -g !.* -g !.git and both again as globs: a --type (the caller's, or the
+//!                 one a caller's glob becomes, below) overrides --no-hidden,
+//!                 and an exclusion glob overrides a type
 //! cwd = root      rg is given a relative scope from the workspace root, so
 //!                 the paths it prints are relative and no absolute path of
 //!                 the Runtime Node can reach the model
@@ -44,6 +44,27 @@
 //! come from `--max-count 1` (rg stops reading a file at its first match),
 //! counts from counting match events. A count therefore counts matching
 //! lines, like `rg --count`, and a multi-line match counts once.
+//!
+//! # The caller's glob is not rg's `--glob`
+//!
+//! In rg 15.2.0 a `--glob` that matches a path settles it on the spot:
+//! `.gitignore` is never consulted, for a file or for a directory. So
+//! `glob: "**"` searched `target/` and `node_modules/`, and `**/*.yml` found
+//! the `secret.yml` that `.gitignore` names (P38 record). Rejecting globs
+//! that can match a directory would not have fixed the second.
+//!
+//! What rg does consult after `.gitignore` is a file type, and a type never
+//! applies to a directory. So the glob goes in two halves. The name part of
+//! each alternative (`*.yml` of `config/**/*.yml`) becomes a throwaway type
+//! with `--type-add`, which keeps rg from reading files that cannot match;
+//! the whole pattern is then applied to every path rg reports, by
+//! [`Glob::matches_file_as_rg`], which keeps the meaning a `--glob` had.
+//! A name rg cannot take as a type definition (it has a `:`) skips the
+//! first half, and so does a caller's own `type`: rg ORs types together,
+//! and the filter alone is exact.
+//!
+//! A glob that starts with `!` is an exclusion. It lets nothing in, so it
+//! cannot step past `.gitignore`, and it still goes to rg as `--glob`.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -252,14 +273,6 @@ impl Plan {
             }
             Some(name) => Some(name.to_string()),
         };
-        // Refused rather than passed on: a file the glob matches is let in
-        // before rg ever looks at its type, so `glob: src/**, type: rust`
-        // quietly returns Python too (rg 15.2.0).
-        if file_type.is_some() && glob.is_some() {
-            return Err(Error::invalid_args(
-                "type and glob cannot be combined: ripgrep lets a matching glob override the type; use one of them, e.g. glob **/*.rs",
-            ));
-        }
 
         let rel_dir = match args.path.as_deref().map(str::trim) {
             None | Some("") | Some(".") | Some("./") => String::new(),
@@ -326,14 +339,25 @@ impl Plan {
             // One argument with `=`: a type spelled `-x` stays a value.
             cmd = cmd.arg(format!("--type={name}"));
         }
-        if let Some(glob) = &self.glob {
-            cmd = cmd.args(["--glob", glob.source()]);
+        match &self.glob {
+            Some(glob) if is_exclusion(glob) => cmd = cmd.args(["--glob", glob.source()]),
+            Some(glob) => {
+                // Narrowing only; `Collector` applies the whole pattern.
+                let names = glob.file_names();
+                if self.file_type.is_none() && names.iter().all(|name| !name.contains(':')) {
+                    for name in names {
+                        cmd = cmd.arg(format!("--type-add={GLOB_TYPE}:{name}"));
+                    }
+                    cmd = cmd.arg(format!("--type={GLOB_TYPE}"));
+                }
+            }
+            None => {}
         }
-        // After the caller's glob, not before: when several globs match a
-        // path rg lets the last one win, and a glob beats `--no-hidden`.
-        // In the other order `*` or `**` matches `.github/` and `.git/`
-        // themselves and walks straight back into both (rg 15.2.0). A
-        // `--type` does the same for a dotfile of that type, `src/.x.rs`.
+        // Last, although the order only matters against a glob that lets
+        // things in, which rg no longer gets: a `--type` lets a dotfile of
+        // that type past `--no-hidden` (`src/.x.rs`), and these exclusions
+        // are what stop it. Before P38 the caller's `**` came after them and
+        // walked back into `.github/` and `.git/`.
         if !self.include_hidden {
             cmd = cmd.args(["--glob", "!.*"]);
         }
@@ -357,6 +381,15 @@ impl Plan {
     }
 }
 
+/// The throwaway rg type a caller's glob is narrowed with. Any name rg
+/// does not already define would do.
+const GLOB_TYPE: &str = "ccnmglob";
+
+/// `!pattern` excludes. It is the one form still handed to rg as a glob.
+fn is_exclusion(glob: &Glob) -> bool {
+    glob.source().starts_with('!')
+}
+
 /// One line of the rendered answer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Line {
@@ -368,6 +401,9 @@ struct Line {
 /// Reads rg's JSON stream and decides when to stop it.
 struct Collector {
     mode: OutputMode,
+    /// The caller's glob, applied here rather than by rg. `None` without
+    /// one, and for an exclusion, which rg applies.
+    filter: Option<Glob>,
     max_results: usize,
     scope: String,
     /// `path -> lines`, in the order rg found them. Content mode only.
@@ -387,6 +423,7 @@ impl Collector {
     fn new(plan: &Plan) -> Collector {
         Collector {
             mode: plan.mode,
+            filter: plan.glob.clone().filter(|glob| !is_exclusion(glob)),
             max_results: plan.max_results as usize,
             scope: plan.scope().to_string(),
             groups: Vec::new(),
@@ -443,7 +480,11 @@ impl Collector {
                 .insert("a file whose name is not valid UTF-8 was skipped".into());
             return None;
         };
-        self.safe_path(&path)
+        let path = self.safe_path(&path)?;
+        match &self.filter {
+            Some(glob) if !glob.matches_file_as_rg(&path) => None,
+            _ => Some(path),
+        }
     }
 
     /// A match in `files_with_matches` or `count`. Only the path goes back,
@@ -1001,27 +1042,149 @@ mod tests {
         assert!(rust.hits.iter().all(|h| h.path.ends_with(".rs")));
         assert!(!rust.text.contains(".dot.rs"), "{}", rust.text);
 
-        for (file_type, glob) in [("nosuchtype", None), ("-x", None), ("", None)] {
+        for file_type in ["nosuchtype", "-x", ""] {
             let e = err(
                 &root,
                 &SearchTextArgs {
                     file_type: Some(file_type.into()),
-                    glob,
                     ..args("needle")
                 },
             );
             assert_eq!(e.code(), ErrorCode::InvalidArgs, "{file_type}: {e}");
         }
-        let e = err(
+    }
+
+    /// P37 refused this pair: with the glob handed to rg as `--glob`, a
+    /// file the glob matched was never checked against the type. The glob
+    /// is a filter now, so both hold.
+    #[test]
+    fn type_and_glob_together_mean_both() {
+        let root = workspace("typeglob");
+        fs::write(root.join("src/tool.py"), "needle = 1\n").unwrap();
+        fs::create_dir_all(root.join("tests")).unwrap();
+        fs::write(root.join("tests/t.rs"), "// needle\n").unwrap();
+        let r = search(
             &root,
             &SearchTextArgs {
                 file_type: Some("rust".into()),
                 glob: Some("src/**".into()),
+                output_mode: Some(OutputMode::FilesWithMatches),
                 ..args("needle")
             },
         );
-        assert_eq!(e.code(), ErrorCode::InvalidArgs);
-        assert!(e.message().contains("cannot be combined"), "{e}");
+        let mut listed: Vec<&str> = r.text.lines().filter(|l| !l.starts_with('[')).collect();
+        listed.sort();
+        assert_eq!(listed, ["src/lib.rs", "src/main.rs"], "{}", r.text);
+    }
+
+    fn listed(root: &Path, glob: &str) -> Vec<String> {
+        let r = search(
+            root,
+            &SearchTextArgs {
+                glob: Some(glob.into()),
+                output_mode: Some(OutputMode::FilesWithMatches),
+                ..args("needle")
+            },
+        );
+        let mut paths: Vec<String> = r
+            .text
+            .lines()
+            .filter(|l| !l.starts_with('['))
+            .map(str::to_string)
+            .collect();
+        paths.sort();
+        paths
+    }
+
+    /// The P38 defect. rg 15.2.0 settles a path the moment a `--glob`
+    /// matches it and never asks `.gitignore`: `**` walked into the ignored
+    /// directory, and `*.rs` -- which cannot match a directory at all --
+    /// still found the ignored file. Both fail with the glob handed to rg.
+    #[test]
+    fn a_glob_does_not_reach_what_gitignore_rules_out() {
+        let root = workspace("gitignored");
+        fs::write(root.join(".gitignore"), "ignored/\ngenerated.rs\n").unwrap();
+        fs::write(root.join("src/generated.rs"), "// needle, generated\n").unwrap();
+        for glob in [
+            "*",
+            "**",
+            "**/*",
+            "*.rs",
+            "**/*.rs",
+            "src/**",
+            "{src,ignored}/**",
+        ] {
+            let paths = listed(&root, glob);
+            assert!(
+                paths
+                    .iter()
+                    .all(|p| !p.starts_with("ignored/") && !p.ends_with("generated.rs")),
+                "glob {glob}: {paths:?}"
+            );
+            assert!(
+                paths.contains(&"src/main.rs".to_string()),
+                "glob {glob}: {paths:?}"
+            );
+        }
+    }
+
+    /// Everything else a glob meant when rg applied it, measured on rg
+    /// 15.2.0 with the same files before the change.
+    #[test]
+    fn a_glob_still_means_what_it_meant_to_ripgrep() {
+        let root = workspace("globmeaning");
+        for (path, body) in [
+            ("src/nested/deep.rs", "needle\n"),
+            ("a/src/other.rs", "needle\n"),
+            ("top.rs", "needle\n"),
+            ("src/tool.py", "needle\n"),
+            ("notes.md", "needle\n"),
+        ] {
+            fs::create_dir_all(root.join(path).parent().unwrap()).unwrap();
+            fs::write(root.join(path), body).unwrap();
+        }
+        let all_rs = [
+            "a/src/other.rs",
+            "src/lib.rs",
+            "src/main.rs",
+            "src/nested/deep.rs",
+            "top.rs",
+        ];
+        assert_eq!(
+            listed(&root, "*.rs"),
+            all_rs,
+            "no slash: the name, any depth"
+        );
+        assert_eq!(listed(&root, "**/*.rs"), all_rs);
+        assert_eq!(
+            listed(&root, "src/*.rs"),
+            ["src/lib.rs", "src/main.rs"],
+            "a slash anchors at the root"
+        );
+        assert_eq!(
+            listed(&root, "**/src/*.rs"),
+            ["a/src/other.rs", "src/lib.rs", "src/main.rs"]
+        );
+        assert_eq!(listed(&root, "{*.rs,src/*.py}"), ["src/tool.py", "top.rs"]);
+        assert!(
+            listed(&root, "src/").is_empty(),
+            "a trailing slash is directories only"
+        );
+        // An exclusion is still rg's.
+        let not_rs = listed(&root, "!*.rs");
+        assert_eq!(not_rs, ["notes.md", "src/tool.py"], "{not_rs:?}");
+    }
+
+    /// rg reads `name:include:other` in a type definition as an include,
+    /// and a second `:` as a malformed one, so such a name is not narrowed
+    /// on -- the filter still answers.
+    #[test]
+    fn a_glob_rg_cannot_take_as_a_type_still_filters() {
+        let root = workspace("colon");
+        fs::write(root.join("src/a:b.txt"), "needle\n").unwrap();
+        fs::write(root.join("src/include:rust"), "needle\n").unwrap();
+        assert_eq!(listed(&root, "*:b.txt"), ["src/a:b.txt"]);
+        assert_eq!(listed(&root, "include:rust"), ["src/include:rust"]);
     }
 
     #[test]
@@ -1362,13 +1525,19 @@ mod tests {
                 "{expected} missing: {argv:?}"
             );
         }
-        // The exclusions are the last globs, after the caller's.
+        // The caller's glob is not a `--glob`: it narrows through a type,
+        // and the only globs are the exclusions.
         let globs: Vec<&str> = argv
             .windows(2)
             .filter(|w| w[0] == "--glob")
             .map(|w| w[1].as_str())
             .collect();
-        assert_eq!(globs, ["**/*.rs", "!.*", "!.git"]);
+        assert_eq!(globs, ["!.*", "!.git"]);
+        assert!(
+            argv.contains(&"--type-add=ccnmglob:*.rs".to_string()),
+            "{argv:?}"
+        );
+        assert!(argv.contains(&"--type=ccnmglob".to_string()), "{argv:?}");
         // The query is one argument, after `--`, and never spliced into a
         // string a shell could reinterpret.
         let end = argv.iter().position(|a| a == "--").unwrap();

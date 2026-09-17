@@ -1,4 +1,4 @@
-//! The glob syntax `list_files` accepts, and later `search_text`.
+//! The glob syntax `list_files` and `search_text` accept.
 //!
 //! Written here rather than pulled in as a crate because it is a small
 //! pure function with a large blast radius, and because the alternative
@@ -38,6 +38,12 @@ const MAX_SEGMENTS: usize = 64;
 pub struct Glob {
     source: String,
     alternatives: Vec<Vec<String>>,
+    /// The pattern has a `/` other than a trailing one. See
+    /// [`Glob::matches_file_as_rg`].
+    rooted: bool,
+    /// The pattern ends with `/`: under ripgrep's rules it names
+    /// directories only.
+    dir_only: bool,
 }
 
 impl Glob {
@@ -88,6 +94,8 @@ impl Glob {
         Ok(Glob {
             source: pattern.to_string(),
             alternatives,
+            rooted: pattern.trim_end_matches('/').contains('/'),
+            dir_only: pattern.ends_with('/'),
         })
     }
 
@@ -102,6 +110,47 @@ impl Glob {
         self.alternatives
             .iter()
             .any(|segments| match_segments(segments, &text))
+    }
+
+    /// Does the file at `path` (relative to the workspace root) match the
+    /// way ripgrep's `--glob` would have matched it? Those are gitignore's
+    /// rules, and `search_text` promised them before it stopped handing
+    /// the glob to rg (P38):
+    ///
+    /// ```text
+    /// *.rs         no `/`: the file name, at any depth
+    /// src/*.rs     a `/`: the whole path from the root
+    /// src/         a trailing `/`: directories only, so never a file
+    /// ```
+    ///
+    /// Whether a pattern is rooted is decided on the pattern as written,
+    /// before braces are expanded, as gitignore decides it: in
+    /// `{*.rs,src/*.py}` the `*.rs` is rooted too.
+    pub fn matches_file_as_rg(&self, path: &str) -> bool {
+        if self.dir_only {
+            return false;
+        }
+        if self.rooted {
+            return self.matches(path);
+        }
+        let name = path.rsplit('/').next().unwrap_or(path);
+        self.alternatives
+            .iter()
+            .any(|segments| match_segments(segments, &[name]))
+    }
+
+    /// The last segment of every alternative, deduplicated: what a file's
+    /// name has to match, whatever directory it is in.
+    pub fn file_names(&self) -> Vec<&str> {
+        let mut names: Vec<&str> = Vec::new();
+        for segments in &self.alternatives {
+            if let Some(last) = segments.last()
+                && !names.contains(&last.as_str())
+            {
+                names.push(last);
+            }
+        }
+        names
     }
 }
 
@@ -346,6 +395,46 @@ mod tests {
         // Unlike a shell, a leading dot is matched by `*`; hiding dotfiles
         // is list_files's job, not the pattern's.
         assert!(g("*").matches(".gitignore"));
+    }
+
+    /// The rules ripgrep's `--glob` applied, measured on rg 15.2.0 (P38
+    /// record): no `/` is the file name anywhere, a `/` anchors at the
+    /// root, a trailing `/` is directories only.
+    #[test]
+    fn matching_a_file_as_rg_would() {
+        let rs = g("*.rs");
+        assert!(rs.matches_file_as_rg("main.rs"));
+        assert!(rs.matches_file_as_rg("src/mcp/read.rs"), "any depth");
+        assert!(!rs.matches_file_as_rg("src/main.toml"));
+
+        let rooted = g("src/*.rs");
+        assert!(rooted.matches_file_as_rg("src/a.rs"));
+        assert!(!rooted.matches_file_as_rg("src/nested/b.rs"));
+        assert!(
+            !rooted.matches_file_as_rg("a/src/x.rs"),
+            "anchored at the root"
+        );
+        assert!(g("**/src/*.rs").matches_file_as_rg("a/src/x.rs"));
+        assert!(g("src/**").matches_file_as_rg("src/nested/b.rs"));
+
+        assert!(!g("src/").matches_file_as_rg("src"), "directories only");
+        assert!(!g("src/").matches_file_as_rg("src/a.rs"));
+
+        // Rooted is a property of the pattern as written.
+        let mixed = g("{*.rs,src/*.py}");
+        assert!(mixed.matches_file_as_rg("a.rs"));
+        assert!(!mixed.matches_file_as_rg("src/a.rs"));
+        assert!(mixed.matches_file_as_rg("src/b.py"));
+
+        assert!(g("*").matches_file_as_rg("deep/down/file"));
+        assert!(g("**").matches_file_as_rg("deep/down/file"));
+    }
+
+    #[test]
+    fn file_names_are_the_last_segments_once_each() {
+        assert_eq!(g("**/*.{rs,toml}").file_names(), ["*.rs", "*.toml"]);
+        assert_eq!(g("{src,tests}/*.rs").file_names(), ["*.rs"]);
+        assert_eq!(g("src/**").file_names(), ["**"]);
     }
 
     #[test]

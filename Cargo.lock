@@ -133,6 +133,7 @@ dependencies = [
  "serde",
  "serde_json",
  "toexec-fs",
+ "toexec-skill",
  "toexec-text",
  "tokio",
  "toml",
@@ -862,6 +863,11 @@ dependencies = [
 name = "toexec-fs"
 version = "0.2.0"
 source = "git+https://github.com/xwfe/toexec.git?tag=toexec-fs-v0.2.0#e8da82a5411c4f5e95258a6bfce6aac14527b80b"
+
+[[package]]
+name = "toexec-skill"
+version = "0.1.0"
+source = "git+https://github.com/xwfe/toexec.git?tag=toexec-skill-v0.1.0#6377cbf269609616e6a478d0c469e46aad7148d7"
 
 [[package]]
 name = "toexec-text"

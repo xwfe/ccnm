@@ -29,6 +29,9 @@ toexec-text = { git = "https://github.com/xwfe/toexec.git", tag = "toexec-text-v
 # 同一个仓库的第二个 crate：原子文件替换。tag 各自独立，所以升级一个
 # 不会顺带把另一个也换掉。
 toexec-fs = { git = "https://github.com/xwfe/toexec.git", tag = "toexec-fs-v0.2.0" }
+# 第三个：读 SKILL.md（frontmatter、参数替换、注入命令识别）。P36 的项目 skills
+# 用它；gld 原来自己的读法不认多行 description，也会换过来。
+toexec-skill = { git = "https://github.com/xwfe/toexec.git", tag = "toexec-skill-v0.1.0" }
 base64 = "0.22"
 clap = { version = "4", features = ["derive", "env"] }
 serde = { version = "1", features = ["derive"] }

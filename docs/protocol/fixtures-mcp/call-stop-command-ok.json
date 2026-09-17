@@ -1,0 +1,17 @@
+{
+  "$schema_ref": "#/$defs/call_tool_result_ok",
+  "$note": "stop_command（P41）：停掉一个后台命令，返回它怎么结束的。之后用同一个 output_ref 读，状态行是 [stopped by stop_command after 0.5 s]。已经结束的命令再停不算错，末尾多一行 [it had already ended; nothing was stopped]。取自真实 server。",
+  "message": {
+    "jsonrpc": "2.0",
+    "id": 4,
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "$ echo ready on :5173; sleep 30\nstopped by stop_command after 0.5 s, 15 B stdout, 0 B stderr\n[read_output with output_ref r-35ec0efe2ed743c9 for what it wrote]"
+        }
+      ],
+      "isError": false
+    }
+  }
+}

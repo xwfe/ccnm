@@ -1,9 +1,10 @@
 //! The commands a server has running, and how they are stopped.
 //!
 //! Three things stop a command they are not themselves waiting for: a client
-//! that cancels the call running it (Claude Code sends that when the person
-//! presses Esc, or stops a call it had moved to the background), `stop_command`
-//! naming a background command, and the server when its session ends.
+//! that cancels the call running it (Claude Code 2.1.273's MCP client sends
+//! `notifications/cancelled` whenever the abort signal it gives each tool call
+//! fires), `stop_command` naming a background command, and the server when
+//! its session ends.
 //!
 //! The last one is what makes a background command safe to offer. Before
 //! P41 a server whose client went away sat waiting for its commands to end

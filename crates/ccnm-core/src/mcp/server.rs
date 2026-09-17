@@ -738,7 +738,7 @@ impl Server {
         });
         // A client that cancels the call wants the command gone, not just
         // the answer: before P41 it ran on to its end or its timeout, up to
-        // ten minutes, after the person had pressed Esc.
+        // ten minutes after the client had given up on it.
         let ran = tokio::select! {
             ran = &mut task => ran,
             () = context.ct.cancelled() => {

@@ -316,6 +316,7 @@ read_output
 load_skill
 view_image
 read_notebook
+stop_command
 ```
 
 主要行为：
@@ -326,6 +327,8 @@ read_notebook
 - `read_notebook` 按 cell 显示 Jupyter notebook：每个 cell 的 id、类型、源码，代码 cell 后面跟着输出，输出里的图作为图片。改 cell 用 `apply_patch` 的 `edit_notebook`，参数和 Claude Code 的 NotebookEdit 同名，见[协议第 5.4 节](protocol/remote-workspace-mcp-v1.md#54-read_notebook-与-edit_notebookjupyter-notebook-按-cell-读写p40-新增)。不执行 cell——要跑用 `exec_command` 调 `jupyter nbconvert --execute`；
 - `exec_command` 二选一：`cmd` 给程序和参数（argv，不经过 shell），`shell` 给一行命令、用 `bash -c` 跑（Runtime 上要有 bash，没有会报 `CCNM_E_DEPENDENCY`）。两种写法的权限和确认完全一样，它本质上就是命令执行能力；
 - 大输出由 `read_output` 分页读取，避免一次把全部输出塞进模型上下文；
+- 要一直跑的命令（dev server、watch、很长的构建）用 `exec_command` 加 `run_in_background: true`：马上拿到 `output_ref`，命令在 Runtime 上接着跑。`read_output` 读它到目前为止的输出，加 `wait_ms` 等它结束；`stop_command` 停掉它。**后台命令活不过会话**：会话结束、断开、在 Claude Code 里 `/mcp` 重连，都会停掉这个会话起的所有命令。同时最多 8 个。细节见[协议第 5.5 节](protocol/remote-workspace-mcp-v1.md#55-后台命令run_in_backgroundwait_msstop_commandp41-新增)；
+- 客户端取消一条还没跑完的 `exec_command`（MCP 的 `notifications/cancelled`，Claude Code 中止工具调用时发它），Runtime 上的命令会被停掉（先 TERM，2 秒后 KILL），不会接着跑完；
 - `load_skill` 把项目自带的 skills 交给模型，见下一节；
 - `view_image` 把 Runtime 上的 PNG、JPEG、GIF、WebP 图片交给模型看（单个文件最多 3932160 字节，太大时报错并给出缩小的命令）；图片原样发出，Claude Code 会自己缩放。受管 Codex 会话里模型要在脚本里调 `image()` 才看得到图，规则见[协议第 5.3 节](protocol/remote-workspace-mcp-v1.md#53-view_image看-workspace-里的图片p39-新增)；
 - Claude 使用项目根 `CLAUDE.md` 上下文；Codex 使用根目录 `AGENTS.override.md`/`AGENTS.md` 的已测优先级；
@@ -368,7 +371,7 @@ unknown 的人工恢复步骤见[支持矩阵](support-matrix.md)。命令 parse
 以下能力暂时延后，不按功能清单机械实现：
 
 - Git 专用 MCP 工具；
-- 托管后台长进程；
+- 活得比会话久的后台进程（后台命令随会话结束而停，见上面"当前模型能做什么"）；
 - Browser provider；
 - image provider；
 - Linux Controller；

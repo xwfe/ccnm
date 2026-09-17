@@ -1,0 +1,17 @@
+{
+  "$schema_ref": "#/$defs/call_tool_result_ok",
+  "$note": "read_output 读一个还在跑的后台命令（P41）：读到末尾不是 eof，脚注写“到目前为止”和下次从哪读；最后一行是命令的状态。取自真实 server，命令起了 0.5 秒。前台命令的页没有状态行，和 P41 之前逐字节一样。",
+  "message": {
+    "jsonrpc": "2.0",
+    "id": 3,
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "ready on :5173\n[15 bytes so far and the command is still running; read again from offset=15, with wait_ms to wait for it]\n[running for 0.5 s]"
+        }
+      ],
+      "isError": false
+    }
+  }
+}

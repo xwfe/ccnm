@@ -1,0 +1,17 @@
+{
+  "$schema_ref": "#/$defs/call_tool_result_ok",
+  "$note": "exec_command 带 run_in_background（P41）：不等命令结束，马上返回 output_ref。取自真实 server，参数 {\"shell\": \"echo ready on :5173; sleep 30\", \"run_in_background\": true}；没有给 timeout_ms，所以没有期限，靠 stop_command 或会话结束停。在没有隔离执行身份、靠 allow_unconfined_exec 放行的 Runtime 上，末尾还会多一行说明，这里去掉了。",
+  "message": {
+    "jsonrpc": "2.0",
+    "id": 2,
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "$ echo ready on :5173; sleep 30\nrunning in the background as output_ref r-35ec0efe2ed743c9\n[read_output with this output_ref shows what it has written so far, and with wait_ms waits for it to finish; stop_command stops it; it is stopped when this session ends]"
+        }
+      ],
+      "isError": false
+    }
+  }
+}

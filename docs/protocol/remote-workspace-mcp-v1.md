@@ -8,6 +8,7 @@
 > 2026-09-17（P37）给三个老工具加了可选参数：`search_text` 的输出模式、跨行、文件类型和 dotfile，`apply_patch` 的 op `write`，`exec_command` 的 `shell`，见第 5.2 节。不带新参数的调用和以前完全一样；`exec_command` 的 `required` 因此从 `["cmd"]` 变成空。同日修了两个行为缺陷：调用方的 `glob` 能把 dotfile 和 `.gitignore` 排除的文件带回搜索（同一节末尾，P37、P38）。
 > 2026-09-17（P39）加了第九个工具 `view_image`，只读，把 workspace 里的图片作为 MCP 图片块交给模型，见第 5.3 节。
 > 2026-09-17（P40）加了第十个工具 `read_notebook`（只读），`apply_patch` 多了 op `edit_notebook`，按 cell 读写 Jupyter notebook，见第 5.4 节。`read_file` 读 `.ipynb` 的结果不变，只多一条提示。
+> 2026-09-18（P41）加了后台命令：`exec_command` 的 `run_in_background`、`read_output` 的 `wait_ms`，和只在 coding 模式有的第十一个工具 `stop_command`，见第 5.5 节。前台调用的结果不变。同时修了两个行为缺陷：`notifications/cancelled` 之后命令照跑、连接结束时远端 server 要等命令自己跑完才退出（第 6.2 节）。
 
 面向的读者是**已经在本机跑着 Claude Code / Codex / 别的 MCP Host，但项目在另一台机器上的人**。它给你的不是一条裸 SSH 通道，而是一个绑定了 workspace 的远程项目工具集。
 
@@ -180,10 +181,13 @@ external_mcp = "read"      # disabled | read | coding
 | `read_output` | ❌ | ✅ |
 | `apply_patch` | ❌ | ✅ |
 | `exec_command` | ❌ | ✅ |
+| `stop_command` | ❌ | ✅ |
 
 `read` 模式**永远没有 `exec_command`**。哪怕调用方保证"只跑 `cat`"也不行：任意 exec 能写磁盘、能联网、能起后台进程，靠解析命令字符串判断只读是假安全。将来真要"只读 shell"，那得靠独立的 OS sandbox 或者白名单可执行文件契约，不是靠猜。
 
 `read` 模式也没有 `read_output`，理由不同：`output_ref` 只在**产生它的那个 session 的保留目录里**有意义（实现上 `read_output` 就是拿这个 ref 去 join 本 session 的目录）。read 模式没有 `exec_command`，永远产不出 ref，留着它就是一个必然失败的工具；而让它去解析**别的 session** 的 ref，就是跨会话泄漏。所以直接不发。
+
+`stop_command`（P41）同理：read 模式起不了命令，也就没有可停的。
 
 > 这比 ROADMAP P9.2 的下限（"read 模式没有 `apply_patch` 和 `exec_command`"）更窄。窄的那一格是 `read_output`，理由如上。
 
@@ -219,6 +223,7 @@ transport 的认证边界是 **OpenSSH identity + 独立的 Runtime OS 账号**�
 | `read_output` | read | `true` | — | — | `false` |
 | `apply_patch` | write | `false` | `true` | `false` | `false` |
 | `exec_command` | exec | `false` | `true` | `false` | `true` |
+| `stop_command` | exec | `false` | `true` | `false` | `false` |
 
 （按 MCP 规范，`destructiveHint` / `idempotentHint` 只在 `readOnlyHint` 为 `false` 时才有意义，所以只读那几行留空。）
 
@@ -396,6 +401,38 @@ rows: 3
 
 **为什么不直接让 `read_file` 按 cell 显示**：`read_file` 返回 notebook 的 JSON 文本，已经有人照着这份文本用 `update` 改 notebook；换成 cell 视图，这些改动就对不上了——冻结契约下这算改语义。所以 `read_file` 的结果不变，只在末尾多一条提示，指向 `read_notebook` 和 `edit_notebook`。
 
+### 5.5 后台命令：`run_in_background`、`wait_ms`、`stop_command`（P41 新增）
+
+**怎么用**，三步：
+
+1. `exec_command` 加 `"run_in_background": true`。调用马上返回 `output_ref`，命令在远端接着跑（[样例](fixtures-mcp/call-exec-background-ok.json)）。
+2. `read_output` 拿这个 ref 读。命令还在跑时，读到末尾不算结束：脚注写"到目前为止"和下次从哪个 offset 读，最后一行是命令的状态（[样例](fixtures-mcp/call-read-output-running.json)）。给 `wait_ms` 就先等它结束——结束立刻返回，等满了也返回，最多 600000 毫秒。
+3. `stop_command` 停掉它：命令和它起的所有进程（同一个进程组）先收到 TERM，2 秒后还在就 KILL；返回它怎么结束的（[样例](fixtures-mcp/call-stop-command-ok.json)）。已经结束的命令再停不算错，照实报状态。
+
+**它活多久**：
+
+- 没给 `timeout_ms` 就没有期限；给了就到点杀，上限和前台一样是 600000。
+- **活不过连接。** 连接结束（Host 关掉、SSH 断、Managed 会话 `/mcp Reconnect`）时，远端 server 先停掉这条连接起的所有命令——前台后台都算，停法和 `stop_command` 一样——再放写入互斥、退出。
+- 同一条连接最多 **8 个**后台命令同时在跑，第 9 个报 `CCNM_E_INVALID_ARGS`，消息里列出在跑的 `output_ref`。原因见第 8 节"保留输出"：在跑的命令的输出不参与回收，8 个最多多占 1 GiB。
+- 其余和前台完全一样：执行门、人工确认、`exec_sandbox`、环境变量剥离、每个流 64 MiB。
+
+**状态行**说的是这些之一：
+
+| 状态行 | 意思 |
+| --- | --- |
+| `running for 12.3 s` | 还在跑 |
+| `exited 0 after 12.3 s` | 自己结束了，带退出码 |
+| `killed on its timeout after 600.0 s` | 到了 `timeout_ms` |
+| `stopped by stop_command after 12.3 s` | 被 `stop_command` 停掉 |
+| `stopped when its session ended, after 12.3 s` | 连接结束时被停掉（只有重连后的 Managed 会话读得到这一行） |
+| `no longer running, and its exit status is unknown: …` | 跑它的 server 没来得及记下就没了（被 `SIGKILL` 之类）；这种情况下它起的进程组没人收，可能还在 |
+
+**为什么命令结束时不通知模型**：MCP 里没有现成的办法让 server 叫醒模型。Claude Code 2.1.273 能让 MCP server 往会话里推消息（channels），但要组织管理员打开；MCP 标准的长任务扩展（SEP-2663）客户端代码在，入口是关着的。所以只能由模型来问，`wait_ms` 让它不必空转轮询。
+
+**两个 Host 等一次调用多久**（决定 `wait_ms` 能给多大）：Claude Code 2.1.273 对 stdio MCP server 的空闲超时是 30 分钟；交互会话里一次调用超过 120 秒，它自己把这次调用转到后台，结果照样回来。Codex 0.154.0 默认配置等满一次 75 秒的调用没有超时，更长的没测。依据见 [P41 记录](../research/p41-background-commands-2026-09-18.md)。
+
+**不做**：给命令喂 stdin、分配终端（Codex 不开 tty 时 stdin 也是关的）；逐行推送输出（Claude Code 的 Monitor）；前台超时转后台（前台照旧到点杀）；命令活过连接。
+
 ## 6. 连接生命周期
 
 ### 6.1 正常路径
@@ -404,9 +441,9 @@ rows: 3
 | --- | --- |
 | 启动 | Host 起 bridge 进程；bridge 立刻建 SSH，在 initialize 之前就完成远端打开 |
 | `initialize` | 由远端 server 回答：协议版本、`serverInfo`（name `ccnm`，version 是远端 ccnm 的版本）、tools 能力、`instructions` |
-| `tools/list` | 按模式返回 7 个或 10 个工具（冻结时是 4 个或 7 个，P36、P39、P40 各加了一个只读工具） |
+| `tools/list` | 按模式返回 7 个或 11 个工具（冻结时是 4 个或 7 个，P36、P39、P40 各加了一个只读工具，P41 加了 coding 模式的 `stop_command`） |
 | `tools/call` | 在远端项目目录里真的执行 |
-| EOF | Host 关 stdin → bridge 关 SSH → 远端 server 退出 → 写入互斥释放 |
+| EOF | Host 关 stdin → bridge 关 SSH → 远端 server 停掉这条连接起的所有命令 → 退出 → 写入互斥释放 |
 
 ### 6.2 断线、中断、崩溃
 
@@ -414,7 +451,8 @@ rows: 3
 - **SSH 断了**：bridge 把这条连接当作结束，退出；**不自动重连**。重连意味着换一个远端 session，而调用方手里的 `output_ref` 属于旧 session——静默重连会让它们指向不存在的东西。
 - **bridge 自己崩了**：同一件事——崩的就是那条 ssh，远端 server 读到 EOF 后结束。
 - **连接半开（对面没了，Runtime 这边不知道）**：远端 server 空闲时**每 30 秒主动发一次 MCP `ping`**（MCP 规范允许任一方发）。Host 在就回一个空结果；Host 那头的连接已经不存在时，这一写会被对方内核 RST，sshd 退出，server 读到 EOF，照正常路径结束、锁变 `released`。**ping 没回应不会断开**——对面只是睡着的话 TCP 还活着，断了反而害人重连；只有写失败才结束。Host 必须按 MCP 规范回应 `ping`，至少不能因为收到它就关连接：实测 Claude Code 2.1.269 / 2.1.272 都回 `{"result":{}}`，工具调用进行中收到也一样；Codex 用的 rmcp 客户端在 SDK 源码里自动回应。
-- **MCP 的 `notifications/cancelled`**：转发给远端；但一次已经在跑的 `exec_command` 是否能立刻停下取决于那个进程，契约不承诺"取消返回 = 命令已停"。
+- **MCP 的 `notifications/cancelled`**：转发给远端。被取消的是一次还没回答的 `exec_command` 时，远端停掉这条命令（TERM，2 秒后 KILL 整个进程组）；取消在命令开始之前到达时，命令不会启动。取消是通知、没有回应，所以契约不承诺"发出取消 = 命令已停"。已经返回了的后台命令不受取消影响，用 `stop_command` 停。（P41 之前取消不停命令，命令照跑到结束或超时，最长 10 分钟。）
+- **连接结束时还有命令在跑**：远端 server 先停掉它们（同上），再放写入互斥、退出。P41 之前是等它们自己跑完——一个 8 秒的命令让 server 在断开后又占了 8.0 秒写入互斥，最长可到 10 分钟。
 - **bridge 绝不影响 Managed session。** 它只管自己这一条 SSH 和这一个远端进程；不去枚举、不去清理别人的 session，哪怕它们属于同一个 workspace。
 
 ### 6.3 没有 resume
@@ -441,11 +479,12 @@ rows: 3
 | `read_file` 一次最多 | 2000 行（`max_lines`）、64 KiB（`max_bytes`，默认 32 KiB），超了给你续读的行号 |
 | `list_files` 一次最多 | 1000 条（`max_entries`） |
 | `search_text` | 200 条结果（只列文件、计数两种模式下是 200 个文件）、上下文 10 行、整体 32 KiB、单行 512 字节 |
-| `exec_command` 超时 | 最大 600000 ms（10 分钟） |
+| `exec_command` 超时 | 最大 600000 ms（10 分钟）；后台命令不给就没有期限 |
+| 后台命令 | 一条连接最多 8 个同时在跑；`read_output` 的 `wait_ms` 最大 600000 ms；停的时候 TERM 之后 2 秒 KILL，一个信号都够不着的（离开了进程组又占着管道）等 10 秒后放弃 |
 | `exec_command` 回传 | 预览总共默认 4 KiB，`preview_bytes` 最大 16 KiB；stderr 最多占一半，其余给 stdout，某个流超出时只留它的开头和结尾。完整输出用 `output_ref` 读 |
 | `read_output` 一次最多 | 32 KiB（默认 16 KiB） |
 | `apply_patch` | 一次最多 50 个文件；一次请求里所有文件的新内容**合计** 1 MiB；被编辑的文件超过 16 MiB 直接拒绝 |
-| 保留输出 | 每次运行的 stdout、stderr **各自**最多落盘 64 MiB，超出的不再写，命令照常跑完、结果里带一条说明；每个 session 只留最新的 100 次运行，开始第 101 次前删最旧的；一个 session 已结束运行的输出**合计**最多 256 MiB，每次运行结束后从最旧的删。还在跑的运行不删，所以同一个 session 并发跑命令时可以暂时超过 256 MiB，超出部分不超过"进行中的运行数 × 128 MiB" |
+| 保留输出 | 每次运行的 stdout、stderr **各自**最多落盘 64 MiB，超出的不再写，命令照常跑完、结果里带一条说明；每个 session 只留最新的 100 次运行，开始第 101 次前删最旧的；一个 session 已结束运行的输出**合计**最多 256 MiB，每次运行结束后从最旧的删。还在跑的运行不删，所以同一个 session 并发跑命令时可以暂时超过 256 MiB，超出部分不超过"进行中的运行数 × 128 MiB"；后台命令跑多久就算多久"进行中"，8 个最多 1 GiB |
 | `read_notebook` | 文件最多 16 MiB；一次最多 32 KiB 文本、单个输出 4 KiB、8 张图（合计不超过 `view_image` 的上限），放不下时停在 cell 边界 |
 | `view_image` | 文件最多 3932160 字节（base64 后 5 MiB，Claude Code 2.1.273 的上限）；只发 PNG、JPEG、GIF、WebP |
 | `instructions` | 2048 个 UTF-16 码元（含项目说明文件），超了由 ccnm 按行截断，见第 10 节 |

@@ -1002,12 +1002,42 @@ fn stage_one(planned: Planned) -> Result<Staged> {
 /// A lock the filesystem will not give an answer about is treated as
 /// held: refusing to accuse is the safe direction, and the same
 /// uncertainty makes `sweep_stale_temps` leave files alone.
+///
+/// A lock this takes it lets go of explicitly, not by closing the file:
+/// see [`probe_journal`].
 fn still_running(path: &Path) -> bool {
+    probe_journal(path, |_| {})
+}
+
+/// [`still_running`], with a hook for tests: `while_held` runs while the
+/// probe holds the lock, which is how a test hands a copy of the
+/// descriptor to a child the way a fork on another thread would.
+fn probe_journal(path: &Path, while_held: impl FnOnce(&std::fs::File)) -> bool {
     let Ok(file) = std::fs::File::open(path) else {
         return true;
     };
     match file.try_lock() {
-        Ok(()) => false,
+        Ok(()) => {
+            while_held(&file);
+            // Let go explicitly rather than by closing. A close releases
+            // the lock only once every copy of the descriptor is closed,
+            // and a thread that forks at this moment (`exec_command`,
+            // `list_files`, on this or another mcp-serve sharing the
+            // state directory) hands its child a copy until the child
+            // execs. Left to the close, the lock outlives this probe by
+            // that window, and the next probe finds it held and calls an
+            // interrupted commit "in progress" -- which lets a patch go
+            // ahead over it. LOCK_UN acts on the open file description,
+            // so every copy lets go at once.
+            if let Err(e) = file.unlock() {
+                tracing::warn!(
+                    journal = %path.display(),
+                    error = ?e,
+                    "could not unlock a patch journal explicitly"
+                );
+            }
+            false
+        }
         Err(std::fs::TryLockError::WouldBlock) => true,
         Err(e) => {
             tracing::warn!(
@@ -1213,6 +1243,11 @@ impl Drop for Journal {
         if !self.keep.get() {
             let _ = std::fs::remove_file(&self.path);
         }
+        // Explicitly, for the reason given in `probe_journal`. It matters
+        // for a kept journal: it is kept so that the next patch refuses,
+        // and the next patch would not while a child forked during this
+        // commit still holds a copy of the descriptor.
+        let _ = self.locked.unlock();
     }
 }
 
@@ -3135,6 +3170,126 @@ mod tests {
             },
         )
         .expect("held is held, whatever the mtime says");
+    }
+
+    /// A child given a copy of `file`'s descriptor, alive until killed.
+    /// That is what a fork on another thread holds until it execs: the
+    /// same open file description, and with it the flock.
+    fn child_holding_a_copy(file: &fs::File) -> std::process::Child {
+        std::process::Command::new("sleep")
+            .arg("60")
+            .stdin(std::process::Stdio::from(file.try_clone().unwrap()))
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap()
+    }
+
+    /// Is the file's lock held by somebody -- a fresh handle asks, then
+    /// lets go.
+    fn locked_by_someone(path: &Path) -> bool {
+        let probe = fs::File::open(path).unwrap();
+        match probe.try_lock() {
+            Ok(()) => {
+                probe.unlock().unwrap();
+                false
+            }
+            Err(std::fs::TryLockError::WouldBlock) => true,
+            Err(e) => panic!("{e:?}"),
+        }
+    }
+
+    /// A probe lets go of the journal's lock explicitly, not by closing
+    /// the file. A close releases the lock only once every copy of the
+    /// descriptor is closed, and a thread that forks while the probe
+    /// holds it (`exec_command`, `list_files`) hands its child a copy
+    /// until the child execs. Left to the close, the next probe finds the
+    /// lock held and calls an interrupted commit "in progress", and a
+    /// patch goes ahead over it.
+    #[test]
+    fn a_probe_lets_go_of_the_lock_even_when_a_child_holds_a_copy() {
+        let root = workspace("journal-fork-probe");
+        let journals = journals("journal-fork-probe");
+        let path = journals.join("99-fork.json");
+        fs::write(
+            &path,
+            serde_json::to_vec(&serde_json::json!({
+                "pid": 99, "root": root.clone(), "files": [],
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        // The premise first: a copy in a child keeps a lock that was
+        // only closed. If some platform released it on close, the test
+        // below would pass for the wrong reason. On its own file: this
+        // handle is copied by whatever the other test threads fork too,
+        // so the lock outlives the sleep by a few milliseconds, and the
+        // journal below must not have to wait for that.
+        let premise_path = journals.join("99-premise.json");
+        fs::write(&premise_path, b"{}").unwrap();
+        let handle = fs::File::open(&premise_path).unwrap();
+        handle.try_lock().unwrap();
+        let mut premise = child_holding_a_copy(&handle);
+        drop(handle);
+        let lingered = locked_by_someone(&premise_path);
+        premise.kill().unwrap();
+        premise.wait().unwrap();
+        assert!(
+            lingered,
+            "a copy of the descriptor in a child must keep a lock that was only closed"
+        );
+
+        // The product's probe, with a child handed a copy while it holds
+        // the lock. Nobody else holds the journal, so the probe says
+        // abandoned -- and so must the next one, child or no child.
+        let mut child = None;
+        let running = probe_journal(&path, |file| child = Some(child_holding_a_copy(file)));
+        let mut child = child.unwrap();
+        let running_after = still_running(&path);
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert!(!running, "nobody holds the journal");
+        assert!(
+            !running_after,
+            "the probe must let go of the lock explicitly: the child's copy kept it, and the next probe called an interrupted commit in progress"
+        );
+    }
+
+    /// The same for a journal kept on purpose: it is kept so that the
+    /// next patch refuses, and the next patch would not while a forked
+    /// child holds a copy of the descriptor the journal was locked with.
+    #[test]
+    fn an_abandoned_journal_reads_as_abandoned_even_when_a_child_holds_a_copy() {
+        let root = workspace("journal-fork-keep");
+        let journals = journals("journal-fork-keep");
+        let plan = plan(
+            &root,
+            &ApplyPatchArgs {
+                files: vec![update(
+                    "src/main.rs",
+                    &version(&root, "src/main.rs"),
+                    "let x = 1;",
+                    "let x = 4;",
+                )],
+                dry_run: None,
+            },
+        )
+        .unwrap();
+        let staged = stage(plan).unwrap();
+        let journal = Journal::open(&journals, &root, &staged).unwrap();
+        let path = journal.path.clone();
+        let mut child = child_holding_a_copy(&journal.locked);
+        journal.abandon();
+        drop(journal);
+        let running = still_running(&path);
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert!(path.is_file(), "an abandoned journal must stay");
+        assert!(
+            !running,
+            "dropping a kept journal must let go of its lock explicitly, or the child's copy keeps it and the next patch goes ahead"
+        );
     }
 
     /// A patch that fails between staging and the commit loop must leave

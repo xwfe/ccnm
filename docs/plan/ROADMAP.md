@@ -38,7 +38,7 @@ ccnm 不需要安装 Orchestrator 也能独立使用。Orchestrator 核心不链
 
 ## 二、顺序和基线
 
-`P0 → P1 → P2 → P3 → P4 → P5 → P6 → P7 → P8 → P9 → P10 → P11 → P12 → P13 → P14 → P15 → P16 → P17 → P18 → P19 → P20 → P21 → P22 → P23 → P24 → P26`。默认每轮只执行一个阶段。P0–P8 是 ccnm v1 收口和独立 Orchestrator 的接口交接；P9–P12 是 ccnm v1.x 的 Remote Workspace MCP 扩展；P13 是按真实 Host 行为修正两个入口共用的 instructions 投影；P21–P24 是 Codex 原生执行链，P26 补它在 Runtime 侧的探活。P25、P27、P28 在各自分支上（握手错误码、doctor 探原生链、MSRV CI），合并时插回这条链并把后一阶段的依赖改成前一个。完整边界见 [双执行入口方案](runtime-surfaces.md)。
+`P0 → P1 → P2 → P3 → P4 → P5 → P6 → P7 → P8 → P9 → P10 → P11 → P12 → P13 → P14 → P15 → P16 → P17 → P18 → P19 → P20 → P21 → P22 → P23 → P24 → P25 → P26`。默认每轮只执行一个阶段。P0–P8 是 ccnm v1 收口和独立 Orchestrator 的接口交接；P9–P12 是 ccnm v1.x 的 Remote Workspace MCP 扩展；P13 是按真实 Host 行为修正两个入口共用的 instructions 投影；P21–P24 是 Codex 原生执行链；P25 修 P24 真机轮发现的预检错误码；P26 补原生链在 Runtime 侧的探活。P27、P28 在各自分支上（doctor 探原生链、MSRV CI），合并时插回这条链并把后一阶段的依赖改成前一个。完整边界见 [双执行入口方案](runtime-surfaces.md)。
 
 ### P0 — 已有内部验证基线
 
@@ -364,9 +364,22 @@ worktree **分配、调度、合并策略**在 Orchestrator；受管 workspace �
 
 停止点：原生链成为 opt-in 的可用能力。要不要改成默认，另做决定。
 
+### P25 — MCP 握手失败时保留远端报的错误码
+
+**依赖 P24。用户 2026-09-16 指定立项，起因是 P24 真机轮（[记录](../research/p24-native-real-machine-2026-09-16.md)第五节）。**写锁被别的会话占着时，从 Agent Node 起会话，`ccnm run` 报 `CCNM_E_RUNTIME_UNREACHABLE`（退出码 21），真正的原因 `CCNM_E_POLICY` / `workspace write guard is busy` 只出现在正文的 `stderr:` 后面。人读得懂，按错误码判断的程序会误判成"连不上 Runtime"。根因在 `mcp::probe`：`initialize` 失败一律用调用方给的"不可达"码包起来，不看远端 stderr 第一行已经写明的 `CCNM_E_*`。P7 以来就这样，不是原生链引入的。
+
+两份冻结契约都已经写着正确答案，所以这是实现向契约靠拢，不改协议：机器协议 `-32005` 只表示"Agent 到 Runtime 的 SSH 不通"、`-32007` 是策略拒绝；Remote Workspace MCP 第 11.3 节把写入互斥 busy/unknown 列在 `CCNM_E_POLICY` 下。`ssh.rs` 的 `remote_failure` 对一次性远端命令早就按 stderr 首行保留错误码，握手这条路没跟上。
+
+- **P25.1** 先红：经真实二进制复现。Runtime 侧起一个真实 `internal mcp-serve` 握着写锁；Agent 侧真实 ccnm 经假 ssh 打到同一 Runtime 状态上的真实 `mcp-serve`，分别走 `internal agent-run`（与 `ccnm run` 同一个 `provider_runtime_preflight`）和 Agent 侧 `ccnm mcp probe`（doctor「远端 MCP 握手」行用的同一个 `mcp_handshake`）。断言退出码 33、stderr 首行 `CCNM_E_POLICY:`、正文同时带传输命令和 `write guard is busy`。修复前这组测试是红的，红的输出记进证据。
+- **P25.2** 修复：`initialize` 失败时，传输 stderr **首行**是已知 `CCNM_E_*` 名，错误就带这个码，消息仍保留传输命令、握手错误和 stderr 尾部；首行不是（ssh 自己的失败、不是 ccnm 的进程）、超时、spawn 失败，分类一律不变。"首行是不是错误码"只写一处，`ssh.rs` 与 `mcp::probe` 共用；按完整 stderr 的首行判，不按截到 4 KiB 的尾巴判。`probe()` 的三个调用方逐个核对：`mcp_probe_local`（Runtime 本机，原来归 `Internal`）、`mcp_handshake`（doctor 的远端 MCP 握手行、Agent 侧 `ccnm mcp probe`）、`provider_runtime_preflight`；`native_runtime_preflight` 经 `remote_failure` 本来就保留错误码，不改。
+- **P25.3** 文档：排错手册里"`ccnm run` 报 `CCNM_E_RUNTIME_UNREACHABLE`，正文里却写着 `workspace write guard is busy`"那一条按新行为改写；运维手册、排错手册里 doctor 示例中因远端拒绝而写成 `CCNM_E_RUNTIME_UNREACHABLE` 的握手行改成新码；删掉 `status.json` 里对应的 observed_gaps 条目。协议文档核对后不改，理由写进证据。
+- **P25.4** 门禁：`cargo fmt --all --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace`；`check_plan`、`check_protocol` 与其单测、`git diff --check`。
+
+停止点：只改握手失败时错误码怎么归类。不补 `session.start` 的占用预检（`-32008` 仍不可达，那是待定的产品决定）；RPC 后台运行失败仍只记消息不记码，不改；不改 doctor 行的结构和 ssh 失败、超时的分类；不跑真机——真机复验要替换已装二进制，需要单独授权。
+
 ### P26 — 原生链：Runtime 侧探活与无响应超时
 
-**依赖 P24。用户 2026-09-16 在 P24 暴露的三条路里选了"ccnm 加空闲超时"。**（编号：立项时记作 P25，提交 4dae491、1d6ac20 的消息里的 P25 指的就是本阶段。P24 之后四个阶段几乎同时立项，照 P20 的先例按开工先后排：握手错误码 23:58:30 是 P25，本阶段 23:59:18 是 P26，doctor 探原生链 P27，MSRV CI P28。在本地 main 上本阶段暂时直接依赖 P24，合并 P25 的分支时改成依赖 P25。）P24 黑洞 5/5：Agent 静默离网时 `exec-serve` 察觉不到，锁一直由已消失的会话持有。MCP 入口没有这个问题，因为 `mcp::server::HEARTBEAT` 每 30 秒往连接上写一次 ping——对面进程没了而机器还在，内核回 RST，sshd 退出，stdin 读到 EOF。exec-server 协议里没有给客户端的 ping，但 Codex 0.154.0 的客户端对服务端发来的、它不认识的**请求**一律回 `-32601`（源码 `exec-server/src/client_recovery.rs`；不认识的**通知**则会让它断连），所以可以借它探活。
+**依赖 P25。用户 2026-09-16 在 P24 暴露的三条路里选了"ccnm 加空闲超时"。**（编号：立项时记作 P25，提交 4dae491、1d6ac20 的消息里的 P25 指的就是本阶段。P24 之后四个阶段几乎同时立项，照 P20 的先例按开工先后排：握手错误码 23:58:30 是 P25，本阶段 23:59:18 是 P26，doctor 探原生链 P27，MSRV CI P28。P25 合并进 main 之后依赖改为 P25。）P24 黑洞 5/5：Agent 静默离网时 `exec-serve` 察觉不到，锁一直由已消失的会话持有。MCP 入口没有这个问题，因为 `mcp::server::HEARTBEAT` 每 30 秒往连接上写一次 ping——对面进程没了而机器还在，内核回 RST，sshd 退出，stdin 读到 EOF。exec-server 协议里没有给客户端的 ping，但 Codex 0.154.0 的客户端对服务端发来的、它不认识的**请求**一律回 `-32601`（源码 `exec-server/src/client_recovery.rs`；不认识的**通知**则会让它断连），所以可以借它探活。
 
 - **P26.1** 实测（零额度）：真实 Codex 0.154.0 经 environments.toml 传输连本机 `exec-serve`，空闲期间收到探活请求时回 `-32601`、不断连、TUI 上没有提示；多次探活之后工具调用照常。结果不符就停，回到设计。
 - **P26.2** 实现：`exec-serve` 在客户端静默满 30 秒（与 `HEARTBEAT` 同值）时发一个 `ccnm/liveness` 请求（字符串 id，不与执行端的请求撞号）；回复由 ccnm 消费，**不转给 exec-server**。客户端连续 10 分钟没有任何字节到达，并且也没有一条多块大消息在向它推进，就按正常关闭路径结束会话（关 exec-server stdin → 等退出 → 扫进程 → 放锁），stderr 写明原因；往客户端写失败同样结束。只在写锁移交上加一条"确认对面不在了"的途径，放锁条件不变：扫不干净仍然 `held`。

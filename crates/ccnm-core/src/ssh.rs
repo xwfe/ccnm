@@ -469,7 +469,7 @@ impl Ssh {
 /// How long the exec-server preflight may take end to end: the ssh, the
 /// Runtime's own `codex --version` (bounded at 20 s there), starting and
 /// stopping exec-server, and the process sweep (up to 5 s).
-const EXEC_PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(90);
+pub(crate) const EXEC_PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(90);
 
 /// Characters that no POSIX shell treats specially, so a remote command
 /// line built from them means the same thing on every login shell. `~` is

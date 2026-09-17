@@ -329,7 +329,7 @@ codex_exec_server = true     # 默认 false
 
 - 同一 workspace 的 **Claude** 会话不受影响，照旧走 MCP 七工具。
 - Codex 的 **print 模式**（`ccnm run --print`、Machine API）在创建会话前拒绝，报 `CCNM_E_INVALID_ARGS`：`codex exec` 会先在 Agent 本机检查 `-C` 的目录，而项目不在那台机器上（[P21 记录](research/p21-codex-native-surface-2026-09-16.md)第 1 条）。要跑 print 就把这一行关掉。
-- 交互会话启动前，Agent 会先经 `exec-serve` 做一次空会话预检：Runtime 没 opt-in、没 `codex_bin`、Codex 版本不对，都在起 Codex 之前报出来，而不是等 Codex 里显示"environment unavailable"。
+- 交互会话启动前，Agent 会先经 `exec-serve` 做一次空会话预检：Runtime 没 opt-in、没 `codex_bin`、Codex 版本不对，都在起 Codex 之前报出来，而不是等 Codex 里显示"environment unavailable"。不想起会话就先看，`ccnm doctor` 的 `Codex 原生链` 一行做的是同一次预检（[使用说明](usage.md#codex-原生链那一行)）。
 
 **Agent 那一侧发生了什么**（[P23 记录](research/p23-stdio-transport-2026-09-16.md)）：Codex 0.154.0 从 `CODEX_HOME/environments.toml` 读它的 exec-server 传输，ccnm 给每个原生会话生成一份自己的 `CODEX_HOME`（session 目录下的 `codex-home/`），里面只有三样：`environments.toml`（让 Codex 自己 spawn `ccnm internal exec-transport`，那个进程再 exec 成到 Runtime 的 ssh）、指向 profile 里 `auth.json` 的 symlink（Codex 读写都穿过它，刷新的 token 落回 profile；ccnm 不读、不复制凭据）、只写了一条对 Runtime 根 `trust_level = "trusted"` 的 `config.toml`（否则每个会话都弹一次信任提示）。**代价**：profile 自己的 `config.toml` 在原生会话里不生效，模型要走实例注册表的 `model` 字段；Codex 的会话记录、历史和缓存也落在 `codex-home/`，随 session 目录一起 `purge`。没有监听端口，别的 OS 用户没有东西可连；Codex 对这种传输不重连、不 resume，断线后的命令哪里都不执行。
 

@@ -41,6 +41,12 @@ pub struct ProbeRequest {
     /// the reverse ssh; 0 skips the handshake.
     #[serde(default)]
     pub mcp_calls: u32,
+    /// The workspace runs Codex through exec-server (P23), so the probe
+    /// also opens one empty `exec-serve` session when the Agent is Codex
+    /// (P27). Sent only when true: this struct refuses unknown fields, and
+    /// every other request stays readable by a build that predates it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub codex_exec_server: bool,
 }
 
 impl Protocol for ProbeRequest {
@@ -104,6 +110,12 @@ pub struct ProbeReport {
     /// when the hello already failed).
     #[serde(default)]
     pub mcp: Option<Reported<super::mcp::ProbeReport>>,
+    /// The exec-server chain's own preflight, the one `ccnm run` makes
+    /// before starting Codex (P27). `None` when it was not run: the request
+    /// did not ask, the Agent is not Codex, the hello failed, or the build
+    /// that answered predates the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exec_server: Option<Reported<()>>,
     /// tmux and this workspace's terminal session, for the "Terminal
     /// session" row. `None` from a ccnm build that predates it.
     #[serde(default)]

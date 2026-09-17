@@ -38,7 +38,7 @@ ccnm 不需要安装 Orchestrator 也能独立使用。Orchestrator 核心不链
 
 ## 二、顺序和基线
 
-`P0 → P1 → P2 → P3 → P4 → P5 → P6 → P7 → P8 → P9 → P10 → P11 → P12 → P13 → P14 → P15 → P16 → P17 → P18 → P19 → P20 → P21 → P22 → P23 → P24 → P25 → P26`。默认每轮只执行一个阶段。P0–P8 是 ccnm v1 收口和独立 Orchestrator 的接口交接；P9–P12 是 ccnm v1.x 的 Remote Workspace MCP 扩展；P13 是按真实 Host 行为修正两个入口共用的 instructions 投影；P21–P24 是 Codex 原生执行链；P25 修 P24 真机轮发现的预检错误码；P26 补原生链在 Runtime 侧的探活。P27、P28 在各自分支上（doctor 探原生链、MSRV CI），合并时插回这条链并把后一阶段的依赖改成前一个。完整边界见 [双执行入口方案](runtime-surfaces.md)。
+`P0 → P1 → P2 → P3 → P4 → P5 → P6 → P7 → P8 → P9 → P10 → P11 → P12 → P13 → P14 → P15 → P16 → P17 → P18 → P19 → P20 → P21 → P22 → P23 → P24 → P25 → P26 → P27`。默认每轮只执行一个阶段。P0–P8 是 ccnm v1 收口和独立 Orchestrator 的接口交接；P9–P12 是 ccnm v1.x 的 Remote Workspace MCP 扩展；P13 是按真实 Host 行为修正两个入口共用的 instructions 投影；P21–P24 是 Codex 原生执行链；P25 修 P24 真机轮发现的预检错误码；P26 补原生链在 Runtime 侧的探活；P27 让 doctor 也探这条链。P28（MSRV CI）在分支上，合并时插回这条链并把依赖改成前一个。完整边界见 [双执行入口方案](runtime-surfaces.md)。
 
 ### P0 — 已有内部验证基线
 
@@ -387,3 +387,14 @@ worktree **分配、调度、合并策略**在 Orchestrator；受管 workspace �
 - **P26.4** 文档：运维手册"静默离网之后锁一直 held"一节按新行为改写（多久自动释放、什么时候仍要人工）；支持矩阵的限制行、配置说明、排错手册同步；代价写清楚——Agent 机器睡眠或断网超过 10 分钟，原生会话会被结束，Codex 里需要 `/exit` 重开。
 
 停止点：离线与本机真实 Codex 验证。**hpsrv 上的黑洞复测不在本阶段**：P24 的一次性公钥已撤，重做要重新授权。
+
+### P27 — doctor 探 Codex 原生链
+
+**实际只依赖 P24。**（编号说明：P24 之后有几个阶段几乎同时立项，各自都记作 P25——「MCP 握手失败时保留远端报的错误码」（分支 `claude/jovial-ramanujan-60da56`，57658de，23:58 开工）、「原生链 Runtime 侧探活与无响应超时」（本地 `main`，4dae491，23:59 开工），以及比本阶段晚开工的「CI 在声明的 rust-version 上编译一遍」（分支 `claude/quirky-faraday-99ba46`，00:10 开工）。照 P20 的先例按开工先后排：握手错误码 P25、探活 P26、本阶段 P27、MSRV P28。合并进 main 后路线图顺序上排在 P26 之后，`depends_on` 随之改为 P26。）P24 真机轮发现（[记录](../research/p24-native-real-machine-2026-09-16.md)第九节）：`codex_exec_server = true` 的 workspace，`ccnm doctor` 只做 MCP 握手；Runtime 节点没配 `codex_bin`、Codex 版本不是 0.154.0、exec-server 起不来，都要到 `ccnm run` 的预检（`native_runtime_preflight`：一次空的 `exec-serve` 会话，stdin 立刻关闭）才报出来。
+
+- **P27.1** 探测与行：`internal probe` 的请求带上 workspace 的 `codex_exec_server`（只在为真时发送，其余请求逐字节不变）。开了它、Agent 是 Codex、反向 hello 通过时，probe 调 `ccnm run` 用的同一个 `native_runtime_preflight`，结果放进报告的新字段（没跑就不出现）。判断条件跟 Runtime 安全、MCP 握手两行一样只看 hello，不看 MCP 握手成没成：doctor 要把能查的都列出来，两行各报各的。Runtime 侧和 Agent 侧 doctor 表都多一行（英文 `Codex exec-server`，中文 `Codex 原生链`）：空会话成功是 OK；失败是 FAIL，带远端报的 `CCNM_E_*`；没开、不是 Codex、前提没过、对端 build 不报这个字段时是 SKIP 并写明原因。这一行在所有固定行集合里都出现（Agent SSH 失败、反向 SSH 失败、没有 Agent、同机、Runtime 没回答），所以不用这条链的 workspace 表里也多一个 SKIP：退出码不变（原本就有两行固定 SKIP），「N 项没查」加 1。Runtime 侧调 `internal probe` 的外层超时加上预检自己的上限。
+- **P27.2** 测试：单测覆盖行的选择（上面每种 SKIP、OK、FAIL）和中英两种渲染；集成测试用 `tests/fixtures/fake_exec_server.py`，经真实二进制的 `ccnm internal exec-serve` 跑 `work::probe` → `doctor::from_agent`：正常时 OK；`--version` 不对时 FAIL `CCNM_E_VERSION`；写锁被一个活着的 `exec-serve` 会话占着时 FAIL `CCNM_E_POLICY`（busy）；探完写锁回到 `released`，执行端没收到任何请求。
+- **P27.3** Linux 前提不进 runtime-audit，只留在文档（运维手册已列）。理由：(1) Codex 0.154.0 找 bwrap 的地方有两处——PATH 上的系统 bwrap，或它自带的 `codex-resources/bwrap`（[P21 记录](../research/p21-codex-native-surface-2026-09-16.md)第 5 节的报错原文），后者放在哪才算数没实测过（P24 会话计划 A2′），照猜的路径查会把能用的机器报红；(2) 「能不能建 user namespace」不是一个开关能读出来的：P24 在 hpsrv 上看了 `kernel.unprivileged_userns_clone`、`user.max_user_namespaces` 和 AppArmor 三处，P21 在容器里是 seccomp 挡住的、那里任何 sysctl 都看不出来——读 sysctl 会在容器里报 OK 而 bwrap 实际起不来，这正是 doctor 最不能犯的错（没证实的东西读成通过）；唯一靠得住的是真去建一次沙箱，那要照抄 Codex 自己的 bwrap 参数，参数属于 Codex、随版本变；(3) 缺了它是失败即拒：命令和带 sandbox 的文件方法都不执行，Codex 随后的「不带沙箱重试」被规则表按 `sandbox: null` 拒掉，是可用性问题不是越权；(4) runtime-audit 是所有入口、所有平台共用的安全审计，结论喂给会话的闸，不该混进一条平台加链路专用的猜测。代价是 Linux 上缺前提时 doctor 这一行照样 OK，要到第一条命令才看到 bwrap 的报错——行的 detail 和排错手册都写明这一行不证明沙箱。
+- **P27.4** 文档与门禁：usage、troubleshooting、support-matrix 里讲 doctor 行的地方写上这一行、它和 MCP 握手一样会取放写锁（有人在写时报 busy，所以别在会话进行中拿它判断链路）、它不证明 Linux 沙箱；删掉 `status.json` 里对应的 observed_gaps 条目。`cargo fmt --all --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace`、`python3 scripts/check_plan.py`、`git diff --check`。
+
+停止点：doctor 多一行，别的不动——不改 `exec-serve` 本身、规则表、runtime-audit 的 wire 和 MCP 握手的错误码分类（后者是另一个分支的 P25）；不跑真机、不耗额度、不换任何机器上的二进制。

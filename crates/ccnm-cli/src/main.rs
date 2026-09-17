@@ -1864,6 +1864,7 @@ fn probe_request(authority: &ccnm_core::runtime::ResolveReport, mcp_calls: u32) 
         runtime_node: authority.runtime_node.clone(),
         provider_config_dir: authority.provider_config_dir.clone(),
         mcp_calls,
+        codex_exec_server: authority.codex_exec_server,
     }
 }
 

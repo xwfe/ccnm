@@ -325,6 +325,7 @@ pub fn from_agent(
                     "Runtime safety",
                     "exec_command",
                     "Remote MCP handshake",
+                    "Codex exec-server",
                     "Workspace root",
                     "Terminal session",
                 ]
@@ -348,6 +349,7 @@ pub fn from_agent(
             runtime_node: &authority.runtime_node,
             agent_node,
             provider_config_dir: authority.provider_config_dir.as_deref(),
+            codex_exec_server: authority.codex_exec_server,
         },
         rep,
     ));
@@ -517,13 +519,23 @@ fn workspace_checks(r: &Resolved<'_>, agent: Option<&str>, env: &Env<'_>) -> Vec
             .flatten(),
         // One real MCP session, shut down before the probe returns.
         mcp_calls: 1,
+        codex_exec_server: ws.codex_exec_server,
     };
+    // The exec-server preflight has its own, longer bound on the Agent
+    // Node; without it here a slow but healthy one would lose every row to
+    // this call's timeout.
+    let timeout = Duration::from_secs(90)
+        + if ws.codex_exec_server {
+            crate::ssh::EXEC_PREFLIGHT_TIMEOUT
+        } else {
+            Duration::ZERO
+        };
     match ssh.call_ccnm::<_, ProbeReport>(
         env.runner,
         Master::Reuse,
         &["internal", "probe"],
         &req,
-        Duration::from_secs(90),
+        timeout,
         ErrorCode::AgentUnreachable,
     ) {
         Ok(rep) => {
@@ -599,6 +611,9 @@ pub(crate) struct Subject<'a> {
     pub agent_node: &'a str,
     /// The Agent-side provider config directory, for the login hint.
     pub provider_config_dir: Option<&'a Path>,
+    /// The workspace runs Codex through exec-server (P23): whether the
+    /// exec-server row has anything to check.
+    pub codex_exec_server: bool,
 }
 
 impl<'a> Subject<'a> {
@@ -611,6 +626,7 @@ impl<'a> Subject<'a> {
             provider_config_dir: r
                 .agent
                 .and_then(|node| AgentProvider::current().config_dir(node)),
+            codex_exec_server: r.workspace.codex_exec_server,
         }
     }
 }
@@ -647,6 +663,7 @@ fn probe_rows(r: &Subject<'_>, rep: &ProbeReport) -> Vec<Check> {
             );
             checks.push(Check::skip("Reverse SSH", &why));
             checks.push(Check::skip("Remote MCP handshake", &why));
+            checks.push(Check::skip("Codex exec-server", &why));
             checks.push(root_row(r, &rep.hello, r.agent_node));
             checks.push(terminal_row(r, rep));
         }
@@ -663,6 +680,7 @@ fn probe_rows(r: &Subject<'_>, rep: &ProbeReport) -> Vec<Check> {
                 // project, from the account the transport lands on.
                 checks.extend(executor_rows(r, rep));
                 checks.push(mcp_row(rep));
+                checks.push(exec_server_row(r, rep));
                 checks.push(terminal_row(r, rep));
             }
             Some(Err(e)) => {
@@ -804,6 +822,7 @@ fn skipped_after_reverse_ssh() -> Vec<Check> {
         "Runtime safety",
         "exec_command",
         "Remote MCP handshake",
+        "Codex exec-server",
         "Workspace root",
         "Terminal session",
     ]
@@ -864,6 +883,53 @@ fn mcp_row(rep: &ProbeReport) -> Check {
         ),
         Some(Ok(m)) => Check::ok(NAME, m.summary()),
         Some(Err(e)) => Check::fail_report(NAME, e),
+    }
+}
+
+/// The exec-server chain's own preflight: the empty `exec-serve` session
+/// `ccnm run` opens before it starts Codex (P27). Before this row the chain's
+/// own problems -- no `codex_bin`, the wrong Codex, an exec-server that does
+/// not start -- first showed up when somebody tried to start a session.
+///
+/// A workspace or Agent the chain does not apply to still gets the row, as
+/// a SKIP that says so, like the other rows about a path a workspace does not
+/// take: the table has the same rows for every workspace.
+///
+/// OK is worded around what the empty session did not do. No command ran,
+/// so on Linux it says nothing about Codex's sandbox (bubblewrap and a user
+/// namespace), whose absence only shows at the first command. P27 decided
+/// against guessing at it here; the reasons are in the plan.
+fn exec_server_row(r: &Subject<'_>, rep: &ProbeReport) -> Check {
+    const NAME: &str = "Codex exec-server";
+    if !r.codex_exec_server {
+        return Check::skip(
+            NAME,
+            "not checked: this workspace does not set codex_exec_server; its sessions use the MCP tools",
+        );
+    }
+    if rep.provider != AgentProvider::Codex {
+        return Check::skip(
+            NAME,
+            format!(
+                "not checked: the selected Agent is {}, and codex_exec_server only changes Codex sessions; this one uses the MCP tools",
+                rep.provider.display_name()
+            ),
+        );
+    }
+    match &rep.exec_server {
+        Some(Ok(())) => Check::ok(
+            NAME,
+            format!(
+                "empty exec-serve session on {}: codex_bin is Codex {}, exec-server started and stopped, write guard taken and released\nno command ran, so Codex's Linux sandbox (bubblewrap, user namespaces) is not proven here",
+                r.runtime_node,
+                crate::provider::codex::VERSION
+            ),
+        ),
+        Some(Err(e)) => Check::fail_report(NAME, e),
+        None => Check::skip(
+            NAME,
+            "not checked: that ccnm build does not report the exec-server chain",
+        ),
     }
 }
 
@@ -1015,6 +1081,9 @@ fn row_label(lang: Lang, name: &str) -> &str {
         "Runtime safety" => "Runtime 安全",
         "Command approval" => "命令审批",
         "Remote MCP handshake" => "远端 MCP 握手",
+        // The chain's name in every Chinese document; `exec-server` itself
+        // is in the detail column for anyone searching by it.
+        "Codex exec-server" => "Codex 原生链",
         "Terminal session" => "终端会话",
         "Native tool policy" => "本机工具策略",
         "Network isolation" => "网络隔离",
@@ -1162,6 +1231,7 @@ fn external_only_checks(r: &Resolved<'_>, env: &Env<'_>) -> Vec<Check> {
             "Claude authentication",
             "Reverse SSH",
             "Remote MCP handshake",
+            "Codex exec-server",
             "Terminal session",
             "Project instructions",
         ]
@@ -1191,6 +1261,7 @@ fn skipped_after_agent_ssh() -> Vec<Check> {
         "Runtime safety",
         "exec_command",
         "Remote MCP handshake",
+        "Codex exec-server",
         "Workspace root",
         "Terminal session",
     ]
@@ -1356,6 +1427,7 @@ fn not_yet_implemented() -> Vec<Check> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::Reported;
     use crate::process::{FakeRunner, Output};
 
     fn fixture(name: &str) -> PathBuf {
@@ -1613,6 +1685,7 @@ mod tests {
                 server_pid: 4242,
                 single_process: true,
             })),
+            exec_server: None,
             terminal: Some(crate::protocol::run::StatusReport {
                 records: vec![],
                 agent_identity: None,
@@ -1937,6 +2010,262 @@ mod tests {
         }
     }
 
+    /// The Runtime's answer for a workspace, as the Agent Node receives it.
+    fn authority(root: &Path, codex_exec_server: bool) -> crate::runtime::ResolveReport {
+        crate::runtime::ResolveReport {
+            protocol: crate::runtime::OPEN_PROTOCOL,
+            workspace: "xshun".into(),
+            root: root.to_path_buf(),
+            runtime_node: "runtime".into(),
+            agent: None,
+            provider_config_dir: None,
+            permission_mode: Default::default(),
+            allow_unisolated_credentials: false,
+            allow_unattended_exec: false,
+            codex_exec_server,
+        }
+    }
+
+    /// A probe from a Codex Agent that ran the exec-server preflight and
+    /// got `result` back.
+    fn codex_probe(result: Option<Reported<()>>) -> ProbeReport {
+        ProbeReport {
+            provider: AgentProvider::Codex,
+            exec_server: result,
+            ..good_probe()
+        }
+    }
+
+    /// P27: which way the exec-server row goes. It is there for every
+    /// workspace, and only a workspace on the chain, with a Codex Agent,
+    /// can turn it into a verdict -- which then is exactly what the
+    /// Runtime said, code included.
+    #[test]
+    fn the_exec_server_row_is_chosen_by_the_workspace_the_agent_and_the_preflight() {
+        const NAME: &str = "Codex exec-server";
+        let (dir, config) = setup("exec-row", true, true);
+        let on_chain = authority(&dir.join("root"), true);
+        let off_chain = authority(&dir.join("root"), false);
+        let verdict = |authority: &crate::runtime::ResolveReport, probe: &ProbeReport| {
+            let report = from_agent(&config, "xshun", Ok((authority, probe)));
+            row(&report, NAME).clone()
+        };
+
+        // Not on the chain: nothing to check, whatever the Agent is.
+        let off = verdict(&off_chain, &codex_probe(None));
+        assert_eq!(off.status, Status::Skip);
+        assert!(
+            off.detail.contains("does not set codex_exec_server"),
+            "{off:?}"
+        );
+
+        // On the chain, but a Claude Agent keeps its MCP tools.
+        let claude = verdict(&on_chain, &good_probe());
+        assert_eq!(claude.status, Status::Skip);
+        assert!(
+            claude.detail.contains("selected Agent is Claude Code"),
+            "{claude:?}"
+        );
+
+        // On the chain with Codex: the preflight's own answer.
+        let ok = verdict(&on_chain, &codex_probe(Some(Ok(()))));
+        assert_eq!(ok.status, Status::Ok, "{ok:?}");
+        assert!(
+            ok.detail.contains("empty exec-serve session on runtime"),
+            "{ok:?}"
+        );
+        assert!(
+            ok.detail.contains(crate::provider::codex::VERSION),
+            "{ok:?}"
+        );
+        // A green row must not be read as a working Linux sandbox.
+        assert!(ok.detail.contains("not proven here"), "{ok:?}");
+
+        let wrong_codex = ErrorReport::new(
+            ErrorCode::Version,
+            "ccnm internal exec-serve on runtime-alias failed (exit 11): codex_bin is Codex 0.153.0; the exec-server chain has been measured only with 0.154.0",
+        );
+        let report = from_agent(
+            &config,
+            "xshun",
+            Ok((&on_chain, &codex_probe(Some(Err(wrong_codex))))),
+        );
+        let failed = row(&report, NAME);
+        assert_eq!(failed.status, Status::Fail(ErrorCode::Version));
+        assert!(
+            failed
+                .detail
+                .starts_with("CCNM_E_VERSION: ccnm internal exec-serve"),
+            "{failed:?}"
+        );
+        assert!(failed.detail.contains("Codex 0.153.0"), "{failed:?}");
+        // Its own row fails; the MCP handshake next to it is untouched, and
+        // the report exits with this row's code.
+        assert_eq!(row(&report, "Remote MCP handshake").status, Status::Ok);
+        assert_eq!(report.exit_code(), ErrorCode::Version.exit_code());
+
+        // A writer holds the guard: the empty session is refused like any
+        // other, and the row says so rather than reading as a broken chain.
+        let busy = ErrorReport::new(
+            ErrorCode::Policy,
+            "ccnm internal exec-serve on runtime-alias failed (exit 33): workspace write guard is busy; another session still owns this working tree",
+        );
+        let busy = verdict(&on_chain, &codex_probe(Some(Err(busy))));
+        assert_eq!(busy.status, Status::Fail(ErrorCode::Policy));
+        assert!(busy.detail.contains("write guard is busy"), "{busy:?}");
+
+        // A build that does not know the field answers without it.
+        let old = verdict(&on_chain, &codex_probe(None));
+        assert_eq!(old.status, Status::Skip);
+        assert!(old.detail.contains("does not report"), "{old:?}");
+
+        // No reverse link, no preflight: skipped for that reason.
+        let mut unreachable = codex_probe(None);
+        unreachable.runtime_hello = Some(Err(ErrorReport::new(
+            ErrorCode::RuntimeUnreachable,
+            "ssh runtime-alias: Permission denied (publickey)",
+        )));
+        let skipped = verdict(&on_chain, &unreachable);
+        assert_eq!(skipped.status, Status::Skip);
+        assert!(skipped.detail.contains("reverse SSH failed"), "{skipped:?}");
+
+        // Colocated: nothing dials back.
+        let mut colocated = codex_probe(None);
+        colocated.runtime_ssh = None;
+        let skipped = verdict(&on_chain, &colocated);
+        assert_eq!(skipped.status, Status::Skip);
+        assert!(skipped.detail.contains("nothing dials back"), "{skipped:?}");
+    }
+
+    /// Every fixed set of rows carries the exec-server row, so a table has
+    /// the same rows however far doctor got.
+    #[test]
+    fn the_exec_server_row_is_in_every_fixed_row_set() {
+        let (dir, config) = setup("exec-row-sets", true, true);
+        let _ = dir;
+        let unanswered = from_agent(
+            &config,
+            "xshun",
+            Err(Error::new(
+                ErrorCode::RuntimeUnreachable,
+                "ssh runtime: down",
+            )),
+        );
+        assert!(
+            row(&unanswered, "Codex exec-server")
+                .detail
+                .contains("the Runtime did not answer")
+        );
+        for rows in [skipped_after_agent_ssh(), skipped_after_reverse_ssh()] {
+            assert!(
+                rows.iter()
+                    .any(|c| c.name == "Codex exec-server" && c.status == Status::Skip),
+                "{rows:?}"
+            );
+        }
+    }
+
+    /// The Runtime Node's own table asks for the preflight only for a
+    /// workspace on the chain, and gives the probe call room for it.
+    #[test]
+    fn a_workspace_on_the_chain_asks_the_probe_for_the_preflight_and_waits_for_it() {
+        let (dir, config) = setup("exec-request", true, true);
+        let text = std::fs::read_to_string(&config).unwrap();
+        std::fs::write(&config, format!("{text}codex_exec_server = true\n")).unwrap();
+        let fake = FakeRunner::new();
+        fake.push(Output::exited(0, format!("ccnm {}\n", crate::VERSION)));
+        fake.push(Output::exited(0, "hostname workmac\nuser me\n"));
+        fake.push(Output::exited(
+            0,
+            serde_json::to_string(&codex_probe(Some(Ok(())))).unwrap(),
+        ));
+        let report = run(&config, Some("xshun"), &env(&fake, &dir));
+        assert_eq!(
+            row(&report, "Codex exec-server").status,
+            Status::Ok,
+            "{}",
+            report.render()
+        );
+        let calls = fake.calls();
+        let wire = calls[2].args.last().unwrap().to_string_lossy().into_owned();
+        let sent: ProbeRequest = crate::protocol::payload::decode(&wire).unwrap();
+        assert!(sent.codex_exec_server);
+        assert_eq!(
+            calls[2].timeout,
+            Duration::from_secs(90) + crate::ssh::EXEC_PREFLIGHT_TIMEOUT
+        );
+    }
+
+    /// The row in both languages: the name is translated, the detail --
+    /// which carries the Runtime's own words and codes -- is not.
+    #[test]
+    fn the_exec_server_row_renders_in_both_languages() {
+        let (dir, config) = setup("exec-render", true, true);
+        let on_chain = authority(&dir.join("root"), true);
+        let ok = from_agent(
+            &config,
+            "xshun",
+            Ok((&on_chain, &codex_probe(Some(Ok(()))))),
+        );
+        let en = ok.render_in(Lang::En);
+        assert!(
+            en.contains(&format!(
+                "Codex exec-server       OK     empty exec-serve session on runtime: codex_bin is Codex {}",
+                crate::provider::codex::VERSION
+            )),
+            "{en}"
+        );
+        assert!(
+            en.contains(
+                "\n                               no command ran, so Codex's Linux sandbox"
+            ),
+            "{en}"
+        );
+        let zh = ok.render_in(Lang::Zh);
+        assert!(
+            zh.contains("Codex 原生链            正常   empty exec-serve session on runtime"),
+            "{zh}"
+        );
+
+        let failed = from_agent(
+            &config,
+            "xshun",
+            Ok((
+                &on_chain,
+                &codex_probe(Some(Err(ErrorReport::new(
+                    ErrorCode::Config,
+                    "ccnm internal exec-serve on runtime-alias failed (exit 10): nodes.runtime.codex_bin is not set",
+                )))),
+            )),
+        );
+        assert!(
+            failed
+                .render_in(Lang::En)
+                .contains("Codex exec-server       FAIL   CCNM_E_CONFIG: ccnm internal exec-serve"),
+            "{}",
+            failed.render_in(Lang::En)
+        );
+        assert!(
+            failed
+                .render_in(Lang::Zh)
+                .contains("Codex 原生链            失败   CCNM_E_CONFIG: ccnm internal exec-serve"),
+            "{}",
+            failed.render_in(Lang::Zh)
+        );
+
+        let off = from_agent(
+            &config,
+            "xshun",
+            Ok((&authority(&dir.join("root"), false), &good_probe())),
+        );
+        assert!(
+            off.render_in(Lang::Zh)
+                .contains("Codex 原生链            没查   not checked: this workspace does not set codex_exec_server"),
+            "{}",
+            off.render_in(Lang::Zh)
+        );
+    }
+
     /// Without the Runtime's answer the Agent Node has no workspace to
     /// check, and it must say so rather than describing one from a guess.
     #[test]
@@ -1955,7 +2284,12 @@ mod tests {
             row(&report, "Workspace config").status,
             Status::Fail(ErrorCode::RuntimeUnreachable)
         );
-        for name in ["Runtime safety", "exec_command", "Workspace root"] {
+        for name in [
+            "Runtime safety",
+            "exec_command",
+            "Codex exec-server",
+            "Workspace root",
+        ] {
             assert_eq!(row(&report, name).status, Status::Skip, "{name}");
         }
         assert_ne!(report.exit_code(), 0);
@@ -2097,8 +2431,16 @@ mod tests {
             row(&report, "Terminal session").detail,
             "tmux 3.7c, ccnm-xshun  xshun  detached  tools connected  (Background, keychain reachable)"
         );
+        // The two rows no probe can prove, and the exec-server row of a
+        // workspace that does not use that chain.
         assert!(
-            text.ends_with("NOT READY (0 failed, 2 not checked)\n"),
+            text.ends_with("NOT READY (0 failed, 3 not checked)\n"),
+            "{text}"
+        );
+        assert!(
+            row(&report, "Codex exec-server")
+                .detail
+                .contains("does not set codex_exec_server"),
             "{text}"
         );
         assert_eq!(report.blocking_code(), Some(ErrorCode::NotReady));
@@ -2138,6 +2480,12 @@ mod tests {
         assert_eq!(sent.root, dir.join("root"));
         assert_eq!(sent.runtime_node, "runtime");
         assert_eq!(sent.mcp_calls, 1);
+        // Not on the chain, so the request is the one every earlier build
+        // reads: the new field is not on the wire at all.
+        assert!(!sent.codex_exec_server);
+        let json = serde_json::to_value(&sent).unwrap();
+        assert!(json.get("codex_exec_server").is_none(), "{json}");
+        assert_eq!(calls[2].timeout, Duration::from_secs(90));
     }
 
     #[test]
@@ -2183,7 +2531,7 @@ mod tests {
         assert_eq!(row(&report, "Workspace root").status, Status::Skip);
         let text = report.render();
         assert!(
-            text.ends_with("NOT READY (1 failed, 12 not checked)\n"),
+            text.ends_with("NOT READY (1 failed, 13 not checked)\n"),
             "{text}"
         );
     }
@@ -2384,6 +2732,7 @@ mod tests {
             reverse.detail
         );
         assert_eq!(row(&report, "Remote MCP handshake").status, Status::Skip);
+        assert_eq!(row(&report, "Codex exec-server").status, Status::Skip);
         assert_eq!(row(&report, "Workspace root").status, Status::Skip);
         assert_eq!(report.exit_code(), 21);
     }

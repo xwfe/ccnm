@@ -212,8 +212,8 @@ workspace 开了 [`codex_exec_server`](configuration.md#codex_exec_server) 时�
 
 | 前提 | 为什么 | 没有它会怎样 |
 | --- | --- | --- |
-| 节点配置里的 `codex_bin` 指向 Codex 0.154.0 | 执行模型命令的是它的 `exec-server` | 会话启动前报 `CCNM_E_CONFIG` 或 `CCNM_E_VERSION` |
-| **Linux**：装 `bubblewrap`，并允许执行账号创建 user namespace（Debian 13 默认允许） | Codex 在 Linux 上用 bwrap 实现 workspace-write 沙箱 | 每条命令都失败、不执行（P21 容器实测） |
+| 节点配置里的 `codex_bin` 指向 Codex 0.154.0 | 执行模型命令的是它的 `exec-server` | 会话启动前报 `CCNM_E_CONFIG` 或 `CCNM_E_VERSION`；`ccnm doctor` 的 `Codex 原生链` 一行提前报同一个错 |
+| **Linux**：装 `bubblewrap`，并允许执行账号创建 user namespace（Debian 13 默认允许） | Codex 在 Linux 上用 bwrap 实现 workspace-write 沙箱 | 每条命令都失败、不执行（P21 容器实测）；**doctor 查不出来**，原因见[使用说明](usage.md#codex-原生链那一行) |
 
 Codex 的 Linux 沙箱会在真实的 `/tmp` 里留下几个空目录（`/tmp/.git`、`/tmp/.agents`、`/tmp/.codex`、`/tmp/codex-bwrap-synthetic-mount-targets-<uid>/`），属主是执行账号，用完不删；`/tmp` 是 tmpfs 的话重启就没了。这是 Codex 的行为，ccnm 不清理它们（P24 实测）。
 

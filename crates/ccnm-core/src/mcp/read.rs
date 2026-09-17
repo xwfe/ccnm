@@ -564,8 +564,8 @@ fn open_error(rel: &str, err: std::io::Error) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ccnm_testdir::TestDir;
     use std::fs;
-    use std::path::PathBuf;
 
     /// The footer's `; version <size-mtime>` is different on every run, so
     /// tests that compare whole texts compare them without it -- after
@@ -579,11 +579,11 @@ mod tests {
         format!("{}]", &text[..start])
     }
 
-    fn workspace(name: &str) -> PathBuf {
+    fn workspace(name: &str) -> TestDir {
         let dir = std::env::temp_dir().join(format!("ccnm-read-{}-{name}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
-        fs::canonicalize(&dir).unwrap()
+        TestDir::adopt(fs::canonicalize(&dir).unwrap())
     }
 
     fn write(root: &Path, name: &str, bytes: impl AsRef<[u8]>) {

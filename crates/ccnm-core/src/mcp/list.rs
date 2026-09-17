@@ -486,14 +486,14 @@ fn finish(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ccnm_testdir::TestDir;
     use crate::error::ErrorCode;
     use crate::process::SystemRunner;
     use std::fs;
-    use std::path::PathBuf;
 
     /// A workspace that looks like a real project: sources, a build
     /// directory that must not show up, a dotfile, and a symlink.
-    fn workspace(name: &str, git: bool) -> PathBuf {
+    fn workspace(name: &str, git: bool) -> TestDir {
         let dir = std::env::temp_dir().join(format!("ccnm-list-{}-{name}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(dir.join("src/mcp")).unwrap();
@@ -528,7 +528,7 @@ mod tests {
                 assert!(out.success(), "{}", out.stderr_lossy());
             }
         }
-        fs::canonicalize(&dir).unwrap()
+        TestDir::adopt(fs::canonicalize(&dir).unwrap())
     }
 
     fn list(root: &Path, args: &ListFilesArgs) -> Listing {
@@ -595,6 +595,7 @@ mod tests {
         // collapses `src` into a single `src/` entry, which is not *inside*
         // `src`, and the listing came back empty.
         let dir = std::env::temp_dir().join(format!("ccnm-list-{}-fresh", std::process::id()));
+        let _cleanup = TestDir::adopt(&dir);
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(dir.join("src/mcp")).unwrap();
         fs::write(dir.join("src/main.rs"), "fn main() {}\n").unwrap();

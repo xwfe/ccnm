@@ -1078,6 +1078,7 @@ fn git_facts(root: &Path, runner: &dyn ProcessRunner) -> (bool, Option<String>) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ccnm_testdir::TestDir;
 
     fn fixture_server(payload: &ServePayload) -> CcnmResult<Server> {
         fixture_server_accepting(payload, crate::safety::Accepted::NOTHING)
@@ -1102,11 +1103,11 @@ mod tests {
         )
     }
 
-    fn temp(test: &str) -> PathBuf {
+    fn temp(test: &str) -> TestDir {
         let dir = std::env::temp_dir().join(format!("ccnm-mcp-{}-{test}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        dir
+        TestDir::adopt(dir)
     }
 
     /// A client on in-memory pipes that has finished `initialize`: what it
@@ -1118,9 +1119,11 @@ mod tests {
         tokio::task::JoinHandle<CcnmResult<()>>,
         tokio::io::DuplexStream,
         tokio::io::Lines<tokio::io::BufReader<tokio::io::DuplexStream>>,
+        TestDir,
     ) {
         use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
-        let server = fixture_server(&ServePayload::new("x", temp(test), "s")).unwrap();
+        let root = temp(test);
+        let server = fixture_server(&ServePayload::new("x", root.to_path_buf(), "s")).unwrap();
         // Two pipes, not one duplex, so that dropping the reading end
         // leaves the server's stdin open -- a real pipe's EPIPE on write
         // with no EOF on read. (`simplex` halves share one buffer and
@@ -1140,14 +1143,14 @@ mod tests {
         to.write_all(b"{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n")
             .await
             .unwrap();
-        (task, to, from)
+        (task, to, from, root)
     }
 
     /// The twelve-hour write guard of `HEARTBEAT`'s doc comment, in small:
     /// stdin stays open forever and nobody reads what the server writes.
     #[tokio::test]
     async fn a_client_that_cannot_be_written_to_ends_the_session() {
-        let (task, _still_open, from) =
+        let (task, _still_open, from, _root) =
             initialized_client("unwritable", Duration::from_millis(50)).await;
         drop(from);
         let ended = tokio::time::timeout(Duration::from_secs(10), task).await;
@@ -1161,7 +1164,8 @@ mod tests {
     /// session for that would cost the person a reconnect for no reason.
     #[tokio::test]
     async fn an_unanswered_ping_does_not_end_the_session() {
-        let (task, to, mut from) = initialized_client("asleep", Duration::from_millis(50)).await;
+        let (task, to, mut from, _root) =
+            initialized_client("asleep", Duration::from_millis(50)).await;
         let mut pings = 0;
         while pings < 4 {
             let line = tokio::time::timeout(Duration::from_secs(5), from.next_line())
@@ -1202,7 +1206,7 @@ mod tests {
     #[test]
     fn tools_list_matches_the_sessions_allow_list() {
         let dir = temp("tools");
-        let server = fixture_server(&ServePayload::new("xshun", dir, "s")).unwrap();
+        let server = fixture_server(&ServePayload::new("xshun", dir.to_path_buf(), "s")).unwrap();
         let mut served: Vec<String> = server
             .tool_router
             .list_all()
@@ -1236,7 +1240,7 @@ mod tests {
     #[test]
     fn only_exec_command_makes_the_client_ask_every_time() {
         let dir = temp("meta");
-        let payload = ServePayload::new("xshun", dir, "s").with_interactive(true);
+        let payload = ServePayload::new("xshun", dir.to_path_buf(), "s").with_interactive(true);
         let server = fixture_server(&payload).unwrap();
         let tools = server.tools();
         assert_eq!(tools.len(), crate::session::MCP_TOOLS.len());
@@ -1262,7 +1266,7 @@ mod tests {
     fn a_session_with_nobody_at_the_terminal_does_not_ask() {
         let dir = temp("meta-print");
         // `new` alone: not interactive, which is also what a probe sends.
-        let server = fixture_server(&ServePayload::new("xshun", dir, "s")).unwrap();
+        let server = fixture_server(&ServePayload::new("xshun", dir.to_path_buf(), "s")).unwrap();
         assert!(!server.tools().iter().any(asks_the_user));
         assert!(!asks_the_user(&server.get_tool("exec_command").unwrap()));
     }
@@ -1276,7 +1280,7 @@ mod tests {
     #[test]
     fn a_workspace_that_accepted_unattended_exec_stops_the_client_asking() {
         let dir = temp("meta-unattended");
-        let payload = ServePayload::new("xshun", dir, "s").with_interactive(true);
+        let payload = ServePayload::new("xshun", dir.to_path_buf(), "s").with_interactive(true);
         let accepted = crate::safety::Accepted {
             unconfined_exec: false,
             unisolated_credentials: false,
@@ -1329,7 +1333,7 @@ mod tests {
     fn the_projects_claude_md_reaches_the_instructions() {
         let dir = temp("project");
         std::fs::write(dir.join("CLAUDE.md"), "# 规则\n\n- 提交要小\n").unwrap();
-        let server = fixture_server(&ServePayload::new("xshun", dir.clone(), "s")).unwrap();
+        let server = fixture_server(&ServePayload::new("xshun", dir.to_path_buf(), "s")).unwrap();
         let text = server.instructions();
         assert!(text.contains("- 提交要小"), "{text}");
         assert_eq!(
@@ -1350,7 +1354,7 @@ mod tests {
         let dir = temp("bigproject");
         let big = "- 一条规则，写得很长很长。\n".repeat(2000);
         std::fs::write(dir.join("CLAUDE.md"), &big).unwrap();
-        let server = fixture_server(&ServePayload::new("xshun", dir, "s")).unwrap();
+        let server = fixture_server(&ServePayload::new("xshun", dir.to_path_buf(), "s")).unwrap();
         let text = server.instructions();
         assert_eq!(server.instructions_cap(), context::CLAUDE_CODE_CAP);
         assert!(
@@ -1372,7 +1376,7 @@ mod tests {
     fn an_unreadable_claude_md_still_serves() {
         let dir = temp("badproject");
         std::fs::create_dir(dir.join("CLAUDE.md")).unwrap();
-        let server = fixture_server(&ServePayload::new("xshun", dir, "s")).unwrap();
+        let server = fixture_server(&ServePayload::new("xshun", dir.to_path_buf(), "s")).unwrap();
         assert_eq!(
             crate::mcp::context::parse_marker(&server.instructions()).as_deref(),
             Some("no CLAUDE.md at the workspace root")
@@ -1387,7 +1391,7 @@ mod tests {
     #[test]
     fn workspace_info_says_when_the_root_has_gone() {
         let dir = temp("vanish");
-        let server = fixture_server(&ServePayload::new("xshun", dir.clone(), "s")).unwrap();
+        let server = fixture_server(&ServePayload::new("xshun", dir.to_path_buf(), "s")).unwrap();
         let before = server.info();
         assert!(before.root_present);
         assert!(

@@ -209,9 +209,9 @@ mod tests {
     use super::*;
     use crate::error::ErrorCode;
     use std::fs;
-    use std::path::PathBuf;
+    use ccnm_testdir::TestDir;
 
-    fn session(name: &str, stdout: &[u8], stderr: &[u8]) -> (PathBuf, String) {
+    fn session(name: &str, stdout: &[u8], stderr: &[u8]) -> (TestDir, String) {
         let dir = std::env::temp_dir().join(format!("ccnm-output-{}-{name}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         let reference = "r-0123456789abcdef".to_string();
@@ -219,7 +219,7 @@ mod tests {
         fs::create_dir_all(&run).unwrap();
         fs::write(run.join("stdout"), stdout).unwrap();
         fs::write(run.join("stderr"), stderr).unwrap();
-        (dir, reference)
+        (TestDir::adopt(dir), reference)
     }
 
     fn read(dir: &Path, args: ReadOutputArgs) -> OutputPage {

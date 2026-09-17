@@ -408,12 +408,14 @@ mod tests {
     use super::*;
     use crate::error::ErrorCode;
     use crate::mcp::retention::Limits;
+    use ccnm_testdir::TestDir;
     use std::fs;
     use std::path::PathBuf;
 
     struct Fixture {
         root: PathBuf,
         state: PathBuf,
+        _dir: TestDir,
     }
 
     fn fixture(name: &str) -> Fixture {
@@ -426,6 +428,7 @@ mod tests {
         Fixture {
             root: fs::canonicalize(dir.join("root")).unwrap(),
             state: fs::canonicalize(dir.join("state")).unwrap(),
+            _dir: TestDir::adopt(dir),
         }
     }
 

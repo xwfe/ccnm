@@ -323,6 +323,7 @@ fn contained(root: &Path, resolved: &Path, rel: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ccnm_testdir::TestDir;
     use std::fs;
     use std::os::unix::fs::symlink;
 
@@ -333,7 +334,7 @@ mod tests {
     /// here, so two tests sharing a name delete each other's workspace when
     /// they happen to run at the same time, and fail at whichever line was
     /// running when the files vanished.
-    fn fixture(name: &str) -> PathBuf {
+    fn fixture(name: &str) -> TestDir {
         let dir = std::env::temp_dir().join(format!("ccnm-path-{}-{name}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         let root = dir.join("ws");
@@ -344,7 +345,9 @@ mod tests {
         symlink("src/main.rs", root.join("inside.txt")).unwrap();
         symlink(dir.join("nothing.txt"), root.join("dangling.txt")).unwrap();
         symlink(&dir, root.join("up")).unwrap();
-        fs::canonicalize(&root).unwrap()
+        // The workspace root is what the tests see; `dir`, one level up,
+        // holds the files that are supposed to be outside it.
+        TestDir::adopt(fs::canonicalize(&root).unwrap()).also(dir)
     }
 
     fn code(root: &Path, raw: &str) -> ErrorCode {

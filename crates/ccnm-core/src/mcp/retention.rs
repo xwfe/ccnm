@@ -444,15 +444,16 @@ fn last_activity(output: &Path) -> Option<SystemTime> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ccnm_testdir::TestDir;
     use std::fs;
     use std::io::BufRead;
 
-    fn state(name: &str) -> PathBuf {
+    fn state(name: &str) -> TestDir {
         let dir =
             std::env::temp_dir().join(format!("ccnm-retention-{}-{name}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
-        fs::canonicalize(dir).unwrap()
+        TestDir::adopt(fs::canonicalize(dir).unwrap())
     }
 
     fn small(runs: usize, session_bytes: u64) -> Limits {

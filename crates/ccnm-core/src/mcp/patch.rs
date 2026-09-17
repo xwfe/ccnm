@@ -1539,15 +1539,16 @@ mod tests {
     use super::*;
     use crate::error::ErrorCode;
     use crate::mcp::read::{self, ReadFileArgs};
+    use ccnm_testdir::TestDir;
     use std::fs;
 
-    fn workspace(name: &str) -> PathBuf {
+    fn workspace(name: &str) -> TestDir {
         let dir = std::env::temp_dir().join(format!("ccnm-patch-{}-{name}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(dir.join("src")).unwrap();
         fs::write(dir.join("src/main.rs"), "fn main() {\n    let x = 1;\n}\n").unwrap();
         fs::write(dir.join("src/lib.rs"), "pub fn a() {}\npub fn b() {}\n").unwrap();
-        fs::canonicalize(&dir).unwrap()
+        TestDir::adopt(fs::canonicalize(&dir).unwrap())
     }
 
     /// The journal directory for one test, beside its workspace rather
@@ -1562,7 +1563,7 @@ mod tests {
     /// delete each other's journals mid-test, and the failure lands on
     /// whichever journal test was unlucky, describing a locking bug that
     /// is not there.
-    fn journals(name: &str) -> PathBuf {
+    fn journals(name: &str) -> TestDir {
         let dir = journals_path(name);
         fs::create_dir_all(&dir).unwrap();
         dir
@@ -1570,12 +1571,12 @@ mod tests {
 
     /// The same path with nothing at it, for the one test that needs a
     /// *file* where the journal directory should be.
-    fn journals_path(name: &str) -> PathBuf {
+    fn journals_path(name: &str) -> TestDir {
         let dir =
             std::env::temp_dir().join(format!("ccnm-patch-{}-{name}-state", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         let _ = fs::remove_file(&dir);
-        dir
+        TestDir::adopt(dir)
     }
 
     /// The version a model would have: read the file, keep what came back.
@@ -1948,7 +1949,8 @@ mod tests {
         // this test's own directory. Straight under `$TMPDIR` it is one
         // file shared by every test process running at once, and they
         // truncate it under each other.
-        let root = workspace("policy").join("ws");
+        let outer = workspace("policy");
+        let root = outer.join("ws");
         fs::create_dir_all(root.join(".git")).unwrap();
         fs::write(root.join(".git/config"), "[core]\n").unwrap();
         let outside = root.parent().unwrap().join("outside.txt");
@@ -2913,7 +2915,7 @@ mod tests {
         let journals = journals("journal-abandoned");
         let record = serde_json::json!({
             "pid": 4321,
-            "root": root.clone(),
+            "root": root.to_path_buf(),
             "files": [
                 {
                     "op": "update",
@@ -3121,7 +3123,7 @@ mod tests {
             fs::write(
                 &path,
                 serde_json::to_vec(&serde_json::json!({
-                    "pid": 99, "root": root.clone(), "files": [],
+                    "pid": 99, "root": root.to_path_buf(), "files": [],
                 }))
                 .unwrap(),
             )
@@ -3218,7 +3220,7 @@ mod tests {
         fs::write(
             &path,
             serde_json::to_vec(&serde_json::json!({
-                "pid": 99, "root": root.clone(), "files": [],
+                "pid": 99, "root": root.to_path_buf(), "files": [],
             }))
             .unwrap(),
         )
@@ -3440,7 +3442,7 @@ mod tests {
             &path,
             serde_json::to_vec(&serde_json::json!({
                 "pid": 888,
-                "root": outer.clone(),
+                "root": outer.to_path_buf(),
                 "files": [{
                     "op": "update",
                     "rel": "web/app.ts",
@@ -3485,7 +3487,7 @@ mod tests {
         fs::write(
             &path,
             serde_json::to_vec(&serde_json::json!({
-                "pid": 999, "root": root.clone(), "files": [],
+                "pid": 999, "root": root.to_path_buf(), "files": [],
             }))
             .unwrap(),
         )

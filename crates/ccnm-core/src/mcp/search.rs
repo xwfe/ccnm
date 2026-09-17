@@ -570,9 +570,10 @@ fn locate_rg() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ccnm_testdir::TestDir;
     use std::fs;
 
-    fn workspace(name: &str) -> PathBuf {
+    fn workspace(name: &str) -> TestDir {
         let dir = std::env::temp_dir().join(format!("ccnm-search-{}-{name}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(dir.join("src")).unwrap();
@@ -593,7 +594,7 @@ mod tests {
         fs::write(dir.join(".git/config"), "needle in the git database\n").unwrap();
         fs::write(dir.join(".hidden"), "needle in a dotfile\n").unwrap();
         fs::write(dir.join("ignored/x.rs"), "needle in an ignored file\n").unwrap();
-        fs::canonicalize(&dir).unwrap()
+        TestDir::adopt(fs::canonicalize(&dir).unwrap())
     }
 
     fn args(query: &str) -> SearchTextArgs {
@@ -975,7 +976,7 @@ mod tests {
         let end = argv.iter().position(|a| a == "--").unwrap();
         assert_eq!(argv[end + 1], "-i --danger");
         assert_eq!(argv[end + 2], "src");
-        assert_eq!(cmd.cwd.as_deref(), Some(root.as_path()));
+        assert_eq!(cmd.cwd.as_deref(), Some(root.path()));
         assert!(!cmd.program.to_string_lossy().contains("sh"));
     }
 

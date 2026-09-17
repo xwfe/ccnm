@@ -142,7 +142,23 @@ fn isolated(cmd: Cmd, home: &Path) -> Cmd {
 
 pub fn parse_version(out: &Output) -> Result<String> {
     if !out.success() {
-        return Err(Error::new(ErrorCode::Version, "codex --version failed"));
+        // Say how, not just that: the operator reading this has to tell a
+        // binary that is not there from one whose interpreter is not.
+        let how = match out.exit_code {
+            Some(code) => format!("exit {code}"),
+            None if out.timed_out => "timed out".to_string(),
+            None => "killed by a signal".to_string(),
+        };
+        let stderr = out.stderr_lossy();
+        let stderr = stderr.trim();
+        return Err(Error::new(
+            ErrorCode::Version,
+            if stderr.is_empty() {
+                format!("codex --version failed ({how})")
+            } else {
+                format!("codex --version failed ({how}): {stderr}")
+            },
+        ));
     }
     let text = out.stdout_lossy();
     let version = text

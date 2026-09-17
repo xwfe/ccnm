@@ -21,6 +21,9 @@ fn repo() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
+/// The command `Sandbox::resolve` runs through the sandbox at startup.
+const PROBE: [&str; 3] = ["/bin/sh", "-c", "exit 0"];
+
 struct Fixture {
     dir: PathBuf,
     root: PathBuf,
@@ -34,11 +37,23 @@ impl Fixture {
     /// the node config when `named` is false.
     fn build(test: &str, bin: Option<&Path>, named: bool) -> Fixture {
         let fake = repo().join("tests/fixtures/fake_codex_sandbox.py");
+        let real = bin.is_some();
         let bin = bin.unwrap_or(&fake).canonicalize().unwrap();
-        let dir = std::env::temp_dir()
-            .canonicalize()
-            .unwrap()
-            .join(format!("ccnm-exec-sandbox-{}-{test}", std::process::id()));
+        // The real Codex refuses to put its sandbox helper under a
+        // temporary directory, and on Linux that makes every sandboxed
+        // command fail (measured in P33), so the real-Codex fixture lives
+        // under target/. The fake stays in the temp dir like every other
+        // fixture: it is a `#!/usr/bin/env python3` script, and from inside
+        // a developer's home tree that lookup can run into their own
+        // version-manager shims and configs.
+        let base = if real {
+            PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        } else {
+            std::env::temp_dir()
+        };
+        let dir = base.join(format!("ccnm-exec-sandbox-{}-{test}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let dir = dir.canonicalize().unwrap();
         let _ = std::fs::remove_dir_all(&dir);
         let root = dir.join("project");
         let outside = dir.join("outside");
@@ -122,8 +137,16 @@ external_mcp = "coding"
         cmd.stdin(Stdio::null()).output().unwrap()
     }
 
-    /// What the fake Codex was asked to sandbox, one entry per command.
+    /// What the fake Codex was asked to sandbox, one entry per command --
+    /// the startup probe (`sh -c 'exit 0'`) left out.
     fn sandboxed(&self) -> Vec<Value> {
+        self.all_sandboxed()
+            .into_iter()
+            .filter(|entry| entry["argv"] != json!(PROBE))
+            .collect()
+    }
+
+    fn all_sandboxed(&self) -> Vec<Value> {
         std::fs::read_to_string(&self.log)
             .unwrap_or_default()
             .lines()
@@ -153,10 +176,12 @@ struct Session {
 
 impl Session {
     fn start(mut command: Command) -> Session {
+        // The server's stderr goes to the test's: when a session refuses
+        // to start, the reason is there and nowhere else.
         let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(Stdio::inherit())
             .spawn()
             .unwrap();
         let stdin = child.stdin.take().unwrap();
@@ -303,6 +328,11 @@ fn the_switch_wraps_every_command_with_the_measured_profile() {
     assert!(text(&failed).contains("exit 3 in"), "{}", text(&failed));
     s.shutdown();
 
+    // The session started with one probe through the sandbox, before any
+    // command; the three commands follow.
+    let all = fx.all_sandboxed();
+    assert_eq!(all.len(), 4, "{all:?}");
+    assert_eq!(all[0]["argv"], json!(PROBE));
     let seen = fx.sandboxed();
     assert_eq!(seen.len(), 3, "{seen:?}");
     let root = fx.root.canonicalize().unwrap();
@@ -382,6 +412,25 @@ fn a_runtime_that_cannot_provide_the_sandbox_refuses_the_session() {
     assert!(said.contains("CCNM_E_VERSION"), "{said}");
     assert!(said.contains("0.155.0"), "{said}");
     assert!(said.contains("0.154.0"), "{said}");
+
+    // The wrapper starts but the sandbox does not work: the probe fails,
+    // and the session is refused with what the wrapper said.
+    let fx = Fixture::build("probe", None, true);
+    let mut cmd = fx.serve("demo", "probe-1");
+    cmd.env(
+        "FAKE_SANDBOX_FAIL",
+        "bwrap: No permissions to create new namespace",
+    );
+    let out = fx.refused(cmd);
+    assert!(!out.status.success());
+    let said = stderr(&out);
+    assert!(said.contains("CCNM_E_DEPENDENCY"), "{said}");
+    assert!(said.contains("does not work on this Runtime"), "{said}");
+    assert!(
+        said.contains("No permissions to create new namespace"),
+        "{said}"
+    );
+    assert!(fx.sandboxed().is_empty(), "no command ran");
 }
 
 /// Against Codex 0.154.0 itself, when `CCNM_TEST_CODEX_BIN` names it: the

@@ -36,6 +36,7 @@
 
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use serde_json::{Value, json};
 
@@ -43,6 +44,9 @@ use crate::config::ExecSandbox;
 use crate::error::{Error, Result};
 use crate::native::serve::CodexHome;
 use crate::process::{Cmd, ProcessRunner};
+
+/// What [`Sandbox::resolve`] runs through the sandbox once, to see it work.
+pub const PROBE: [&str; 3] = ["/bin/sh", "-c", "exit 0"];
 
 /// The line every `exec_command` result carries while the sandbox is on.
 pub const NOTE: &str = "sandboxed: this command could write only inside the workspace (not .git), $TMPDIR and /tmp, and had no network; a refusal shows as `Operation not permitted` or `Read-only file system`";
@@ -100,11 +104,51 @@ impl Sandbox {
         let base = crate::safety::environment::runtime_child(Cmd::new(&codex_bin).cwd(root))
             .env("CODEX_HOME", home.path());
         crate::provider::codex::check_measured(&base, runner, "the exec_command sandbox")?;
-        Ok(Some(Sandbox {
+        let sandbox = Sandbox {
             codex_bin,
             root: root.to_path_buf(),
             home,
-        }))
+        };
+        sandbox.probe(runner)?;
+        Ok(Some(sandbox))
+    }
+
+    /// One empty command through the sandbox before the session is
+    /// accepted. Everything this catches would otherwise surface as the
+    /// model's *command* failing: bubblewrap missing or refused a user
+    /// namespace, a CODEX_HOME Codex will not put its helper in (it refuses
+    /// temporary directories -- measured on Linux, where the first command
+    /// then died with `bwrap: execvp codex-linux-sandbox`), a wrapper that
+    /// cannot start. It proves the wrapper runs, not that it confines; the
+    /// confinement is what P33 measured and the real-Codex test checks.
+    /// Cost: one wrapper round trip, 15--40 ms.
+    fn probe(&self, runner: &dyn ProcessRunner) -> Result<()> {
+        let probe = crate::safety::environment::runtime_child(
+            Cmd::new(PROBE[0])
+                .args(&PROBE[1..])
+                .cwd(&self.root)
+                .timeout(Duration::from_secs(20)),
+        );
+        let out = runner.run(&self.wrap(probe, &self.root))?;
+        if out.exit_code == Some(0) {
+            if !out.stderr.is_empty() {
+                tracing::warn!(stderr = %String::from_utf8_lossy(&out.stderr).trim(), "codex sandbox ran the probe but complained");
+            }
+            return Ok(());
+        }
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let tail = stderr.trim();
+        let tail = &tail[tail.len().saturating_sub(600)..];
+        Err(Error::dependency(format!(
+            "the exec_command sandbox does not work on this Runtime: codex sandbox exited {} running `sh -c 'exit 0'`{}{}",
+            match out.exit_code {
+                Some(code) => code.to_string(),
+                None if out.timed_out => "on timeout".to_string(),
+                None => "on a signal".to_string(),
+            },
+            if tail.is_empty() { "" } else { "\n" },
+            tail
+        )))
     }
 
     /// `cmd`, run inside the sandbox: program and arguments move behind the

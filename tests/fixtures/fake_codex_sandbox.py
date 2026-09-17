@@ -8,7 +8,9 @@ assume Codex is installed (CI has no Codex):
 It does no sandboxing at all. What it proves is what ccnm sent it: the
 state JSON, the argv, the cwd, the CODEX_HOME -- one JSON line per call
 appended to FAKE_SANDBOX_LOG -- and that the command really ran behind the
-wrapper (it sees FAKE_SANDBOXED=1). The real thing is exercised by the
+wrapper (it sees FAKE_SANDBOXED=1). With FAKE_SANDBOX_FAIL set, every
+`sandbox` call prints that line to stderr and exits 1 without running
+anything: a machine where the sandbox cannot be set up. The real thing is exercised by the
 test that runs only with CCNM_TEST_CODEX_BIN.
 """
 import json
@@ -23,6 +25,11 @@ def main():
         return 0
     if len(argv) >= 4 and argv[0] == "sandbox" and argv[1] == "--sandbox-state-json" and argv[3] == "--":
         state, command = argv[2], argv[4:]
+        if os.environ.get("FAKE_SANDBOX_FAIL"):
+            # The sandbox cannot be set up on this machine: what bubblewrap
+            # says, and exit 1, as measured.
+            print(os.environ["FAKE_SANDBOX_FAIL"], file=sys.stderr)
+            return 1
         log = os.environ.get("FAKE_SANDBOX_LOG")
         if log:
             with open(log, "a") as f:

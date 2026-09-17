@@ -54,8 +54,7 @@
 //! the first compiler error and the final summary are both worth more than
 //! the middle — plus an `output_ref` for `read_output` to page through.
 
-use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Duration;
 
 use rmcp::schemars;
@@ -63,6 +62,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, ErrorCode, Result};
 use crate::mcp::path;
+use crate::mcp::retention::{Output, Run};
 use crate::mcp::truncate_bytes;
 use crate::process::{Cmd, run_captured};
 
@@ -75,16 +75,6 @@ pub const MAX_TIMEOUT_MS: u64 = 600_000;
 pub const DEFAULT_PREVIEW_BYTES: usize = 4 * 1024;
 /// Ceiling on `preview_bytes` (design doc section 15).
 pub const MAX_PREVIEW_BYTES: usize = 16 * 1024;
-
-/// Bytes of one stream kept on disk. Not a parameter: it bounds what ccnm
-/// leaves on the user's machine, which is not the caller's decision. A
-/// command that produces more still runs to completion and still reports
-/// its exit code; the retained copy is cut and says so.
-const MAX_RETAINED_BYTES: u64 = 64 * 1024 * 1024;
-
-/// Runs kept per session before the oldest are removed. Without this the
-/// retention directory grows for as long as the machine is up.
-const MAX_RETAINED_RUNS: usize = 100;
 
 /// Arguments of `exec_command`.
 #[derive(Debug, Clone, Default, Deserialize, schemars::JsonSchema)]
@@ -132,23 +122,6 @@ pub struct ExecResult {
     pub notes: Vec<String>,
 }
 
-/// Where one run's output lives.
-#[derive(Debug, Clone)]
-pub struct Retention {
-    pub dir: PathBuf,
-    pub reference: String,
-}
-
-impl Retention {
-    pub fn stdout(&self) -> PathBuf {
-        self.dir.join("stdout")
-    }
-
-    pub fn stderr(&self) -> PathBuf {
-        self.dir.join("stderr")
-    }
-}
-
 /// What to say when the directory a session works in is no longer there.
 ///
 /// Never the absolute path: the server does not reveal where the
@@ -174,20 +147,18 @@ pub fn exec_command(
     state: &Path,
     args: &ExecCommandArgs,
 ) -> Result<ExecResult> {
-    exec_command_for(
+    exec_command_in(
         crate::provider::AgentProvider::Claude,
         root,
-        session,
-        state,
+        &Output::new(state, session),
         args,
     )
 }
 
-pub(crate) fn exec_command_for(
+pub(crate) fn exec_command_in(
     provider: crate::provider::AgentProvider,
     root: &Path,
-    session: &str,
-    state: &Path,
+    output: &Output,
     args: &ExecCommandArgs,
 ) -> Result<ExecResult> {
     if args.cmd.is_empty() {
@@ -223,15 +194,13 @@ pub(crate) fn exec_command_for(
         }
     };
 
-    let retention = make_retention(state, session)?;
+    let (run, stdout, stderr) = output.begin()?;
     let mut cmd = Cmd::new(&args.cmd[0])
         .args(&args.cmd[1..])
         .cwd(&cwd_abs)
         .timeout(Duration::from_millis(timeout_ms));
     let _ = provider; // Runtime protection covers all known Agents, not this selection.
     cmd = crate::safety::environment::runtime_child(cmd);
-    let stdout = Sink::create(&retention.stdout())?;
-    let stderr = Sink::create(&retention.stderr())?;
     let captured = run_captured(&cmd, stdout, stderr).map_err(|e| {
         if !e.message().starts_with("cannot spawn") {
             return e;
@@ -256,52 +225,25 @@ pub(crate) fn exec_command_for(
     })?;
 
     let mut notes = Vec::new();
-    if captured.stdout_bytes > MAX_RETAINED_BYTES || captured.stderr_bytes > MAX_RETAINED_BYTES {
+    let per_stream = output.limits().per_stream;
+    if captured.stdout_bytes > per_stream || captured.stderr_bytes > per_stream {
         notes.push(format!(
-            "the command produced more than {} MiB on one stream; the retained copy stops there",
-            MAX_RETAINED_BYTES / (1024 * 1024)
+            "the command produced more than {} on one stream; the retained copy stops there",
+            bytes_label(per_stream)
         ));
     }
-    Ok(build(
-        &args.cmd,
-        cwd_rel,
-        &retention,
-        &captured,
-        preview_bytes,
-        notes,
-    ))
+    let result = build(&args.cmd, cwd_rel, &run, &captured, preview_bytes, notes);
+    output.finish(&run);
+    Ok(result)
 }
 
-/// A file that stops writing at [`MAX_RETAINED_BYTES`] but keeps
-/// accepting, so the pipe behind it is always drained.
-struct Sink {
-    file: std::fs::File,
-    written: u64,
-}
-
-impl Sink {
-    fn create(path: &Path) -> Result<Sink> {
-        let file = std::fs::File::create(path).map_err(|e| {
-            Error::internal("cannot create a file for the command's output").with_source(e)
-        })?;
-        Ok(Sink { file, written: 0 })
-    }
-}
-
-impl Write for Sink {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let room = MAX_RETAINED_BYTES.saturating_sub(self.written) as usize;
-        if room == 0 {
-            return Ok(buf.len());
-        }
-        let take = room.min(buf.len());
-        self.file.write_all(&buf[..take])?;
-        self.written += take as u64;
-        Ok(buf.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        self.file.flush()
+/// `64 MiB` for the real limit, bytes for the small ones tests use.
+fn bytes_label(bytes: u64) -> String {
+    const MIB: u64 = 1024 * 1024;
+    if bytes >= MIB && bytes.is_multiple_of(MIB) {
+        format!("{} MiB", bytes / MIB)
+    } else {
+        format!("{bytes} B")
     }
 }
 
@@ -319,58 +261,10 @@ where
     crate::safety::environment::strip_names(names)
 }
 
-/// Where this session's runs are kept. `read_output` resolves references
-/// against exactly this, so an output_ref is a reference within one
-/// session and not a handle on the machine.
-pub fn session_dir(state: &Path, session: &str) -> PathBuf {
-    crate::paths::session_dir(state, session).join("output")
-}
-
-/// A fresh directory for this run, and a reference the caller can bring
-/// back to `read_output`.
-fn make_retention(state: &Path, session: &str) -> Result<Retention> {
-    let session_dir = session_dir(state, session);
-    std::fs::create_dir_all(&session_dir).map_err(|e| {
-        Error::internal("cannot create the output retention directory").with_source(e)
-    })?;
-    prune(&session_dir);
-    let id = format!("r-{}", &uuid::Uuid::new_v4().simple().to_string()[..16]);
-    let dir = session_dir.join(&id);
-    std::fs::create_dir(&dir)
-        .map_err(|e| Error::internal("cannot create a directory for this run").with_source(e))?;
-    Ok(Retention { dir, reference: id })
-}
-
-/// Keep the newest [`MAX_RETAINED_RUNS`] runs. Nothing else ever removes
-/// these, and a long session would otherwise fill the user's disk with
-/// build logs.
-fn prune(session_dir: &Path) {
-    let Ok(entries) = std::fs::read_dir(session_dir) else {
-        return;
-    };
-    let mut runs: Vec<(std::time::SystemTime, PathBuf)> = entries
-        .flatten()
-        .filter_map(|entry| {
-            let meta = entry.metadata().ok()?;
-            if !meta.is_dir() {
-                return None;
-            }
-            Some((meta.modified().ok()?, entry.path()))
-        })
-        .collect();
-    if runs.len() < MAX_RETAINED_RUNS {
-        return;
-    }
-    runs.sort_by_key(|(modified, _)| std::cmp::Reverse(*modified));
-    for (_, path) in runs.into_iter().skip(MAX_RETAINED_RUNS - 1) {
-        let _ = std::fs::remove_dir_all(path);
-    }
-}
-
 fn build(
     cmd: &[String],
     cwd: String,
-    retention: &Retention,
+    retention: &Run,
     captured: &crate::process::Captured,
     preview_bytes: usize,
     mut notes: Vec<String>,
@@ -478,7 +372,9 @@ fn preview(path: &Path, budget: usize) -> (String, bool) {
 mod tests {
     use super::*;
     use crate::error::ErrorCode;
+    use crate::mcp::retention::Limits;
     use std::fs;
+    use std::path::PathBuf;
 
     struct Fixture {
         root: PathBuf,
@@ -840,47 +736,49 @@ mod tests {
         assert!(json.contains("\"output_ref\""), "{json}");
     }
 
+    /// The per-stream limit cuts the retained copy, not the command: it
+    /// still runs to completion, its byte counts are the real ones, and a
+    /// pipe that nobody reads past the limit is still drained -- 1 MiB is
+    /// far more than a pipe buffer, so a sink that stopped reading would
+    /// hang here until the timeout.
     #[test]
-    fn old_runs_are_pruned_so_the_directory_does_not_grow_forever() {
-        let f = fixture("prune");
-        let session_dir = f.state.join("sessions/s-test/output");
-        fs::create_dir_all(&session_dir).unwrap();
-        for n in 0..MAX_RETAINED_RUNS + 20 {
-            fs::create_dir_all(session_dir.join(format!("r-old{n:04}"))).unwrap();
-        }
-        run(&f, &["true"]);
-        let count = fs::read_dir(&session_dir).unwrap().count();
-        assert!(count <= MAX_RETAINED_RUNS, "{count} runs kept");
-    }
-
-    #[test]
-    fn a_session_id_cannot_escape_the_retention_directory() {
-        // The id names a directory and arrives from the other machine, so
-        // it goes through the same filter every state path uses.
-        let state = Path::new("/state");
-        assert_eq!(
-            session_dir(state, "s-1_ok"),
-            Path::new("/state/sessions/s-1_ok/output")
+    fn a_stream_past_its_limit_is_cut_and_the_command_still_finishes() {
+        let f = fixture("per-stream");
+        let output = Output::with_limits(
+            &f.state,
+            "s-cut",
+            Limits {
+                per_stream: 1024,
+                ..Limits::RUNTIME
+            },
         );
-        // The property that matters is not "the name looks tidy" but
-        // "the name is one segment". `../../etc` filters down to
-        // `....etc`, which is an odd directory name and cannot traverse
-        // anywhere; `..` and `../..` are all dots and fall back.
-        for hostile in ["../../etc", "a/b", "", "/", "..", "../..", "x/../../y"] {
-            let dir = session_dir(state, hostile);
-            let inside = dir
-                .strip_prefix("/state/sessions")
-                .unwrap_or_else(|_| panic!("{hostile} escaped to {}", dir.display()));
-            let parts: Vec<_> = inside.components().collect();
-            assert_eq!(parts.len(), 2, "{hostile} -> {}", dir.display());
-            assert!(
-                !parts
-                    .iter()
-                    .any(|c| matches!(c, std::path::Component::ParentDir)),
-                "{hostile} -> {}",
-                dir.display()
-            );
-        }
-        assert!(session_dir(state, &"x".repeat(200)).to_string_lossy().len() < 100);
+        let r = exec_command_in(
+            crate::provider::AgentProvider::Claude,
+            &f.root,
+            &output,
+            &ExecCommandArgs {
+                cmd: vec![
+                    "sh".into(),
+                    "-c".into(),
+                    "head -c 1048576 /dev/zero; echo short >&2".into(),
+                ],
+                timeout_ms: Some(20_000),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(r.exit_code, Some(0), "{}", r.text);
+        assert!(!r.timed_out);
+        assert_eq!(r.stdout_bytes, 1_048_576);
+        let run = output.dir().join(&r.output_ref);
+        assert_eq!(fs::metadata(run.join("stdout")).unwrap().len(), 1024);
+        assert_eq!(fs::read_to_string(run.join("stderr")).unwrap(), "short\n");
+        assert!(
+            r.notes
+                .iter()
+                .any(|n| n.contains("more than 1024 B on one stream")),
+            "{:?}",
+            r.notes
+        );
     }
 }

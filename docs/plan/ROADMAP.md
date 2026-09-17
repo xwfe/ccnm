@@ -38,7 +38,7 @@ ccnm 不需要安装 Orchestrator 也能独立使用。Orchestrator 核心不链
 
 ## 二、顺序和基线
 
-`P0 → P1 → P2 → P3 → P4 → P5 → P6 → P7 → P8 → P9 → P10 → P11 → P12 → P13 → P14 → P15 → P16 → P17 → P18 → P19 → P20 → P21 → P22 → P23 → P24 → P25 → P26 → P27 → P28 → P29 → P30 → P31 → P32`。默认每轮只执行一个阶段。P0–P8 是 ccnm v1 收口和独立 Orchestrator 的接口交接；P9–P12 是 ccnm v1.x 的 Remote Workspace MCP 扩展；P13 是按真实 Host 行为修正两个入口共用的 instructions 投影；P21–P24 是 Codex 原生执行链；P25 修 P24 真机轮发现的预检错误码；P26 补原生链在 Runtime 侧的探活；P27 让 doctor 也探这条链；P28 让 CI 在声明的 rust-version 上编译一遍；P29 补测原生链的并发、在途请求与资源上限，P30 修它查出的 fs helper 活过放锁；P31 封存原生链（用户决定）；P32 把沙箱那项收益搬到两个入口共用的 `exec_command` 上。完整边界见 [双执行入口方案](runtime-surfaces.md)。
+`P0 → P1 → P2 → P3 → P4 → P5 → P6 → P7 → P8 → P9 → P10 → P11 → P12 → P13 → P14 → P15 → P16 → P17 → P18 → P19 → P20 → P21 → P22 → P23 → P24 → P25 → P26 → P27 → P28 → P29 → P30 → P31 → P32 → P33`。默认每轮只执行一个阶段。P0–P8 是 ccnm v1 收口和独立 Orchestrator 的接口交接；P9–P12 是 ccnm v1.x 的 Remote Workspace MCP 扩展；P13 是按真实 Host 行为修正两个入口共用的 instructions 投影；P21–P24 是 Codex 原生执行链；P25 修 P24 真机轮发现的预检错误码；P26 补原生链在 Runtime 侧的探活；P27 让 doctor 也探这条链；P28 让 CI 在声明的 rust-version 上编译一遍；P29 补测原生链的并发、在途请求与资源上限，P30 修它查出的 fs helper 活过放锁；P31 给 Runtime 保留输出加会话总量上限、结束即删和过期清理；P32 封存原生链（用户决定）；P33 把沙箱那项收益搬到两个入口共用的 `exec_command` 上。完整边界见 [双执行入口方案](runtime-surfaces.md)。
 
 ### P0 — 已有内部验证基线
 
@@ -432,20 +432,35 @@ worktree **分配、调度、合并策略**在 Orchestrator；受管 workspace �
 
 停止点：只改收尾扫描的判据。不改规则表、探活、放锁的其他条件，不跑真机、不耗额度、不换任何机器上的二进制。
 
-### P31 — 封存 Codex 原生执行链
+### P31 — Runtime 保留输出：会话总量上限、结束即删、过期清理
 
-**依赖 P30。用户 2026-09-17 决定。**决定本身、依据、封存后的行为和解封条件写在[双执行入口方案](runtime-surfaces.md)第 12.0 节，这里只列要改的东西和停止点。一句话：收益没量过，量过的那项（OS 沙箱）`codex sandbox` 不经 RPC 就能拿到，只开交互模式让 Machine API 用不上它，而每次 Codex 升级都要重做 P21 的规则表——不值。最终目标定为三种客户端（Claude Code、Codex、Web AI 经 gld hub）× 三种操作系统，只留一条执行路径才做得到。
+**依赖 P30。**（编号说明：开工时记作 P31，与另一分支上同日更早开工的 P31、P30 撞号，照 P20 和 P25–P28 的先例按开工先后顺延为 P31；提交 1f7aafe、b86d599、d5353cb、b3c4ce5、75061ca 消息里的 P31 指的就是本阶段。）**用户 2026-09-17 指定立项，起因是协议第 8 节保留输出的措辞更正（32ec5fd，经 4aeb641 合并）。**更正时核实的现状（`crates/ccnm-core/src/mcp/exec.rs` 的 `Sink`、`prune`，2026-09-03 起没改过）：stdout、stderr 每次运行各自最多落盘 64 MiB；每个 session 留最新 100 次；没有 session 级字节上限，一个 session 最坏留 100 × 2 × 64 MiB = 12800 MiB（12.5 GiB）。toexec V2-P0 基线里一个 session 连跑 5 次输出 64 MiB 的命令，Runtime 上就留了约 320 MiB。更大的口子在跨 session：Runtime 侧没有任何清理，占用随 session 个数一直累加；外部 MCP 的 `sessions/bridge-<uuid>/` 在 Agent 上没有记录，`ccnm workspace remove --purge` 一个也删不到，现在只能照运维手册手动 `rm`。三件事放在一个阶段里做，是因为只加单 session 上限的话，总占用照样没有上限。
 
-- **P31.1** 决定入档：runtime-surfaces 第 12 节加封存小节；AGENTS.md 告诉后续模型别再投入，并指向跨仓库目标。
-- **P31.2** 用户文档：支持矩阵那一行状态改成封存、证据保留并标明只对 0.154.0 成立；配置说明、README、使用说明、运维手册、排错手册里介绍这条链的地方各加一句封存和指向，原因只写在 12.0 一处。
-- **P31.3** 跨仓库：toexec v2 计划第 0 节改成"三种客户端都走 MCP + 共享库"，写入最终目标和当前覆盖表（客户端 × 操作系统，事实以各仓库支持文档为准）；第 8、11 节 V2-C 状态改封存；toexec README 同步。gld RFC-0002 头部那句和第 9 节补记指向新状态。
-- **P31.4** 取消的事写清楚：hpsrv 黑洞复测、Linux 上 fs helper 实测、为原生链发版并替换机器上的二进制，都不做；交接里对应的待办删掉。`python3 scripts/check_plan.py`、`git diff --check`。
+**两个值用户 2026-09-17 已定，就用提议值**：(1) 会话总量上限 256 MiB，出自 toexec v2 计划第 9 节，那里写明是"首轮拟定上限，不是已测试保证"；(2) 已结束会话的输出留 7 天。第 (2) 条改变了"Runtime 输出不会被自动删"的现状，但会话结束后 ccnm 本来就没有命令还能读它：Runtime 上的 `sessions/<id>/output/` 只有 `read_output` 读，而它只认本 session 的目录。两个值都做成常量，不做配置项。
+
+- **P31.1** 会话总量上限：一个 session 所有**已结束**运行的 stdout + stderr 合计不超过上限。每次运行结束后，从最旧的已结束运行开始整份删，直到合计不超过上限；刚结束的这次不删（单次最多 128 MiB，一定放得下）。100 次的上限保留。**进行中的运行永远不删，跨进程也成立**：rmcp 3.2.0 每个请求单独起一个任务，同一 session 的 `exec_command` 可以并发；Managed 会话 `/mcp Reconnect` 会用同一个 session id 起新的 `mcp-serve`，新旧两个可能同时在。持有者进程已经不在的运行不算进行中，否则崩溃留下的运行永远删不掉。现有 `prune` 按目录修改时间删、不看运行结没结束，一并改掉：按代码推断，同 session 里一条长命令还没结束、期间又开始了 100 次运行，它的目录就会被删（未复现；Claude Code 一轮的并行调用到不了这个数，别的 Host 不一定）。并发时总量可以暂时超过上限，超出部分不超过"进行中的运行数 × 128 MiB"，协议里照实写。被删运行的 `output_ref` 报的错与现在按次数删的一样（`CCNM_E_INVALID_ARGS`，`no output kept for r-…`），不加错误码。删除失败不影响命令结果，只写进 stderr 诊断。
+- **P31.2** 外部 MCP 会话结束即删：外部入口（按 payload 的协议号判，不按 `bridge-` 这个名字）的 `mcp-serve` 结束时，删掉**本进程建的**运行，目录空了再删 `sessions/<id>/output` 和 `sessions/<id>/`（都不递归）。只删自己建的，因为 session id 来自对端：一个只读客户端报了别人的 id，断开时不该能删掉别人的输出。依据是协议第 6 节：一个 bridge 进程就是一个 session，断了不重连，手里的 `output_ref` 跟着作废。Managed 会话**不**在 `mcp-serve` 退出时删：`/mcp Reconnect` 之后新的 `mcp-serve` 还用这个 id，旧的 `output_ref` 仍然有效，删了就是把一个还活着的会话的输出弄丢。
+- **P31.3** 过期清理：`mcp-serve` 启动时扫一遍本机 `sessions/`，某个 session 的 `output/` 同时满足三条才删——最新一次运行已超过保留期；本机没有服务这个 session id 的 `mcp-serve`；进程枚举本身成功了。`overview::scan_servers` 在 `ps` 失败时返回空列表，直接拿来用会把"查不到"当成"没人在用"，要换成能区分失败的版本，失败就一个都不删。只删 `output/`，删完 `sessions/<id>/` 空了才删这一层（非递归）：Agent 的会话记录和 Runtime 的输出用的是同一种路径 `sessions/<id>/`，一个状态目录两种角色都当的时候，那一层里还放着 Agent 的记录。扫描出任何错都不影响这次会话启动。
+- **P31.4** `--purge` 不改，限制写进运维手册（用户 2026-09-17 开工后决定，原先的 P31.4 是"`--purge` 按 workspace 记录删本机的 session 输出"）。开工后核实原来的前提不成立：推荐部署里 Operator 和 Runtime Executor 是两个账号，输出在执行账号的状态目录，而 `ccnm workspace remove --purge`（`launcher::purge`）删的是**敲命令那个账号自己**目录里、Agent 报回来的会话——不光 bridge 会话，Managed 会话的 Runtime 输出也删不到，照原计划按记录在本机删结果一样。真要删到得走 Operator → Agent → Runtime Executor 两跳，要改 `agent-purge` 的内部 wire，而 `PurgeRequest` 拒绝未知字段，两端版本不一致时整个 `--purge` 会失败。P31.2、P31.3 已经让输出不会无限累积，所以只在运维手册写明这个限制和手动删的办法，observed_gaps 记一条。
+- **P31.5** 测试：两个上限做成可注入参数，单测用 KiB 级的小值（真写 64 MiB 太慢）。覆盖：单流超限时截断、管道照样排空、命令照常结束、结果带说明（补上现在完全没有的测试）；按次数删掉的是最旧的（现在的测试只数个数）；按字节删最旧的已结束运行，刚结束的和进行中的都不删，另一个进程持有的进行中运行也不删，持有者已经不在的照删；过期清理三个条件缺任何一个都不删，`ps` 失败不删，只删 `output/`。经真实二进制（`cargo test -p ccnm-cli --test external_mcp`）：bridge 会话正常结束后目录没了；Managed 形状的 session 在 `mcp-serve` 退出后目录还在，同一个 id 再起一个 `mcp-serve`，旧的 `output_ref` 仍能读。
+- **P31.6** 文档与门禁：协议第 8 节"保留输出"一行和下一段按新行为改写（会话总量上限、并发时的暂时超出、bridge 结束即删、过期清理）；运维手册手动 `rm` 那一段改成新行为，写明"`ps` 跑不了时不删"和 P31.4 的 `--purge` 限制。证据里写明为什么不升 `ccnm.workspace-mcp/2`：契约从没承诺保留时长，被删 ref 的错误码和消息不变，只是删得更早。门禁：`cargo fmt --all --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace`、`cargo test -p ccnm-cli --test external_mcp`、`python3 -m unittest tests.test_remote_workspace_mcp -q`、`python3 scripts/check_protocol.py` 与 `python3 -m unittest tests.test_check_protocol -q`、`python3 scripts/check_plan.py`、`git diff --check`。
+
+停止点：只管 Runtime 上的 `sessions/*/output/`。不做整台机器的总配额（toexec 计划第 9 节写明"另定"）；不改单流 64 MiB 和 100 次这两个现有上限；不清 Agent 侧会话记录和 `rpc/` 记录；不做配置项；不跑真机、不换任何机器上的二进制。
+
+### P32 — 封存 Codex 原生执行链
+
+**依赖 P31。用户 2026-09-17 决定。**（编号说明：立项时记作 P31；并行分支上 13:30 开工的「Runtime 保留输出」按开工先后排在前面成为 P31，本阶段顺延为 P32、随后的沙箱阶段为 P33，提交 35aeadf 消息里的 P31/P32 指的就是这两个。）决定本身、依据、封存后的行为和解封条件写在[双执行入口方案](runtime-surfaces.md)第 12.0 节，这里只列要改的东西和停止点。一句话：收益没量过，量过的那项（OS 沙箱）`codex sandbox` 不经 RPC 就能拿到，只开交互模式让 Machine API 用不上它，而每次 Codex 升级都要重做 P21 的规则表——不值。最终目标定为三种客户端（Claude Code、Codex、Web AI 经 gld hub）× 三种操作系统，只留一条执行路径才做得到。
+
+- **P32.1** 决定入档：runtime-surfaces 第 12 节加封存小节；AGENTS.md 告诉后续模型别再投入，并指向跨仓库目标。
+- **P32.2** 用户文档：支持矩阵那一行状态改成封存、证据保留并标明只对 0.154.0 成立；配置说明、README、使用说明、运维手册、排错手册里介绍这条链的地方各加一句封存和指向，原因只写在 12.0 一处。
+- **P32.3** 跨仓库：toexec v2 计划第 0 节改成"三种客户端都走 MCP + 共享库"，写入最终目标和当前覆盖表（客户端 × 操作系统，事实以各仓库支持文档为准）；第 8、11 节 V2-C 状态改封存；toexec README 同步。gld RFC-0002 头部那句和第 9 节补记指向新状态。
+- **P32.4** 取消的事写清楚：hpsrv 黑洞复测、Linux 上 fs helper 实测、为原生链发版并替换机器上的二进制，都不做；交接里对应的待办删掉。`python3 scripts/check_plan.py`、`git diff --check`。
 
 停止点：不改代码、不删代码，CI 里原生链的测试照跑；版本门、opt-in 开关、规则表都不动。
 
-### P32 — MCP 路径的 `exec_command` 加 OS 沙箱
+### P33 — MCP 路径的 `exec_command` 加 OS 沙箱
 
-**依赖 P31。**原生链唯一实测过的额外收益是命令有 OS 沙箱；toexec V2-P1 证明 `codex sandbox --sandbox-state-json '{"permissionProfile":…,"sandboxCwd":…,"workspaceRoots":[…]}' -- argv` 不经 RPC 就挡住同一集合（工作区外写、HOME 写、`.git` 写、网络；macOS Seatbelt 实测，多约 30 ms）。把它搬到两个入口共用的 `exec_command` 上，Claude、Codex、Web AI 三种客户端都拿到。
+**依赖 P32。**原生链唯一实测过的额外收益是命令有 OS 沙箱；toexec V2-P1 证明 `codex sandbox --sandbox-state-json '{"permissionProfile":…,"sandboxCwd":…,"workspaceRoots":[…]}' -- argv` 不经 RPC 就挡住同一集合（工作区外写、HOME 写、`.git` 写、网络；macOS Seatbelt 实测，多约 30 ms）。把它搬到两个入口共用的 `exec_command` 上，Claude、Codex、Web AI 三种客户端都拿到。
 
 先要定、不能默认的三件事：
 
@@ -453,9 +468,9 @@ worktree **分配、调度、合并策略**在 Orchestrator；受管 workspace �
 2. **Linux 前提。**Codex 的 Linux 沙箱要 bubblewrap 和 user namespace（P21）；V2-P1 只在 macOS 上测过 `codex sandbox`。Linux 那一半先在本机容器里测（P21 的做法）。
 3. **合法操作被挡怎么办。**V2-P1 实测沙箱里 `git commit` 失败（`.git` 只读）。`exec_command` 现在能跑的东西（构建、测试、`git commit`）哪些会被挡要先列出来；挡住了是报错，还是给模型一条"不带沙箱重试"的路——后者等于没有沙箱。
 
-- **P32.1** 实测清单：在 MCP 路径上用 `codex sandbox` 包 P12 dogfood 那套命令（read→search→patch→构建→测试→commit），记下哪些被挡；macOS 本机，Linux 容器。
-- **P32.2** 按结果定开关形状和默认值，写进配置说明和支持矩阵；实现时沙箱起不来和命令失败要分开报，不能把前者报成后者。
-- **P32.3** 离线测试：有沙箱时工作区外写、HOME 写、网络被挡且有具名错误；`codex_bin` 缺失或版本不对时按开关语义拒绝；`cargo test --workspace` 及全部门禁。
-- **P32.4** 版本关系写清楚：`codex sandbox` 的参数和 profile 形状也是按 0.154.0 实测的，同样受版本 pin 约束；比原生链省下的是协议、规则表、监督进程和 fs helper 那一整层，不是版本核对。
+- **P33.1** 实测清单：在 MCP 路径上用 `codex sandbox` 包 P12 dogfood 那套命令（read→search→patch→构建→测试→commit），记下哪些被挡；macOS 本机，Linux 容器。
+- **P33.2** 按结果定开关形状和默认值，写进配置说明和支持矩阵；实现时沙箱起不来和命令失败要分开报，不能把前者报成后者。
+- **P33.3** 离线测试：有沙箱时工作区外写、HOME 写、网络被挡且有具名错误；`codex_bin` 缺失或版本不对时按开关语义拒绝；`cargo test --workspace` 及全部门禁。
+- **P33.4** 版本关系写清楚：`codex sandbox` 的参数和 profile 形状也是按 0.154.0 实测的，同样受版本 pin 约束；比原生链省下的是协议、规则表、监督进程和 fs helper 那一整层，不是版本核对。
 
 停止点：opt-in、默认不变；不跑真机、不耗额度、不换任何机器上的二进制。

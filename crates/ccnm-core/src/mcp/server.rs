@@ -41,6 +41,7 @@ use crate::mcp::list::{self, ListFilesArgs};
 use crate::mcp::output::{self, ReadOutputArgs};
 use crate::mcp::patch::{self, ApplyPatchArgs};
 use crate::mcp::read::{self, ReadFileArgs};
+use crate::mcp::retention;
 use crate::mcp::search::{self, SearchTextArgs};
 use crate::process::{Cmd, ProcessRunner, SystemRunner};
 use crate::protocol::mcp::ServePayload;
@@ -252,6 +253,8 @@ struct Inner {
     /// `~/.local/state/ccnm`. Resolved once; a runtime that cannot find it
     /// still serves every read-only tool.
     state: Option<PathBuf>,
+    /// This session's retained output, under `state`.
+    output: Option<Arc<retention::Output>>,
     /// What the account this runtime runs as can reach, and whether this
     /// workspace has accepted it. Decided once at startup: the answer
     /// cannot change while the process lives, and re-running `id` and
@@ -388,6 +391,7 @@ impl Server {
                 None
             }
         };
+        let state = crate::paths::state_dir().ok();
         tracing::info!(
             workspace = %payload.workspace,
             root = %root.display(),
@@ -405,7 +409,10 @@ impl Server {
                 provider: payload.provider,
                 workspace: payload.workspace.clone(),
                 session: payload.session.clone(),
-                state: crate::paths::state_dir().ok(),
+                state: state.clone(),
+                output: state
+                    .as_deref()
+                    .map(|state| Arc::new(retention::Output::new(state, &payload.session))),
                 exec_gate,
                 root,
                 project,
@@ -659,17 +666,16 @@ impl Server {
         if let Err(error) = checked {
             return Ok(tool_error(&error));
         }
-        let Some(state) = self.inner.state.clone() else {
+        let Some(output) = self.inner.output.clone() else {
             return Ok(tool_error(&Error::new(
                 ErrorCode::NotReady,
                 "ccnm cannot find a state directory on the Runtime Node, so it has nowhere to keep a command's output",
             )));
         };
         let root = self.inner.root.clone();
-        let session = self.inner.session.clone();
         let provider = self.inner.provider;
         let ran = tokio::task::spawn_blocking(move || {
-            exec::exec_command_for(provider, &root, &session, &state, &args)
+            exec::exec_command_in(provider, &root, &output, &args)
         })
         .await
         .map_err(|e| ErrorData::internal_error(format!("exec_command task failed: {e}"), None))?;
@@ -700,7 +706,7 @@ impl Server {
         if let Some(refusal) = self.refuse_withheld("read_output") {
             return Ok(refusal);
         }
-        let Some(state) = self.inner.state.clone() else {
+        let Some(output) = self.inner.output.as_ref() else {
             return Ok(tool_error(&Error::new(
                 ErrorCode::NotReady,
                 "ccnm cannot find a state directory on the Runtime Node, so there is nowhere for a command's output to have been kept",
@@ -708,7 +714,7 @@ impl Server {
         };
         // The session's own directory and no other: an output_ref is a
         // reference within this session, not a handle on the machine.
-        let dir = exec::session_dir(&state, &self.inner.session);
+        let dir = output.dir().to_path_buf();
         let page = tokio::task::spawn_blocking(move || output::read_output(&dir, &args))
             .await
             .map_err(|e| {
@@ -933,15 +939,39 @@ pub fn serve_external(request: &crate::runtime::ExternalOpenPayload) -> CcnmResu
 pub const HEARTBEAT: Duration = Duration::from_secs(30);
 
 fn run(server: Server) -> CcnmResult<()> {
+    if let Some(state) = server.inner.state.clone() {
+        // Off this thread: a sweep of every session on the machine must
+        // not delay the handshake, and nothing it runs into is this
+        // session's problem.
+        let own = server.inner.session.clone();
+        let _ = std::thread::Builder::new()
+            .name("ccnm-output-expiry".into())
+            .spawn(move || retention::sweep_expired(&state, &own, &SystemRunner));
+    }
+    // Only an external client's session ends with this process; see
+    // `Output::discard_started` for why a managed one must not.
+    let discard = server
+        .inner
+        .entry
+        .is_external()
+        .then(|| server.inner.output.clone())
+        .flatten();
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|e| Error::internal("cannot start tokio runtime").with_source(e))?;
-    rt.block_on(serve_until_gone(
+    let served = rt.block_on(serve_until_gone(
         server,
         rmcp::transport::stdio(),
         HEARTBEAT,
-    ))
+    ));
+    // Dropping the runtime waits for commands still running in
+    // `spawn_blocking`, so their runs are finished before they are removed.
+    drop(rt);
+    if let Some(output) = discard {
+        output.discard_started();
+    }
+    served
 }
 
 /// Serve until the client closes the stream or can no longer be written to.

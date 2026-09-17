@@ -246,12 +246,19 @@ fn judge(
 
 /// `ps` for every `ccnm internal mcp-serve`, whoever runs it.
 pub fn scan_servers(runner: &dyn ProcessRunner) -> Vec<Server> {
+    try_scan_servers(runner).unwrap_or_default()
+}
+
+/// [`scan_servers`], saying `None` when `ps` could not be asked. Anything
+/// that removes a session's files on the strength of "nobody serves it"
+/// needs this one: an empty list from a failed `ps` is not an answer.
+pub fn try_scan_servers(runner: &dyn ProcessRunner) -> Option<Vec<Server>> {
     let cmd = Cmd::new("/bin/ps")
         .args(["-axo", "pid=,ppid=,etime=,command="])
         .timeout(std::time::Duration::from_secs(10));
     match runner.run(&cmd) {
-        Ok(out) if out.success() => parse_servers(&out.stdout_lossy()),
-        _ => Vec::new(),
+        Ok(out) if out.success() => Some(parse_servers(&out.stdout_lossy())),
+        _ => None,
     }
 }
 

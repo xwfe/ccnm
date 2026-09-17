@@ -540,3 +540,17 @@ workspace 的 lint 是 `unsafe_code = "forbid"`，也没有 libc 依赖，进程
 - **P37.6** 门禁：`cargo fmt --all --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace`、`cargo +1.89 check --workspace --all-targets --locked`、`python3 scripts/check_plan.py`、`python3 scripts/check_protocol.py`、`python3 -m unittest tests.test_check_protocol tests.test_remote_workspace_mcp -q`、`git diff --check`。
 
 停止点：不做分开的 `-A` / `-B`、`head_limit` / `offset` 分页、`-o`（只输出匹配部分）；不做跨调用保持工作目录（原生 Bash 有，ccnm 每次传 `cwd`）；不耗模型额度，所以"模型会不会用这些新参数"没有验；不发版、不换任何机器上的二进制；gld 的同步是 v3 方案第 5 步。
+
+### P38 — `search_text` 的 glob 不再越过 `.gitignore`
+
+**依赖 P37。P37 发现、记在 status.json 的 observed_gaps；用户 2026-09-17 让按建议修。**现象：给了 `glob` 时，rg 会搜 `.gitignore` 排除的东西——`glob: "**"` 搜进 `target/`、`node_modules/`，`glob: "**/*.yml"` 搜到被忽略的 `secret.yml`。原因是 rg 15.2.0 里 glob 一旦命中（文件或目录都算）就不再看 `.gitignore`。
+
+P37 交接时建议的修法是"拒绝能匹配目录的 glob"。开工前实测否定了它：`*.log`、`**/*.yml` 这种只匹配文件的 glob 同样越过 `.gitignore`。改用的做法：glob 不再作为 `--glob` 交给 rg；每个备选的文件名部分用 `--type-add` 登记成一个临时类型交给 rg 缩小范围（rg 的类型判断排在 `.gitignore` 之后、不作用于目录），整条 glob 由 ccnm 按 rg 原本的规则（不含 `/` 的只比文件名、含 `/` 的从 workspace 根比整条路径、以 `/` 结尾的只匹配目录）过滤结果。这样 `*.rs` 的含义不变，唯一的结果变化是被忽略的文件不再出现——这正是工具说明一直写的。
+
+- **P38.1** 实测，零额度：rg 15.2.0 上 glob 越过文件级和目录级 `.gitignore` 的最小复现；`--type-add` 是否遵守 `.gitignore`、是否受 `!.*` 约束、`*` / `**` 作为类型 glob 的效果、带 `:` 的 glob 和 `include:` 前缀怎么被解析；rg 对含 `/` 与不含 `/` 的 glob 分别怎么锚定（含 `path` 不是根时）。
+- **P38.2** 实现：`Glob` 记下是否含 `/`、是否以 `/` 结尾，提供按 rg 规则匹配文件路径的方法；`search_text` 用 `--type-add` 缩小范围（文件名部分含 `:` 时不缩小，只靠过滤），结果逐条过滤。以 `!` 开头的 glob 是排除规则、不会越过 `.gitignore`，照旧交给 rg。
+- **P38.3** 顺带：`type` 和 `glob` 同时给时不再拒绝，改成两者都要满足——glob 不再是 rg 的 `--glob`，P37 拒绝它的理由（命中 glob 的文件不看类型）不存在了。
+- **P38.4** 测试：旧实现下失败的复现测试（目录级、文件级各一）；glob 语义不变的回归（`*.rs` 任意深度、`src/*.rs` 不进子目录、`**/x/*.rs`、花括号、以 `/` 结尾、排除规则）；`type` + `glob` 取交集；中立客户端同步。
+- **P38.5** 文档与门禁：协议第 5.2 节、使用说明、支持矩阵、P37 记录加后续说明；门禁同 P37.6。
+
+停止点：不改 `list_files`（它走 `git ls-files`，没有这个问题）；不优化"文件名部分是 `**`、没法缩小范围"时的扫描量（这时 rg 扫全部未忽略的文件、ccnm 丢掉不匹配的，受 60 秒超时约束）；不耗模型额度；不发版。

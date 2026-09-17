@@ -450,6 +450,18 @@ fn output_to_a_client_that_never_reads_is_not_hearing_from_it() {
     drop(peer);
 }
 
+/// A progress line straight to file descriptor 2. libtest captures
+/// `eprintln!` until a test ends, so a test that never ends shows nothing;
+/// this does not go through the capture and lands in the CI log's tail.
+fn stage(step: &str) {
+    use std::io::Write;
+    let _ = writeln!(
+        std::io::stderr(),
+        "[session-test {:?}] {step}",
+        std::time::SystemTime::now()
+    );
+}
+
 /// Run `work` on its own thread and give it `limit`. A step that hangs fails
 /// the test with its name and what the marked processes look like, instead of
 /// holding the CI job until its timeout with nothing to read (this test hung
@@ -506,6 +518,7 @@ fn describe_marked(marker: &str) -> String {
 /// says `released` -- the same ending as a client that closed its stdin.
 #[test]
 fn a_session_given_up_on_shuts_down_and_releases_the_guard() {
+    stage("start");
     let scratch = Scratch::new("session");
     let state = scratch.dir.join("state");
     let marker = marker("session");
@@ -523,13 +536,17 @@ fn a_session_given_up_on_shuts_down_and_releases_the_guard() {
             WriteGuard::acquire(&guard_state, &root, "demo", "s1", None, &SystemRunner).unwrap()
         },
     );
+    stage("guard acquired");
+    let child = scratch.executor(&marker);
+    stage("executor spawned");
     let session = Session {
-        child: scratch.executor(&marker),
+        child,
         policy: Policy::new(scratch.root(), MARKER),
         marker: marker.clone(),
         guard,
         home: CodexHome::create(&state, &marker).unwrap(),
     };
+    stage("home created");
     let (client, peer) = client_pair();
     send(
         &peer,
@@ -539,7 +556,9 @@ fn a_session_given_up_on_shuts_down_and_releases_the_guard() {
         &peer,
         &serde_json::json!({"method": "initialized", "params": {}}),
     );
+    stage("initialize and initialized sent");
     send(&peer, &scratch.start(2, "exec sleep 600"));
+    stage("process/start sent");
     let received = drain(peer.try_clone().unwrap());
     let watcher_marker = marker.clone();
     let started = Instant::now();
@@ -555,6 +574,7 @@ fn a_session_given_up_on_shuts_down_and_releases_the_guard() {
         let _ = seen.send(started.elapsed());
     });
 
+    stage("running the session");
     let end = within(
         "Session::run",
         Duration::from_secs(30),
@@ -562,6 +582,7 @@ fn a_session_given_up_on_shuts_down_and_releases_the_guard() {
         move || session.run(client, timing, &Sweeper::system()),
     )
     .unwrap();
+    stage(&format!("session ended: {end:?}"));
     assert_eq!(end, End::ClientSilent);
     let running_after = running_at
         .recv_timeout(Duration::from_secs(10))
@@ -582,6 +603,7 @@ fn a_session_given_up_on_shuts_down_and_releases_the_guard() {
     assert_eq!(locks, vec!["released\n".to_string()]);
     assert!(!state.join("exec-server").join(&marker).exists());
     assert!(scratch.executor_saw().contains("process/start"));
+    stage("guard released, shutting the client down");
     peer.shutdown(std::net::Shutdown::Both).unwrap();
     let replies = within(
         "draining the client side",
@@ -590,4 +612,5 @@ fn a_session_given_up_on_shuts_down_and_releases_the_guard() {
         move || received.join().unwrap(),
     );
     assert!(replies.iter().any(|m| m["id"] == 2), "{replies:?}");
+    stage("done");
 }

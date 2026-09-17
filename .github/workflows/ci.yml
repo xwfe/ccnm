@@ -134,14 +134,14 @@ jobs:
       # the tail is the useful part.
       #
       # A hang is not a failure until something ends it, so the tests get
-      # 20 minutes. libtest prints "test <name> has been running for over
-      # 60 seconds" while it waits, which puts the stuck test's name in the
-      # tail and so in the annotation. `timeout` signals its whole process
+      # 10 minutes (a normal Test step takes 2 to 3). libtest prints "test
+      # <name> has been running for over 60 seconds" while it waits, which
+      # puts the stuck test's name in the tail and so in the annotation. `timeout` signals its whole process
       # group, the test binary included, and exits 124.
       - name: Test
         run: |
           set -o pipefail
-          if ! timeout --signal=INT --kill-after=30s 20m cargo test --workspace 2>&1 | tee /tmp/test.log; then
+          if ! timeout --signal=INT --kill-after=30s 10m cargo test --workspace 2>&1 | tee /tmp/test.log; then
             {
               echo '### `cargo test --workspace` failed on Linux'
               echo

@@ -17,11 +17,28 @@ use ccnm_core::protocol::mcp::ServePayload;
 use ccnm_core::protocol::payload;
 use ccnm_core::provider::AgentProvider;
 use ccnm_core::runtime::OpenPayload;
+use ccnm_testdir::TestDir;
+
+thread_local! {
+    /// HOME for every `ccnm` the current test starts: one per test thread,
+    /// removed when the thread ends. One per process, as it used to be, is
+    /// shared by all the tests here and so can be deleted by none of them.
+    static HOME: TestDir = {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static NEXT: AtomicU32 = AtomicU32::new(0);
+        let home = std::env::temp_dir().join(format!(
+            "ccnm-open-home-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&home).unwrap();
+        TestDir::adopt(home)
+    };
+}
 
 fn ccnm() -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_ccnm"));
-    let home = std::env::temp_dir().join(format!("ccnm-open-home-{}", std::process::id()));
-    std::fs::create_dir_all(&home).unwrap();
+    let home = HOME.with(|home| home.to_path_buf());
     cmd.env_clear()
         .env("PATH", std::env::var_os("PATH").unwrap_or_default())
         .env("USER", std::env::var_os("USER").unwrap_or_default())
@@ -36,7 +53,7 @@ fn stderr(out: &Output) -> String {
 
 /// A Runtime config with one instance workspace, and the directory it
 /// points at.
-fn setup(test: &str, root_exists: bool) -> (PathBuf, PathBuf) {
+fn setup(test: &str, root_exists: bool) -> (TestDir, PathBuf, PathBuf) {
     let dir = std::env::temp_dir().join(format!("ccnm-open-{}-{test}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -66,7 +83,7 @@ allow_unconfined_exec = true
         ),
     )
     .unwrap();
-    (config, root)
+    (TestDir::adopt(dir), config, root)
 }
 
 fn identity() -> AgentIdentity {
@@ -95,7 +112,7 @@ fn serve(config: &Path, wire: &str) -> Output {
 /// sent, which is the whole point of the shape.
 #[test]
 fn the_runtime_supplies_the_root_the_request_could_not() {
-    let (config, root) = setup("resolves", false);
+    let (_dir, config, root) = setup("resolves", false);
     let wire = payload::encode(&OpenPayload::new("demo", identity(), "session-1")).unwrap();
     let out = serve(&config, &wire);
     assert!(!out.status.success());
@@ -106,7 +123,7 @@ fn the_runtime_supplies_the_root_the_request_could_not() {
 
 #[test]
 fn a_workspace_this_runtime_does_not_have_is_refused() {
-    let (config, _) = setup("unknown", true);
+    let (_dir, config, _) = setup("unknown", true);
     let wire = payload::encode(&OpenPayload::new("not-here", identity(), "session-1")).unwrap();
     let out = serve(&config, &wire);
     assert!(!out.status.success());
@@ -118,7 +135,7 @@ fn a_workspace_this_runtime_does_not_have_is_refused() {
 /// it fails on that root rather than on the workspace's.
 #[test]
 fn the_legacy_shape_still_opens_beside_the_new_one() {
-    let (config, _) = setup("legacy", true);
+    let (_dir, config, _) = setup("legacy", true);
     let wire = payload::encode(&ServePayload::new(
         "demo",
         PathBuf::from("/nonexistent/caller/root"),
@@ -135,7 +152,7 @@ fn the_legacy_shape_still_opens_beside_the_new_one() {
 /// other shape and hoping is how a new chain ends up running on old rules.
 #[test]
 fn an_unknown_protocol_stops_rather_than_falling_back() {
-    let (config, _) = setup("version", true);
+    let (_dir, config, _) = setup("version", true);
     let json = serde_json::json!({
         "protocol": 99,
         "workspace": "demo",

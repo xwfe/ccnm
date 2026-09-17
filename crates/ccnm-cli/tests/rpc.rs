@@ -13,15 +13,30 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
+use ccnm_testdir::TestDir;
 use serde_json::Value;
 
 const HELLO: &str = r#"{"jsonrpc":"2.0","id":1,"method":"hello","params":{"client":"integration/1","protocol_versions":["ccnm.machine/1"]}}"#;
 
+fn sandbox_path(test: &str) -> PathBuf {
+    std::env::temp_dir().join(format!("ccnm-rpc-it-{}-{test}", std::process::id()))
+}
+
 fn sandbox(test: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("ccnm-rpc-it-{}-{test}", std::process::id()));
+    let dir = sandbox_path(test);
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     dir
+}
+
+/// Removes a test's sandbox, and the `<test>-config` one beside it, when
+/// the test ends.
+///
+/// The test holds this rather than `talk`: a sandbox has to outlive the
+/// call that made it, because `talk_reusing` comes back to the same one to
+/// look like a second client of the same session store.
+fn tidy(test: &str) -> TestDir {
+    TestDir::adopt(sandbox_path(test)).also(sandbox_path(&format!("{test}-config")))
 }
 
 fn fixture(name: &str) -> PathBuf {
@@ -73,6 +88,7 @@ fn lines(out: &Output) -> Vec<Value> {
 
 #[test]
 fn a_conversation_over_pipes_works_end_to_end() {
+    let _tidy = tidy("conversation");
     let out = talk(
         "conversation",
         &fixture("agent-instance/runtime.toml"),
@@ -94,6 +110,7 @@ fn a_conversation_over_pipes_works_end_to_end() {
 
 #[test]
 fn stdout_carries_only_protocol_even_when_logging_is_on() {
+    let _tidy = tidy("logging");
     // The one guarantee a client cannot work around: a stray line on stdout
     // desynchronises the stream. Debug logging is the likeliest source, so
     // it is turned all the way up here.
@@ -138,6 +155,7 @@ fn stdout_carries_only_protocol_even_when_logging_is_on() {
 
 #[test]
 fn eof_on_an_empty_stream_exits_cleanly() {
+    let _tidy = tidy("eof");
     let out = talk("eof", &fixture("agent-instance/runtime.toml"), "");
     assert!(out.status.success());
     assert!(out.stdout.is_empty());
@@ -145,6 +163,7 @@ fn eof_on_an_empty_stream_exits_cleanly() {
 
 #[test]
 fn a_broken_line_does_not_desync_the_stream() {
+    let _tidy = tidy("desync");
     // Newline framing earns its keep here: one unusable line is answered and
     // the next real request is still understood.
     let input = format!("not json\n[]\n{HELLO}\n");
@@ -160,6 +179,7 @@ fn a_broken_line_does_not_desync_the_stream() {
 
 #[test]
 fn an_oversize_line_is_refused_and_the_stream_continues() {
+    let _tidy = tidy("oversize");
     let huge = format!(
         "{{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"hello\",\"params\":{{\"client\":\"{}\"}}}}",
         "x".repeat(1024 * 1024)
@@ -177,6 +197,7 @@ fn an_oversize_line_is_refused_and_the_stream_continues() {
 
 #[test]
 fn a_client_that_reads_while_it_writes_does_not_deadlock() {
+    let _tidy = tidy("backpressure");
     // Backpressure: enough requests that the answers cannot fit in a pipe
     // buffer. A client that only wrote would wedge -- the server blocks on
     // write, stops reading stdin, and both sides wait forever. Reading on
@@ -221,6 +242,7 @@ fn a_client_that_reads_while_it_writes_does_not_deadlock() {
 
 #[test]
 fn nothing_can_be_called_before_the_handshake() {
+    let _tidy = tidy("handshake");
     let out = talk(
         "handshake",
         &fixture("agent-instance/runtime.toml"),
@@ -231,6 +253,7 @@ fn nothing_can_be_called_before_the_handshake() {
 
 #[test]
 fn a_missing_config_is_reported_as_a_config_error() {
+    let _tidy = tidy("noconfig");
     let out = talk(
         "noconfig",
         Path::new("/nonexistent/ccnm/config.toml"),
@@ -244,6 +267,7 @@ fn a_missing_config_is_reported_as_a_config_error() {
 
 #[test]
 fn a_start_that_cannot_reach_the_agent_still_leaves_a_session_to_ask_about() {
+    let _tidy = tidy("failed-start");
     // The workspace root does not exist here, so the launcher refuses before
     // any ssh. What matters is that the failure is recorded: an accepted
     // start that reports an error but leaves no session is the one outcome a
@@ -316,6 +340,7 @@ fn start_line(key: Option<&str>) -> String {
 
 #[test]
 fn a_start_key_stays_idempotent_across_a_server_restart() {
+    let _tidy = tidy("restart");
     // Two runs of the binary, one store. The second must reuse the first
     // session rather than start a second Agent -- that is the whole promise
     // of the key surviving a restart.
@@ -366,6 +391,7 @@ fn a_start_key_stays_idempotent_across_a_server_restart() {
 
 #[test]
 fn a_session_left_behind_by_a_killed_server_reads_as_unknown() {
+    let _tidy = tidy("killed");
     // Fault injection: put the store into exactly the state a server that
     // died mid-run leaves behind -- still running, owned by a pid that
     // cannot be that server -- then ask the real binary about it.
@@ -385,7 +411,7 @@ fn a_session_left_behind_by_a_killed_server_reads_as_unknown() {
         .unwrap()
         .to_string();
 
-    let home = std::env::temp_dir().join(format!("ccnm-rpc-it-{}-killed", std::process::id()));
+    let home = sandbox_path("killed");
     let path = home
         .join("state/ccnm/rpc/sessions")
         .join(format!("{session}.json"));
@@ -417,7 +443,7 @@ fn a_session_left_behind_by_a_killed_server_reads_as_unknown() {
 /// Same sandbox as a previous call, so the session store persists across
 /// what looks to the server like two separate clients.
 fn talk_reusing(test: &str, config: &Path, input: &str) -> Output {
-    let home = std::env::temp_dir().join(format!("ccnm-rpc-it-{}-{test}", std::process::id()));
+    let home = sandbox_path(test);
     let mut child = Command::new(env!("CARGO_BIN_EXE_ccnm"))
         .env_clear()
         .env("PATH", std::env::var_os("PATH").unwrap_or_default())

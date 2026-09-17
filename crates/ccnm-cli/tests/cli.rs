@@ -13,15 +13,33 @@ use ccnm_core::protocol::hello::{HelloReport, HelloRequest};
 use ccnm_core::protocol::mcp::ProbeReport as McpProbeReport;
 use ccnm_core::protocol::payload;
 use ccnm_core::session::RuntimeLink;
+use ccnm_testdir::TestDir;
+
+thread_local! {
+    /// HOME for every `ccnm` the current test starts.
+    ///
+    /// libtest runs each test on a thread of its own, so this is one HOME
+    /// per test, removed when that thread ends. It used to be one per
+    /// process, shared by every test here -- and a directory that is shared
+    /// has no test whose end could delete it, so each run left one behind,
+    /// write-guard lock files and all.
+    static HOME: TestDir = {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static NEXT: AtomicU32 = AtomicU32::new(0);
+        let home = Path::new("/tmp").canonicalize().unwrap().join(format!(
+            "ccnm-cli-home-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&home).unwrap();
+        TestDir::adopt(home)
+    };
+}
 
 fn ccnm() -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_ccnm"));
     // Never let the developer's own config leak into a test.
-    let home = Path::new("/tmp")
-        .canonicalize()
-        .unwrap()
-        .join(format!("ccnm-cli-home-{}", std::process::id()));
-    std::fs::create_dir_all(&home).unwrap();
+    let home = HOME.with(|home| home.to_path_buf());
     cmd.env_clear()
         .env("PATH", std::env::var_os("PATH").unwrap_or_default())
         .env("USER", std::env::var_os("USER").unwrap_or_default())
@@ -60,7 +78,7 @@ fn stderr(out: &Output) -> String {
 
 /// A fresh directory with `root/` inside it and a config pointing there.
 /// `home_bin` is what the Agent Node would invoke on this host.
-fn setup(test: &str, home_bin: &str) -> (PathBuf, PathBuf) {
+fn setup(test: &str, home_bin: &str) -> (TestDir, PathBuf) {
     let dir = std::env::temp_dir().join(format!("ccnm-cli-{}-{test}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let root = dir.join("root");
@@ -78,7 +96,7 @@ fn setup(test: &str, home_bin: &str) -> (PathBuf, PathBuf) {
         ),
     )
     .unwrap();
-    (dir, config)
+    (TestDir::adopt(dir), config)
 }
 
 #[test]
@@ -563,6 +581,7 @@ fn verbose_logs_go_to_stderr_not_stdout() {
 #[test]
 fn init_and_workspace_add_write_a_config_that_loads() {
     let dir = std::env::temp_dir().join(format!("ccnm-cli-init-{}", std::process::id()));
+    let _cleanup = TestDir::adopt(&dir);
     let _ = std::fs::remove_dir_all(&dir);
     let project = dir.join("myproj");
     std::fs::create_dir_all(&project).unwrap();
@@ -638,6 +657,7 @@ fn init_and_workspace_add_write_a_config_that_loads() {
 #[test]
 fn a_name_that_is_taken_is_refused_with_something_to_type() {
     let dir = std::env::temp_dir().join(format!("ccnm-cli-collide-{}", std::process::id()));
+    let _cleanup = TestDir::adopt(&dir);
     let _ = std::fs::remove_dir_all(&dir);
     let first = dir.join("code/web");
     let second = dir.join("other/web");
@@ -709,6 +729,7 @@ fn a_name_that_is_taken_is_refused_with_something_to_type() {
 #[test]
 fn adding_a_workspace_before_init_says_to_init() {
     let dir = std::env::temp_dir().join(format!("ccnm-cli-noinit-{}", std::process::id()));
+    let _cleanup = TestDir::adopt(&dir);
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let out = ccnm()
@@ -799,6 +820,7 @@ fn the_line_the_agent_sends_the_runtime_is_one_the_runtime_accepts() {
 #[test]
 fn on_the_work_machine_attach_status_and_stop_stay_local() {
     let state = std::env::temp_dir().join(format!("ccnm-cli-{}-worklocal", std::process::id()));
+    let _cleanup = TestDir::adopt(&state);
     let _ = std::fs::remove_dir_all(&state);
     std::fs::create_dir_all(&state).unwrap();
     // A name nothing can have a live session for, so `stop` cannot end
@@ -847,6 +869,7 @@ fn on_the_work_machine_attach_status_and_stop_stay_local() {
 #[test]
 fn on_the_agent_node_result_is_read_off_this_disk() {
     let xdg = std::env::temp_dir().join(format!("ccnm-cli-{}-workresult", std::process::id()));
+    let _cleanup = TestDir::adopt(&xdg);
     let _ = std::fs::remove_dir_all(&xdg);
     let workspace = "ccnm-test-result";
     let id = "7c1d9f60-0a11-4c22-9d33-8e44f5566a77";
@@ -985,10 +1008,10 @@ fn with_stdin(cmd: &mut Command, input: &str) -> Output {
 
 /// ControlPath expands to at most 103 bytes and macOS `temp_dir()` is
 /// most of that by itself, so the state directory goes under /tmp.
-fn short_state(test: &str) -> PathBuf {
+fn short_state(test: &str) -> TestDir {
     let dir = PathBuf::from("/tmp/ccnm-cli-st").join(format!("{}-{test}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    dir
+    TestDir::adopt(dir)
 }
 
 /// The words after `-T`/`-t` in one recorded ssh call: the alias, then
@@ -1015,6 +1038,7 @@ fn sitting_at_home_detached_starts_the_session_and_keeps_the_terminal_here() {
     use ccnm_core::protocol::run::{AttachRequest, StartReport, StartRequest, StatusReport};
 
     let dir = std::env::temp_dir().join(format!("ccnm-cli-{}-home-loop", std::process::id()));
+    let _cleanup = TestDir::adopt(&dir);
     let _ = std::fs::remove_dir_all(&dir);
     let root = dir.join("root");
     std::fs::create_dir_all(&root).unwrap();
@@ -1180,6 +1204,7 @@ fn sitting_at_home_detached_starts_the_session_and_keeps_the_terminal_here() {
 #[test]
 fn sitting_at_the_agent_only_the_question_goes_to_the_runtime() {
     let dir = std::env::temp_dir().join(format!("ccnm-cli-{}-work-loop", std::process::id()));
+    let _cleanup = TestDir::adopt(&dir);
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     // A name nothing can have a live session for on this machine.
@@ -1413,7 +1438,7 @@ fn supervise_runs_the_session_and_writes_its_exit_record() {
             prompt: "say ok".into(),
         },
         timeout_secs: 60,
-        cwd: dir.clone(),
+        cwd: dir.to_path_buf(),
         codex_exec_server: false,
     };
     let ssh = ccnm_core::ssh::Ssh::new("ccnm-home", "/tmp/ccnm-t/cli-sup").unwrap();
@@ -1480,7 +1505,7 @@ fn codex_supervisor_records_launch_validation_failure_without_running_an_agent()
             prompt: "never sent".into(),
         },
         timeout_secs: 10,
-        cwd: root.clone(),
+        cwd: root.to_path_buf(),
         codex_exec_server: false,
     };
     std::fs::write(dir.meta(), serde_json::to_vec(&spec).unwrap()).unwrap();

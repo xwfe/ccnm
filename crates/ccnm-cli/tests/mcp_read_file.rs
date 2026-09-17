@@ -21,6 +21,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use ccnm_core::protocol::mcp::ServePayload;
 use ccnm_core::protocol::payload;
+use ccnm_testdir::TestDir;
 use serde_json::{Value, json};
 
 /// A live MCP session over pipes.
@@ -210,7 +211,7 @@ fn is_error(result: &Value) -> bool {
 }
 
 /// A workspace with the files that make `read_file` interesting.
-fn workspace(name: &str) -> PathBuf {
+fn workspace(name: &str) -> TestDir {
     let dir = std::env::temp_dir().join(format!("ccnm-e2e-{}-{name}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let root = dir.join("root");
@@ -227,7 +228,9 @@ fn workspace(name: &str) -> PathBuf {
     // workspace, and a symlink inside it that points at the secret.
     std::fs::write(dir.join("secret.txt"), "TOTALLY-SECRET-VALUE\n").unwrap();
     std::os::unix::fs::symlink(dir.join("secret.txt"), root.join("shortcut.txt")).unwrap();
-    std::fs::canonicalize(&root).unwrap()
+    // The tests see the workspace root; the secret and the config live one
+    // level up, so that is what has to go.
+    TestDir::adopt(std::fs::canonicalize(&root).unwrap()).also(dir)
 }
 
 /// A config declaring this workspace. `unconfined` is what the round of
@@ -698,7 +701,7 @@ fn provider_authentication_environment_cannot_be_waived_or_leak() {
             std::fs::set_permissions(bin.join("git"), std::fs::Permissions::from_mode(0o700))
                 .unwrap();
             let wire = payload::encode(
-                &ServePayload::new("t", root.clone(), "s1").with_provider(provider),
+                &ServePayload::new("t", root.to_path_buf(), "s1").with_provider(provider),
             )
             .unwrap();
             let result = Command::new(env!("CARGO_BIN_EXE_ccnm"))

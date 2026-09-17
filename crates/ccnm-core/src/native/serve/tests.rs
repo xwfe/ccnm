@@ -194,9 +194,21 @@ fn client_pair() -> (Client, UnixStream) {
     (client, theirs)
 }
 
+/// One whole line, one write. `writeln!(stream, "{message}")` would hand a
+/// serde_json value to the socket token by token, hundreds of tiny writes;
+/// Linux charges each of them a socket buffer unit of several hundred bytes,
+/// so a captured `process/start` alone fills the send budget of a socket
+/// nobody is reading yet and the write blocks for good (it hung the Linux CI
+/// job; macOS counts bytes and never showed it).
+fn line_of(message: &Value) -> Vec<u8> {
+    let mut line = message.to_string().into_bytes();
+    line.push(b'\n');
+    line
+}
+
 fn send(stream: &UnixStream, message: &Value) {
     let mut stream = stream;
-    writeln!(stream, "{message}").unwrap();
+    stream.write_all(&line_of(message)).unwrap();
 }
 
 /// Reads everything the supervisor sends and answers each liveness request
@@ -210,7 +222,7 @@ fn answer_like_codex(stream: UnixStream) -> std::thread::JoinHandle<usize> {
             if message["method"] == "ccnm/liveness" {
                 let answer = serde_json::json!({"id": message["id"], "error": {"code": -32601, "message": "exec-server client does not implement `ccnm/liveness` yet"}});
                 let mut out = &stream;
-                if writeln!(out, "{answer}").is_err() {
+                if out.write_all(&line_of(&answer)).is_err() {
                     break;
                 }
                 answered += 1;
@@ -236,7 +248,7 @@ fn answer_while(
                 && answering.load(std::sync::atomic::Ordering::SeqCst)
             {
                 let answer = serde_json::json!({"id": message["id"], "error": {"code": -32601, "message": "exec-server client does not implement `ccnm/liveness` yet"}});
-                let _ = writeln!(out, "{answer}");
+                let _ = out.write_all(&line_of(&answer));
             }
             seen.push(message);
         }
@@ -474,64 +486,6 @@ fn output_to_a_client_that_never_reads_is_not_hearing_from_it() {
     drop(peer);
 }
 
-/// Where the session test is, for the watchdog below.
-static STAGE: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
-
-/// Record progress and write it straight to file descriptor 2. libtest
-/// captures `eprintln!` until a test ends, so a test that never ends shows
-/// nothing; this line does not go through the capture.
-fn stage(step: &str) {
-    use std::io::Write;
-    *STAGE.lock().unwrap_or_else(|e| e.into_inner()) = step.to_string();
-    let _ = writeln!(std::io::stderr(), "[session-test] {step}");
-}
-
-/// Every 15 seconds until `done`, say which stage the session test is in.
-/// On CI only the last 40 lines of the log reach the public annotation, and
-/// the stages of a test that hangs are printed long before those; this keeps
-/// repeating the one that matters at the bottom.
-fn stage_watchdog(done: Arc<std::sync::atomic::AtomicBool>) {
-    std::thread::spawn(move || {
-        use std::io::Write;
-        let started = Instant::now();
-        loop {
-            std::thread::sleep(Duration::from_secs(15));
-            if done.load(std::sync::atomic::Ordering::SeqCst) {
-                return;
-            }
-            let at = STAGE.lock().unwrap_or_else(|e| e.into_inner()).clone();
-            let _ = writeln!(
-                std::io::stderr(),
-                "[session-test watchdog] {:?} in, still at: {at}",
-                started.elapsed()
-            );
-        }
-    });
-}
-
-/// Run `work` on its own thread and give it `limit`. A step that hangs fails
-/// the test with its name and what the marked processes look like, instead of
-/// holding the CI job until its timeout with nothing to read (this test hung
-/// on the Linux runner and only there).
-fn within<T: Send + 'static>(
-    step: &str,
-    limit: Duration,
-    marker: &str,
-    work: impl FnOnce() -> T + Send + 'static,
-) -> T {
-    let (tx, rx) = mpsc::channel();
-    std::thread::spawn(move || {
-        let _ = tx.send(work());
-    });
-    match rx.recv_timeout(limit) {
-        Ok(value) => value,
-        Err(_) => panic!(
-            "{step} did not finish within {limit:?}; processes with the marker: {}",
-            describe_marked(marker)
-        ),
-    }
-}
-
 /// pid, state and command line of every process carrying the marker, read
 /// on a thread of its own so a stuck /proc read cannot hang the report.
 fn describe_marked(marker: &str) -> String {
@@ -565,9 +519,6 @@ fn describe_marked(marker: &str) -> String {
 /// says `released` -- the same ending as a client that closed its stdin.
 #[test]
 fn a_session_given_up_on_shuts_down_and_releases_the_guard() {
-    let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    stage_watchdog(Arc::clone(&done));
-    stage("start");
     let scratch = Scratch::new("session");
     let state = scratch.dir.join("state");
     let marker = marker("session");
@@ -575,27 +526,14 @@ fn a_session_given_up_on_shuts_down_and_releases_the_guard() {
         give_up_after: Duration::from_millis(1500),
         ..FAST
     };
-    let root = scratch.root();
-    let guard_state = state.clone();
-    let guard = within(
-        "acquiring the write guard",
-        Duration::from_secs(10),
-        &marker,
-        move || {
-            WriteGuard::acquire(&guard_state, &root, "demo", "s1", None, &SystemRunner).unwrap()
-        },
-    );
-    stage("guard acquired");
-    let child = scratch.executor(&marker);
-    stage("executor spawned");
     let session = Session {
-        child,
+        child: scratch.executor(&marker),
         policy: Policy::new(scratch.root(), MARKER),
         marker: marker.clone(),
-        guard,
+        guard: WriteGuard::acquire(&state, &scratch.root(), "demo", "s1", None, &SystemRunner)
+            .unwrap(),
         home: CodexHome::create(&state, &marker).unwrap(),
     };
-    stage("home created");
     let (client, peer) = client_pair();
     send(
         &peer,
@@ -605,9 +543,7 @@ fn a_session_given_up_on_shuts_down_and_releases_the_guard() {
         &peer,
         &serde_json::json!({"method": "initialized", "params": {}}),
     );
-    stage("initialize and initialized sent");
     send(&peer, &scratch.start(2, "exec sleep 600"));
-    stage("process/start sent");
     // Answer liveness requests until the command is seen running, then
     // fall silent. Going silent right away raced the check: listing
     // processes can take longer than the whole silence limit on a loaded
@@ -615,7 +551,6 @@ fn a_session_given_up_on_shuts_down_and_releases_the_guard() {
     let answering = Arc::new(std::sync::atomic::AtomicBool::new(true));
     let received = answer_while(peer.try_clone().unwrap(), Arc::clone(&answering));
 
-    stage("running the session");
     let (ended, end_rx) = mpsc::channel();
     std::thread::spawn(move || {
         let _ = ended.send(session.run(client, timing, &Sweeper::system()));
@@ -633,7 +568,6 @@ fn a_session_given_up_on_shuts_down_and_releases_the_guard() {
         );
         std::thread::sleep(Duration::from_millis(20));
     }
-    stage("command seen running; the client falls silent");
     answering.store(false, std::sync::atomic::Ordering::SeqCst);
     let silent_since = Instant::now();
     let end = match end_rx.recv_timeout(Duration::from_secs(30)) {
@@ -643,21 +577,17 @@ fn a_session_given_up_on_shuts_down_and_releases_the_guard() {
             describe_marked(&marker)
         ),
     };
-    stage(&format!("session ended: {end:?}"));
     assert_eq!(end, End::ClientSilent);
     assert!(
         silent_since.elapsed() >= timing.give_up_after - timing.ping_after,
         "given up on {:?} after the client fell silent",
         silent_since.elapsed()
     );
-    let left_marker = marker.clone();
-    let left = within(
-        "listing leftovers",
-        Duration::from_secs(10),
-        &marker,
-        move || marked_processes(&left_marker).unwrap(),
+    assert!(
+        marked_processes(&marker).unwrap().is_empty(),
+        "{}",
+        describe_marked(&marker)
     );
-    assert!(left.is_empty(), "{}", describe_marked(&marker));
     let locks: Vec<_> = std::fs::read_dir(state.join("write-guards"))
         .unwrap()
         .map(|entry| std::fs::read_to_string(entry.unwrap().path()).unwrap())
@@ -665,15 +595,7 @@ fn a_session_given_up_on_shuts_down_and_releases_the_guard() {
     assert_eq!(locks, vec!["released\n".to_string()]);
     assert!(!state.join("exec-server").join(&marker).exists());
     assert!(scratch.executor_saw().contains("process/start"));
-    stage("guard released, shutting the client down");
     peer.shutdown(std::net::Shutdown::Both).unwrap();
-    let replies = within(
-        "draining the client side",
-        Duration::from_secs(10),
-        &marker,
-        move || received.join().unwrap(),
-    );
+    let replies = received.join().unwrap();
     assert!(replies.iter().any(|m| m["id"] == 2), "{replies:?}");
-    stage("done");
-    done.store(true, std::sync::atomic::Ordering::SeqCst);
 }

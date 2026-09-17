@@ -118,6 +118,8 @@ ccnm 这一段逐块转发，不把 267 MiB 的一行读进内存；**执行端�
 
 ## 5. 发现的缺陷：fs helper 活过放锁
 
+**已由 P30 修复**（[P30 记录](p30-native-group-sweep-2026-09-17.md)）：收尾扫描现在也清空 exec-server 的进程组，修复后同一场景 20/20 在放锁前清掉 helper。下面是 P29 当时的发现，保留原样。
+
 **现象**：macOS Runtime 上，exec-server 进程死掉（被 OOM、被人 `kill -9` 这个 pid、自己崩溃）的那一刻，如果它正有一个带沙箱的文件操作在 fs helper 里没做完，helper 会被挂到 pid 1 上继续运行。`exec-serve` 看到 exec-server 的输出结束，按标记扫进程表、没找到，报告干净并写 `released`。之后 helper 完成那次写入——落在一个别的会话已经可以拿锁的工作区上。`helper-crash` 20/20 复现，写入内容在放锁之后到达。
 
 **为什么 P22 的扫描没覆盖到**：P22 的前提是"exec-server 起的每个进程都继承它的环境、带着会话标记"，规则表拒绝不继承环境的 `process/start` 来保证这一点。但 fs helper 不是经 `process/start` 起的：exec-server 对带沙箱的文件方法（`fs/writeFile`、`fs/remove`、`fs/createDirectory`、`fs/copy`，以及带沙箱的读）自己 spawn `codex --codex-run-as-fs-helper`，先 `env_clear()` 再只放回四个变量。P22 和 P24 的"exec-server 被杀"测试里没有在途的文件操作（P22 用的假执行端根本没有 helper），所以没撞上。

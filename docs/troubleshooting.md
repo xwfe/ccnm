@@ -96,7 +96,7 @@ Codex exec-server       FAIL   CCNM_E_POLICY: ccnm internal exec-serve on runtim
 - `cargo build` 报 `Couldn't resolve host` / `Operation not permitted (os error 1)` 且路径在 `~/.cargo` 下 —— 没网络，而且 HOME 下的缓存写不了。先在沙箱外（关掉开关，或直接在 Runtime 上）`cargo fetch` 一遍，warm cache 的构建和测试在沙箱里是正常的。`npm install` 同理。
 - `sh: /bin/ps: Operation not permitted`（Linux：`fatal library error, lookup self`）—— 沙箱里看不到进程表。
 - 会话根本起不来，报 `CCNM_E_CONFIG: nodes.<runtime>.codex_bin is not set` 或 `CCNM_E_VERSION` —— 开了开关但 Runtime 给不了沙箱（没配 Codex、版本不是 0.154.0）。补上 [`codex_bin`](configuration.md#node-的其他字段) 或关掉开关；ccnm 不会退回裸跑。
-- Linux 上每条命令都失败、提 `bubblewrap` 或 `namespace` —— Runtime 没装 bubblewrap，或执行账号建不了 user namespace，见[运维手册](operations.md#runtime-node-的前置条件与项目工具链)。
+- 会话起不来，报 `CCNM_E_DEPENDENCY: the exec_command sandbox does not work on this Runtime`，后面跟着 Codex 自己的话 —— ccnm 启动时用沙箱试跑了一条空命令没成。常见三种：Linux 没装 bubblewrap（`bubblewrap is unavailable`）；执行账号建不了 user namespace（`No permissions to create new namespace`），见[运维手册](operations.md#runtime-node-的前置条件与项目工具链)；ccnm 的状态目录在 `/tmp` 下（`Refusing to create helper binaries under temporary dir` 然后 `bwrap: execvp codex-linux-sandbox: No such file or directory`）——Codex 不在临时目录里建辅助程序，把 `XDG_STATE_HOME` 挪出 `/tmp`。
 
 实测哪些能跑、哪些被挡，见 [P33 记录](research/p33-exec-sandbox-2026-09-17.md)。
 

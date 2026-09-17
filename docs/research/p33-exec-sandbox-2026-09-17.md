@@ -50,12 +50,15 @@
 
 两个变体（`.git` 可写、网络放开）和 macOS 结果相同：放开网络后 cold `cargo build` 仍因 `~/.cargo-cold` 是 `Read-only file system` 失败。沙箱加的环境变量只有 `CODEX_SANDBOX_NETWORK_DISABLED=1` 和 `PATH` 前面的 `$CODEX_HOME/tmp/arg0/…`（没有 `CODEX_SANDBOX=seatbelt`）。没装 node，L9 跳过。
 
+**容器里用真实 ccnm 二进制跑集成测试时撞到的一条**：测试夹具把 ccnm 的状态目录放在 `/tmp` 下，Codex 拒绝在临时目录里建它的沙箱辅助程序（`WARNING: proceeding, even though we could not create PATH aliases: Refusing to create helper binaries under temporary dir "/tmp"`），随后每条命令都死在 `bwrap: execvp codex-linux-sandbox: No such file or directory`，退出码 1——**而这被当成模型的命令失败报了出来**，正是 P33.2 说不能发生的事（脚本实测没撞上，因为它的 `CODEX_HOME` 在证据目录下）。macOS 上同样的夹具不受影响（Seatbelt 不需要这个辅助程序）。这条催生了第 2 节的启动探针。
+
 ## 2. 做了什么（P33.2、P33.3）
 
 - **配置**：workspace 新字段 `exec_sandbox`，值 `off`（默认）/ `codex`。Runtime 自己的配置，不上 wire——MCP server 启动时本来就读 Runtime 配置（`ExecGate::decide`），沙箱在同一处解析。
 - **`crates/ccnm-core/src/mcp/sandbox.rs`（新）**：`Sandbox::resolve` 在 server 启动时定下来——没 `codex_bin`、版本不是 0.154.0（和 exec-server 链共用 `provider::codex::check_measured`）、找不到状态目录，会话启动就拒（`CCNM_E_CONFIG` / `CCNM_E_VERSION`），不退回裸跑。`Sandbox::wrap` 把 `Cmd` 的程序和参数挪到 `codex sandbox --sandbox-state-json <state> --` 后面，cwd、环境、超时不动，另设 `CODEX_HOME` 指向 ccnm 在状态目录下建的私有目录（随 server 结束删除）。权限对象由 `permission_profile()` 生成，测试 `the_profile_is_the_one_codex_sends_for_its_own_commands` 把它和 P21 的 fixture 逐字段比对；`file://` URI 按 URL 规则百分号编码。
-- **`exec_command`**：开了沙箱时先按 `execvp` 的规则找程序（`sandbox::locate`），找不到仍报 `CCNM_E_DEPENDENCY`——否则沙箱启动器的退出码 71 会冒充命令结果；包装器本身起不来报的是 `codex_bin` 不可运行，不是命令名。每条结果的 `notes` 和正文末尾多一行 `[sandboxed: …]`。
-- **不做的**：不区分"沙箱挡的"和"命令自己失败的"——两者都是退出码非 0 加 `Operation not permitted`，Codex 自己也只能靠猜（`is_likely_sandbox_denied` 看退出码和文本）。不给模型"不带沙箱重试"。不改 doctor：开关在会话启动时就把问题报出来。
+- **启动探针**：`Sandbox::resolve` 在版本核对之后用沙箱跑一条 `sh -c 'exit 0'`，退出码非 0 就拒绝会话（`CCNM_E_DEPENDENCY: the exec_command sandbox does not work on this Runtime`，带 Codex 自己的 stderr）。它证明包装器起得来，不证明它在管束——管束靠第 1 节的实测和真 Codex 那条测试。能抓到的：Linux 没装 bubblewrap、建不了 user namespace、状态目录在 `/tmp` 下（第 1.2 节）。代价：会话启动多一次往返，15–40 ms。`codex --version` 失败时现在也报退出码和 stderr（原来只说 failed，排错时分不清是二进制不在还是解释器不在）。
+- **`exec_command`**：开了沙箱时先按 `execvp` 的规则找程序（`sandbox::locate`），找不到仍报 `CCNM_E_DEPENDENCY`——否则沙箱启动器的退出码 71（Linux 是 101）会冒充命令结果；包装器本身起不来报的是 `codex_bin` 不可运行，不是命令名。每条结果的 `notes` 和正文末尾多一行 `[sandboxed: …]`。
+- **不做的**：不区分"沙箱挡的"和"命令自己失败的"——两者都是退出码非 0 加 `Operation not permitted`（Linux 上是 `Read-only file system`），Codex 自己也只能靠猜（`is_likely_sandbox_denied` 看退出码和文本）。不给模型"不带沙箱重试"。不改 doctor：开关在会话启动时就把问题报出来。
 
 ## 3. 测试
 
@@ -66,10 +69,10 @@
 | 测试 | 证明了什么 |
 | --- | --- |
 | `a_workspace_without_the_switch_runs_commands_bare` | 同一节点配了 Codex，没开开关的 workspace 一条命令都不经过包装器 |
-| `the_switch_wraps_every_command_with_the_measured_profile` | 三条命令全部经过包装器；每条的权限对象等于 fixture、`workspaceRoots` 是根、`sandboxCwd` 跟着 `cwd` 参数走；结果正文第一行是命令本身而不是包装器、末尾带沙箱说明；失败的命令仍是结果不是错误；`CODEX_HOME` 在 ccnm 状态目录的 `exec-sandbox/` 下、server 结束后已删 |
+| `the_switch_wraps_every_command_with_the_measured_profile` | 会话开头恰好一次探针（`/bin/sh -c 'exit 0'`），然后三条命令全部经过包装器；每条的权限对象等于 fixture、`workspaceRoots` 是根、`sandboxCwd` 跟着 `cwd` 参数走；结果正文第一行是命令本身而不是包装器、末尾带沙箱说明；失败的命令仍是结果不是错误；`CODEX_HOME` 在 ccnm 状态目录的 `exec-sandbox/` 下、server 结束后已删 |
 | `a_missing_program_is_still_a_dependency_error_not_a_result` | `/nonexistent/program` 和 `./no-such.sh` 都报 `CCNM_E_DEPENDENCY`，没有到达包装器 |
-| `a_runtime_that_cannot_provide_the_sandbox_refuses_the_session` | 没 `codex_bin` 报 `CCNM_E_CONFIG` 并点名 `exec_sandbox`（同一 Runtime 上没开开关的 workspace 照常）；版本 0.155.0 报 `CCNM_E_VERSION` |
-| `against_the_real_codex_sandbox_when_configured` | 设 `CCNM_TEST_CODEX_BIN` 才跑：真 Codex 0.154.0 下工作区内写成功、工作区外写按失败报且带 `Operation not permitted`、连本机端口被挡。本机 1 passed |
+| `a_runtime_that_cannot_provide_the_sandbox_refuses_the_session` | 没 `codex_bin` 报 `CCNM_E_CONFIG` 并点名 `exec_sandbox`（同一 Runtime 上没开开关的 workspace 照常）；版本 0.155.0 报 `CCNM_E_VERSION`；假 Codex 的 `FAKE_SANDBOX_FAIL` 让每次 `sandbox` 调用退出 1 并打一句 bwrap 的话，会话报 `CCNM_E_DEPENDENCY` 并原样带上那句，没有任何命令跑过 |
+| `against_the_real_codex_sandbox_when_configured` | 设 `CCNM_TEST_CODEX_BIN` 才跑：真 Codex 0.154.0 下工作区内写成功、工作区外写按失败报且带 `Operation not permitted` / `Read-only file system`、连本机端口被挡；一条 `sleep 300` 在 1 秒超时后报 `timed out`，10 秒内进程表里没有它——macOS 上它在包装器的进程组里，Linux 上靠 bwrap 的 die-with-parent 链。本机 macOS 1 passed；Linux 见第 4 节 |
 
 ## 4. 门禁
 
@@ -77,13 +80,15 @@ macOS 26.6.2 arm64，rustc 1.98.0：
 
 - `cargo fmt --all --check`、`cargo clippy --workspace --all-targets -- -D warnings`：通过
 - `cargo test --workspace`：807 passed / 0 failed（合并 P31 后 797，本阶段新增 5 个单元 + 5 个集成）
-- `CCNM_TEST_CODEX_BIN=/opt/homebrew/bin/codex cargo test -p ccnm-cli --test exec_sandbox against_the_real`：1 passed
+- `CCNM_TEST_CODEX_BIN=/opt/homebrew/bin/codex cargo test -p ccnm-cli --test exec_sandbox against_the_real`：1 passed（含探针、被挡的写和网络、1 秒超时后沙箱内的 `sleep` 没活下来）；同样带真 Codex 的 `exec_serve against_the_real`：1 passed
+- **Linux 容器**（OrbStack Debian bookworm aarch64，用户 `runner`，rustc 1.98.1，Codex 0.154.0 musl 发行包，bubblewrap 0.8.0）：把工作树拷进去，`CCNM_TEST_CODEX_BIN=/usr/local/bin/codex cargo test -p ccnm-cli --test exec_sandbox`：**5 passed / 0 failed**，其中真 Codex 那条的超时子项在日志里可见 ccnm 的看门狗杀掉包装器后沙箱里的命令也没了。修探针之前同一组是 4 passed / 1 failed（第 1.2 节那条）
 - `cargo +1.89 check --workspace --all-targets --locked`：通过、0 条警告
 - `python3 scripts/check_protocol.py`、`python3 -B -m unittest discover -s tests -p 'test_*.py'`、`python3 scripts/check_plan.py`、`git diff --check`：通过
 
 ## 5. 没做到、没测到的
 
 - **`codex sandbox` 的参数和权限对象形状同样按 0.154.0 实测**，受同一个版本 pin 约束；比封存的原生链省下的是协议、规则表、监督进程和 fs helper 那一整层，不是版本核对。
-- 没有真机、没有真实模型回合；Linux 只在本机容器里跑了脚本，没有经 ccnm 的集成测试（CI 的 Linux job 没有 Codex）。
+- 没有真机、没有真实模型回合；Linux 只在本机 aarch64 容器里验过（脚本和 ccnm 的集成测试都跑了，见第 4 节），CI 的 Linux job 没有 Codex，跑不到真 Codex 那条。
 - 没测：被沙箱挡住时模型会怎么反应（会不会反复试）；带 `cwd` 参数指向 symlink 目录时 `sandboxCwd` 和沙箱判定是否一致；`$TMPDIR` 没设时 `tmpdir` 条目解析到哪。
+- 探针只证明包装器起得来。一台机器上沙箱"起得来但不管束"（比如 Seatbelt 被系统策略放宽）探针看不出，也没有便宜的办法在每次会话启动时证明管束。
 - 两个变体（`.git` 可写、网络放开）只量了，没提供开关；要提供得先按第 1 节的表重新量一遍。

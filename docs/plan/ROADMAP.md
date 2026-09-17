@@ -462,14 +462,14 @@ worktree **分配、调度、合并策略**在 Orchestrator；受管 workspace �
 
 **依赖 P32。**原生链唯一实测过的额外收益是命令有 OS 沙箱；toexec V2-P1 证明 `codex sandbox --sandbox-state-json '{"permissionProfile":…,"sandboxCwd":…,"workspaceRoots":[…]}' -- argv` 不经 RPC 就挡住同一集合（工作区外写、HOME 写、`.git` 写、网络；macOS Seatbelt 实测，多约 30 ms）。把它搬到两个入口共用的 `exec_command` 上，Claude、Codex、Web AI 三种客户端都拿到。
 
-先要定、不能默认的三件事：
+先要定、不能默认的三件事（**用户 2026-09-17 按建议定了**：opt-in、默认不变；Linux 先在本机容器测；被挡就报失败，不给"不带沙箱重试"的路）：
 
 1. **默认路径要不要依赖 Codex 二进制。**现在 MCP 路径的 Runtime 不需要 Codex；用 `codex sandbox` 就需要。备选是直接调 `sandbox-exec`（macOS）/ `bwrap`（Linux）自己生成 profile——那等于把 Codex 的沙箱策略代码抄一遍，随它版本漂。建议先做成 per-workspace opt-in（例如 `exec_sandbox = "codex"`，要求节点有 `codex_bin`），默认不变。
 2. **Linux 前提。**Codex 的 Linux 沙箱要 bubblewrap 和 user namespace（P21）；V2-P1 只在 macOS 上测过 `codex sandbox`。Linux 那一半先在本机容器里测（P21 的做法）。
 3. **合法操作被挡怎么办。**V2-P1 实测沙箱里 `git commit` 失败（`.git` 只读）。`exec_command` 现在能跑的东西（构建、测试、`git commit`）哪些会被挡要先列出来；挡住了是报错，还是给模型一条"不带沙箱重试"的路——后者等于没有沙箱。
 
-- **P33.1** 实测清单：在 MCP 路径上用 `codex sandbox` 包 P12 dogfood 那套命令（read→search→patch→构建→测试→commit），记下哪些被挡；macOS 本机，Linux 容器。
-- **P33.2** 按结果定开关形状和默认值，写进配置说明和支持矩阵；实现时沙箱起不来和命令失败要分开报，不能把前者报成后者。
+- **P33.1** 实测清单：用 `codex sandbox` 包一套日常项目操作（cargo 构建/测试/运行、cold cache 构建、git 只读与 commit、node、python、各种目标的写、网络、`ps`），对照直接跑，记下哪些被挡；macOS 本机，Linux 容器。顺带量 `.git` 可写和网络放开两个变体，只为决定用。
+- **P33.2** 按结果定开关形状和默认值（定为 workspace 字段 `exec_sandbox = "off" | "codex"`，权限对象取 Codex 自己那份、一字不改），写进配置说明和支持矩阵；实现时沙箱起不来和命令失败要分开报，不能把前者报成后者。
 - **P33.3** 离线测试：有沙箱时工作区外写、HOME 写、网络被挡且有具名错误；`codex_bin` 缺失或版本不对时按开关语义拒绝；`cargo test --workspace` 及全部门禁。
 - **P33.4** 版本关系写清楚：`codex sandbox` 的参数和 profile 形状也是按 0.154.0 实测的，同样受版本 pin 约束；比原生链省下的是协议、规则表、监督进程和 fs helper 那一整层，不是版本核对。
 

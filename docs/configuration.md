@@ -352,7 +352,7 @@ exec_sandbox = "codex"       # 默认 off
 
 **把这个 workspace 的每条 `exec_command` 包进 Codex 自带的 workspace-write 沙箱里跑**（P33）：命令只能写工作区根目录以内（`.git` 除外）、`$TMPDIR` 和 `/tmp`，不能连网；读不受限。Claude、Codex 的受管会话和外部 MCP 客户端（gld hub）的 coding 会话都生效，因为它们跑命令走的是同一个 `exec_command`。`--print`、`ccnm mcp bridge` 也一样。
 
-**需要什么**：Runtime 节点写 [`codex_bin`](#node-的其他字段)（Codex 0.154.0，和 exec-server 链共用同一个版本 pin）；Linux 上装 bubblewrap 并允许执行账号创建 user namespace（[运维手册](operations.md#runtime-node-的前置条件与项目工具链)）。开了却给不了——没 `codex_bin`、版本不对、找不到状态目录——会话启动就失败（`CCNM_E_CONFIG` / `CCNM_E_VERSION`），**不会退回不带沙箱地跑**。
+**需要什么**：Runtime 节点写 [`codex_bin`](#node-的其他字段)（Codex 0.154.0，和 exec-server 链共用同一个版本 pin）；Linux 上装 bubblewrap 并允许执行账号创建 user namespace（[运维手册](operations.md#runtime-node-的前置条件与项目工具链)）。开了却给不了——没 `codex_bin`、版本不对、找不到状态目录——会话启动就失败（`CCNM_E_CONFIG` / `CCNM_E_VERSION`）；启动时 ccnm 还会用这个沙箱跑一条 `sh -c 'exit 0'` 探一下，起不来（Linux 没装 bubblewrap、建不了 user namespace，或者 ccnm 的状态目录在 `/tmp` 下——Codex 拒绝在临时目录里建它的辅助程序）也在启动时拒（`CCNM_E_DEPENDENCY`，带 Codex 自己的报错）。**任何一种都不会退回不带沙箱地跑。**
 
 **代价**（本机 macOS 和 Linux 容器实测，[P33 记录](research/p33-exec-sandbox-2026-09-17.md)）：
 

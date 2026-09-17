@@ -18,6 +18,11 @@ Knobs, all environment variables:
   FAKE_EXEC_LOG          append every message received, one JSON per line
   FAKE_CODEX_VERSION     what `--version` prints (default codex-cli 0.154.0)
   FAKE_EXEC_CRASH_ON     a method name; receiving it exits 7 at once
+  FAKE_EXEC_LEAVE_HELPER a pid file; just before that crash, start a `sleep`
+                         with an empty environment in this process's own
+                         group and write its pid there -- the real executor's
+                         fs helper, which is cleared of the session marker and
+                         outlives an executor killed mid-operation (ccnm P29)
   FAKE_EXEC_CHATTER      COUNT:SIZE; after `initialized`, another thread writes
                          COUNT `process/output` notifications of SIZE chunk
                          characters while requests are being answered, the
@@ -106,6 +111,12 @@ def main():
                 f.write(json.dumps(message) + "\n")
         method, mid = message.get("method"), message.get("id")
         if method == crash_on:
+            helper_pidfile = os.environ.get("FAKE_EXEC_LEAVE_HELPER")
+            if helper_pidfile:
+                helper = subprocess.Popen(["/bin/sleep", "300"], env={}, stdin=subprocess.DEVNULL,
+                                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                with open(helper_pidfile, "w") as f:
+                    f.write(str(helper.pid))
             os._exit(7)
         if mid is None:
             if method == "initialized":

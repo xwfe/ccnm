@@ -706,6 +706,51 @@ fn an_executor_that_dies_releases_the_guard_after_the_sweep_twenty_times() {
     }
 }
 
+/// exec-server does a sandboxed file write in a helper process whose
+/// environment it clears, so the helper carries no session marker; it stays
+/// in exec-server's process group. Killed mid-operation, exec-server leaves
+/// the helper running, and P29 measured the write landing after the guard
+/// said `released` (macOS, 20 of 20). The sweep has to count the group as
+/// well. 20 times: a write-authority fault point (toexec v2 section 9).
+#[test]
+fn an_executor_killed_mid_file_operation_leaves_no_helper_behind_twenty_times() {
+    let fx = Fixture::build("helper");
+    let alive = |pid: &str| {
+        Command::new("kill")
+            .args(["-0", pid])
+            .stderr(Stdio::null())
+            .status()
+            .unwrap()
+            .success()
+    };
+    for round in 0..20 {
+        let pidfile = fx.dir.join(format!("helper-{round}.pid"));
+        let wire = fx.native_wire("demo", AgentProvider::Codex, &format!("helper-{round}"));
+        let mut s = Session::start({
+            let mut cmd = fx.command("exec-serve", &wire);
+            cmd.env("FAKE_EXEC_CRASH_ON", "fs/writeFile")
+                .env("FAKE_EXEC_LEAVE_HELPER", &pidfile);
+            cmd
+        });
+        s.handshake();
+        s.send(&fx.write_file(60, &fx.root.join("late.txt"), "late\n"));
+        let status = s.child.wait().unwrap();
+        assert!(status.success(), "round {round}");
+        let pid = std::fs::read_to_string(&pidfile).unwrap();
+        let outlived = alive(pid.trim());
+        if outlived {
+            let _ = Command::new("kill").args(["-KILL", pid.trim()]).status();
+        }
+        assert!(
+            !outlived,
+            "round {round}: the helper outlived its executor and the guard was released anyway"
+        );
+        let mut next = fx.open(&format!("helper-next-{round}"));
+        next.handshake();
+        assert!(next.close().status.success(), "round {round}");
+    }
+}
+
 /// The Runtime half of `ccnm doctor`'s probe, reached the way the Agent
 /// Node reaches it, minus the network (P27).
 ///

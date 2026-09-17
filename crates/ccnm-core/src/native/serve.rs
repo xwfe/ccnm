@@ -17,18 +17,24 @@
 //!             started is gone before the guard is released
 //! ```
 //!
-//! "Prove gone" is by environment marker. exec-server starts each command
-//! in its own process group, so killing exec-server's group reaches none of
-//! them; it kills them itself when its stdin closes, except a process that
-//! left its session with `setsid` (measured, 0.154.0). Every one of them
+//! "Prove gone" looks for two kinds of process. exec-server starts each
+//! command in its own process group, so killing exec-server's group reaches
+//! none of them; it kills them itself when its stdin closes, except a process
+//! that left its session with `setsid` (measured, 0.154.0). Every command
 //! inherits exec-server's environment -- the policy refuses a
-//! `process/start` that would not -- so a process still carrying this
-//! session's marker after exec-server exits is found, killed and checked
-//! again. Anything that cannot be proven gone leaves the guard `held`, which
-//! the next session sees as unknown and refuses, exactly like a Runtime that
-//! crashed. A process that deliberately clears its own environment is not
-//! found; that is the platform isolation boundary the plan lists
-//! separately, not something a supervisor can close.
+//! `process/start` that would not -- so it carries this session's marker.
+//! The other kind is exec-server's fs helper, the process that does a
+//! sandboxed file write: exec-server clears its environment, so it has no
+//! marker, but it stays in exec-server's process group. A clean exit kills
+//! it; an exec-server killed mid-operation leaves it running, and its write
+//! then lands after the guard was released (P29, macOS). So after
+//! exec-server exits, whatever still carries the marker *or* is still in
+//! exec-server's group is found, killed and checked again. Anything that
+//! cannot be proven gone leaves the guard `held`, which the next session
+//! sees as unknown and refuses, exactly like a Runtime that crashed. A
+//! command that deliberately clears its own environment is not found; that
+//! is the platform isolation boundary the plan lists separately, not
+//! something a supervisor can close.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
@@ -554,7 +560,8 @@ fn shutdown(child: &mut Child, marker: &str, sweeper: &Sweeper) -> Result<()> {
             ));
         }
     }
-    sweeper.sweep(marker, SWEEP_WAIT)
+    // Spawned with `process_group(0)`: the group is named by its pid.
+    sweeper.sweep(marker, child.id(), SWEEP_WAIT)
 }
 
 fn wait_for_exit(child: &mut Child, limit: Duration) -> bool {
@@ -568,24 +575,31 @@ fn wait_for_exit(child: &mut Child, limit: Duration) -> bool {
     }
 }
 
-/// Finds and removes processes carrying one session's marker.
+/// Finds and removes what is left of one session: processes carrying its
+/// marker, and processes still in its executor's process group.
 pub struct Sweeper {
-    list: fn(&str) -> Result<Vec<u32>>,
+    list: fn(&str, u32) -> Result<Vec<u32>>,
 }
 
 impl Sweeper {
     pub fn system() -> Self {
         Sweeper {
-            list: marked_processes,
+            list: session_processes,
         }
     }
 
-    /// Kill what carries the marker until nothing does, or say it could
-    /// not be proven.
-    pub fn sweep(&self, marker: &str, limit: Duration) -> Result<()> {
+    /// Kill what carries the marker or is in `group` until nothing is, or
+    /// say it could not be proven.
+    ///
+    /// Only call this once the group's leader has exited. The group number
+    /// could then in principle be reused, but only after the group is empty
+    /// and a new process takes that same number as its pid and leads a
+    /// group of its own, within these few seconds -- the same order of risk
+    /// as a listed pid being reused before its kill.
+    pub fn sweep(&self, marker: &str, group: u32, limit: Duration) -> Result<()> {
         let deadline = Instant::now() + limit;
         loop {
-            let pids = (self.list)(marker).map_err(|error| {
+            let pids = (self.list)(marker, group).map_err(|error| {
                 Error::policy(format!(
                     "cannot list processes to prove the exec-server session is over ({}); the workspace write guard stays held",
                     error.message()
@@ -596,7 +610,7 @@ impl Sweeper {
             }
             if Instant::now() >= deadline {
                 return Err(Error::policy(format!(
-                    "{} process(es) of this exec-server session are still running after being killed; the workspace write guard stays held\nfind them on the Runtime Node by the {MARKER}={marker} variable in their environment",
+                    "{} process(es) of this exec-server session are still running after being killed; the workspace write guard stays held\nfind them on the Runtime Node by the {MARKER}={marker} variable in their environment, or by process group {group}",
                     pids.len()
                 )));
             }
@@ -616,12 +630,15 @@ impl Sweeper {
     }
 }
 
-/// Every process of this account whose environment has `MARKER=marker`.
+/// Every live process of this account that belongs to one session: its
+/// environment has `MARKER=marker`, or its process group is `group`.
 ///
 /// Only this account's processes are visible with their environment, which
 /// is enough: exec-server and everything it starts run as this account.
+/// Zombies are skipped -- they have finished and cannot write -- and they
+/// keep their group until reaped, which is not this process's job.
 #[cfg(target_os = "linux")]
-pub fn marked_processes(marker: &str) -> Result<Vec<u32>> {
+pub fn session_processes(marker: &str, group: u32) -> Result<Vec<u32>> {
     let wanted = format!("{MARKER}={marker}");
     let mut pids = Vec::new();
     let entries = std::fs::read_dir("/proc")
@@ -634,7 +651,21 @@ pub fn marked_processes(marker: &str) -> Result<Vec<u32>> {
         else {
             continue;
         };
-        // Gone already, or another account's: neither is this session's.
+        // Gone already: not this session's.
+        let Ok(stat) = std::fs::read_to_string(entry.path().join("stat")) else {
+            continue;
+        };
+        let Some((state, pgrp)) = stat_state_and_group(&stat) else {
+            continue;
+        };
+        if state == 'Z' {
+            continue;
+        }
+        if pgrp == group {
+            pids.push(pid);
+            continue;
+        }
+        // Another account's environment is unreadable: not this session's.
         let Ok(environ) = std::fs::read(entry.path().join("environ")) else {
             continue;
         };
@@ -648,17 +679,21 @@ pub fn marked_processes(marker: &str) -> Result<Vec<u32>> {
     Ok(pids)
 }
 
-/// Every process of this account whose environment has `MARKER=marker`.
+/// Every live process of this account that belongs to one session: its
+/// environment has `MARKER=marker`, or its process group is `group`.
 ///
 /// `ps -E` appends a process's environment to its command column, for the
 /// caller's own processes only. The marker value is a fresh UUID, so a
 /// command line that merely mentions it is not a realistic collision; `ps`
 /// itself does not, because nothing on its command line contains it.
+/// Zombies are skipped, as on Linux.
 #[cfg(not(target_os = "linux"))]
-pub fn marked_processes(marker: &str) -> Result<Vec<u32>> {
+pub fn session_processes(marker: &str, group: u32) -> Result<Vec<u32>> {
     let wanted = format!("{MARKER}={marker}");
     let out = Command::new("ps")
-        .args(["-axEww", "-o", "pid=", "-o", "command="])
+        .args([
+            "-axEww", "-o", "pid=", "-o", "pgid=", "-o", "stat=", "-o", "command=",
+        ])
         .stdin(Stdio::null())
         .stderr(Stdio::null())
         .output()
@@ -669,10 +704,30 @@ pub fn marked_processes(marker: &str) -> Result<Vec<u32>> {
     let own = std::process::id();
     Ok(String::from_utf8_lossy(&out.stdout)
         .lines()
-        .filter(|line| line.split_whitespace().any(|word| word == wanted.as_str()))
-        .filter_map(|line| line.split_whitespace().next()?.parse::<u32>().ok())
-        .filter(|pid| *pid != own)
+        .filter_map(|line| {
+            let mut words = line.split_whitespace();
+            let pid = words.next()?.parse::<u32>().ok()?;
+            let pgid = words.next()?.parse::<u32>().ok()?;
+            let state = words.next()?;
+            let belongs = pgid == group || words.any(|word| word == wanted.as_str());
+            (belongs && !state.starts_with('Z') && pid != own).then_some(pid)
+        })
         .collect())
+}
+
+/// The state letter and process group of a `/proc/<pid>/stat` line.
+///
+/// The command name sits in parentheses and may itself contain spaces and
+/// parentheses, so fields are counted from the last `)`: state, ppid, pgrp.
+/// Not platform-gated so its tests run everywhere; only Linux calls it.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn stat_state_and_group(stat: &str) -> Option<(char, u32)> {
+    let (_, rest) = stat.rsplit_once(')')?;
+    let mut fields = rest.split_whitespace();
+    let state = fields.next()?.chars().next()?;
+    let _ppid = fields.next()?;
+    let pgrp = fields.next()?.parse().ok()?;
+    Some((state, pgrp))
 }
 
 /// The CODEX_HOME exec-server runs with. Made by ccnm, empty, private, and

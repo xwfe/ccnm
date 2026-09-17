@@ -166,7 +166,7 @@ jobs:
 
   msrv:
     # One platform is enough while the only OS-gated code is
-    # native::serve::marked_processes (/proc on Linux, `ps` elsewhere) and
+    # native::serve::session_processes (/proc on Linux, `ps` elsewhere) and
     # no dependency is platform-specific. Add either and this needs
     # rethinking: the other platform's branch would never be compiled here.
     runs-on: ubuntu-24.04

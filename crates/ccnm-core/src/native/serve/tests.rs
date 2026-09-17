@@ -58,6 +58,14 @@ fn the_executor_gets_a_ccnm_home_and_the_marker_and_no_agent_login() {
     assert_eq!(cmd.cwd.as_deref(), Some(Path::new("/work/project")));
 }
 
+/// No process group has this number (pid_max is far below it), so a sweep
+/// given it looks at the marker alone.
+const NO_GROUP: u32 = u32::MAX;
+
+fn marked(marker: &str) -> Result<Vec<u32>> {
+    session_processes(marker, NO_GROUP)
+}
+
 /// A real process with the marker, the way exec-server's children carry
 /// it: found by the sweep, killed, and the sweep then reports clean.
 #[test]
@@ -71,7 +79,7 @@ fn the_sweep_finds_a_marked_process_kills_it_and_then_reports_clean() {
         .unwrap();
     let pid = child.id();
     let deadline = Instant::now() + Duration::from_secs(5);
-    while !marked_processes(&marker).unwrap().contains(&pid) {
+    while !marked(&marker).unwrap().contains(&pid) {
         assert!(Instant::now() < deadline, "marked process never listed");
         std::thread::sleep(Duration::from_millis(50));
     }
@@ -79,34 +87,84 @@ fn the_sweep_finds_a_marked_process_kills_it_and_then_reports_clean() {
     // by init, here the test is its parent.
     let reaper = std::thread::spawn(move || child.wait());
     Sweeper::system()
-        .sweep(&marker, Duration::from_secs(5))
+        .sweep(&marker, NO_GROUP, Duration::from_secs(5))
         .unwrap();
     reaper.join().unwrap().unwrap();
-    assert!(marked_processes(&marker).unwrap().is_empty());
+    assert!(marked(&marker).unwrap().is_empty());
     // Another session's marker is not this one's.
-    assert!(
-        marked_processes(&format!("{marker}-other"))
-            .unwrap()
-            .is_empty()
+    assert!(marked(&format!("{marker}-other")).unwrap().is_empty());
+}
+
+/// A process exec-server started with a cleared environment -- its fs
+/// helper -- and left in its process group when exec-server was killed
+/// (P29): no marker, found by the group all the same.
+#[test]
+fn the_sweep_finds_a_process_left_in_the_executors_group_without_the_marker() {
+    use std::os::unix::process::CommandExt;
+    let mut leader = Command::new("/bin/sleep")
+        .arg("60")
+        .process_group(0)
+        .stdin(Stdio::null())
+        .spawn()
+        .unwrap();
+    let group = leader.id();
+    let mut helper = Command::new("/bin/sleep")
+        .arg("60")
+        .env_clear()
+        .process_group(group as i32)
+        .stdin(Stdio::null())
+        .spawn()
+        .unwrap();
+    let pid = helper.id();
+    leader.kill().unwrap();
+    leader.wait().unwrap();
+    let marker = format!("group-{}", crate::session::new_id());
+    assert_eq!(session_processes(&marker, group).unwrap(), vec![pid]);
+    assert!(marked(&marker).unwrap().is_empty(), "it has no marker");
+
+    let reaper = std::thread::spawn(move || helper.wait());
+    Sweeper::system()
+        .sweep(&marker, group, Duration::from_secs(5))
+        .unwrap();
+    reaper.join().unwrap().unwrap();
+    assert!(session_processes(&marker, group).unwrap().is_empty());
+}
+
+#[test]
+fn a_proc_stat_line_gives_state_and_group_whatever_the_command_is_called() {
+    assert_eq!(
+        stat_state_and_group("4321 (sleep) S 4300 4300 4300 0 -1 4194304"),
+        Some(('S', 4300))
     );
+    // A command name may contain spaces and parentheses.
+    assert_eq!(
+        stat_state_and_group("77 (a) b (c)) R 1 1234 1234 0 -1"),
+        Some(('R', 1234))
+    );
+    assert_eq!(
+        stat_state_and_group("88 (codex) Z 1 900 900 0 -1"),
+        Some(('Z', 900))
+    );
+    assert_eq!(stat_state_and_group("99 (truncated"), None);
+    assert_eq!(stat_state_and_group("99 (x) S 1"), None);
 }
 
 #[test]
 fn what_cannot_be_listed_or_killed_is_never_reported_clean() {
-    fn broken(_: &str) -> Result<Vec<u32>> {
+    fn broken(_: &str, _: u32) -> Result<Vec<u32>> {
         Err(Error::internal("ps failed"))
     }
-    fn immortal(_: &str) -> Result<Vec<u32>> {
+    fn immortal(_: &str, _: u32) -> Result<Vec<u32>> {
         // Above any pid_max, so the kill cannot reach a real process --
         // even when a test runs as root -- and the listing never changes.
         Ok(vec![999_999_999])
     }
     let error = Sweeper { list: broken }
-        .sweep("m", Duration::from_millis(300))
+        .sweep("m", NO_GROUP, Duration::from_millis(300))
         .unwrap_err();
     assert!(error.message().contains("stays held"), "{error}");
     let error = Sweeper { list: immortal }
-        .sweep("m", Duration::from_millis(300))
+        .sweep("m", NO_GROUP, Duration::from_millis(300))
         .unwrap_err();
     assert!(error.message().contains("stays held"), "{error}");
 }
@@ -492,7 +550,7 @@ fn describe_marked(marker: &str) -> String {
     let marker = marker.to_string();
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
-        let pids = marked_processes(&marker);
+        let pids = marked(&marker);
         let text = match pids {
             Err(e) => format!("listing failed: {e}"),
             Ok(pids) => pids
@@ -556,7 +614,7 @@ fn a_session_given_up_on_shuts_down_and_releases_the_guard() {
         let _ = ended.send(session.run(client, timing, &Sweeper::system()));
     });
     let started = Instant::now();
-    while marked_processes(&marker).unwrap().len() < 2 {
+    while marked(&marker).unwrap().len() < 2 {
         assert!(
             started.elapsed() < Duration::from_secs(10),
             "the command was never seen running: {}",
@@ -584,7 +642,7 @@ fn a_session_given_up_on_shuts_down_and_releases_the_guard() {
         silent_since.elapsed()
     );
     assert!(
-        marked_processes(&marker).unwrap().is_empty(),
+        marked(&marker).unwrap().is_empty(),
         "{}",
         describe_marked(&marker)
     );

@@ -313,6 +313,7 @@ search_text
 apply_patch
 exec_command
 read_output
+load_skill
 ```
 
 主要行为：
@@ -321,10 +322,31 @@ read_output
 - `apply_patch` 是结构化写入路径，带版本检查，并提供事务/恢复保护；
 - `exec_command` 使用 argv，不主动通过 shell 执行，但调用者仍然可以显式运行 `sh -c` 等程序，所以它本质上仍然是命令执行能力；
 - 大输出由 `read_output` 分页读取，避免一次把全部输出塞进模型上下文；
+- `load_skill` 把项目自带的 skills 交给模型，见下一节；
 - Claude 使用项目根 `CLAUDE.md` 上下文；Codex 使用根目录 `AGENTS.override.md`/`AGENTS.md` 的已测优先级；
 - remote session 使用对应 Provider 的已测工具策略，让项目访问统一走 Runtime Node。
 
 **Codex 还有一条 opt-in 的路（已封存）**：workspace 写 `codex_exec_server = true` 后，Codex 交互会话不再拿这七个工具，而是用它自带的 `exec_command` / `apply_patch`，由 Runtime 上受 ccnm 监督和过滤的官方 `codex exec-server` 执行；只开交互模式，print 会被拒绝；Claude 不受影响。2026-09-17 起封存：只认 Codex 0.154.0、不再维护、新项目别开，原因见[双执行入口方案](plan/runtime-surfaces.md)第 12.0 节，开关和边界见[配置说明](configuration.md#codex_exec_server)。
+
+## 项目自带的 skills
+
+**skill 是项目写给 AI 的"这类任务该怎么做"**：`.claude/skills/<名字>/SKILL.md`，开头几行写名字和描述，后面是做法，旁边可以放脚本。直接在项目机器上跑官方 CLI 时，CLI 会在当前目录下发现它们；经 ccnm 时 CLI 的当前目录在 Agent Node 上，项目在 Runtime Node 上，它一个都发现不了——所以由 Runtime 这一侧来发现，经 `load_skill` 工具交给模型。Claude、Codex、外部 MCP 客户端三种入口都一样，不用配置。
+
+会被找到的三个地方（相对项目根）：`.claude/skills/<名字>/SKILL.md`、`.agents/skills/<名字>/SKILL.md`、`.claude/commands/**/*.md`。
+
+- **模型怎么知道有哪些**：每个 skill 的名字和描述就写在 `load_skill` 这个工具的说明里，模型整个会话都看得见；要用哪个，它带名字调一次，拿到正文照着做。
+- **人怎么手动启动一个**（只有 Claude Code）：敲 `/mcp__ccnm__<名字> 参数`。Codex 不支持这种方式。
+- **skill 里的脚本在哪跑**：Runtime Node 上，由模型用 `exec_command` 跑，和别的命令一样以执行账号的身份、受同样的限制。
+
+三处和官方 CLI 不一样，都是故意的：
+
+- SKILL.md 里的 `` !`命令` ``（官方 CLI 会在加载 skill 时先执行它、把输出填进正文）**不自动执行**。模型会看到一份清单，需要就自己用 `exec_command` 跑。一次"读 skill"不该变成一次"执行仓库指定的命令"。
+- frontmatter 里的 `allowed-tools`、`hooks`、`model` 等**不起作用**，模型加载时会被告知。
+- 只找项目里的。Runtime 执行账号 HOME 下的用户级 skills 不读。
+
+**写了 skill 但模型没用上，先这样查**：让模型（或你自己接一个 MCP 客户端）不带名字调一次 `load_skill`。返回的列表末尾有一段 `Not offered`，写着每个没被收进来的文件和原因——最常见的是 frontmatter 写错了（会说第几行）、没有 `description`、两个文件重名，以及 skills 目录是一个指到项目外面的 symlink（读路径出不了项目根，这条和 `read_file` 是同一个规矩）。另外，目录是会话开始时定下来的：会话中途新加的 skill 可以按名字加载，但要到下一个会话才出现在工具说明里。
+
+完整规则见[协议文档第 5.1 节](protocol/remote-workspace-mcp-v1.md#51-load_skill-与-prompts项目自带的-skillsp36-新增)。**验到哪一步**：发现、加载、参数替换、目录长度、prompts 都有离线测试和一个不依赖 ccnm 代码的中立 MCP 客户端测试；"真实模型会不会主动去用 skill"**没有验**，见[支持矩阵](support-matrix.md)。
 
 ## 同一工作树的单写限制
 

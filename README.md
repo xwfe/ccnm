@@ -97,12 +97,15 @@ runtime_user = "ccrun"
 
 ## 会话里模型能用什么
 
-七个工具，全部落在 Runtime Node 上；模型自己机器上的文件工具是关掉的。
+八个工具，全部落在 Runtime Node 上；模型自己机器上的文件工具是关掉的。
 
 ```text
 workspace_info   read_file   list_files   search_text
 apply_patch      exec_command            read_output
+load_skill
 ```
+
+`load_skill` 把项目自带的 skills（`.claude/skills/`、`.claude/commands/`、`.agents/skills/`）交给模型：官方 CLI 靠当前目录发现它们，而 CLI 的当前目录不在项目机器上，所以由 Runtime 这边来找。skill 里的脚本照样在 Runtime 上跑。细节和三处与官方不同的地方见[使用说明](docs/usage.md#项目自带的-skills)。
 
 两个按 workspace 打开的开关，默认都关：
 

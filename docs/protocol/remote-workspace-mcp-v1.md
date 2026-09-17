@@ -4,6 +4,7 @@
 > 依据是两轮真机：允许矩阵在真实 Claude Code 2.1.268 上跑过（[P11 记录](../research/p11-real-host-2026-09-11.md)、[证据](../research/p11-matrix-20260911.json)），远端真实项目 dogfood 在 Debian 13 / x86_64 的 Runtime 上跑过（[P12 记录](../research/p12-real-project-2026-09-11.md)、[证据](../research/p12-dogfood-20260911.json)）。
 > **冻结的意思是**：往后加工具、加字段、加错误原因属于加法，可以；删工具、改 `disabled`/`read`/`coding` 三个值的含义、改权限判定或错误码语义要升到 `ccnm.workspace-mcp/2`。
 > 验收范围、已知代价和**不作保证的 egress** 见[支持矩阵](../support-matrix.md)；这一版明确不做的东西见第 12 节。
+> **冻结之后的加法**：2026-09-17（P36）加了第八个工具 `load_skill` 和 `prompts` 能力，用来把项目自带的 skills 交给模型和人，见第 5.1 节。原来七个工具的名字、参数和语义没有动。
 
 面向的读者是**已经在本机跑着 Claude Code / Codex / 别的 MCP Host，但项目在另一台机器上的人**。它给你的不是一条裸 SSH 通道，而是一个绑定了 workspace 的远程项目工具集。
 
@@ -170,6 +171,7 @@ external_mcp = "read"      # disabled | read | coding
 | `read_file` | ✅ | ✅ |
 | `list_files` | ✅ | ✅ |
 | `search_text` | ✅ | ✅ |
+| `load_skill` | ✅ | ✅ |
 | `read_output` | ❌ | ✅ |
 | `apply_patch` | ❌ | ✅ |
 | `exec_command` | ❌ | ✅ |
@@ -206,6 +208,7 @@ transport 的认证边界是 **OpenSSH identity + 独立的 Runtime OS 账号**�
 | `read_file` | read | `true` | — | — | `false` |
 | `list_files` | read | `true` | — | — | `false` |
 | `search_text` | read | `true` | — | — | `false` |
+| `load_skill` | read | `true` | — | — | `false` |
 | `read_output` | read | `true` | — | — | `false` |
 | `apply_patch` | write | `false` | `true` | `false` | `false` |
 | `exec_command` | exec | `false` | `true` | `false` | `true` |
@@ -219,6 +222,47 @@ transport 的认证边界是 **OpenSSH identity + 独立的 Runtime OS 账号**�
 3. `apply_patch` 不是 open-world：它只能改这个 workspace 里的文件。但它是 destructive——update 会替换内容，delete 会删文件。
 
 另外，Managed 路径上 `exec_command` 会带一个 `_meta` 键 `anthropic/requiresUserInteraction`（只在有人坐在终端前的交互式 session 里带，而且该 workspace 没有写 `allow_unattended_exec`）。**外部 MCP 永远不发这个键**：bridge 不知道 Host 那头有没有人，冒充知道比不说更糟，所以那个开关对 bridge 没有任何影响。
+
+### 5.1 `load_skill` 与 prompts：项目自带的 skills（P36 新增）
+
+**skill 是什么**：项目在 `.claude/skills/<名字>/SKILL.md` 里写下的"这类任务该怎么做"——开头一段 YAML（名字、描述、参数），后面是给模型的正文，旁边可以带脚本和参考文件。`.claude/commands/*.md` 是同一种格式的单文件版本。官方 CLI 靠"当前目录"发现它们；项目在远端时 CLI 的当前目录不在项目里，一个都发现不了，所以由 Runtime 这一侧来发现。
+
+**在哪找**（都相对 workspace 根，走和 `read_file` 同一套路径策略）：
+
+| 位置 | 形状 |
+| --- | --- |
+| `.claude/skills/<名字>/SKILL.md` | skill |
+| `.agents/skills/<名字>/SKILL.md` | skill（跨 Agent 的通用写法，Codex 找的是这里） |
+| `.claude/commands/**/*.md`（最深 3 层） | 命令；名字是文件名 |
+
+重名时按上表从上到下谁先谁赢，输的那个不会悄悄消失——不带名字调 `load_skill` 返回的完整列表末尾会写出它的路径和原因。读不了的 frontmatter、没有描述的文件、经 symlink 指到 workspace 外面的 skill 目录，同样列在那里。最多 100 个；单个文件超过 1 MiB 不读。
+
+**`load_skill` 怎么用：**
+
+| 调用 | 返回 |
+| --- | --- |
+| 不带 `name` | 完整列表：每个 skill 的名字、参数提示、描述（最多 1536 字符）、文件路径；只能由人启动的、没被收进来的也列出并说明原因 |
+| `name`（可选 `arguments`，一个字符串） | 这个 skill 的正文，见下 |
+
+返回的正文前面有几行方括号，是 server 加的：skill 在哪个文件、`${CLAUDE_SKILL_DIR}` 是哪个目录、哪些命令**没有被执行**、哪些 frontmatter 在这里不起作用。样例见 [`call-load-skill-ok.json`](fixtures-mcp/call-load-skill-ok.json)。正文本身：
+
+- frontmatter 去掉；`$ARGUMENTS`、`$ARGUMENTS[N]`、`$N`、声明过的 `$name` 按 Claude Code 2.1.273 的实际规则替换（没给到的 `$N` 原样留着——正文里的 `awk '{print $1}'` 因此不会被抹掉）；
+- `${CLAUDE_SKILL_DIR}` 换成 skill 目录的 **workspace 相对路径**，`${CLAUDE_PROJECT_DIR}` 换成 `.`。skill 的脚本和参考文件就是 workspace 里的普通文件：模型用 `read_file` 读、用 `exec_command` 跑，所以它们在 Runtime 上、以执行身份、受同一套写入互斥和 `exec_sandbox` 约束执行；
+- 超过 64 KiB 在行边界截断，并写明用 `read_file` 从哪一行接着读。
+
+**目录放在哪**：`load_skill` 自己的 `description` 里。它的前半段是固定文本，后半段是这个 workspace 的 skill 目录（名字、参数提示、折成一行并截到 200 字符的描述），整段不超过 2048 个 UTF-16 码元——Claude Code 2.1.273 对每个工具的 description 只留这么多（实测；Codex 0.154.0 不截）。放不下的 skill 只列名字。**这是七个老工具没有的性质：`description` 随 workspace 变。** 没有 skill 时它是固定文本，[`tools-list-*.json`](fixtures-mcp/tools-list-read.json) 逐字节比对的就是那一版。目录在会话开始时定下来（Host 整个连接期间都留着 `tools/list` 的结果）；调用时重新扫描，所以会话中途新写的 skill 能加载，只是要到下一个会话才出现在目录里。
+
+**三条和官方 CLI 不一样的地方，都是故意的：**
+
+1. **`` !`命令` `` 注入不执行。** 官方 CLI 在加载 skill 时先跑这些命令、把输出填进正文。这里原样保留，并在开头列出行号和命令，模型需要就自己用 `exec_command` 跑。理由：一次"读"调用不该触发仓库指定的命令——那会绕过 `exec_command` 上的人工确认（`allow_unattended_exec` 管的那一层），`read` 模式下更是直接变成了执行。
+2. **`allowed-tools`、`disallowed-tools`、`hooks`、`model`、`effort`、`context`、`agent`、`shell` 不起作用**，出现时在返回文本里点名。ccnm 改不了 Host 的权限和模型，也不在 Agent 那台机器上执行任何来自仓库的东西。Claude Code 自己对经 MCP 来的 skill 也不认 `hooks` 和 `allowed-tools`。
+3. **只找 workspace 里的。** 执行账号 HOME 下的用户级 skills 不读。
+
+`disable-model-invocation: true` 的 skill 不进目录，`load_skill` 拒绝它（`CCNM_E_POLICY`）；`user-invocable: false` 的不登记成 prompt。
+
+**prompts**：每个可由人启动的 skill / 命令同时登记成一个 MCP prompt（[`prompts-list-ok.json`](fixtures-mcp/prompts-list-ok.json)、[`prompts-get-ok.json`](fixtures-mcp/prompts-get-ok.json)），`prompts/get` 返回的就是 `load_skill` 会返回的那段文本。Claude Code 把它变成斜杠命令 `/mcp__ccnm__<名字>`（server 在 Host 配置里叫别的名字，中间那段就跟着变）。prompt 的参数是 skill 在 frontmatter 的 `arguments` 里声明的名字；一个都没声明时是单个 `arguments`。**Claude Code 把人敲的参数按空白切开、依次对应声明的参数，多出来的词被它丢掉**（2.1.273 实测）——要传多个词，skill 得声明多个参数。Codex 0.154.0 连上之后只调 `tools/list`，看不到 prompts，所以 prompts 是锦上添花，`load_skill` 才是主通道。
+
+**没做的**：MCP 官方的 skills 扩展（SEP-2640，`skills/list` / `skill://` 资源）。Claude Code 里它的客户端已经写好，但挂在一个默认关闭的开关后面，现在对哪个 Host 都不生效；它是另一个阶段。依据见 [P36 记录](../research/p36-skills-surface-2026-09-17.md)。
 
 ## 6. 连接生命周期
 

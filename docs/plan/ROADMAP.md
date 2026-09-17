@@ -38,7 +38,7 @@ ccnm 不需要安装 Orchestrator 也能独立使用。Orchestrator 核心不链
 
 ## 二、顺序和基线
 
-`P0 → P1 → P2 → P3 → P4 → P5 → P6 → P7 → P8 → P9 → P10 → P11 → P12 → P13 → P14 → P15 → P16 → P17 → P18 → P19 → P20 → P21 → P22 → P23 → P24 → P25 → P26 → P27 → P28 → P29 → P30 → P31 → P32 → P33 → P34`。默认每轮只执行一个阶段。P0–P8 是 ccnm v1 收口和独立 Orchestrator 的接口交接；P9–P12 是 ccnm v1.x 的 Remote Workspace MCP 扩展；P13 是按真实 Host 行为修正两个入口共用的 instructions 投影；P21–P24 是 Codex 原生执行链；P25 修 P24 真机轮发现的预检错误码；P26 补原生链在 Runtime 侧的探活；P27 让 doctor 也探这条链；P28 让 CI 在声明的 rust-version 上编译一遍；P29 补测原生链的并发、在途请求与资源上限，P30 修它查出的 fs helper 活过放锁；P31 给 Runtime 保留输出加会话总量上限、结束即删和过期清理；P32 封存原生链（用户决定）；P33 把沙箱那项收益搬到两个入口共用的 `exec_command` 上；P34 修 `apply_patch` 日志锁探测靠关文件放锁、fork 窗口里漏拦的缺陷。完整边界见 [双执行入口方案](runtime-surfaces.md)。
+`P0 → P1 → P2 → P3 → P4 → P5 → P6 → P7 → P8 → P9 → P10 → P11 → P12 → P13 → P14 → P15 → P16 → P17 → P18 → P19 → P20 → P21 → P22 → P23 → P24 → P25 → P26 → P27 → P28 → P29 → P30 → P31 → P32 → P33 → P34 → P35`。默认每轮只执行一个阶段。P0–P8 是 ccnm v1 收口和独立 Orchestrator 的接口交接；P9–P12 是 ccnm v1.x 的 Remote Workspace MCP 扩展；P13 是按真实 Host 行为修正两个入口共用的 instructions 投影；P21–P24 是 Codex 原生执行链；P25 修 P24 真机轮发现的预检错误码；P26 补原生链在 Runtime 侧的探活；P27 让 doctor 也探这条链；P28 让 CI 在声明的 rust-version 上编译一遍；P29 补测原生链的并发、在途请求与资源上限，P30 修它查出的 fs helper 活过放锁；P31 给 Runtime 保留输出加会话总量上限、结束即删和过期清理；P32 封存原生链（用户决定）；P33 把沙箱那项收益搬到两个入口共用的 `exec_command` 上；P34 修 `apply_patch` 日志锁探测靠关文件放锁、fork 窗口里漏拦的缺陷；P35 让测试建的临时目录跑完就删（纯测试代码）。完整边界见 [双执行入口方案](runtime-surfaces.md)。
 
 ### P0 — 已有内部验证基线
 
@@ -485,3 +485,16 @@ worktree **分配、调度、合并策略**在 Orchestrator；受管 workspace �
 - **P34.4** 记录与门禁：研究记录 `docs/research/p34-journal-lock-release-2026-09-17.md`，observed_gaps 那条改成已修。`cargo fmt --all --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace`、`cargo +1.89 check --workspace --all-targets --locked`、`python3 scripts/check_plan.py`、`git diff --check`。
 
 停止点：只改放锁的时机。不改 journal 的判定规则、格式和用户看到的报错，不改用户文档，不跑真机、不耗额度、不换任何机器上的二进制。
+
+### P35 — 测试建的临时目录跑完就删
+
+**依赖 P34。起因记在 status.json 的 observed_gaps 和 [P34 记录](../research/p34-journal-lock-release-2026-09-17.md)第 4 节：测试的 fixture 目录没有 teardown。**目录名里带 pid 或会话 id，所以每跑一次测试二进制就在 `$TMPDIR`（和 `/tmp`——ssh ControlPath、Unix socket 路径有 103 字节上限，那几处故意放在 `/tmp` 下）留一批新的，永远不会被下一次运行覆盖。本机 `$TMPDIR` 里攒到过 18 万个 `ccnm-*` 目录、把盘写满；排查偶发失败时直接循环跑测试二进制几十上百次是这个仓库的常规做法，所以不是"偶尔清一下"能解决的。
+
+workspace 的 lint 是 `unsafe_code = "forbid"`，也没有 libc 依赖，进程退出钩子（`atexit`）用不了；能用的机制只有 Drop。
+
+- **P35.1** 基线：全量 `cargo test --workspace` 跑一遍，前后各数一次 `$TMPDIR` 与 `/tmp` 下的 `ccnm-*`、`cp3-*` 条目，新增数按名字模式分组记进记录。这是改之前的红灯。
+- **P35.2** 一个共用的守卫类型，放在只作 dev-dependency 的 workspace 成员 `crates/ccnm-testdir` 里（单元测试、`ccnm-core/tests`、`ccnm-cli/tests` 三处编译上下文用同一份定义，且不进产品二进制）：接管一个调用方自己算好的路径，drop 时 `remove_dir_all`；**所在线程正在 panic（测试失败）时不删，并把路径打到 stderr**，留给人看现场。路径怎么起名、放 `$TMPDIR` 还是 `/tmp`、要不要 canonicalize，都还是各个 fixture 自己定——守卫只管删，测试看到的路径一个字节都不变。
+- **P35.3** 把 `crates/` 下所有建临时目录或 socket 文件的测试过一遍（`temp_dir()` 86 处，加上直接写 `/tmp/ccnm-*`、`/tmp/cp3-*` 的那些）：每一处要么交给守卫，要么在记录里写明为什么不用（只拼路径、从不建东西的）。几个测试共用的"每进程一个"目录（`/tmp/ccnm-ctl-<pid>`、`ccnm-open-home-<pid>`、`/tmp/ccnm-cli-home-<pid>` 这类）不能由某一个测试的 Drop 删掉——别的测试可能还在用——改成每个测试一个。**不改任何断言，不改产品代码。**
+- **P35.4** 验证与门禁：同 P35.1 的量法，全量测试后新增残留为 0；直接循环跑 `ccnm-core` 测试二进制 20 次（`--test-threads=64`）后新增残留为 0、没有新的失败——守卫删得太早、删到别的测试的目录，在高并发下才看得出来。研究记录 `docs/research/p35-test-dir-cleanup-2026-09-17.md`，observed_gaps 那条改成已修。`cargo fmt --all --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace`、`cargo +1.89 check --workspace --all-targets --locked`、`python3 scripts/check_plan.py`、`git diff --check`。
+
+停止点：只动测试代码和一个只作 dev-dependency 的新 crate。不改产品代码、断言、用户文档；不清理本机已有的历史残留（那是另一件事，P34 清过一次）；被 SIGKILL 或超时杀掉的测试进程留下的目录不在范围内——Drop 跑不到，没有 `unsafe` 也没有别的钩子。

@@ -408,3 +408,15 @@ worktree **分配、调度、合并策略**在 Orchestrator；受管 workspace �
 - **P28.3** 推送后 GitHub Actions 上 `msrv` job 通过。推送要用户批准。
 
 停止点：rust-version 有了 CI 门禁。以后升级仍按 toexec 计划第 11 节三仓同步，提交说明写明是哪个依赖或 std API 要求。
+
+### P29 — 原生链补测：同会话并发、在途请求与资源上限
+
+**依赖 P28。起因是 toexec v2 计划第 11 节"对齐检查"第 7–9 行：原生链上 V2-G07 的"同会话并发修改串行"和 V2-G08 的"在途超时"没测，V2-G09 资源上限没做。**门禁定义不改。先按 Codex 0.154.0 源码把每个子项落到"归谁管"，再用真实 `exec-serve` + 真实 `codex exec-server` 零额度实测 ccnm 那一份。开工前读源码（tag `rust-v0.154.0`）已知的：exec-server 对同一连接的请求并发处理（`exec-server/src/server/request_dispatcher.rs` 的信号量），发给客户端的消息走容量 128 的有界通道（`connection.rs`）；每个进程只留最近 1 MiB 输出，结束后再留 30 秒（`local_process.rs` 的 `RETAINED_OUTPUT_BYTES_PER_PROCESS`、`EXITED_PROCESS_RETENTION`）；`fs/readFile` 把整个文件放进一个回包，上限 512 MiB（`local_file_system.rs` 的 `MAX_READ_FILE_BYTES`）；Codex 客户端只给 `environment/info`、`environment/status` 设了超时，文件和进程请求一直等回包（`rpc.rs` 的 `call_with_timeout` 只有 `client.rs` 这两处调用）；工具默认不并行（`tools/src/tool_executor.rs`），`apply_patch` 没改默认，执行时拿每轮一把读写锁的写锁（`core/src/tools/parallel.rs`），`exec_command` 声明可并行。
+
+- **P29.1** 适用性表：G07、G08、G09 的每个子项写明归谁（ccnm 转发层、exec-server、Codex 客户端、不适用）和依据（源码位置或本阶段实测），写进研究记录；toexec 对齐检查第 7–9 行改成指向它。实测推翻上面任何一条源码结论，先改表再往下测。
+- **P29.2** 并发：(1) 同一连接不等回包连发一批请求——放行的读、写、起进程，加上 ccnm 要拒的越界写和提权命令——同时有命令在持续输出：客户端收到的每一行都是完整 JSON，每个请求 id 恰好一个回答，被拒的请求执行端没见到、磁盘上没有副作用。能用假执行端表达的部分进 CI 测试，真执行端本机跑。(2) 真执行端上两个 `fs/writeFile` 同时写同一路径（长短不同的两份内容），20 次：记录最终文件是不是其中一份的完整内容。要不要在 ccnm 里把写方法串起来，看结果另做决定，本阶段不改。
+- **P29.3** 在途请求：(1) 一个还没回的请求（`process/read` 带很长的 `wait_ms`，等一个不出声的命令）在途时客户端断开：会话在 `EXIT_WAIT` 加 `SWEEP_WAIT` 之内结束、锁 `released`、没有带会话标记的进程，执行端日志里这条请求只出现一次，20 次。(2) `process/terminate` 一棵正在跑的进程树（同进程组的子孙，加一个 `setsid` 脱离的）：同组的 5 秒内消失、`process/read` 报 exited 和 closed；脱离的那个活到会话结束，被扫掉后锁才放，5 次。
+- **P29.4** 资源：(1) 命令连续输出 200 MiB、客户端照常读：客户端解出的字节数恰好 200 MiB，记下耗时、`exec-serve` 和执行端的峰值 RSS（按 `ps` 采样）；中途 60 秒不读再恢复：这段时间命令不前进、`exec-serve` 的 RSS 不涨，恢复后读完。5 次。(2) `fs/readFile` 读 200 MiB 文件：`exec-serve` 峰值 RSS 与 (1) 同一量级（逐块转发，不把整行读进内存）；大于 512 MiB 的文件拿到执行端原样的错误。(3) 写：base64 之后单行不超过 32 MiB 的 `fs/writeFile` 成功，超过的结束会话（P22 已有测试，这里只复核）；工作区放在用户级挂载的 16 MiB 磁盘映像上（测完卸载删除）写满时，`fs/writeFile` 拿到错误回包、会话继续、之后的小文件写入成功、结束时锁放掉。(4) 过期引用：一条很快结束的命令，30 秒内 `process/read` 仍拿到全部输出，超过 30 秒拿到执行端的错误；`fs/close` 之后的 `fs/readBlock` 报错。这些都应是原样转发，ccnm 不改写。
+- **P29.5** 记录：研究记录 `docs/research/p29-native-gates-2026-09-17.md`，脚本与每轮 `summary.json` 放 toexec `evidence/v2-c/p29-gates/`。用户会撞上的上限（原生链单文件写入上限、磁盘写满时的表现）写进支持矩阵或排错手册，只写一处。改了 Rust 就跑全量门禁。
+
+停止点：只测和记录，新增的测试只钉住现有行为。发现 ccnm 缺陷就记进 observed_gaps 并停下，修复另立阶段；不改规则表、探活计时和冻结协议，不跑真机、不耗额度、不换任何机器上的二进制。

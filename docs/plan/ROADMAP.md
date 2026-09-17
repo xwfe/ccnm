@@ -38,7 +38,7 @@ ccnm 不需要安装 Orchestrator 也能独立使用。Orchestrator 核心不链
 
 ## 二、顺序和基线
 
-`P0 → P1 → P2 → P3 → P4 → P5 → P6 → P7 → P8 → P9 → P10 → P11 → P12 → P13 → P14 → P15 → P16 → P17 → P18 → P19 → P20 → P21 → P22 → P23 → P24 → P25 → P26 → P27 → P28`。默认每轮只执行一个阶段。P0–P8 是 ccnm v1 收口和独立 Orchestrator 的接口交接；P9–P12 是 ccnm v1.x 的 Remote Workspace MCP 扩展；P13 是按真实 Host 行为修正两个入口共用的 instructions 投影；P21–P24 是 Codex 原生执行链；P25 修 P24 真机轮发现的预检错误码；P26 补原生链在 Runtime 侧的探活；P27 让 doctor 也探这条链；P28 让 CI 在声明的 rust-version 上编译一遍。完整边界见 [双执行入口方案](runtime-surfaces.md)。
+`P0 → P1 → P2 → P3 → P4 → P5 → P6 → P7 → P8 → P9 → P10 → P11 → P12 → P13 → P14 → P15 → P16 → P17 → P18 → P19 → P20 → P21 → P22 → P23 → P24 → P25 → P26 → P27 → P28 → P29 → P30`。默认每轮只执行一个阶段。P0–P8 是 ccnm v1 收口和独立 Orchestrator 的接口交接；P9–P12 是 ccnm v1.x 的 Remote Workspace MCP 扩展；P13 是按真实 Host 行为修正两个入口共用的 instructions 投影；P21–P24 是 Codex 原生执行链；P25 修 P24 真机轮发现的预检错误码；P26 补原生链在 Runtime 侧的探活；P27 让 doctor 也探这条链；P28 让 CI 在声明的 rust-version 上编译一遍；P29 补测原生链的并发、在途请求与资源上限，P30 修它查出的 fs helper 活过放锁。完整边界见 [双执行入口方案](runtime-surfaces.md)。
 
 ### P0 — 已有内部验证基线
 
@@ -420,3 +420,14 @@ worktree **分配、调度、合并策略**在 Orchestrator；受管 workspace �
 - **P29.5** 记录：研究记录 `docs/research/p29-native-gates-2026-09-17.md`，脚本与每轮 `summary.json` 放 toexec `evidence/v2-c/p29-gates/`。用户会撞上的上限（原生链单文件写入上限、磁盘写满时的表现）写进支持矩阵或排错手册，只写一处。改了 Rust 就跑全量门禁。
 
 停止点：只测和记录，新增的测试只钉住现有行为。发现的 ccnm 缺陷记进 observed_gaps，不在本阶段修，修复另立阶段；不改规则表、探活计时和冻结协议，不跑真机、不耗额度、不换任何机器上的二进制。
+
+### P30 — 原生链：放锁前清空执行端的进程组
+
+**依赖 P29。起因是 [P29 记录](../research/p29-native-gates-2026-09-17.md)第 5 节查出的缺陷。**exec-server 做带沙箱的文件读写（`fs/writeFile` 等）时自己起 `codex --codex-run-as-fs-helper`，先 `env_clear()` 再只放回 `PATH`/`TMPDIR`/`TMP`/`TEMP`，所以 helper 不带会话标记。exec-server 在一次这样的操作中被强杀时，helper 被挂到 pid 1 继续运行；`exec-serve` 按标记扫不到它，写 `released`，之后 helper 的写入才落地（macOS 20/20）。客户端正常断开时 tokio 的 `kill_on_drop` 会杀掉它，只有强杀时漏。P29 实测 helper 与 exec-server 同一个进程组（ccnm 以 `process_group(0)` 启动 exec-server），exec-server 死后这个组还在。
+
+- **P30.1** 先红：假执行端加一个开关，收到指定方法时先起一个清空环境、留在自己进程组里的子进程（扮演 helper），再立刻崩溃；经真实二进制的 `exec-serve` 跑 20 次（写锁移交相关的故障点），断言会话结束时那个子进程已经不在、下一个会话能开。修复前这组测试是红的，红的输出记进证据。
+- **P30.2** 修复：收尾扫描的判据从"带这个会话的标记"扩成"带标记，**或**进程组号等于 exec-server 的 pid"，两条在同一次进程表扫描里判，找到的逐个杀掉、再扫，扫不干净仍然 `held`。按 OS 分支的仍只有这一个函数（Linux 读 `/proc/<pid>/stat` 的进程组字段，其他平台 `ps` 多取一列 `pgid`），所以 P28 的 msrv job 只跑 Linux 的前提不变；`/proc/<pid>/stat` 的解析写成不分平台的纯函数，本机单测覆盖命令名里带空格和括号的情况。进程组号被复用的风险写清楚：只在组已空、同一个号又被新进程拿去当组长的几秒窗口里存在，与按 pid 杀标记进程时 pid 被复用是同一量级。
+- **P30.3** 实测：修复后的 release 构建重跑 toexec `evidence/v2-c/p29-gates/` 的 `helper-crash`（20 次，期望 helper 在放锁前已不在），以及 `helper-close`、`client-leaves`、`terminate` 做回归。Linux 上 helper 由 `bwrap --new-session --die-with-parent` 启动，不在这个进程组里，靠 die-with-parent 随 exec-server 结束——按源码说明，不实测（本机和 CI 都没有 Linux 上的 Codex）。
+- **P30.4** 文档与门禁：`serve.rs` 开头讲"怎么证明进程都没了"的注释、P29 记录第 5 节、支持矩阵里的"已知缺陷"、`status.json` 的对应 observed_gaps 条目按新行为更新。`cargo fmt --all --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace`、`--target x86_64-unknown-linux-gnu` 的 check（覆盖 Linux 分支）、`python3 scripts/check_plan.py`、`git diff --check`。
+
+停止点：只改收尾扫描的判据。不改规则表、探活、放锁的其他条件，不跑真机、不耗额度、不换任何机器上的二进制。

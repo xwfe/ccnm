@@ -580,3 +580,29 @@ P37 交接时建议的修法是"拒绝能匹配目录的 glob"。开工前实测
 - **P40.5** 门禁：同 P37.6。
 
 停止点：不执行 cell（那是 `exec_command` 跑 `jupyter nbconvert --execute` 的事）；不处理 nbformat 3 及更早的格式（报错说明）；不渲染 HTML、LaTeX、SVG 输出（只给 `text/plain`）；浮点数在元数据里的写法可能和 Python 不同（`1e-05` 会写成 `1e-5`），记下不修；不耗模型额度；不发版。
+
+### P41 — 后台命令；客户端取消或断开时停掉命令
+
+**依赖 P40。v3 方案第 5 节第 4 步。**PDF（第 3 步最后一项）用户 2026-09-18 定暂时不做，所以直接接这一步。
+
+现状，开工前零额度实测（记录见 P41.1）：
+
+| | 后台 | 看输出、等结束 | 停 | 会话结束 |
+| --- | --- | --- | --- | --- |
+| Claude Code 2.1.273（读打包代码） | Bash `run_in_background`；前台超时后转后台而不是杀掉；MCP 调用超过 120 秒在交互会话里自动转后台 | 结束时推通知；TaskOutput（`block`、`timeout` 默认 30000、上限 600000）已标弃用，改读输出文件 | TaskStop（`task_id`） | — |
+| Codex 0.154.0（本机假模型实测） | `exec_command` 等满 `yield_time_ms`（默认 10000）还没结束就返回会话号 | `write_stdin` 空字符串轮询：进程结束就提前返回，只给新输出 | 没有单独的工具 | `codex exec` 退出时还在跑的进程被杀 |
+| ccnm | 没有：最长 600 秒，到点杀进程组 | `read_output` 只读已结束的命令 | 没有 | 见下 |
+
+同时查出 ccnm 两个现有缺陷（真实二进制 + 中立客户端实测）：**客户端发 `notifications/cancelled` 后命令照跑**，到结束或超时为止（Claude Code 里按 Esc、或停掉被自动转后台的调用，都是这个通知）；**客户端断开时 server 等命令跑完才退出**，8 秒的命令断开后 8.0 秒才退出，最长可到 600 秒，期间一直占着写锁、新会话进不来。后台命令会把第二个放大成"永远不退出"，所以一起修。
+
+做法（`ccnm.workspace-mcp/1` 冻结时写明加工具、加参数属于加法，不升版本）：
+
+- **P41.1** 实测记录：上表的依据（toexec `evidence/v3-parity/background-exec/`）和两个缺陷的复现，写进研究记录。MCP 没有让 server 叫醒模型的通道——Claude Code 的 channels 要组织开关，MCP 标准任务（SEP-2663）的入口函数在 2.1.273 里直接返回 false——所以命令结束不会通知模型，只能由模型来问。
+- **P41.2** `exec_command` 加 `run_in_background`（名字照 Claude Code）：起了就返回 `output_ref`，不等。不给 `timeout_ms` 时一直跑到 `stop_command` 或会话结束；给了就到点杀。其余一律不变：执行门、人工确认、`exec_sandbox`、`cmd` / `shell`、环境变量剥离、输出保留（单流 64 MiB）。同一个 server 进程里同时在跑的后台命令最多 8 个，第 9 个报 `CCNM_E_INVALID_ARGS` 并列出在跑的 `output_ref`——每个在跑的命令的输出不参与会话总量回收（P31），8 个最多多占 1 GiB。
+- **P41.3** `read_output` 加 `wait_ms`（默认 0，上限 600000）：命令还在跑时最多等这么久，结束就提前返回。后台命令的结果多一行状态（在跑多久了 / 退出码 / 被 `stop_command` 停掉 / 超时 / 会话结束时被停）；还在跑时读到末尾写"到目前为止"，不是 eof。前台命令的结果一个字节都不变。
+- **P41.4** 新工具 `stop_command`（`output_ref`）：给命令的整个进程组发 TERM，2 秒内没退就 KILL，杀到管道读完为止（沿用超时那套反复杀的做法）；返回最终状态。已经结束的命令照实报状态，不算错。只停本 server 进程起的命令。
+- **P41.5** 取消与断开：`exec_command` 前台调用被取消时用同一套办法停掉命令；server 退出前停掉本进程起的所有命令（前台、后台）并等管道读完，**然后**才放写锁。停掉的命令在结果和 `read_output` 里写明原因。
+- **P41.6** 接线与契约：加工具要动的全部地方（同 P39.3；`stop_command` 和 `exec_command` 一样只在 coding 模式有）；协议文档加一节、页首记加法、新增样例；中立客户端覆盖后台起、`wait_ms` 等到结束、`stop_command`、第 9 个被拒、取消、断开后进程不在且 server 立刻退出；`usage.md`、`support-matrix.md`。
+- **P41.7** 门禁：同 P37.6，另加 AGENTS.md 对 `process.rs` 要求的 `cargo test --workspace -- --test-threads=64`。
+
+停止点：不做 stdin 和 tty（Codex 不开 tty 时 stdin 也是关的）；不做命令结束时通知模型；不做逐行推送（Claude Code 的 Monitor）；前台超时仍然杀掉而不是转后台（冻结契约里的语义）；后台命令活不过 server 进程——`/mcp Reconnect` 和断开都会停掉它们，写进文档；`mcp-serve` 被 SIGKILL 时起的进程组没人收（前台命令今天也一样），记下不修；不耗模型额度；不发版。

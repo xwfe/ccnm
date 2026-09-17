@@ -18,6 +18,7 @@ pub mod patch;
 pub mod path;
 pub mod probe;
 pub mod read;
+pub mod retention;
 pub mod search;
 pub mod server;
 pub mod write_guard;

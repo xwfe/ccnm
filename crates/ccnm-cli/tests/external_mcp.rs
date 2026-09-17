@@ -994,27 +994,48 @@ fn a_host_that_ignores_annotations_gains_nothing() {
     reader.shutdown();
 }
 
-/// Retained output belongs to the session that produced it. Another
-/// session's reference resolves to nothing, whichever entry it came in
-/// through -- an output_ref is not a handle on the machine.
-#[test]
-fn an_output_ref_does_not_cross_sessions() {
-    let fixture = Fixture::unconfined("outputs", "coding");
-    let mut first = fixture.open("demo", ExternalMode::Coding, "bridge-out-1");
-    let ran = first.call("exec_command", json!({"cmd": ["/bin/echo", "hello"]}));
-    assert!(!is_error(&ran), "{}", text(&ran));
-    let said = text(&ran);
+/// The `output_ref` an `exec_command` result names.
+fn output_ref(result: &Value) -> String {
+    let said = text(result);
     let marker = "output_ref ";
     let start = said
         .find(marker)
         .unwrap_or_else(|| panic!("no ref in {said:?}"))
         + marker.len();
-    let reference: String = said[start..]
+    said[start..]
         .split([',', ']', ' ', '\n'])
         .next()
         .unwrap()
-        .to_string();
+        .to_string()
+}
+
+impl Fixture {
+    /// Where a session's retained output lives under this fixture's state.
+    fn session_state(&self, session: &str) -> PathBuf {
+        self.dir.join("state/ccnm/sessions").join(session)
+    }
+}
+
+/// Retained output belongs to the session that produced it. Another
+/// session's reference resolves to nothing, whichever entry it came in
+/// through -- an output_ref is not a handle on the machine.
+///
+/// The first session is a managed one because its output outlives it (an
+/// external session's is removed when it ends): the refusal below has to
+/// be about whose output it is, not about output that is no longer there.
+#[test]
+fn an_output_ref_does_not_cross_sessions() {
+    let fixture = Fixture::unconfined("outputs", "coding");
+    let mut first = Session::start(fixture.managed("s-out-1"));
+    let ran = first.call("exec_command", json!({"cmd": ["/bin/echo", "hello"]}));
+    assert!(!is_error(&ran), "{}", text(&ran));
+    let reference = output_ref(&ran);
     first.shutdown();
+    let kept = fixture
+        .session_state("s-out-1")
+        .join("output")
+        .join(&reference);
+    assert!(kept.is_dir(), "{} is not there", kept.display());
 
     let mut second = fixture.open("demo", ExternalMode::Coding, "bridge-out-2");
     let borrowed = second.call("read_output", json!({"output_ref": reference}));
@@ -1025,6 +1046,84 @@ fn an_output_ref_does_not_cross_sessions() {
         text(&borrowed)
     );
     second.shutdown();
+    assert!(kept.is_dir(), "another session's output was touched");
+}
+
+/// An external client's session cannot be resumed, so its output cannot
+/// be asked for again once it ends -- and is not left on the Runtime.
+#[test]
+fn an_external_session_leaves_no_output_behind() {
+    let fixture = Fixture::unconfined("gone", "coding");
+    let mut session = fixture.open("demo", ExternalMode::Coding, "bridge-gone");
+    let ran = session.call("exec_command", json!({"cmd": ["/bin/echo", "hello"]}));
+    assert!(!is_error(&ran), "{}", text(&ran));
+    let run = fixture
+        .session_state("bridge-gone")
+        .join("output")
+        .join(output_ref(&ran));
+    assert!(run.join("stdout").is_file());
+    session.shutdown();
+    assert!(
+        !fixture.session_state("bridge-gone").exists(),
+        "left behind: {}",
+        run.display()
+    );
+}
+
+/// A managed session's id outlives its server: `/mcp Reconnect` starts a
+/// new one under the same id, and the references the model already holds
+/// still have to work.
+#[test]
+fn a_managed_session_keeps_its_output_across_a_reconnect() {
+    let fixture = Fixture::unconfined("reconnect", "coding");
+    let mut before = Session::start(fixture.managed("s-reconnect"));
+    let ran = before.call("exec_command", json!({"cmd": ["/bin/echo", "still here"]}));
+    assert!(!is_error(&ran), "{}", text(&ran));
+    let reference = output_ref(&ran);
+    before.shutdown();
+
+    let mut after = Session::start(fixture.managed("s-reconnect"));
+    let page = after.call("read_output", json!({"output_ref": reference}));
+    assert!(!is_error(&page), "{}", text(&page));
+    assert!(text(&page).contains("still here"), "{}", text(&page));
+    after.shutdown();
+}
+
+/// A server that starts removes the output of sessions nobody serves and
+/// nobody has run anything in for a week, and leaves newer ones alone.
+/// It does so off the thread that answers the client, hence the wait.
+#[test]
+fn a_starting_server_removes_output_nobody_has_touched_for_a_week() {
+    let fixture = Fixture::new("expiry", "read", "generic");
+    let week_and_a_day =
+        std::time::SystemTime::now() - std::time::Duration::from_secs(8 * 24 * 60 * 60);
+    let retained = |session: &str, when: Option<std::time::SystemTime>| -> PathBuf {
+        let output = fixture.session_state(session).join("output");
+        let run = output.join("r-0123456789abcdef");
+        std::fs::create_dir_all(&run).unwrap();
+        std::fs::write(run.join("stdout"), "old\n").unwrap();
+        if let Some(when) = when {
+            for path in [&run, &output] {
+                std::fs::File::open(path)
+                    .unwrap()
+                    .set_modified(when)
+                    .unwrap();
+            }
+        }
+        output
+    };
+    let old = retained("s-abandoned", Some(week_and_a_day));
+    let recent = retained("s-recent", None);
+
+    let session = fixture.open("demo", ExternalMode::Read, "bridge-sweeper");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while old.exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    session.shutdown();
+    assert!(!old.exists(), "{} was kept", old.display());
+    assert!(!fixture.session_state("s-abandoned").exists());
+    assert!(recent.join("r-0123456789abcdef/stdout").is_file());
 }
 
 /// The credential boundary is not a property of the managed entry. A

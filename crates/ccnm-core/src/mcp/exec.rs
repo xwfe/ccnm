@@ -32,20 +32,24 @@
 //! machine holds no Claude credential and must not learn one through a
 //! command ccnm ran.
 //!
-//! # argv, not a shell
+//! # argv, or one shell line
 //!
-//! `cmd` is a list. There is no `sh -c`, so there is no quoting anywhere
-//! in ccnm to get wrong, and the audit line is exactly what ran.
+//! `cmd` is a list. There is no shell, so there is no quoting anywhere in
+//! ccnm to get wrong, and the audit line is exactly what ran.
 //!
-//! The usual reasons to want a shell are covered without one:
+//! `shell` (P37) is the other way in: one line, run as `bash -c <line>`,
+//! for what a model writes as a matter of course -- `cd sub && make`,
+//! `cargo test 2>&1 | tail -50`. It widens nothing. A model could always
+//! send `["bash", "-c", line]` itself, and this is exactly that argv: the
+//! same gate, the same confirmation, the same sandbox wrapping it.
 //!
-//! ```text
-//! cargo test 2>&1 | tail -50   output is already capped and paged; just run cargo test
-//! cd sub && make               the cwd parameter
-//! RUST_LOG=debug cargo test    ["env", "RUST_LOG=debug", "cargo", "test"]
-//! ls *.rs                      list_files
-//! grep -r x .                  search_text
-//! ```
+//! bash and not `sh`, and no falling back to `sh` when bash is missing.
+//! Claude Code's Bash tool runs the user's bash or zsh (2.1.273 refuses to
+//! start without one), so bash is the dialect models write; on Debian `sh`
+//! is dash, where `[[ ]]`,
+//! `source` and `set -o pipefail` do something else or nothing, and a line
+//! that quietly means something different is worse than a refusal naming
+//! the missing program.
 //!
 //! # Output
 //!
@@ -81,8 +85,13 @@ pub const MAX_PREVIEW_BYTES: usize = 16 * 1024;
 #[derive(Debug, Clone, Default, Deserialize, schemars::JsonSchema)]
 pub struct ExecCommandArgs {
     /// Program and arguments, e.g. `["cargo", "test", "--lib"]`. Not a
-    /// shell line: no pipes, redirection or globs.
+    /// shell line: no pipes, redirection or globs. Give this or `shell`.
+    #[serde(default)]
     pub cmd: Vec<String>,
+    /// One shell line, run with `bash -c`, e.g. `cargo test 2>&1 | tail -50`.
+    /// Give this or `cmd`.
+    #[serde(default)]
+    pub shell: Option<String>,
     /// Directory to run in, relative to the workspace root. Default: the root.
     #[serde(default)]
     pub cwd: Option<String>,
@@ -103,8 +112,9 @@ pub struct ExecCommandArgs {
 pub struct ExecResult {
     #[serde(skip)]
     pub text: String,
-    /// What actually ran, as one line, for a human reading a log. It is
-    /// not quoted, so it is not a shell command.
+    /// What actually ran, as one line, for a human reading a log: the
+    /// `shell` line as given, or `cmd` joined with spaces -- not quoted, so
+    /// that one is not a shell command.
     pub command: String,
     /// Workspace-relative directory it ran in; `.` for the root.
     pub cwd: String,
@@ -141,7 +151,8 @@ pub(crate) fn workspace_gone(rel: &str) -> String {
     )
 }
 
-/// Run `args.cmd` under `root`, retaining its output under `state`.
+/// Run `args.cmd` or `args.shell` under `root`, retaining its output under
+/// `state`.
 pub fn exec_command(
     root: &Path,
     session: &str,
@@ -167,14 +178,32 @@ pub(crate) fn exec_command_in(
     args: &ExecCommandArgs,
     sandbox: Option<&Sandbox>,
 ) -> Result<ExecResult> {
-    if args.cmd.is_empty() {
-        return Err(Error::invalid_args(
-            "cmd is empty; pass the program and its arguments, e.g. [\"cargo\", \"test\"]",
-        ));
-    }
-    for part in &args.cmd {
+    let (argv, command) = match (args.cmd.is_empty(), args.shell.as_deref()) {
+        (false, Some(_)) => {
+            return Err(Error::invalid_args(
+                "pass cmd or shell, not both: cmd runs a program directly, shell runs one line with bash -c",
+            ));
+        }
+        (true, None) => {
+            return Err(Error::invalid_args(
+                "cmd is empty; pass the program and its arguments, e.g. [\"cargo\", \"test\"], or one shell line in shell",
+            ));
+        }
+        (false, None) => (args.cmd.clone(), args.cmd.join(" ")),
+        (true, Some(line)) => {
+            if line.trim().is_empty() {
+                return Err(Error::invalid_args("shell is empty"));
+            }
+            (
+                vec![SHELL.to_string(), "-c".to_string(), line.to_string()],
+                line.to_string(),
+            )
+        }
+    };
+    let field = if args.shell.is_some() { "shell" } else { "cmd" };
+    for part in &argv {
         if part.contains('\0') {
-            return Err(Error::invalid_args("cmd contains a NUL byte"));
+            return Err(Error::invalid_args(format!("{field} contains a NUL byte")));
         }
     }
     let timeout_ms = match args.timeout_ms {
@@ -201,8 +230,8 @@ pub(crate) fn exec_command_in(
     };
 
     let (run, stdout, stderr) = output.begin()?;
-    let mut cmd = Cmd::new(&args.cmd[0])
-        .args(&args.cmd[1..])
+    let mut cmd = Cmd::new(&argv[0])
+        .args(&argv[1..])
         .cwd(&cwd_abs)
         .timeout(Duration::from_millis(timeout_ms));
     let _ = provider; // Runtime protection covers all known Agents, not this selection.
@@ -217,11 +246,8 @@ pub(crate) fn exec_command_in(
         // Inside the wrapper a missing program fails in the sandbox
         // launcher and would come back as a command result with exit 71;
         // bare, it is a dependency error. Keep it the dependency error.
-        if sandbox::locate(&args.cmd[0], &cwd_abs, std::env::var_os("PATH").as_deref()).is_none() {
-            return Err(Error::dependency(format!(
-                "{} is not installed on the Runtime Node, or is not on its PATH",
-                args.cmd[0]
-            )));
+        if sandbox::locate(&argv[0], &cwd_abs, std::env::var_os("PATH").as_deref()).is_none() {
+            return Err(missing_program(&argv[0], args.shell.is_some()));
         }
         cmd = sandbox.wrap(cmd, &cwd_abs);
     }
@@ -250,10 +276,7 @@ pub(crate) fn exec_command_in(
         if !cwd_abs.is_dir() {
             return Error::new(ErrorCode::WrongWorkspace, workspace_gone(&cwd_rel));
         }
-        Error::dependency(format!(
-            "{} is not installed on the Runtime Node, or is not on its PATH",
-            args.cmd[0]
-        ))
+        missing_program(&argv[0], args.shell.is_some())
     })?;
 
     let mut notes = Vec::new();
@@ -267,9 +290,23 @@ pub(crate) fn exec_command_in(
             bytes_label(per_stream)
         ));
     }
-    let result = build(&args.cmd, cwd_rel, &run, &captured, preview_bytes, notes);
+    let result = build(command, cwd_rel, &run, &captured, preview_bytes, notes);
     output.finish(&run);
     Ok(result)
+}
+
+/// The program `shell` runs its line with. Found on PATH like any `cmd`.
+const SHELL: &str = "bash";
+
+/// A program that could not be started, named. For `shell` the program is
+/// bash, and the way round a Runtime without it is `cmd`.
+fn missing_program(program: &str, via_shell: bool) -> Error {
+    let mut message =
+        format!("{program} is not installed on the Runtime Node, or is not on its PATH");
+    if via_shell {
+        message.push_str("; shell runs its line with bash -c, so without bash pass the program and its arguments in cmd instead");
+    }
+    Error::dependency(message)
 }
 
 /// `64 MiB` for the real limit, bytes for the small ones tests use.
@@ -297,14 +334,13 @@ where
 }
 
 fn build(
-    cmd: &[String],
+    command: String,
     cwd: String,
     retention: &Run,
     captured: &crate::process::Captured,
     preview_bytes: usize,
     mut notes: Vec<String>,
 ) -> ExecResult {
-    let command = cmd.join(" ");
     let duration_ms = u64::try_from(captured.duration.as_millis()).unwrap_or(u64::MAX);
 
     // stderr first when there is any: a failing command's reason is
@@ -747,6 +783,124 @@ mod tests {
             },
         );
         assert_eq!(e.code(), ErrorCode::InvalidArgs);
+    }
+
+    fn shell(f: &Fixture, line: &str) -> ExecResult {
+        exec_command(
+            &f.root,
+            "s-test",
+            &f.state,
+            &ExecCommandArgs {
+                shell: Some(line.to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn a_shell_line_runs_with_bash() {
+        let f = fixture("shell");
+        let r = shell(&f, "cat marker.txt | tr a-z A-Z && echo done > out.txt");
+        assert_eq!(r.exit_code, Some(0), "{}", r.text);
+        assert!(r.text.contains("--- stdout\nIN THE ROOT\n"), "{}", r.text);
+        assert_eq!(
+            fs::read_to_string(f.root.join("out.txt")).unwrap(),
+            "done\n"
+        );
+        // The log line is the line that was asked for.
+        assert_eq!(
+            r.command,
+            "cat marker.txt | tr a-z A-Z && echo done > out.txt"
+        );
+        assert!(r.text.starts_with("$ cat marker.txt | tr"), "{}", r.text);
+
+        // bash, not whatever sh is: `[[ ]]` and pipefail are bash.
+        let r = shell(
+            &f,
+            "set -o pipefail; false | true; [[ $? == 1 ]] && echo bash",
+        );
+        assert!(r.text.contains("--- stdout\nbash\n"), "{}", r.text);
+    }
+
+    #[test]
+    fn a_shell_line_keeps_cwd_timeout_and_exit_status() {
+        let f = fixture("shell-rest");
+        let r = exec_command(
+            &f.root,
+            "s",
+            &f.state,
+            &ExecCommandArgs {
+                shell: Some("cat marker.txt; exit 4".into()),
+                cwd: Some("sub".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!((r.cwd.as_str(), r.exit_code), ("sub", Some(4)));
+        assert!(r.text.contains("in the subdirectory"), "{}", r.text);
+
+        let r = exec_command(
+            &f.root,
+            "s",
+            &f.state,
+            &ExecCommandArgs {
+                shell: Some("echo early; sleep 30".into()),
+                timeout_ms: Some(400),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(r.timed_out, "{}", r.text);
+        assert!(r.text.contains("early"), "{}", r.text);
+    }
+
+    #[test]
+    fn cmd_and_shell_are_one_or_the_other() {
+        let f = fixture("shell-args");
+        let both = fails(
+            &f,
+            ExecCommandArgs {
+                cmd: vec!["true".into()],
+                shell: Some("true".into()),
+                ..Default::default()
+            },
+        );
+        assert_eq!(both.code(), ErrorCode::InvalidArgs);
+        assert!(both.message().contains("not both"), "{both}");
+
+        for line in ["", "   "] {
+            let e = fails(
+                &f,
+                ExecCommandArgs {
+                    shell: Some(line.into()),
+                    ..Default::default()
+                },
+            );
+            assert_eq!(e.code(), ErrorCode::InvalidArgs, "{line:?}");
+            assert!(e.message().contains("shell is empty"), "{e}");
+        }
+        let e = fails(
+            &f,
+            ExecCommandArgs {
+                shell: Some("echo a\0b".into()),
+                ..Default::default()
+            },
+        );
+        assert!(e.message().contains("shell contains a NUL byte"), "{e}");
+        // Neither says what both are for.
+        let e = fails(&f, ExecCommandArgs::default());
+        assert!(e.message().contains("shell"), "{e}");
+    }
+
+    #[test]
+    fn without_bash_the_error_names_it_and_the_way_round() {
+        let e = missing_program("bash", true);
+        assert_eq!(e.code(), ErrorCode::Dependency);
+        assert!(e.message().starts_with("bash is not installed"), "{e}");
+        assert!(e.message().contains("in cmd instead"), "{e}");
+        // A plain cmd gets no advice about shells.
+        assert!(!missing_program("cargo", false).message().contains("shell"));
     }
 
     #[test]

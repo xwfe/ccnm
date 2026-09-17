@@ -669,7 +669,7 @@ impl Server {
 
     #[tool(
         name = "exec_command",
-        description = "Run a command in the remote workspace. cmd is a program and its arguments, not a shell line: there are no pipes, redirection or globs. Long output stays on that machine; what comes back is the head and tail plus an output_ref. This runs with the full access of the account the runtime uses."
+        description = "Run a command in the remote workspace. Give either cmd, a program and its arguments with no shell involved, or shell, one line run with bash -c where pipes, redirection and && work. Long output stays on that machine; what comes back is the head and tail plus an output_ref. This runs with the full access of the account the runtime uses."
     )]
     async fn exec_command(
         &self,

@@ -363,6 +363,30 @@ fn the_switch_wraps_every_command_with_the_measured_profile() {
     assert_eq!(seen[1]["cwd"], json!(root.join("src").to_str().unwrap()));
 }
 
+/// `shell` (P37) widens nothing: behind the sandbox it is the `bash -c`
+/// argv a model could always have sent as `cmd`, wrapped the same way.
+#[test]
+fn a_shell_line_is_the_bash_argv_behind_the_same_wrapper() {
+    let fx = Fixture::build("shell", None, true);
+    let mut s = fx.open("demo", "shell-1");
+    let line = "echo ${FAKE_SANDBOXED:-bare} | tr 1 x";
+    let ran = s.rpc(
+        "tools/call",
+        json!({"name": "exec_command", "arguments": {"shell": line}}),
+    );
+    assert!(!is_error(&ran), "{ran}");
+    let out = text(&ran);
+    assert!(out.starts_with(&format!("$ {line}\n")), "{out}");
+    assert!(
+        out.contains("--- stdout\nx\n"),
+        "ran behind the wrapper: {out}"
+    );
+    s.shutdown();
+    let seen = fx.sandboxed();
+    assert_eq!(seen.len(), 1, "{seen:?}");
+    assert_eq!(seen[0]["argv"], json!(["bash", "-c", line]));
+}
+
 /// A program that is not there is a dependency error, as it is bare -- not
 /// the sandbox launcher's exit 71 dressed up as a command result.
 #[test]
@@ -451,6 +475,16 @@ fn against_the_real_codex_sandbox_when_configured() {
     assert_eq!(
         std::fs::read_to_string(fx.root.join("inside.txt")).unwrap(),
         "inside\n"
+    );
+    // bash itself starts inside the real sandbox (P37's `shell`).
+    let piped = s.rpc(
+        "tools/call",
+        json!({"name": "exec_command", "arguments": {"shell": "echo piped | tr a-z A-Z > piped.txt"}}),
+    );
+    assert!(text(&piped).contains("ok in"), "{}", text(&piped));
+    assert_eq!(
+        std::fs::read_to_string(fx.root.join("piped.txt")).unwrap(),
+        "PIPED\n"
     );
 
     let escaped = fx.outside.join("escaped.txt");

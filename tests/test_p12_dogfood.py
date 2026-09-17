@@ -208,7 +208,7 @@ agent_node = "agent"
         self.assertTrue(evidence["passed"], evidence)
         checks = evidence["checks"]
 
-        self.assertEqual(len(checks["tools"]), 7)
+        self.assertEqual(len(checks["tools"]), 8)  # 七个，加 P36 的 load_skill
         self.assertIn("skipped", checks["identity"])
         self.assertIn("git version", checks["toolchain"]["git"])
 
@@ -223,7 +223,7 @@ agent_node = "agent"
         self.assertEqual(cycle["test_exit"], 0)
 
         self.assertIn("CCNM_E_", checks["writer_busy"])
-        self.assertEqual(len(checks["read_leg"]["tools"]), 4)
+        self.assertEqual(len(checks["read_leg"]["tools"]), 5)  # 四个，加 P36 的 load_skill
         self.assertEqual(
             sorted(checks["read_leg"]["refusals"]), ["apply_patch", "exec_command", "read_output"]
         )

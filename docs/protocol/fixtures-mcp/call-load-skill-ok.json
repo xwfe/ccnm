@@ -1,0 +1,16 @@
+{
+  "$schema_ref": "#/$defs/call_tool_result_ok",
+  "$note": "load_skill 带名字调用：头几行方括号是 server 加的（skill 在哪、${CLAUDE_SKILL_DIR} 是什么、哪些 !`命令` 没有被执行、哪些 frontmatter 在这里不起作用），空一行之后是 SKILL.md 的正文，参数已经填好。",
+  "message": {
+    "jsonrpc": "2.0",
+    "id": 7,
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "[skill deploy -- .claude/skills/deploy/SKILL.md, 412 bytes; ${CLAUDE_SKILL_DIR} is .claude/skills/deploy]\n[1 command(s) this skill wants run as it loads were NOT run. Their output is not below; where you need it, run the command with exec_command:\n  line 12: git status --short\n]\n[frontmatter with no effect here: allowed-tools]\n\n# Deploy\n\nTarget: staging. Status first: !`git status --short`\nRun .claude/skills/deploy/scripts/go.sh staging\n"
+        }
+      ]
+    }
+  }
+}

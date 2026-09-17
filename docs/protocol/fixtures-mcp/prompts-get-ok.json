@@ -1,0 +1,19 @@
+{
+  "$schema_ref": "#/$defs/prompts_get_result",
+  "$note": "prompts/get 返回的就是 load_skill 会返回的那段文本，作为一条 user 消息。disable-model-invocation 不拦这条路：发起它的就是人。",
+  "message": {
+    "jsonrpc": "2.0",
+    "id": 5,
+    "result": {
+      "messages": [
+        {
+          "role": "user",
+          "content": {
+            "type": "text",
+            "text": "[skill deploy -- .claude/skills/deploy/SKILL.md, 412 bytes; ${CLAUDE_SKILL_DIR} is .claude/skills/deploy]\n\n# Deploy\n\nTarget: staging.\n"
+          }
+        }
+      ]
+    }
+  }
+}

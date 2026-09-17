@@ -113,13 +113,13 @@ external_mcp = "read"
         self.assertTrue(evidence["passed"], evidence)
 
         coding = evidence["checks"]["coding"]
-        self.assertEqual(len(coding["tools"]), 7)
+        self.assertEqual(len(coding["tools"]), 8)  # 七个，加 P36 的 load_skill
         # 产物属主由 Runtime 自己报，不是这边猜的。
         self.assertEqual(coding["artifact_owner"], getpass.getuser())
         self.assertIn("CCNM_E_", coding["second_coding_refused"])
 
         read = evidence["checks"]["read"]
-        self.assertEqual(len(read["tools"]), 4)
+        self.assertEqual(len(read["tools"]), 5)  # 四个，加 P36 的 load_skill
         self.assertEqual(sorted(read["refusals"]), ["apply_patch", "exec_command", "read_output"])
         for line in read["refusals"].values():
             self.assertTrue(line.startswith("CCNM_E_POLICY"), line)

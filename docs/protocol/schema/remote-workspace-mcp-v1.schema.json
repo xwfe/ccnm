@@ -36,17 +36,19 @@
         "search_text",
         "read_output",
         "apply_patch",
-        "exec_command"
+        "exec_command",
+        "load_skill"
       ]
     },
     "read_tool_name": {
-      "description": "read 模式允许出现的全部工具。exec_command 和 apply_patch 不在里面是权限；read_output 不在里面是因为 read 模式产不出 output_ref。",
+      "description": "read 模式允许出现的全部工具。exec_command 和 apply_patch 不在里面是权限；read_output 不在里面是因为 read 模式产不出 output_ref。 load_skill（P36）在里面：它只读，什么都不执行。",
       "type": "string",
       "enum": [
         "workspace_info",
         "read_file",
         "list_files",
-        "search_text"
+        "search_text",
+        "load_skill"
       ]
     },
     "annotations": {
@@ -274,6 +276,10 @@
               "type": "object",
               "properties": {
                 "tools": {
+                  "type": "object"
+                },
+                "prompts": {
+                  "description": "P36 起声明：项目的 skills 同时登记为 prompts，给人手动调用。",
                   "type": "object"
                 }
               },
@@ -520,6 +526,127 @@
       "required": [
         "exit_code",
         "stderr"
+      ],
+      "additionalProperties": false
+    },
+    "prompt": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "description": {
+          "type": "string"
+        },
+        "arguments": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "description": {
+                "type": "string"
+              },
+              "required": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "name"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "additionalProperties": false
+    },
+    "prompts_list_result": {
+      "description": "prompts/list 的回答。",
+      "type": "object",
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "result": {
+          "type": "object",
+          "properties": {
+            "prompts": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/prompt"
+              }
+            }
+          },
+          "required": [
+            "prompts"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    "prompts_get_result": {
+      "description": "prompts/get 的回答：一条 user 文本消息。",
+      "type": "object",
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "result": {
+          "type": "object",
+          "properties": {
+            "description": {
+              "type": "string"
+            },
+            "messages": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "role": {
+                    "const": "user"
+                  },
+                  "content": {
+                    "$ref": "#/$defs/text_content"
+                  }
+                },
+                "required": [
+                  "role",
+                  "content"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "messages"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "result"
       ],
       "additionalProperties": false
     }

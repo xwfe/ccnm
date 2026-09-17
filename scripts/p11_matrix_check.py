@@ -52,7 +52,9 @@ from mcp_client import McpClient, is_error, result_text  # noqa: E402
 
 
 # read 模式该有的全部工具。多一个少一个都是失败。
-READ_TOOLS = ["list_files", "read_file", "search_text", "workspace_info"]
+# load_skill 是 P36 加的只读工具（项目自带的 skills），read 模式也有。2026-09-11
+# 那两轮真机证据是在它之前采的，记的是 4 / 7 个。
+READ_TOOLS = ["list_files", "load_skill", "read_file", "search_text", "workspace_info"]
 CODING_TOOLS = READ_TOOLS + ["apply_patch", "exec_command", "read_output"]
 
 # read 腿要按名字硬调的三个，参数都合法——参数不合法会先被参数检查拦下，那

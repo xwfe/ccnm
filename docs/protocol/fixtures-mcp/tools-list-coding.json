@@ -1,6 +1,6 @@
 {
   "$schema_ref": "#/$defs/tools_list_result",
-  "$note": "coding 模式的工具表：七个。exec_command 是 destructive + open-world，不因为某次命令看着安全就改注解。工具名、description、inputSchema 里的参数名和 required 都是精确的，由 external_mcp 的 published_tool_tables_match_the_running_server 对着真实 server 逐字节校验；只有每个参数内部的类型、上下界和说明是简写，server 发的是 schemars 从 Rust 类型生成的完整 schema。",
+  "$note": "coding 模式的工具表：八个（P36 起多了只读的 load_skill，它的 description 见 read 那份样例的说明）。exec_command 是 destructive + open-world，不因为某次命令看着安全就改注解。工具名、description、inputSchema 里的参数名和 required 都是精确的，由 external_mcp 的 published_tool_tables_match_the_running_server 对着真实 server 逐字节校验；只有每个参数内部的类型、上下界和说明是简写，server 发的是 schemars 从 Rust 类型生成的完整 schema。",
   "message": {
     "jsonrpc": "2.0",
     "id": 2,
@@ -191,6 +191,25 @@
             "destructiveHint": true,
             "idempotentHint": false,
             "openWorldHint": true
+          }
+        },
+        {
+          "name": "load_skill",
+          "description": "Load one of this project's skills: task instructions the project keeps in .claude/skills, .claude/commands or .agents/skills. Before starting a task that a skill below describes, call this with the skill's name and follow what comes back. A skill's scripts and reference files are ordinary workspace files under its directory: read them with read_file and run them with exec_command. Without a name this returns the full list.\n\nThis workspace has no skills right now.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "arguments": {
+                "type": "string"
+              }
+            }
+          },
+          "annotations": {
+            "readOnlyHint": true,
+            "openWorldHint": false
           }
         }
       ]

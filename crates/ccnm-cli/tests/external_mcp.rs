@@ -249,7 +249,15 @@ fn stderr(out: &Output) -> String {
     String::from_utf8_lossy(&out.stderr).into_owned()
 }
 
-const READ_TOOLS: [&str; 4] = ["workspace_info", "read_file", "list_files", "search_text"];
+/// Five since P36: `load_skill` reads and runs nothing, so a read session
+/// has it.
+const READ_TOOLS: [&str; 5] = [
+    "workspace_info",
+    "read_file",
+    "list_files",
+    "search_text",
+    "load_skill",
+];
 const WITHHELD: [&str; 3] = ["exec_command", "apply_patch", "read_output"];
 
 /// The read session's whole surface: four tools, and the ones it does not
@@ -300,7 +308,7 @@ fn a_coding_session_gets_every_tool_and_can_write() {
     let fixture = Fixture::new("coding", "coding", "generic");
     let mut session = fixture.open("demo", ExternalMode::Coding, "bridge-coding");
     let tools = session.tools();
-    assert_eq!(tools.len(), 7, "{tools:?}");
+    assert_eq!(tools.len(), READ_TOOLS.len() + WITHHELD.len(), "{tools:?}");
     for tool in WITHHELD {
         assert!(
             tools.contains(&tool.to_string()),
@@ -934,7 +942,7 @@ fn a_read_session_coexists_with_a_managed_writer() {
     let mut reader = fixture.open("demo", ExternalMode::Read, "bridge-beside");
     let read = reader.call("read_file", json!({"path": "hello.txt"}));
     assert!(!is_error(&read), "{read}");
-    assert_eq!(reader.tools().len(), 4);
+    assert_eq!(reader.tools().len(), READ_TOOLS.len());
     reader.shutdown();
     managed.shutdown();
 }

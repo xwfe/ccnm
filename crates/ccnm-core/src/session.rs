@@ -52,10 +52,14 @@ use crate::protocol::payload::{self, PROTOCOL, Protocol};
 use crate::provider::AgentProvider;
 use crate::ssh::Ssh;
 
-/// The seven tools `ccnm internal mcp-serve` offers, as the settings
-/// allow-list needs them. A test in the server module keeps this in step
-/// with the real `tools/list`.
-pub const MCP_TOOLS: [&str; 7] = [
+/// The tools `ccnm internal mcp-serve` offers, as the settings allow-list
+/// needs them. A test in the server module keeps this in step with the
+/// real `tools/list`.
+///
+/// Seven until P36 added `load_skill`. It is last so that the order of the
+/// first seven -- which golden fixtures and people's memory both hold --
+/// did not move.
+pub const MCP_TOOLS: [&str; 8] = [
     "workspace_info",
     "read_file",
     "list_files",
@@ -63,6 +67,7 @@ pub const MCP_TOOLS: [&str; 7] = [
     "apply_patch",
     "exec_command",
     "read_output",
+    "load_skill",
 ];
 
 // Compatibility export; native tool names belong to the provider.
@@ -979,7 +984,7 @@ mod tests {
             .iter()
             .map(|a| a.as_str().unwrap())
             .collect();
-        assert_eq!(allow.len(), 7);
+        assert_eq!(allow.len(), MCP_TOOLS.len());
         for tool in MCP_TOOLS {
             assert!(
                 allow.contains(&format!("mcp__ccnm__{tool}").as_str()),

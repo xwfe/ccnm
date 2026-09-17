@@ -504,6 +504,7 @@ fn mcp_probe_local_speaks_to_one_persistent_server() {
             "apply_patch",
             "exec_command",
             "list_files",
+            "load_skill",
             "read_file",
             "read_output",
             "search_text",

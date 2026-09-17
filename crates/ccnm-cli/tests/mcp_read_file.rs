@@ -275,6 +275,7 @@ fn read_file_serves_a_whole_session_over_one_process() {
             "apply_patch",
             "exec_command",
             "list_files",
+            "load_skill",
             "read_file",
             "read_output",
             "search_text",

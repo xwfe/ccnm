@@ -26,7 +26,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from mcp_client import McpClient, is_error, result_text  # noqa: E402
+from mcp_client import McpClient, RpcError, is_error, result_text  # noqa: E402
 
 
 def ccnm_binary() -> Path | None:
@@ -42,8 +42,24 @@ def ccnm_binary() -> Path | None:
 
 BINARY = ccnm_binary()
 
-# read 模式该有的全部工具，以及三个不该有的。
-READ_TOOLS = ["list_files", "read_file", "search_text", "workspace_info"]
+# read 模式该有的全部工具，以及三个不该有的。load_skill 是 P36 加的：它只读、
+# 什么都不执行，所以 read 模式也有。
+READ_TOOLS = ["list_files", "load_skill", "read_file", "search_text", "workspace_info"]
+
+DEPLOY_SKILL = """---
+name: deploy
+description: >
+  Deploy the service.
+  Use after tests pass.
+arguments: [env]
+allowed-tools: Bash(git *)
+---
+
+# Deploy
+
+Target: $env. Status first: !`touch ran-by-loading`
+Run ${CLAUDE_SKILL_DIR}/scripts/go.sh
+"""
 WITHHELD = {
     "exec_command": {"cmd": ["/bin/echo", "hi"]},
     "apply_patch": {"files": [{"op": "add", "path": "sneaked.txt", "content": "x\n"}]},
@@ -159,12 +175,81 @@ agent_node = "agent"
                 self.assertTrue(result_text(got).startswith("CCNM_E_POLICY:"), result_text(got))
         self.assertFalse((self.root / "sneaked.txt").exists(), "被拒的写不能真的发生")
 
-    def test_a_coding_session_gets_all_seven(self):
+    def test_a_coding_session_gets_every_tool(self):
         self.write_config("coding")
         client = self.client("demo", "coding", "neutral-coding")
-        self.assertEqual(len(client.tool_names()), 7)
+        self.assertEqual(len(client.tool_names()), len(READ_TOOLS) + len(WITHHELD))
         for tool in WITHHELD:
             self.assertIn(tool, client.tool_names())
+
+    # -- 项目自带的 skills（P36） --
+
+    def add_skill(self, name: str = "deploy", text: str = DEPLOY_SKILL) -> None:
+        path = self.root / ".claude" / "skills" / name / "SKILL.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+
+    def skill_tool(self, client: McpClient) -> dict:
+        return next(tool for tool in client.tools() if tool["name"] == "load_skill")
+
+    def test_the_catalog_rides_in_the_tool_description(self):
+        # 没有 skill 时 description 是固定文本；有了之后，名字和（折成一行的）
+        # 描述出现在里面——模型整个会话里一直看得见的就是这一段。
+        bare = self.skill_tool(self.client("demo", "read", "neutral-skill-none"))
+        self.assertTrue(bare["description"].endswith("This workspace has no skills right now."))
+        self.add_skill()
+        listed = self.skill_tool(self.client("demo", "read", "neutral-skill-one"))
+        self.assertIn("- deploy (arguments: env): Deploy the service. Use after tests pass.",
+                      listed["description"])
+        # Claude Code 2.1.273 只留每个工具 description 的前 2048 个 UTF-16 码元。
+        self.assertLessEqual(len(listed["description"].encode("utf-16-le")) // 2, 2048)
+        self.assertTrue(listed["annotations"]["readOnlyHint"])
+
+    def test_loading_a_skill_fills_arguments_and_runs_nothing(self):
+        self.add_skill()
+        client = self.client("demo", "read", "neutral-skill-load")
+        got = client.call_tool("load_skill", {"name": "deploy", "arguments": "staging"})
+        self.assertFalse(is_error(got), got)
+        text = result_text(got)
+        self.assertIn("Target: staging.", text)
+        self.assertIn("Run .claude/skills/deploy/scripts/go.sh", text)
+        self.assertIn("were NOT run", text)
+        self.assertIn("allowed-tools", text)
+        self.assertNotIn("name: deploy", text, "frontmatter 不是给模型的指令")
+        # 原生客户端会在加载时执行 !`命令`；这里一次"读"不能变成一次"执行"。
+        self.assertFalse((self.root / "ran-by-loading").exists())
+
+    def test_without_a_name_the_whole_list_comes_back(self):
+        self.add_skill()
+        self.add_skill("broken", "---\nname: broken\ndescription: &anchor x\n---\nbody\n")
+        client = self.client("demo", "read", "neutral-skill-list")
+        text = result_text(client.call_tool("load_skill", {}))
+        self.assertIn("- deploy", text)
+        # 读不了的 skill 不是悄悄消失，而是说出文件和原因。
+        self.assertIn(".claude/skills/broken/SKILL.md", text)
+        self.assertIn("frontmatter line 2", text)
+
+    def test_an_unknown_skill_is_an_error_the_model_can_act_on(self):
+        self.add_skill()
+        client = self.client("demo", "read", "neutral-skill-unknown")
+        got = client.call_tool("load_skill", {"name": "deplyo"})
+        self.assertTrue(is_error(got), got)
+        self.assertTrue(result_text(got).startswith("CCNM_E_INVALID_ARGS:"), result_text(got))
+        self.assertIn("deploy", result_text(got))
+
+    def test_skills_are_also_prompts_for_a_person_to_start(self):
+        self.add_skill()
+        self.add_skill("hidden", "---\ndescription: Background.\nuser-invocable: false\n---\nx\n")
+        client = self.client("demo", "read", "neutral-skill-prompts")
+        prompts = {p["name"]: p for p in client.call("prompts/list", {})["prompts"]}
+        self.assertEqual(sorted(prompts), ["deploy"])
+        self.assertEqual([a["name"] for a in prompts["deploy"]["arguments"]], ["env"])
+        got = client.call("prompts/get", {"name": "deploy", "arguments": {"env": "prod"}})
+        message = got["messages"][0]
+        self.assertEqual(message["role"], "user")
+        self.assertIn("Target: prod.", message["content"]["text"])
+        with self.assertRaises(RpcError):
+            client.call("prompts/get", {"name": "hidden", "arguments": {}})
 
     def test_annotations_say_what_the_runtime_enforces(self):
         self.write_config("coding")

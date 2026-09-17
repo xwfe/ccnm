@@ -22,6 +22,7 @@ pub mod retention;
 pub mod sandbox;
 pub mod search;
 pub mod server;
+pub mod skills;
 pub mod write_guard;
 
 /// The longest prefix of `s` that fits in `max` bytes without splitting a

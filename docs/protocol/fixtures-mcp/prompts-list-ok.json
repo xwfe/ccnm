@@ -1,0 +1,23 @@
+{
+  "$schema_ref": "#/$defs/prompts_list_result",
+  "$note": "每个可由人调用的 skill / 命令一个 prompt。Claude Code 把它变成 /mcp__ccnm__deploy；Codex 0.154.0 不调 prompts/list。arguments 是 skill 在 frontmatter 里声明的名字；一个都没声明时是单个 arguments。",
+  "message": {
+    "jsonrpc": "2.0",
+    "id": 4,
+    "result": {
+      "prompts": [
+        {
+          "name": "deploy",
+          "description": "Deploy the service. Use after tests pass.",
+          "arguments": [
+            {
+              "name": "env",
+              "description": "<env>",
+              "required": false
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

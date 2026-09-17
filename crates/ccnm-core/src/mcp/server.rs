@@ -28,7 +28,11 @@ use std::time::Duration;
 
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
-use rmcp::model::{CallToolResult, ContentBlock, Implementation, ServerCapabilities, ServerInfo};
+use rmcp::model::{
+    CallToolResult, ContentBlock, GetPromptRequestParams, GetPromptResponse, GetPromptResult,
+    Implementation, ListPromptsResult, Prompt, PromptArgument, PromptMessage, Role,
+    ServerCapabilities, ServerInfo,
+};
 use rmcp::{ErrorData, ServerHandler, ServiceExt, tool, tool_handler, tool_router};
 use serde::{Deserialize, Serialize};
 
@@ -44,6 +48,7 @@ use crate::mcp::read::{self, ReadFileArgs};
 use crate::mcp::retention;
 use crate::mcp::sandbox;
 use crate::mcp::search::{self, SearchTextArgs};
+use crate::mcp::skills::{self, LoadSkillArgs};
 use crate::process::{Cmd, ProcessRunner, SystemRunner};
 use crate::protocol::mcp::ServePayload;
 
@@ -276,6 +281,12 @@ struct Inner {
     /// Further instruction files the project has, named in the handshake
     /// rather than carried in it.
     named: Vec<context::Named>,
+    /// The project's skills as they were when the session started. The tool
+    /// description is built from this and, like the instructions, is what
+    /// the model was given: a client keeps `tools/list` for the life of the
+    /// connection. A call re-scans, so a skill added since can still be
+    /// loaded -- it just is not advertised until the next session.
+    skills: skills::Catalog,
     git: bool,
     git_subdir: Option<String>,
     /// Somebody is at a terminal, so a permission prompt can be answered.
@@ -396,6 +407,7 @@ impl Server {
                 None
             }
         };
+        let skills = skills::discover(&root);
         let state = crate::paths::state_dir().ok();
         let sandbox = match exec_gate.config.as_ref() {
             Some(config) => sandbox::Sandbox::resolve(
@@ -419,6 +431,8 @@ impl Server {
             exec_allowed = exec_gate.allowed(),
             exec_sandbox = sandbox.is_some(),
             project_instructions = project.as_ref().map_or(0, context::Project::included),
+            skills = skills.skills.len(),
+            skills_skipped = skills.skipped.len(),
             "mcp server starting"
         );
         Ok(Server {
@@ -436,6 +450,7 @@ impl Server {
                 root,
                 project,
                 named,
+                skills,
                 git,
                 git_subdir,
                 interactive: payload.interactive,
@@ -458,7 +473,13 @@ impl Server {
             .list_all()
             .into_iter()
             .filter(|tool| self.offers(&tool.name))
-            .map(|tool| {
+            .map(|mut tool| {
+                // The one description that depends on the workspace: it
+                // carries the catalog. The attribute on the method is
+                // evaluated without `self`, so it is replaced here.
+                if tool.name == skills::TOOL {
+                    tool.description = Some(self.inner.skills.description().into());
+                }
                 let annotations = annotations_for(&tool.name);
                 let tool = tool.annotate(annotations);
                 // Only where somebody can answer, and never to an external
@@ -714,6 +735,31 @@ impl Server {
         }
     }
 
+    // The description here is a placeholder: `tools()` replaces it with the
+    // workspace's catalog, which an attribute cannot see.
+    #[tool(
+        name = "load_skill",
+        description = "Load one of this project's skills."
+    )]
+    async fn load_skill(
+        &self,
+        Parameters(args): Parameters<LoadSkillArgs>,
+    ) -> std::result::Result<CallToolResult, ErrorData> {
+        self.count_call();
+        let root = self.inner.root.clone();
+        let session = self.inner.session.clone();
+        let loaded =
+            tokio::task::spawn_blocking(move || skills::load_skill(&root, &args, Some(&session)))
+                .await
+                .map_err(|e| {
+                    ErrorData::internal_error(format!("load_skill task failed: {e}"), None)
+                })?;
+        match loaded {
+            Ok(text) => Ok(text_only(text)),
+            Err(err) => Ok(tool_error(&err)),
+        }
+    }
+
     #[tool(
         name = "read_output",
         description = "Page through what a command wrote, using the output_ref exec_command returned. Offsets are byte offsets and stable: a finished command's output does not change."
@@ -908,11 +954,118 @@ impl ServerHandler for Server {
         self.tools().into_iter().find(|tool| tool.name == name)
     }
 
-    fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
-            .with_server_info(Implementation::new(SERVER_NAME, crate::VERSION))
-            .with_instructions(self.instructions())
+    /// The project's skills again, as prompts: the way a *person* starts
+    /// one. Claude Code turns each into `/mcp__ccnm__<name>`; Codex never
+    /// asks for prompts at all (both measured, P36.1), which is why the
+    /// tool exists and this is an extra.
+    async fn list_prompts(
+        &self,
+        _request: Option<rmcp::model::PaginatedRequestParams>,
+        _context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> std::result::Result<ListPromptsResult, ErrorData> {
+        let root = self.inner.root.clone();
+        let catalog = tokio::task::spawn_blocking(move || skills::discover(&root))
+            .await
+            .map_err(|e| ErrorData::internal_error(format!("skill scan failed: {e}"), None))?;
+        let prompts = catalog
+            .skills
+            .iter()
+            .filter(|skill| skill.user_invocable)
+            .map(|skill| {
+                Prompt::new(
+                    skill.name.clone(),
+                    Some(skill.description.clone()),
+                    Some(prompt_arguments(skill)),
+                )
+            })
+            .collect();
+        Ok(ListPromptsResult::with_all_items(prompts))
     }
+
+    async fn get_prompt(
+        &self,
+        request: GetPromptRequestParams,
+        _context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> std::result::Result<GetPromptResponse, ErrorData> {
+        let root = self.inner.root.clone();
+        let session = self.inner.session.clone();
+        let given = request.arguments.unwrap_or_default();
+        let name = request.name;
+        let text = tokio::task::spawn_blocking(move || {
+            let catalog = skills::discover(&root);
+            let declared = catalog
+                .skills
+                .iter()
+                .find(|skill| skill.name == name)
+                .map(prompt_arguments)
+                .unwrap_or_default();
+            // Back into the one string a skill's `$ARGUMENTS` stands for,
+            // in the order the arguments were declared.
+            let line = declared
+                .iter()
+                .filter_map(|arg| given.get(&arg.name))
+                .map(|value| match value {
+                    serde_json::Value::String(text) => quote_argument(text),
+                    other => other.to_string(),
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+            skills::prompt_text(&root, &name, &line, Some(&session))
+        })
+        .await
+        .map_err(|e| ErrorData::internal_error(format!("skill load failed: {e}"), None))?
+        // A prompt has no `isError` result to put a refusal in; a protocol
+        // error is the only way to say no.
+        .map_err(|err| ErrorData::invalid_params(err.to_string(), None))?;
+        Ok(GetPromptResult::new(vec![PromptMessage::new_text(Role::User, text)]).into())
+    }
+
+    fn get_info(&self) -> ServerInfo {
+        ServerInfo::new(
+            ServerCapabilities::builder()
+                .enable_tools()
+                .enable_prompts()
+                .build(),
+        )
+        .with_server_info(Implementation::new(SERVER_NAME, crate::VERSION))
+        .with_instructions(self.instructions())
+    }
+}
+
+/// The arguments a skill's prompt declares: the names its frontmatter
+/// lists, or one catch-all.
+///
+/// Claude Code splits what the person typed on whitespace and hands the
+/// words to the declared arguments in order, dropping any that are left
+/// over (2.1.273). So a skill that wants several words has to declare
+/// them; with nothing declared, only the first word arrives.
+fn prompt_arguments(skill: &skills::Skill) -> Vec<PromptArgument> {
+    let names: Vec<String> = if skill.arguments.is_empty() {
+        vec!["arguments".to_string()]
+    } else {
+        skill.arguments.clone()
+    };
+    names
+        .into_iter()
+        .map(|name| {
+            let mut arg = PromptArgument::new(name);
+            arg.description = skill.argument_hint.clone();
+            arg.required = Some(false);
+            arg
+        })
+        .collect()
+}
+
+/// One prompt argument, spelled so that splitting the line again gives it
+/// back as one word.
+fn quote_argument(text: &str) -> String {
+    if !text.is_empty() && !text.contains(|c: char| c.is_whitespace() || c == '"' || c == '\'') {
+        return text.to_string();
+    }
+    if !text.contains('"') {
+        return format!("\"{text}\"");
+    }
+    format!("'{}'", text.replace('\'', ""))
 }
 
 /// Serve MCP on this process's stdin/stdout until the client closes the

@@ -14,9 +14,15 @@
 //! which Claude Code does read.
 //!
 //! Only the root `CLAUDE.md` is carried. A project usually has more --
-//! nested `CLAUDE.md` files, `.claude/rules/`, skills -- and those are
-//! *named* rather than copied: the handshake lists where they are and the
-//! model reads the ones it needs with `read_file`.
+//! nested `CLAUDE.md` files, `.claude/rules/` -- and those are *named*
+//! rather than copied: the handshake lists where they are and the model
+//! reads the ones it needs with `read_file`.
+//!
+//! Skills used to be named here too, as bare `SKILL.md` paths. A path says
+//! where a skill is and nothing about when to use it, so since P36 they are
+//! offered by the `load_skill` tool, whose description carries each
+//! skill's own description (`crate::mcp::skills`). The list here got its
+//! room back.
 //!
 //! That asymmetry is the whole design. Inlining everything would cost the
 //! whole handshake budget for every session whether or not any of it mattered,
@@ -141,17 +147,14 @@ pub fn budget(workspace: &str, named: &[Named]) -> Cap {
 /// of how much project context exists, so the model can spend the tools
 /// it already has on the parts that turn out to matter.
 ///
-/// Three shapes, matching where Claude Code itself looks: a `CLAUDE.md`
-/// in a subdirectory, a rule in `.claude/rules/`, and a skill's
-/// `SKILL.md`. The walk is depth-bounded and skips dependency and build
+/// Two shapes, matching where Claude Code itself looks: a `CLAUDE.md` in a
+/// subdirectory and a rule in `.claude/rules/`. The walk is depth-bounded and skips dependency and build
 /// directories, so it costs a handful of `read_dir` calls on any project
 /// and cannot be made expensive by a large one.
 pub fn named(root: &Path) -> Vec<Named> {
     let mut found = Vec::new();
     walk(root, root, 0, &mut found);
-    for dir in [".claude/rules", ".claude/skills"] {
-        collect_claude_dir(root, dir, &mut found);
-    }
+    collect_rules(root, ".claude/rules", &mut found);
     // Sorted before it is cut, so the same project always names the same
     // files. `read_dir` returns entries in whatever order the filesystem
     // likes, and a handshake that varies between runs for no reason is a
@@ -188,23 +191,16 @@ fn walk(root: &Path, dir: &Path, depth: usize, found: &mut Vec<Named>) {
     }
 }
 
-/// `.claude/rules/*.md`, and each skill's `SKILL.md`.
-fn collect_claude_dir(root: &Path, rel: &str, found: &mut Vec<Named>) {
+/// `.claude/rules/*.md`.
+fn collect_rules(root: &Path, rel: &str, found: &mut Vec<Named>) {
     let Ok(entries) = std::fs::read_dir(root.join(rel)) else {
         return;
     };
     for entry in entries.flatten() {
-        let Ok(kind) = entry.file_type() else {
-            continue;
-        };
         let path = entry.path();
-        if kind.is_file() && path.extension().is_some_and(|e| e == "md") {
+        let is_file = entry.file_type().is_ok_and(|kind| kind.is_file());
+        if is_file && path.extension().is_some_and(|e| e == "md") {
             push(root, &path, found);
-        } else if kind.is_dir() {
-            let skill = path.join("SKILL.md");
-            if skill.is_file() {
-                push(root, &skill, found);
-            }
         }
     }
 }
@@ -260,8 +256,9 @@ mod tests {
     use ccnm_testdir::TestDir;
     use std::fs;
 
-    /// The three places Claude Code itself keeps project instructions get
-    /// named. Named and not carried: a project with more rules than
+    /// The places Claude Code itself keeps further project instructions get
+    /// named -- except skills, which `load_skill` offers with their
+    /// descriptions instead of as bare paths. Named and not carried: a project with more rules than
     /// budget must not silently lose some, and a session that never
     /// touches the frontend should not pay for the frontend's rules.
     #[test]
@@ -285,11 +282,7 @@ mod tests {
         let names: Vec<&str> = found.iter().map(|n| n.rel.as_str()).collect();
         assert_eq!(
             names,
-            vec![
-                ".claude/rules/style.md",
-                ".claude/skills/deploy/SKILL.md",
-                "crates/core/CLAUDE.md",
-            ]
+            vec![".claude/rules/style.md", "crates/core/CLAUDE.md"]
         );
         assert!(found[0].bytes > 0);
 

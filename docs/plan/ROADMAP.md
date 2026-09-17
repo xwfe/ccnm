@@ -566,3 +566,17 @@ P37 交接时建议的修法是"拒绝能匹配目录的 glob"。开工前实测
 - **P39.5** 门禁：同 P37.6。
 
 停止点：不在 Runtime 上缩放或转码图片（不加图像处理依赖；Claude Code 自己会缩放，依据见 P39.1）；不做 SVG 渲染、HEIC/BMP/TIFF 转换；不做 PDF、notebook；不耗模型额度，所以"模型拿到图后看得对不对"没验；不发版。
+
+### P40 — Jupyter notebook：按 cell 读、按 cell 改
+
+**依赖 P39。v3 方案第 5 节第 3 步的第二项。**现状：`read_file` 把 `.ipynb` 当 JSON 文本读，输出里的图看不到；改 cell 只能对 JSON 做精确替换，要自己照顾引号转义和 `source` 的行数组。原生 Claude Code 2.1.273（读打包代码）：Read 把每个 cell 渲染成 `<cell id="…">`，代码 cell 的输出跟在后面，输出里的 PNG / JPEG 作为图片；NotebookEdit 收 `cell_id`、`new_source`、`cell_type`、`edit_mode`（replace / insert / delete），找不到 id 时把 `cell-N` 当序号，替换代码 cell 时清空 `outputs` 和 `execution_count`，nbformat ≥ 4.5 时给新 cell 生成 8 位 id。
+
+做法：不改 `read_file` 对 `.ipynb` 的结果——现在有人照着它的 JSON 文本用 `update` 改 notebook，换成 cell 视图会让这些改动对不上（冻结契约下是改语义）。所以新增只读工具 `read_notebook`，`apply_patch` 加一种操作 `edit_notebook`；`read_file` 读 `.ipynb` 时只多一条提示指向它们。
+
+- **P40.1** 实测，零额度：上面那段原生行为的打包代码证据；nbformat 写文件的格式（`indent=1`、键排序、不转义非 ASCII、结尾换行）用 Python 标准库 `json` 复现，确认 ccnm 读进来再写出去、没改动时逐字节一致。
+- **P40.2** `read_notebook`（`read` 与 `coding` 都给）：参数 `path`、`start_cell`。每个 cell 渲染成带 id、序号、类型、执行序号的块，代码 cell 的输出跟在后面（stream、`text/plain`、error 去掉终端颜色码）；输出里的 PNG / JPEG 作为 MCP `image` 块，按出现位置插在文本之间。文本总量 32 KiB、单个输出 4 KiB、图片每次最多 8 张且合计不超过 `view_image` 的上限；放不下时停在 cell 边界并写明从哪个 `start_cell` 接着读。结尾带和 `read_file` 同一种 `version`。
+- **P40.3** `apply_patch` 的 `edit_notebook`：`version` 必填，`cells` 是按顺序应用的编辑列表，每项 `cell_id`、`new_source`、`cell_type`、`edit_mode`，语义照原生（上面那段），和别的文件一起原子提交。写回保持原文件的缩进宽度和结尾换行，`source` 按 nbformat 的习惯存成行数组。
+- **P40.4** 接线与契约：加工具的全部地方（同 P39.3）；协议文档加一节、新增样例；中立客户端覆盖读（含图片）和三种编辑；`usage.md`、`support-matrix.md`。
+- **P40.5** 门禁：同 P37.6。
+
+停止点：不执行 cell（那是 `exec_command` 跑 `jupyter nbconvert --execute` 的事）；不处理 nbformat 3 及更早的格式（报错说明）；不渲染 HTML、LaTeX、SVG 输出（只给 `text/plain`）；浮点数在元数据里的写法可能和 Python 不同（`1e-05` 会写成 `1e-5`），记下不修；不耗模型额度；不发版。

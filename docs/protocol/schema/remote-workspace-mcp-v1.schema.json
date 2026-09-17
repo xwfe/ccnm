@@ -37,18 +37,20 @@
         "read_output",
         "apply_patch",
         "exec_command",
-        "load_skill"
+        "load_skill",
+        "view_image"
       ]
     },
     "read_tool_name": {
-      "description": "read 模式允许出现的全部工具。exec_command 和 apply_patch 不在里面是权限；read_output 不在里面是因为 read 模式产不出 output_ref。 load_skill（P36）在里面：它只读，什么都不执行。",
+      "description": "read 模式允许出现的全部工具。exec_command 和 apply_patch 不在里面是权限；read_output 不在里面是因为 read 模式产不出 output_ref。 load_skill（P36）在里面：它只读，什么都不执行。 view_image（P39）也在里面：只读一个图片文件。",
       "type": "string",
       "enum": [
         "workspace_info",
         "read_file",
         "list_files",
         "search_text",
-        "load_skill"
+        "load_skill",
+        "view_image"
       ]
     },
     "annotations": {
@@ -182,6 +184,33 @@
       "required": [
         "type",
         "text"
+      ],
+      "additionalProperties": false
+    },
+    "image_content": {
+      "description": "view_image（P39）的图片块：data 是文件原样的 base64，mimeType 由文件头判断。两个 Host 都只把这种块当图片，resource blob 不行（依据见协议第 5.3 节）。",
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "image"
+        },
+        "data": {
+          "type": "string",
+          "minLength": 1
+        },
+        "mimeType": {
+          "enum": [
+            "image/png",
+            "image/jpeg",
+            "image/gif",
+            "image/webp"
+          ]
+        }
+      },
+      "required": [
+        "type",
+        "data",
+        "mimeType"
       ],
       "additionalProperties": false
     },
@@ -408,7 +437,14 @@
               "type": "array",
               "minItems": 1,
               "items": {
-                "$ref": "#/$defs/text_content"
+                "oneOf": [
+                  {
+                    "$ref": "#/$defs/text_content"
+                  },
+                  {
+                    "$ref": "#/$defs/image_content"
+                  }
+                ]
               }
             },
             "isError": {

@@ -12,6 +12,7 @@ pub mod bridge;
 pub mod context;
 pub mod exec;
 pub mod glob;
+pub mod image;
 pub mod list;
 pub mod output;
 pub mod patch;

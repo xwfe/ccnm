@@ -41,6 +41,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::{Error, ErrorCode, ErrorReport};
 use crate::mcp::context;
 use crate::mcp::exec::{self, ExecCommandArgs};
+use crate::mcp::image::{self, ViewImageArgs};
 use crate::mcp::list::{self, ListFilesArgs};
 use crate::mcp::output::{self, ReadOutputArgs};
 use crate::mcp::patch::{self, ApplyPatchArgs};
@@ -731,6 +732,31 @@ impl Server {
                 }
                 Ok(text_only(ran.text))
             }
+            Err(err) => Ok(tool_error(&err)),
+        }
+    }
+
+    #[tool(
+        name = "view_image",
+        description = "Look at a PNG, JPEG, GIF or WebP image in the remote workspace. The image comes back as an image the model can see, up to 3932160 bytes; nothing is converted on that machine. In Codex Code Mode, pass the image block from the result to image() to see it."
+    )]
+    async fn view_image(
+        &self,
+        Parameters(args): Parameters<ViewImageArgs>,
+    ) -> std::result::Result<CallToolResult, ErrorData> {
+        self.count_call();
+        let root = self.inner.root.clone();
+        let viewed = tokio::task::spawn_blocking(move || image::view_image(&root, &args))
+            .await
+            .map_err(|e| ErrorData::internal_error(format!("view_image task failed: {e}"), None))?;
+        match viewed {
+            // The text first: in Codex Code Mode the result reaches the
+            // model's script as an object, and `content[1]` is the one to
+            // hand to `image()`.
+            Ok(viewed) => Ok(CallToolResult::success(vec![
+                ContentBlock::text(viewed.text),
+                ContentBlock::image(viewed.data, viewed.format.mime_type()),
+            ])),
             Err(err) => Ok(tool_error(&err)),
         }
     }

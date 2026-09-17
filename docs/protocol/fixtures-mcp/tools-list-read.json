@@ -1,6 +1,6 @@
 {
   "$schema_ref": "#/$defs/tools_list_result_read",
-  "$note": "read 模式的工具表：5 个（P36 起多了只读的 load_skill；这份样例的工作区没有 skill，所以它的 description 是没有目录的那一版——有 skill 时 description 后半段是目录，见协议第 5.1 节）。没有 exec_command，没有 apply_patch，也没有 read_output——read 模式产不出 output_ref。工具名、description、inputSchema 里的参数名和 required 都是精确的，由 external_mcp 的 published_tool_tables_match_the_running_server 对着真实 server 逐字节校验；只有每个参数内部的类型、上下界和说明是简写，server 发的是 schemars 从 Rust 类型生成的完整 schema。",
+  "$note": "read 模式的工具表：6 个（P36 起多了只读的 load_skill，P39 起多了只读的 view_image；这份样例的工作区没有 skill，所以它的 description 是没有目录的那一版——有 skill 时 description 后半段是目录，见协议第 5.1 节）。没有 exec_command，没有 apply_patch，也没有 read_output——read 模式产不出 output_ref。工具名、description、inputSchema 里的参数名和 required 都是精确的，由 external_mcp 的 published_tool_tables_match_the_running_server 对着真实 server 逐字节校验；只有每个参数内部的类型、上下界和说明是简写，server 发的是 schemars 从 Rust 类型生成的完整 schema。",
   "message": {
     "jsonrpc": "2.0",
     "id": 2,
@@ -141,6 +141,25 @@
                 "type": "string"
               }
             }
+          },
+          "annotations": {
+            "readOnlyHint": true,
+            "openWorldHint": false
+          }
+        },
+        {
+          "name": "view_image",
+          "description": "Look at a PNG, JPEG, GIF or WebP image in the remote workspace. The image comes back as an image the model can see, up to 3932160 bytes; nothing is converted on that machine. In Codex Code Mode, pass the image block from the result to image() to see it.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path"
+            ]
           },
           "annotations": {
             "readOnlyHint": true,

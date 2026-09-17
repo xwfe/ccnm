@@ -1,0 +1,21 @@
+{
+  "$schema_ref": "#/$defs/call_tool_result_ok",
+  "$note": "view_image：先一段说明文本，再一个图片块。图片块的 data 是文件原样的 base64（这里是一张 2×2 的红色 PNG），ccnm 不缩放、不转码；Claude Code 收到后自己缩放，Codex 原样转成 input_image，Code Mode 下模型脚本要把 content[1] 交给 image()。",
+  "message": {
+    "jsonrpc": "2.0",
+    "id": 8,
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "shots/red.png: PNG, 73 bytes"
+        },
+        {
+          "type": "image",
+          "data": "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEElEQVR4nGP4z8AARAwQCgAf7gP9i18U1AAAAABJRU5ErkJggg==",
+          "mimeType": "image/png"
+        }
+      ]
+    }
+  }
+}

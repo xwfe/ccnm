@@ -249,14 +249,15 @@ fn stderr(out: &Output) -> String {
     String::from_utf8_lossy(&out.stderr).into_owned()
 }
 
-/// Five since P36: `load_skill` reads and runs nothing, so a read session
-/// has it.
-const READ_TOOLS: [&str; 5] = [
+/// Five since P36 and six since P39: `load_skill` and `view_image` read
+/// and run nothing, so a read session has them.
+const READ_TOOLS: [&str; 6] = [
     "workspace_info",
     "read_file",
     "list_files",
     "search_text",
     "load_skill",
+    "view_image",
 ];
 const WITHHELD: [&str; 3] = ["exec_command", "apply_patch", "read_output"];
 

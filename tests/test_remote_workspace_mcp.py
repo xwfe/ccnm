@@ -42,9 +42,9 @@ def ccnm_binary() -> Path | None:
 
 BINARY = ccnm_binary()
 
-# read 模式该有的全部工具，以及三个不该有的。load_skill 是 P36 加的：它只读、
-# 什么都不执行，所以 read 模式也有。
-READ_TOOLS = ["list_files", "load_skill", "read_file", "search_text", "workspace_info"]
+# read 模式该有的全部工具，以及三个不该有的。load_skill（P36）和 view_image
+# （P39）只读、什么都不执行，所以 read 模式也有。
+READ_TOOLS = ["list_files", "load_skill", "read_file", "search_text", "view_image", "workspace_info"]
 
 DEPLOY_SKILL = """---
 name: deploy
@@ -381,6 +381,32 @@ agent_node = "agent"
             with self.subTest(arguments=arguments):
                 got = client.call_tool("exec_command", arguments)
                 self.assertTrue(result_text(got).startswith("CCNM_E_INVALID_ARGS:"), result_text(got))
+
+    # -- view_image（P39） --
+
+    def test_view_image_sends_the_file_as_an_image_block(self):
+        png = bytes.fromhex(
+            "89504e470d0a1a0a0000000d4948445200000002000000020802000000fdd49a73"
+            "0000001049444154789c63f8cfc000440c100a001fee03fd8b5f14d40000000049454e44ae426082"
+        )
+        (self.root / "shots").mkdir()
+        (self.root / "shots" / "red.png").write_bytes(png)
+        (self.root / "shots" / "notes.txt").write_text("not an image\n", encoding="utf-8")
+        client = self.client("demo", "read", "neutral-view-image")
+        got = client.call_tool("view_image", {"path": "shots/red.png"})
+        self.assertFalse(is_error(got), got)
+        text, image = got["content"]
+        self.assertEqual(text, {"type": "text", "text": f"shots/red.png: PNG, {len(png)} bytes"})
+        # 两个 Host 都只把 image 块当图片（toexec evidence/v3-parity/media-surface）。
+        self.assertEqual(image["type"], "image")
+        self.assertEqual(image["mimeType"], "image/png")
+        self.assertEqual(base64.b64decode(image["data"]), png, "原样发出，不缩放不转码")
+
+        refused = client.call_tool("view_image", {"path": "shots/notes.txt"})
+        self.assertTrue(result_text(refused).startswith("CCNM_E_INVALID_ARGS:"), refused)
+        # read_file 看到图片时指向 view_image。
+        pointed = client.call_tool("read_file", {"path": "shots/red.png"})
+        self.assertIn("view_image", result_text(pointed))
 
     # -- 拒绝 --
 

@@ -198,7 +198,18 @@ pub fn read_file(root: &Path, args: &ReadFileArgs) -> Result<FileChunk> {
     let version = crate::mcp::version_of(&meta);
 
     let mut file = File::open(target.abs()).map_err(|e| open_error(&rel, e))?;
-    if let Some(offset) = binary_offset(&mut file)? {
+    let head = peek(&mut file)?;
+    // An image first, by its signature: most carry a NUL early and would be
+    // refused anyway, but the next step is view_image, not "this is binary",
+    // and a JPEG without a NUL in its first 8 KiB would otherwise come back
+    // as a page of mojibake.
+    if let Some(format) = crate::mcp::image::Format::sniff(&head) {
+        return Err(Error::invalid_args(format!(
+            "{rel} is a {} image, not text; look at it with view_image",
+            format.name()
+        )));
+    }
+    if let Some(offset) = head.iter().position(|b| *b == 0) {
         return Err(Error::invalid_args(format!(
             "{rel} looks like a binary file (NUL byte at offset {offset}); ccnm only reads text"
         )));
@@ -538,14 +549,15 @@ fn render(
     out
 }
 
-/// Does the head of the file contain a NUL? Cheaper and more reliable than
-/// guessing from the extension, and it is what `git` does.
-fn binary_offset(file: &mut File) -> Result<Option<usize>> {
+/// The head of the file, to look for a NUL in -- cheaper and more reliable
+/// than guessing from the extension, and it is what `git` does -- and for an
+/// image signature.
+fn peek(file: &mut File) -> Result<Vec<u8>> {
     let mut head = Vec::new();
     file.take(BINARY_PEEK_BYTES)
         .read_to_end(&mut head)
         .map_err(|e| Error::internal("cannot read file head").with_source(e))?;
-    Ok(head.iter().position(|b| *b == 0))
+    Ok(head)
 }
 
 /// A failed open is almost always the caller's problem, not a bug: the
@@ -972,6 +984,27 @@ mod tests {
         assert_eq!(e.code(), ErrorCode::InvalidArgs);
         assert!(e.message().contains("binary"), "{e}");
         assert!(e.message().contains("offset 7"), "{e}");
+    }
+
+    /// P39: the refusal names the tool that can show it. A JPEG whose
+    /// first 8 KiB happen to hold no NUL used to come back as text.
+    #[test]
+    fn an_image_is_refused_with_a_pointer_to_view_image() {
+        let root = workspace("image");
+        write(
+            &root,
+            "shot.png",
+            b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR".as_slice(),
+        );
+        let e = err(&root, &args("shot.png"));
+        assert_eq!(e.code(), ErrorCode::InvalidArgs);
+        assert!(e.message().contains("PNG image"), "{e}");
+        assert!(e.message().contains("view_image"), "{e}");
+
+        let jpeg_without_nul = [&[0xFF, 0xD8, 0xFF, 0xE1][..], &[b'x'; 64][..]].concat();
+        write(&root, "photo.jpg", jpeg_without_nul.as_slice());
+        let e = err(&root, &args("photo.jpg"));
+        assert!(e.message().contains("JPEG image"), "{e}");
     }
 
     #[test]

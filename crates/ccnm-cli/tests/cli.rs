@@ -508,6 +508,7 @@ fn mcp_probe_local_speaks_to_one_persistent_server() {
             "read_file",
             "read_output",
             "search_text",
+            "view_image",
             "workspace_info"
         ]
     );

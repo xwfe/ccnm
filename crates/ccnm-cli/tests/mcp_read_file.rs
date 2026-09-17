@@ -279,6 +279,7 @@ fn read_file_serves_a_whole_session_over_one_process() {
             "read_file",
             "read_output",
             "search_text",
+            "view_image",
             "workspace_info"
         ]
     );

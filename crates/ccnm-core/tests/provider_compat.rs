@@ -178,15 +178,17 @@ fn claude_behavior_matches_snapshot_except_documented_safety_and_colocated_fixes
     expected["instructions"] = Value::from(format!(
         "{base}\n[project instructions:{marker}\n\nThis project has{list}\n\n--- CLAUDE.md{file}"
     ));
-    // P36 adds an eighth tool, `load_skill`, so the settings allow-list that
-    // lets the model call ccnm's tools without a prompt names it too. The
-    // seven that were there are unchanged and in the same order.
+    // P36 adds an eighth tool, `load_skill`, and P39 a ninth, `view_image`,
+    // so the settings allow-list that lets the model call ccnm's tools
+    // without a prompt names them too. The seven that were there are
+    // unchanged and in the same order.
     for launch in expected["launches"].as_array_mut().unwrap() {
         if let Some(allow) = launch
             .pointer_mut("/settings/permissions/allow")
             .and_then(Value::as_array_mut)
         {
             allow.push(Value::from("mcp__ccnm__load_skill"));
+            allow.push(Value::from("mcp__ccnm__view_image"));
         }
     }
     assert_eq!(actual, expected);

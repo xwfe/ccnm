@@ -46,10 +46,9 @@
 //! bash and not `sh`, and no falling back to `sh` when bash is missing.
 //! Claude Code's Bash tool runs the user's bash or zsh (2.1.273 refuses to
 //! start without one), so bash is the dialect models write; on Debian `sh`
-//! is dash, where `[[ ]]`,
-//! `source` and `set -o pipefail` do something else or nothing, and a line
-//! that quietly means something different is worse than a refusal naming
-//! the missing program.
+//! is dash, where `[[ ]]`, `source` and `set -o pipefail` do something else
+//! or nothing, and a line that quietly means something different is worse
+//! than a refusal naming the missing program.
 //!
 //! # Output
 //!

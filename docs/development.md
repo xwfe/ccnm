@@ -11,6 +11,22 @@
 换成超时判断的话两个方向都错：有一段时间中断看不出来，而且它读时钟，NTP 一跳就会宣布
 一次从没发生过的中断。
 
+平时用 stable 开发，CI 的 `msrv` job 另用 `Cargo.toml` 里 `rust-version` 写的版本编译一遍。
+推之前想先验：
+
+```bash
+rustup toolchain install 1.89 --profile minimal
+cargo +1.89 check --workspace --all-targets --locked
+```
+
+两种红法：
+
+- `error[E0658]: use of unstable library feature ...`——看着像用了 nightly 特性，实际是这个
+  std API 在 1.89 之后才稳定，stable 上当然编得过。换个老 API 写。
+- `error: rustc 1.89.0 is not supported by the following package`——某个依赖声明要更高的版本。
+  **别只在 ccnm 里把 `rust-version` 调高**：gld、ccnm、toexec 三个仓库一起升，提交说明写明是哪个
+  依赖要求的（toexec `docs/plan/implementation-plan-v2.md` 第 11 节）。
+
 ### 本地跑测试
 
 ```bash

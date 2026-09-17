@@ -17,8 +17,9 @@
 //!                 to change what ccnm searches or how
 //! --no-follow     a symlink is how a search leaves the workspace
 //! --no-hidden     dotfiles stay out, .git among them
-//! -g !.git        and .git explicitly again, because a future flag that
-//!                 turns hidden files back on must not turn this off
+//! -g !.* -g !.git and both again as the last globs: a caller's glob that
+//!                 matches a directory overrides --no-hidden, and of
+//!                 several matching globs rg lets the last one win
 //! cwd = root      rg is given a relative scope from the workspace root, so
 //!                 the paths it prints are relative and no absolute path of
 //!                 the Runtime Node can reach the model
@@ -221,14 +222,7 @@ impl Plan {
     /// glob are their own arguments and no shell ever sees them.
     fn command(&self, rg: &Path) -> Cmd {
         let mut cmd = Cmd::new(rg)
-            .args([
-                "--json",
-                "--no-config",
-                "--no-follow",
-                "--no-hidden",
-                "--glob",
-                "!.git",
-            ])
+            .args(["--json", "--no-config", "--no-follow", "--no-hidden"])
             .cwd(&self.root)
             .timeout(RG_TIMEOUT);
         cmd = cmd.arg(if self.case_sensitive {
@@ -245,6 +239,11 @@ impl Plan {
         if let Some(glob) = &self.glob {
             cmd = cmd.args(["--glob", glob.source()]);
         }
+        // After the caller's glob, not before: when several globs match a
+        // path rg lets the last one win, and a glob beats `--no-hidden`.
+        // In the other order `*` or `**` matches `.github/` and `.git/`
+        // themselves and walks straight back into both (rg 15.2.0).
+        cmd = cmd.args(["--glob", "!.*", "--glob", "!.git"]);
         // `--` first: a query of `-i` is a query, not a flag.
         cmd.arg("--")
             .arg(&self.query)
@@ -414,10 +413,8 @@ impl Collector {
     /// back to the model.
     ///
     /// `.git` is defended three times over: `--no-hidden` keeps rg out of
-    /// it, `-g !.git` says so again, and this drops it if the first two
-    /// ever stop being true. Only the first and third have behavioural
-    /// tests -- with `--no-hidden` in place the glob makes no observable
-    /// difference, which is the point of having it.
+    /// it, the trailing `-g !.git` keeps it out when a caller's glob would
+    /// have let it back in, and this drops it if both ever stop being true.
     fn safe_path(&mut self, raw: &str) -> Option<String> {
         let path = raw.strip_prefix("./").unwrap_or(raw);
         let rejected = path.is_empty()
@@ -658,6 +655,35 @@ mod tests {
             "{:?}",
             r.hits
         );
+    }
+
+    /// Found while adding `include_hidden` (P37): with the exclusions
+    /// before the caller's glob, `*` and `**` matched `.git/` and every
+    /// dotfile directory themselves, and rg's last-glob-wins rule walked
+    /// into them. `.git` hits were still dropped afterwards, which is why
+    /// the note is the assertion: rg must not offer them at all.
+    #[test]
+    fn a_glob_that_matches_directories_does_not_bring_dotfiles_back() {
+        let root = workspace("globhidden");
+        fs::create_dir_all(root.join(".github")).unwrap();
+        fs::write(root.join(".github/ci.yml"), "needle in a dot dir\n").unwrap();
+        for glob in ["*", "**", "**/*", ".*"] {
+            let r = search(
+                &root,
+                &SearchTextArgs {
+                    glob: Some(glob.into()),
+                    ..args("needle")
+                },
+            );
+            for forbidden in [".git", ".hidden", ".github"] {
+                assert!(
+                    !r.text.contains(forbidden),
+                    "glob {glob}: {forbidden} reached the model:\n{}",
+                    r.text
+                );
+            }
+            assert!(r.notes.is_empty(), "glob {glob}: {:?}", r.notes);
+        }
     }
 
     #[test]
@@ -971,6 +997,13 @@ mod tests {
                 "{expected} missing: {argv:?}"
             );
         }
+        // The exclusions are the last globs, after the caller's.
+        let globs: Vec<&str> = argv
+            .windows(2)
+            .filter(|w| w[0] == "--glob")
+            .map(|w| w[1].as_str())
+            .collect();
+        assert_eq!(globs, ["**/*.rs", "!.*", "!.git"]);
         // The query is one argument, after `--`, and never spliced into a
         // string a shell could reinterpret.
         let end = argv.iter().position(|a| a == "--").unwrap();

@@ -360,19 +360,20 @@ mod tests {
     use super::*;
 
     use crate::process::SystemRunner;
+    use ccnm_testdir::TestDir;
     use session::{RunAsk, Runs};
     use std::sync::{Arc, Mutex};
 
     /// A fresh directory every call: tests run in parallel and two of them
     /// sharing a state directory would see each other's session records.
-    fn temp(test: &str) -> PathBuf {
+    fn temp(test: &str) -> TestDir {
         use std::sync::atomic::{AtomicU32, Ordering};
         static NEXT: AtomicU32 = AtomicU32::new(0);
         let n = NEXT.fetch_add(1, Ordering::Relaxed);
         let dir = std::env::temp_dir().join(format!("ccnm-rpc-{}-{test}-{n}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        dir
+        TestDir::adopt(dir)
     }
 
     /// Stands in for the launcher. No ssh, no Agent, no controller: these
@@ -457,11 +458,13 @@ mod tests {
             .collect()
     }
 
-    /// A config file with whatever body the test needs.
-    fn config_with(test: &str, body: &str) -> PathBuf {
-        let path = temp(test).join("config.toml");
+    /// A config file with whatever body the test needs, and the directory
+    /// it lives in: the file is gone once that is dropped.
+    fn config_with(test: &str, body: &str) -> (TestDir, PathBuf) {
+        let dir = temp(test);
+        let path = dir.join("config.toml");
         std::fs::write(&path, body).unwrap();
-        path
+        (dir, path)
     }
 
     /// Feed lines in, get answered lines back.
@@ -470,10 +473,11 @@ mod tests {
     }
 
     fn exchange_with(config_path: PathBuf, input: &str) -> Vec<Value> {
+        let state = temp("exchange-state");
         talk(
             Arc::new(FakeRuns::default()),
             config_path,
-            temp("exchange-state"),
+            state.to_path_buf(),
             input,
         )
     }
@@ -596,10 +600,11 @@ mod tests {
         input.extend_from_slice(HELLO.as_bytes());
         input.push(b'\n');
         let mut out = Vec::new();
+        let state = temp("utf8-state");
         serve(
             Context {
                 config_path: PathBuf::from("/nonexistent/ccnm/config.toml"),
-                state: temp("utf8-state"),
+                state: state.to_path_buf(),
                 runs: Arc::new(FakeRuns::default()),
                 runner: Arc::new(SystemRunner),
             },
@@ -663,7 +668,7 @@ agent = { node = "worker", instance = "claude-main" }
 "#;
 
     fn agents_of(config: &str, test: &str) -> Value {
-        let path = config_with(test, config);
+        let (_dir, path) = config_with(test, config);
         let out = exchange_with(
             path,
             &format!("{HELLO}\n{{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"agents.list\"}}\n"),
@@ -748,7 +753,7 @@ root = "/runtime/legacy"
 
     #[test]
     fn agents_list_takes_no_parameters() {
-        let path = config_with("agents-params", RUNTIME_CONFIG);
+        let (_dir, path) = config_with("agents-params", RUNTIME_CONFIG);
         let out = exchange_with(
             path,
             &format!(
@@ -766,14 +771,17 @@ root = "/runtime/legacy"
     struct Peer {
         runs: Arc<FakeRuns>,
         config: PathBuf,
-        state: PathBuf,
+        _config_dir: TestDir,
+        state: TestDir,
     }
 
     impl Peer {
         fn new(test: &str, runs: FakeRuns) -> Self {
+            let (config_dir, config) = config_with(test, RUNTIME_CONFIG);
             Peer {
                 runs: Arc::new(runs),
-                config: config_with(test, RUNTIME_CONFIG),
+                config,
+                _config_dir: config_dir,
                 state: temp(test),
             }
         }
@@ -788,7 +796,7 @@ root = "/runtime/legacy"
             let mut out = talk(
                 self.runs.clone(),
                 self.config.clone(),
-                self.state.clone(),
+                self.state.to_path_buf(),
                 &input,
             );
             out.remove(0); // the hello answer
@@ -957,7 +965,7 @@ root = "/runtime/legacy"
 
     #[test]
     fn a_workspace_without_an_instance_binding_is_refused() {
-        let config = config_with(
+        let (_dir, config) = config_with(
             "legacy-start",
             r#"
 this = "runtime"
@@ -969,10 +977,11 @@ agent_node = "worker"
 root = "/runtime/legacy"
 "#,
         );
+        let state = temp("legacy-start-state");
         let out = talk(
             Arc::new(FakeRuns::ok(0, "")),
             config,
-            temp("legacy-start-state"),
+            state.to_path_buf(),
             &format!("{HELLO}\n{}\n", start_call("")),
         );
         assert_eq!(out[1]["error"]["code"], code::NOT_READY);

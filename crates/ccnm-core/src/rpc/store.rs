@@ -297,12 +297,13 @@ pub fn owner_check(runner: &dyn ProcessRunner, pid: u32, started: &str) -> Owner
 mod tests {
     use super::*;
     use crate::process::{Output, SystemRunner};
+    use ccnm_testdir::TestDir;
 
-    fn temp(test: &str) -> PathBuf {
+    fn temp(test: &str) -> TestDir {
         let dir = std::env::temp_dir().join(format!("ccnm-rpcstore-{}-{test}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
-        dir
+        TestDir::adopt(dir)
     }
 
     fn record(id: &str) -> Record {
@@ -327,7 +328,8 @@ mod tests {
 
     #[test]
     fn a_record_survives_a_round_trip() {
-        let store = Store::open(&temp("roundtrip")).unwrap();
+        let dir = temp("roundtrip");
+        let store = Store::open(&dir).unwrap();
         let mut rec = record("s-1");
         store.write(&rec).unwrap();
         assert_eq!(store.read("s-1").unwrap().unwrap(), rec);
@@ -345,7 +347,8 @@ mod tests {
 
     #[test]
     fn an_unknown_session_reads_as_none_not_an_error() {
-        let store = Store::open(&temp("missing")).unwrap();
+        let dir = temp("missing");
+        let store = Store::open(&dir).unwrap();
         assert!(store.read("s-nope").unwrap().is_none());
     }
 
@@ -362,7 +365,8 @@ mod tests {
 
     #[test]
     fn a_start_key_can_only_be_claimed_once() {
-        let store = Store::open(&temp("claim")).unwrap();
+        let dir = temp("claim");
+        let store = Store::open(&dir).unwrap();
         assert_eq!(
             store.claim_key("demo", "task-1", "s-1").unwrap(),
             KeyClaim::Taken
@@ -380,7 +384,8 @@ mod tests {
 
     #[test]
     fn releasing_a_key_lets_the_next_call_take_it() {
-        let store = Store::open(&temp("release")).unwrap();
+        let dir = temp("release");
+        let store = Store::open(&dir).unwrap();
         store.claim_key("demo", "task-1", "s-1").unwrap();
         store.release_key("demo", "task-1");
         assert_eq!(

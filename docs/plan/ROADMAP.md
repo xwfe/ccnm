@@ -38,7 +38,7 @@ ccnm 不需要安装 Orchestrator 也能独立使用。Orchestrator 核心不链
 
 ## 二、顺序和基线
 
-`P0 → P1 → P2 → P3 → P4 → P5 → P6 → P7 → P8 → P9 → P10 → P11 → P12 → P13 → P14 → P15 → P16 → P17 → P18 → P19 → P20 → P21 → P22 → P23 → P24 → P25 → P26 → P27 → P28 → P29 → P30 → P31 → P32 → P33`。默认每轮只执行一个阶段。P0–P8 是 ccnm v1 收口和独立 Orchestrator 的接口交接；P9–P12 是 ccnm v1.x 的 Remote Workspace MCP 扩展；P13 是按真实 Host 行为修正两个入口共用的 instructions 投影；P21–P24 是 Codex 原生执行链；P25 修 P24 真机轮发现的预检错误码；P26 补原生链在 Runtime 侧的探活；P27 让 doctor 也探这条链；P28 让 CI 在声明的 rust-version 上编译一遍；P29 补测原生链的并发、在途请求与资源上限，P30 修它查出的 fs helper 活过放锁；P31 给 Runtime 保留输出加会话总量上限、结束即删和过期清理；P32 封存原生链（用户决定）；P33 把沙箱那项收益搬到两个入口共用的 `exec_command` 上。完整边界见 [双执行入口方案](runtime-surfaces.md)。
+`P0 → P1 → P2 → P3 → P4 → P5 → P6 → P7 → P8 → P9 → P10 → P11 → P12 → P13 → P14 → P15 → P16 → P17 → P18 → P19 → P20 → P21 → P22 → P23 → P24 → P25 → P26 → P27 → P28 → P29 → P30 → P31 → P32 → P33 → P34`。默认每轮只执行一个阶段。P0–P8 是 ccnm v1 收口和独立 Orchestrator 的接口交接；P9–P12 是 ccnm v1.x 的 Remote Workspace MCP 扩展；P13 是按真实 Host 行为修正两个入口共用的 instructions 投影；P21–P24 是 Codex 原生执行链；P25 修 P24 真机轮发现的预检错误码；P26 补原生链在 Runtime 侧的探活；P27 让 doctor 也探这条链；P28 让 CI 在声明的 rust-version 上编译一遍；P29 补测原生链的并发、在途请求与资源上限，P30 修它查出的 fs helper 活过放锁；P31 给 Runtime 保留输出加会话总量上限、结束即删和过期清理；P32 封存原生链（用户决定）；P33 把沙箱那项收益搬到两个入口共用的 `exec_command` 上；P34 修 `apply_patch` 日志锁探测靠关文件放锁、fork 窗口里漏拦的缺陷。完整边界见 [双执行入口方案](runtime-surfaces.md)。
 
 ### P0 — 已有内部验证基线
 
@@ -474,3 +474,14 @@ worktree **分配、调度、合并策略**在 Orchestrator；受管 workspace �
 - **P33.4** 版本关系写清楚：`codex sandbox` 的参数和 profile 形状也是按 0.154.0 实测的，同样受版本 pin 约束；比原生链省下的是协议、规则表、监督进程和 fs helper 那一整层，不是版本核对。
 
 停止点：opt-in、默认不变；不跑真机、不耗额度、不换任何机器上的二进制。
+
+### P34 — `apply_patch` 日志锁：探测完显式放锁
+
+**依赖 P33。起因是修两条并发测试的分支（ecstatic-bose，2026-09-17 合并）顺带查出的产品缺陷，记在 status.json 的 observed_gaps。**`apply_patch` 开工前先看状态目录里有没有上一次被打断的提交记录（journal）；判据是它的 flock：`still_running` 打开文件、`try_lock` 拿到就说明写它的进程已经不在，然后靠关文件放锁。可是 flock 挂在打开文件描述上，关文件只在**所有 fd 副本都关掉后**才放锁，而同一个 `mcp-serve` 里 `exec_command`/`list_files` 会 fork，fork 出的子进程在 exec 之前就持有这个 fd 的副本（Rust 打开文件都带 CLOEXEC，exec 之后才没有）。fork 恰好落在探测拿锁到关文件之间时，锁被那个子进程延长几毫秒到几十毫秒；紧接着的另一次检查（同一个进程的下一次 patch，或共用状态目录的另一个 `mcp-serve`）拿不到锁，把已中断的记录当成"还在提交"而跳过，这次 patch 就放行了。只会漏拦，不会误报；被 `abandon` 保留的 Journal 在 drop 时也靠关文件放锁，同理。分支上用 Python 实测过机制：只 close 时没 exec 的子进程仍占着锁，先 `LOCK_UN` 就立即能拿；`WriteGuard` 已经是先显式 unlock 再关。
+
+- **P34.1** 先红：不靠并发碰运气，把 fork 窗口做成确定的——探测拿到锁时，把描述符的一个副本交给一个活得比探测久的子进程（`Stdio::from(file.try_clone())` 当它的 stdin，和 fork 到 exec 之间子进程手里的那份是同一个打开文件描述），然后断言下一次探测把这份记录读成已中断；被保留的 Journal 也一样：副本交给子进程、`abandon` 后 drop，下一次探测读成已中断。测试先确认前提（只关文件时那份副本确实还占着锁），修复前这两条是红的，红的输出记进记录。
+- **P34.2** 修复：`still_running` 拿到锁后先显式 `unlock` 再关；`Journal` drop 时显式 `unlock`。`LOCK_UN` 作用于打开文件描述本身，副本在谁手里都一起放掉。判据、错误码、报错文字、journal 格式都不动。
+- **P34.3** 同一条记录里顺带的测试卫生：`the_write_policy_is_the_one_the_read_tools_use` 把 `outside.txt` 写在 `$TMPDIR` 根下、不带 pid，改到本测试自己的目录里。其余两件（fixture 目录跑完不删、两条墙钟阈值测试在超额负载下超时）只记录不改：前者涉及 43 个文件 86 处，要单独立阶段。
+- **P34.4** 记录与门禁：研究记录 `docs/research/p34-journal-lock-release-2026-09-17.md`，observed_gaps 那条改成已修。`cargo fmt --all --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace`、`cargo +1.89 check --workspace --all-targets --locked`、`python3 scripts/check_plan.py`、`git diff --check`。
+
+停止点：只改放锁的时机。不改 journal 的判定规则、格式和用户看到的报错，不改用户文档，不跑真机、不耗额度、不换任何机器上的二进制。

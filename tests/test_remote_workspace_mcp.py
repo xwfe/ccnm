@@ -297,9 +297,27 @@ agent_node = "agent"
             ),
             ["src/b.py"],
         )
-        # type 和 glob 一起给，rg 会让 glob 盖过 type——宁可拒绝也不悄悄搜错。
-        got = client.call_tool("search_text", {"query": "needle", "type": "py", "glob": "**/*.rs"})
-        self.assertTrue(result_text(got).startswith("CCNM_E_INVALID_ARGS:"), result_text(got))
+        # type 和 glob 一起给时两者都要满足（P37 曾经拒绝这种组合，P38 起不再）。
+        self.assertEqual(
+            self.search_lines(
+                client,
+                {"query": "needle", "type": "rust", "glob": "src/**", "output_mode": "files_with_matches"},
+            ),
+            ["src/a.rs"],
+        )
+
+    def test_a_glob_never_reaches_what_gitignore_rules_out(self):
+        # P38：rg 的 --glob 一命中就不看 .gitignore；只能匹配文件的 *.yml 也一样。
+        (self.root / ".git").mkdir()
+        (self.root / ".gitignore").write_text("target/\nsecret.yml\n", encoding="utf-8")
+        (self.root / "target").mkdir()
+        (self.root / "target" / "out.rs").write_text("needle\n", encoding="utf-8")
+        (self.root / "secret.yml").write_text("needle: 1\n", encoding="utf-8")
+        (self.root / "app.yml").write_text("needle: 2\n", encoding="utf-8")
+        client = self.client("demo", "read", "neutral-search-gitignore")
+        base = {"query": "needle", "output_mode": "files_with_matches"}
+        self.assertEqual(self.search_lines(client, {**base, "glob": "**"}), ["app.yml"])
+        self.assertEqual(self.search_lines(client, {**base, "glob": "*.yml"}), ["app.yml"])
 
     def test_search_text_spans_lines_only_when_asked(self):
         (self.root / "call.rs").write_text("f(1,\n  2);\n", encoding="utf-8")

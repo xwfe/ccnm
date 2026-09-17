@@ -208,7 +208,7 @@ git config --global user.email "<email>"
 | `git` | `list_files`、写 guard 的资源判定、项目自己 | 降级成非 git 视图；guard 按目录而不是按仓库互斥 |
 | `ripgrep`（`rg`） | `search_text`——它不自己扫文件 | 七工具少一个，报 `ripgrep is not installed on the Runtime Node` |
 
-workspace 开了 [`codex_exec_server`](configuration.md#codex_exec_server) 时，Runtime 上还要：
+workspace 开了 [`codex_exec_server`](configuration.md#codex_exec_server)（这条链已封存，默认关，新项目别开）时，Runtime 上还要：
 
 | 前提 | 为什么 | 没有它会怎样 |
 | --- | --- | --- |

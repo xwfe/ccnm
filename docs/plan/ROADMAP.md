@@ -38,7 +38,7 @@ ccnm 不需要安装 Orchestrator 也能独立使用。Orchestrator 核心不链
 
 ## 二、顺序和基线
 
-`P0 → P1 → P2 → P3 → P4 → P5 → P6 → P7 → P8 → P9 → P10 → P11 → P12 → P13 → P14 → P15 → P16 → P17 → P18 → P19 → P20 → P21 → P22 → P23 → P24 → P25 → P26 → P27 → P28 → P29 → P30`。默认每轮只执行一个阶段。P0–P8 是 ccnm v1 收口和独立 Orchestrator 的接口交接；P9–P12 是 ccnm v1.x 的 Remote Workspace MCP 扩展；P13 是按真实 Host 行为修正两个入口共用的 instructions 投影；P21–P24 是 Codex 原生执行链；P25 修 P24 真机轮发现的预检错误码；P26 补原生链在 Runtime 侧的探活；P27 让 doctor 也探这条链；P28 让 CI 在声明的 rust-version 上编译一遍；P29 补测原生链的并发、在途请求与资源上限，P30 修它查出的 fs helper 活过放锁。完整边界见 [双执行入口方案](runtime-surfaces.md)。
+`P0 → P1 → P2 → P3 → P4 → P5 → P6 → P7 → P8 → P9 → P10 → P11 → P12 → P13 → P14 → P15 → P16 → P17 → P18 → P19 → P20 → P21 → P22 → P23 → P24 → P25 → P26 → P27 → P28 → P29 → P30 → P31 → P32`。默认每轮只执行一个阶段。P0–P8 是 ccnm v1 收口和独立 Orchestrator 的接口交接；P9–P12 是 ccnm v1.x 的 Remote Workspace MCP 扩展；P13 是按真实 Host 行为修正两个入口共用的 instructions 投影；P21–P24 是 Codex 原生执行链；P25 修 P24 真机轮发现的预检错误码；P26 补原生链在 Runtime 侧的探活；P27 让 doctor 也探这条链；P28 让 CI 在声明的 rust-version 上编译一遍；P29 补测原生链的并发、在途请求与资源上限，P30 修它查出的 fs helper 活过放锁；P31 封存原生链（用户决定）；P32 把沙箱那项收益搬到两个入口共用的 `exec_command` 上。完整边界见 [双执行入口方案](runtime-surfaces.md)。
 
 ### P0 — 已有内部验证基线
 
@@ -431,3 +431,31 @@ worktree **分配、调度、合并策略**在 Orchestrator；受管 workspace �
 - **P30.4** 文档与门禁：`serve.rs` 开头讲"怎么证明进程都没了"的注释、P29 记录第 5 节、支持矩阵里的"已知缺陷"、`status.json` 的对应 observed_gaps 条目按新行为更新。`cargo fmt --all --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace`、`--target x86_64-unknown-linux-gnu` 的 check（覆盖 Linux 分支）、`python3 scripts/check_plan.py`、`git diff --check`。
 
 停止点：只改收尾扫描的判据。不改规则表、探活、放锁的其他条件，不跑真机、不耗额度、不换任何机器上的二进制。
+
+### P31 — 封存 Codex 原生执行链
+
+**依赖 P30。用户 2026-09-17 决定。**决定本身、依据、封存后的行为和解封条件写在[双执行入口方案](runtime-surfaces.md)第 12.0 节，这里只列要改的东西和停止点。一句话：收益没量过，量过的那项（OS 沙箱）`codex sandbox` 不经 RPC 就能拿到，只开交互模式让 Machine API 用不上它，而每次 Codex 升级都要重做 P21 的规则表——不值。最终目标定为三种客户端（Claude Code、Codex、Web AI 经 gld hub）× 三种操作系统，只留一条执行路径才做得到。
+
+- **P31.1** 决定入档：runtime-surfaces 第 12 节加封存小节；AGENTS.md 告诉后续模型别再投入，并指向跨仓库目标。
+- **P31.2** 用户文档：支持矩阵那一行状态改成封存、证据保留并标明只对 0.154.0 成立；配置说明、README、使用说明、运维手册、排错手册里介绍这条链的地方各加一句封存和指向，原因只写在 12.0 一处。
+- **P31.3** 跨仓库：toexec v2 计划第 0 节改成"三种客户端都走 MCP + 共享库"，写入最终目标和当前覆盖表（客户端 × 操作系统，事实以各仓库支持文档为准）；第 8、11 节 V2-C 状态改封存；toexec README 同步。gld RFC-0002 头部那句和第 9 节补记指向新状态。
+- **P31.4** 取消的事写清楚：hpsrv 黑洞复测、Linux 上 fs helper 实测、为原生链发版并替换机器上的二进制，都不做；交接里对应的待办删掉。`python3 scripts/check_plan.py`、`git diff --check`。
+
+停止点：不改代码、不删代码，CI 里原生链的测试照跑；版本门、opt-in 开关、规则表都不动。
+
+### P32 — MCP 路径的 `exec_command` 加 OS 沙箱
+
+**依赖 P31。**原生链唯一实测过的额外收益是命令有 OS 沙箱；toexec V2-P1 证明 `codex sandbox --sandbox-state-json '{"permissionProfile":…,"sandboxCwd":…,"workspaceRoots":[…]}' -- argv` 不经 RPC 就挡住同一集合（工作区外写、HOME 写、`.git` 写、网络；macOS Seatbelt 实测，多约 30 ms）。把它搬到两个入口共用的 `exec_command` 上，Claude、Codex、Web AI 三种客户端都拿到。
+
+先要定、不能默认的三件事：
+
+1. **默认路径要不要依赖 Codex 二进制。**现在 MCP 路径的 Runtime 不需要 Codex；用 `codex sandbox` 就需要。备选是直接调 `sandbox-exec`（macOS）/ `bwrap`（Linux）自己生成 profile——那等于把 Codex 的沙箱策略代码抄一遍，随它版本漂。建议先做成 per-workspace opt-in（例如 `exec_sandbox = "codex"`，要求节点有 `codex_bin`），默认不变。
+2. **Linux 前提。**Codex 的 Linux 沙箱要 bubblewrap 和 user namespace（P21）；V2-P1 只在 macOS 上测过 `codex sandbox`。Linux 那一半先在本机容器里测（P21 的做法）。
+3. **合法操作被挡怎么办。**V2-P1 实测沙箱里 `git commit` 失败（`.git` 只读）。`exec_command` 现在能跑的东西（构建、测试、`git commit`）哪些会被挡要先列出来；挡住了是报错，还是给模型一条"不带沙箱重试"的路——后者等于没有沙箱。
+
+- **P32.1** 实测清单：在 MCP 路径上用 `codex sandbox` 包 P12 dogfood 那套命令（read→search→patch→构建→测试→commit），记下哪些被挡；macOS 本机，Linux 容器。
+- **P32.2** 按结果定开关形状和默认值，写进配置说明和支持矩阵；实现时沙箱起不来和命令失败要分开报，不能把前者报成后者。
+- **P32.3** 离线测试：有沙箱时工作区外写、HOME 写、网络被挡且有具名错误；`codex_bin` 缺失或版本不对时按开关语义拒绝；`cargo test --workspace` 及全部门禁。
+- **P32.4** 版本关系写清楚：`codex sandbox` 的参数和 profile 形状也是按 0.154.0 实测的，同样受版本 pin 约束；比原生链省下的是协议、规则表、监督进程和 fs helper 那一整层，不是版本核对。
+
+停止点：opt-in、默认不变；不跑真机、不耗额度、不换任何机器上的二进制。

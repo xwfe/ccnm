@@ -426,7 +426,28 @@ ROADMAP 的 P9–P12 对应以下顺序；P8 仍先完成独立 Orchestrator 的
 
 如果真实代码证明某一批需要调整顺序，可以改计划，但必须先在 status blocker/evidence 写清楚“哪条已验证假设被推翻”，不能静默换架构。
 
-## 12. Codex 原生执行链（P21–P24，已完成；真机验收见 P24 记录）
+## 12. Codex 原生执行链（P21–P30；2026-09-17 封存）
+
+### 12.0 封存决定（2026-09-17）
+
+**用户决定：这条链封存。**代码和测试保留，`codex_exec_server` 仍是 opt-in、默认关，版本门仍钉 Codex 0.154.0；**不再随 Codex 版本重测规则表、不为它发版推广、不做剩下的真机和 Linux 补测**（hpsrv 黑洞复测、Linux 上 fs helper 的实测都取消）。默认执行路径只有一条：ccnm 的 MCP 七工具 + 共享库，Claude Code、Codex CLI、Web AI（经 gld hub）三种客户端都走它。跨仓库的最终目标——三种客户端 × macOS / Linux / Windows——和当前覆盖表写在 toexec 仓库 `docs/plan/implementation-plan-v2.md` 第 0 节；只留一条路径，才谈得上把它做到跨平台。
+
+**为什么**（依据都是已有实测，不是估计）：
+
+- **收益没量过。**原生链的假设收益是"模型用自带工具比用 MCP 七工具干得好"，从头到尾没做过对照：P24 只跑了 3 次模型、没有 MCP 组；P0 时 Codex 经 MCP 七工具本来就跑通了。
+- **量过的那一项收益不需要这条链。**命令有 OS 沙箱（Seatbelt / bubblewrap）是原生链相对 MCP 路径唯一实测过的额外约束；toexec V2-P1 证明 `codex sandbox` 包一下命令、不经 exec-server 的 RPC，挡住的集合完全相同（macOS 实测，Linux 未测）。
+- **自动化那条主线用不上它。**原生链只开交互模式（`codex exec` 要求 Agent 本机有同名目录，第 12.3 节），而 Machine API / Orchestrator 走的正是 print。它只服务人坐在 TUI 前的用法。
+- **带来的新限制**：单个文件写入约 24 MiB 就断会话、exec-server 读 200 MiB 文件占约 1 GiB、Agent 离开 10 分钟会话作废、Agent 本机个人 skill 的名字进提示（P24、P29）。
+- **持续成本的大头是版本钉死。**exec-server 协议没有版本协商、未知通知直接断连、沙箱内容完全信客户端，ccnm 只能逐字段核对；Codex 每发一版就要按 P21 的 17 个实验重测一遍规则表，不测就永远钉在 0.154.0。另外两条执行路径、两套安全模型要保持等价，Runtime 还要装 Codex 二进制和 bubblewrap。
+- **通往三平台的不是它。**它依赖 Unix 进程组、`ps` / `/proc`、ssh stdio 和 macOS / Linux 各自的沙箱。
+
+**封存状态下会发生什么**：Codex 升到 0.154.0 之后的版本，这条链在会话启动前就被版本门拒绝（`CCNM_E_VERSION`），不需要人做任何事；开着 `codex_exec_server` 的 workspace 在 0.154.0 上仍按 P24–P30 实测的样子工作，但不再有新的证据和承诺。CI 里它的测试照跑（不到 30 秒），代码坏了会知道。
+
+**什么情况下解封**：有人做了同任务的对照（MCP 七工具 vs 原生链，约 30 次额度）且原生链明显更好；或者 Codex 官方给 exec-server 协议加了版本协商、把沙箱判定挪到服务端。两条都没发生就不动它。
+
+**沙箱那项收益怎么拿**：另立阶段把 `codex sandbox`（或同等的 OS 沙箱）加到 MCP 路径的 `exec_command` 上，三种客户端都受益；要不要让默认路径依赖 Codex 二进制、Linux 前提怎么办、合法操作（比如 `git commit`）被挡怎么办，是那个阶段先要定的事（ROADMAP P32）。
+
+下面从 12.1 起是这条链的设计原文，保留作记录；各阶段的实测见 P21–P30 的研究记录。
 
 来自跨仓计划 toexec v2 的 V2-C。**现在的 Managed Codex 关掉自己的执行工具，改用 ccnm 的七个 MCP 工具**；原生链让 Codex 用它自带的执行工具，由官方 `codex exec-server` 在 Runtime 上执行。它是入口 A 在 Codex 上的一个 opt-in 变体，默认仍走 MCP，不影响 Claude 和入口 B。
 

@@ -321,7 +321,7 @@ external_mcp = "read"        # disabled（默认）| read | coding
 codex_exec_server = true     # 默认 false
 ```
 
-**当前状态：真机验收过一种平台组合（P24，2026-09-16：macOS Agent + Debian 13 x86_64 Runtime）。**默认关着，打开只影响 Codex 会话；已验证的范围和已知限制以[支持矩阵](support-matrix.md)为准。装在各机器上的 0.7.0 还没有这条链。
+**当前状态：封存（2026-09-17）。**代码保留、默认关、只认 Codex 0.154.0，不再随 Codex 版本重测，也不为它发版；开了它就是按 P24–P30 实测的样子工作，没有新的证据和承诺，新项目别开。为什么封存、什么情况下解封，见[双执行入口方案](plan/runtime-surfaces.md)第 12.0 节。默认执行路径是 MCP 七工具，Claude 和 Codex 都走它。打开只影响 Codex 交互会话；封存前验证过的范围和已知限制以[支持矩阵](support-matrix.md)为准。
 
 打开后，这个 workspace 的受管 **Codex 交互会话**改用 Codex **自带**的执行工具（它的 `exec_command`、`apply_patch` 等），由官方 `codex exec-server` 在这台 Runtime 上执行，不再注入 ccnm 的七个 MCP 工具（设计见[双执行入口方案](plan/runtime-surfaces.md)第 12 节）。需要三样都在：这一行、Runtime node 上的 `codex_bin`、会话的 Agent 是 Codex。缺哪样就在启动前拒绝，不会退回别的执行方式。
 

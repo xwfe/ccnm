@@ -254,7 +254,7 @@ ccnm doctor my-project
 
 ### Codex 原生链那一行
 
-workspace 写了 [`codex_exec_server = true`](configuration.md#codex_exec_server)、选中的 Agent 又是 Codex 时，doctor 表里 `远端 MCP 握手` 下面那行 `Codex 原生链`（英文 `Codex exec-server`）才会给结论：Agent 替你做一次 `ccnm run` 起 Codex 之前的**同一个**预检——经 ssh 在 Runtime 上开一个空的 `exec-serve` 会话，stdin 立刻关掉。Runtime 侧、Agent 侧跑 doctor 都一样。
+workspace 写了 [`codex_exec_server = true`](configuration.md#codex_exec_server)、选中的 Agent 又是 Codex 时，doctor 表里 `远端 MCP 握手` 下面那行 `Codex 原生链`（英文 `Codex exec-server`）才会给结论：Agent 替你做一次 `ccnm run` 起 Codex 之前的**同一个**预检——经 ssh 在 Runtime 上开一个空的 `exec-serve` 会话，stdin 立刻关掉。Runtime 侧、Agent 侧跑 doctor 都一样。（这条链 2026-09-17 起封存，原因在[配置说明](configuration.md#codex_exec_server)；这一行的行为不变。）
 
 | 状态 | 说明什么 |
 | --- | --- |
@@ -324,7 +324,7 @@ read_output
 - Claude 使用项目根 `CLAUDE.md` 上下文；Codex 使用根目录 `AGENTS.override.md`/`AGENTS.md` 的已测优先级；
 - remote session 使用对应 Provider 的已测工具策略，让项目访问统一走 Runtime Node。
 
-**Codex 还有一条 opt-in 的路**：workspace 写 `codex_exec_server = true` 后，Codex 交互会话不再拿这七个工具，而是用它自带的 `exec_command` / `apply_patch`，由 Runtime 上受 ccnm 监督和过滤的官方 `codex exec-server` 执行；模型看到的是 Codex 自己的工具面，读写边界和沙箱要求与七工具相同。只开交互模式，print 会被拒绝；Claude 不受影响。2026-09-16 在 macOS Agent + Debian 13 Runtime 上做过真机验收（[记录](research/p24-native-real-machine-2026-09-16.md)），开关和边界见[配置说明](configuration.md#codex_exec_server)。
+**Codex 还有一条 opt-in 的路（已封存）**：workspace 写 `codex_exec_server = true` 后，Codex 交互会话不再拿这七个工具，而是用它自带的 `exec_command` / `apply_patch`，由 Runtime 上受 ccnm 监督和过滤的官方 `codex exec-server` 执行；只开交互模式，print 会被拒绝；Claude 不受影响。2026-09-17 起封存：只认 Codex 0.154.0、不再维护、新项目别开，原因见[双执行入口方案](plan/runtime-surfaces.md)第 12.0 节，开关和边界见[配置说明](configuration.md#codex_exec_server)。
 
 ## 同一工作树的单写限制
 

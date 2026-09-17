@@ -38,7 +38,7 @@ ccnm 不需要安装 Orchestrator 也能独立使用。Orchestrator 核心不链
 
 ## 二、顺序和基线
 
-`P0 → P1 → P2 → P3 → P4 → P5 → P6 → P7 → P8 → P9 → P10 → P11 → P12 → P13 → P14 → P15 → P16 → P17 → P18 → P19 → P20 → P21 → P22 → P23 → P24 → P25 → P26 → P27 → P28 → P29 → P30 → P31 → P32 → P33 → P34 → P35`。默认每轮只执行一个阶段。P0–P8 是 ccnm v1 收口和独立 Orchestrator 的接口交接；P9–P12 是 ccnm v1.x 的 Remote Workspace MCP 扩展；P13 是按真实 Host 行为修正两个入口共用的 instructions 投影；P21–P24 是 Codex 原生执行链；P25 修 P24 真机轮发现的预检错误码；P26 补原生链在 Runtime 侧的探活；P27 让 doctor 也探这条链；P28 让 CI 在声明的 rust-version 上编译一遍；P29 补测原生链的并发、在途请求与资源上限，P30 修它查出的 fs helper 活过放锁；P31 给 Runtime 保留输出加会话总量上限、结束即删和过期清理；P32 封存原生链（用户决定）；P33 把沙箱那项收益搬到两个入口共用的 `exec_command` 上；P34 修 `apply_patch` 日志锁探测靠关文件放锁、fork 窗口里漏拦的缺陷；P35 让测试建的临时目录跑完就删（纯测试代码）。完整边界见 [双执行入口方案](runtime-surfaces.md)。
+`P0 → P1 → P2 → P3 → P4 → P5 → P6 → P7 → P8 → P9 → P10 → P11 → P12 → P13 → P14 → P15 → P16 → P17 → P18 → P19 → P20 → P21 → P22 → P23 → P24 → P25 → P26 → P27 → P28 → P29 → P30 → P31 → P32 → P33 → P34 → P35 → P36`。默认每轮只执行一个阶段。P0–P8 是 ccnm v1 收口和独立 Orchestrator 的接口交接；P9–P12 是 ccnm v1.x 的 Remote Workspace MCP 扩展；P13 是按真实 Host 行为修正两个入口共用的 instructions 投影；P21–P24 是 Codex 原生执行链；P25 修 P24 真机轮发现的预检错误码；P26 补原生链在 Runtime 侧的探活；P27 让 doctor 也探这条链；P28 让 CI 在声明的 rust-version 上编译一遍；P29 补测原生链的并发、在途请求与资源上限，P30 修它查出的 fs helper 活过放锁；P31 给 Runtime 保留输出加会话总量上限、结束即删和过期清理；P32 封存原生链（用户决定）；P33 把沙箱那项收益搬到两个入口共用的 `exec_command` 上；P34 修 `apply_patch` 日志锁探测靠关文件放锁、fork 窗口里漏拦的缺陷；P35 让测试建的临时目录跑完就删（纯测试代码）；P36 起是"工具面对齐原生能力"那条线（跨仓方案在 toexec 的 v3 计划），第一个阶段是 Runtime 上项目自带的 skills。完整边界见 [双执行入口方案](runtime-surfaces.md)。
 
 ### P0 — 已有内部验证基线
 
@@ -498,3 +498,22 @@ workspace 的 lint 是 `unsafe_code = "forbid"`，也没有 libc 依赖，进程
 - **P35.4** 验证与门禁：同 P35.1 的量法，全量测试后新增残留为 0；直接循环跑 `ccnm-core` 测试二进制 20 次（`--test-threads=64`）后新增残留为 0、没有新的失败——守卫删得太早、删到别的测试的目录，在高并发下才看得出来。研究记录 `docs/research/p35-test-dir-cleanup-2026-09-17.md`，observed_gaps 那条改成已修。`cargo fmt --all --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace`、`cargo +1.89 check --workspace --all-targets --locked`、`python3 scripts/check_plan.py`、`git diff --check`。
 
 停止点：只动测试代码和一个只作 dev-dependency 的新 crate。不改产品代码、断言、用户文档；不清理本机已有的历史残留（那是另一件事，P34 清过一次）；被 SIGKILL 或超时杀掉的测试进程留下的目录不在范围内——Drop 跑不到，没有 `unsafe` 也没有别的钩子。
+
+### P36 — Runtime 上项目自带的 skills
+
+**依赖 P35。用户 2026-09-17 决定：不引入第三方 harness，但 ccnm / gld 自己的工具要达到原生工具的全部能力，并支持 Runtime 上的 skills。**整条线的差距表、三类能力的划分和顺序在 toexec 仓库的 [v3 方案](https://github.com/xwfe/toexec/blob/main/docs/plan/implementation-plan-v3-native-parity.md)，这里只登记第一个阶段；后面的阶段开工时再登记（并行会话经常撞号，提前占号没有意义）。
+
+现状：官方 CLI 靠"当前目录"发现 `.claude/skills/`，而受管会话里 CLI 的当前目录在 Agent Node 上，项目在 Runtime 上，所以一个都发现不了。ccnm 现在只在 MCP 握手文本里点了 `SKILL.md` 的路径（和规则文件共用 40 个名额、768 个码元），没有 name 和 description——模型不知道有哪些 skill、什么时候该用；Codex 会话连路径都没有（`provider::context::named` 对 Codex 返回空）。
+
+做法：skills 在 Runtime 上发现，经一个新的 MCP 工具交给模型；skill 目录里的脚本由模型用现有的 `exec_command` 跑，因此天然在 Runtime 上、以执行账号的身份、受同一套写互斥和 `exec_sandbox` 约束。三种入口（Claude 受管、Codex 受管、外部 bridge）共用一个实现。`ccnm.workspace-mcp/1` 冻结时写明"加工具属于加法"，不升版本。
+
+- **P36.1** 实测，零额度：本机的 Claude Code（记下版本）和 Codex 0.154.0 各自怎么处理 MCP 工具的 description（有没有长度上限、截在哪）、怎么呈现 MCP `prompts`（变成什么名字的斜杠命令、参数怎么传）。办法沿用 V2-Q1：读 CLI 打包代码的静态证据，加一次不登录也会发生的 MCP 连接的 debug 日志；Codex 用现成的本机假模型服务抓它实际发出的请求。结论决定目录放哪、放多少，以及 P36.5 做不做。
+- **P36.2** 共享库：toexec 新 crate `toexec-skill`（零依赖，发 tag），只放纯机制——frontmatter 读取（单行值、引号、`>` / `|` 块标量、简单列表）、`$ARGUMENTS` / `$N` / `$name` 替换、`` !`命令` `` 注入行的识别。gld 已有一份解析且不认多行 description，它换用这个 crate 是 gld 自己的阶段，不挡 P36。
+- **P36.3** 发现：`mcp-serve` 扫工作区里的 `.claude/skills/*/SKILL.md`、`.claude/commands/**/*.md`、`.agents/skills/*/SKILL.md`。个数和单个大小有上限，排序确定——同一个项目每次得到同一份目录。路径走现有的读策略（不出工作区、不跟穿出去的 symlink）。重名时 skill 优先于同名命令（官方语义）。
+- **P36.4** 工具：新增一个只读工具（`read` 与 `coding` 两种模式都给）。不带名字调用返回完整目录；带名字返回 SKILL.md 正文：去掉 frontmatter，做参数替换，`${CLAUDE_SKILL_DIR}` 换成 skill 目录的工作区相对路径，`${CLAUDE_PROJECT_DIR}` 换成 `.`；正文超上限时截在行边界并写明用 `read_file` 从哪一行接着读。**`` !`命令` `` 注入不执行**：原样保留并在正文开头列出，由模型自己决定要不要用 `exec_command` 跑——自动执行等于一次"读"调用触发了项目指定的命令，绕过 `exec_command` 上的人工确认。`disable-model-invocation: true` 的 skill 不进目录、也不能由这个工具加载。
+- **P36.5** 目录放进工具 description（工作区没有 skill 时 description 是固定文本，fixture 逐字节比对的就是它）；`prompts`：可由用户调用的 skill 和命令登记成 MCP prompts。两件事的形状都以 P36.1 的结论为准；Host 不呈现 prompts 就不做，并写明。
+- **P36.6** 握手文本：不再点名 `SKILL.md`，把那部分预算还给规则文件和 `CLAUDE.md`；标记行里加一段说明有几个 skill、用哪个工具看。
+- **P36.7** 契约与文档：`docs/protocol/remote-workspace-mcp-v1.md` 加一节，fixture 与 schema 做加法（两份 `tools-list-*.json` 各多一个工具，这是契约新增，不是为了过测试重录）；中立客户端测试覆盖目录、加载、不存在的名字、`read` 模式；`usage.md`、`support-matrix.md` 写明验到哪一步。
+- **P36.8** 门禁：`cargo fmt --all --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace`、`cargo +1.89 check --workspace --all-targets --locked`、`python3 scripts/check_plan.py`、`python3 scripts/check_protocol.py`、`python3 -m unittest tests.test_check_protocol tests.test_remote_workspace_mcp -q`、`git diff --check`。
+
+停止点：只做工作区里的 skills，不读执行账号 HOME 下的用户级 skills；不执行 `` !`命令` `` 注入；`allowed-tools`、`context: fork`、`agent`、`model`、`effort`、`hooks` 这些 frontmatter 字段忽略并在文档里写明；不放开 CLI 的任何内置工具（那是 v3 方案的另一个阶段）；不耗模型额度，所以"模型会不会主动去用 skill"这一条**没有验**，留给 v3 方案最后的对照实验；不发版、不换任何机器上的二进制。

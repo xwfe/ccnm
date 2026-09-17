@@ -328,6 +328,11 @@ mod tests {
 
     /// A workspace with one file, one subdirectory, and the symlinks the
     /// policy exists for.
+    ///
+    /// `name` must be unique per test. The directory is deleted and rebuilt
+    /// here, so two tests sharing a name delete each other's workspace when
+    /// they happen to run at the same time, and fail at whichever line was
+    /// running when the files vanished.
     fn fixture(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("ccnm-path-{}-{name}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
@@ -593,7 +598,7 @@ mod tests {
     /// call "missing".
     #[test]
     fn resolving_inside_lets_missing_paths_through_but_no_escape() {
-        let root = fixture("inside");
+        let root = fixture("resolve-inside");
         assert_eq!(resolve_inside(&root, "src/main.rs").unwrap(), "src/main.rs");
         assert_eq!(
             resolve_inside(&root, "src/new/deep.rs").unwrap(),

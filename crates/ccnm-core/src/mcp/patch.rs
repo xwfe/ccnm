@@ -3066,23 +3066,37 @@ mod tests {
     fn whether_a_journal_is_abandoned_does_not_depend_on_the_clock() {
         let root = workspace("journal-clock");
         let journals = journals("journal-clock");
-        let path = journals.join("99-tomorrow.json");
-        fs::write(
-            &path,
-            serde_json::to_vec(&serde_json::json!({
-                "pid": 99, "root": root.clone(), "files": [],
-            }))
-            .unwrap(),
-        )
-        .unwrap();
-
-        for stamp in [
-            std::time::SystemTime::now() + Duration::from_secs(86_400),
-            std::time::SystemTime::now() - Duration::from_secs(86_400),
-        ] {
+        let tomorrow = std::time::SystemTime::now() + Duration::from_secs(86_400);
+        let yesterday = std::time::SystemTime::now() - Duration::from_secs(86_400);
+        // A new file for every case, never one an earlier case used. Asking
+        // whether a journal is abandoned takes its lock and lets go of it by
+        // closing the file, and a close only releases the lock once every
+        // copy of the descriptor is closed. Another test thread that forks
+        // at that moment hands its child a copy, kept until the child execs,
+        // so under `--test-threads=64` a later case on the same file can
+        // find a lock nobody in this test holds: the holder below failed to
+        // take it, and an unheld journal could just as well read as in
+        // progress.
+        let stamped = |name: &str, stamp: std::time::SystemTime| {
+            let path = journals.join(name);
+            fs::write(
+                &path,
+                serde_json::to_vec(&serde_json::json!({
+                    "pid": 99, "root": root.clone(), "files": [],
+                }))
+                .unwrap(),
+            )
+            .unwrap();
             let handle = fs::File::options().write(true).open(&path).unwrap();
             handle.set_modified(stamp).unwrap();
-            drop(handle);
+            path
+        };
+
+        for (name, stamp) in [
+            ("99-tomorrow.json", tomorrow),
+            ("99-yesterday.json", yesterday),
+        ] {
+            let path = stamped(name, stamp);
             // Nobody holds it, so it is abandoned whatever the date says.
             let err = apply_patch(
                 &root,
@@ -3099,9 +3113,12 @@ mod tests {
             )
             .expect_err("an unheld journal is abandoned regardless of its mtime");
             assert!(err.message().contains("interrupted"), "{err}");
+            fs::remove_file(&path).unwrap();
         }
 
-        // And held, it is in progress -- again regardless of the date.
+        // And held, it is in progress -- even dated a day ago, which is what
+        // the old timeout would have called abandoned.
+        let path = stamped("99-held.json", yesterday);
         let holder = fs::File::open(&path).unwrap();
         holder.try_lock().unwrap();
         apply_patch(

@@ -83,6 +83,7 @@ use rmcp::schemars;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
+use crate::mcp::notebook;
 use crate::mcp::path::{self, WriteTarget};
 use crate::mcp::version_of;
 
@@ -120,6 +121,8 @@ pub enum Op {
     Update,
     /// Replace the whole content of an existing file.
     Write,
+    /// Change cells of an existing Jupyter notebook (P40).
+    EditNotebook,
     Delete,
     /// Rename. The content is untouched.
     Move,
@@ -131,6 +134,7 @@ impl Op {
             Op::Add => "add",
             Op::Update => "update",
             Op::Write => "write",
+            Op::EditNotebook => "edit_notebook",
             Op::Delete => "delete",
             Op::Move => "move",
         }
@@ -170,6 +174,10 @@ pub struct FilePatch {
     /// what a later edit's `old` looks for.
     #[serde(default)]
     pub edits: Option<Vec<Edit>>,
+    /// Cell edits, for `edit_notebook`, applied in order: each sees the
+    /// notebook the previous one left.
+    #[serde(default)]
+    pub cells: Option<Vec<notebook::CellEdit>>,
 }
 
 /// Arguments of `apply_patch`.
@@ -303,6 +311,12 @@ fn plan(root: &Path, args: &ApplyPatchArgs) -> Result<Vec<Planned>> {
                 + f.edits.as_ref().map_or(0, |edits| {
                     edits.iter().map(|e| e.old.len() + e.new.len()).sum()
                 })
+                + f.cells.as_ref().map_or(0, |cells| {
+                    cells
+                        .iter()
+                        .map(|c| c.new_source.as_ref().map_or(0, String::len))
+                        .sum()
+                })
         })
         .sum();
     if content_bytes > MAX_CONTENT_BYTES {
@@ -340,6 +354,7 @@ fn plan_one(root: &Path, file: &FilePatch) -> Result<Planned> {
         Op::Add => plan_add(file, target, rel),
         Op::Update => plan_update(file, target, rel),
         Op::Write => plan_write(file, target, rel),
+        Op::EditNotebook => plan_edit_notebook(file, target, rel),
         Op::Delete => plan_delete(file, target, rel),
         Op::Move => plan_move(root, file, target, rel),
     }
@@ -450,6 +465,37 @@ fn plan_write(file: &FilePatch, target: WriteTarget, rel: String) -> Result<Plan
         edits: 0,
         before_bytes,
         after_bytes,
+        new_dirs: Vec::new(),
+    })
+}
+
+/// The file is edited as a notebook and written back whole; see
+/// [`notebook::edit`] for what is kept byte for byte.
+fn plan_edit_notebook(file: &FilePatch, target: WriteTarget, rel: String) -> Result<Planned> {
+    let (original, meta) = read_existing(&target, &rel)?;
+    check_version(file, &meta, &rel)?;
+    if file.content.is_some() || file.edits.is_some() {
+        return Err(Error::invalid_args(format!(
+            "{rel}: op \"edit_notebook\" takes cells, not content or edits"
+        )));
+    }
+    let cells = file
+        .cells
+        .as_deref()
+        .ok_or_else(|| Error::invalid_args(format!("{rel}: op \"edit_notebook\" needs cells")))?;
+    let new_content = notebook::edit(&original, &rel, cells)?;
+    Ok(Planned {
+        op: Op::EditNotebook,
+        rel,
+        abs: target.abs().to_path_buf(),
+        to_rel: None,
+        to_abs: None,
+        before_bytes: original.len() as u64,
+        after_bytes: new_content.len() as u64,
+        new_content: Some(new_content),
+        original: Some(original),
+        mode: Some(meta.permissions()),
+        edits: cells.len() as u32,
         new_dirs: Vec::new(),
     })
 }
@@ -1446,7 +1492,7 @@ fn commit(staged: &[Staged], journal: Option<&Journal>) -> Result<Vec<Option<Str
 fn commit_one(one: &Staged) -> Result<Option<String>> {
     let planned = &one.planned;
     match planned.op {
-        Op::Add | Op::Update | Op::Write => {
+        Op::Add | Op::Update | Op::Write | Op::EditNotebook => {
             let temp = one
                 .new_temp
                 .as_ref()
@@ -1491,7 +1537,7 @@ fn rollback(committed: &[Staged]) -> std::result::Result<(), String> {
         let outcome = match planned.op {
             // The file did not exist before; removing it restores that.
             Op::Add => std::fs::remove_file(&planned.abs).map_err(|e| e.to_string()),
-            Op::Update | Op::Write | Op::Delete => match &one.backup {
+            Op::Update | Op::Write | Op::EditNotebook | Op::Delete => match &one.backup {
                 Some(backup) => std::fs::rename(backup, &planned.abs).map_err(|e| e.to_string()),
                 None => Err("no backup was staged".to_string()),
             },
@@ -1548,6 +1594,14 @@ fn report<'a>(
             "write" => format!(
                 "write  {} ({} -> {} bytes)",
                 change.path, change.before_bytes, change.after_bytes
+            ),
+            "edit_notebook" => format!(
+                "edit_notebook {} ({} cell edit{}, {} -> {} bytes)",
+                change.path,
+                change.edits,
+                if change.edits == 1 { "" } else { "s" },
+                change.before_bytes,
+                change.after_bytes
             ),
             "delete" => format!("delete {}", change.path),
             _ => format!(
@@ -3792,6 +3846,156 @@ mod tests {
         assert!(r.dry_run);
         assert_eq!(r.files[0].op, "write");
         assert_eq!(text(&root, "src/lib.rs"), before);
+    }
+
+    const NOTEBOOK: &str = include_str!("../../../../tests/fixtures/notebook/analysis.ipynb");
+
+    fn edit_cells(path: &str, version: Option<&str>, cells: Vec<notebook::CellEdit>) -> FilePatch {
+        FilePatch {
+            op: Some(Op::EditNotebook),
+            path: path.to_string(),
+            version: version.map(str::to_string),
+            cells: Some(cells),
+            ..Default::default()
+        }
+    }
+
+    fn replace_cell(id: &str, source: &str) -> notebook::CellEdit {
+        notebook::CellEdit {
+            cell_id: Some(id.into()),
+            new_source: Some(source.into()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn edit_notebook_changes_cells_through_the_same_commit() {
+        let root = workspace("notebook");
+        fs::write(root.join("analysis.ipynb"), NOTEBOOK).unwrap();
+        let r = apply(
+            &root,
+            vec![edit_cells(
+                "analysis.ipynb",
+                Some(&version(&root, "analysis.ipynb")),
+                vec![replace_cell("d0f19b3c", "1 / 2")],
+            )],
+        );
+        assert_eq!(r.files[0].op, "edit_notebook");
+        assert!(
+            r.text
+                .starts_with("edit_notebook analysis.ipynb (1 cell edit, "),
+            "{}",
+            r.text
+        );
+        let after = text(&root, "analysis.ipynb");
+        assert!(after.contains("\"1 / 2\""), "{after}");
+        assert!(
+            !after.contains("ZeroDivisionError"),
+            "the replaced cell's outputs went"
+        );
+        // Only that cell's lines differ from the file Jupyter wrote: strip
+        // the lines both files start and end with, and what is left of the
+        // new file is the edited cell.
+        let (old_lines, new_lines): (Vec<&str>, Vec<&str>) =
+            (NOTEBOOK.lines().collect(), after.lines().collect());
+        let prefix = old_lines
+            .iter()
+            .zip(&new_lines)
+            .take_while(|(a, b)| a == b)
+            .count();
+        let suffix = old_lines
+            .iter()
+            .rev()
+            .zip(new_lines.iter().rev())
+            .take_while(|(a, b)| a == b)
+            .count();
+        let changed = &new_lines[prefix..new_lines.len() - suffix];
+        assert_eq!(changed.len(), 6, "{changed:#?}");
+        assert!(
+            changed.contains(&"   \"id\": \"d0f19b3c\",")
+                && changed.contains(&"   \"outputs\": [],"),
+            "{changed:#?}"
+        );
+        assert_eq!(r.files[0].version, Some(version(&root, "analysis.ipynb")));
+    }
+
+    #[test]
+    fn edit_notebook_needs_a_current_version_and_only_takes_cells() {
+        let root = workspace("notebook-refused");
+        fs::write(root.join("analysis.ipynb"), NOTEBOOK).unwrap();
+        let err = fails(
+            &root,
+            vec![edit_cells(
+                "analysis.ipynb",
+                None,
+                vec![replace_cell("d0f19b3c", "x")],
+            )],
+        );
+        assert!(err.message().contains("version is required"), "{err}");
+        let err = fails(
+            &root,
+            vec![edit_cells(
+                "analysis.ipynb",
+                Some("1-0"),
+                vec![replace_cell("d0f19b3c", "x")],
+            )],
+        );
+        assert_eq!(err.code(), ErrorCode::StaleEpoch, "{err}");
+        let v = version(&root, "analysis.ipynb");
+        let err = fails(
+            &root,
+            vec![FilePatch {
+                content: Some("{}".into()),
+                ..edit_cells(
+                    "analysis.ipynb",
+                    Some(&v),
+                    vec![replace_cell("d0f19b3c", "x")],
+                )
+            }],
+        );
+        assert!(err.message().contains("takes cells"), "{err}");
+        let err = fails(
+            &root,
+            vec![FilePatch {
+                cells: None,
+                ..edit_cells("analysis.ipynb", Some(&v), vec![])
+            }],
+        );
+        assert!(err.message().contains("needs cells"), "{err}");
+        assert_eq!(
+            text(&root, "analysis.ipynb"),
+            NOTEBOOK,
+            "nothing was written"
+        );
+    }
+
+    #[test]
+    fn a_bad_cell_edit_fails_the_whole_patch() {
+        let root = workspace("notebook-atomic");
+        fs::write(root.join("analysis.ipynb"), NOTEBOOK).unwrap();
+        let main_before = text(&root, "src/main.rs");
+        let err = fails(
+            &root,
+            vec![
+                update(
+                    "src/main.rs",
+                    &version(&root, "src/main.rs"),
+                    "let x = 1;",
+                    "let x = 2;",
+                ),
+                edit_cells(
+                    "analysis.ipynb",
+                    Some(&version(&root, "analysis.ipynb")),
+                    vec![replace_cell("no-such-cell", "x")],
+                ),
+            ],
+        );
+        assert!(
+            err.message().contains("no cell has id no-such-cell"),
+            "{err}"
+        );
+        assert_eq!(text(&root, "src/main.rs"), main_before);
+        assert_eq!(text(&root, "analysis.ipynb"), NOTEBOOK);
     }
 
     #[test]

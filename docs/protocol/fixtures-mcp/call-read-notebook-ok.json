@@ -1,0 +1,26 @@
+{
+  "$schema_ref": "#/$defs/call_tool_result_ok",
+  "$note": "read_notebook：文本块和图片块按 notebook 里的顺序交替出现——这份样例是 tests/fixtures/notebook/analysis.ipynb，第三个 cell 的输出里有一张 PNG，所以结果是文本、图片、文本三块。cell 的 id 就是 apply_patch 的 edit_notebook 要用的 cell_id；最后一行的 version 取决于文件的大小和修改时间，每次不同。",
+  "message": {
+    "jsonrpc": "2.0",
+    "id": 9,
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "[notebook notebooks/analysis.ipynb: 5 cells, python]\n<cell id=\"5a1c0e2f\" index=\"0\" type=\"markdown\">\n# 销售分析\n\nLoad the data and plot it.\n</cell>\n<cell id=\"b7d3a901\" index=\"1\" type=\"code\" execution_count=\"1\">\nimport pandas as pd\ndf = pd.read_csv(\"sales.csv\")\nprint(\"rows:\", len(df))\nprint(\"columns:\", len(df.columns))\n</cell>\n<output cell=\"b7d3a901\" type=\"stream\" name=\"stdout\">\nrows: 3\ncolumns: 2\n</output>\n<cell id=\"c4e8f7aa\" index=\"2\" type=\"code\" execution_count=\"2\">\ndf.plot()\n42\n</cell>\n<output cell=\"c4e8f7aa\" type=\"display_data\">\n<Figure size 640x480 with 1 Axes>\n[image/png, 73 bytes, the image follows]\n"
+        },
+        {
+          "type": "image",
+          "data": "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEElEQVR4nGP4z8AARAwQCgAf7gP9i18U1AAAAABJRU5ErkJggg==",
+          "mimeType": "image/png"
+        },
+        {
+          "type": "text",
+          "text": "</output>\n<output cell=\"c4e8f7aa\" type=\"execute_result\">\n42\n</output>\n<cell id=\"d0f19b3c\" index=\"3\" type=\"code\" execution_count=\"3\">\n1/0\n</cell>\n<output cell=\"d0f19b3c\" type=\"error\">\nZeroDivisionError: division by zero\n----------------------------------------\nZeroDivisionError   Traceback (most recent call last)\nCell In[3], line 1\n----> 1 1/0\n\nZeroDivisionError: division by zero\n</output>\n<cell id=\"e92b4d10\" index=\"4\" type=\"code\">\n</cell>\n[cells 0-4 of 5 shown, end of notebook; version 2396-18d62398c8f3b24f]"
+        }
+      ],
+      "isError": false
+    }
+  }
+}

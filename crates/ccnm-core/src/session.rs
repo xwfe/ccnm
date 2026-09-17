@@ -56,10 +56,11 @@ use crate::ssh::Ssh;
 /// needs them. A test in the server module keeps this in step with the
 /// real `tools/list`.
 ///
-/// Seven until P36 added `load_skill` and P39 `view_image`. New tools go
+/// Seven until P36 added `load_skill`, P39 `view_image` and P40
+/// `read_notebook`. New tools go
 /// last so that the order of the first seven -- which golden fixtures and
 /// people's memory both hold -- does not move.
-pub const MCP_TOOLS: [&str; 9] = [
+pub const MCP_TOOLS: [&str; 10] = [
     "workspace_info",
     "read_file",
     "list_files",
@@ -69,6 +70,7 @@ pub const MCP_TOOLS: [&str; 9] = [
     "read_output",
     "load_skill",
     "view_image",
+    "read_notebook",
 ];
 
 // Compatibility export; native tool names belong to the provider.

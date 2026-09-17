@@ -42,9 +42,11 @@ def ccnm_binary() -> Path | None:
 
 BINARY = ccnm_binary()
 
-# read 模式该有的全部工具，以及三个不该有的。load_skill（P36）和 view_image
-# （P39）只读、什么都不执行，所以 read 模式也有。
-READ_TOOLS = ["list_files", "load_skill", "read_file", "search_text", "view_image", "workspace_info"]
+# read 模式该有的全部工具，以及三个不该有的。load_skill（P36）、view_image
+# （P39）、read_notebook（P40）只读、什么都不执行，所以 read 模式也有。
+READ_TOOLS = [
+    "list_files", "load_skill", "read_file", "read_notebook", "search_text", "view_image", "workspace_info",
+]
 
 DEPLOY_SKILL = """---
 name: deploy
@@ -407,6 +409,69 @@ agent_node = "agent"
         # read_file 看到图片时指向 view_image。
         pointed = client.call_tool("read_file", {"path": "shots/red.png"})
         self.assertIn("view_image", result_text(pointed))
+
+    # -- notebook（P40） --
+
+    NOTEBOOK = ROOT / "tests" / "fixtures" / "notebook" / "analysis.ipynb"
+
+    def add_notebook(self) -> None:
+        (self.root / "analysis.ipynb").write_bytes(self.NOTEBOOK.read_bytes())
+
+    def test_read_notebook_shows_cells_outputs_and_images_in_order(self):
+        self.add_notebook()
+        client = self.client("demo", "read", "neutral-notebook-read")
+        got = client.call_tool("read_notebook", {"path": "analysis.ipynb"})
+        self.assertFalse(is_error(got), got)
+        kinds = [block["type"] for block in got["content"]]
+        self.assertEqual(kinds, ["text", "image", "text"])
+        first, image, rest = got["content"]
+        self.assertIn('<cell id="b7d3a901" index="1" type="code" execution_count="1">', first["text"])
+        self.assertEqual(image["mimeType"], "image/png")
+        self.assertTrue(base64.b64decode(image["data"]).startswith(b"\x89PNG"))
+        self.assertIn("ZeroDivisionError: division by zero", rest["text"])
+        self.assertNotIn("\x1b", rest["text"], "终端颜色码要去掉")
+        self.assertIn("end of notebook; version ", rest["text"])
+        # read_file 仍然返回 JSON，只多一条指向 read_notebook 的提示。
+        raw = result_text(client.call_tool("read_file", {"path": "analysis.ipynb"}))
+        self.assertIn('"cell_type": "markdown"', raw)
+        self.assertIn("read_notebook shows its cells", raw)
+
+    def test_edit_notebook_replaces_inserts_and_deletes_cells(self):
+        self.add_notebook()
+        self.write_config("coding")
+        client = self.client("demo", "coding", "neutral-notebook-edit")
+        # version 在最后一个文本块的页脚里，和 read_file 一样。
+        footer = client.call_tool("read_notebook", {"path": "analysis.ipynb"})["content"][-1]["text"]
+        version = footer.rsplit("; version ", 1)[1].rstrip("]")
+        got = client.call_tool("apply_patch", {"files": [{
+            "op": "edit_notebook", "path": "analysis.ipynb", "version": version,
+            "cells": [
+                {"cell_id": "d0f19b3c", "edit_mode": "delete"},
+                {"cell_id": "c4e8f7aa", "new_source": "df.describe()"},
+                {"cell_id": "5a1c0e2f", "edit_mode": "insert", "cell_type": "code", "new_source": "import numpy as np\n"},
+            ],
+        }]})
+        self.assertFalse(is_error(got), got)
+        self.assertTrue(result_text(got).startswith("edit_notebook analysis.ipynb (3 cell edits, "), result_text(got))
+        nb = json.loads((self.root / "analysis.ipynb").read_text(encoding="utf-8"))
+        ids = [cell.get("id") for cell in nb["cells"]]
+        self.assertEqual(len(ids), 5)
+        self.assertEqual(ids[0], "5a1c0e2f")
+        self.assertNotIn("d0f19b3c", ids)
+        self.assertEqual(nb["cells"][1]["source"], ["import numpy as np\n"])
+        replaced = nb["cells"][ids.index("c4e8f7aa")]
+        self.assertEqual((replaced["source"], replaced["outputs"], replaced["execution_count"]),
+                         (["df.describe()"], [], None))
+        # nbformat 的写法没被打乱：一个空格缩进、结尾换行。
+        text = (self.root / "analysis.ipynb").read_text(encoding="utf-8")
+        self.assertTrue(text.startswith('{\n "cells": [\n'))
+        self.assertTrue(text.endswith("}\n"))
+
+        stale = client.call_tool("apply_patch", {"files": [{
+            "op": "edit_notebook", "path": "analysis.ipynb", "version": version,
+            "cells": [{"cell_id": "c4e8f7aa", "new_source": "again"}],
+        }]})
+        self.assertTrue(result_text(stale).startswith("CCNM_E_STALE_EPOCH:"), result_text(stale))
 
     # -- 拒绝 --
 

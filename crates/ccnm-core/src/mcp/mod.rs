@@ -14,6 +14,7 @@ pub mod exec;
 pub mod glob;
 pub mod image;
 pub mod list;
+pub mod notebook;
 pub mod output;
 pub mod patch;
 pub mod path;

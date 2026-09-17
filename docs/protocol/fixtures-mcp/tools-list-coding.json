@@ -1,6 +1,6 @@
 {
   "$schema_ref": "#/$defs/tools_list_result",
-  "$note": "coding 模式的工具表：九个（P36 起多了只读的 load_skill，它的 description 见 read 那份样例的说明；P39 起多了只读的 view_image）。exec_command 是 destructive + open-world，不因为某次命令看着安全就改注解；P37 起它没有 required——cmd 和 shell 二选一，JSON Schema 的 required 表达不了“恰好一个”，由 server 在调用时检查。工具名、description、inputSchema 里的参数名和 required 都是精确的，由 external_mcp 的 published_tool_tables_match_the_running_server 对着真实 server 逐字节校验；只有每个参数内部的类型、上下界和说明是简写，server 发的是 schemars 从 Rust 类型生成的完整 schema。",
+  "$note": "coding 模式的工具表：十个（P36 起多了只读的 load_skill，它的 description 见 read 那份样例的说明；P39、P40 起多了只读的 view_image、read_notebook）。exec_command 是 destructive + open-world，不因为某次命令看着安全就改注解；P37 起它没有 required——cmd 和 shell 二选一，JSON Schema 的 required 表达不了“恰好一个”，由 server 在调用时检查。工具名、description、inputSchema 里的参数名和 required 都是精确的，由 external_mcp 的 published_tool_tables_match_the_running_server 对着真实 server 逐字节校验；只有每个参数内部的类型、上下界和说明是简写，server 发的是 schemars 从 Rust 类型生成的完整 schema。",
   "message": {
     "jsonrpc": "2.0",
     "id": 2,
@@ -158,7 +158,7 @@
         },
         {
           "name": "apply_patch",
-          "description": "Change files in the remote workspace: add, update, write, delete or move. This is the only way to write. An update replaces exact strings and a write replaces a whole existing file; like delete and move, both must carry the version read_file returned, so a change built on content that has since changed is refused. Either every file in the patch is applied or none is.",
+          "description": "Change files in the remote workspace: add, update, write, edit_notebook, delete or move. This is the only way to write. An update replaces exact strings, a write replaces a whole existing file and edit_notebook replaces, inserts or deletes Jupyter cells; like delete and move, they must carry the version read_file or read_notebook returned, so a change built on content that has since changed is refused. Either every file in the patch is applied or none is.",
           "inputSchema": {
             "type": "object",
             "properties": {
@@ -237,6 +237,28 @@
             "properties": {
               "path": {
                 "type": "string"
+              }
+            },
+            "required": [
+              "path"
+            ]
+          },
+          "annotations": {
+            "readOnlyHint": true,
+            "openWorldHint": false
+          }
+        },
+        {
+          "name": "read_notebook",
+          "description": "Read a Jupyter notebook from the remote workspace as cells: each cell's id, type and source, then a code cell's outputs, with PNG and JPEG outputs as images. Long notebooks come back in parts with the start_cell to continue from. Change cells with apply_patch op edit_notebook, using the ids shown here.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "start_cell": {
+                "type": "integer"
               }
             },
             "required": [

@@ -43,6 +43,7 @@ use crate::mcp::context;
 use crate::mcp::exec::{self, ExecCommandArgs};
 use crate::mcp::image::{self, ViewImageArgs};
 use crate::mcp::list::{self, ListFilesArgs};
+use crate::mcp::notebook::{self, ReadNotebookArgs};
 use crate::mcp::output::{self, ReadOutputArgs};
 use crate::mcp::patch::{self, ApplyPatchArgs};
 use crate::mcp::read::{self, ReadFileArgs};
@@ -761,6 +762,37 @@ impl Server {
         }
     }
 
+    #[tool(
+        name = "read_notebook",
+        description = "Read a Jupyter notebook from the remote workspace as cells: each cell's id, type and source, then a code cell's outputs, with PNG and JPEG outputs as images. Long notebooks come back in parts with the start_cell to continue from. Change cells with apply_patch op edit_notebook, using the ids shown here."
+    )]
+    async fn read_notebook(
+        &self,
+        Parameters(args): Parameters<ReadNotebookArgs>,
+    ) -> std::result::Result<CallToolResult, ErrorData> {
+        self.count_call();
+        let root = self.inner.root.clone();
+        let read = tokio::task::spawn_blocking(move || notebook::read_notebook(&root, &args))
+            .await
+            .map_err(|e| {
+                ErrorData::internal_error(format!("read_notebook task failed: {e}"), None)
+            })?;
+        match read {
+            Ok(blocks) => Ok(CallToolResult::success(
+                blocks
+                    .into_iter()
+                    .map(|block| match block {
+                        notebook::Block::Text(text) => ContentBlock::text(text),
+                        notebook::Block::Image { data, format } => {
+                            ContentBlock::image(data, format.mime_type())
+                        }
+                    })
+                    .collect(),
+            )),
+            Err(err) => Ok(tool_error(&err)),
+        }
+    }
+
     // The description here is a placeholder: `tools()` replaces it with the
     // workspace's catalog, which an attribute cannot see.
     #[tool(
@@ -820,7 +852,7 @@ impl Server {
 
     #[tool(
         name = "apply_patch",
-        description = "Change files in the remote workspace: add, update, write, delete or move. This is the only way to write. An update replaces exact strings and a write replaces a whole existing file; like delete and move, both must carry the version read_file returned, so a change built on content that has since changed is refused. Either every file in the patch is applied or none is."
+        description = "Change files in the remote workspace: add, update, write, edit_notebook, delete or move. This is the only way to write. An update replaces exact strings, a write replaces a whole existing file and edit_notebook replaces, inserts or deletes Jupyter cells; like delete and move, they must carry the version read_file or read_notebook returned, so a change built on content that has since changed is refused. Either every file in the patch is applied or none is."
     )]
     async fn apply_patch(
         &self,

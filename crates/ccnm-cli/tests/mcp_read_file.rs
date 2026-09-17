@@ -277,6 +277,7 @@ fn read_file_serves_a_whole_session_over_one_process() {
             "list_files",
             "load_skill",
             "read_file",
+            "read_notebook",
             "read_output",
             "search_text",
             "view_image",

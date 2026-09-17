@@ -441,6 +441,13 @@ impl Scan {
                 "line {line} is longer than max_bytes and was cut; the rest of it is not returned"
             ));
         }
+        // P40. The JSON stays what read_file returns; this only says a cell
+        // view exists.
+        if path.ends_with(".ipynb") {
+            notes.push(
+                "this is a Jupyter notebook: read_notebook shows its cells and outputs, and apply_patch op edit_notebook changes cells".to_string(),
+            );
+        }
 
         let text = render(
             &self.lines,

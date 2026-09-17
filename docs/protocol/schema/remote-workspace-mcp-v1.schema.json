@@ -38,11 +38,12 @@
         "apply_patch",
         "exec_command",
         "load_skill",
-        "view_image"
+        "view_image",
+        "read_notebook"
       ]
     },
     "read_tool_name": {
-      "description": "read 模式允许出现的全部工具。exec_command 和 apply_patch 不在里面是权限；read_output 不在里面是因为 read 模式产不出 output_ref。 load_skill（P36）在里面：它只读，什么都不执行。 view_image（P39）也在里面：只读一个图片文件。",
+      "description": "read 模式允许出现的全部工具。exec_command 和 apply_patch 不在里面是权限；read_output 不在里面是因为 read 模式产不出 output_ref。 load_skill（P36）在里面：它只读，什么都不执行。 view_image（P39）也在里面：只读一个图片文件。 read_notebook（P40）也在里面：只读一个 notebook。",
       "type": "string",
       "enum": [
         "workspace_info",
@@ -50,7 +51,8 @@
         "list_files",
         "search_text",
         "load_skill",
-        "view_image"
+        "view_image",
+        "read_notebook"
       ]
     },
     "annotations": {

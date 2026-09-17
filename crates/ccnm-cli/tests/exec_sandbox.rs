@@ -411,8 +411,15 @@ fn against_the_real_codex_sandbox_when_configured() {
         "a refused write is the command failing, not an error: {outside}"
     );
     let out = text(&outside);
-    assert!(out.contains("exit 1 in"), "{out}");
-    assert!(out.contains("Operation not permitted"), "{out}");
+    assert!(
+        out.contains("exit 1 in") || out.contains("exit 2 in"),
+        "{out}"
+    );
+    // Seatbelt says one thing, bubblewrap another.
+    assert!(
+        out.contains("Operation not permitted") || out.contains("Read-only file system"),
+        "{out}"
+    );
     assert!(!escaped.exists());
 
     let network = s.exec(&[
@@ -425,6 +432,34 @@ fn against_the_real_codex_sandbox_when_configured() {
     assert!(
         out.contains("Operation not permitted"),
         "refused by the sandbox, not by the port: {out}"
+    );
+
+    // A timeout must still kill the command behind the wrapper. On Linux
+    // that command is in bubblewrap's own session, out of the wrapper's
+    // process group; what has to hold is that killing the wrapper takes it
+    // down (`--die-with-parent`, pid namespace).
+    let stamp = format!("ccnm-p33-{}", std::process::id());
+    let slow = s.rpc(
+        "tools/call",
+        json!({"name": "exec_command", "arguments": {"cmd": ["sh", "-c", format!("sleep 300; echo {stamp}")], "timeout_ms": 1000}}),
+    );
+    assert!(!is_error(&slow), "{slow}");
+    assert!(text(&slow).contains("timed out after"), "{}", text(&slow));
+    let leftover = |stamp: &str| {
+        let out = Command::new("ps").args(["-axo", "args="]).output().unwrap();
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter(|line| line.contains(stamp) && !line.contains("ps -axo"))
+            .count()
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while leftover(&stamp) > 0 && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    assert_eq!(
+        leftover(&stamp),
+        0,
+        "the sandboxed command outlived its timeout"
     );
     s.shutdown();
 }

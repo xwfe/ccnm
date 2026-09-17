@@ -7,10 +7,15 @@
 //! <codex_bin> sandbox --sandbox-state-json <state> -- <program> <args...>
 //! ```
 //!
-//! run from the same cwd, with the same cleaned environment, under the same
-//! timeout and in the same process group as the bare command would be, so
-//! the watchdog's kill reaches the sandboxed child (measured: toexec
-//! `evidence/v2-p/p33-sandbox`, the child stays in the wrapper's group).
+//! run from the same cwd, with the same cleaned environment and under the
+//! same timeout as the bare command would be. On macOS the sandboxed child
+//! stays in the wrapper's process group, so the watchdog's kill reaches it
+//! directly; on Linux bubblewrap puts it in a session of its own, and what
+//! reaches it is the chain the wrapper set up -- `--die-with-parent` plus a
+//! pid namespace whose init is bwrap's child, so killing the wrapper's group
+//! takes the whole namespace with it (measured both ways: toexec
+//! `evidence/v2-p/p33-sandbox`, and the timeout case of the real-Codex test
+//! in `crates/ccnm-cli/tests/exec_sandbox.rs`).
 //!
 //! The permission profile is Codex 0.154.0's own workspace-write object,
 //! verbatim -- the one it sends for its own commands, captured in
@@ -24,8 +29,8 @@
 //!
 //! What this does not do is tell "the sandbox refused it" from "the
 //! command failed": both come back as the command's exit code and its
-//! stderr (`Operation not permitted`), and Codex itself only guesses from
-//! the text. Every result therefore says the sandbox was on, so a refusal
+//! stderr (`Operation not permitted` under Seatbelt, `Read-only file
+//! system` under bubblewrap), and Codex itself only guesses from the text. Every result therefore says the sandbox was on, so a refusal
 //! can be read for what it is. The wrapper failing to start, and a program
 //! that is not there, are still refused as errors, not reported as results.
 
@@ -40,7 +45,7 @@ use crate::native::serve::CodexHome;
 use crate::process::{Cmd, ProcessRunner};
 
 /// The line every `exec_command` result carries while the sandbox is on.
-pub const NOTE: &str = "sandboxed: this command could write only inside the workspace (not .git), $TMPDIR and /tmp, and had no network; a refusal shows as `Operation not permitted`";
+pub const NOTE: &str = "sandboxed: this command could write only inside the workspace (not .git), $TMPDIR and /tmp, and had no network; a refusal shows as `Operation not permitted` or `Read-only file system`";
 
 /// One workspace's sandbox, resolved once when the MCP server starts.
 pub struct Sandbox {

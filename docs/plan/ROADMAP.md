@@ -512,7 +512,7 @@ workspace 的 lint 是 `unsafe_code = "forbid"`，也没有 libc 依赖，进程
 - **P36.3** 发现：`mcp-serve` 扫工作区里的 `.claude/skills/*/SKILL.md`、`.claude/commands/**/*.md`、`.agents/skills/*/SKILL.md`。个数和单个大小有上限，排序确定——同一个项目每次得到同一份目录。路径走现有的读策略（不出工作区、不跟穿出去的 symlink）。重名时 skill 优先于同名命令（官方语义）。
 - **P36.4** 工具：新增一个只读工具（`read` 与 `coding` 两种模式都给）。不带名字调用返回完整目录；带名字返回 SKILL.md 正文：去掉 frontmatter，做参数替换，`${CLAUDE_SKILL_DIR}` 换成 skill 目录的工作区相对路径，`${CLAUDE_PROJECT_DIR}` 换成 `.`；正文超上限时截在行边界并写明用 `read_file` 从哪一行接着读。**`` !`命令` `` 注入不执行**：原样保留并在正文开头列出，由模型自己决定要不要用 `exec_command` 跑——自动执行等于一次"读"调用触发了项目指定的命令，绕过 `exec_command` 上的人工确认。`disable-model-invocation: true` 的 skill 不进目录、也不能由这个工具加载。
 - **P36.5** 目录放进工具 description（工作区没有 skill 时 description 是固定文本，fixture 逐字节比对的就是它）；`prompts`：可由用户调用的 skill 和命令登记成 MCP prompts。两件事的形状都以 P36.1 的结论为准；Host 不呈现 prompts 就不做，并写明。
-- **P36.6** 握手文本：不再点名 `SKILL.md`，把那部分预算还给规则文件和 `CLAUDE.md`；标记行里加一段说明有几个 skill、用哪个工具看。
+- **P36.6** 握手文本：不再点名 `SKILL.md`，把那部分预算还给规则文件和 `CLAUDE.md`。（立项时还写了"标记行里说明有几个 skill、用哪个工具看"；实现时去掉了——目录已经在工具 description 里、一直在模型面前，再从装 `CLAUDE.md` 的 2048 码元里拿预算重复一遍不值。依据见记录第 3 节。）
 - **P36.7** 契约与文档：`docs/protocol/remote-workspace-mcp-v1.md` 加一节，fixture 与 schema 做加法（两份 `tools-list-*.json` 各多一个工具，这是契约新增，不是为了过测试重录）；中立客户端测试覆盖目录、加载、不存在的名字、`read` 模式；`usage.md`、`support-matrix.md` 写明验到哪一步。
 - **P36.8** 门禁：`cargo fmt --all --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace`、`cargo +1.89 check --workspace --all-targets --locked`、`python3 scripts/check_plan.py`、`python3 scripts/check_protocol.py`、`python3 -m unittest tests.test_check_protocol tests.test_remote_workspace_mcp -q`、`git diff --check`。
 

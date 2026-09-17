@@ -314,6 +314,7 @@ apply_patch
 exec_command
 read_output
 load_skill
+view_image
 ```
 
 主要行为：
@@ -324,6 +325,7 @@ load_skill
 - `exec_command` 二选一：`cmd` 给程序和参数（argv，不经过 shell），`shell` 给一行命令、用 `bash -c` 跑（Runtime 上要有 bash，没有会报 `CCNM_E_DEPENDENCY`）。两种写法的权限和确认完全一样，它本质上就是命令执行能力；
 - 大输出由 `read_output` 分页读取，避免一次把全部输出塞进模型上下文；
 - `load_skill` 把项目自带的 skills 交给模型，见下一节；
+- `view_image` 把 Runtime 上的 PNG、JPEG、GIF、WebP 图片交给模型看（单个文件最多 3932160 字节，太大时报错并给出缩小的命令）；图片原样发出，Claude Code 会自己缩放。受管 Codex 会话里模型要在脚本里调 `image()` 才看得到图，规则见[协议第 5.3 节](protocol/remote-workspace-mcp-v1.md#53-view_image看-workspace-里的图片p39-新增)；
 - Claude 使用项目根 `CLAUDE.md` 上下文；Codex 使用根目录 `AGENTS.override.md`/`AGENTS.md` 的已测优先级；
 - remote session 使用对应 Provider 的已测工具策略，让项目访问统一走 Runtime Node。
 

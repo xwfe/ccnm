@@ -6,6 +6,7 @@
 > 验收范围、已知代价和**不作保证的 egress** 见[支持矩阵](../support-matrix.md)；这一版明确不做的东西见第 12 节。
 > **冻结之后的加法**：2026-09-17（P36）加了第八个工具 `load_skill` 和 `prompts` 能力，用来把项目自带的 skills 交给模型和人，见第 5.1 节。原来七个工具的名字、参数和语义没有动。
 > 2026-09-17（P37）给三个老工具加了可选参数：`search_text` 的输出模式、跨行、文件类型和 dotfile，`apply_patch` 的 op `write`，`exec_command` 的 `shell`，见第 5.2 节。不带新参数的调用和以前完全一样；`exec_command` 的 `required` 因此从 `["cmd"]` 变成空。同日修了两个行为缺陷：调用方的 `glob` 能把 dotfile 和 `.gitignore` 排除的文件带回搜索（同一节末尾，P37、P38）。
+> 2026-09-17（P39）加了第九个工具 `view_image`，只读，把 workspace 里的图片作为 MCP 图片块交给模型，见第 5.3 节。
 
 面向的读者是**已经在本机跑着 Claude Code / Codex / 别的 MCP Host，但项目在另一台机器上的人**。它给你的不是一条裸 SSH 通道，而是一个绑定了 workspace 的远程项目工具集。
 
@@ -52,7 +53,7 @@ Host                     bridge                    Runtime Executor
  │  <── result（协议版本、工具能力、instructions）──────── │
  │  tools/list              │                            │
  │ ────────────────────────>│ ─────────────────────────> │
- │  <── 4 个或 7 个工具 ─────────────────────────────────│
+ │  <── 6 个或 9 个工具 ─────────────────────────────────│
  │  tools/call              │                            │
  │ ────────────────────────>│ ─────────────────────────> │ 在项目目录里真的执行
  │  <── content / isError ───────────────────────────────│
@@ -173,6 +174,7 @@ external_mcp = "read"      # disabled | read | coding
 | `list_files` | ✅ | ✅ |
 | `search_text` | ✅ | ✅ |
 | `load_skill` | ✅ | ✅ |
+| `view_image` | ✅ | ✅ |
 | `read_output` | ❌ | ✅ |
 | `apply_patch` | ❌ | ✅ |
 | `exec_command` | ❌ | ✅ |
@@ -210,6 +212,7 @@ transport 的认证边界是 **OpenSSH identity + 独立的 Runtime OS 账号**�
 | `list_files` | read | `true` | — | — | `false` |
 | `search_text` | read | `true` | — | — | `false` |
 | `load_skill` | read | `true` | — | — | `false` |
+| `view_image` | read | `true` | — | — | `false` |
 | `read_output` | read | `true` | — | — | `false` |
 | `apply_patch` | write | `false` | `true` | `false` | `false` |
 | `exec_command` | exec | `false` | `true` | `false` | `true` |
@@ -308,6 +311,41 @@ transport 的认证边界是 **OpenSSH identity + 独立的 Runtime OS 账号**�
 
 代价：文件名部分是 `**` 的 glob（如 `src/**`）没法交给 rg 缩小范围，rg 会读所有没被忽略的文件、由 ccnm 丢掉不匹配的，慢一些，仍受 60 秒超时约束。依据见 [P38 记录](../research/p38-glob-gitignore-2026-09-17.md)。
 
+### 5.3 `view_image`：看 workspace 里的图片（P39 新增）
+
+**怎么用**：`{"path": "shots/login.png"}`。路径规则和 `read_file` 一样。成功时结果里有两个内容块：
+
+```json
+{"content": [
+  {"type": "text",  "text": "shots/login.png: PNG, 48213 bytes"},
+  {"type": "image", "data": "<文件原样的 base64>", "mimeType": "image/png"}
+]}
+```
+
+完整样例见 [`call-view-image-ok.json`](fixtures-mcp/call-view-image-ok.json)。
+
+| 情况 | 结果 |
+| --- | --- |
+| PNG、JPEG、GIF、WebP，不超过 3932160 字节 | 上面那两个块。格式看文件头，不看扩展名 |
+| 超过 3932160 字节 | `CCNM_E_INVALID_ARGS`，消息里给出在 workspace 里缩一份小图的命令（`sips -Z 2000` / ImageMagick `convert -resize`） |
+| SVG | `CCNM_E_INVALID_ARGS`，指向 `read_file`（SVG 是文本） |
+| 其他格式（BMP、TIFF、HEIC……）、普通文件 | `CCNM_E_INVALID_ARGS`，说明要先用 `exec_command` 转换 |
+| 目录、fifo、socket、设备，workspace 外的路径 | 和 `read_file` 相同的错误 |
+
+`read_file` 读到这四种图片时，报 `CCNM_E_INVALID_ARGS` 并指向 `view_image`（P39 起；原来按"二进制文件"拒绝，前 8 KiB 没有 NUL 的 JPEG 还会被当成乱码文本读出来）。
+
+**为什么是 `image` 块、不缩放、只认这四种**——依据是零额度实测（toexec 仓库 `evidence/v3-parity/media-surface/`）：
+
+| | Claude Code 2.1.273（读打包代码） | Codex 0.154.0（本机假模型真的调工具） |
+| --- | --- | --- |
+| `image` 块 | 当图片交给模型；超过 2000×2000 或字节预算就自己缩放、压缩 | 变成 `input_image`（`detail: high`）交给模型，原样转发。真实 ccnm 二进制实测过，图片逐字节一致 |
+| `resource` 块里的 blob | **写到跑 CLI 的那台机器的磁盘上**，模型只拿到那台机器上的路径 | 整个块被序列化成文本，base64 原样塞进上下文 |
+| 这四种以外的图片类型 | 同 `resource` blob，落盘 | 没测 |
+
+所以只发 `image` 块；Claude Code 会自己缩放，ccnm 不在 Runtime 上缩放、不加图像处理依赖；上限取 Claude Code 能收的最大值；别的类型会被 Claude Code 落到持有凭据的那台机器上，所以不发。
+
+**Codex Code Mode 的差别**：ccnm 受管的 Codex 会话默认开着 Code Mode，模型不直接调工具，而是写 JS 调；工具结果是个对象，模型要自己写 `image(result.content[1])` 才会看到图（实测过这一步确实生效）。工具说明里写了这一句；模型会不会照做没有验。
+
 ## 6. 连接生命周期
 
 ### 6.1 正常路径
@@ -316,7 +354,7 @@ transport 的认证边界是 **OpenSSH identity + 独立的 Runtime OS 账号**�
 | --- | --- |
 | 启动 | Host 起 bridge 进程；bridge 立刻建 SSH，在 initialize 之前就完成远端打开 |
 | `initialize` | 由远端 server 回答：协议版本、`serverInfo`（name `ccnm`，version 是远端 ccnm 的版本）、tools 能力、`instructions` |
-| `tools/list` | 按模式返回 4 个或 7 个工具 |
+| `tools/list` | 按模式返回 6 个或 9 个工具（冻结时是 4 个或 7 个，P36、P39 各加了一个只读工具） |
 | `tools/call` | 在远端项目目录里真的执行 |
 | EOF | Host 关 stdin → bridge 关 SSH → 远端 server 退出 → 写入互斥释放 |
 
@@ -358,6 +396,7 @@ transport 的认证边界是 **OpenSSH identity + 独立的 Runtime OS 账号**�
 | `read_output` 一次最多 | 32 KiB（默认 16 KiB） |
 | `apply_patch` | 一次最多 50 个文件；一次请求里所有文件的新内容**合计** 1 MiB；被编辑的文件超过 16 MiB 直接拒绝 |
 | 保留输出 | 每次运行的 stdout、stderr **各自**最多落盘 64 MiB，超出的不再写，命令照常跑完、结果里带一条说明；每个 session 只留最新的 100 次运行，开始第 101 次前删最旧的；一个 session 已结束运行的输出**合计**最多 256 MiB，每次运行结束后从最旧的删。还在跑的运行不删，所以同一个 session 并发跑命令时可以暂时超过 256 MiB，超出部分不超过"进行中的运行数 × 128 MiB" |
+| `view_image` | 文件最多 3932160 字节（base64 后 5 MiB，Claude Code 2.1.273 的上限）；只发 PNG、JPEG、GIF、WebP |
 | `instructions` | 2048 个 UTF-16 码元（含项目说明文件），超了由 ccnm 按行截断，见第 10 节 |
 
 保留的输出**留在远端**，只在这个 session 的目录里。本入口的 session 在连接结束时删掉自己的输出：第 6 节说过，断了就是断了，重开是新 session，旧的 `output_ref` 本来就没人能再用。Managed 会话的输出不随连接删，它重连后沿用同一个 session，旧 ref 还要能读。不管哪个入口，最后一次运行过去 7 天、Runtime 上又没有进程在服务它的 session，输出会被删掉；运维上怎么看、怎么提前清见[运维手册](../operations.md#状态文件在哪多大怎么清)。

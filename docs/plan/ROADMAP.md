@@ -517,3 +517,26 @@ workspace 的 lint 是 `unsafe_code = "forbid"`，也没有 libc 依赖，进程
 - **P36.8** 门禁：`cargo fmt --all --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace`、`cargo +1.89 check --workspace --all-targets --locked`、`python3 scripts/check_plan.py`、`python3 scripts/check_protocol.py`、`python3 -m unittest tests.test_check_protocol tests.test_remote_workspace_mcp -q`、`git diff --check`。
 
 停止点：只做工作区里的 skills，不读执行账号 HOME 下的用户级 skills；不执行 `` !`命令` `` 注入；`allowed-tools`、`context: fork`、`agent`、`model`、`effort`、`hooks` 这些 frontmatter 字段忽略并在文档里写明；不放开 CLI 的任何内置工具（那是 v3 方案的另一个阶段）；不耗模型额度，所以"模型会不会主动去用 skill"这一条**没有验**，留给 v3 方案最后的对照实验；不发版、不换任何机器上的二进制。
+
+### P37 — 执行面第一批：搜索模式、整文件覆盖、一行 shell
+
+**依赖 P36。v3 方案第 5 节第 2 步。用户 2026-09-17 定：先把执行面补齐，再放开 Agent 面**（同时定了 WebSearch 默认放开、WebFetch 做成 opt-in，记在 toexec 的 v3 方案第 7 节，不是本阶段的事）。
+
+现状，对照的是本机 Claude Code 2.1.273 打包代码里的工具定义：
+
+| 能力 | 原生 | ccnm |
+| --- | --- | --- |
+| 搜索 | Grep：`output_mode` 三种（内容 / 只列文件 / 计数，默认只列文件）、`multiline`（`rg -U --multiline-dotall`）、`type`（`rg --type`）；一律带 `--hidden`，再排除版本库目录 | `search_text` 只有内容模式；dotfile 永远不搜 |
+| 整文件覆盖 | Write | 没有。`add` 只能建不存在的文件，覆盖要先 `delete` 再 `add`，两次调用之间文件不存在 |
+| 一行 shell | Bash（用户的 bash / zsh） | `exec_command` 只收 argv，要管道得自己写 `["sh","-c",…]` |
+
+做法：全部是给已有工具加可选参数、加一种操作。`ccnm.workspace-mcp/1` 冻结时写明这属于加法，不升版本；不加工具，所以 `session::MCP_TOOLS`（Claude 放行清单、Codex `enabled_tools`）不动。已有参数的默认值和语义一个都不改——包括 `search_text` 默认仍是内容模式（原生默认只列文件，但 ccnm 冻结时就是内容）。
+
+- **P37.1** 实测，零额度：本机 rg 在 `--max-count 1`、`-U --multiline-dotall`、`--type`（含不认识的类型）、`--hidden` 下 `--json` 输出的实际形状；`--glob` 和 `!.git` 排除的先后关系；Claude Code 2.1.273 Grep / Write / Bash 的参数和它拼的 rg 参数。结论决定参数名和语义，记进研究记录。
+- **P37.2** `search_text` 加 `output_mode`（`content` 默认 / `files_with_matches` / `count`）、`multiline`、`type`、`include_hidden`。`.git` 不论怎么设都不搜，事后丢弃越界路径的那道检查不变。后两种模式下 `max_results` 数的是文件，`context_lines` 不起作用；多行匹配按行展开，每行照样受 512 字节和总量 32 KiB 限制。
+- **P37.3** `apply_patch` 加 op `write`：用 `content` 整体替换一个**已存在**的文件，必须带 `read_file` 给的 `version`；文件不存在时拒绝并指向 `add`。和 `update` 走同一套三阶段提交、中断日志、回滚和权限保留。
+- **P37.4** `exec_command` 加 `shell`（字符串），和 `cmd` 二选一，都没给或都给了报 `CCNM_E_INVALID_ARGS`；执行的是 `bash -c <shell>`，Runtime 上没有 bash 报 `CCNM_E_DEPENDENCY`，不退回 `sh`（同一行命令在 dash 和 bash 下意思可以不同，悄悄换解释器比报错更糟）。`required` 从 `["cmd"]` 变成空，旧调用照样合法。权限门、人工确认、`exec_sandbox`、超时和输出保留一律不变；开了 `exec_sandbox` 时被包起来的就是 `bash -c …` 这条 argv。
+- **P37.5** 契约与文档：两份 `tools-list-*.json` 手工同步说明文字和参数（契约新增，不是为过测试重录）；`remote-workspace-mcp-v1.md` 页首记这次加法并加一节；中立客户端测试覆盖三种输出模式、多行、类型过滤、dotfile、`write`、`shell`；`usage.md`、`support-matrix.md` 写明验到哪一步。
+- **P37.6** 门禁：`cargo fmt --all --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace`、`cargo +1.89 check --workspace --all-targets --locked`、`python3 scripts/check_plan.py`、`python3 scripts/check_protocol.py`、`python3 -m unittest tests.test_check_protocol tests.test_remote_workspace_mcp -q`、`git diff --check`。
+
+停止点：不做分开的 `-A` / `-B`、`head_limit` / `offset` 分页、`-o`（只输出匹配部分）；不做跨调用保持工作目录（原生 Bash 有，ccnm 每次传 `cwd`）；不耗模型额度，所以"模型会不会用这些新参数"没有验；不发版、不换任何机器上的二进制；gld 的同步是 v3 方案第 5 步。

@@ -10,6 +10,7 @@
 | [status.json](status.json) | 当前阶段、完成项、阻塞、证据与下一动作，唯一进度来源 |
 | [runtime-surfaces.md](runtime-surfaces.md) | Managed Agent Runtime、Remote Workspace MCP、OS 身份和 v1/v1.x 实施边界，以及 Codex 原生执行链的设计 |
 | [../research/](../research/) | 脱敏的实测记录；回归 fixture 放在 `tests/fixtures/` |
+| [三仓重构落地清单](../research/2026-09-19-cross-project-refactor-actions.md) | 2026-09-19 跨仓评审建议、依赖与验收；不替代 status，也不自动认领新阶段 |
 
 `AGENTS.md` 是模型入口，`CLAUDE.md` 只指向它。开发命令见 [开发文档](../development.md)。整个接续流程只依赖 Git、仓库文件和项目自身命令，不要求任何特定 MCP、IDE 插件、Agent harness 或私有任务系统。旧的“在 ccnm 内做多 Agent”计划已被本路线替代，不要恢复执行。
 

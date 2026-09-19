@@ -588,6 +588,72 @@ agent_node = "agent"
         again = self.client("demo", "coding", "neutral-disconnect-again")
         self.assertIn("workspace demo", result_text(again.call_tool("workspace_info", {})))
 
+    # -- 生命周期契约：取消等待不等于取消命令，断了就是断了（P42） --
+
+    def test_cancelling_a_wait_leaves_the_command_running(self):
+        """取消一次等待只是取消这次等待。
+
+        取消 `exec_command` 的调用会停掉命令（上一个测试），取消 `read_output`
+        的等待不会——**这两件事只差一个工具名**，而模型和 hub 都会按"超时了就
+        取消"去做。命令的终点只有三个：它自己结束、`stop_command`、连接结束。
+        """
+        self.write_config("coding", unconfined=True)
+        client = self.client("demo", "coding", "neutral-cancel-wait")
+        ref = self.background(client, "echo $$ > bg.pid; sleep 3; echo done")
+        pid = self.wait_pid("bg.pid")
+
+        waiting = client.send("tools/call", {
+            "name": "read_output",
+            "arguments": {"output_ref": ref, "wait_ms": 30000},
+        })
+        time.sleep(0.2)
+        client.notify("notifications/cancelled", {"requestId": waiting, "reason": "调用方等不及了"})
+        time.sleep(0.5)
+        os.kill(pid, 0)  # 还在跑；停了的话这里抛 ProcessLookupError
+
+        done = result_text(client.call_tool("read_output", {"output_ref": ref, "wait_ms": 10000}))
+        self.assertTrue(done.startswith("done\n"), done)
+        self.assertIn("\n[exited 0 after ", done)
+
+    def test_stopping_a_command_twice_says_the_same_thing(self):
+        """停一个已经停了的命令不是错误，照实报它怎么结束的。
+
+        调用方重试、或者两个地方同时收手，都会来第二次。第二次报错会让人以为
+        命令还在。
+        """
+        self.write_config("coding", unconfined=True)
+        client = self.client("demo", "coding", "neutral-stop-twice")
+        ref = self.background(client, "echo $$ > bg.pid; exec sleep 30")
+        pid = self.wait_pid("bg.pid")
+
+        first = result_text(client.call_tool("stop_command", {"output_ref": ref}))
+        self.assertIn("\nstopped by stop_command after ", first)
+        self.assert_gone(pid)
+
+        again = client.call_tool("stop_command", {"output_ref": ref})
+        self.assertFalse(is_error(again), result_text(again))
+        self.assertIn("\nstopped by stop_command after ", result_text(again))
+
+    def test_an_output_ref_does_not_survive_the_connection(self):
+        """断了就是断了：同名会话重连，旧 `output_ref` 什么都不是。
+
+        这一条挡住的是"重连之后接着看那个后台任务"——契约里没有这种操作，而
+        只要它一次侥幸成功，调用方就会当成能用。
+        """
+        self.write_config("coding", unconfined=True)
+        client = self.client("demo", "coding", "neutral-ref-gone")
+        ref = self.background(client, "echo $$ > bg.pid; exec sleep 30")
+        pid = self.wait_pid("bg.pid")
+        client.close()
+        self.assert_gone(pid, within=2)
+
+        again = self.client("demo", "coding", "neutral-ref-gone")
+        for tool in ("read_output", "stop_command"):
+            with self.subTest(tool=tool):
+                said = result_text(again.call_tool(tool, {"output_ref": ref}))
+                self.assertTrue(said.startswith("CCNM_E_INVALID_ARGS:"), said)
+                self.assertIn(ref, said)
+
     # -- 拒绝 --
 
     def test_a_workspace_without_the_opt_in_never_hands_out_a_session(self):

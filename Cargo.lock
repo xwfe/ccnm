@@ -861,8 +861,8 @@ dependencies = [
 
 [[package]]
 name = "toexec-fs"
-version = "0.2.0"
-source = "git+https://github.com/xwfe/toexec.git?tag=toexec-fs-v0.2.0#e8da82a5411c4f5e95258a6bfce6aac14527b80b"
+version = "0.2.1"
+source = "git+https://github.com/xwfe/toexec.git?tag=toexec-fs-v0.2.1#3f5b9f98c5fdd23eb0d4a6c773434f9fe89f828a"
 
 [[package]]
 name = "toexec-skill"

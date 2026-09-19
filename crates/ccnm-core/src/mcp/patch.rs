@@ -1499,8 +1499,10 @@ fn commit_one(one: &Staged) -> Result<Option<String>> {
                 .ok_or_else(|| Error::internal("staged content is missing"))?;
             // One rename, so there is never a moment when the file is
             // absent and never a partly written file at its name. Shared
-            // with gld, which needs the Windows path where a rename onto
-            // an existing file has to unlink first.
+            // with gld. When it fails the old file is still there, which
+            // is what `commit` counts on: it rolls back the files before
+            // this one and leaves this one alone, because a failed
+            // replace has not touched it.
             toexec_fs::replace(temp, &planned.abs).map_err(|e| {
                 Error::internal(format!("cannot replace {}", planned.rel)).with_source(e)
             })?;

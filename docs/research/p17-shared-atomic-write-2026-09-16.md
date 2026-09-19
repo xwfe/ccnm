@@ -62,4 +62,10 @@ macOS arm64，Rust 1.98：
   可见，得再 fsync 父目录，两个产品原来都没做，这一刀也没做。
 - Windows 的 `replace` 分支没在 Windows 上跑过（ccnm 不支持 Windows；gld 支持，
   但它的 CI Windows job 只做 `cargo check`）。
+  > **2026-09-19 后来的事**：那个分支已经删掉了——它先 `remove_file` 再 rename，
+  > 后一步失败就把旧文件弄丢了（跨仓评审 X01）。现在所有平台都只做一次
+  > `rename`，并且在 windows-latest 上真跑了测试。结果和仍然存在的边界（Windows
+  > 上替换不了只读目标）见
+  > <https://github.com/xwfe/toexec/blob/main/evidence/x01-windows-replace/README.md>。
+  > ccnm 这边从 `toexec-fs-v0.2.0` 升到了 `v0.2.1`。
 - 没有跑真机、没有换已安装的二进制、没有消耗模型额度。

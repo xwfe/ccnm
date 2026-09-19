@@ -436,6 +436,36 @@ ccnm attach <workspace>
 
 **怎么不再踩**：受管会话里别用后台，要离开就 detach（状态栏右下角写着按键，默认 `C-b d`），回来用 `ccnm attach`。从 v0.4.0 起，每次 attach 时状态栏会把这句提示一遍。
 
+### 后台命令跑着跑着就没了
+
+**症状**：`exec_command` 加 `run_in_background` 起了一个 dev server 或者很长的构建，过一阵去 `read_output`，看到的是
+
+```text
+[stopped when its session ended, after 137.0 s]
+```
+
+或者干脆
+
+```text
+CCNM_E_INVALID_ARGS: no output kept for r-0193f2c8a1b74e05
+```
+
+命令本身没报错，日志也没写完。
+
+**其实是**：**后台命令活不过连接**（[协议第 6 节](protocol/remote-workspace-mcp-v1.md#6-连接生命周期)）。连接一断，Runtime 就停掉这条连接起的所有命令，再放写入互斥——这是有意的，否则一个没人管的进程会一直占着那棵树的写权，谁也接不上。所以要查的不是 Runtime，是**谁把连接断掉了**。按"最容易中"的顺序：
+
+1. **中间层的单次调用预算。**不是直连 ccnm，而是过了一层 hub 的时候，它一般给每次远端调用一个预算，超时就丢掉这条连接（gld 现在是 60 秒）。触发它的往往是一条跑长的**前台** `exec_command`——出事的是前台那条，陪葬的是同一个会话里所有后台命令。
+2. **中间层的空闲回收。**hub 还会回收一段时间没人用的连接（gld 的 coding 会话现在是 2 分钟）。判据通常是"上一次调用返回到现在多久"，**在跑的后台命令不算在用**：模型起完任务就去干别的，两分钟后连接就可能被收走。
+3. **Host 那边断了。**Claude Code 里 `/mcp` 重连、关掉会话、SSH 掉线，都是连接结束。
+
+**修**：
+
+- 长命令一律 `run_in_background`，然后用 `read_output` 分次看。**别靠把 `wait_ms` 调大来扛**——一次长等待正是触发第 1 条的做法。
+- 起了后台任务就别让这条会话静默太久：隔一会儿 `read_output` 一次，既看到进度，也把空闲计时清零。
+- **别用 `nohup` / `setsid` 把进程从进程组里摘出去。**那样 Runtime 停不掉它：写入互斥放掉之后它还在改文件，另一个会话进来就是两个人改同一棵树，比任务被杀糟得多。真要长活的服务，交给 Runtime 上的 systemd / launchd / tmux，ccnm 只负责起它。
+
+**怎么不再踩**：状态行就是答案，先读它。`stopped when its session ended` 是连接断了；`killed on its timeout` 是你给的 `timeout_ms` 到了；`stopped by stop_command` 是有人显式停的；`no longer running, and its exit status is unknown` 是跑它的 server 被强杀——那种情况它起的进程组**可能还在**，得上 Runtime 自己看。
+
 ### 合上笔记本睡一觉，第二天某个项目的工具连不上
 
 **症状**：同时开着几个项目，其他都好，唯独一个 `ccnm <workspace>` 起来之后 Claude 里 MCP 显示连接失败，`ccnm status` 那一行是 `TOOLS DOWN`。

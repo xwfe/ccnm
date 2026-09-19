@@ -606,3 +606,31 @@ P37 交接时建议的修法是"拒绝能匹配目录的 glob"。开工前实测
 - **P41.7** 门禁：同 P37.6，另加 AGENTS.md 对 `process.rs` 要求的 `cargo test --workspace -- --test-threads=64`。
 
 停止点：不做 stdin 和 tty（Codex 不开 tty 时 stdin 也是关的）；不做命令结束时通知模型；不做逐行推送（Claude Code 的 Monitor）；前台超时仍然杀掉而不是转后台（冻结契约里的语义）；后台命令活不过 server 进程——`/mcp Reconnect` 和断开都会停掉它们，写进文档；`mcp-serve` 被 SIGKILL 时起的进程组没人收（前台命令今天也一样），记下不修；不耗模型额度；不发版。
+
+### P42 — 后台命令的生命周期契约：四个时钟、取消的边界、连接就是命脉
+
+**依赖 P41。对应跨仓评审 X04，以及[落地清单](../research/2026-09-19-cross-project-refactor-actions.md)的 C-A。**
+
+现状是 2026-09-20 读三个仓库源码得出的，**不是运行证据**。ccnm 这边有四个时钟，散在协议文档四处，没有一处说明它们是四件不同的事；调用方那边还有第五个。
+
+| 时钟 | 谁定、在哪 | 现在是多少 | 到点会怎样 |
+| --- | --- | --- | --- |
+| 单次等待 | 调用方给 `read_output.wait_ms` | ≤ 600000 ms（`mcp::output::MAX_WAIT_MS`） | 这一次读返回，**命令继续跑** |
+| 命令运行期限 | 调用方给 `exec_command.timeout_ms` | 前台默认 120000、上限 600000（`mcp::exec` 的两个常量）；后台不给就没有期限 | 杀掉整个进程组 |
+| 会话 | 连接本身，没有别的东西 | 没有租约、没有续租、没有空闲回收 | 连接一断，这条连接起的命令全停，然后才放写锁 |
+| 输出保留 | Runtime | 外部入口连接结束即删；跨入口是最后一次运行过去 7 天 | 旧 ref 报 `CCNM_E_INVALID_ARGS` |
+| 单次调用预算 | **调用方自己的**，不是 Runtime 的 | gld `bridge::session::CALL_TIMEOUT` 60 秒；Claude Code 2.1.273 交互会话超过 120 秒自动把这次调用转后台 | gld 是丢掉这条连接（`run_locked` 里 `guard.take()`），于是 ccnm 那头连接结束 |
+
+两层叠起来是两个真问题，都还没人跑过：
+
+1. gld 的 coding 槽位 `CODING_IDLE_AFTER` 是 2 分钟，判据是 `last_used.elapsed()`——最后一次**调用返回**到现在多久，在跑的后台命令不算"在用"；回收不是定时器，发生在别的请求来找槽位的时候。模型起了后台任务、两分钟不碰这个 workspace，下一个别的请求进来就可能把连接关掉，ccnm 随即停掉那个任务。
+2. 更快的一条：gld 单次调用超过 60 秒就丢连接（它自己的 `remote_exec_command` 说明里已经写了 "this hub cuts a call off after 60 seconds and that ends the coding session"）。所以一次跑长的前台 `exec_command` 会连带杀掉同一会话里所有后台任务。
+
+ccnm 这一轮只定权威语义、补自己这边的证据。租约展示与状态投影是 gld 的事（C-A 分工），**不在本阶段实现 durable Job、租约或跨连接恢复**。
+
+- **P42.1** 实测，零额度：真实 ccnm 二进制 + 中立 MCP 客户端，确认三件现在没有测试盯着的事——`read_output` 的 `wait_ms` 等待被 `notifications/cancelled` 取消时命令继续跑（取消等待不等于取消命令，源码上 `wait_while_running` 只是 return）；同一个 `output_ref` 连停两次，第二次照实报状态、不算错；连接断掉后重连，旧 `output_ref` 读不到。上表里 gld 那两行连同源码位置一并记进 research，标明是源码事实；真实 gld + 真实 ccnm 的组合复现留给 gld（它的 `with_budgets` 就是为可控时钟准备的），本仓只记为验收依赖。
+- **P42.2** 契约：协议文档新增一节，把上表写成契约语言，并写死三句——**session-bound 是权威语义**（没有租约、没有续租、没有跨连接恢复，任何"任务活过连接"都是新的生命周期，要 `ccnm.workspace-mcp/2` 或显式协商，不能在 `/1` 下悄悄改）；**取消等待不等于取消命令**（`read_output` 的等待被取消只停等待，`exec_command` 的调用被取消才停命令，`stop_command` 是唯一停后台命令的办法）；**终态只有 Runtime 说了算**（调用方不能拿自己的传输超时给远端进程编一个结果，`read_output` 的状态行是唯一权威）。调用方自己的调用预算写明不是 Runtime 的运行时限。
+- **P42.3** 补测：P42.1 那三件事进中立客户端；`stop_command` 幂等再加一条真实二进制集成测试。都是回归护栏，不改行为。
+- **P42.4** 文档与门禁：`usage.md` 后台那段指向新一节，`support-matrix.md` 写明与 hub 的组合尚未真机组合验证，`troubleshooting.md` 加一条"后台任务莫名其妙没了"（先看调用方的调用预算和空闲回收，不是 Runtime 杀的）；门禁同 P41.7。
+
+停止点：不做 durable Job、租约、续租、跨连接恢复；不改 gld 代码（复现与修复交过去）；不改冻结契约的任何既有行为，只补说明与测试；不耗模型额度；不发版。

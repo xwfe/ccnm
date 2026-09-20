@@ -654,3 +654,34 @@ ccnm 这一轮只定权威语义、补自己这边的证据。租约展示与状
 - **P43.5** 门禁同 P41.7。
 
 停止点：不做 supervisor、cgroup、job object 这类平台进程容器（X05 只说"可采用"，那是另立范围）；不做跨 state home 的共享锁服务（评审明说近期不要造，只写清边界）；不按时间清锁；不靠"某个 pid 不在了"就交权；不改 `ccnm.workspace-mcp/1` 的任何既有行为（拒绝的错误码仍是 `CCNM_E_POLICY`，只是话更准）；不耗模型额度；不发版。
+
+### P44 — 服务端自己验输入：有副作用的拒绝，只读的说一声
+
+**依赖 P43。对应跨仓评审 X06/X10，以及[落地清单](../research/2026-09-19-cross-project-refactor-actions.md)的 C-C。**
+
+为什么服务端非得自己验：gld 那边确实已经拦掉了远端没有的工具名和顶层参数（它的 `Offered`），但**外部 CLI 可以绕过 hub 直连 ccnm**，那条路上没有任何人替 Runtime 检查。
+
+现状是 2026-09-20 用真实二进制 + 中立客户端探出来的：
+
+| 喂什么 | 现在 | 对不对 |
+| --- | --- | --- |
+| 未知顶层字段（`exec_command` 带 `sandbox: false`） | **静默忽略，命令照常执行** | 错。调用方以为关掉了什么，其实那个字段根本没人看 |
+| 嵌套里的未知字段（`files[0].mode: "0777"`） | **静默忽略，补丁照常落盘** | 同上 |
+| 不认识的枚举（`op: "chmod"`、`output_mode: "json"`） | 拒绝，还列出合法值 | 对 |
+| 类型不对（`timeout_ms: "soon"`） | 拒绝 | 对 |
+| 必填缺失 | 拒绝 | 对 |
+| 超界（`timeout_ms: 99999999`） | **静默钳到 600000** | 错。调用方以为自己要到了 27 小时 |
+
+后三条的拒绝是 `isError` 工具结果而不是 JSON-RPC 错误，**句柄不会被误伤**——正是 X06 验收要的"拒绝发生在执行之前，且不误伤仍有效的 coding 会话"。
+
+还有一条：已发布的 `inputSchema` 里一个 `additionalProperties` 都没有，等于**声明"随便加字段"**，实现也确实照单全收。X06 验收的"声明的 schema 与真实解析一致"现在不成立。
+
+做法（用户 2026-09-20 定的力度）：
+
+- **P44.1** 实测记录：上表的依据，以及 schemars 会跟着 serde 的 `deny_unknown_fields` 自动发出 `additionalProperties: false`（实测 `exec_command` 有、`read_file` 没有）——所以声明和解析是一次改对，不用手写 schema。
+- **P44.2** 有副作用的三个工具收紧：`exec_command`、`apply_patch`、`stop_command` 连同它们的嵌套结构（`FilePatch`、`Edit`、`CellEdit`）开 `deny_unknown_fields`；`timeout_ms`、`preview_bytes` 超界改成**拒绝**而不是钳到上限。拒绝都发生在执行之前。
+- **P44.3** 只读工具反过来：照旧接受未知字段，但**结果里多一行**写明忽略了哪些——不静默，也不因为一个多余字段让一次读失败。超界值照旧钳，同样说一声。
+- **P44.4** 契约与文档：协议加一节讲这两条规矩和为什么分开；两份 `tools-list-*.json` 跟着更新（`additionalProperties` 进 fixture 的比对范围）；页首**记明这是行为收紧，不是加法**，并写清为什么不升 `ccnm.workspace-mcp/2`；`usage`、`support-matrix`、`troubleshooting` 各一处。
+- **P44.5** 门禁同 P41.7。
+
+停止点：只读工具**不**拒绝未知字段（用户定的力度，一个多余字段不该让一次读失败）；不改任何错误码（参数解析失败仍是 `isError` 工具结果）；不做 MCP 层的能力协商扩展（SEP 那条另立）；不碰 gld；不耗模型额度；不发版。

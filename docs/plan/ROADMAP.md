@@ -38,7 +38,9 @@ ccnm 不需要安装 Orchestrator 也能独立使用。Orchestrator 核心不链
 
 ## 二、顺序和基线
 
-`P0 → P1 → P2 → P3 → P4 → P5 → P6 → P7 → P8 → P9 → P10 → P11 → P12 → P13 → P14 → P15 → P16 → P17 → P18 → P19 → P20 → P21 → P22 → P23 → P24 → P25 → P26 → P27 → P28 → P29 → P30 → P31 → P32 → P33 → P34 → P35 → P36`。默认每轮只执行一个阶段。P0–P8 是 ccnm v1 收口和独立 Orchestrator 的接口交接；P9–P12 是 ccnm v1.x 的 Remote Workspace MCP 扩展；P13 是按真实 Host 行为修正两个入口共用的 instructions 投影；P21–P24 是 Codex 原生执行链；P25 修 P24 真机轮发现的预检错误码；P26 补原生链在 Runtime 侧的探活；P27 让 doctor 也探这条链；P28 让 CI 在声明的 rust-version 上编译一遍；P29 补测原生链的并发、在途请求与资源上限，P30 修它查出的 fs helper 活过放锁；P31 给 Runtime 保留输出加会话总量上限、结束即删和过期清理；P32 封存原生链（用户决定）；P33 把沙箱那项收益搬到两个入口共用的 `exec_command` 上；P34 修 `apply_patch` 日志锁探测靠关文件放锁、fork 窗口里漏拦的缺陷；P35 让测试建的临时目录跑完就删（纯测试代码）；P36 起是"工具面对齐原生能力"那条线（跨仓方案在 toexec 的 v3 计划），第一个阶段是 Runtime 上项目自带的 skills。完整边界见 [双执行入口方案](runtime-surfaces.md)。
+`P0 → P1 → P2 → P3 → P4 → P5 → P6 → P7 → P8 → P9 → P10 → P11 → P12 → P13 → P14 → P15 → P16 → P17 → P18 → P19 → P20 → P21 → P22 → P23 → P24 → P25 → P26 → P27 → P28 → P29 → P30 → P31 → P32 → P33 → P34 → P35 → P36 → P37 → P38 → P39 → P40 → P41 → P42 → P43 → P44`。默认每轮只执行一个阶段。P0–P8 是 ccnm v1 收口和独立 Orchestrator 的接口交接；P9–P12 是 ccnm v1.x 的 Remote Workspace MCP 扩展；P13 是按真实 Host 行为修正两个入口共用的 instructions 投影；P21–P24 是 Codex 原生执行链；P25 修 P24 真机轮发现的预检错误码；P26 补原生链在 Runtime 侧的探活；P27 让 doctor 也探这条链；P28 让 CI 在声明的 rust-version 上编译一遍；P29 补测原生链的并发、在途请求与资源上限，P30 修它查出的 fs helper 活过放锁；P31 给 Runtime 保留输出加会话总量上限、结束即删和过期清理；P32 封存原生链（用户决定）；P33 把沙箱那项收益搬到两个入口共用的 `exec_command` 上；P34 修 `apply_patch` 日志锁探测靠关文件放锁、fork 窗口里漏拦的缺陷；P35 让测试建的临时目录跑完就删（纯测试代码）；P36–P41 是"工具面对齐原生能力"那条线（跨仓方案在 toexec 的 v3 计划）：P36 项目自带的 skills、P37 搜索模式与整文件覆盖与一行 shell、P38 让搜索的 glob 不越过 `.gitignore`、P39 view_image、P40 notebook 按 cell 读写、P41 后台命令；P42–P44 是跨仓重构评审 X04–X06 的三条收口：P42 后台命令的生命周期契约、P43 停不掉的命令不交出写权、P44 服务端自己验输入。完整边界见 [双执行入口方案](runtime-surfaces.md)。
+
+**P44 之后没有已排期的阶段。**下一步的候选写在 toexec 的 v3 计划第 5 节第 6、7 步（Agent 面放开、对照实验），两步都要真实 CLI 和模型额度，且第 6 步开工前要用户先定"除 WebSearch 外的 Agent 面是默认开还是按 workspace opt-in"。在那之前 ccnm 这边没有可以自行开工的阶段。
 
 ### P0 — 已有内部验证基线
 

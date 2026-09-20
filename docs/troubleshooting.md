@@ -503,7 +503,13 @@ kill <那个 sshd-session 的 pid>
 
 如果 busy 是**你自己那个会话**的分身造成的，看上一条。其余情况：busy 表示仍有 writer 持锁——**受管入口和外部 MCP 共用同一把锁**，所以持锁的可能是任一侧；unknown 表示异常退出或 marker 不完整，不能证明旧执行者已经结束。不要循环删锁或按时间强制接管。
 
+**还有第三种，话不一样**：`workspace write guard was kept on purpose`。这不是崩溃——上一个会话结束时有命令**停不掉**（离开了进程组又攥着管道，ccnm 的信号够不着），它明知有东西可能还在改这棵树，故意没交出写权。拒绝信息里点名还剩哪些 `output_ref`。**先把那些命令收掉再谈清锁**，顺序反了就是两个写者进同一棵树；每条命令的命令行在 `sessions/<session>/output/<ref>/status` 里，步骤见[写入 guard 残留](operations.md#写入-guard-残留)。
+
+拒绝信息里还会说上一个会话的 pid 现在是什么（还在跑，连命令行一起给；已经不在；或者被别的程序复用了）。**pid 没了不等于可以接管**——它起的命令可能还活着，而 ccnm 看不见它们。
+
 先在 Agent Node 用 `ccnm status <workspace> --agent <instance-id> --session <ccnm-session-id>` 定位会话，再由 Runtime 操作者确认旧 MCP 和子进程。完整人工恢复边界见[支持矩阵](support-matrix.md#runtime-单写-guard)。`doctor`/MCP probe 同样经过写 guard，活动 writer 下诊断被拒绝不等于 SSH 损坏。
+
+**两个会话都开起来了、都能写同一棵树**，那不是锁坏了：写锁只在一个 state 目录内有效，两边的 `XDG_STATE_HOME` 不同就是两把互不相干的锁。见[运维手册](operations.md#一棵树配两个-state-目录--两个互不知晓的写域)。
 
 ### doctor 报 `ssh <别名>: connect to host ... port 22: Operation timed out`
 

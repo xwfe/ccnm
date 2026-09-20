@@ -340,15 +340,36 @@ ccnm stop demo --agent codex-main --session <id>  # 精确停一个
 
 症状：新会话起不来，报工作树被占，但没有会话在跑。
 
-异常退出会在 Runtime 的 `write-guards/` 里留下 `held <session> <workspace>` 标记，状态是 unknown。**ccnm 不会因为时间过去就自动接管**——它证明不了旧的执行者已经结束。
+Runtime 的 `write-guards/` 里那个 marker 长这样（P43 起多了 pid）：
+
+```text
+held <session> <workspace> pid <pid>
+```
+
+**先看有没有第二行**，两种情况的处理不一样：
+
+```text
+held bridge-abandoned demo pid 25669
+abandoned 1 command(s) (r-e69acf4e804643a2)
+```
+
+**有 `abandoned` 这一行 = 不是异常退出。**上一个会话结束时有命令停不掉（离开了进程组、又攥着管道那种，ccnm 的信号够不着它），ccnm 明知有东西可能还在改这棵树，**故意**没把写权交出去。所以**先去收那些命令，别急着删 marker**——删了就是放第二个写者进同一棵树，那正是这把锁存在的理由。每条命令的命令行在 `${XDG_STATE_HOME:-~/.local/state}/ccnm/sessions/<session>/output/<ref>/status` 里；进程要按它自己留下的进程组找，`ccnm status` 看不到它们。`ccnm status` 这时会说"故意留着的"，不是"异常退出留下的"。
+
+**没有第二行 = 异常退出留下的**，状态是 unknown。**ccnm 不会因为时间过去就自动接管**——它证明不了旧的执行者已经结束。marker 里的 pid 只帮你少找一步：拒绝信息会告诉你那个 pid 现在是什么（还在跑，连命令行一起给你；已经不在；或者被别的程序复用了）。**pid 没了不等于可以接管**——它起的命令可能还活着，而这里看不见它们。
 
 恢复必须由 Runtime 操作者做，顺序不能反：
 
-1. 先证明旧的都结束了：`ccnm status <workspace>` 加进程列表，确认旧 supervisor、Agent、SSH MCP 及其子进程都没了。
+1. 先证明旧的都结束了：`ccnm status <workspace>` 加进程列表，确认旧 supervisor、Agent、SSH MCP 及其子进程都没了。marker 里有 pid 的话先查它（`ps -o pid=,lstart=,command= -p <pid>`）。
 2. 在 `${XDG_STATE_HOME:-~/.local/state}/ccnm/write-guards/` 里找到包含那个 session id 的**单个** marker 文件。
 3. 备份后删掉那**一个**文件。
 
 不要批量删，不要仅因为"过了很久"就清。**证明不了旧执行者结束时，保持 unknown 才是对的状态。**
+
+#### 一棵树配两个 state 目录 = 两个互不知晓的写域
+
+写锁存在**传给 ccnm 的那个 state 目录**里（`${XDG_STATE_HOME:-~/.local/state}/ccnm/write-guards/`），文件名按工作树的规范化路径算。所以同一棵工作树，只要两边的 `XDG_STATE_HOME` 不一样，就是两把互不相干的锁：两个 coding 会话能同时开起来，各写各的，谁也不知道谁。2026-09-20 用真实二进制实测过——两个会话都成功写进了同一棵树（[P43 记录](research/p43-guard-recovery-2026-09-20.md)）。
+
+这是设计的边界，不是 bug：ccnm 不往工作树里放状态，也不占用系统级的固定路径。避开它只有一条：**同一台机器上服务同一棵树的所有 ccnm 进程，用同一个 `XDG_STATE_HOME`**。两个不同的系统用户各自跑 ccnm 服务同一棵树也是这个问题（各自的 home 就是各自的 state），那种情况下这把锁保护不了你，得靠别的办法（比如干脆不让第二个账号写那棵树）。
 
 **占着锁的是 Codex exec-server 链时**（`codex_exec_server = true` 的 workspace），第 1 步要找的是 `ccnm internal exec-serve`、`codex exec-server` 和它们起的命令；Agent Node 那边对应的是 Codex 自己 spawn 的 `ccnm internal exec-transport`——它 exec 成了一条 `ssh … internal exec-serve`，`ps` 里看到的是 ssh。命令不一定还挂在这两个进程下面：exec-server 给每条命令单独开进程组，用 `setsid` 脱离的进程会被 init 收养。它们的环境变量里都有 `CCNM_EXEC_SESSION=<session id>-<随机串>`，按这个找（macOS 用 `ps -axEww -o pid,command`，Linux 看 `/proc/<pid>/environ`）。监督进程自己放不了锁时报的错里就带着这个值。
 

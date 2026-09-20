@@ -143,6 +143,13 @@ jobs:
     needs: [macos, linux]
     runs-on: ubuntu-24.04
     steps:
+      # 为了拿 tag 自己的说明。`git tag -a` 写的那段话只存在 tag 对象里，
+      # GitHub 的 release 页面不会显示它——不捞出来的话，每个版本的页面
+      # 都是下面那段一模一样的安装说明，升级的人看不到这版改了什么。
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - uses: actions/download-artifact@v4
         with:
           path: downloads
@@ -160,8 +167,8 @@ jobs:
             '' \
             '* `macos-universal` — arm64 + x86_64. This is the one an **Agent Node**' \
             '  needs, and it also works as a Runtime.' \
-            "* \`linux-x86_64\` — the **Runtime** half only (\`internal mcp-serve\` and the" \
-            '  seven tools). The Agent half is a launchd LaunchAgent and does not run on' \
+            "* \`linux-x86_64\` — the **Runtime** half only (\`internal mcp-serve\` and its" \
+            '  tools). The Agent half is a launchd LaunchAgent and does not run on' \
             "  Linux. Needs glibc >= $GLIBC; Debian 13 has 2.41." \
             '' \
             'Both machines need the same ccnm version.' \
@@ -181,10 +188,22 @@ jobs:
             '* Downloaded through a browser it arrives quarantined and macOS refuses to' \
             '  run it: `xattr -d com.apple.quarantine ccnm`. `curl` does not set that.' \
             '' \
-            'Setup, the doctor table and troubleshooting: README.md' > notes.md
+            'Setup, the doctor table and troubleshooting: README.md' > install.md
+          # tag 自己那段话在前，安装说明在后。`%(contents)` 的第一行是 tag 名
+          # （历史上每个 tag 都这么写的），删掉它免得和 release 标题重复。
+          # 拿不到就只发安装说明——发版不能因为少一段说明而失败。
+          git tag -l --format='%(contents)' "$GITHUB_REF_NAME" \
+            | tail -n +2 > tagnotes.md || true
+          if [ -s tagnotes.md ]; then
+            cat tagnotes.md > notes.md
+            printf '\n---\n\n' >> notes.md
+            cat install.md >> notes.md
+          else
+            echo "::warning::tag $GITHUB_REF_NAME 没有 annotation，release 只带安装说明"
+            cp install.md notes.md
+          fi
           gh release create "$GITHUB_REF_NAME" \
             downloads/macos/* downloads/linux/* \
             --repo "$GITHUB_REPOSITORY" \
             --title "ccnm $GITHUB_REF_NAME" \
-            --generate-notes \
             --notes "$(cat notes.md)"

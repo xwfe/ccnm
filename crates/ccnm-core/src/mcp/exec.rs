@@ -94,6 +94,7 @@ pub const MAX_PREVIEW_BYTES: usize = 16 * 1024;
 
 /// Arguments of `exec_command`.
 #[derive(Debug, Clone, Default, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ExecCommandArgs {
     /// Program and arguments, e.g. `["cargo", "test", "--lib"]`. Not a
     /// shell line: no pipes, redirection or globs. Give this or `shell`.
@@ -244,15 +245,30 @@ pub(crate) fn exec_command_in(
             return Err(Error::invalid_args(format!("{field} contains a NUL byte")));
         }
     }
+    // Over the ceiling is refused, not quietly clamped (P44): a caller that
+    // asked for 27 hours and got ten minutes goes on believing it has 27
+    // hours. Clamping is fine where the answer is only smaller than asked
+    // for -- a short read -- but this one decides when a command is killed.
     let timeout_ms = match (args.timeout_ms, args.run_in_background) {
         (Some(0), _) => return Err(Error::invalid_args("timeout_ms must be at least 1")),
-        (Some(ms), _) => Some(ms.min(MAX_TIMEOUT_MS)),
+        (Some(ms), _) if ms > MAX_TIMEOUT_MS => {
+            return Err(Error::invalid_args(format!(
+                "timeout_ms is at most {MAX_TIMEOUT_MS}; for longer than that use run_in_background, which has no limit unless you give one"
+            )));
+        }
+        (Some(ms), _) => Some(ms),
         (None, false) => Some(DEFAULT_TIMEOUT_MS),
         (None, true) => None,
     };
-    let preview_bytes = args.preview_bytes.map_or(DEFAULT_PREVIEW_BYTES, |n| {
-        (n as usize).min(MAX_PREVIEW_BYTES)
-    });
+    let preview_bytes = match args.preview_bytes {
+        Some(n) if n as usize > MAX_PREVIEW_BYTES => {
+            return Err(Error::invalid_args(format!(
+                "preview_bytes is at most {MAX_PREVIEW_BYTES}; the rest of the output stays on the Runtime Node, read it with read_output"
+            )));
+        }
+        Some(n) => n as usize,
+        None => DEFAULT_PREVIEW_BYTES,
+    };
 
     let (cwd_rel, cwd_abs) = match args.cwd.as_deref().map(str::trim) {
         None | Some("") | Some(".") | Some("./") => (".".to_string(), root.to_path_buf()),
@@ -922,6 +938,30 @@ mod tests {
             },
         );
         assert_eq!(e.code(), ErrorCode::InvalidArgs);
+
+        // 超上限是**拒**，不是钳（P44）。钳的话要 27 小时的调用方会拿着一个
+        // 十分钟的命令，以为自己有 27 小时。
+        let e = fails(
+            &f,
+            ExecCommandArgs {
+                cmd: vec!["true".into()],
+                timeout_ms: Some(MAX_TIMEOUT_MS + 1),
+                ..Default::default()
+            },
+        );
+        assert_eq!(e.code(), ErrorCode::InvalidArgs);
+        assert!(e.message().contains("run_in_background"), "{e}");
+
+        let e = fails(
+            &f,
+            ExecCommandArgs {
+                cmd: vec!["true".into()],
+                preview_bytes: Some(MAX_PREVIEW_BYTES as u32 + 1),
+                ..Default::default()
+            },
+        );
+        assert_eq!(e.code(), ErrorCode::InvalidArgs);
+        assert!(e.message().contains("read_output"), "{e}");
     }
 
     fn shell(f: &Fixture, line: &str) -> ExecResult {

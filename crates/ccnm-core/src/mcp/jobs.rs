@@ -414,6 +414,7 @@ fn seconds(ms: u64) -> String {
 
 /// Arguments of `stop_command`.
 #[derive(Debug, Clone, Default, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct StopCommandArgs {
     /// The output_ref exec_command returned for a command started with
     /// run_in_background.

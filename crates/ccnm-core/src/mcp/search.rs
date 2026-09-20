@@ -145,6 +145,10 @@ pub struct SearchTextArgs {
     /// Default false.
     #[serde(default)]
     pub include_hidden: Option<bool>,
+    /// Anything this tool does not declare: reported back, not obeyed. See
+    /// [`crate::mcp::Ignored`].
+    #[serde(flatten)]
+    pub ignored: crate::mcp::Ignored,
 }
 
 /// What a search returns.

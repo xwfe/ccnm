@@ -59,6 +59,10 @@ pub struct ReadOutputArgs {
     #[serde(default)]
     #[schemars(range(min = 0, max = 600_000))]
     pub wait_ms: Option<u64>,
+    /// Anything this tool does not declare: reported back, not obeyed. See
+    /// [`crate::mcp::Ignored`].
+    #[serde(flatten)]
+    pub ignored: crate::mcp::Ignored,
 }
 
 #[derive(

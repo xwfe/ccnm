@@ -70,6 +70,10 @@ pub struct ReadNotebookArgs {
     /// Index of the first cell to show, from 0. Default 0.
     #[serde(default)]
     pub start_cell: Option<u32>,
+    /// Anything this tool does not declare: reported back, not obeyed. See
+    /// [`crate::mcp::Ignored`].
+    #[serde(flatten)]
+    pub ignored: crate::mcp::Ignored,
 }
 
 /// One piece of a `read_notebook` result, in order.
@@ -540,6 +544,7 @@ pub enum EditMode {
 
 /// One cell edit, named as Claude Code's NotebookEdit names them.
 #[derive(Debug, Clone, Default, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct CellEdit {
     /// The cell's id as read_notebook shows it (`cell-N` for a notebook
     /// without ids). Required for replace and delete; for insert the new
@@ -714,6 +719,7 @@ mod tests {
             &ReadNotebookArgs {
                 path: "analysis.ipynb".into(),
                 start_cell: start,
+                ..Default::default()
             },
         )
         .unwrap()
@@ -907,6 +913,7 @@ mod tests {
                 &ReadNotebookArgs {
                     path: "bad.ipynb".into(),
                     start_cell: None,
+                    ..Default::default()
                 },
             )
             .unwrap_err();

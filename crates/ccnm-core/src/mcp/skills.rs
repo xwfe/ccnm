@@ -99,6 +99,10 @@ pub struct LoadSkillArgs {
     /// type after the skill's name.
     #[serde(default)]
     pub arguments: Option<String>,
+    /// Anything this tool does not declare: reported back, not obeyed. See
+    /// [`crate::mcp::Ignored`].
+    #[serde(flatten)]
+    pub ignored: crate::mcp::Ignored,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -703,6 +707,7 @@ mod tests {
             &LoadSkillArgs {
                 name: Some("secret".into()),
                 arguments: None,
+                ..Default::default()
             },
             None,
         )
@@ -769,6 +774,7 @@ mod tests {
         let call = LoadSkillArgs {
             name: Some("/deploy".into()),
             arguments: Some("staging".into()),
+            ..Default::default()
         };
         let text = load_skill(&root, &call, Some("sess-1")).unwrap();
         assert!(
@@ -826,6 +832,7 @@ mod tests {
             &LoadSkillArgs {
                 name: Some("release".into()),
                 arguments: None,
+                ..Default::default()
             },
             None,
         )
@@ -853,6 +860,7 @@ mod tests {
             &LoadSkillArgs {
                 name: Some("deplyo".into()),
                 arguments: None,
+                ..Default::default()
             },
             None,
         )
@@ -886,6 +894,7 @@ mod tests {
             &LoadSkillArgs {
                 name: Some("long".into()),
                 arguments: None,
+                ..Default::default()
             },
             None,
         )
@@ -925,7 +934,8 @@ mod tests {
                 &root,
                 &LoadSkillArgs {
                     name: Some("new".into()),
-                    arguments: None
+                    arguments: None,
+                    ..Default::default()
                 },
                 None
             )

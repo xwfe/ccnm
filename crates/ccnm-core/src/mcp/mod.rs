@@ -8,6 +8,8 @@
 //! protocol's base64 payload is consumed once, before the first byte of
 //! MCP (section 9).
 
+use rmcp::schemars;
+
 pub mod bridge;
 pub mod context;
 pub mod exec;
@@ -27,6 +29,52 @@ pub mod search;
 pub mod server;
 pub mod skills;
 pub mod write_guard;
+
+/// Fields a read-only tool was given but does not declare.
+///
+/// The three tools with side effects (`exec_command`, `apply_patch`,
+/// `stop_command`) refuse an unknown field outright — `deny_unknown_fields`,
+/// which schemars also publishes as `additionalProperties: false`, so the
+/// schema and the parser say the same thing. A field nobody reads is how a
+/// command ends up running on terms the caller believes it set.
+///
+/// A read cannot go wrong that way, so it still answers. But it **says what
+/// it ignored**: silently dropping `follow_symlinks` is how "I asked it to
+/// follow symlinks" turns into "it followed symlinks" (P44).
+#[derive(Debug, Clone, Default, serde::Deserialize, schemars::JsonSchema)]
+#[serde(transparent)]
+pub struct Ignored(pub std::collections::BTreeMap<String, serde_json::Value>);
+
+impl Ignored {
+    /// The line to add to the result, or nothing when every field was one
+    /// this tool knows.
+    pub fn note(&self) -> Option<String> {
+        if self.0.is_empty() {
+            return None;
+        }
+        let names: Vec<&str> = self.0.keys().map(String::as_str).collect();
+        Some(format!(
+            "[ignored, this tool has no such argument: {}. The answer above did not take {} into account; see this tool's schema]",
+            names.join(", "),
+            if names.len() == 1 { "it" } else { "them" }
+        ))
+    }
+}
+
+/// Append [`Ignored::note`] to a tool's text, when there is one.
+pub(crate) fn with_ignored(text: String, note: Option<String>) -> String {
+    match note {
+        None => text,
+        Some(note) => {
+            let mut text = text;
+            if !text.ends_with('\n') {
+                text.push('\n');
+            }
+            text.push_str(&note);
+            text
+        }
+    }
+}
 
 /// The longest prefix of `s` that fits in `max` bytes without splitting a
 /// character.

@@ -83,7 +83,7 @@
       "additionalProperties": false
     },
     "input_schema": {
-      "description": "一个工具的参数表。这里只管形状：`properties` 必须在场，哪怕是空的——一个没有它的工具表等于没说这个工具收什么，而参数名正是 Host 照着实现的东西。**参数名本身这份 schema 证明不了**，它是手写的，和 fixture 一起漂也不会有人发现；对着真实 server 比参数名（以及工具名和 description）的是 `cargo test -p ccnm-cli --test external_mcp`（`published_tool_tables_match_the_running_server`）。",
+      "description": "一个工具的参数表。这里只管形状：`properties` 必须在场，哪怕是空的——一个没有它的工具表等于没说这个工具收什么，而参数名正是 Host 照着实现的东西。`additionalProperties` 说这个工具收不收它没声明的字段（P44：有副作用的三个是 false，只读的是 true，没有参数结构的 workspace_info 不发这个键），**它和服务端真实的解析必须一致**，这一条同样由下面那个测试盯着。**参数名本身这份 schema 证明不了**，它是手写的，和 fixture 一起漂也不会有人发现；对着真实 server 比参数名（以及工具名、description 和 additionalProperties）的是 `cargo test -p ccnm-cli --test external_mcp`（`published_tool_tables_match_the_running_server`）。",
       "type": "object",
       "properties": {
         "type": {
@@ -98,6 +98,9 @@
             "type": "string",
             "minLength": 1
           }
+        },
+        "additionalProperties": {
+          "type": "boolean"
         }
       },
       "required": [

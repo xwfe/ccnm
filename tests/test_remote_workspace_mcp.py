@@ -654,6 +654,73 @@ agent_node = "agent"
                 self.assertTrue(said.startswith("CCNM_E_INVALID_ARGS:"), said)
                 self.assertIn(ref, said)
 
+    # -- 服务端自己验输入（P44） --
+
+    def test_a_tool_with_side_effects_refuses_a_field_it_does_not_declare(self):
+        """有副作用的工具拒绝未知字段，连嵌套里的也拒。
+
+        gld 那边会先拦一道，但**外部 CLI 可以绕过 hub 直连**，那条路上没人替
+        Runtime 检查。以前这些字段被 serde 静默丢掉，命令照跑、补丁照落盘——
+        调用方于是以为自己关掉了什么。
+        """
+        self.write_config("coding", unconfined=True)
+        client = self.client("demo", "coding", "neutral-unknown-write")
+
+        # 编一个看起来像安全开关的字段。
+        said = result_text(
+            client.call_tool("exec_command", {"cmd": ["/bin/echo", "hi"], "sandbox": False})
+        )
+        self.assertIn("unknown field `sandbox`", said)
+        # 合法字段名一并列出来，模型能自己改对。
+        self.assertIn("run_in_background", said)
+
+        # 嵌套里的也拒：files[0] 多一个 mode。
+        said = result_text(client.call_tool("apply_patch", {
+            "files": [{"op": "add", "path": "new.txt", "content": "x\n", "mode": "0777"}],
+        }))
+        self.assertIn("unknown field `mode`", said)
+        self.assertFalse((self.root / "new.txt").exists(), "拒绝要发生在落盘之前")
+
+    def test_a_read_only_tool_answers_but_says_what_it_ignored(self):
+        """只读工具不因为一个多余字段就失败，但也不装作看见了它。"""
+        self.write_config("coding", unconfined=True)
+        client = self.client("demo", "coding", "neutral-unknown-read")
+        said = result_text(
+            client.call_tool("read_file", {"path": "hello.txt", "follow_symlinks": True})
+        )
+        self.assertIn("1→one", said, "读该照常给答案")
+        self.assertIn("[ignored, this tool has no such argument: follow_symlinks", said)
+
+    def test_a_ceiling_a_command_depends_on_is_refused_not_clamped(self):
+        """写/执行这边超界是拒，不是悄悄改小——读那边照旧钳，但说一声。"""
+        self.write_config("coding", unconfined=True)
+        client = self.client("demo", "coding", "neutral-ceiling")
+
+        said = result_text(
+            client.call_tool("exec_command", {"cmd": ["/bin/echo", "hi"], "timeout_ms": 99_999_999})
+        )
+        self.assertTrue(said.startswith("CCNM_E_INVALID_ARGS:"), said)
+        self.assertIn("run_in_background", said, "要告诉它该怎么办")
+
+        ref = self.background(client, "sleep 0.2")
+        page = result_text(client.call_tool("read_output", {"output_ref": ref, "wait_ms": 99_999_999}))
+        self.assertIn("[waited up to 600000 ms, not the 99999999 ms asked for", page)
+
+    def test_the_published_schema_says_which_tools_refuse_extra_fields(self):
+        """声明和真实解析必须一致（评审 X06）：schema 上写的就是服务端执行的。"""
+        self.write_config("coding", unconfined=True)
+        client = self.client("demo", "coding", "neutral-schema")
+        extra = {
+            tool["name"]: tool["inputSchema"].get("additionalProperties")
+            for tool in client.tools()
+        }
+        for name in ("exec_command", "apply_patch", "stop_command"):
+            self.assertIs(extra[name], False, f"{name} 该声明它不收额外字段")
+        for name in ("read_file", "list_files", "search_text", "read_output"):
+            self.assertIs(extra[name], True, f"{name} 收额外字段（只是会说忽略了）")
+        # 没有参数结构的那个不发这个键，不要凭空造一个。
+        self.assertIsNone(extra["workspace_info"])
+
     # -- 拒绝 --
 
     def test_a_workspace_without_the_opt_in_never_hands_out_a_session(self):

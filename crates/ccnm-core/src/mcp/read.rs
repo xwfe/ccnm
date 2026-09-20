@@ -95,6 +95,10 @@ pub struct ReadFileArgs {
     #[serde(default)]
     #[schemars(range(min = 1, max = 65536))]
     pub max_bytes: Option<u32>,
+    /// Anything this tool does not declare: reported back, not obeyed. See
+    /// [`crate::mcp::Ignored`].
+    #[serde(flatten)]
+    pub ignored: crate::mcp::Ignored,
 }
 
 /// Why a read stopped early. Absent when the caller's own range or the end

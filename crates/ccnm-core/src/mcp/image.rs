@@ -48,6 +48,10 @@ pub const MAX_IMAGE_BYTES: u64 = 5 * 1024 * 1024 / 4 * 3;
 pub struct ViewImageArgs {
     /// Path of a PNG, JPEG, GIF or WebP file, relative to the workspace root.
     pub path: String,
+    /// Anything this tool does not declare: reported back, not obeyed. See
+    /// [`crate::mcp::Ignored`].
+    #[serde(flatten)]
+    pub ignored: crate::mcp::Ignored,
 }
 
 /// An image format both Hosts show the model.
@@ -197,6 +201,7 @@ mod tests {
             root,
             &ViewImageArgs {
                 path: path.to_string(),
+                ..Default::default()
             },
         )
     }

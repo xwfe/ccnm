@@ -83,6 +83,10 @@ pub struct ListFilesArgs {
     /// Include names starting with a dot. Default false.
     #[serde(default)]
     pub include_hidden: Option<bool>,
+    /// Anything this tool does not declare: reported back, not obeyed. See
+    /// [`crate::mcp::Ignored`].
+    #[serde(flatten)]
+    pub ignored: crate::mcp::Ignored,
 }
 
 /// Where the file list came from. Worth reporting: the two sources leave

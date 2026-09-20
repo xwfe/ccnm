@@ -23,6 +23,7 @@
           "description": "Read a text file from the remote workspace, as numbered lines. Paths are relative to the workspace root. Long files come back truncated with the line to resume from; there is no way to read a file whole in one call.",
           "inputSchema": {
             "type": "object",
+            "additionalProperties": true,
             "properties": {
               "path": {
                 "type": "string"
@@ -54,6 +55,7 @@
           "description": "List a directory of the remote workspace, or search it with a glob. Without a glob you get the immediate children of one directory; with one you get every match under it, at any depth. In a git workspace, files that .gitignore rules out are never listed.",
           "inputSchema": {
             "type": "object",
+            "additionalProperties": true,
             "properties": {
               "path": {
                 "type": "string"
@@ -79,6 +81,7 @@
           "description": "Search the remote workspace for a string, or a regex if you ask for one. The search runs where the files are and only the results come back: matching lines by default, or with output_mode just the file names or a count per file. Files that .gitignore rules out are never searched, dotfiles only with include_hidden, and .git never.",
           "inputSchema": {
             "type": "object",
+            "additionalProperties": true,
             "properties": {
               "query": {
                 "type": "string"
@@ -133,6 +136,7 @@
           "description": "Load one of this project's skills: task instructions the project keeps in .claude/skills, .claude/commands or .agents/skills. Before starting a task that a skill below describes, call this with the skill's name and follow what comes back. A skill's scripts and reference files are ordinary workspace files under its directory: read them with read_file and run them with exec_command. Without a name this returns the full list.\n\nThis workspace has no skills right now.",
           "inputSchema": {
             "type": "object",
+            "additionalProperties": true,
             "properties": {
               "name": {
                 "type": "string"
@@ -152,6 +156,7 @@
           "description": "Look at a PNG, JPEG, GIF or WebP image in the remote workspace. The image comes back as an image the model can see, up to 3932160 bytes; nothing is converted on that machine. In Codex Code Mode, pass the image block from the result to image() to see it.",
           "inputSchema": {
             "type": "object",
+            "additionalProperties": true,
             "properties": {
               "path": {
                 "type": "string"
@@ -171,6 +176,7 @@
           "description": "Read a Jupyter notebook from the remote workspace as cells: each cell's id, type and source, then a code cell's outputs, with PNG and JPEG outputs as images. Long notebooks come back in parts with the start_cell to continue from. Change cells with apply_patch op edit_notebook, using the ids shown here.",
           "inputSchema": {
             "type": "object",
+            "additionalProperties": true,
             "properties": {
               "path": {
                 "type": "string"

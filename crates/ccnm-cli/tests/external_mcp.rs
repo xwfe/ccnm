@@ -603,6 +603,13 @@ fn published_tool_tables_match_the_running_server() {
                 required(tool),
                 "{fixture_file}: {tool_name} publishes a different required set"
             );
+            // P44: a schema that promises to tolerate unknown fields while
+            // the parser refuses them is exactly what X06 asks to rule out.
+            assert_eq!(
+                extra_fields(mine),
+                extra_fields(tool),
+                "{fixture_file}: {tool_name} publishes an additionalProperties this server does not enforce"
+            );
         }
         session.shutdown();
     }
@@ -662,6 +669,13 @@ fn required(tool: &Value) -> Vec<String> {
         .unwrap_or_default();
     names.sort();
     names
+}
+
+/// What this tool's schema says about fields it does not declare: `false`
+/// for the three with side effects, `true` for the read-only ones, and
+/// absent for `workspace_info`, which has no argument struct at all.
+fn extra_fields(tool: &Value) -> Option<bool> {
+    tool["inputSchema"]["additionalProperties"].as_bool()
 }
 
 /// A path outside the workspace is refused the same way it is on the

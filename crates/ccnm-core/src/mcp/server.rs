@@ -54,6 +54,7 @@ use crate::mcp::retention;
 use crate::mcp::sandbox;
 use crate::mcp::search::{self, SearchTextArgs};
 use crate::mcp::skills::{self, LoadSkillArgs};
+use crate::mcp::with_ignored;
 use crate::process::{Cmd, ProcessRunner, SystemRunner};
 use crate::protocol::mcp::ServePayload;
 
@@ -622,6 +623,7 @@ impl Server {
     ) -> std::result::Result<CallToolResult, ErrorData> {
         self.count_call();
         let root = self.inner.root.clone();
+        let ignored = args.ignored.note();
         // The read is blocking and the runtime is single-threaded, so it
         // runs on the blocking pool: a slow disk must not stop the server
         // answering pings or a cancellation while it works.
@@ -629,7 +631,7 @@ impl Server {
             .await
             .map_err(|e| ErrorData::internal_error(format!("read_file task failed: {e}"), None))?;
         match chunk {
-            Ok(chunk) => Ok(text_only(chunk.text)),
+            Ok(chunk) => Ok(text_only(with_ignored(chunk.text, ignored))),
             Err(err) => Ok(tool_error(&err)),
         }
     }
@@ -644,6 +646,7 @@ impl Server {
     ) -> std::result::Result<CallToolResult, ErrorData> {
         self.count_call();
         let root = self.inner.root.clone();
+        let ignored = args.ignored.note();
         let listing =
             tokio::task::spawn_blocking(move || list::list_files(&root, &args, &SystemRunner))
                 .await
@@ -651,7 +654,7 @@ impl Server {
                     ErrorData::internal_error(format!("list_files task failed: {e}"), None)
                 })?;
         match listing {
-            Ok(listing) => Ok(text_only(listing.text)),
+            Ok(listing) => Ok(text_only(with_ignored(listing.text, ignored))),
             Err(err) => Ok(tool_error(&err)),
         }
     }
@@ -666,13 +669,14 @@ impl Server {
     ) -> std::result::Result<CallToolResult, ErrorData> {
         self.count_call();
         let root = self.inner.root.clone();
+        let ignored = args.ignored.note();
         let found = tokio::task::spawn_blocking(move || search::search_text(&root, &args))
             .await
             .map_err(|e| {
                 ErrorData::internal_error(format!("search_text task failed: {e}"), None)
             })?;
         match found {
-            Ok(found) => Ok(text_only(found.text)),
+            Ok(found) => Ok(text_only(with_ignored(found.text, ignored))),
             Err(err) => Ok(tool_error(&err)),
         }
     }
@@ -773,6 +777,7 @@ impl Server {
     ) -> std::result::Result<CallToolResult, ErrorData> {
         self.count_call();
         let root = self.inner.root.clone();
+        let ignored = args.ignored.note();
         let viewed = tokio::task::spawn_blocking(move || image::view_image(&root, &args))
             .await
             .map_err(|e| ErrorData::internal_error(format!("view_image task failed: {e}"), None))?;
@@ -781,7 +786,7 @@ impl Server {
             // model's script as an object, and `content[1]` is the one to
             // hand to `image()`.
             Ok(viewed) => Ok(CallToolResult::success(vec![
-                ContentBlock::text(viewed.text),
+                ContentBlock::text(with_ignored(viewed.text, ignored)),
                 ContentBlock::image(viewed.data, viewed.format.mime_type()),
             ])),
             Err(err) => Ok(tool_error(&err)),
@@ -798,14 +803,15 @@ impl Server {
     ) -> std::result::Result<CallToolResult, ErrorData> {
         self.count_call();
         let root = self.inner.root.clone();
+        let ignored = args.ignored.note();
         let read = tokio::task::spawn_blocking(move || notebook::read_notebook(&root, &args))
             .await
             .map_err(|e| {
                 ErrorData::internal_error(format!("read_notebook task failed: {e}"), None)
             })?;
         match read {
-            Ok(blocks) => Ok(CallToolResult::success(
-                blocks
+            Ok(blocks) => {
+                let mut blocks: Vec<ContentBlock> = blocks
                     .into_iter()
                     .map(|block| match block {
                         notebook::Block::Text(text) => ContentBlock::text(text),
@@ -813,8 +819,15 @@ impl Server {
                             ContentBlock::image(data, format.mime_type())
                         }
                     })
-                    .collect(),
-            )),
+                    .collect();
+                // Its own block at the end: the cells and their images are
+                // read in order, and a note spliced into one of them would
+                // read as part of the notebook.
+                if let Some(note) = ignored {
+                    blocks.push(ContentBlock::text(note));
+                }
+                Ok(CallToolResult::success(blocks))
+            }
             Err(err) => Ok(tool_error(&err)),
         }
     }
@@ -832,6 +845,7 @@ impl Server {
         self.count_call();
         let root = self.inner.root.clone();
         let session = self.inner.session.clone();
+        let ignored = args.ignored.note();
         let loaded =
             tokio::task::spawn_blocking(move || skills::load_skill(&root, &args, Some(&session)))
                 .await
@@ -839,7 +853,7 @@ impl Server {
                     ErrorData::internal_error(format!("load_skill task failed: {e}"), None)
                 })?;
         match loaded {
-            Ok(text) => Ok(text_only(text)),
+            Ok(text) => Ok(text_only(with_ignored(text, ignored))),
             Err(err) => Ok(tool_error(&err)),
         }
     }
@@ -866,6 +880,21 @@ impl Server {
         // The session's own directory and no other: an output_ref is a
         // reference within this session, not a handle on the machine.
         let dir = output.dir().to_path_buf();
+        // Reading is the forgiving side (P44): an over-large `wait_ms` is
+        // still clamped rather than refused -- waiting less than asked is
+        // not a wrong answer. But it is said out loud, because a caller
+        // that thinks it waited ten minutes will read "still running" as
+        // "hung".
+        let ignored = {
+            let mut lines: Vec<String> = args.ignored.note().into_iter().collect();
+            if let Some(asked) = args.wait_ms.filter(|ms| *ms > output::MAX_WAIT_MS) {
+                lines.push(format!(
+                    "[waited up to {} ms, not the {asked} ms asked for: that is this tool's ceiling]",
+                    output::MAX_WAIT_MS
+                ));
+            }
+            (!lines.is_empty()).then(|| lines.join("\n"))
+        };
         if let Some(wait) = args.wait_ms.filter(|ms| *ms > 0)
             && let Ok(reference) = output::validate_ref(&args.output_ref)
         {
@@ -882,7 +911,7 @@ impl Server {
                 ErrorData::internal_error(format!("read_output task failed: {e}"), None)
             })?;
         match page {
-            Ok(page) => Ok(text_only(page.text)),
+            Ok(page) => Ok(text_only(with_ignored(page.text, ignored))),
             Err(err) => Ok(tool_error(&err)),
         }
     }

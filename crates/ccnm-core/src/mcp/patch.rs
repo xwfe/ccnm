@@ -143,6 +143,7 @@ impl Op {
 
 /// One exact replacement inside a file.
 #[derive(Debug, Clone, Default, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct Edit {
     /// Text to find. Must appear exactly once unless `replace_all` is set.
     pub old: String,
@@ -155,6 +156,7 @@ pub struct Edit {
 
 /// One file's worth of the patch.
 #[derive(Debug, Clone, Default, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct FilePatch {
     pub op: Option<Op>,
     /// Path relative to the workspace root.
@@ -182,6 +184,7 @@ pub struct FilePatch {
 
 /// Arguments of `apply_patch`.
 #[derive(Debug, Clone, Default, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ApplyPatchArgs {
     /// The files to change. Either all of them are applied or none are.
     pub files: Vec<FilePatch>,

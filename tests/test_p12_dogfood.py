@@ -25,6 +25,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 import unittest
 
 
@@ -83,13 +84,14 @@ BINARY = ccnm_binary()
 @unittest.skipIf(BINARY is None, "先 cargo build，或用 CCNM_BIN 指定二进制")
 class DogfoodToolTests(unittest.TestCase):
     def setUp(self):
-        self.dir = Path(
-            # 真实路径：凭据检查对"路径可达性未知"是 fail-closed 的，而 macOS 的
-            # /var 是一条符号链接。
-            subprocess.run(
-                ["mktemp", "-d", "-t", "ccnm-p12"], capture_output=True, text=True, check=True
-            ).stdout.strip()
-        ).resolve()
+        # 真实路径：凭据检查对"路径可达性未知"是 fail-closed 的，而 macOS 的
+        # /var 是一条符号链接，所以要 resolve()。
+        #
+        # 别改回 shell 的 `mktemp -d -t ccnm-p12`：那是 BSD 语义，`-t` 后面跟的是
+        # 前缀；GNU 的 `-t` 要求模板自带至少 6 个 X，拿到 `ccnm-p12` 会报
+        # "too few X's in template" 并退出 1，于是这个类的每个用例都在 setUp 里
+        # 挂掉——2026-09-20 第一次在 Debian 13 上跑时 32 个用例就是这么没的。
+        self.dir = Path(tempfile.mkdtemp(prefix="ccnm-p12.")).resolve()
         self.addCleanup(lambda: subprocess.run(["rm", "-rf", str(self.dir)], check=False))
         for sub in ("readonly", "closed", "home", "state", "runtimehome/.ssh", "otherhome"):
             (self.dir / sub).mkdir(parents=True)
@@ -280,6 +282,13 @@ agent_node = "agent"
             "--other-home",
             str(self.dir / "otherhome"),
         )
+        if out.returncode == 0:
+            # 在真正的 Runtime 上（专用低权限账号，没有 sudo、不在特权组里）审计
+            # 本来就该放行，这条用例要的前提不成立。它验的是"审计拦得住开发者
+            # 自己的账号"，不是"审计总是拒绝"——在 ccrun 那种账号上跑成绿的才对。
+            self.skipTest(
+                f"{getpass.getuser()} 本身就是合格的执行身份，这条用例要的前提不成立"
+            )
         self.assertNotEqual(out.returncode, 0)
         failure = self.evidence()["failure"]
         self.assertTrue(

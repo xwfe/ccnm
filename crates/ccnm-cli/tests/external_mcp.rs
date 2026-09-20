@@ -889,6 +889,84 @@ fn a_killed_session_is_eof_and_does_not_hand_over_the_guard() {
     reader.shutdown();
 }
 
+/// A command no signal reaches: it forks, leaves the process group with
+/// `setsid`, and keeps hold of the stdout pipe.
+const ESCAPING_CHILD: &str = r#"python3 -c "import os,sys,time;pid=os.fork();open('escaped.pid','w').write(str(pid)) if pid else None;sys.exit(0) if pid else None;os.setsid();time.sleep(120)""#;
+
+/// When a session ends with a command it could not stop, the workspace is
+/// **not** handed to the next writer.
+///
+/// `stop_all` gives up on the child above after `STOP_GIVE_UP` and the
+/// server exits normally — and until P43 that exit marked the guard
+/// released, so the next coding session opened on the same tree, beside
+/// something still free to write it (评审 X05 验收第一句). Now the marker
+/// stays `held` with an `abandoned` line, the next session is refused, and
+/// the refusal names the `output_ref` that is still out there.
+///
+/// The slowest test in this file: it waits out both give-up windows, ten
+/// seconds each.
+#[test]
+fn a_command_that_cannot_be_stopped_keeps_the_guard() {
+    let fixture = Fixture::unconfined("abandoned", "coding");
+    let mut session = fixture.open("demo", ExternalMode::Coding, "bridge-abandoned");
+    let ran = session.call(
+        "exec_command",
+        json!({"shell": ESCAPING_CHILD, "run_in_background": true}),
+    );
+    assert!(!is_error(&ran), "{}", text(&ran));
+    let reference = output_ref(&ran);
+    let escaped = wait_for_pid(&fixture.root.join("escaped.pid"));
+
+    // The server still ends cleanly; what changed is what it leaves behind.
+    session.shutdown();
+
+    let marker = one_guard_marker(&fixture.dir.join("state/ccnm/write-guards"));
+    assert!(
+        marker.starts_with("held bridge-abandoned demo pid "),
+        "{marker:?}"
+    );
+    assert!(
+        marker.contains(&format!("\nabandoned 1 command(s) ({reference})")),
+        "{marker:?}"
+    );
+
+    let next = fixture.refused("demo", ExternalMode::Coding);
+    assert!(!next.status.success());
+    let said = stderr(&next);
+    assert!(said.starts_with("CCNM_E_POLICY:"), "{said}");
+    // Not "interrupted": ccnm knew what was left and chose to keep the guard.
+    assert!(said.contains("kept on purpose"), "{said}");
+    assert!(said.contains(&reference), "{said}");
+
+    // Reading is still fine: it never wanted the guard.
+    fixture
+        .open("demo", ExternalMode::Read, "bridge-abandoned-read")
+        .shutdown();
+
+    let _ = Command::new("kill")
+        .args(["-9", &escaped.to_string()])
+        .status();
+}
+
+fn wait_for_pid(path: &Path) -> i32 {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while std::time::Instant::now() < deadline {
+        if let Ok(text) = std::fs::read_to_string(path)
+            && let Ok(pid) = text.trim().parse()
+        {
+            return pid;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    panic!("the escaping child never wrote its pid");
+}
+
+fn one_guard_marker(locks: &Path) -> String {
+    let mut found: Vec<_> = std::fs::read_dir(locks).unwrap().flatten().collect();
+    assert_eq!(found.len(), 1, "expected exactly one marker in {locks:?}");
+    std::fs::read_to_string(found.pop().unwrap().path()).unwrap()
+}
+
 // -- P11：两个入口，一棵工作树 --------------------------------------------
 //
 // 这一段证明的不是"外部入口能用"，而是"它没有把第一个入口已经建立的边界撑

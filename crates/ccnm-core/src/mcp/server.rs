@@ -258,8 +258,9 @@ struct Inner {
     /// Every command this server has running. [`run`] stops them all before
     /// this struct -- and the write guard in it -- is let go.
     jobs: Arc<Jobs>,
-    /// Held for this MCP process's complete lifetime.
-    _write_guard: Option<crate::mcp::write_guard::WriteGuard>,
+    /// Held for this MCP process's complete lifetime -- and **not** marked
+    /// released when [`run`] ends with commands it could not stop.
+    write_guard: Option<crate::mcp::write_guard::WriteGuard>,
     provider: crate::provider::AgentProvider,
     workspace: String,
     /// Names the directory `exec_command` retains output in.
@@ -446,7 +447,7 @@ impl Server {
         Ok(Server {
             inner: Arc::new(Inner {
                 jobs: Jobs::new(),
-                _write_guard: write_guard,
+                write_guard,
                 provider: payload.provider,
                 workspace: payload.workspace.clone(),
                 session: payload.session.clone(),
@@ -1303,7 +1304,23 @@ fn run(server: Server) -> CcnmResult<()> {
     // waited for before anything is let go. Before P41 this waited for them
     // to end by themselves, up to their ten-minute timeout, holding the
     // write guard all the while.
-    inner.jobs.stop_all();
+    //
+    // What comes back is what could not be stopped -- something that left
+    // its process group and holds a pipe, given up on after `STOP_GIVE_UP`.
+    // Such a command can still write this working tree, so the guard is not
+    // handed on: the next session is refused and a person looks. Until P43
+    // the guard was marked released here and the next writer walked straight
+    // in beside it (评审 X05).
+    let abandoned = inner.jobs.stop_all();
+    if !abandoned.is_empty()
+        && let Some(guard) = &inner.write_guard
+    {
+        guard.abandon(&format!(
+            "{} command(s) ({})",
+            abandoned.len(),
+            abandoned.join(", ")
+        ));
+    }
     // Dropping the runtime waits for what is left in `spawn_blocking`, which
     // is now only results being written, so runs are finished before they
     // are removed.

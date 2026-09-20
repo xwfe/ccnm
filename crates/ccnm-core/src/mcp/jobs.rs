@@ -128,6 +128,17 @@ struct Entry {
     stop: Arc<Stop>,
 }
 
+impl Entry {
+    /// How a person finds this command again. The `output_ref` once it has
+    /// one -- its command line is in that run's `status` file -- and before
+    /// that the only handle there is.
+    fn name(&self) -> String {
+        self.reference
+            .clone()
+            .unwrap_or_else(|| format!("run #{}", self.id))
+    }
+}
+
 /// A command's place in the registry, given up when it is dropped. The
 /// thread that waits for the command holds it, so a command leaves the
 /// registry only once its result -- or its final status -- is written.
@@ -236,13 +247,18 @@ impl Jobs {
     }
 
     /// Stop every command, foreground and background, and wait until each
-    /// has been waited for. Nothing new starts afterwards. Returns whether
-    /// all of them ended; one no signal reaches is given up on after
-    /// [`STOP_GIVE_UP`], and the server ends anyway.
+    /// has been waited for. Nothing new starts afterwards.
+    ///
+    /// **Returns the ones it gave up on**, empty when every command ended.
+    /// One no signal reaches is given up on after [`STOP_GIVE_UP`] and the
+    /// server ends anyway -- but the caller has to know, because such a
+    /// command is still free to write the working tree. The write guard is
+    /// not handed on when this comes back non-empty
+    /// ([`WriteGuard::abandon`](crate::mcp::write_guard::WriteGuard::abandon)).
     ///
     /// The commands are stopped side by side, so ending a session with
     /// eight of them takes the grace period once, not eight times.
-    pub fn stop_all(&self) -> bool {
+    pub fn stop_all(&self) -> Vec<String> {
         let stops: Vec<Arc<Stop>> = {
             let mut registry = self.lock();
             registry.closed = true;
@@ -253,7 +269,7 @@ impl Jobs {
                 .collect()
         };
         if stops.is_empty() {
-            return true;
+            return Vec::new();
         }
         tracing::info!(
             commands = stops.len(),
@@ -271,11 +287,12 @@ impl Jobs {
         let mut registry = self.lock();
         while !registry.running.is_empty() {
             let Some(left) = deadline.checked_duration_since(Instant::now()) else {
+                let names: Vec<String> = registry.running.iter().map(Entry::name).collect();
                 tracing::warn!(
-                    commands = registry.running.len(),
+                    commands = names.len(),
                     "commands still running after the session was stopped; leaving them"
                 );
-                return false;
+                return names;
             };
             registry = self
                 .left
@@ -283,7 +300,7 @@ impl Jobs {
                 .unwrap_or_else(PoisonError::into_inner)
                 .0;
         }
-        true
+        Vec::new()
     }
 }
 
@@ -509,7 +526,10 @@ mod tests {
         assert!(jobs.background("r-0000000000000001").is_some());
         assert!(jobs.background("r-0000000000000000").is_none(), "it left");
         drop((tickets, again));
-        assert!(jobs.stop_all(), "nothing running, nothing to wait for");
+        assert!(
+            jobs.stop_all().is_empty(),
+            "nothing running, nothing to wait for"
+        );
         let refused = jobs.admit(true, Arc::default()).err().unwrap();
         assert_eq!(refused.code(), ErrorCode::NotReady);
     }
@@ -532,7 +552,7 @@ mod tests {
             }));
         }
         let clock = Instant::now();
-        assert!(jobs.stop_all());
+        assert!(jobs.stop_all().is_empty());
         assert!(jobs.lock().running.is_empty(), "stop_all returned early");
         assert!(
             clock.elapsed() < Duration::from_secs(5),
@@ -855,7 +875,7 @@ mod tests {
         wait_for(|| std::fs::read_to_string(s.root.join("fg.pid")).is_ok_and(|p| !p.is_empty()));
 
         let clock = Instant::now();
-        assert!(s.jobs.stop_all());
+        assert!(s.jobs.stop_all().is_empty());
         assert!(
             clock.elapsed() < Duration::from_secs(5),
             "{:?}",
@@ -968,7 +988,7 @@ mod tests {
         s.stop(&running[0].output_ref).unwrap();
         let ninth = s.background("sleep 30", None);
         assert!(ninth.background);
-        assert!(s.jobs.stop_all());
+        assert!(s.jobs.stop_all().is_empty());
     }
 
     /// A server killed before it could write the final status leaves a

@@ -70,7 +70,17 @@ pub struct WorkspaceView {
     pub sessions: Vec<LiveSession>,
     pub servers: Vec<ServerView>,
     /// The session a `held` marker names, when it names no running server.
-    pub guard_left_held: Option<String>,
+    pub guard_left_held: Option<LeftGuard>,
+}
+
+/// A write guard whose session is gone but whose marker still says `held`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LeftGuard {
+    pub session: String,
+    /// What that session could not stop. Some = kept on purpose, see
+    /// [`Guard::abandoned`] -- and the recovery is not the same, because
+    /// something that can write is still out there.
+    pub abandoned: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -161,8 +171,11 @@ pub fn collect(config: &Config, env: &Env<'_>, state: &Path) -> Overview {
         let guard_left_held = guards
             .iter()
             .find(|g| g.workspace.as_deref() == Some(name.as_str()))
-            .map(|g| g.session.clone())
-            .filter(|held| !servers.iter().any(|s| s.session == *held));
+            .filter(|g| !servers.iter().any(|s| s.session == g.session))
+            .map(|g| LeftGuard {
+                session: g.session.clone(),
+                abandoned: g.abandoned.clone(),
+            });
         workspaces.push(WorkspaceView {
             name: name.clone(),
             root: Some(resolved.workspace.root.clone()),
@@ -338,6 +351,11 @@ fn parse_etime(text: &str) -> Option<u64> {
 pub struct Guard {
     pub session: String,
     pub workspace: Option<String>,
+    /// What that session could not stop when it ended. Some = the guard was
+    /// **kept on purpose**, not left behind by a crash: something that can
+    /// still write the tree is out there, and clearing the marker would put
+    /// a second writer beside it (P43).
+    pub abandoned: Option<String>,
 }
 
 /// Every `held` marker in this machine's write-guard directory.
@@ -353,10 +371,19 @@ pub fn scan_guards(state: &Path) -> Vec<Guard> {
 }
 
 fn parse_guard(text: &str) -> Option<Guard> {
-    let mut words = text.strip_prefix("held ")?.split_whitespace();
+    let mut words = text
+        .lines()
+        .next()?
+        .strip_prefix("held ")?
+        .split_whitespace();
     Some(Guard {
         session: words.next()?.to_string(),
         workspace: words.next().map(str::to_string),
+        abandoned: text
+            .lines()
+            .skip(1)
+            .find_map(|line| line.strip_prefix("abandoned "))
+            .map(str::to_string),
     })
 }
 
@@ -509,11 +536,19 @@ impl Overview {
                 ));
             }
             if let Some(held) = &ws.guard_left_held {
-                let id = short(held);
-                notes.push(lang.pick(
-                    format!("{name}：写锁标着被 {id} 占着，但已经没有这个会话的 mcp-serve 了（异常退出留下的），新会话会被拒"),
-                    format!("{name}: the write guard is left held by {id}, which has no mcp-serve any more; new sessions will be refused"),
-                ));
+                let id = short(&held.session);
+                notes.push(match &held.abandoned {
+                    // 故意留下的：还有东西在跑，清掉 marker 就是放第二个写者
+                    // 进同一棵树。措辞必须和"异常退出留下的"分开。
+                    Some(what) => lang.pick(
+                        format!("{name}：写锁是 {id} 结束时**故意留着**的——它有 {what} 停不掉，可能还在改这棵树；先把它们收掉再谈恢复"),
+                        format!("{name}: the write guard was kept on purpose when {id} ended -- {what} it could not stop, possibly still writing this tree; end those before recovering"),
+                    ),
+                    None => lang.pick(
+                        format!("{name}：写锁标着被 {id} 占着，但已经没有这个会话的 mcp-serve 了（异常退出留下的），新会话会被拒"),
+                        format!("{name}: the write guard is left held by {id}, which has no mcp-serve any more; new sessions will be refused"),
+                    ),
+                });
             }
             if ws.sessions.first().is_some_and(|s| s.tools == Some(false))
                 && ws.orphans().next().is_none()
@@ -668,10 +703,17 @@ impl Overview {
             }
         }
         if let Some(held) = &ws.guard_left_held {
-            out.push_str(&lang.pick(
-                format!("  写锁  标着被 {} 占着，但没有对应的 mcp-serve：新会话会被拒，恢复见 docs/operations.md「写入 guard 残留」\n", short(held)),
-                format!("  guard  left held by {} with no mcp-serve: new sessions are refused; see docs/operations.md\n", short(held)),
-            ));
+            let id = short(&held.session);
+            out.push_str(&match &held.abandoned {
+                Some(what) => lang.pick(
+                    format!("  写锁  {id} 结束时故意留着的：有 {what} 停不掉，可能还在改这棵树。先收掉它们，再看 docs/operations.md「写入 guard 残留」\n"),
+                    format!("  guard  kept on purpose when {id} ended: {what} it could not stop, possibly still writing. End those first; see docs/operations.md\n"),
+                ),
+                None => lang.pick(
+                    format!("  写锁  标着被 {id} 占着，但没有对应的 mcp-serve：新会话会被拒，恢复见 docs/operations.md「写入 guard 残留」\n"),
+                    format!("  guard  left held by {id} with no mcp-serve: new sessions are refused; see docs/operations.md\n"),
+                ),
+            });
         }
         out
     }
@@ -836,7 +878,18 @@ mod tests {
             parse_guard("held 402638ca gld\n"),
             Some(Guard {
                 session: "402638ca".into(),
-                workspace: Some("gld".into())
+                workspace: Some("gld".into()),
+                abandoned: None,
+            })
+        );
+        // P43 起 marker 多了 pid，和一行「它结束时没停掉什么」。前者不该
+        // 被当成 workspace，后者是"故意留着的"和"崩溃留下的"的分水岭。
+        assert_eq!(
+            parse_guard("held 402638ca gld pid 4242\nabandoned 2 command(s) (r-a, r-b)\n"),
+            Some(Guard {
+                session: "402638ca".into(),
+                workspace: Some("gld".into()),
+                abandoned: Some("2 command(s) (r-a, r-b)".into()),
             })
         );
         assert_eq!(parse_guard("released\n"), None);

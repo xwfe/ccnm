@@ -448,6 +448,36 @@ ccnm attach <workspace>
 
 **怎么不再踩**：受管会话里别用后台，要离开就 detach（状态栏右下角写着按键，默认 `C-b d`），回来用 `ccnm attach`。从 v0.4.0 起，每次 attach 时状态栏会把这句提示一遍。
 
+### 模型说命令跑过了，可是什么都没发生（`command not found`，秒回）
+
+**症状**：模型报告"测试通过"或者"构建完成"，但你去看，产物没变、`target/` 没动过。翻它跑的命令，结果长这样：
+
+```text
+bash: cargo: command not found
+```
+
+退出码 127，**耗时 0.0 秒**。
+
+**为什么会被当成通过**：一条真的跑起来的 `cargo test` 要几十秒并打印一大片；`command not found` 是瞬间返回、只有一行。模型（和人）扫一眼输出很容易把"没有报错信息"读成"没有错误"。
+
+**根因通常不是 ccnm，是 Runtime 那台机器的 PATH。** 最常见的一种：PATH 里挂着 `~/.cargo/bin`，**而那个目录根本不存在**——rustup 的 shim 没装或者被清过，工具链实体在 `~/.rustup/toolchains/<toolchain>/bin`。2026-09-20 的真机轮就撞上了这个（[记录](research/real-machine-p36-p44-2026-09-20.md)第 5 节）。
+
+**先确认是不是它**，在 Runtime Node 上：
+
+```bash
+echo $PATH | tr ':' '\n' | while read d; do [ -d "$d" ] || echo "不存在: $d"; done
+```
+
+Rust 的修法是补回 shim：
+
+```bash
+rustup default stable
+```
+
+**为什么模型那边"自己绕过去了"也不算解决**：它可以把工具链目录前置到 PATH 再跑，那一次能过，但下一个会话、下一条命令又是同样的坑。要么修 Runtime 的 PATH，要么在项目里放 `rust-toolchain.toml` 把版本钉死。
+
+注意 `exec_command` 拿到的是**非交互 shell** 的环境，你在 `~/.zshrc` 里加的 PATH 不一定生效——放 `~/.zshenv` 或者 `~/.profile` 才稳。
+
 ### 后台命令跑着跑着就没了
 
 **症状**：`exec_command` 加 `run_in_background` 起了一个 dev server 或者很长的构建，过一阵去 `read_output`，看到的是

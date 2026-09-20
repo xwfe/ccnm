@@ -88,6 +88,18 @@ Codex exec-server       FAIL   CCNM_E_POLICY: ccnm internal exec-serve on runtim
 
 **这一行正常，Codex 里第一条命令却报 `bubblewrap is unavailable: no system bwrap was found on PATH and no bundled codex-resources/bwrap binary`**（P21 容器实测的原文）：Linux Runtime 没装 bubblewrap。执行账号建不了 user namespace 时也是第一条命令才失败。空会话一条命令都不跑，doctor 看不出来，这是有意的（理由见上面那个链接）。按[运维手册](operations.md#runtime-node-的前置条件与项目工具链)补上前提。Codex 接着会问要不要不带沙箱重试，答"是"也会被 ccnm 拒掉。
 
+### 工具报 `failed to deserialize parameters: unknown field ...`
+
+**症状**：`exec_command`、`apply_patch` 或 `stop_command` 回一个 `isError`，说某个字段它不认识，后面跟着它认识的那些名字。
+
+**其实是**：这三个工具（连同 `files[]` 里每一项）**不接受它们没声明的字段**，而且拒绝发生在命令跑起来、补丁落盘之前。P44 起如此，之前是静默丢掉——那更糟：调用方以为自己传了 `sandbox: false` 之类的开关，其实那个字段根本没人看，命令照着它没同意的条件跑完了。
+
+**修**：照它列出的名字改。每个工具真正收什么，`tools/list` 里的 `inputSchema` 就是权威，规则见[协议第 5.6 节](protocol/remote-workspace-mcp-v1.md#56-参数怎么验有副作用的拒绝只读的说一声p44-新增)。
+
+**只读工具不一样**：`read_file` 这些照常回答，只在结果末尾加一行 `[ignored, this tool has no such argument: …]`。看到那一行说明你以为生效的参数其实没生效，答案是按**没有它**算出来的。
+
+**顺带**：`timeout_ms`、`preview_bytes` 超过上限现在是**拒绝**（以前悄悄钳到上限，调用方以为自己要到了 27 小时）。命令要跑更久就 `run_in_background`，它没有期限。`read_output` 的 `wait_ms` 超界仍然钳，但结果里会说钳了多少。
+
 ### 开了 `exec_sandbox` 之后命令报 `Operation not permitted`、`git commit` 失败、`cargo build` 下不了依赖
 
 只出现在 workspace 写了 [`exec_sandbox = "codex"`](configuration.md#exec_sandbox) 的会话里；每条 `exec_command` 结果末尾都有一行 `[sandboxed: …]`，看到它就知道命令跑在沙箱里。**这不是坏了，是沙箱在挡**：命令只能写工作区（`.git` 除外）、`$TMPDIR` 和 `/tmp`，不能连网。被挡的命令按普通失败报（退出码非 0，stderr 里 `Operation not permitted`，Linux 上是 `Read-only file system`），不会有"不带沙箱重试"的路。

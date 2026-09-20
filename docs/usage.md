@@ -334,6 +334,8 @@ stop_command
 - Claude 使用项目根 `CLAUDE.md` 上下文；Codex 使用根目录 `AGENTS.override.md`/`AGENTS.md` 的已测优先级；
 - remote session 使用对应 Provider 的已测工具策略，让项目访问统一走 Runtime Node。
 
+**传错参数会怎样**：`exec_command`、`apply_patch`、`stop_command` 不接受它们没声明的字段，连 `files[]` 里的每一项也一样——拒绝发生在命令跑起来、补丁落盘之前，结果里会列出它认识的字段名。只读那几个照常回答，只在末尾加一行说忽略了什么。`timeout_ms`、`preview_bytes` 超上限是拒不是钳（要跑更久用 `run_in_background`）。规则见[协议第 5.6 节](protocol/remote-workspace-mcp-v1.md#56-参数怎么验有副作用的拒绝只读的说一声p44-新增)。
+
 **Codex 还有一条 opt-in 的路（已封存）**：workspace 写 `codex_exec_server = true` 后，Codex 交互会话不再拿这七个工具，而是用它自带的 `exec_command` / `apply_patch`，由 Runtime 上受 ccnm 监督和过滤的官方 `codex exec-server` 执行；只开交互模式，print 会被拒绝；Claude 不受影响。2026-09-17 起封存：只认 Codex 0.154.0、不再维护、新项目别开，原因见[双执行入口方案](plan/runtime-surfaces.md)第 12.0 节，开关和边界见[配置说明](configuration.md#codex_exec_server)。
 
 ## 项目自带的 skills

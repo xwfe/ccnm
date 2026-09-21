@@ -687,3 +687,24 @@ ccnm 这一轮只定权威语义、补自己这边的证据。租约展示与状
 - **P44.5** 门禁同 P41.7。
 
 停止点：只读工具**不**拒绝未知字段（用户定的力度，一个多余字段不该让一次读失败）；不改任何错误码（参数解析失败仍是 `isError` 工具结果）；不做 MCP 层的能力协商扩展（SEP 那条另立）；不碰 gld；不耗模型额度；不发版。
+
+### P45 — skill 的 frontmatter 照 Claude Code 的读法读
+
+**依赖 P44。对应跨仓评审 X08。共享库那半边在 toexec：`toexec-skill` 0.2.0（`f0f7548`、`c8cf321`），差分证据在它的 `evidence/x08-skill-frontmatter/`。**
+
+为什么要做：P36 起 `load_skill` 用 `toexec-skill` 读 frontmatter，但从没和宿主对过。X08 拿 Claude Code 2.1.278 自己的解析器（它内嵌的 Bun 1.4.3，零额度借来）做差分，查出同一个 SKILL.md 两边读得不一样，其中几处直接改变 ccnm 的判定：
+
+| 写法 | 宿主 | P45 之前的 ccnm |
+| --- | --- | --- |
+| `disable-model-invocation: yes`（或 `on`、`1`） | 对模型隐藏 | 当没写，模型能调用 |
+| `disable-model-invocation` 写两遍，后一个是 `true` | 隐藏（后写的赢） | 先写的赢，可能不隐藏 |
+| ``description: `git` helper``、`@…`、`*Bold*…` 开头 | 加引号重读，正常显示 | 整个 skill 被跳过 |
+| `argument-hint: [issue-number]`（官方文档例子） | 显示 `issue-number` | 没有提示 |
+| `user-invocable:` 空值或认不出的字 | 不进 `/` 菜单 | 照样登记成 prompt |
+
+- **P45.1** 共享库升到 0.2.0；产品原有的测试断言只动一条，并写明为什么：`what_cannot_be_offered_says_why_instead_of_vanishing` 用来造"读不了"的 `description: &anchor x`，宿主读得了、0.2.0 也读得了，换成引号不闭合。
+- **P45.2** 产品侧的语义：`argument-hint`、`when_to_use` 用 `string()`（宿主的 String(值)）；`user-invocable` 按宿主的不对称规则；`load_skill` 返回的开头在"宿主会整段丢弃这份 frontmatter"和"同一个键写了几遍"时各加一行说明，给作者看。新测试钉住上表每一行。
+- **P45.3** 协议页首记一笔（工具、参数、错误码都没变，变的是读出来的结果），第 5.1 节写明读法。
+- **P45.4** 门禁同 P37.6。
+
+停止点：不改工具、参数和错误码；不改 skill 的发现范围（仍只读 workspace）；`name` 仍按 P36 的规则取（宿主把目录名当标识、`name` 只当显示名，这个差异在 P36 就有，不在本阶段）；不碰 gld（它换 0.2.0 是 gld 自己的事）；不耗模型额度；不发版。

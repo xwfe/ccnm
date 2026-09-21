@@ -12,6 +12,7 @@
 > 2026-09-20（P42）第 6 节开头多了一段：四个时钟各管什么、调用方自己的调用预算为什么不是 Runtime 的运行时限，以及三句本来就成立却没写下来的话（session-bound 是权威语义、取消等待不等于取消命令、终态只有 Runtime 说了算）。**没有加工具、参数或行为**，只是把散在第 5.5、6.2 和第 8 节的规则收到一处，好让别的产品照着实现。
 > 2026-09-20（P43）**修了一处写权会被错误交出的缺口**：会话结束时如果有命令停不掉（离开了进程组、又攥着管道，信号够不着），写入互斥不再被标成可用——下一个会话被拒，并看到还剩哪些 `output_ref`（第 7 节）。错误码没变，仍是 `CCNM_E_POLICY`；变的是**什么时候放锁**，而之前那种情况下放锁等于让两个写者同时改一棵树，本就违反第 4.4 节。锁标记里同时开始记 pid，只为让诊断说得准，不改变任何判定。同一节还写明了一条一直存在、此前一个字都没写过的边界：这把锁只在一个 state 目录内有效。
 > 2026-09-20（P44）**服务端自己验参数，有副作用的三个工具收紧了**：`exec_command`、`apply_patch`、`stop_command`（连同 `files[]` 里的嵌套结构）不再接受它们没声明的字段，超上限的 `timeout_ms` / `preview_bytes` 也从"悄悄钳到上限"改成拒绝；只读那七个照旧接受，但结果里写明忽略了什么（第 5.6 节）。**这是收紧，不是加法。**它同时修好一处声明与实现不一致：`tools/list` 里以前一个 `additionalProperties` 都没有，等于声明"随便加字段"，现在每个工具都说实话。**不升 `/2` 的理由**：`/1` 从没承诺过"未知字段会被忽略"，而按 schema 生成参数的客户端一个都不受影响——schema 现在就是服务端执行的那套；拒绝发生在执行之前，是 `isError` 工具结果，不作废句柄也不改错误码。
+> 2026-09-22（P45）**skill 的 frontmatter 改成照 Claude Code 2.1.278 的读法读**（共享库 `toexec-skill` 0.2.0），工具、参数、错误码都没变，变的是同一个 SKILL.md 读出来的结果：以 `` ` `` `@` `*` 开头的描述不再让 skill 被跳过，`argument-hint: [filename] [format]` 和 `[issue-number]` 的提示不再丢；`disable-model-invocation: yes` / `on` / `1` 现在生效；写了 `user-invocable` 却不是 true（空值、认不出的字）现在不登记成 prompt；同一个键写两遍后写的赢。宿主会整段丢弃的 frontmatter、重复的键，`load_skill` 的返回开头各多一行说明。见第 5.1 节。
 
 面向的读者是**已经在本机跑着 Claude Code / Codex / 别的 MCP Host，但项目在另一台机器上的人**。它给你的不是一条裸 SSH 通道，而是一个绑定了 workspace 的远程项目工具集。
 
@@ -274,6 +275,13 @@ transport 的认证边界是 **OpenSSH identity + 独立的 Runtime OS 账号**�
 3. **只找 workspace 里的。** 执行账号 HOME 下的用户级 skills 不读。
 
 `disable-model-invocation: true` 的 skill 不进目录，`load_skill` 拒绝它（`CCNM_E_POLICY`）；`user-invocable: false` 的不登记成 prompt。
+
+**frontmatter 照 Claude Code 2.1.278 的读法读**（P45 起，差分证据在 toexec 仓库 `evidence/x08-skill-frontmatter/`）：
+
+- 先按 YAML 严格读；读不了，照宿主的规则给顶层带特殊字符的值加引号再读——所以 ``description: `git` helper``、`argument-hint: [filename] [format]` 都读得出来，结果和宿主一样。宿主两步都读不了时会把整段 frontmatter 当空的（名字、描述、开关全丢）；这里宽松读出来，并在 `load_skill` 返回的开头写一行 `this frontmatter is not valid YAML`，好让作者知道原生客户端里它不生效。
+- 两个开关不对称，照宿主：`disable-model-invocation` 只有真值才生效；`user-invocable` 没写才默认可用，写了就只有真值才算——空值、认不出的字都会让它不登记成 prompt。真值认 `true` / `yes` / `on` / `1`，不分大小写。
+- 同一个键写了两遍，后写的赢（宿主如此），返回开头点名是哪几行。键名只差大小写或 `-` / `_` 时这里也认（宿主只认原样）——对两个开关，这是照作者本意、更保守的一侧。
+- `argument-hint` 写成 YAML 列表（官方例子 `[issue-number]`）时，提示是各项用逗号接起来，和宿主显示的一样。
 
 **prompts**：每个可由人启动的 skill / 命令同时登记成一个 MCP prompt（[`prompts-list-ok.json`](fixtures-mcp/prompts-list-ok.json)、[`prompts-get-ok.json`](fixtures-mcp/prompts-get-ok.json)），`prompts/get` 返回的就是 `load_skill` 会返回的那段文本。Claude Code 把它变成斜杠命令 `/mcp__ccnm__<名字>`（server 在 Host 配置里叫别的名字，中间那段就跟着变）。prompt 的参数是 skill 在 frontmatter 的 `arguments` 里声明的名字；一个都没声明时是单个 `arguments`。**Claude Code 把人敲的参数按空白切开、依次对应声明的参数，多出来的词被它丢掉**（2.1.273 实测）——要传多个词，skill 得声明多个参数。Codex 0.154.0 连上之后只调 `tools/list`，看不到 prompts，所以 prompts 是锦上添花，`load_skill` 才是主通道。
 

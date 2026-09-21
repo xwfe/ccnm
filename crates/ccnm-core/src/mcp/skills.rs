@@ -34,7 +34,7 @@ use std::path::Path;
 
 use rmcp::schemars;
 use serde::Deserialize;
-use toexec_skill::{Frontmatter, args, frontmatter, inject};
+use toexec_skill::{Frontmatter, Reading, args, frontmatter, inject};
 
 use crate::error::{Error, ErrorCode, Result};
 use crate::mcp::path;
@@ -269,11 +269,17 @@ fn read(root: &Path, kind: Kind, file: &str) -> std::result::Result<Option<Skill
     if !valid_name(name) {
         return Err(format!("\"{name}\" cannot be used as a skill name"));
     }
-    let description = [front.text("description"), front.text("when_to_use")]
-        .into_iter()
-        .flatten()
-        .collect::<Vec<_>>()
-        .join(" ");
+    // `when_to_use` and `argument-hint` are for show, and the host shows
+    // String(value): the docs' own `argument-hint: [issue-number]` is a YAML
+    // list and still has text.
+    let description = [
+        front.text("description").map(str::to_string),
+        front.string("when_to_use"),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>()
+    .join(" ");
     let description = one_line(if description.is_empty() {
         first_text_line(body)
     } else {
@@ -288,10 +294,15 @@ fn read(root: &Path, kind: Kind, file: &str) -> std::result::Result<Option<Skill
         kind,
         file: resolved.rel().to_string(),
         dir: dir.to_string(),
-        argument_hint: front.text("argument-hint").map(one_line),
+        argument_hint: front.string("argument-hint").map(|hint| one_line(&hint)),
         arguments: front.words("arguments"),
         model_invocable: front.flag("disable-model-invocation") != Some(true),
-        user_invocable: front.flag("user-invocable") != Some(false),
+        // Not the mirror image of the line above, because the host's two
+        // switches are not: `user-invocable` left out means yes, but once
+        // written only a true counts -- an empty value or a word it does not
+        // know takes the skill off the `/` menu.
+        user_invocable: front.get("user-invocable").is_none()
+            || front.flag("user-invocable") == Some(true),
     }))
 }
 
@@ -535,6 +546,19 @@ fn render(root: &Path, skill: &Skill, arguments: &str, session: Option<&str>) ->
             ignored.join(", ")
         ));
     }
+    // Both are for the author, through the model: the file reads differently
+    // natively, and nothing else would ever say so.
+    if front.reading() == Reading::Lenient {
+        head.push_str("[this frontmatter is not valid YAML: native Claude Code ignores all of it (name, description, disable-model-invocation); it was read leniently here]\n");
+    }
+    for group in front.duplicates() {
+        let lines: Vec<String> = group.iter().map(|(_, line)| line.to_string()).collect();
+        head.push_str(&format!(
+            "[frontmatter sets \"{}\" more than once (lines {}); the last one counts]\n",
+            group[group.len() - 1].0,
+            lines.join(", ")
+        ));
+    }
 
     let context = args::Context {
         skill_dir: Some(if skill.dir.is_empty() {
@@ -656,10 +680,13 @@ mod tests {
     #[test]
     fn what_cannot_be_offered_says_why_instead_of_vanishing() {
         let root = workspace("skipped");
+        // An unclosed quote: unreadable here and natively. (Until P45 this
+        // used `description: &anchor x`, which the host reads and so, now,
+        // does this -- see the next test.)
         write(
             &root,
             ".claude/skills/broken/SKILL.md",
-            "---\nname: broken\ndescription: &anchor x\n---\nbody\n",
+            "---\nname: broken\ndescription: \"open\n---\nbody\n",
         );
         write(
             &root,
@@ -677,6 +704,96 @@ mod tests {
         assert!(reasons[0].1.contains("no description"), "{reasons:?}");
         assert!(reasons[1].1.contains("frontmatter line 2"), "{reasons:?}");
         assert!(catalog.list().contains("frontmatter line 2"));
+    }
+
+    /// What YAML itself cannot read but Claude Code reads anyway, by quoting
+    /// the value and trying again, is offered here too. Before P45 all four
+    /// were skipped with "unsupported YAML construct" -- and the hint in the
+    /// official docs' own example came out empty.
+    #[test]
+    fn what_the_host_reads_by_quoting_is_offered() {
+        let root = workspace("rescued");
+        for (name, front) in [
+            ("tick", "description: `git` helper\n"),
+            ("at", "description: @claude does it\n"),
+            ("bold", "description: *Bold* first\n"),
+            (
+                "hint",
+                "description: fix\nargument-hint: [filename] [format]\n",
+            ),
+            ("list", "description: fix\nargument-hint: [issue-number]\n"),
+        ] {
+            write(
+                &root,
+                &format!(".claude/skills/{name}/SKILL.md"),
+                &format!("---\n{front}---\nbody\n"),
+            );
+        }
+        let catalog = discover(&root);
+        assert!(catalog.skipped.is_empty(), "{:?}", catalog.skipped);
+        let by = |n: &str| catalog.skills.iter().find(|s| s.name == n).unwrap();
+        assert_eq!(by("tick").description, "`git` helper");
+        assert_eq!(by("at").description, "@claude does it");
+        assert_eq!(by("bold").description, "*Bold* first");
+        assert_eq!(
+            by("hint").argument_hint.as_deref(),
+            Some("[filename] [format]")
+        );
+        assert_eq!(by("list").argument_hint.as_deref(), Some("issue-number"));
+    }
+
+    /// The two switches, read as the host reads them.
+    #[test]
+    fn the_switches_are_read_the_way_the_host_reads_them() {
+        let root = workspace("switches");
+        for (name, front) in [
+            ("yes", "disable-model-invocation: yes\n"),
+            (
+                "twice",
+                "disable-model-invocation: false\ndisable-model-invocation: true\n",
+            ),
+            ("blank", "user-invocable:\n"),
+            ("maybe", "user-invocable: maybe\n"),
+            ("off", "user-invocable: off\n"),
+            ("plain", ""),
+        ] {
+            write(
+                &root,
+                &format!(".claude/skills/{name}/SKILL.md"),
+                &format!("---\ndescription: {name}\n{front}---\nbody\n"),
+            );
+        }
+        let catalog = discover(&root);
+        let by = |n: &str| catalog.skills.iter().find(|s| s.name == n).unwrap();
+        // `yes` hides it from the model natively; 0.1.0 of the shared reader
+        // took it for "not written" and left the skill callable.
+        assert!(!by("yes").model_invocable);
+        // Written twice: the last one counts, natively and here.
+        assert!(!by("twice").model_invocable);
+        // Once written, only a true keeps it on the `/` menu.
+        assert!(!by("blank").user_invocable);
+        assert!(!by("maybe").user_invocable);
+        assert!(!by("off").user_invocable);
+        assert!(by("plain").user_invocable && by("plain").model_invocable);
+    }
+
+    /// The author finds out, through the model, when the file reads
+    /// differently natively.
+    #[test]
+    fn a_frontmatter_the_host_would_ignore_or_that_repeats_a_key_is_named() {
+        let root = workspace("notes");
+        write(
+            &root,
+            ".claude/skills/loose/SKILL.md",
+            "---\ndescription: Review code.\n  Use when: asked.\nname: loose\nname: loose\n---\nbody\n",
+        );
+        let catalog = discover(&root);
+        let text = render(&root, &catalog.skills[0], "", None).unwrap();
+        assert!(text.contains("not valid YAML"), "{text}");
+        assert!(
+            text.contains("sets \"name\" more than once (lines 3, 4)"),
+            "{text}"
+        );
     }
 
     /// A skills directory may be a symlink to a shared checkout outside the

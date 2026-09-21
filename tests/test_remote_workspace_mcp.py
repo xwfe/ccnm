@@ -228,7 +228,9 @@ agent_node = "agent"
 
     def test_without_a_name_the_whole_list_comes_back(self):
         self.add_skill()
-        self.add_skill("broken", "---\nname: broken\ndescription: &anchor x\n---\nbody\n")
+        # 引号不闭合：原生客户端和这里都读不了。P45 之前这里用的是
+        # `description: &anchor x`，宿主读得了，0.2.0 的共享库也就读得了。
+        self.add_skill("broken", "---\nname: broken\ndescription: \"open\n---\nbody\n")
         client = self.client("demo", "read", "neutral-skill-list")
         text = result_text(client.call_tool("load_skill", {}))
         self.assertIn("- deploy", text)

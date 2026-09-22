@@ -22,7 +22,7 @@
 
 ## 门禁
 
-依赖用一次性环境变量从本地 toexec 解析（toexec 的 tag 还没推）：
+依赖当时用一次性环境变量从本地 toexec 解析（那时 toexec 的 tag 还没推；推送之后不需要了）：
 
 ```bash
 CARGO_NET_GIT_FETCH_WITH_CLI=true GIT_CONFIG_COUNT=1 \
@@ -39,9 +39,10 @@ GIT_CONFIG_VALUE_0=https://github.com/xwfe/toexec.git cargo test --workspace
 | `python3 -m unittest discover -s tests` | 194 passed |
 | `check_plan`、`check_protocol`（38 + 29 个 fixture）、`git diff --check` | 通过 |
 
+**推送**：2026-09-22 按 toexec（连同 tag）→ ccnm → gld 的顺序推送，`Cargo.lock` 里的 `c8cf321` 和远端 tag 对得上，三边 CI 全绿。顺序不能反：先推产品的话，它的 CI 在干净检出上拉不到还不存在的 tag。
+
 ## 没做的
 
-- **推送顺序**：`Cargo.lock` 记的是 toexec `c8cf321`（tag `toexec-skill-v0.2.0`），先推 toexec 连同 tag，再推这里，CI 才拉得到。
 - **真实 Host 没跑**：原生的读法是拿 Claude Code 自己的运行时逐字核对的，但"模型会不会因此用上以前被跳过的 skill"没有花额度去验。
 - **`name` 的差异**：原生把目录名当 skill 的标识、`name` 只当显示名；ccnm 从 P36 起用 `name`（合法时）当标识。这不是 frontmatter 读法的问题，不在本阶段。
-- **gld** 也链接 `toexec-skill`，它换 0.2.0 是 gld 自己的事。
+- **gld** 同日也升到了 0.2.0（gld `70cd0f0`）；它自己那半边的 skills 后续（读不了的说原因、用户级附件）记在 gld 的 RFC-0003。

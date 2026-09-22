@@ -121,7 +121,7 @@ pub enum Op {
     Update,
     /// Replace the whole content of an existing file.
     Write,
-    /// Change cells of an existing Jupyter notebook (P40).
+    /// Change cells of an existing Jupyter notebook.
     EditNotebook,
     Delete,
     /// Rename. The content is untouched.
@@ -171,13 +171,10 @@ pub struct FilePatch {
     /// Whole content, for `add` and `write`.
     #[serde(default)]
     pub content: Option<String>,
-    /// Replacements, for `update`. Order does not matter when each one
-    /// matches the file you read; it does when one edit's `new` text is
-    /// what a later edit's `old` looks for.
+    /// Replacements, for `update`, applied in order.
     #[serde(default)]
     pub edits: Option<Vec<Edit>>,
-    /// Cell edits, for `edit_notebook`, applied in order: each sees the
-    /// notebook the previous one left.
+    /// Cell edits, for `edit_notebook`, applied in order.
     #[serde(default)]
     pub cells: Option<Vec<notebook::CellEdit>>,
 }

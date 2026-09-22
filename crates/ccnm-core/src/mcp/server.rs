@@ -541,6 +541,10 @@ impl Server {
                 }
                 let annotations = annotations_for(&tool.name);
                 let tool = tool.annotate(annotations);
+                let mut meta = serde_json::Map::new();
+                if LARGE_RESULT_TOOLS.contains(&tool.name.as_ref()) {
+                    meta.insert(MAX_RESULT_SIZE.into(), MAX_RESULT_CHARS.into());
+                }
                 // Only where somebody can answer, and never to an external
                 // client: this server cannot know whether there is a person
                 // on the other side of a bridge, and claiming to know would
@@ -550,9 +554,12 @@ impl Server {
                     && !self.inner.exec_gate.accepted.unattended_exec
                     && INTERACTION_TOOLS.contains(&tool.name.as_ref())
                 {
-                    tool.with_meta(requires_user_interaction())
-                } else {
+                    meta.insert(REQUIRES_INTERACTION.into(), true.into());
+                }
+                if meta.is_empty() {
                     tool
+                } else {
+                    tool.with_meta(rmcp::model::MetaObject(meta))
                 }
             })
             .collect()
@@ -1153,14 +1160,26 @@ fn annotations_for(tool: &str) -> rmcp::model::ToolAnnotations {
 }
 const REQUIRES_INTERACTION: &str = "anthropic/requiresUserInteraction";
 
-fn requires_user_interaction() -> rmcp::model::MetaObject {
-    let mut meta = serde_json::Map::new();
-    meta.insert(
-        REQUIRES_INTERACTION.to_string(),
-        serde_json::Value::Bool(true),
-    );
-    rmcp::model::MetaObject(meta)
-}
+/// The tools whose one result can pass about 50 000 characters: a
+/// `read_file` or `load_skill` page is up to 64 KiB, a `call_mcp_tool`
+/// tool list up to 64 KiB plus the server's instructions.
+///
+/// Claude Code 2.1.278 does not hand a result that size to the model: it
+/// saves it under `~/.claude/projects/…/tool-results/` and passes a 2 KB
+/// preview with the path, for the model to open with `Read` -- which a
+/// remote session does not have. Measured with a fake model (toexec
+/// `evidence/v4-mcp/agent-mcp/`): 50 000 bytes arrived whole, 52 000 as
+/// the preview. The key below, per tool, lifts that line; declared on a
+/// test tool, 150 000 bytes arrived whole. It changes nothing about how
+/// much ccnm returns -- the pages above are what they were -- only whether
+/// a page ccnm already sized reaches the model. The other tools stay
+/// under 32 KiB and do not need it, and every byte here is in `tools/list`
+/// for every session.
+pub(crate) const LARGE_RESULT_TOOLS: [&str; 3] = ["read_file", skills::TOOL, relay::TOOL];
+pub(crate) const MAX_RESULT_SIZE: &str = "anthropic/maxResultSizeChars";
+/// Room for 64 KiB of text written as JSON (a quote or a backslash is two
+/// characters there). Claude Code accepts up to 500 000.
+pub(crate) const MAX_RESULT_CHARS: u32 = 200_000;
 
 /// Wait until a run is no longer in progress, `limit` passes, or the call is
 /// cancelled -- whichever is first.
@@ -1720,6 +1739,41 @@ mod tests {
             .get("_meta")
             .and_then(|m| m.get("anthropic/requiresUserInteraction"))
             == Some(&serde_json::Value::Bool(true))
+    }
+
+    /// The size a tool declares to Claude Code, from the serialized form
+    /// for the same reason as [`asks_the_user`].
+    fn declared_size(tool: &rmcp::model::Tool) -> Option<u64> {
+        serde_json::to_value(tool)
+            .unwrap()
+            .get("_meta")
+            .and_then(|m| m.get("anthropic/maxResultSizeChars"))
+            .and_then(serde_json::Value::as_u64)
+    }
+
+    /// A 64 KiB page of `read_file` or `load_skill` would otherwise reach
+    /// a Claude session as a 2 KB preview and a path it cannot open. Only
+    /// those tools declare it, and an interactive session keeps both keys.
+    #[test]
+    fn the_tools_with_large_pages_declare_their_size_to_claude() {
+        let dir = temp("size");
+        for interactive in [false, true] {
+            let payload =
+                ServePayload::new("xshun", dir.to_path_buf(), "s").with_interactive(interactive);
+            let server = fixture_server(&payload).unwrap();
+            for tool in server.tools() {
+                let large = ["read_file", "load_skill"].contains(&tool.name.as_ref());
+                assert_eq!(
+                    declared_size(&tool),
+                    large.then_some(u64::from(MAX_RESULT_CHARS)),
+                    "{}",
+                    tool.name
+                );
+                if interactive && tool.name == "exec_command" {
+                    assert!(asks_the_user(&tool));
+                }
+            }
+        }
     }
 
     /// `exec_command` is the one tool not bounded by the path policy, so

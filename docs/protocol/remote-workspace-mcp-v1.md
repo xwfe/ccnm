@@ -13,6 +13,7 @@
 > 2026-09-20（P43）**修了一处写权会被错误交出的缺口**：会话结束时如果有命令停不掉（离开了进程组、又攥着管道，信号够不着），写入互斥不再被标成可用——下一个会话被拒，并看到还剩哪些 `output_ref`（第 7 节）。错误码没变，仍是 `CCNM_E_POLICY`；变的是**什么时候放锁**，而之前那种情况下放锁等于让两个写者同时改一棵树，本就违反第 4.4 节。锁标记里同时开始记 pid，只为让诊断说得准，不改变任何判定。同一节还写明了一条一直存在、此前一个字都没写过的边界：这把锁只在一个 state 目录内有效。
 > 2026-09-20（P44）**服务端自己验参数，有副作用的三个工具收紧了**：`exec_command`、`apply_patch`、`stop_command`（连同 `files[]` 里的嵌套结构）不再接受它们没声明的字段，超上限的 `timeout_ms` / `preview_bytes` 也从"悄悄钳到上限"改成拒绝；只读那七个照旧接受，但结果里写明忽略了什么（第 5.6 节）。**这是收紧，不是加法。**它同时修好一处声明与实现不一致：`tools/list` 里以前一个 `additionalProperties` 都没有，等于声明"随便加字段"，现在每个工具都说实话。**不升 `/2` 的理由**：`/1` 从没承诺过"未知字段会被忽略"，而按 schema 生成参数的客户端一个都不受影响——schema 现在就是服务端执行的那套；拒绝发生在执行之前，是 `isError` 工具结果，不作废句柄也不改错误码。
 > 2026-09-22（P49）**加了第十二个工具 `call_mcp_tool`**：把 Runtime 上的 MCP server 转给会话——项目 `.mcp.json` 里声明的，和执行账号给 Claude Code / Codex 装的。只在 coding 模式、而且那台机器上确实有能转的 server 时才出现在 `tools/list` 里；起 server 就是以执行账号跑程序，所以它过的门和 `exec_command` 一样。原来十一个工具不变。Runtime 配置 `[runtime_mcp]` 可以关。见第 5.7 节。
+> 2026-09-22 `read_file`、`load_skill`、`call_mcp_tool` 的工具定义多了 `_meta` 键 `anthropic/maxResultSizeChars`：Claude Code 会把超过约 50 000 字符的结果存盘、只给模型预览，而受管会话读不回来（第 5 节末）。工具、参数、结果都没变。
 > 2026-09-22（P48）**`load_skill` 也交出 Runtime 执行账号装好的 skills**（`~/.claude/skills`、`~/.agents/skills`、`~/.codex/skills`、`~/.claude/commands`），排在项目的后面；同名时装好的赢（照原生）。新增两个可选参数 `file`、`line`：读 skill 目录里的其他文件，长文件分段。不带新参数、执行账号 HOME 里又没装 skill 的调用和以前一样，只有工具的固定说明文字换了。Runtime 配置 `[machine_skills]` 可以整段关掉或按名字藏。见第 5.1 节。
 > 2026-09-22（P45）**skill 的 frontmatter 改成照 Claude Code 2.1.278 的读法读**（共享库 `toexec-skill` 0.2.0），工具、参数、错误码都没变，变的是同一个 SKILL.md 读出来的结果：以 `` ` `` `@` `*` 开头的描述不再让 skill 被跳过，`argument-hint: [filename] [format]` 和 `[issue-number]` 的提示不再丢；`disable-model-invocation: yes` / `on` / `1` 现在生效；写了 `user-invocable` 却不是 true（空值、认不出的字）现在不登记成 prompt；同一个键写两遍后写的赢。宿主会整段丢弃的 frontmatter、重复的键，`load_skill` 的返回开头各多一行说明。见第 5.1 节。
 
@@ -242,6 +243,8 @@ transport 的认证边界是 **OpenSSH identity + 独立的 Runtime OS 账号**�
 3. `apply_patch` 不是 open-world：它只能改这个 workspace 里的文件。但它是 destructive——update、write 会替换内容，delete 会删文件。
 
 另外，Managed 路径上 `exec_command` 和 `call_mcp_tool`（P49）会带一个 `_meta` 键 `anthropic/requiresUserInteraction`（只在有人坐在终端前的交互式 session 里带，而且该 workspace 没有写 `allow_unattended_exec`）。**外部 MCP 永远不发这个键**：bridge 不知道 Host 那头有没有人，冒充知道比不说更糟，所以那个开关对 bridge 没有任何影响。
+
+`read_file`、`load_skill`、`call_mcp_tool` 三个工具在两个入口上都带 `_meta` 键 `anthropic/maxResultSizeChars: 200000`（2026-09-22 起）。不带的话，Claude Code 2.1.278 收到超过约 50 000 字符的结果，不交给模型，而是存到本机磁盘、只给模型 2 KB 预览和一个路径，要它用 `Read` 去读；受管会话没有 `Read`，后面的就丢了（零额度实测：50 000 字节原样到达，52 000 字节只剩预览；声明之后 150 000 字节原样到达）。这三个工具一次最多回 64 KiB，其余工具最多 32 KiB，到不了那条线。**这个键不改变 ccnm 回多少**，第 8 节的上限照旧，只决定已经切好的一页能不能完整到模型面前。
 
 ### 5.1 `load_skill` 与 prompts：项目自带的 skills（P36 新增）
 

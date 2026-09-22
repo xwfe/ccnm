@@ -432,6 +432,38 @@ fn codexs_skill_list_goes_and_the_agents_server_takes_its_place() {
     assert_eq!(with.len(), without.len() + 8);
 }
 
+/// A tool result the size of ccnm's pages reaches the model whole: without
+/// this key, Codex with top-level tools keeps about 12 KB of any result and
+/// drops the middle (measured on 0.155.1, toexec `evidence/v4-mcp/agent-mcp/`).
+#[test]
+fn a_page_sized_result_is_not_cut_down_to_twelve_kilobytes() {
+    let args = strings(
+        &build_launch_cmd(
+            Path::new("/agent/codex"),
+            &spec(Mode::Print {
+                prompt: "hi".into(),
+            }),
+            &Dir::at("/agent/session"),
+            Path::new("/agent/private-codex"),
+            Path::new("/agent/ccnm"),
+            Some("gpt-5.1-codex"),
+        )
+        .unwrap(),
+    );
+    let at = args
+        .iter()
+        .position(|a| a == "tool_output_token_limit=20000")
+        .expect("the limit is raised");
+    assert_eq!(args[at - 1], "-c");
+    // After the MCP wiring, so the argv the 0.154.0 fixture recorded up to
+    // there is unchanged.
+    let wiring = args
+        .iter()
+        .position(|a| a.starts_with("mcp_servers."))
+        .unwrap();
+    assert!(at > wiring, "{args:?}");
+}
+
 /// What the model can reach when Code Mode is off, measured rather than
 /// assumed -- because turning Code Mode off is what the gate above does.
 ///

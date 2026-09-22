@@ -415,6 +415,15 @@ pub(crate) fn build_launch_cmd(
     // is there and nothing can read what it names (P48). So it goes, and
     // this machine's installed skills come from the server below instead.
     cmd = cmd.args(["-c", "skills.include_instructions=false"]);
+    // What of a tool's result reaches the model. Measured on 0.155.1 against
+    // a fake model (toexec `evidence/v4-mcp/agent-mcp/`): with the model's
+    // tools at the top level (`gpt-5.1-codex`), anything over about 12 KB
+    // loses its middle -- a 32 KiB `read_file` page arrives as its first and
+    // last 6 KB, and the model then reads on from 32 KiB as if it had the
+    // rest. 20000 passed 81 000 bytes whole, past ccnm's largest page
+    // (64 KiB). The default model's Code Mode is not affected by this key
+    // (it passes 32 KiB whole and cuts 64 KiB to 40 KB with a warning).
+    cmd = cmd.args(["-c", "tool_output_token_limit=20000"]);
     if let Some(agent) = agent_skills::Recorded::read(&dir.agent_skills())? {
         let key = agent_skills::SERVER_NAME;
         cmd = cmd

@@ -15,6 +15,13 @@
 //! an SSE stream; in a stream, reading stops at the reply to this request,
 //! since a server may keep the stream open.
 //!
+//! That directory lives only as long as one `curl`: it is removed when the
+//! request is over, not when the connection closes. Measured with Claude
+//! Code 2.1.278: at exit it sends this server SIGINT, SIGTERM 100 ms later
+//! and then SIGKILL, without closing stdin -- so nothing that waits for the
+//! end of the session ever runs, and a directory kept for the connection
+//! stayed behind in `$TMPDIR` with the key in it after every real session.
+//!
 //! What it does not do: a server behind OAuth (401) is reported as needing
 //! a login -- Claude Code keeps that token, ccnm cannot use it. The old
 //! HTTP+SSE transport is not spoken at all.
@@ -46,7 +53,7 @@ pub struct Curl {
     /// The config's own headers, already checked.
     headers: Vec<(String, String)>,
     loopback: bool,
-    /// Holds the `-K` file and curl's stderr; removed on close.
+    /// Holds the `-K` file and curl's stderr while one curl runs.
     dir: PathBuf,
     session: Option<String>,
     protocol: Option<String>,
@@ -86,10 +93,6 @@ impl Curl {
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
-        fs::DirBuilder::new()
-            .mode(0o700)
-            .create(&dir)
-            .map_err(|e| Error::Start(format!("cannot make a private directory for curl: {e}")))?;
         Ok(Curl {
             url: url.to_string(),
             headers: headers
@@ -158,10 +161,22 @@ impl Curl {
         lines.join("\n") + "\n"
     }
 
+    /// Starts one curl. The private directory is made here and removed by
+    /// [`Curl::done`] once that curl has ended.
     fn spawn(&self, method: &str, timeout: Duration) -> Result<Child, Error> {
         let config = self.dir.join("request");
         let stderr = self.dir.join("stderr");
         let write = || -> std::io::Result<fs::File> {
+            let make = || fs::DirBuilder::new().mode(0o700).create(&self.dir);
+            if let Err(e) = make() {
+                // Left by a request whose clean-up failed: this process's
+                // own name, so its own to replace.
+                if e.kind() != std::io::ErrorKind::AlreadyExists {
+                    return Err(e);
+                }
+                fs::remove_dir_all(&self.dir)?;
+                make()?;
+            }
             fs::OpenOptions::new()
                 .write(true)
                 .create(true)
@@ -171,8 +186,12 @@ impl Curl {
                 .write_all(self.config(method, timeout).as_bytes())?;
             fs::File::create(&stderr)
         };
-        let stderr =
-            write().map_err(|e| Error::Start(format!("cannot write curl's request: {e}")))?;
+        let stderr = write().map_err(|e| {
+            self.done();
+            Error::Start(format!(
+                "cannot write curl's request in a private directory: {e}"
+            ))
+        })?;
         Command::new("curl")
             .arg("-K")
             .arg(&config)
@@ -181,6 +200,7 @@ impl Curl {
             .stderr(stderr)
             .spawn()
             .map_err(|e| {
+                self.done();
                 if e.kind() == std::io::ErrorKind::NotFound {
                     Error::Start(
                         "curl is not on this machine's PATH; ccnm reaches HTTP MCP servers through it"
@@ -192,6 +212,11 @@ impl Curl {
             })
     }
 
+    /// The request is over: its files go.
+    fn done(&self) {
+        let _ = fs::remove_dir_all(&self.dir);
+    }
+
     fn post(&mut self, line: &str, timeout: Duration) -> Result<(), Error> {
         let waiting_for = awaited_id(line);
         let mut child = self.spawn("POST", timeout)?;
@@ -199,11 +224,13 @@ impl Curl {
         // A stream the server keeps open is cut here, reply in hand.
         let _ = child.kill();
         let status = child.wait().ok().and_then(|s| s.code());
-        match result {
+        let result = match result {
             Err(Exchange::NoResponse) => Err(self.curl_failed(status, timeout)),
             Err(Exchange::Failed(error)) => Err(error),
             Ok(()) => Ok(()),
-        }
+        };
+        self.done();
+        result
     }
 
     fn exchange(
@@ -382,7 +409,7 @@ impl Transport for Curl {
     }
 
     /// Tells the server the session is over (optional in the protocol; a
-    /// failure is ignored) and removes the private directory.
+    /// failure is ignored).
     fn close(&mut self) {
         if self.closed {
             return;
@@ -397,7 +424,7 @@ impl Transport for Curl {
             }
             let _ = child.wait();
         }
-        let _ = fs::remove_dir_all(&self.dir);
+        self.done();
     }
 }
 
@@ -489,23 +516,31 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use toexec_mcp::Client;
 
-    /// What one request carried.
+    /// What one request carried, and how curl's private directory looked
+    /// while it was in flight.
     #[derive(Debug, Default, Clone)]
     struct Heard {
         method: String,
         agent: Option<String>,
         session: Option<String>,
         key: Option<String>,
+        dir_mode: Option<u32>,
+        request_mode: Option<u32>,
     }
+
+    type Watched = Arc<Mutex<Option<PathBuf>>>;
 
     /// A streamable-HTTP MCP server on 127.0.0.1, one request per
     /// connection: JSON for initialize, SSE (a notification first, then
-    /// the reply) for everything else, 401 when `login` is set.
-    fn serve(login: bool) -> (String, Arc<Mutex<Vec<Heard>>>) {
+    /// the reply) for everything else, 401 when `login` is set. The
+    /// directory put in the third value is looked at on every request.
+    fn serve(login: bool) -> (String, Arc<Mutex<Vec<Heard>>>, Watched) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}/mcp", listener.local_addr().unwrap());
         let heard = Arc::new(Mutex::new(Vec::new()));
         let log = heard.clone();
+        let watched: Watched = Arc::new(Mutex::new(None));
+        let watch = watched.clone();
         std::thread::spawn(move || {
             for stream in listener.incoming() {
                 let Ok(stream) = stream else { break };
@@ -538,6 +573,15 @@ mod tests {
                 }
                 let mut body = vec![0u8; length];
                 reader.read_exact(&mut body).unwrap();
+                if let Some(dir) = watch.lock().unwrap().clone() {
+                    let mode = |path: &std::path::Path| {
+                        fs::metadata(path).ok().map(|m| {
+                            std::os::unix::fs::PermissionsExt::mode(&m.permissions()) & 0o777
+                        })
+                    };
+                    heard.dir_mode = mode(&dir);
+                    heard.request_mode = mode(&dir.join("request"));
+                }
                 log.lock().unwrap().push(heard);
                 let mut out = stream;
                 if login {
@@ -589,7 +633,7 @@ mod tests {
                 }
             }
         });
-        (url, heard)
+        (url, heard, watched)
     }
 
     fn headers(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
@@ -601,9 +645,10 @@ mod tests {
 
     #[test]
     fn a_session_is_carried_and_an_sse_reply_is_picked_out_of_an_open_stream() {
-        let (url, heard) = serve(false);
+        let (url, heard, watched) = serve(false);
         let transport = Curl::new(&url, &headers(&[("x-api-key", "k-1")])).unwrap();
         let dir = transport.dir.clone();
+        *watched.lock().unwrap() = Some(dir.clone());
         let started = std::time::Instant::now();
         let mut client = Client::connect(
             Box::new(transport),
@@ -640,20 +685,27 @@ mod tests {
         );
         // The key was in a file only this account can read, and never on
         // curl's command line.
-        let mode = fs::metadata(&dir).unwrap().permissions();
-        assert_eq!(
-            std::os::unix::fs::PermissionsExt::mode(&mode) & 0o777,
-            0o700
+        assert!(
+            heard
+                .iter()
+                .all(|h| h.dir_mode == Some(0o700) && h.request_mode == Some(0o600)),
+            "{heard:?}"
         );
+        // And only while a curl ran: with the connection still open,
+        // nothing is on disk -- a client that SIGKILLs this server between
+        // calls (Claude Code does, at every exit) leaves no key behind.
+        assert!(!dir.exists(), "the private directory outlived its request");
         drop(client);
-        assert!(!dir.exists(), "the private directory is removed on close");
+        assert!(!dir.exists(), "the DELETE on close leaves nothing either");
     }
 
     #[test]
     fn a_login_wall_is_named_as_such() {
-        let (url, _) = serve(true);
+        let (url, _, _) = serve(true);
+        let transport = Curl::new(&url, &BTreeMap::new()).unwrap();
+        let dir = transport.dir.clone();
         let error = match Client::connect(
-            Box::new(Curl::new(&url, &BTreeMap::new()).unwrap()),
+            Box::new(transport),
             ("ccnm", "test"),
             Duration::from_secs(20),
         ) {
@@ -664,6 +716,7 @@ mod tests {
             matches!(error, Error::NeedsLogin { status: 401 }),
             "{error}"
         );
+        assert!(!dir.exists(), "a refused request leaves nothing either");
     }
 
     #[test]
@@ -672,8 +725,11 @@ mod tests {
             let listener = TcpListener::bind("127.0.0.1:0").unwrap();
             listener.local_addr().unwrap().port()
         };
+        let transport =
+            Curl::new(&format!("http://127.0.0.1:{port}/mcp"), &BTreeMap::new()).unwrap();
+        let dir = transport.dir.clone();
         let error = match Client::connect(
-            Box::new(Curl::new(&format!("http://127.0.0.1:{port}/mcp"), &BTreeMap::new()).unwrap()),
+            Box::new(transport),
             ("ccnm", "test"),
             Duration::from_secs(20),
         ) {
@@ -681,6 +737,7 @@ mod tests {
             Ok(_) => panic!("nothing listens there"),
         };
         assert!(matches!(error, Error::Start(_)), "{error}");
+        assert!(!dir.exists());
     }
 
     #[test]

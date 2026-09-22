@@ -12,6 +12,7 @@
 > 2026-09-20（P42）第 6 节开头多了一段：四个时钟各管什么、调用方自己的调用预算为什么不是 Runtime 的运行时限，以及三句本来就成立却没写下来的话（session-bound 是权威语义、取消等待不等于取消命令、终态只有 Runtime 说了算）。**没有加工具、参数或行为**，只是把散在第 5.5、6.2 和第 8 节的规则收到一处，好让别的产品照着实现。
 > 2026-09-20（P43）**修了一处写权会被错误交出的缺口**：会话结束时如果有命令停不掉（离开了进程组、又攥着管道，信号够不着），写入互斥不再被标成可用——下一个会话被拒，并看到还剩哪些 `output_ref`（第 7 节）。错误码没变，仍是 `CCNM_E_POLICY`；变的是**什么时候放锁**，而之前那种情况下放锁等于让两个写者同时改一棵树，本就违反第 4.4 节。锁标记里同时开始记 pid，只为让诊断说得准，不改变任何判定。同一节还写明了一条一直存在、此前一个字都没写过的边界：这把锁只在一个 state 目录内有效。
 > 2026-09-20（P44）**服务端自己验参数，有副作用的三个工具收紧了**：`exec_command`、`apply_patch`、`stop_command`（连同 `files[]` 里的嵌套结构）不再接受它们没声明的字段，超上限的 `timeout_ms` / `preview_bytes` 也从"悄悄钳到上限"改成拒绝；只读那七个照旧接受，但结果里写明忽略了什么（第 5.6 节）。**这是收紧，不是加法。**它同时修好一处声明与实现不一致：`tools/list` 里以前一个 `additionalProperties` 都没有，等于声明"随便加字段"，现在每个工具都说实话。**不升 `/2` 的理由**：`/1` 从没承诺过"未知字段会被忽略"，而按 schema 生成参数的客户端一个都不受影响——schema 现在就是服务端执行的那套；拒绝发生在执行之前，是 `isError` 工具结果，不作废句柄也不改错误码。
+> 2026-09-22（P49）**加了第十二个工具 `call_mcp_tool`**：把 Runtime 上的 MCP server 转给会话——项目 `.mcp.json` 里声明的，和执行账号给 Claude Code / Codex 装的。只在 coding 模式、而且那台机器上确实有能转的 server 时才出现在 `tools/list` 里；起 server 就是以执行账号跑程序，所以它过的门和 `exec_command` 一样。原来十一个工具不变。Runtime 配置 `[runtime_mcp]` 可以关。见第 5.7 节。
 > 2026-09-22（P48）**`load_skill` 也交出 Runtime 执行账号装好的 skills**（`~/.claude/skills`、`~/.agents/skills`、`~/.codex/skills`、`~/.claude/commands`），排在项目的后面；同名时装好的赢（照原生）。新增两个可选参数 `file`、`line`：读 skill 目录里的其他文件，长文件分段。不带新参数、执行账号 HOME 里又没装 skill 的调用和以前一样，只有工具的固定说明文字换了。Runtime 配置 `[machine_skills]` 可以整段关掉或按名字藏。见第 5.1 节。
 > 2026-09-22（P45）**skill 的 frontmatter 改成照 Claude Code 2.1.278 的读法读**（共享库 `toexec-skill` 0.2.0），工具、参数、错误码都没变，变的是同一个 SKILL.md 读出来的结果：以 `` ` `` `@` `*` 开头的描述不再让 skill 被跳过，`argument-hint: [filename] [format]` 和 `[issue-number]` 的提示不再丢；`disable-model-invocation: yes` / `on` / `1` 现在生效；写了 `user-invocable` 却不是 true（空值、认不出的字）现在不登记成 prompt；同一个键写两遍后写的赢。宿主会整段丢弃的 frontmatter、重复的键，`load_skill` 的返回开头各多一行说明。见第 5.1 节。
 
@@ -187,12 +188,13 @@ external_mcp = "read"      # disabled | read | coding
 | `apply_patch` | ❌ | ✅ |
 | `exec_command` | ❌ | ✅ |
 | `stop_command` | ❌ | ✅ |
+| `call_mcp_tool` | ❌ | ✅（那台机器上有能转的 MCP server 时，P49） |
 
 `read` 模式**永远没有 `exec_command`**。哪怕调用方保证"只跑 `cat`"也不行：任意 exec 能写磁盘、能联网、能起后台进程，靠解析命令字符串判断只读是假安全。将来真要"只读 shell"，那得靠独立的 OS sandbox 或者白名单可执行文件契约，不是靠猜。
 
 `read` 模式也没有 `read_output`，理由不同：`output_ref` 只在**产生它的那个 session 的保留目录里**有意义（实现上 `read_output` 就是拿这个 ref 去 join 本 session 的目录）。read 模式没有 `exec_command`，永远产不出 ref，留着它就是一个必然失败的工具；而让它去解析**别的 session** 的 ref，就是跨会话泄漏。所以直接不发。
 
-`stop_command`（P41）同理：read 模式起不了命令，也就没有可停的。
+`stop_command`（P41）同理：read 模式起不了命令，也就没有可停的。`call_mcp_tool`（P49）和 `exec_command` 同一个理由：起一个 MCP server 就是以执行账号跑一个程序。
 
 > 这比 ROADMAP P9.2 的下限（"read 模式没有 `apply_patch` 和 `exec_command`"）更窄。窄的那一格是 `read_output`，理由如上。
 
@@ -229,6 +231,7 @@ transport 的认证边界是 **OpenSSH identity + 独立的 Runtime OS 账号**�
 | `apply_patch` | write | `false` | `true` | `false` | `false` |
 | `exec_command` | exec | `false` | `true` | `false` | `true` |
 | `stop_command` | exec | `false` | `true` | `false` | `false` |
+| `call_mcp_tool` | exec | `false` | `true` | `false` | `true` |
 
 （按 MCP 规范，`destructiveHint` / `idempotentHint` 只在 `readOnlyHint` 为 `false` 时才有意义，所以只读那几行留空。）
 
@@ -238,7 +241,7 @@ transport 的认证边界是 **OpenSSH identity + 独立的 Runtime OS 账号**�
 2. **`exec_command` 永远按 destructive + open-world 处理。** 不因为这次的命令"看起来只是 `ls`"就动态改注解。注解是工具的属性，不是某次调用的属性。
 3. `apply_patch` 不是 open-world：它只能改这个 workspace 里的文件。但它是 destructive——update、write 会替换内容，delete 会删文件。
 
-另外，Managed 路径上 `exec_command` 会带一个 `_meta` 键 `anthropic/requiresUserInteraction`（只在有人坐在终端前的交互式 session 里带，而且该 workspace 没有写 `allow_unattended_exec`）。**外部 MCP 永远不发这个键**：bridge 不知道 Host 那头有没有人，冒充知道比不说更糟，所以那个开关对 bridge 没有任何影响。
+另外，Managed 路径上 `exec_command` 和 `call_mcp_tool`（P49）会带一个 `_meta` 键 `anthropic/requiresUserInteraction`（只在有人坐在终端前的交互式 session 里带，而且该 workspace 没有写 `allow_unattended_exec`）。**外部 MCP 永远不发这个键**：bridge 不知道 Host 那头有没有人，冒充知道比不说更糟，所以那个开关对 bridge 没有任何影响。
 
 ### 5.1 `load_skill` 与 prompts：项目自带的 skills（P36 新增）
 
@@ -457,7 +460,7 @@ rows: 3
 
 两条规矩，按工具分：
 
-| | `exec_command`、`apply_patch`、`stop_command` | 其余七个（只读） |
+| | `exec_command`、`apply_patch`、`stop_command`、`call_mcp_tool`（P49） | 其余七个（只读） |
 | --- | --- | --- |
 | 收到它没声明的字段 | **拒绝**，并列出它认识的字段名 | 照常回答，结果末尾多一行 `[ignored, this tool has no such argument: …]` |
 | `tools/list` 里的 `additionalProperties` | `false` | `true`（`workspace_info` 没有参数结构，不发这个键） |
@@ -470,6 +473,44 @@ rows: 3
 不认识的枚举值（`op`、`output_mode`、`edit_mode`）、类型不对、必填缺失，一直都是拒绝，并且把合法取值列出来——这三条不分工具。
 
 **所有这些拒绝都是工具结果（`isError`），不是 JSON-RPC 错误。**所以一次参数写错既不会作废 coding 会话的句柄，也不该被调用方当成传输故障。
+
+### 5.7 `call_mcp_tool`：Runtime 上的 MCP server（P49 新增）
+
+把项目那台机器上的 MCP server 转给会话：数据库这类只能跑在项目旁边的 server 是它存在的理由。
+
+**哪些 server**，按这个顺序，同名时先列的赢：
+
+| 从哪读 | 读什么 |
+| --- | --- |
+| workspace 根下的 `.mcp.json` | `mcpServers`（Claude Code 的 project 级写法） |
+| 执行账号的 `~/.claude.json` | 顶层 `mcpServers`（Claude Code 的 user 级） |
+| 执行账号的 `$CODEX_HOME/config.toml`（默认 `~/.codex/config.toml`） | `[mcp_servers.*]` |
+
+项目的压过装好的，这是 Claude Code 自己的规矩（project 级压过 user 级）；Claude 的压过 Codex 的只是得定一个。`${VAR}` / `${VAR:-默认值}` 照 Claude Code 展开，但**像凭据的变量名一律当没设**（Agent 的登录变量和 `*_TOKEN`、`*_API_KEY` 这类），这样的 server 列出来、标明缺什么、不起。**只转 stdio 的**：HTTP server 不需要跑在项目旁边，列出来并写明原因。
+
+**参数**（全都可选，`additionalProperties: false`）：
+
+| 参数 | 是什么 |
+| --- | --- |
+| `server` | 不给：列出所有 server 和它们的状态（没起 / 在跑、有哪些工具 / 不转的原因），**什么都不起** |
+| `tool` | 给了 `server` 不给它：列出这个 server 的工具、各自的参数表和 server 自己的说明（这一步才起它） |
+| `arguments` | 给了 `server` 和 `tool`：调用那个工具，这是它自己的参数对象，原样转过去 |
+
+工具说明的固定部分是 `Use an MCP server on the runtime machine: …`，末尾是会话开始时能转的 server 名字（`Servers here: a, b.`），名字放不下 2048 个 UTF-16 码元时写"还有几个"。**有能转的 server 时才出现在 `tools/list`**，所以它不在两份 `tools-list-*.json` fixture 里（那个测试 server 没有可转的）；名字、参数、说明由中立客户端测试（`tests/test_remote_workspace_mcp.py`）和 `mcp::relay` 的单元测试核对。
+
+**过的门和 `exec_command` 一样**（起 server 之前；只列清单不起东西，不过门）：
+
+- 执行门（第 4.1 节的执行身份检查）、Runtime 凭据检查——拒绝时报 `CCNM_E_POLICY`，措辞写明"和 exec_command 同一个理由"；
+- 工作区配了 `exec_sandbox` 就套同一个 OS 沙箱：server 只能写 workspace（不含 `.git`）、`$TMPDIR`、`/tmp`，**没有网络**；
+- 环境变量按命令的规矩清理；server 配置里自己的 `env` 照传（token 也传，那是写配置的人给它的），但 Agent 的登录变量不传；
+- 工作目录是 workspace 根（Codex 的 `cwd` 按它算）；
+- Managed 路径上有人值守时每次调用都问人（`requiresUserInteraction`，见上面第 5 节末）。
+
+**结果**：server 的内容块原样交回（文字、图片），`isError` 原样保留。有文字时**去掉内容相同的 `structuredContent`**（按 P11 实测，Claude Code 两者都有时只给模型看结构化那份）；只有它时转成文字。文字超过 32 KiB（`read_output` 一页的上限）时先交前 32 KiB，全文放进这个会话的留存目录，末尾一行写 `read_output output_ref=… offset=…`——和命令输出同一套分页、上限和过期。单张图片超过 3,932,160 字节（base64，`view_image` 的上限）换成一句说明。
+
+**连接**：用到才起，同一个会话复用；闲 5 分钟收掉（每分钟看一次）；**会话结束时先停 server 再放写锁**——它能写工作树。起不来、超时、断开报 `CCNM_E_DEPENDENCY`；调用发出去之后断了或超时，报的话里写明"做没做成不知道"，下一次调用会重起它。server 回了 JSON-RPC 错误（参数不对）报 `CCNM_E_INVALID_ARGS`。握手接 2024-11-05 到 2025-11-25 之间的版本。
+
+**开关**：Runtime 自己的配置 `[runtime_mcp]`：`enabled = false` 全关，`project = false` 不读项目的 `.mcp.json`，`hidden = [...]` 按名字藏。默认全开。见[配置说明](../configuration.md#runtime_mcp)。
 
 ## 6. 连接生命周期
 
@@ -548,6 +589,7 @@ rows: 3
 | `read_notebook` | 文件最多 16 MiB；一次最多 32 KiB 文本、单个输出 4 KiB、8 张图（合计不超过 `view_image` 的上限），放不下时停在 cell 边界 |
 | `view_image` | 文件最多 3932160 字节（base64 后 5 MiB，Claude Code 2.1.273 的上限）；只发 PNG、JPEG、GIF、WebP |
 | `instructions` | 2048 个 UTF-16 码元（含项目说明文件），超了由 ccnm 按行截断，见第 10 节 |
+| `call_mcp_tool`（P49） | 结果文字一次最多 32 KiB，其余进留存目录用 `read_output` 读（算在上面"保留输出"里）；单张图片同 `view_image`；一个 server 的工具表最多 64 KiB，放不下先去参数表再去描述；server 自己的说明最多 4 KiB；一条消息超过 32 MiB 这次调用报错；server 起 30 秒、一次调用 60 秒（Codex 配置里的 `startup_timeout_sec` / `tool_timeout_sec` 会改它） |
 
 保留的输出**留在远端**，只在这个 session 的目录里。本入口的 session 在连接结束时删掉自己的输出：第 6 节说过，断了就是断了，重开是新 session，旧的 `output_ref` 本来就没人能再用。Managed 会话的输出不随连接删，它重连后沿用同一个 session，旧 ref 还要能读。不管哪个入口，最后一次运行过去 7 天、Runtime 上又没有进程在服务它的 session，输出会被删掉；运维上怎么看、怎么提前清见[运维手册](../operations.md#状态文件在哪多大怎么清)。
 
@@ -668,6 +710,8 @@ python3 scripts/check_protocol.py
 | 工具名集合 | 模式的边界，Host 照着它决定有哪些工具 |
 | 每个工具的 `description` | 它是人手写进 `#[tool(description = ...)]` 的，**也是模型实际读到的那段文本** |
 | 参数名与 `required` | Host 照着它拼 `tools/call` 的 arguments，名字错一个字就每次都被拒 |
+
+**`call_mcp_tool`（P49）不在这两份里**：它只在那台机器上有能转的 MCP server 时才出现，而这个测试起的 server 没有。它的名字、参数和说明的固定部分记在第 5.7 节，由中立客户端测试和 `mcp::relay` 的单元测试对着真实 server 核对。
 
 **`check_protocol.py` 证明不了这些，别指望它。** 它把 fixture 对着 `schema/` 里手写的 JSON Schema 校验，两份都是手写的，一起漂走也照样通过——2026-09-16 发现的 `apply_patch` 就是这样：fixture 写着 `changes`，wire 上一直叫 `files`，照 fixture 实现的 Host 每次调用都被拒，而协议检查一直是绿的。
 

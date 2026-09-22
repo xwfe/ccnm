@@ -458,6 +458,30 @@ Agent 这边为什么不直接用 Claude Code / Codex 自己的 skills：实测�
 - 这台 Runtime 的执行账号是专门建的 `ccrun` 时，它的 HOME 里一般什么都没装，这一节在 Runtime 上等于没有效果；要给它装，就装到 `~ccrun/.claude/skills` 这类目录里。
 - 旧版本的 ccnm 不认识这一节，读到它会整份配置报错（配置对未知字段是严格的），先升级再写。
 
+## `[runtime_mcp]`
+
+```toml
+[runtime_mcp]
+enabled = true         # 默认值，可省略
+project = true         # 默认值：读项目根下的 .mcp.json
+hidden = ["computer"]  # 这几个不转，按名字
+```
+
+**Runtime 上的 MCP server 转不转给会话**（P49）。只写在 Runtime Node 上、只管这台机器：会话里多一个工具 `call_mcp_tool`，经它用这台机器上的 server——项目 `.mcp.json` 里声明的，和执行账号给 Claude Code（`~/.claude.json`）或 Codex（`~/.codex/config.toml`）装的。**默认全开**，是用户 2026-09-22 的决定。
+
+**会是什么样**：
+
+- 只有能写的会话有这个工具（Managed 会话、`external_mcp = "coding"` 的外部连接），而且那台机器上至少有一个能转的 server；read 模式永远没有。
+- 起一个 server 就是以执行账号跑一个程序，所以它过的门和 `exec_command` 一样：执行身份没隔离又没写 `allow_unconfined_exec` 时拒绝（报 `CCNM_E_POLICY`，写明理由）；配了 `exec_sandbox` 就套同一个沙箱（server 没有网络，context7 这类要联网的会失败）；有人值守的 Claude 会话每次调用都问人。只列清单（不带 `server`）不起任何东西，不过这些门。
+- 项目的 `.mcp.json` 排最前、同名压过装好的（Claude Code 的规矩）。只转 stdio 的；HTTP 的列出来、写明"从 Agent 那边连"。
+- server 配置里自己的 `env` 照传，token 也传；Agent 的登录变量（`ANTHROPIC_API_KEY` 这些）不传。`${VAR}` 查不到像凭据的变量名——ccnm 的执行门本来就不许 Runtime 的环境里有它们——这样的 server 标成"缺什么"，不起。
+- 结果文字超过 32 KiB 的，先交前 32 KiB，其余像命令输出一样用 `read_output` 接着读。
+- 会话结束时先停 server、再放写锁（它能写工作树）；闲 5 分钟的也会被收掉，下次调用重起。
+- `project = false`：只转执行账号装的，不读项目的 `.mcp.json`——给托管别人项目、不想让项目文件点名要跑什么程序的机器。`hidden` 里的在哪声明都不转。
+- 执行账号是专门建的 `ccrun` 时，它的 HOME 里一般什么都没装，转的就只有项目自己声明的。
+- 改了从下一个会话开始算；开着的会话的工具说明（列了哪些 server）不变，但每次调用都重新读配置。
+- 旧版本的 ccnm 不认识这一节，读到它会整份配置报错，先升级再写。
+
 ## CLI 改配置
 
 ```bash

@@ -359,6 +359,25 @@ stop_command
 
 完整规则见[协议文档第 5.1 节](protocol/remote-workspace-mcp-v1.md#51-load_skill-与-prompts项目自带的-skillsp36-新增)。**验到哪一步**：发现、加载、参数替换、目录长度、prompts 都有离线测试和一个不依赖 ccnm 代码的中立 MCP 客户端测试；"真实模型会不会主动去用 skill"**没有验**，见[支持矩阵](support-matrix.md)。
 
+## 项目那台机器上的 MCP server
+
+项目的 `.mcp.json` 里声明了 server（比如一个连本地数据库的），或者 Runtime 的执行账号给 Claude Code / Codex 装了 server，模型会多一个工具 `call_mcp_tool`（P49，默认全开）：
+
+```text
+call_mcp_tool                                        有哪些 server、各自什么状态（什么都不起）
+call_mcp_tool  server=db                             db 的工具和参数表（这一步才把它起起来）
+call_mcp_tool  server=db  tool=query  arguments={…}  调用
+```
+
+- **只在能写的会话里有**（Managed 会话、`coding` 模式的外部连接），因为起 server 就是以执行账号跑程序：和 `exec_command` 过同一道执行门、同一个沙箱，有人值守时每次都问你。
+- **只转在这台机器上起的程序**（stdio）；HTTP 的 server 不需要跑在项目旁边，会列出来并说明。
+- 结果太长时先给 32 KiB，其余用 `read_output` 接着读，和命令输出一样。
+- 会话结束时先停掉这些 server，再把写锁交出去。
+
+怎么关、怎么不读项目的 `.mcp.json`、按名字藏，见[配置说明](configuration.md#runtime_mcp)；完整规则见[协议第 5.7 节](protocol/remote-workspace-mcp-v1.md#57-call_mcp_toolruntime-上的-mcp-serverp49-新增)。
+
+**起不来，先这样查**：不带参数调一次 `call_mcp_tool`，每个 server 后面写着状态；"not relayed" 的写着原因（HTTP 的、配置里用了执行账号环境里没有的变量）。带 `server` 调失败时报 `CCNM_E_DEPENDENCY`，后面是它在 stderr 上说的最后一段话——最常见的是程序不在执行账号的 `PATH` 上（`npx`、`uvx` 装在你自己账号的 mise / nvm 目录里，`ccrun` 看不到）。
+
 ## 同一工作树的单写限制
 
 Runtime MCP 在完整 session 生命周期持有独占写 guard。另一个 Agent Node、CLI 或后续 RPC 即使绕开上层协调，只要进入同一 Runtime workspace，也会在 MCP 初始化阶段得到 busy/unknown：

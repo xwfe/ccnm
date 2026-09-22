@@ -333,7 +333,7 @@ stop_command
 - `view_image` 把 Runtime 上的 PNG、JPEG、GIF、WebP 图片交给模型看（单个文件最多 3932160 字节，太大时报错并给出缩小的命令）；图片原样发出，Claude Code 会自己缩放。受管 Codex 会话里模型要在脚本里调 `image()` 才看得到图，规则见[协议第 5.3 节](protocol/remote-workspace-mcp-v1.md#53-view_image看-workspace-里的图片p39-新增)；
 - Claude 使用项目根 `CLAUDE.md` 上下文；Codex 使用根目录 `AGENTS.override.md`/`AGENTS.md` 的已测优先级；
 - remote session 使用对应 Provider 的已测工具策略，让项目访问统一走 Runtime Node；
-- 受管会话里模型还能**搜网页**（Claude 的 `WebSearch`、Codex 的 `web_search`，默认开）；抓网页、子代理、待办清单要 workspace 自己开，关掉搜索写 `agent_tools = []`。这些都不碰 Agent 本机的磁盘，Agent 自带的文件和 shell 工具一直关着，见[配置说明](configuration.md#agent_tools)。
+- 受管会话里模型还能**搜网页**（Claude 的 `WebSearch`、Codex 的 `web_search`，默认开），能用 **Agent 机器上装好的 MCP server**（默认只给远端地址的，见下面[那一节](#agent-机器上的-mcp-server)）；抓网页、子代理、待办清单要 workspace 自己开，全关写 `agent_tools = []`。Agent 自带的文件和 shell 工具一直关着，见[配置说明](configuration.md#agent_tools)。
 
 **传错参数会怎样**：`exec_command`、`apply_patch`、`stop_command` 不接受它们没声明的字段，连 `files[]` 里的每一项也一样——拒绝发生在命令跑起来、补丁落盘之前，结果里会列出它认识的字段名。只读那几个照常回答，只在末尾加一行说忽略了什么。`timeout_ms`、`preview_bytes` 超上限是拒不是钳（要跑更久用 `run_in_background`）。规则见[协议第 5.6 节](protocol/remote-workspace-mcp-v1.md#56-参数怎么验有副作用的拒绝只读的说一声p44-新增)。
 
@@ -370,13 +370,37 @@ call_mcp_tool  server=db  tool=query  arguments={…}  调用
 ```
 
 - **只在能写的会话里有**（Managed 会话、`coding` 模式的外部连接），因为起 server 就是以执行账号跑程序：和 `exec_command` 过同一道执行门、同一个沙箱，有人值守时每次都问你。
-- **只转在这台机器上起的程序**（stdio）；HTTP 的 server 不需要跑在项目旁边，会列出来并说明。
+- **只转在这台机器上起的程序**（stdio）；HTTP 的 server 不需要跑在项目旁边，会列出来并说明——Agent 机器上装的由下一节那个同名工具转。
 - 结果太长时先给 32 KiB，其余用 `read_output` 接着读，和命令输出一样。
 - 会话结束时先停掉这些 server，再把写锁交出去。
 
 怎么关、怎么不读项目的 `.mcp.json`、按名字藏，见[配置说明](configuration.md#runtime_mcp)；完整规则见[协议第 5.7 节](protocol/remote-workspace-mcp-v1.md#57-call_mcp_toolruntime-上的-mcp-serverp49-新增)。
 
 **起不来，先这样查**：不带参数调一次 `call_mcp_tool`，每个 server 后面写着状态；"not relayed" 的写着原因（HTTP 的、配置里用了执行账号环境里没有的变量）。带 `server` 调失败时报 `CCNM_E_DEPENDENCY`，后面是它在 stderr 上说的最后一段话——最常见的是程序不在执行账号的 `PATH` 上（`npx`、`uvx` 装在你自己账号的 mise / nvm 目录里，`ccrun` 看不到）。
+
+## Agent 机器上的 MCP server
+
+你自己给 Claude Code / Codex 装的 MCP server（`~/.claude.json`、`~/.codex/config.toml` 里的），远端会话也能用（P50）：模型看到 `ccnm_agent` 下的 `call_mcp_tool`，用法和上一节一样，另有 `read_mcp_result` 读长结果的后面部分。
+
+```text
+mcp__ccnm_agent__call_mcp_tool                                     这台机器上有哪些、各自什么状态
+mcp__ccnm_agent__call_mcp_tool   server=exa-search                 它的工具和参数表（这一步才连上它）
+mcp__ccnm_agent__call_mcp_tool   server=exa-search tool=… arguments={…}  调用
+mcp__ccnm_agent__read_mcp_result ref=… offset=…                    结果太长时照上一次末尾的说明接着读
+```
+
+- **默认只给别的机器上的地址**（exa、DeepWiki 这类 HTTP server）。在这台机器上跑的——`npx` / `uvx` 起的程序、`127.0.0.1` 上的服务——能碰这台机器的磁盘、用你的 ssh，默认不给；要哪个，在 Agent 机器的配置里点名：
+
+  ```toml
+  [agent_mcp]
+  local = ["context7", "mcp-time"]
+  ```
+
+- workspace 那边也要同意：Runtime 配置里 `agent_tools` 默认含 `mcp_servers`，去掉就不给（见[配置说明](configuration.md#agent_tools)）。
+- 结果太长时先给 32 KiB，其余留 30 分钟，用 `read_mcp_result` 接着读。
+- HTTP 的经这台机器的 `curl` 连；要 OAuth 登录的连不上（令牌在 Claude Code 那里）。
+
+**不给、连不上，先这样查**：不带参数调一次 `mcp__ccnm_agent__call_mcp_tool`，每个 server 后面写着状态或原因——"runs as a program on this machine" 就是没点名，"turned off in ~/.codex/config.toml" 是你在 Codex 里关了它。开关全在 [`[agent_mcp]`](configuration.md#agent_mcp)。
 
 ## 同一工作树的单写限制
 

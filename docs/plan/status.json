@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-09-22T21:35:00+09:00",
+  "last_updated": "2026-09-22T23:10:00+09:00",
   "current_task": null,
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
@@ -2492,6 +2492,41 @@
         }
       ],
       "blockers": []
+    },
+    {
+      "id": "P50",
+      "title": "Agent 机器上装好的 MCP server 交给会话",
+      "status": "completed",
+      "depends_on": [
+        "P49"
+      ],
+      "owner": null,
+      "started_at": "2026-09-22T22:10:00+09:00",
+      "last_updated": "2026-09-22T23:10:00+09:00",
+      "completed_criteria": [
+        "P50.1",
+        "P50.2",
+        "P50.3",
+        "P50.4",
+        "P50.5",
+        "P50.6"
+      ],
+      "evidence": [
+        {
+          "kind": "offline",
+          "criteria": [
+            "P50.1",
+            "P50.2",
+            "P50.3",
+            "P50.4",
+            "P50.5",
+            "P50.6"
+          ],
+          "ref": "docs/research/p50-agent-mcp-2026-09-22.md",
+          "result": "零额度，macOS arm64。先量（toexec evidence/v4-mcp/agent-mcp/）：Agent 上的 server 直接写进原生客户端配置时，Claude Code 2.1.278 把超过约 5 万字符的结果存盘只给 2 KB 预览（受管会话没有 Read），Codex 0.154.0/0.155.1 指定模型时只留约 12 KB、Code Mode 留约 40 KB；所以由 ccnm 转：ccnm internal agent-skills 加 call_mcp_tool 与 read_mcp_result（长结果留内存、32 KiB 一段），一次调用的步骤与 P49 共用（relay::call + Side）。默认只给别的机器上的 HTTP 地址，本机跑的要 [agent_mcp] local 点名，配置里关掉的不给（P49 同改）；workspace 的 agent_tools 加 mcp_servers（默认开，和 web_fetch 默认关的理由冲突，文档照实写）。HTTP 经 curl（-K 私有文件，SSE 拿到回复即停）。附带修复：Codex 会话加 tool_output_token_limit=20000（1965d44），read_file/load_skill/call_mcp_tool 带 maxResultSizeChars=200000（198a9dd，tools/list 16 293 字节仍在 16 KiB 内）。toexec-mcp 0.2.0（toexec a7c84bc，本地 tag toexec-mcp-v0.2.0 未推送）加 kept、sse，gld 同步改用。门禁：fmt、clippy -D warnings 通过；cargo test --workspace 935 passed / 0 failed；python3 -m unittest discover -s tests 209 passed（新增 tests/test_agent_mcp.py 4 条）。真实 Claude Code 2.1.278、Codex 0.154.0 与 0.155.1（gpt-5.1-codex、Code Mode）接真实 Agent 端服务调通 stdio 与 HTTP，52 000 字节读回一字不差；不加 tool_output_token_limit 的对照组第一段只剩 12 KB 且接着读的说明被丢。真实 DeepWiki 经 ccnm 与 curl 读全 407 KB（13 段）。未覆盖：真实模型；受管会话经 SSH 的整条路；OAuth server；Linux 上的 curl；Codex 会话里 ${VAR} 缺变量的样子。"
+        }
+      ],
+      "blockers": []
     }
   ],
   "observed_gaps": [
@@ -2543,7 +2578,7 @@
     "【P41 记下不修】mcp-serve 被 SIGKILL（或别的不走正常退出的死法）时，它起的命令的进程组没人收：前台命令一直如此，P41 的后台命令没有期限，所以可能一直跑下去；它们的 run 在 read_output 里读作 exit status unknown。正常路径（客户端断开、stdin EOF、心跳发现对端不在）会先停掉所有命令再放写锁。要收干净得给子进程加会话标记、下次启动时按标记扫（封存的原生链 P26/P30 有类似做法），需另立阶段。依据 docs/research/p41-background-commands-2026-09-18.md 第 5 节。"
   ],
   "handoff": {
-    "next_action": "**2026-09-22 21:35 P49 完成：Runtime 上的 MCP server 转给会话（toexec v4 方案第 3 步）。**第十二个工具 call_mcp_tool：项目 .mcp.json 里声明的、执行账号给 Claude Code / Codex 装的 server，经它交给能写的会话；不带参数列、带 server 列工具（这才起它）、再带 tool/arguments 调用。起 server 就是以执行账号跑程序，所以和 exec_command 过同一道门（read 模式没有、执行门、凭据检查、OS 沙箱、环境清理、有人值守时每次问人），会话结束先停 server 再放写锁；大结果接 read_output。默认全开，Runtime 的 [runtime_mcp] 可关、可不读项目的、可按名字藏。只转 stdio，HTTP 的留给第 4 步从 Agent 那边连。**共用代码成了 toexec-mcp 0.1.0**（toexec 1e8b06a，本地 tag，未推送），gld 第 2 步那份整块搬过去、gld 改链它；gld hub 同步加了 remote_call_mcp_tool。**没做的**：真实模型；受管会话经 SSH 的路径；Codex 0.154.0；Linux；三仓都没推送、没发版——推送顺序仍是 toexec（含 toexec-skill-v0.3.0、toexec-mcp-v0.1.0 两个 tag）→ ccnm → gld；v4 第 4 步（ccnm 会话接 Agent 上的 MCP）没开工。\n\n之前的交接：\n**2026-09-22 18:07 P48 完成：两台机器上装好的 skills 交给会话（toexec v4 方案第 1 步）。**用户要 gld / ccnm 都用上 Agent 和 Runtime 机器上已经装好的 skills，ccnm 默认全开、共用代码进 toexec、不要了能整块删。**先量了再做**（toexec 6741340）：Claude 原生的 Skill 要放开 Read 才读得到附件，而只放 skills 目录的 Read 仍会读到会话工作目录；Codex 在远端会话里其实已经列出 Agent 上的 skills、却因 shell 被关读不到。于是 Agent 上的由 ccnm 自己起一个只读服务 ccnm internal agent-skills 交出去（mcp__ccnm_agent__load_skill），Codex 那份清单一律关掉；Runtime 上执行账号装的并进 load_skill，排在项目后面，同名时装好的赢（照原生）。load_skill 多了 file / line 读附件（toexec-skill 0.3.0 的 dir 模块，gld 同用）。开关是每台机器自己的 [machine_skills]，线上格式一个字段没加。**实测改掉的**：开发机 97 个装好的 skill 名字放不进 2048 码元，目录原先只剩一个数字，现在列放得下的 84 个；30 个逐字节相同的拷贝不再刷屏。**没做的**：真实模型没跑；toexec-skill 0.3.0 的 tag（c50a039）只打在本地、没推送，所以推送顺序必须是先 toexec（含 tag）再 ccnm、gld；三仓都没推送、没发版；v4 后三步（MCP）没开工。\n\n之前的交接：\n**2026-09-22 13:30 P46 完成：受管会话默认开 WebSearch，其他 Agent 功能按工作区开（v3 计划第 5 节第 6 步的离线部分）。**用户定了默认值，工作区字段 agent_tools（web_search 默认开，web_fetch / subagents / tasks 可选，[] 全关），写在 Runtime 上。代码 d021aad，零额度实测在 toexec e0b5c7d。**实测改变了设计的三处**：print 模式下没进 settings allow 的 WebSearch/WebFetch 会被自动拒绝，所以开了的都写进 allow；ToolSearch 一进 --tools 白名单 ccnm 的工具就全进延迟加载池，所以永远不写；--tools 不认的名字（TodoWrite、Task 这类旧名）被悄悄忽略，所以名字表钉在代码和测试里。**默认行为变了**：不写 agent_tools 的远端会话现在多出搜索；要回到原样写 agent_tools = []。**没做的**：真实模型一次没跑（模型会不会用搜索、子代理真实开销）；Codex 不写 model 时 web_search 开了也不见效，原因没查明；Codex 子代理仍关；没推送、没发版。\n\n之前的交接：\n**2026-09-22 00:35 P45 完成：skill 的 frontmatter 照 Claude Code 的读法读（跨仓评审 X08）。**共享库 toexec-skill 0.2.0 在 toexec 仓库（f0f7548 实现、fa32646 差分证据、c8cf321 版本号 + 本地 tag toexec-skill-v0.2.0），ccnm 这边 c57f9bb。**做法**：借 Claude Code 2.1.278 自己的运行时当对照——它内嵌 Bun 1.4.3（公开版只到 1.4.2），BUN_OPTIONS=--preload 让脚本在它主程序之前跑、读完就 exit，不联网不花额度。**查出并改掉的**：disable-model-invocation: yes 原生生效、这里当没写；重复键这里先写的赢、原生后写的赢；以 ` @ * 开头的描述这里整个跳过；官方例子 argument-hint: [issue-number] 这里没提示；user-invocable 写了空值原生不进 / 菜单；另有 0.1.0 的平方级耗时（416 KB 引号不闭合 10 秒）。行为变更表见 docs/research/p45-skill-frontmatter-2026-09-22.md。**已推送（2026-09-22 09:13）**：按 toexec（含 tag toexec-skill-v0.2.0）→ ccnm → gld 的顺序推，git ls-remote 对过 tag 解引用是 c8cf321，和两个产品的 Cargo.lock 一致；三边 CI 全绿（ccnm run 35671150347，含 linux-runtime 与 msrv）。**没做的**：（gld 同日也升到 0.2.0，并补了它自己那半边的 skills 后续，见 gld RFC-0003 G2.4–G2.7，不属于 ccnm 的阶段。）真实 Host 与模型没跑；原生把目录名当 skill 标识而 ccnm 用 name，这个 P36 就有的差异不在本阶段。",
+    "next_action": "**2026-09-22 23:10 P50 完成：Agent 机器上装好的 MCP server 交给会话（toexec v4 方案第 4 步，四步全部做完）。**先量了：把 server 直接写进 Claude / Codex 的配置，大结果会丢（Claude 超过约 5 万字符存盘只给 2 KB 预览、受管会话没有 Read 读不回；Codex 指定模型时只留约 12 KB），所以由 ccnm 在 Agent 上的 ccnm_agent 服务转：多了 call_mcp_tool（和 Runtime 上的同名同用法）与 read_mcp_result（长结果 32 KiB 一段接着读）。**默认只给别的机器上的 HTTP 地址**（exa、DeepWiki），本机跑的（npx/uvx 起的程序、127.0.0.1 上的服务）要 Agent 的 [agent_mcp] local 点名；workspace 的 agent_tools 多了 mcp_servers（默认开，去掉就不给——它和 web_fetch 默认关的理由冲突，文档照实写了）。HTTP 经系统的 curl，key 不上命令行；真实 DeepWiki 经它读全 407 KB。**附带修了两处已有问题**：Codex 指定模型时 ccnm 每页都被砍到 12 KB（加 tool_output_token_limit=20000），Claude 会把 read_file/load_skill 64 KiB 的一页存盘（这三个工具声明 maxResultSizeChars）——P49 说的\"32 KiB 一段不会丢\"当时只在 Claude 上成立。共用代码：toexec-mcp 0.2.0 加 kept、sse（toexec a7c84bc，本地 tag，未推送），gld 改用。**没做的**：真实模型；受管会话经 SSH 的整条路；OAuth server；Linux 上的 curl；ccnm/gld/toexec 的新提交都没推送——推送顺序仍是 toexec（含 toexec-mcp-v0.2.0 tag）→ ccnm → gld；没发版。\n\n之前的交接：\n**2026-09-22 21:35 P49 完成：Runtime 上的 MCP server 转给会话（toexec v4 方案第 3 步）。**第十二个工具 call_mcp_tool：项目 .mcp.json 里声明的、执行账号给 Claude Code / Codex 装的 server，经它交给能写的会话；不带参数列、带 server 列工具（这才起它）、再带 tool/arguments 调用。起 server 就是以执行账号跑程序，所以和 exec_command 过同一道门（read 模式没有、执行门、凭据检查、OS 沙箱、环境清理、有人值守时每次问人），会话结束先停 server 再放写锁；大结果接 read_output。默认全开，Runtime 的 [runtime_mcp] 可关、可不读项目的、可按名字藏。只转 stdio，HTTP 的留给第 4 步从 Agent 那边连。**共用代码成了 toexec-mcp 0.1.0**（toexec 1e8b06a，本地 tag，未推送），gld 第 2 步那份整块搬过去、gld 改链它；gld hub 同步加了 remote_call_mcp_tool。**没做的**：真实模型；受管会话经 SSH 的路径；Codex 0.154.0；Linux；三仓都没推送、没发版——推送顺序仍是 toexec（含 toexec-skill-v0.3.0、toexec-mcp-v0.1.0 两个 tag）→ ccnm → gld；v4 第 4 步（ccnm 会话接 Agent 上的 MCP）没开工。\n\n之前的交接：\n**2026-09-22 18:07 P48 完成：两台机器上装好的 skills 交给会话（toexec v4 方案第 1 步）。**用户要 gld / ccnm 都用上 Agent 和 Runtime 机器上已经装好的 skills，ccnm 默认全开、共用代码进 toexec、不要了能整块删。**先量了再做**（toexec 6741340）：Claude 原生的 Skill 要放开 Read 才读得到附件，而只放 skills 目录的 Read 仍会读到会话工作目录；Codex 在远端会话里其实已经列出 Agent 上的 skills、却因 shell 被关读不到。于是 Agent 上的由 ccnm 自己起一个只读服务 ccnm internal agent-skills 交出去（mcp__ccnm_agent__load_skill），Codex 那份清单一律关掉；Runtime 上执行账号装的并进 load_skill，排在项目后面，同名时装好的赢（照原生）。load_skill 多了 file / line 读附件（toexec-skill 0.3.0 的 dir 模块，gld 同用）。开关是每台机器自己的 [machine_skills]，线上格式一个字段没加。**实测改掉的**：开发机 97 个装好的 skill 名字放不进 2048 码元，目录原先只剩一个数字，现在列放得下的 84 个；30 个逐字节相同的拷贝不再刷屏。**没做的**：真实模型没跑；toexec-skill 0.3.0 的 tag（c50a039）只打在本地、没推送，所以推送顺序必须是先 toexec（含 tag）再 ccnm、gld；三仓都没推送、没发版；v4 后三步（MCP）没开工。",
     "scope": "P46 这一轮：config.rs 的 AgentTool/AgentTools 与 workspace 字段、runtime.rs / protocol/run.rs / session.rs 的 agent_tools 字段、provider/claude/policy.rs 的 --tools 与 allow/deny、provider/codex/mod.rs 的 web_search，加对应测试；配置说明、支持矩阵、排错手册、协议文档 alwaysLoad 一节、ROADMAP、研究记录。toexec：evidence/v3-parity/agent-surface/。没有加依赖，没有耗额度，没有推送。\n\n上一轮的范围：\nP44 这一轮：三个写/执行工具及其嵌套结构的 deny_unknown_fields 与超界拒绝、只读工具的忽略提示、两份 tools-list fixture、协议与三处文档；不碰 gld，不改错误码。\n\n上一轮的范围：\nP43 这一轮：mcp/jobs.rs 的 stop_all 返回值、mcp/write_guard.rs 的放弃状态与诊断、mcp/server.rs 的退出路径，加对应测试与四处文档；不碰 gld，不改冻结契约的错误码。\n\n上一轮的范围：\nP42 这一轮：只加协议文档的生命周期一节、研究记录、回归测试和三处文档指向；不改任何运行行为，不碰 gld 仓库。\n\n更早各轮的范围在 git 历史里。",
     "planning_validation": {
       "at": "2026-09-08T21:22:43+09:00",

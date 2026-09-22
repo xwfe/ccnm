@@ -38,9 +38,9 @@ ccnm 不需要安装 Orchestrator 也能独立使用。Orchestrator 核心不链
 
 ## 二、顺序和基线
 
-`P0 → P1 → P2 → P3 → P4 → P5 → P6 → P7 → P8 → P9 → P10 → P11 → P12 → P13 → P14 → P15 → P16 → P17 → P18 → P19 → P20 → P21 → P22 → P23 → P24 → P25 → P26 → P27 → P28 → P29 → P30 → P31 → P32 → P33 → P34 → P35 → P36 → P37 → P38 → P39 → P40 → P41 → P42 → P43 → P44 → P45 → P46 → P48 → P49`（P47 被 2026-09-22 做完又整个撤销的一次占用过，不再用）。默认每轮只执行一个阶段。P0–P8 是 ccnm v1 收口和独立 Orchestrator 的接口交接；P9–P12 是 ccnm v1.x 的 Remote Workspace MCP 扩展；P13 是按真实 Host 行为修正两个入口共用的 instructions 投影；P21–P24 是 Codex 原生执行链；P25 修 P24 真机轮发现的预检错误码；P26 补原生链在 Runtime 侧的探活；P27 让 doctor 也探这条链；P28 让 CI 在声明的 rust-version 上编译一遍；P29 补测原生链的并发、在途请求与资源上限，P30 修它查出的 fs helper 活过放锁；P31 给 Runtime 保留输出加会话总量上限、结束即删和过期清理；P32 封存原生链（用户决定）；P33 把沙箱那项收益搬到两个入口共用的 `exec_command` 上；P34 修 `apply_patch` 日志锁探测靠关文件放锁、fork 窗口里漏拦的缺陷；P35 让测试建的临时目录跑完就删（纯测试代码）；P36–P41 是"工具面对齐原生能力"那条线（跨仓方案在 toexec 的 v3 计划）：P36 项目自带的 skills、P37 搜索模式与整文件覆盖与一行 shell、P38 让搜索的 glob 不越过 `.gitignore`、P39 view_image、P40 notebook 按 cell 读写、P41 后台命令；P42–P44 是跨仓重构评审 X04–X06 的三条收口：P42 后台命令的生命周期契约、P43 停不掉的命令不交出写权、P44 服务端自己验输入。P45 让 skill 的 frontmatter 读法对齐宿主（评审 X08）；P46 给受管会话的 Agent 自带功能加开关（v3 计划第 5 节第 6 步的离线部分）；P48 把两台机器上装好的 skills 交给会话（toexec v4 方案第 1 步）；P49 把 Runtime 上的 MCP server 转给会话（第 3 步）。完整边界见 [双执行入口方案](runtime-surfaces.md)。
+`P0 → P1 → P2 → P3 → P4 → P5 → P6 → P7 → P8 → P9 → P10 → P11 → P12 → P13 → P14 → P15 → P16 → P17 → P18 → P19 → P20 → P21 → P22 → P23 → P24 → P25 → P26 → P27 → P28 → P29 → P30 → P31 → P32 → P33 → P34 → P35 → P36 → P37 → P38 → P39 → P40 → P41 → P42 → P43 → P44 → P45 → P46 → P48 → P49 → P50`（P47 被 2026-09-22 做完又整个撤销的一次占用过，不再用）。默认每轮只执行一个阶段。P0–P8 是 ccnm v1 收口和独立 Orchestrator 的接口交接；P9–P12 是 ccnm v1.x 的 Remote Workspace MCP 扩展；P13 是按真实 Host 行为修正两个入口共用的 instructions 投影；P21–P24 是 Codex 原生执行链；P25 修 P24 真机轮发现的预检错误码；P26 补原生链在 Runtime 侧的探活；P27 让 doctor 也探这条链；P28 让 CI 在声明的 rust-version 上编译一遍；P29 补测原生链的并发、在途请求与资源上限，P30 修它查出的 fs helper 活过放锁；P31 给 Runtime 保留输出加会话总量上限、结束即删和过期清理；P32 封存原生链（用户决定）；P33 把沙箱那项收益搬到两个入口共用的 `exec_command` 上；P34 修 `apply_patch` 日志锁探测靠关文件放锁、fork 窗口里漏拦的缺陷；P35 让测试建的临时目录跑完就删（纯测试代码）；P36–P41 是"工具面对齐原生能力"那条线（跨仓方案在 toexec 的 v3 计划）：P36 项目自带的 skills、P37 搜索模式与整文件覆盖与一行 shell、P38 让搜索的 glob 不越过 `.gitignore`、P39 view_image、P40 notebook 按 cell 读写、P41 后台命令；P42–P44 是跨仓重构评审 X04–X06 的三条收口：P42 后台命令的生命周期契约、P43 停不掉的命令不交出写权、P44 服务端自己验输入。P45 让 skill 的 frontmatter 读法对齐宿主（评审 X08）；P46 给受管会话的 Agent 自带功能加开关（v3 计划第 5 节第 6 步的离线部分）；P48 把两台机器上装好的 skills 交给会话（toexec v4 方案第 1 步）；P49 把 Runtime 上的 MCP server 转给会话（第 3 步）；P50 把 Agent 上的 MCP server 转给会话（第 4 步），顺带修了两个客户端会截掉 ccnm 大结果的问题。完整边界见 [双执行入口方案](runtime-surfaces.md)。
 
-**P49 之后没有已排期的 ccnm 阶段。**用户 2026-09-22 要 gld / ccnm 用上两台机器上已经装好的 skills 和 MCP server，顺序是跨仓 [v4 方案](https://github.com/xwfe/toexec/blob/main/docs/plan/implementation-plan-v4-machine-skills-mcp.md) 里的四步：skills（P48，已做）→ gld 聚合本机 MCP（gld RFC-0006，已做）→ ccnm 在 Runtime 上代理 MCP（P49，已做）→ ccnm 会话接 Agent 上的 MCP。第 4 步开工时再登记阶段。v3 第 5 节第 6 步剩下的真实模型轮和第 7 步的对照实验要模型额度，要单独授权。
+**P50 之后没有已排期的 ccnm 阶段。**用户 2026-09-22 要 gld / ccnm 用上两台机器上已经装好的 skills 和 MCP server，跨仓 [v4 方案](https://github.com/xwfe/toexec/blob/main/docs/plan/implementation-plan-v4-machine-skills-mcp.md) 里的四步都做完了：skills（P48）→ gld 聚合本机 MCP（gld RFC-0006）→ ccnm 在 Runtime 上代理 MCP（P49）→ ccnm 会话接 Agent 上的 MCP（P50）。v3 第 5 节第 6 步剩下的真实模型轮和第 7 步的对照实验要模型额度，要单独授权。
 
 ### P0 — 已有内部验证基线
 
@@ -752,3 +752,18 @@ ccnm 这一轮只定权威语义、补自己这边的证据。租约展示与状
 - **P49.6** 中立 MCP 客户端对真实二进制跑、gld 连真实 ccnm 的组合测试、真实 Claude Code / Codex 经真实 ccnm 调通（零额度）。门禁同 P37.6，外加 `check_protocol`。
 
 停止点：不转 HTTP server（第 4 步从 Agent 那边连）、不转 server 的 resources / prompts；不跑真实模型；不改 Agent 上的 MCP（第 4 步）；gld 那一半（hub 的 `remote_call_mcp_tool`、改链 `toexec-mcp`）记在 gld 自己的仓库；不发版。
+
+### P50 — Agent 机器上装好的 MCP server 交给会话
+
+**依赖 P49。toexec v4 方案第 4 步。用户 2026-09-22："push, then continue step 4"；这一步当初定的是"只放网络类"，v4 总要求是 ccnm "默认全开"、不要了能整块删、共用代码进 toexec。** 零额度实测在 toexec 的 `evidence/v4-mcp/agent-mcp/`，ccnm 的记录在 [P50 记录](../research/p50-agent-mcp-2026-09-22.md)；共用机制 `toexec-mcp` 0.2.0（加 `kept`、`sse`，gld 同步改用）。
+
+为什么要做：用户给 Claude Code / Codex 装的 MCP server（exa、DeepWiki、context7……）在 Agent 机器上，远端受管会话一个都用不上。
+
+- **P50.1** 先量：把 server 直接写进原生客户端的配置，大结果会丢（Claude 超过约 5 万字符存盘只给 2 KB 预览，Codex 指定模型时只留约 12 KB）。据此由 ccnm 转：`ccnm internal agent-skills` 加 `call_mcp_tool`（和 Runtime 上的同名同用法）与 `read_mcp_result`（长结果留内存、32 KiB 一段）；一次调用的步骤和 P49 共用（`relay::call` + `Side`）。
+- **P50.2** 默认给哪些：别的机器上的 HTTP 地址默认给，本机跑的（程序、`127.0.0.1`）要 Agent 的 `[agent_mcp] local` 点名；`hidden` 按名字藏；配置里自己关掉的不给（P49 那边也照此改）。workspace 的 `agent_tools` 加值 `mcp_servers`（默认开），去掉就不给。
+- **P50.3** HTTP 经 Agent 上的 `curl`：地址和请求头写进只有本账号能读的文件交给 `curl -K`，SSE 拿到回复就停，401 报要登录；拆 SSE 用 `toexec-mcp` 的 `sse`。server 的环境去掉 Agent 登录变量和 `SSH_AUTH_SOCK`、加配置 `env`；会话结束停掉起过的 server。
+- **P50.4** 附带修掉两处已有问题：Codex 会话加 `tool_output_token_limit=20000`（否则指定模型时 ccnm 每页都被砍到 12 KB）；`read_file`、`load_skill`、`call_mcp_tool` 带 `maxResultSizeChars`（否则 Claude 把 64 KiB 的一页存盘），`tools/list` 守住 16 KiB 预算。
+- **P50.5** 会话文件：`session::create` 按 workspace 的 `agent_tools` 和 Agent 的 `[agent_mcp]` 决定 `ccnm_agent` 带不带 MCP 这一半，记录里写明它的工具，Claude 允许表、Codex `enabled_tools` 照写；P48 留下的会话文件照旧读。配置说明、使用说明、协议第 5 节、支持矩阵、README 跟着改。
+- **P50.6** Rust 单元测试、中立 MCP 客户端 `tests/test_agent_mcp.py`、真实 Claude Code 2.1.278 / Codex 0.154.0 与 0.155.1 接真实 Agent 端服务（零额度），真实 DeepWiki 经 `curl` 读全。门禁同 P37.6，外加 `check_protocol`。
+
+停止点：不把 server 写进原生客户端的配置；不转老的 HTTP+SSE 传输、不转 server 的 resources / prompts；不跑真实模型；gld 那一半（改用 `kept` / `sse`）记在 gld 自己的仓库；不发版。

@@ -32,6 +32,9 @@ toexec-fs = { git = "https://github.com/xwfe/toexec.git", tag = "toexec-fs-v0.2.
 # 第三个：读 SKILL.md（frontmatter、参数替换、注入命令识别）。P36 的项目 skills
 # 用它；gld 原来自己的读法不认多行 description，也会换过来。
 toexec-skill = { git = "https://github.com/xwfe/toexec.git", tag = "toexec-skill-v0.2.0" }
+# 第四个：读 ~/.agents/mcp.json，按工具、按 skill 收窄暴露面（toexec RFC-0001，
+# ccnm 这边是 P47）。gld 读同一个文件，所以规则的意思只能在一处定义。
+toexec-agents = { git = "https://github.com/xwfe/toexec.git", tag = "toexec-agents-v0.1.0" }
 base64 = "0.22"
 clap = { version = "4", features = ["derive", "env"] }
 serde = { version = "1", features = ["derive"] }

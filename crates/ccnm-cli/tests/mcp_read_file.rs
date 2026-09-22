@@ -785,3 +785,104 @@ fn runtime_child_keeps_project_environment_but_not_provider_private_metadata() {
         s.shutdown();
     }
 }
+
+/// Where the executor account's `~/.agents/mcp.json` goes for a session
+/// started by [`Session::start`]: the fixture HOME next to the root.
+fn agents_file(root: &Path, text: &str) {
+    let dir = root.parent().unwrap().join("runtime-home/.agents");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("mcp.json"), text).unwrap();
+}
+
+/// P47 over the real wire: the executor's `~/.agents/mcp.json` takes a
+/// tool out of `tools/list`, refuses it when called by name anyway, and
+/// hides an `off` skill from the catalog and the prompts alike.
+#[test]
+fn the_executors_agents_file_narrows_tools_and_skills() {
+    let root = workspace("agents-file");
+    for name in ["deploy", "keep"] {
+        let dir = root.join(format!(".claude/skills/{name}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("SKILL.md"),
+            format!("---\ndescription: The {name} skill.\n---\nDo {name}.\n"),
+        )
+        .unwrap();
+    }
+    agents_file(
+        &root,
+        r#"{"mcpServers": {"ccnm": {"disabledTools": ["exec_command"]}},
+            "skillOverrides": {"deploy": "off"}}"#,
+    );
+    let config = config_for(&root, true);
+    let mut session = Session::start_with(&root, Some(&config));
+
+    let tools = session.rpc("tools/list", json!({}));
+    let names: Vec<&str> = tools["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    assert!(!names.contains(&"exec_command"), "{names:?}");
+    assert!(names.contains(&"read_file"), "{names:?}");
+    let catalog = tools["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "load_skill")
+        .unwrap()["description"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(catalog.contains("The keep skill."), "{catalog}");
+    assert!(!catalog.contains("deploy"), "{catalog}");
+
+    // Unconfined exec is accepted in this config, so the only thing that
+    // can refuse the command is the file.
+    let refused = session.call("exec_command", json!({"cmd": ["/bin/echo", "hi"]}));
+    assert!(is_error(&refused), "{refused}");
+    let why = refused["content"][0]["text"].as_str().unwrap();
+    assert!(why.contains("mcpServers.ccnm.disabledTools"), "{why}");
+
+    let prompts = session.rpc("prompts/list", json!({}));
+    let prompt_names: Vec<&str> = prompts["prompts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(prompt_names, ["keep"]);
+    session.shutdown();
+}
+
+/// A file that cannot be read does not quietly mean "nothing turned off":
+/// the session refuses to open and says which entry is wrong.
+#[test]
+fn a_broken_agents_file_stops_the_session_and_says_where() {
+    let root = workspace("agents-file-broken");
+    agents_file(
+        &root,
+        r#"{"mcpServers": {"ccnm": {"disabledTools": "exec_command"}}}"#,
+    );
+    let home = root.parent().unwrap().join("runtime-home");
+    let wire = payload::encode(&ServePayload::new("t", root.to_path_buf(), "s1")).unwrap();
+    let result = Command::new(env!("CARGO_BIN_EXE_ccnm"))
+        .args(["internal", "mcp-serve", "--payload", &wire])
+        .env_clear()
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .env("HOME", home.canonicalize().unwrap())
+        .env("CCNM_CONFIG", config_for(&root, true))
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(!result.status.success());
+    assert!(
+        result.stdout.is_empty(),
+        "nothing on the wire before refusing"
+    );
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert!(stderr.contains("CCNM_E_CONFIG"), "{stderr}");
+    assert!(stderr.contains(".agents/mcp.json"), "{stderr}");
+    assert!(stderr.contains("mcpServers.ccnm.disabledTools"), "{stderr}");
+}

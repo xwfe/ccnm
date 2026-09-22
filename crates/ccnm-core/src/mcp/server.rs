@@ -303,6 +303,9 @@ struct Inner {
     interactive: bool,
     /// Which entry opened this server, and therefore whether it may write.
     entry: crate::protocol::mcp::Entry,
+    /// `~/.agents/mcp.json` as it was when the session opened (P47). Read
+    /// once, like the tool list it shapes: the list is sent once.
+    exposure: toexec_agents::Policy,
     calls: AtomicU64,
 }
 
@@ -366,7 +369,12 @@ impl Server {
         } else {
             None
         };
-        Self::with_gate(payload, root, exec_gate, guard)
+        // After the gate and the guard, so that a broken file is reported
+        // for a session that could otherwise have opened, and before any
+        // tool is listed: falling back to "no rules" would hand out the
+        // tools the file was written to take away.
+        let exposure = crate::exposure::load()?;
+        Self::with_gate(payload, root, exec_gate, guard, exposure)
     }
 
     /// Open for an external MCP client: this Runtime's config decides the
@@ -382,6 +390,7 @@ impl Server {
         root: PathBuf,
         exec_gate: ExecGate,
         write_guard: Option<crate::mcp::write_guard::WriteGuard>,
+        exposure: toexec_agents::Policy,
     ) -> CcnmResult<Self> {
         // The same gate `Server::new` already applied, restated where the
         // first workspace-dependent subprocess actually happens: `git_facts`
@@ -417,7 +426,14 @@ impl Server {
                 None
             }
         };
-        let skills = skills::discover(&root);
+        let skills = skills::discover_for(&root, &exposure);
+        let unknown = crate::exposure::unknown_tools(&exposure);
+        if !unknown.is_empty() {
+            // Worth a warning rather than a refusal: tool names come and go
+            // between versions. But a typo in disabledTools leaves on a tool
+            // somebody meant to turn off, so it must be visible somewhere.
+            tracing::warn!(names = ?unknown, "~/.agents/mcp.json names tools this server does not have");
+        }
         let state = crate::paths::state_dir().ok();
         let sandbox = match exec_gate.config.as_ref() {
             Some(config) => sandbox::Sandbox::resolve(
@@ -443,6 +459,7 @@ impl Server {
             project_instructions = project.as_ref().map_or(0, context::Project::included),
             skills = skills.skills.len(),
             skills_skipped = skills.skipped.len(),
+            tools_turned_off = crate::exposure::hidden_tools(&exposure).len(),
             "mcp server starting"
         );
         Ok(Server {
@@ -466,6 +483,7 @@ impl Server {
                 git_subdir,
                 interactive: payload.interactive,
                 entry: payload.entry,
+                exposure,
                 calls: AtomicU64::new(0),
             }),
             tool_router: Self::tool_router(),
@@ -518,7 +536,17 @@ impl Server {
     /// produce one. Offering it would be a tool that always fails, and
     /// resolving somebody else's ref is the leak that must not exist.
     fn offers(&self, tool: &str) -> bool {
-        self.inner.entry.writes() || !WITHHELD_WITHOUT_WRITE.contains(&tool)
+        (self.inner.entry.writes() || !WITHHELD_WITHOUT_WRITE.contains(&tool))
+            && crate::exposure::rules(&self.inner.exposure).tool_allowed(tool)
+    }
+
+    /// The refusal for a tool `~/.agents/mcp.json` turned off, whichever
+    /// tool it is. The four tools that read mode withholds say so in their
+    /// own handlers; this covers every tool, because the file can name any.
+    fn refuse_turned_off(&self, tool: &str) -> Option<CallToolResult> {
+        crate::exposure::rules(&self.inner.exposure)
+            .tool_rule(tool)
+            .map(|rule| tool_error(&Error::policy(crate::exposure::refusal(tool, rule))))
     }
 
     /// The refusal a withheld tool gets if a client calls it anyway.
@@ -610,7 +638,19 @@ impl Server {
         description = "Name, git status and platform of the remote workspace. Call once to orient; all other tool paths are relative to this workspace."
     )]
     async fn workspace_info(&self) -> std::result::Result<CallToolResult, ErrorData> {
-        Ok(text_only(self.info().render()))
+        let rendered = self.info().render();
+        // What ~/.agents/mcp.json took away, so that a model (or a person
+        // calling this) can tell a tool that is off from one that is
+        // missing. Before the server line, which the probe reads as the
+        // last one.
+        let text = match (
+            crate::exposure::summary(&self.inner.exposure),
+            rendered.rsplit_once('\n'),
+        ) {
+            (Some(extra), Some((head, server))) => format!("{head}\n{extra}\n{server}"),
+            _ => rendered,
+        };
+        Ok(text_only(text))
     }
 
     #[tool(
@@ -846,12 +886,12 @@ impl Server {
         let root = self.inner.root.clone();
         let session = self.inner.session.clone();
         let ignored = args.ignored.note();
-        let loaded =
-            tokio::task::spawn_blocking(move || skills::load_skill(&root, &args, Some(&session)))
-                .await
-                .map_err(|e| {
-                    ErrorData::internal_error(format!("load_skill task failed: {e}"), None)
-                })?;
+        let inner = self.inner.clone();
+        let loaded = tokio::task::spawn_blocking(move || {
+            skills::load_skill(&root, &args, Some(&session), &inner.exposure)
+        })
+        .await
+        .map_err(|e| ErrorData::internal_error(format!("load_skill task failed: {e}"), None))?;
         match loaded {
             Ok(text) => Ok(text_only(with_ignored(text, ignored))),
             Err(err) => Ok(tool_error(&err)),
@@ -1141,6 +1181,23 @@ impl ServerHandler for Server {
         self.tools().into_iter().find(|tool| tool.name == name)
     }
 
+    /// Every call passes here before its handler, so that a tool
+    /// `~/.agents/mcp.json` turned off is refused whichever one it is. Not
+    /// listing it is a hint a client may ignore -- one that cached the
+    /// list, or a model calling by name from memory. Written by hand for
+    /// the same reason as `list_tools`; the rest is what the macro emits.
+    async fn call_tool(
+        &self,
+        request: rmcp::model::CallToolRequestParams,
+        context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> std::result::Result<rmcp::model::CallToolResponse, ErrorData> {
+        if let Some(refusal) = self.refuse_turned_off(&request.name) {
+            return Ok(refusal.into());
+        }
+        let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
+        self.tool_router.call(tcc).await
+    }
+
     /// The project's skills again, as prompts: the way a *person* starts
     /// one. Claude Code turns each into `/mcp__ccnm__<name>`; Codex never
     /// asks for prompts at all (both measured, P36.1), which is why the
@@ -1150,10 +1207,11 @@ impl ServerHandler for Server {
         _request: Option<rmcp::model::PaginatedRequestParams>,
         _context: rmcp::service::RequestContext<rmcp::RoleServer>,
     ) -> std::result::Result<ListPromptsResult, ErrorData> {
-        let root = self.inner.root.clone();
-        let catalog = tokio::task::spawn_blocking(move || skills::discover(&root))
-            .await
-            .map_err(|e| ErrorData::internal_error(format!("skill scan failed: {e}"), None))?;
+        let inner = self.inner.clone();
+        let catalog =
+            tokio::task::spawn_blocking(move || skills::discover_for(&inner.root, &inner.exposure))
+                .await
+                .map_err(|e| ErrorData::internal_error(format!("skill scan failed: {e}"), None))?;
         let prompts = catalog
             .skills
             .iter()
@@ -1178,8 +1236,9 @@ impl ServerHandler for Server {
         let session = self.inner.session.clone();
         let given = request.arguments.unwrap_or_default();
         let name = request.name;
+        let inner = self.inner.clone();
         let text = tokio::task::spawn_blocking(move || {
-            let catalog = skills::discover(&root);
+            let catalog = skills::discover_for(&root, &inner.exposure);
             let declared = catalog
                 .skills
                 .iter()
@@ -1197,7 +1256,7 @@ impl ServerHandler for Server {
                 })
                 .collect::<Vec<_>>()
                 .join(" ");
-            skills::prompt_text(&root, &name, &line, Some(&session))
+            skills::prompt_text(&root, &name, &line, Some(&session), &inner.exposure)
         })
         .await
         .map_err(|e| ErrorData::internal_error(format!("skill load failed: {e}"), None))?
@@ -1455,6 +1514,14 @@ mod tests {
         payload: &ServePayload,
         accepted: crate::safety::Accepted,
     ) -> CcnmResult<Server> {
+        fixture_server_with(payload, accepted, toexec_agents::Policy::default())
+    }
+
+    fn fixture_server_with(
+        payload: &ServePayload,
+        accepted: crate::safety::Accepted,
+        exposure: toexec_agents::Policy,
+    ) -> CcnmResult<Server> {
         Server::with_gate(
             payload,
             crate::runtime::canonical_root(&payload.root)?,
@@ -1467,6 +1534,7 @@ mod tests {
                 config: None,
             },
             None,
+            exposure,
         )
     }
 
@@ -1488,9 +1556,21 @@ mod tests {
         tokio::io::Lines<tokio::io::BufReader<tokio::io::DuplexStream>>,
         TestDir,
     ) {
-        use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
         let root = temp(test);
         let server = fixture_server(&ServePayload::new("x", root.to_path_buf(), "s")).unwrap();
+        let (task, to, from) = connect(server, heartbeat).await;
+        (task, to, from, root)
+    }
+
+    async fn connect(
+        server: Server,
+        heartbeat: Duration,
+    ) -> (
+        tokio::task::JoinHandle<CcnmResult<()>>,
+        tokio::io::DuplexStream,
+        tokio::io::Lines<tokio::io::BufReader<tokio::io::DuplexStream>>,
+    ) {
+        use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
         // Two pipes, not one duplex, so that dropping the reading end
         // leaves the server's stdin open -- a real pipe's EPIPE on write
         // with no EOF on read. (`simplex` halves share one buffer and
@@ -1510,7 +1590,66 @@ mod tests {
         to.write_all(b"{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n")
             .await
             .unwrap();
-        (task, to, from, root)
+        (task, to, from)
+    }
+
+    /// `~/.agents/mcp.json` (P47): a tool it turns off is not listed, and
+    /// calling it by name anyway -- a cached list, a model working from
+    /// memory -- is refused with the rule that did it. `workspace_info`
+    /// says what is off, and names what the file got wrong, before the
+    /// server line the probe reads.
+    #[tokio::test]
+    async fn a_tool_the_agents_file_turns_off_is_neither_listed_nor_callable() {
+        use tokio::io::AsyncWriteExt as _;
+        let root = temp("exposure");
+        let exposure = toexec_agents::Policy::parse(
+            r#"{"mcpServers": {"ccnm": {"disabledTools": ["read_file", "exec_comand"]},
+                                "gld": {"disabledTools": ["list_files"]}}}"#,
+        )
+        .unwrap();
+        let server = fixture_server_with(
+            &ServePayload::new("x", root.to_path_buf(), "s"),
+            crate::safety::Accepted::NOTHING,
+            exposure,
+        )
+        .unwrap();
+        let listed: Vec<String> = server.tools().iter().map(|t| t.name.to_string()).collect();
+        assert!(!listed.contains(&"read_file".to_string()), "{listed:?}");
+        assert!(
+            listed.contains(&"list_files".to_string()),
+            "gld's entry is not ccnm's"
+        );
+        assert_eq!(listed.len(), crate::session::MCP_TOOLS.len() - 1);
+
+        let (task, mut to, mut from) = connect(server, Duration::from_secs(30)).await;
+        let call = |id: u32, tool: &str, args: &str| {
+            format!(
+                "{{\"jsonrpc\":\"2.0\",\"id\":{id},\"method\":\"tools/call\",\"params\":{{\"name\":\"{tool}\",\"arguments\":{args}}}}}\n"
+            )
+        };
+        to.write_all(call(2, "read_file", r#"{"path":"x.txt"}"#).as_bytes())
+            .await
+            .unwrap();
+        let refused: serde_json::Value =
+            serde_json::from_str(&from.next_line().await.unwrap().unwrap()).unwrap();
+        assert_eq!(refused["result"]["isError"], true, "{refused}");
+        let text = refused["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("mcpServers.ccnm.disabledTools"), "{text}");
+
+        to.write_all(call(3, "workspace_info", "{}").as_bytes())
+            .await
+            .unwrap();
+        let info: serde_json::Value =
+            serde_json::from_str(&from.next_line().await.unwrap().unwrap()).unwrap();
+        let text = info["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(
+            text.contains("turned off by ~/.agents/mcp.json: read_file"),
+            "{text}"
+        );
+        assert!(text.contains("not tools here: exec_comand"), "{text}");
+        assert!(WorkspaceInfo::parse_server_line(text).is_some(), "{text}");
+        drop(to);
+        let _ = tokio::time::timeout(Duration::from_secs(10), task).await;
     }
 
     /// The twelve-hour write guard of `HEARTBEAT`'s doc comment, in small:

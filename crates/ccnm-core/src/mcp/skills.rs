@@ -130,6 +130,9 @@ pub struct Skill {
     pub model_invocable: bool,
     /// `user-invocable: false` takes this away: no prompt is offered.
     pub user_invocable: bool,
+    /// False for `name-only` in `~/.agents/mcp.json` (P47): the catalog
+    /// and the list carry the name alone, to save the model's context.
+    pub described: bool,
 }
 
 /// A file that looked like a skill and is not in the catalog, and why.
@@ -194,6 +197,16 @@ pub fn discover(root: &Path) -> Catalog {
         catalog.skills.push(skill);
     }
     catalog.skills.sort_by(|a, b| a.name.cmp(&b.name));
+    catalog
+}
+
+/// [`discover`], then narrowed by `~/.agents/mcp.json` (P47). Every
+/// place that hands a skill to the model or a person goes through this,
+/// so the file means the same in the catalog, the list, `load_skill` and
+/// the prompts.
+pub fn discover_for(root: &Path, exposure: &toexec_agents::Policy) -> Catalog {
+    let mut catalog = discover(root);
+    catalog.narrow(&crate::exposure::rules(exposure));
     catalog
 }
 
@@ -303,6 +316,7 @@ fn read(root: &Path, kind: Kind, file: &str) -> std::result::Result<Option<Skill
         // know takes the skill off the `/` menu.
         user_invocable: front.get("user-invocable").is_none()
             || front.flag("user-invocable") == Some(true),
+        described: true,
     }))
 }
 
@@ -340,6 +354,9 @@ fn entry(skill: &Skill, chars: usize) -> String {
         (None, false) => format!(" (arguments: {})", skill.arguments.join(" ")),
         (None, true) => String::new(),
     };
+    if !skill.described {
+        return format!("- {}{hint}", skill.name);
+    }
     format!(
         "- {}{hint}: {}",
         skill.name,
@@ -348,6 +365,24 @@ fn entry(skill: &Skill, chars: usize) -> String {
 }
 
 impl Catalog {
+    /// Take away what the file's level for each skill takes away. Only
+    /// ever less than the frontmatter allowed: `on` cannot hand the model a
+    /// skill its author marked `disable-model-invocation`.
+    ///
+    /// `off` removes the skill outright -- from the catalog, the list, the
+    /// prompts, and from `load_skill`, which then says there is no such
+    /// skill. It is not listed under "Not offered" either: that section is
+    /// for skills somebody expected to see, and this one was hidden on
+    /// purpose.
+    fn narrow(&mut self, rules: &toexec_agents::Rules<'_>) {
+        self.skills.retain_mut(|skill| {
+            let level = rules.skill_level(&skill.name);
+            skill.model_invocable &= level.model_invocable();
+            skill.described &= level.described();
+            level != toexec_agents::SkillLevel::Off
+        });
+    }
+
     fn offered(&self) -> impl Iterator<Item = &Skill> {
         self.skills.iter().filter(|s| s.model_invocable)
     }
@@ -429,8 +464,13 @@ impl Catalog {
 }
 
 /// The tool: the list, or one skill's instructions.
-pub fn load_skill(root: &Path, call: &LoadSkillArgs, session: Option<&str>) -> Result<String> {
-    let catalog = discover(root);
+pub fn load_skill(
+    root: &Path,
+    call: &LoadSkillArgs,
+    session: Option<&str>,
+    exposure: &toexec_agents::Policy,
+) -> Result<String> {
+    let catalog = discover_for(root, exposure);
     let Some(name) = call
         .name
         .as_deref()
@@ -461,8 +501,9 @@ pub fn prompt_text(
     name: &str,
     arguments: &str,
     session: Option<&str>,
+    exposure: &toexec_agents::Policy,
 ) -> Result<String> {
-    let catalog = discover(root);
+    let catalog = discover_for(root, exposure);
     let skill = find(&catalog, name)?;
     if !skill.user_invocable {
         return Err(Error::invalid_args(format!(
@@ -593,6 +634,23 @@ mod tests {
     use super::*;
     use ccnm_testdir::TestDir;
     use std::fs;
+    use toexec_agents::Policy;
+
+    // The tests before P47 are about the skills themselves, with no
+    // ~/.agents/mcp.json; these keep their calls as they were. The ones
+    // about the file call `super::` with a policy.
+    fn load_skill(root: &Path, call: &LoadSkillArgs, session: Option<&str>) -> Result<String> {
+        super::load_skill(root, call, session, &Policy::default())
+    }
+
+    fn prompt_text(
+        root: &Path,
+        name: &str,
+        arguments: &str,
+        session: Option<&str>,
+    ) -> Result<String> {
+        super::prompt_text(root, name, arguments, session, &Policy::default())
+    }
 
     fn workspace(name: &str) -> TestDir {
         let dir = std::env::temp_dir().join(format!("ccnm-skills-{}-{name}", std::process::id()));
@@ -609,6 +667,89 @@ mod tests {
 
     fn names(catalog: &Catalog) -> Vec<&str> {
         catalog.skills.iter().map(|s| s.name.as_str()).collect()
+    }
+
+    /// The four levels of `~/.agents/mcp.json` (P47), each where it shows:
+    /// the catalog in the tool description, the list, `load_skill` and the
+    /// prompts. `ccnm`'s own entry wins over the top level; `gld`'s entry
+    /// says nothing here; and `on` does not undo an author's
+    /// `disable-model-invocation`.
+    #[test]
+    fn levels_from_the_agents_file_narrow_every_way_a_skill_is_offered() {
+        let root = workspace("exposure");
+        for (name, extra) in [
+            ("deploy", ""),
+            ("notes", ""),
+            ("plain", ""),
+            ("release", ""),
+            ("manual", "disable-model-invocation: true\n"),
+        ] {
+            write(
+                &root,
+                &format!(".claude/skills/{name}/SKILL.md"),
+                &format!("---\ndescription: Does {name} things.\n{extra}---\nDo {name}.\n"),
+            );
+        }
+        let policy = Policy::parse(
+            r#"{
+              "mcpServers": {
+                "ccnm": { "skillOverrides": { "release": "user-invocable-only", "manual": "on" } },
+                "gld":  { "skillOverrides": { "plain": "off" } }
+              },
+              "skillOverrides": { "deploy": "off", "notes": "name-only", "release": "on" }
+            }"#,
+        )
+        .unwrap();
+
+        let catalog = discover_for(&root, &policy);
+        assert_eq!(names(&catalog), ["manual", "notes", "plain", "release"]);
+        let description = catalog.description();
+        assert!(
+            description.contains("- plain: Does plain things."),
+            "{description}"
+        );
+        assert!(
+            description.contains("- notes\n") || description.ends_with("- notes"),
+            "{description}"
+        );
+        assert!(!description.contains("Does notes things."), "{description}");
+        assert!(!description.contains("deploy"), "{description}");
+        assert!(!description.contains("- release"), "{description}");
+        let list = catalog.list();
+        assert!(list.contains("Only a person can start these"), "{list}");
+        assert!(
+            list.contains("- release [") && list.contains("- manual ["),
+            "{list}"
+        );
+        assert!(!list.contains("deploy"), "{list}");
+
+        let load = |name: &str| {
+            super::load_skill(
+                &root,
+                &LoadSkillArgs {
+                    name: Some(name.into()),
+                    ..Default::default()
+                },
+                None,
+                &policy,
+            )
+        };
+        let gone = load("deploy").unwrap_err();
+        assert_eq!(gone.code(), ErrorCode::InvalidArgs);
+        assert!(
+            gone.message().contains("no skill named \"deploy\""),
+            "{gone}"
+        );
+        assert_eq!(load("release").unwrap_err().code(), ErrorCode::Policy);
+        assert_eq!(load("manual").unwrap_err().code(), ErrorCode::Policy);
+        assert!(load("notes").unwrap().contains("Do notes."));
+
+        let prompt = |name: &str| super::prompt_text(&root, name, "", None, &policy);
+        assert!(
+            prompt("release").unwrap().contains("Do release."),
+            "a person may"
+        );
+        assert_eq!(prompt("deploy").unwrap_err().code(), ErrorCode::InvalidArgs);
     }
 
     const DEPLOY: &str = "---\nname: deploy\ndescription: >\n  Deploy the service.\n  Use after tests pass.\nargument-hint: <env>\narguments: [env]\nallowed-tools: Bash(git *)\n---\n\n# Deploy\n\nTarget: $env. Status first: !`git status --short`\nRun ${CLAUDE_SKILL_DIR}/scripts/go.sh $ARGUMENTS\n";

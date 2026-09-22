@@ -44,6 +44,11 @@ pub fn tool_names(tool: AgentTool) -> &'static [&'static str] {
         // how the model stops one.
         AgentTool::Subagents => &["Agent", "TaskStop"],
         AgentTool::Tasks => &["TaskCreate", "TaskGet", "TaskList", "TaskUpdate"],
+        // Not a native tool: the Agent's servers come through ccnm's own
+        // server on this machine (P50), allowed with it, never through
+        // Claude Code's MCP config, which `--strict-mcp-config` keeps to
+        // ccnm's.
+        AgentTool::McpServers => &[],
     }
 }
 
@@ -67,10 +72,12 @@ pub fn tools_flag(agent_tools: &AgentTools) -> String {
     names(agent_tools, true).join(",")
 }
 
-/// `mcp.json`: ccnm's server, and the Agent's installed-skills server
-/// when this session gets one (P48). `--strict-mcp-config` keeps every
-/// other server out, so these two are all there is.
-pub fn mcp_config(cmd: &Cmd, agent_skills: Option<&Cmd>) -> serde_json::Value {
+/// `mcp.json`: ccnm's server, and ccnm's server on this machine -- its
+/// installed skills (P48) and MCP servers (P50) -- when this session gets
+/// one. `--strict-mcp-config` keeps every other server out, so these two
+/// are all there is; this machine's own MCP servers reach the session
+/// through the second, never as entries here.
+pub fn mcp_config(cmd: &Cmd, agent_server: Option<&agent_skills::Recorded>) -> serde_json::Value {
     let args: Vec<String> = cmd
         .args
         .iter()
@@ -88,8 +95,7 @@ pub fn mcp_config(cmd: &Cmd, agent_skills: Option<&Cmd>) -> serde_json::Value {
             "args": args,
         }
     });
-    if let Some(cmd) = agent_skills {
-        let recorded = agent_skills::Recorded::of(cmd);
+    if let Some(recorded) = agent_server {
         servers[agent_skills::SERVER_NAME] = serde_json::json!({
             "type": "stdio",
             "command": recorded.command,
@@ -118,16 +124,21 @@ pub fn mcp_config(cmd: &Cmd, agent_skills: Option<&Cmd>) -> serde_json::Value {
 /// when the project is on another one; when the project is this machine's
 /// disk, it would only be in the way.
 ///
-/// `agent_skills`: the session has the Agent's installed-skills server,
-/// whose one tool is allowed like ccnm's (P48).
-pub fn settings(remote: bool, agent_tools: &AgentTools, agent_skills: bool) -> serde_json::Value {
+/// `agent_server`: the permissions of the Agent's own server's tools, when
+/// the session has it -- `load_skill` (P48), `call_mcp_tool` and
+/// `read_mcp_result` (P50) -- allowed like ccnm's.
+pub fn settings(
+    remote: bool,
+    agent_tools: &AgentTools,
+    agent_server: &[String],
+) -> serde_json::Value {
     if !remote {
         return serde_json::json!({ "permissions": {} });
     }
     let allow: Vec<String> = MCP_TOOLS
         .iter()
         .map(|t| format!("mcp__{SERVER_NAME}__{t}"))
-        .chain(agent_skills.then(|| agent_skills::TOOL_PERMISSION.to_string()))
+        .chain(agent_server.iter().cloned())
         .chain(names(agent_tools, true).into_iter().map(str::to_string))
         .collect();
     let deny: Vec<&str> = NATIVE_TOOLS_DENIED
@@ -146,18 +157,17 @@ pub(crate) fn write_session_files(
     dir: &Dir,
     transport: Option<&Cmd>,
     agent_tools: &AgentTools,
-    agent_skills: Option<&Cmd>,
+    agent_server: Option<&agent_skills::Recorded>,
 ) -> Result<()> {
     if let Some(cmd) = transport {
-        std::fs::write(dir.mcp_config(), pretty(&mcp_config(cmd, agent_skills))?)?;
+        std::fs::write(dir.mcp_config(), pretty(&mcp_config(cmd, agent_server))?)?;
     }
+    let permissions = agent_server
+        .map(agent_skills::Recorded::permissions)
+        .unwrap_or_default();
     std::fs::write(
         dir.settings(),
-        pretty(&settings(
-            transport.is_some(),
-            agent_tools,
-            agent_skills.is_some(),
-        ))?,
+        pretty(&settings(transport.is_some(), agent_tools, &permissions))?,
     )?;
     Ok(())
 }

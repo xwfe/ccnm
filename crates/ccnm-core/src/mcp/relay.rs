@@ -32,8 +32,9 @@
 //!   through `${VAR}` either, which only ever looks up names that are not
 //!   authentication.
 //! - Only stdio servers. A streamable-HTTP server does not need to run next
-//!   to the project; reaching it from the Agent's side is step 4 of the
-//!   plan. It is listed with that reason instead of vanishing.
+//!   to the project; the ones installed on the Agent Node are reached from
+//!   there (P50, `agent_mcp.rs`). It is listed with that reason instead of
+//!   vanishing.
 //!
 //! # Size
 //!
@@ -42,9 +43,18 @@
 //! the rest is read with `read_output`: same paging, same limits, same
 //! expiry, no second mechanism.
 //!
-//! Deleting the feature: this file, the tool in `server.rs`, `[runtime_mcp]`
-//! in the config, the name in `session::MCP_TOOLS`, and the `toexec-mcp`
-//! dependency.
+//! # Shared with the Agent side
+//!
+//! The steps of one call -- the overview, a server's tool list, the call,
+//! trimming the result -- are the same on the Agent Node, where
+//! `ccnm internal agent-skills` relays the servers installed there (P50,
+//! `agent_mcp.rs`). They are [`call`] over a [`Side`]: each machine says
+//! which servers it has, how one starts, which cannot be relayed and why,
+//! and where a long result goes.
+//!
+//! Deleting the feature: this file (keeping what `agent_mcp.rs` uses, or
+//! that goes too), the tool in `server.rs`, `[runtime_mcp]` in the config,
+//! the name in `session::MCP_TOOLS`, and the `toexec-mcp` dependency.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -168,31 +178,7 @@ impl Relay {
 
     /// The tool description: what it does, then the servers by name.
     pub fn description(&self) -> String {
-        let mut text = format!("{INTRO} Servers here:");
-        let mut used = utf16(&text);
-        let mut named = 0;
-        for name in &self.catalog {
-            let entry = format!(" {name},");
-            // Room is kept for the " and N more; ..." that may have to follow.
-            if used + utf16(&entry) + MORE_ROOM > DESCRIPTION_BUDGET {
-                break;
-            }
-            used += utf16(&entry);
-            text.push_str(&entry);
-            named += 1;
-        }
-        if named > 0 {
-            text.pop();
-        }
-        if named < self.catalog.len() {
-            text.push_str(&format!(
-                " and {} more; call without server for all of them.",
-                self.catalog.len() - named
-            ));
-        } else {
-            text.push('.');
-        }
-        text
+        describe(INTRO, &self.catalog)
     }
 
     /// Stop every server this session started. Called before the session's
@@ -217,133 +203,228 @@ impl Relay {
     /// One call. Blocking: run it off the async thread.
     pub fn call(&self, args: &CallMcpToolArgs, output: Option<&Output>) -> Result<CallToolResult> {
         let installed = self.read();
-        let Some(name) = args
-            .server
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-        else {
-            if args.tool.is_some() || args.arguments.is_some() {
-                return Err(Error::invalid_args(
-                    "tool and arguments need server: which server's tool?",
-                ));
-            }
-            return Ok(text(self.overview(&installed)));
-        };
-        let Some(server) = installed.find(name) else {
-            let names: Vec<&str> = installed.servers.iter().map(|s| s.name.as_str()).collect();
-            return Err(Error::invalid_args(if names.is_empty() {
-                format!(
-                    "no MCP server {name}: this workspace declares none and the runtime account has none installed"
-                )
-            } else {
-                format!("no MCP server {name} here; there are: {}", names.join(", "))
-            }));
-        };
-        if let Some(problem) = unusable(server) {
-            return Err(Error::config(format!(
-                "MCP server {name} is not relayed: {problem}"
-            )));
-        }
         let opener = Opener {
             root: &self.root,
             sandbox: self.sandbox.as_deref(),
         };
-        let timeout = server.tool_timeout.unwrap_or(CALL_TIMEOUT);
-        let tool = args
-            .tool
-            .as_deref()
-            .map(str::trim)
-            .filter(|t| !t.is_empty());
-        let Some(tool) = tool else {
-            if args.arguments.is_some() {
-                return Err(Error::invalid_args(
-                    "arguments need tool: which of the server's tools?",
-                ));
-            }
-            let listed = self
-                .pool
-                .with(server, "", &opener, timeout, |live| {
-                    Ok((
-                        live.tools.clone(),
-                        live.client.instructions.clone(),
-                        live.client.server_name.clone(),
-                        live.client.server_version.clone(),
-                    ))
-                })
-                .map_err(|error| failure(server, error))?;
-            return Ok(text(listing(server, listed)));
+        let notes: Vec<String> = self
+            .sandbox
+            .iter()
+            .map(|_| sandbox_note().to_string())
+            .collect();
+        let rest = |whole: &str, end: usize| -> Result<String> {
+            Ok(match output {
+                Some(output) => format!(
+                    "[the result is {} bytes; this is bytes 0-{end}. The rest is kept like a command's output: read_output output_ref={} offset={end}]",
+                    whole.len(),
+                    keep(output, whole)?
+                ),
+                None => format!(
+                    "[the result is {} bytes and only bytes 0-{end} are shown: this runtime has no state directory to keep the rest in]",
+                    whole.len()
+                ),
+            })
         };
-        let arguments = Value::Object(args.arguments.clone().unwrap_or_default());
-        let called = self
+        call(
+            &Side {
+                installed: &installed,
+                pool: &self.pool,
+                opener: &opener,
+                unusable: &unusable,
+                words: &RUNTIME,
+                notes: &notes,
+                keep: &rest,
+            },
+            args,
+        )
+    }
+}
+
+/// What the relay on one machine supplies. The steps of a call are the
+/// same on both (module doc).
+pub(crate) struct Side<'a> {
+    /// What the configs say now, hidden names already left out.
+    pub installed: &'a Installed,
+    pub pool: &'a Pool,
+    pub opener: &'a dyn Open,
+    /// Why a server cannot be relayed from here, if it cannot.
+    pub unusable: &'a dyn Fn(&Server) -> Option<String>,
+    pub words: &'a Words,
+    /// Lines the overview adds before its last one.
+    pub notes: &'a [String],
+    /// Keep a long result's whole text and say, in one bracketed line, how
+    /// to read on from byte `end`.
+    pub keep: &'a dyn Fn(&str, usize) -> Result<String>,
+}
+
+/// The sentences that name the machine.
+pub(crate) struct Words {
+    /// The overview's first line.
+    pub heading: &'static str,
+    /// The whole overview when no server is installed at all.
+    pub nothing: &'static str,
+    /// Why a server of that name is not found when none is installed.
+    pub none_installed: &'static str,
+    /// The overview's last line.
+    pub next: &'static str,
+}
+
+const RUNTIME: Words = Words {
+    heading: "MCP servers on the runtime machine for this workspace (the project's .mcp.json first):",
+    nothing: "No MCP server here: this workspace has no .mcp.json with servers in it, and the runtime account has none installed for Claude Code or Codex.",
+    none_installed: "this workspace declares none and the runtime account has none installed",
+    next: "Call call_mcp_tool with server=<name> to see its tools and their input schemas (that starts it), then with tool and arguments to call one.",
+};
+
+/// One call of `call_mcp_tool` on either machine. Blocking.
+pub(crate) fn call(side: &Side, args: &CallMcpToolArgs) -> Result<CallToolResult> {
+    let installed = side.installed;
+    let Some(name) = args
+        .server
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    else {
+        if args.tool.is_some() || args.arguments.is_some() {
+            return Err(Error::invalid_args(
+                "tool and arguments need server: which server's tool?",
+            ));
+        }
+        return Ok(text(overview(side)));
+    };
+    let Some(server) = installed.find(name) else {
+        let names: Vec<&str> = installed.servers.iter().map(|s| s.name.as_str()).collect();
+        return Err(Error::invalid_args(if names.is_empty() {
+            format!("no MCP server {name}: {}", side.words.none_installed)
+        } else {
+            format!("no MCP server {name} here; there are: {}", names.join(", "))
+        }));
+    };
+    if let Some(problem) = (side.unusable)(server) {
+        return Err(Error::config(format!(
+            "MCP server {name} is not relayed: {problem}"
+        )));
+    }
+    let timeout = server.tool_timeout.unwrap_or(CALL_TIMEOUT);
+    let tool = args
+        .tool
+        .as_deref()
+        .map(str::trim)
+        .filter(|t| !t.is_empty());
+    let Some(tool) = tool else {
+        if args.arguments.is_some() {
+            return Err(Error::invalid_args(
+                "arguments need tool: which of the server's tools?",
+            ));
+        }
+        let listed = side
             .pool
-            .with(server, "", &opener, timeout, |live| {
-                let offered = live
-                    .tools
-                    .iter()
-                    .any(|t| t["name"] == json!(tool) && server.allows_tool(tool));
-                if !offered {
-                    return Ok(Err(tool_names(server, &live.tools)));
-                }
-                live.client.call_tool(tool, arguments, timeout).map(Ok)
+            .with(server, "", side.opener, timeout, |live| {
+                Ok((
+                    live.tools.clone(),
+                    live.client.instructions.clone(),
+                    live.client.server_name.clone(),
+                    live.client.server_version.clone(),
+                ))
             })
             .map_err(|error| failure(server, error))?;
-        match called {
-            Ok(result) => shaped(result, output),
-            Err(names) => Err(Error::invalid_args(format!(
-                "MCP server {name} has no tool {tool}; it has: {}",
-                names.join(", ")
-            ))),
-        }
+        return Ok(text(listing(server, listed)));
+    };
+    let arguments = Value::Object(args.arguments.clone().unwrap_or_default());
+    let called = side
+        .pool
+        .with(server, "", side.opener, timeout, |live| {
+            let offered = live
+                .tools
+                .iter()
+                .any(|t| t["name"] == json!(tool) && server.allows_tool(tool));
+            if !offered {
+                return Ok(Err(tool_names(server, &live.tools)));
+            }
+            live.client.call_tool(tool, arguments, timeout).map(Ok)
+        })
+        .map_err(|error| failure(server, error))?;
+    match called {
+        Ok(result) => shaped(result, side.keep),
+        Err(names) => Err(Error::invalid_args(format!(
+            "MCP server {name} has no tool {tool}; it has: {}",
+            names.join(", ")
+        ))),
     }
+}
 
-    fn overview(&self, installed: &Installed) -> String {
-        if installed.servers.is_empty() {
-            return "No MCP server here: this workspace has no .mcp.json with servers in it, and the runtime account has none installed for Claude Code or Codex.".to_string();
-        }
-        let mut lines = vec![
-            "MCP servers on the runtime machine for this workspace (the project's .mcp.json first):"
-                .to_string(),
-        ];
-        for server in &installed.servers {
-            let state = if let Some(problem) = unusable(server) {
-                format!("not relayed: {problem}")
-            } else if let Some(tools) = self.pool.known_tools(&server.name, "") {
-                let names: Vec<&str> = tools
-                    .iter()
-                    .filter_map(|t| t["name"].as_str())
-                    .filter(|n| server.allows_tool(n))
-                    .collect();
-                format!("running, tools: {}", names.join(", "))
-            } else {
-                "not started".to_string()
-            };
-            lines.push(format!(
-                "- {} ({}): {state}",
-                server.name,
-                server.source.file()
-            ));
-        }
-        for problem in &installed.problems {
-            let what = problem
-                .server
-                .as_deref()
-                .map(|name| format!(" entry {name}"))
-                .unwrap_or_default();
-            lines.push(format!(
-                "[{}{what} could not be read: {}]",
-                problem.source.file(),
-                problem.message
-            ));
-        }
-        if self.sandbox.is_some() {
-            lines.push(format!("[{}]", sandbox_note()));
-        }
-        lines.push(format!(
-            "Call {TOOL} with server=<name> to see its tools and their input schemas (that starts it), then with tool and arguments to call one."
-        ));
-        lines.join("\n")
+fn overview(side: &Side) -> String {
+    let installed = side.installed;
+    if installed.servers.is_empty() {
+        return side.words.nothing.to_string();
     }
+    let mut lines = vec![side.words.heading.to_string()];
+    for server in &installed.servers {
+        let state = if let Some(problem) = (side.unusable)(server) {
+            format!("not relayed: {problem}")
+        } else if let Some(tools) = side.pool.known_tools(&server.name, "") {
+            let names: Vec<&str> = tools
+                .iter()
+                .filter_map(|t| t["name"].as_str())
+                .filter(|n| server.allows_tool(n))
+                .collect();
+            format!("running, tools: {}", names.join(", "))
+        } else {
+            "not started".to_string()
+        };
+        lines.push(format!(
+            "- {} ({}): {state}",
+            server.name,
+            server.source.file()
+        ));
+    }
+    for problem in &installed.problems {
+        let what = problem
+            .server
+            .as_deref()
+            .map(|name| format!(" entry {name}"))
+            .unwrap_or_default();
+        lines.push(format!(
+            "[{}{what} could not be read: {}]",
+            problem.source.file(),
+            problem.message
+        ));
+    }
+    for note in side.notes {
+        lines.push(format!("[{note}]"));
+    }
+    lines.push(side.words.next.to_string());
+    lines.join("\n")
+}
+
+/// The tool description: `intro`, then the servers by name, as many as
+/// fit Claude Code's 2048 UTF-16 units.
+pub(crate) fn describe(intro: &str, catalog: &[String]) -> String {
+    let mut text = format!("{intro} Servers here:");
+    let mut used = utf16(&text);
+    let mut named = 0;
+    for name in catalog {
+        let entry = format!(" {name},");
+        // Room is kept for the " and N more; ..." that may have to follow.
+        if used + utf16(&entry) + MORE_ROOM > DESCRIPTION_BUDGET {
+            break;
+        }
+        used += utf16(&entry);
+        text.push_str(&entry);
+        named += 1;
+    }
+    if named > 0 {
+        text.pop();
+    }
+    if named < catalog.len() {
+        text.push_str(&format!(
+            " and {} more; call without server for all of them.",
+            catalog.len() - named
+        ));
+    } else {
+        text.push('.');
+    }
+    text
 }
 
 /// Environment lookup for `${VAR}` in a config. Never an Agent's login or
@@ -362,6 +443,11 @@ fn lookup(name: &str) -> Option<String> {
 
 /// Why this server cannot be relayed as configured, if it cannot.
 fn unusable(server: &Server) -> Option<String> {
+    // Codex's `enabled = false`, or `disabled: true` in a JSON config: the
+    // client it was installed for would not start it either.
+    if server.off_in_source {
+        return Some(format!("it is turned off in {}", server.source.file()));
+    }
     if !server.missing_env.is_empty() {
         return Some(format!(
             "its config uses {} which the runtime does not pass on (unset here, or named like a credential)",
@@ -449,7 +535,7 @@ impl Open for Opener<'_> {
 /// crate has no `unsafe` for `killpg`. Only then, while the child has not
 /// been collected and its pid cannot belong to anyone else; one that exited
 /// by itself is left alone for the same reason.
-fn stop() -> Stop {
+pub(crate) fn stop() -> Stop {
     Box::new(|child, exited| {
         if !exited {
             let _ = std::process::Command::new("kill")
@@ -506,9 +592,12 @@ fn listing(server: &Server, (tools, instructions, name, version): Listed) -> Str
 }
 
 /// The server's result, trimmed: duplicate `structuredContent` gone, a
-/// too-large image replaced by a line, and text past [`INLINE_BYTES`] kept
-/// for `read_output`.
-fn shaped(result: Value, output: Option<&Output>) -> Result<CallToolResult> {
+/// too-large image replaced by a line, and text past [`INLINE_BYTES`]
+/// handed to `keep`, whose note follows the first part.
+pub(crate) fn shaped(
+    result: Value,
+    keep: &dyn Fn(&str, usize) -> Result<String>,
+) -> Result<CallToolResult> {
     let shaped = shape::shape(
         &result,
         &shape::Limits {
@@ -519,19 +608,7 @@ fn shaped(result: Value, output: Option<&Output>) -> Result<CallToolResult> {
     let mut blocks: Vec<ContentBlock> = Vec::new();
     if let Some(whole) = shaped.long {
         let end = shape::part_end(&whole, 0, INLINE_BYTES);
-        let note = match output {
-            Some(output) => {
-                let reference = keep(output, &whole)?;
-                format!(
-                    "[the result is {} bytes; this is bytes 0-{end}. The rest is kept like a command's output: read_output output_ref={reference} offset={end}]",
-                    whole.len()
-                )
-            }
-            None => format!(
-                "[the result is {} bytes and only bytes 0-{end} are shown: this runtime has no state directory to keep the rest in]",
-                whole.len()
-            ),
-        };
+        let note = keep(&whole, end)?;
         blocks.push(ContentBlock::text(whole[..end].to_string()));
         blocks.push(ContentBlock::text(note));
     }
@@ -638,7 +715,8 @@ done
             r#"{ "mcpServers": {
                 "fake": { "command": "./fake-mcp.sh", "env": { "DB_TOKEN": "t0k", "ANTHROPIC_API_KEY": "leak" } },
                 "remote": { "type": "http", "url": "https://example.invalid/mcp" },
-                "keyed": { "command": "./fake-mcp.sh", "env": { "K": "${SOME_SECRET_TOKEN}" } }
+                "keyed": { "command": "./fake-mcp.sh", "env": { "K": "${SOME_SECRET_TOKEN}" } },
+                "off": { "command": "./fake-mcp.sh", "disabled": true }
             } }"#,
         )
         .unwrap();
@@ -686,6 +764,10 @@ done
             overview
                 .contains("- keyed (.mcp.json): not relayed: its config uses SOME_SECRET_TOKEN"),
             "a credential-looking variable is never looked up: {overview}"
+        );
+        assert!(
+            overview.contains("- off (.mcp.json): not relayed: it is turned off in .mcp.json"),
+            "{overview}"
         );
     }
 

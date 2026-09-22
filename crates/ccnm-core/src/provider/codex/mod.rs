@@ -444,7 +444,7 @@ pub(crate) fn build_launch_cmd(
             .arg("-c")
             .arg(format!(
                 "mcp_servers.{key}.enabled_tools={}",
-                serde_json::json!([crate::mcp::skills::TOOL])
+                serde_json::json!(agent.tools)
             ));
     }
     match &spec.mode {

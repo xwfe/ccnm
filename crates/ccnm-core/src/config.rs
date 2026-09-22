@@ -86,6 +86,11 @@ pub struct Config {
     /// Runtime for (P49). Local like `machine_skills`.
     #[serde(default, skip_serializing_if = "RuntimeMcp::is_default")]
     pub runtime_mcp: RuntimeMcp,
+    /// The MCP servers this machine offers the sessions it is the Agent
+    /// for (P50). Local like `machine_skills`; the workspace still decides
+    /// whether its sessions get any (`agent_tools`, `mcp_servers`).
+    #[serde(default, skip_serializing_if = "AgentMcp::is_default")]
+    pub agent_mcp: AgentMcp,
 }
 
 /// Skills installed for this machine's account -- `~/.claude/skills`,
@@ -171,6 +176,53 @@ impl Default for RuntimeMcp {
 impl RuntimeMcp {
     pub fn is_default(&self) -> bool {
         self == &RuntimeMcp::default()
+    }
+}
+
+/// MCP servers installed on the Agent Node that a remote session gets
+/// through `ccnm internal agent-skills`'s `call_mcp_tool` (P50): the ones
+/// this account installed for Claude Code or Codex (`~/.claude.json`,
+/// `~/.codex/config.toml`).
+///
+/// Two kinds, two defaults. A server at an address on another machine
+/// (exa, DeepWiki) cannot touch this one, and is offered unless hidden:
+/// the user's call was "on by default", and the v4 plan's "network ones
+/// only". One that runs here -- a program, or an address on this machine
+/// -- can read and write this machine's disk, run commands, reach the
+/// Runtime over this account's ssh; the remote session was built so that
+/// the project is reachable only through ccnm. Those are offered only by
+/// name (`local`). Which is which cannot be told from the program: a
+/// context7 started by `npx` only talks to the network, a Filesystem
+/// server started the same way does not (toexec v4 plan, section 3.3).
+///
+/// Read only on the Agent Node, when a session is created.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentMcp {
+    /// `false`: no session on this machine gets any of its servers.
+    #[serde(default = "yes")]
+    pub enabled: bool,
+    /// Servers that run on this machine, offered by name.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    pub local: std::collections::BTreeSet<String>,
+    /// Servers never offered, by name, of either kind.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    pub hidden: std::collections::BTreeSet<String>,
+}
+
+impl Default for AgentMcp {
+    fn default() -> Self {
+        AgentMcp {
+            enabled: true,
+            local: Default::default(),
+            hidden: Default::default(),
+        }
+    }
+}
+
+impl AgentMcp {
+    pub fn is_default(&self) -> bool {
+        self == &AgentMcp::default()
     }
 }
 
@@ -542,14 +594,23 @@ pub enum AgentTool {
     /// The model's own to-do list. Harmless, but five more tool schemas in
     /// every request for something short print runs rarely use.
     Tasks,
+    /// MCP servers installed on the Agent Node, through ccnm's own server
+    /// there (P50). On by default: the user's call. What this workspace
+    /// allows is the sessions using them at all -- a server at a URL
+    /// receives what the model sends it, as `web_fetch` does, and exa has
+    /// a fetch tool. Which servers is the Agent's own `[agent_mcp]`, and
+    /// one that runs on the Agent (and so can reach its disk) is offered
+    /// only when the Agent names it there.
+    McpServers,
 }
 
 impl AgentTool {
-    pub const ALL: [AgentTool; 4] = [
+    pub const ALL: [AgentTool; 5] = [
         AgentTool::WebSearch,
         AgentTool::WebFetch,
         AgentTool::Subagents,
         AgentTool::Tasks,
+        AgentTool::McpServers,
     ];
 
     /// The value as written in config.toml.
@@ -559,6 +620,7 @@ impl AgentTool {
             AgentTool::WebFetch => "web_fetch",
             AgentTool::Subagents => "subagents",
             AgentTool::Tasks => "tasks",
+            AgentTool::McpServers => "mcp_servers",
         }
     }
 }
@@ -572,10 +634,12 @@ impl AgentTool {
 pub struct AgentTools(std::collections::BTreeSet<AgentTool>);
 
 impl Default for AgentTools {
-    /// Web search only: the user's call (2026-09-22), and the one feature
-    /// whose absence a coding session actually misses.
+    /// Web search, and the Agent's installed MCP servers (P50): the user's
+    /// calls (2026-09-22). Search is the one native feature a coding
+    /// session actually misses; the servers are what the user asked to
+    /// reach from these sessions, on by default.
     fn default() -> Self {
-        AgentTools::of(&[AgentTool::WebSearch])
+        AgentTools::of(&[AgentTool::WebSearch, AgentTool::McpServers])
     }
 }
 
@@ -1165,14 +1229,23 @@ mod tests {
     /// twice is one; a name ccnm does not know is refused, like any other
     /// typo in this file. The default is never written back.
     #[test]
-    fn agent_tools_default_to_web_search_and_refuse_unknown_names() {
+    fn agent_tools_default_to_web_search_and_mcp_servers_and_refuse_unknown_names() {
         let base = "this = \"runtime\"\n[nodes.agent]\nssh = \"a\"\n[nodes.runtime]\n\
                     [workspaces.x]\nagent_node = \"agent\"\nroot = \"/p\"\n";
         let tools = |extra: &str| {
             Config::parse(&format!("{base}{extra}")).map(|c| c.workspaces["x"].agent_tools.clone())
         };
-        assert_eq!(tools("").unwrap(), AgentTools::of(&[AgentTool::WebSearch]));
+        assert_eq!(
+            tools("").unwrap(),
+            AgentTools::of(&[AgentTool::WebSearch, AgentTool::McpServers])
+        );
         assert_eq!(tools("agent_tools = []\n").unwrap(), AgentTools::none());
+        // What a workspace wrote before P50 still means what it meant then:
+        // search, and no MCP servers.
+        assert_eq!(
+            tools("agent_tools = [\"web_search\"]\n").unwrap(),
+            AgentTools::of(&[AgentTool::WebSearch])
+        );
         assert_eq!(
             tools("agent_tools = [\"web_fetch\", \"subagents\", \"web_fetch\"]\n").unwrap(),
             AgentTools::of(&[AgentTool::Subagents, AgentTool::WebFetch])
@@ -1187,10 +1260,29 @@ mod tests {
         };
         assert!(!written(AgentTools::default()).contains("agent_tools"));
         assert!(written(AgentTools::none()).contains("agent_tools = []"));
+        assert!(
+            written(AgentTools::of(&[AgentTool::WebSearch]))
+                .contains("agent_tools = [\"web_search\"]")
+        );
         let text = written(AgentTools::of(&AgentTool::ALL));
         for tool in AgentTool::ALL {
             assert!(text.contains(&format!("\"{}\"", tool.as_str())), "{text}");
         }
+    }
+
+    #[test]
+    fn agent_mcp_defaults_on_names_local_servers_and_is_not_written_when_default() {
+        let base = "this = \"agent\"\n[nodes.agent]\n";
+        let parsed = |extra: &str| Config::parse(&format!("{base}{extra}")).map(|c| c.agent_mcp);
+        assert_eq!(parsed("").unwrap(), AgentMcp::default());
+        assert!(AgentMcp::default().enabled);
+        let chosen = parsed("[agent_mcp]\nlocal = [\"context7\"]\nhidden = [\"exa\"]\n").unwrap();
+        assert!(chosen.local.contains("context7") && chosen.hidden.contains("exa"));
+        assert!(!parsed("[agent_mcp]\nenabled = false\n").unwrap().enabled);
+        let err = parsed("[agent_mcp]\nallow = [\"x\"]\n").unwrap_err();
+        assert!(err.message().contains("allow"), "{err}");
+        let written = toml::to_string(&Config::parse(base).unwrap()).unwrap();
+        assert!(!written.contains("agent_mcp"), "{written}");
     }
 
     /// A config with no workspace list is an Agent Node's, and a name it

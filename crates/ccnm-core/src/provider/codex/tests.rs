@@ -408,6 +408,7 @@ fn codexs_skill_list_goes_and_the_agents_server_takes_its_place() {
             "--payload".into(),
             "e30".into(),
         ],
+        tools: vec!["load_skill".into(), "call_mcp_tool".into()],
     };
     std::fs::write(
         session.agent_skills(),
@@ -419,7 +420,7 @@ fn codexs_skill_list_goes_and_the_agents_server_takes_its_place() {
         "mcp_servers.ccnm_agent.command=\"/agent/ccnm\"",
         "mcp_servers.ccnm_agent.args=[\"internal\",\"agent-skills\",\"--payload\",\"e30\"]",
         "mcp_servers.ccnm_agent.default_tools_approval_mode=\"approve\"",
-        "mcp_servers.ccnm_agent.enabled_tools=[\"load_skill\"]",
+        "mcp_servers.ccnm_agent.enabled_tools=[\"load_skill\",\"call_mcp_tool\"]",
     ] {
         assert!(
             with.contains(&expected.to_string()),

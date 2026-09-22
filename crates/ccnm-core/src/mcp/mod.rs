@@ -10,9 +10,11 @@
 
 use rmcp::schemars;
 
+pub mod agent_mcp;
 pub mod agent_skills;
 pub mod bridge;
 pub mod context;
+pub mod curl;
 pub mod exec;
 pub mod glob;
 pub mod image;

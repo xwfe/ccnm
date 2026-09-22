@@ -559,7 +559,14 @@ fn session_identity_requires_version_three_and_a_verified_remote_transport() {
     wrong.instance = "other".into();
     assert!(loaded.check_agent_binding(&wrong).is_err());
     assert!(
-        ccnm_core::session::create(&f.0.join("state"), &spec, None, &Default::default()).is_err()
+        ccnm_core::session::create(
+            &f.0.join("state"),
+            &spec,
+            None,
+            &Default::default(),
+            &Default::default(),
+        )
+        .is_err()
     );
     assert!(!f.0.join("state").exists());
     assert!(ccnm_core::session::transport::command(&spec).is_ok());

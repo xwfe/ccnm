@@ -357,6 +357,7 @@ pub fn run(req: &RunRequest, tools: &Tools<'_>) -> Result<RunReport> {
         &spec,
         ssh.as_ref(),
         &tools.config.machine_skills,
+        &tools.config.agent_mcp,
     )?;
     let pid = match controller::start_for_identity(
         &tools.controller,
@@ -710,6 +711,7 @@ fn start_fresh(
         &spec,
         ssh.as_ref(),
         &tools.config.machine_skills,
+        &tools.config.agent_mcp,
     )?;
     let server_pid = match controller::start_for_identity(
         &tools.controller,

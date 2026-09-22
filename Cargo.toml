@@ -33,8 +33,9 @@ toexec-fs = { git = "https://github.com/xwfe/toexec.git", tag = "toexec-fs-v0.2.
 # 用它；gld 原来自己的读法不认多行 description，也会换过来。
 toexec-skill = { git = "https://github.com/xwfe/toexec.git", tag = "toexec-skill-v0.3.0" }
 # 第四个：转发装好的 MCP server 的那几块机制（读配置、握手调用、子进程通道、
-# 连接池、结果整理），gld 也用。P49 的 call_mcp_tool 靠它。
-toexec-mcp = { git = "https://github.com/xwfe/toexec.git", tag = "toexec-mcp-v0.1.0" }
+# 连接池、结果整理，0.2.0 起还有长结果分段读和 SSE 拆包），gld 也用。P49 的
+# call_mcp_tool 和 P50 Agent 上的那一个靠它。
+toexec-mcp = { git = "https://github.com/xwfe/toexec.git", tag = "toexec-mcp-v0.2.0" }
 base64 = "0.22"
 clap = { version = "4", features = ["derive", "env"] }
 serde = { version = "1", features = ["derive"] }

@@ -521,7 +521,7 @@ mod tests {
                 .collect()
         };
         let chosen = AgentTools::of(&[AgentTool::WebSearch, AgentTool::Tasks]);
-        let s = settings(true, &chosen, false);
+        let s = settings(true, &chosen, &[]);
         let (allow, deny) = (list(&s, "allow"), list(&s, "deny"));
         assert_eq!(
             allow[crate::session::MCP_TOOLS.len()..],
@@ -540,7 +540,7 @@ mod tests {
         );
         // A colocated session keeps Claude's own settings untouched.
         assert_eq!(
-            settings(false, &chosen, false),
+            settings(false, &chosen, &[]),
             serde_json::json!({ "permissions": {} })
         );
     }

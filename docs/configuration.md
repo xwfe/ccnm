@@ -201,6 +201,7 @@ allow_unconfined_exec = false
 allow_unisolated_credentials = false   # 默认值；开它之前先读下面那一节
 allow_unattended_exec = false          # 默认值：每条命令执行前问你一次
 external_mcp = "disabled"    # 默认值，可省略
+agent_tools = ["web_search"] # 默认值，可省略：受管会话能用 Agent 自带的哪些功能
 ```
 
 ### `agent_node`
@@ -364,6 +365,40 @@ exec_sandbox = "codex"       # 默认 off
 **被挡住是什么样**：不是错误，是命令自己失败——退出码非 0，stderr 里是 `Operation not permitted`（macOS）或 `Read-only file system`（Linux），和命令本身写错了长得一样。ccnm 分不出来，Codex 自己也只能靠猜；所以每条结果末尾都带一行 `[sandboxed: …]`，模型看到 `Operation not permitted` 时知道那是沙箱，不会有"不带沙箱重试"的路——能让模型开的门不是门。
 
 **权限对象是 Codex 0.154.0 发给它自己命令的那一份，一字不改**（P21 录下的 workspace-write 沙箱，`crates/ccnm-core/src/mcp/sandbox.rs` 有测试钉着）。不放宽也不收紧，别的形状都没量过。它和上面三个 `allow_*` 开关方向相反——那三个是放开，这个是收紧——所以不影响 doctor 的审计行，也不改变 `exec_gate` 的判断：执行账号本身仍然是上限，沙箱只是在它里面再画一圈。
+
+### `agent_tools`
+
+```toml
+agent_tools = ["web_search"]                # 默认值，可省略
+agent_tools = ["web_search", "web_fetch"]   # 再允许抓网页
+agent_tools = []                            # 全关，就是 P46 之前的样子
+```
+
+**远端受管会话能用 Agent CLI 自带的哪些功能**（P46）。读、改、搜项目和跑命令一律走 ccnm 的工具、在 Runtime 上执行；Claude Code / Codex 自带的文件、shell、notebook 和 skill 工具永远关着，这一行管不到它们。它管的是剩下几个不碰 Agent 本机磁盘的功能：
+
+| 值 | 做什么 | Claude Code 里是 | Codex 里是 |
+| --- | --- | --- | --- |
+| `web_search`（默认开） | 搜网页 | `WebSearch` | `web_search = "cached"`：Codex 自己的默认值，用 OpenAI 的索引，不现抓网页 |
+| `web_fetch` | 抓任意 URL 的内容 | `WebFetch` | 没有对应工具，不起作用 |
+| `subagents` | 派子代理分头干活 | `Agent`、`TaskStop` | 不起作用，子代理仍关 |
+| `tasks` | 模型自己的待办清单 | `TaskCreate`、`TaskGet`、`TaskList`、`TaskUpdate` | 不起作用 |
+
+**`web_fetch` 为什么默认关**：它是往外的通道。模型读过的项目内容能拼进 URL 发给任意网站，而让模型这么做只需要一段提示注入——藏在项目某个文件里、或者某条搜索结果里。`web_search` 只把搜索词发给 Anthropic / OpenAI 自己的搜索服务，面窄得多。开之前想清楚这个项目能不能接受。
+
+**子代理不是绕过去的路**：实测（Claude Code 2.1.278）子代理拿到的工具和主会话一模一样，同样没有 Read、Bash。它的代价是额度：每个子代理是一段独立的上下文。
+
+**写在 Runtime 上，Agent 那边改不了**：和上面几个 `allow_*` 一样，担风险的是项目所在的机器，所以由它说了算。
+
+**会是什么样**：
+
+- 不写这一行等于只开 `web_search`；`[]` 全关；写了不认识的名字（比如 `todo`）整份配置读不进来，报错里列出能写的值；同一个名字写两遍算一个。
+- 不认识这个字段的旧 Agent 连新 Runtime：默认配置照常起会话，只是没有搜索（旧版本本来就全关）；写了别的值，旧 Agent 会拒绝这个请求、报 `unknown field agent_tools`，升级 Agent 就好。
+- print 模式（`ccnm run --print`、Machine API）没人能点"允许"，所以开了的工具会写进这个会话的权限允许表。实测不写的话，Claude Code 会自动拒绝 `WebSearch` 和 `WebFetch`。
+- Codex 不写 `model`（用 CLI 默认模型）时，`web_search` 开了也看不到效果：实测 0.154.0 和 0.155.1 在默认模型下三种取值发出的请求一字不差；指定 `gpt-5.1-codex` 这类模型才会带上搜索工具。
+- `WebFetch` 真正取网页之前，Claude Code 会先去 claude.ai 查这个域名安不安全。Agent 机器连不上 claude.ai 的话，每次都报 `Unable to verify if domain … is safe to fetch`。
+- 只管远端受管会话。外部 MCP 客户端（比如 gld）自带自己的工具，和这一行无关。
+
+实测依据和为什么这样映射：[P46 记录](research/p46-agent-tools-2026-09-22.md)。
 
 ### `external_instructions`
 

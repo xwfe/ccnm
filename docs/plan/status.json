@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-09-22T09:35:44+09:00",
+  "last_updated": "2026-09-22T13:31:11+09:00",
   "current_task": null,
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
@@ -2388,6 +2388,40 @@
         }
       ],
       "blockers": []
+    },
+    {
+      "id": "P46",
+      "title": "受管会话默认开 WebSearch，其他 Agent 功能按工作区开",
+      "status": "completed",
+      "depends_on": [
+        "P45"
+      ],
+      "owner": null,
+      "started_at": "2026-09-22T12:40:00+09:00",
+      "last_updated": "2026-09-22T13:31:11+09:00",
+      "completed_criteria": [
+        "P46.1",
+        "P46.2",
+        "P46.3",
+        "P46.4",
+        "P46.5"
+      ],
+      "evidence": [
+        {
+          "kind": "offline",
+          "criteria": [
+            "P46.1",
+            "P46.2",
+            "P46.3",
+            "P46.4",
+            "P46.5"
+          ],
+          "ref": "docs/research/p46-agent-tools-2026-09-22.md",
+          "commit": "d021aad",
+          "result": "零额度，macOS arm64，rustc 1.98.0。实测在 toexec e0b5c7d 的 evidence/v3-parity/agent-surface/：Claude Code 2.1.278 连本机假模型接口，--tools 认 WebSearch/WebFetch/Agent/Skill/Task*/NotebookEdit，不认的名字被悄悄忽略；子代理工具表和主会话相同；ToolSearch 进白名单会把 MCP 工具全推进延迟池；print 模式下 WebSearch/WebFetch 不进 allow 会被自动拒绝。Codex 0.154.0（连同 code-mode-host）：指定 gpt-5.1-codex 时 web_search=cached 加托管搜索工具、Code Mode 不排除；不写 model（gpt-6-astra）三种取值请求一字不差，0.155.1 和内置 provider 也一样，原因未查明。实现：workspace 字段 agent_tools（默认 [web_search]），经 ResolveReport/RunRequest/StartRequest/Spec 只在非默认值时传；Claude --tools 列开了的名字、allow 加它们、deny 加没开的与 NotebookEdit/Skill；Codex 只接 web_search。两份实测 fixture 没重录（Claude 基线测试施加有意改动，Codex argv 比对改用全关配置）。门禁：fmt、clippy -D warnings 通过；cargo test --workspace 898 passed / 0 failed（新增 5 条）；cargo +1.89 check --workspace --all-targets --locked 通过；python3 -m unittest discover -s tests 194 passed；check_plan、check_protocol（38 + 29 个 fixture）、git diff --check 通过。未覆盖：真实模型；Codex 默认模型下搜索不见效的原因；Codex 子代理；Linux。"
+        }
+      ],
+      "blockers": []
     }
   ],
   "observed_gaps": [
@@ -2439,8 +2473,8 @@
     "【P41 记下不修】mcp-serve 被 SIGKILL（或别的不走正常退出的死法）时，它起的命令的进程组没人收：前台命令一直如此，P41 的后台命令没有期限，所以可能一直跑下去；它们的 run 在 read_output 里读作 exit status unknown。正常路径（客户端断开、stdin EOF、心跳发现对端不在）会先停掉所有命令再放写锁。要收干净得给子进程加会话标记、下次启动时按标记扫（封存的原生链 P26/P30 有类似做法），需另立阶段。依据 docs/research/p41-background-commands-2026-09-18.md 第 5 节。"
   ],
   "handoff": {
-    "next_action": "**2026-09-22 00:35 P45 完成：skill 的 frontmatter 照 Claude Code 的读法读（跨仓评审 X08）。**共享库 toexec-skill 0.2.0 在 toexec 仓库（f0f7548 实现、fa32646 差分证据、c8cf321 版本号 + 本地 tag toexec-skill-v0.2.0），ccnm 这边 c57f9bb。**做法**：借 Claude Code 2.1.278 自己的运行时当对照——它内嵌 Bun 1.4.3（公开版只到 1.4.2），BUN_OPTIONS=--preload 让脚本在它主程序之前跑、读完就 exit，不联网不花额度。**查出并改掉的**：disable-model-invocation: yes 原生生效、这里当没写；重复键这里先写的赢、原生后写的赢；以 ` @ * 开头的描述这里整个跳过；官方例子 argument-hint: [issue-number] 这里没提示；user-invocable 写了空值原生不进 / 菜单；另有 0.1.0 的平方级耗时（416 KB 引号不闭合 10 秒）。行为变更表见 docs/research/p45-skill-frontmatter-2026-09-22.md。**已推送（2026-09-22 09:13）**：按 toexec（含 tag toexec-skill-v0.2.0）→ ccnm → gld 的顺序推，git ls-remote 对过 tag 解引用是 c8cf321，和两个产品的 Cargo.lock 一致；三边 CI 全绿（ccnm run 35671150347，含 linux-runtime 与 msrv）。**没做的**：（gld 同日也升到 0.2.0，并补了它自己那半边的 skills 后续，见 gld RFC-0003 G2.4–G2.7，不属于 ccnm 的阶段。）真实 Host 与模型没跑；原生把目录名当 skill 标识而 ccnm 用 name，这个 P36 就有的差异不在本阶段。\n\n之前的交接：\n**2026-09-20 21:30 v0.8.0 发布了，并且 P36–P44 第一次在 Linux 上跑。**推 tag a5b6a3e，release.yml 出了四个产物（macos-universal 与 linux-x86_64 各一个 tar.gz 加 sha256）。**Linux 验证**：用那个 linux-x86_64 发布产物在 hpsrv（Debian 13 / x86_64）上、以 P12 建的专用执行身份 ccrun（uid 1002，无 sudo）跑中立客户端套件，**194 passed / 1 skipped**，核心 36 条 11.0 秒全过。记录 docs/research/linux-runtime-2026-09-20.md。**产品代码一行没改，露馅的是测试自己的两个假设**（已修，43b0c11）：mktemp -d -t 是 BSD 写法、GNU 要模板自带 6 个 X，报 too few X's 后 32 个用例一次都没起来（和 P12 那次的 date -r 同类）；另一条用例的前提\"跑测试的账号在 admin/staff 里\"在真 Runtime 上不成立，ccrun 审计本来就该放行，现在 skip 并说明。**Linux 这一轮不覆盖**：真实模型、Managed 入口（Controller 是 launchd，Linux 上不跑）、Codex 当 Host、exec_sandbox 与原生链、cargo test（那台机器没有 Rust 工具链）；rg 是 14.1.1 不是验 P37 的 15.2.0，只证明测试过得去，没逐条比对搜索语义。**hpsrv 上留了 /home/ccrun/ccnm-linux-check**（二进制在 ~ccrun/.local/bin/ccnm），下次复验不用重传；不要了就整个删。\n\n之前的交接：\n**2026-09-20 19:45 真机模型轮跑了一次，$0.57。**两台 0.8.0，fodelf 上真实 Claude Code 2.1.272 经双机 SSH 做完一个三小问的任务（20 turns / 146 s / 0 permission denials）。记录 docs/research/real-machine-p36-p44-2026-09-20.md。**换成证据的**：read_notebook（答出 cell 类型和存储输出，而 Read 被 deny）、view_image（答出三色横杠和 126 字节，图确实到了模型面前）、load_skill（跑的三步门禁和临时放的 SKILL.md 一字不差）、exec_command 的 shell（进程快照抓到 bash -c 带分号和重定向）；**P44 的收紧没有咬到真实 Host**，20 轮零 unknown field 报错。**没拿到证据的**：run_in_background——prompt 和 skill 都引导了，但 --print 模式不留 JSONL、前台 120 秒上限也容纳得下那条 81.3 秒的命令，所以看不出用没用；下次要开 CCNM_LOG=debug 或换交互模式。**顺手撞出的真问题**：Runtime 这台机器 PATH 里挂着不存在的 ~/.cargo/bin，模型第一次跑 cargo 拿到 exit 127，这种失败快得像秒过、容易被当成通过；修法是在 Runtime 上跑 rustup default stable，本轮没动环境。**临时夹具已删**（tests/fixtures/realmachine-probe 与 .claude/skills/run-gates）。\n\n之前的交接：\n**2026-09-20 19:20 两台机器升到 0.8.0，没有发版。**版本号提到 0.8.0（cd9e8e0）后用 scripts/deploy.sh fodelf 同时装到 Runtime（本机）和 Agent（fodelf），两台 --version 都报 0.8.0，ccnm doctor ccnm 0 项失败。**为什么先不推 tag**：P43 的写权语义和 P44 的参数校验是两处行为收紧，真实 Host 一次都没碰过，先在自己两台上跑，验完再发。**换来的第一个真机事实**：远端 MCP 握手报 11 个工具（16137 B），之前是 7 个——P36–P41 加的四个工具第一次经真实 SSH 链路握手并列出成功；这只证明工具表到得了 Agent 侧，不证明模型会调，支持矩阵里\"真实模型会不会用\"一条都没消掉。**装机前跑过的验证**：release 二进制跑中立客户端套件 194 passed，真实 gld + release ccnm 的组合测试连跑 3 次全绿（各 8.3 秒），三仓 CI 全绿。**下一步要花额度**：fodelf 上有 Claude Code 2.1.272 和 claude.ai (max) 登录，真机模型轮现在做得了，但那要消耗订阅额度，得单独授权。\n\n更早的交接（P13–P41 各轮）已于 2026-09-20 清理，P44 那一轮 2026-09-22 按四轮的规矩删掉：这个字段当时堆了 52 段、5.2 万字符，其中 P13–P28 那一批还因为并行分支合并被粘了两遍。每个阶段的正式记录在本文件的 evidence 和 docs/research/ 下，原文在 git 历史里。**本字段只保留最近四轮**，再往前的不要往回补。",
-    "scope": "P44 这一轮：三个写/执行工具及其嵌套结构的 deny_unknown_fields 与超界拒绝、只读工具的忽略提示、两份 tools-list fixture、协议与三处文档；不碰 gld，不改错误码。\n\n上一轮的范围：\nP43 这一轮：mcp/jobs.rs 的 stop_all 返回值、mcp/write_guard.rs 的放弃状态与诊断、mcp/server.rs 的退出路径，加对应测试与四处文档；不碰 gld，不改冻结契约的错误码。\n\n上一轮的范围：\nP42 这一轮：只加协议文档的生命周期一节、研究记录、回归测试和三处文档指向；不改任何运行行为，不碰 gld 仓库。\n\n上一轮的范围：\nP24 真机轮：只加文档与记录——docs/research/p24-native-real-machine-2026-09-16.md；support-matrix、configuration、usage、README、operations、troubleshooting、runtime-surfaces 第 12 节、P24 会话计划开头；status.json。没有改代码。toexec：evidence/v2-c/p24-real/（脚本、root 脚本、runs）与 v2 计划对齐检查。系统变更（均经用户 A0–A9 授权）：hpsrv 装 bubblewrap（保留）、ccrun 公钥（已撤）、ccrun 名下 ccnm 与 Codex 二进制（保留）、临时 nftables 规则 5 次（自动删除）；本机临时 LaunchAgent（已卸）、ssh 别名与密钥（已删）。\n\n上一轮的范围：\nP24 这一轮（到授权为止）：只加计划文件 docs/plan/p24-native-real-machine-session.md、ROADMAP P24 一行链接、status.json 把 P24 记成 blocked 并写入只读预检结果。本机和 hpsrv 都只读，没有任何变更，没有消耗额度。推送了 ccnm、toexec、gld 三个仓库的 main。\n\n上一轮的范围：\nP23 这一轮：新增 internal exec-transport、provider/codex/native.rs（每会话 codex-home）、Codex 原生启动参数、Ssh::exec_transport_cmd / exec_transport_preflight、ResolveReport / StartRequest / RunRequest / Spec 的 codex_exec_server 字段（只在为真时序列化）、resolve 对 opt-in 的 workspace 报 canonical root、work::run 的 print 拒绝、交互会话的 exec-serve 预检；新增 CLI 集成测试 exec_transport；ROADMAP P23 与 runtime-surfaces 第 12 节按实测改写；配置说明、运维手册、支持矩阵、排错手册、使用说明、README 各加一段；研究记录 docs/research/p23-stdio-transport-2026-09-16.md。toexec：evidence/v2-c/p23-stdio/（spike + P23.4 harness + 三轮结果）、v2 计划第 5.2 节与状态表。gld：README 与 RFC-0002 两处「尚未实施」改成已实施。没有加依赖，没有部署，没有消耗额度。\n\n上一轮的范围：\nP22 这一轮：新增 native 模块（policy、serve）、wire protocol 6、internal exec-serve、config 的 codex_bin 与 codex_exec_server、mcp::path 新增 resolve_inside、ExecGate 改为 crate 内可见；新增假 exec-server fixture、P21 录下的请求 fixture、exec_serve 集成测试；配置文档与运维手册各加一节；P21 规则表回填 P22 的补充，ROADMAP P22.3 与设计第 12.3 节改掉\"环境白名单\"的说法。没有 Agent 侧改动，没有部署，没有消耗额度。\n\n上一轮的范围：\nP21 这一轮：零额度实测（Linux 容器里的 exec-server + macOS 上的 Codex + 假模型），新增研究记录 docs/research/p21-codex-native-surface-2026-09-16.md，按实测改写 runtime-surfaces 第 12.2/12.3 节和 ROADMAP 的 P22.3、P22.4、P23.3、P24.1。没改代码、没碰真实 Runtime、没耗额度；实验容器和拉下来的镜像已删，OrbStack 已停回原状态。\n\n上一轮的范围：\n立 P21–P24 这一轮只改计划文档：runtime-surfaces.md 加第 12 节（原生链设计与读边界决定），ROADMAP 加四个阶段，status.json 加四个任务并认领 P21；顺带把 P20 和合并门禁记录里两处写成比实际更晚的时间戳按提交时间（012ff6e，16:05）改正。没有改代码、没有部署、没有消耗额度。\n\n上一轮的范围：\n合并只做两件事：P20 从 P18 顺延改号，status.json 与 ROADMAP 按三方版本合并；没有改任何行为。\n\nP20 真机轮只在 fodelf 上新建 9 个文件（1 个二进制 ccnm-p18-bin、6 个包装脚本、3 份配置）并在验完后全删，既有的 ccnm 二进制、config.toml、gldprobe.toml、ccnm-gldprobe 和探针目录一律没动；没起官方 Agent、没耗额度。同轮按真机发现补了协议 11.2 和排错手册各一段退出码限制说明（只加已知限制，不改行为，四项相关门禁已复跑）。\n\nP20 只改怎么把结论讲给人听：`Audit::refusal` 带上「在拒什么」，加两条回归测试，改 troubleshooting 与 production-safety 两处文档。audit 判定、finding 分类、豁免规则、doctor 输出、协议 schema 与 fixture 一律没动，退出码 33 与 CCNM_E_POLICY 不变；exec 那条路径措辞一个字没改。没有真机部署，没有消耗额度。\n\nP19 只把 description 纳入同一道检查、给测试改名、同步四处引用。不改工具行为、参数、说明文字本身和 ccnm.workspace-mcp 版本；annotations 不纳入；每个参数内部的类型和上下界仍不比。没有真机、没有部署、没有消耗额度。上一轮（P18 与更早）的范围见 next_action 附的原文。",
+    "next_action": "**2026-09-22 13:30 P46 完成：受管会话默认开 WebSearch，其他 Agent 功能按工作区开（v3 计划第 5 节第 6 步的离线部分）。**用户定了默认值，工作区字段 agent_tools（web_search 默认开，web_fetch / subagents / tasks 可选，[] 全关），写在 Runtime 上。代码 d021aad，零额度实测在 toexec e0b5c7d。**实测改变了设计的三处**：print 模式下没进 settings allow 的 WebSearch/WebFetch 会被自动拒绝，所以开了的都写进 allow；ToolSearch 一进 --tools 白名单 ccnm 的工具就全进延迟加载池，所以永远不写；--tools 不认的名字（TodoWrite、Task 这类旧名）被悄悄忽略，所以名字表钉在代码和测试里。**默认行为变了**：不写 agent_tools 的远端会话现在多出搜索；要回到原样写 agent_tools = []。**没做的**：真实模型一次没跑（模型会不会用搜索、子代理真实开销）；Codex 不写 model 时 web_search 开了也不见效，原因没查明；Codex 子代理仍关；没推送、没发版。\n\n之前的交接：\n**2026-09-22 00:35 P45 完成：skill 的 frontmatter 照 Claude Code 的读法读（跨仓评审 X08）。**共享库 toexec-skill 0.2.0 在 toexec 仓库（f0f7548 实现、fa32646 差分证据、c8cf321 版本号 + 本地 tag toexec-skill-v0.2.0），ccnm 这边 c57f9bb。**做法**：借 Claude Code 2.1.278 自己的运行时当对照——它内嵌 Bun 1.4.3（公开版只到 1.4.2），BUN_OPTIONS=--preload 让脚本在它主程序之前跑、读完就 exit，不联网不花额度。**查出并改掉的**：disable-model-invocation: yes 原生生效、这里当没写；重复键这里先写的赢、原生后写的赢；以 ` @ * 开头的描述这里整个跳过；官方例子 argument-hint: [issue-number] 这里没提示；user-invocable 写了空值原生不进 / 菜单；另有 0.1.0 的平方级耗时（416 KB 引号不闭合 10 秒）。行为变更表见 docs/research/p45-skill-frontmatter-2026-09-22.md。**已推送（2026-09-22 09:13）**：按 toexec（含 tag toexec-skill-v0.2.0）→ ccnm → gld 的顺序推，git ls-remote 对过 tag 解引用是 c8cf321，和两个产品的 Cargo.lock 一致；三边 CI 全绿（ccnm run 35671150347，含 linux-runtime 与 msrv）。**没做的**：（gld 同日也升到 0.2.0，并补了它自己那半边的 skills 后续，见 gld RFC-0003 G2.4–G2.7，不属于 ccnm 的阶段。）真实 Host 与模型没跑；原生把目录名当 skill 标识而 ccnm 用 name，这个 P36 就有的差异不在本阶段。\n\n之前的交接：\n**2026-09-20 21:30 v0.8.0 发布了，并且 P36–P44 第一次在 Linux 上跑。**推 tag a5b6a3e，release.yml 出了四个产物（macos-universal 与 linux-x86_64 各一个 tar.gz 加 sha256）。**Linux 验证**：用那个 linux-x86_64 发布产物在 hpsrv（Debian 13 / x86_64）上、以 P12 建的专用执行身份 ccrun（uid 1002，无 sudo）跑中立客户端套件，**194 passed / 1 skipped**，核心 36 条 11.0 秒全过。记录 docs/research/linux-runtime-2026-09-20.md。**产品代码一行没改，露馅的是测试自己的两个假设**（已修，43b0c11）：mktemp -d -t 是 BSD 写法、GNU 要模板自带 6 个 X，报 too few X's 后 32 个用例一次都没起来（和 P12 那次的 date -r 同类）；另一条用例的前提\"跑测试的账号在 admin/staff 里\"在真 Runtime 上不成立，ccrun 审计本来就该放行，现在 skip 并说明。**Linux 这一轮不覆盖**：真实模型、Managed 入口（Controller 是 launchd，Linux 上不跑）、Codex 当 Host、exec_sandbox 与原生链、cargo test（那台机器没有 Rust 工具链）；rg 是 14.1.1 不是验 P37 的 15.2.0，只证明测试过得去，没逐条比对搜索语义。**hpsrv 上留了 /home/ccrun/ccnm-linux-check**（二进制在 ~ccrun/.local/bin/ccnm），下次复验不用重传；不要了就整个删。\n\n之前的交接：\n**2026-09-20 19:45 真机模型轮跑了一次，$0.57。**两台 0.8.0，fodelf 上真实 Claude Code 2.1.272 经双机 SSH 做完一个三小问的任务（20 turns / 146 s / 0 permission denials）。记录 docs/research/real-machine-p36-p44-2026-09-20.md。**换成证据的**：read_notebook（答出 cell 类型和存储输出，而 Read 被 deny）、view_image（答出三色横杠和 126 字节，图确实到了模型面前）、load_skill（跑的三步门禁和临时放的 SKILL.md 一字不差）、exec_command 的 shell（进程快照抓到 bash -c 带分号和重定向）；**P44 的收紧没有咬到真实 Host**，20 轮零 unknown field 报错。**没拿到证据的**：run_in_background——prompt 和 skill 都引导了，但 --print 模式不留 JSONL、前台 120 秒上限也容纳得下那条 81.3 秒的命令，所以看不出用没用；下次要开 CCNM_LOG=debug 或换交互模式。**顺手撞出的真问题**：Runtime 这台机器 PATH 里挂着不存在的 ~/.cargo/bin，模型第一次跑 cargo 拿到 exit 127，这种失败快得像秒过、容易被当成通过；修法是在 Runtime 上跑 rustup default stable，本轮没动环境。**临时夹具已删**（tests/fixtures/realmachine-probe 与 .claude/skills/run-gates）。\n\n更早的交接（P13–P41 各轮）已于 2026-09-20 清理，P44 那一轮与 2026-09-20 19:20 装机那一轮 2026-09-22 按四轮的规矩删掉：这个字段当时堆了 52 段、5.2 万字符，其中 P13–P28 那一批还因为并行分支合并被粘了两遍。每个阶段的正式记录在本文件的 evidence 和 docs/research/ 下，原文在 git 历史里。**本字段只保留最近四轮**，再往前的不要往回补。",
+    "scope": "P46 这一轮：config.rs 的 AgentTool/AgentTools 与 workspace 字段、runtime.rs / protocol/run.rs / session.rs 的 agent_tools 字段、provider/claude/policy.rs 的 --tools 与 allow/deny、provider/codex/mod.rs 的 web_search，加对应测试；配置说明、支持矩阵、排错手册、协议文档 alwaysLoad 一节、ROADMAP、研究记录。toexec：evidence/v3-parity/agent-surface/。没有加依赖，没有耗额度，没有推送。\n\n上一轮的范围：\nP44 这一轮：三个写/执行工具及其嵌套结构的 deny_unknown_fields 与超界拒绝、只读工具的忽略提示、两份 tools-list fixture、协议与三处文档；不碰 gld，不改错误码。\n\n上一轮的范围：\nP43 这一轮：mcp/jobs.rs 的 stop_all 返回值、mcp/write_guard.rs 的放弃状态与诊断、mcp/server.rs 的退出路径，加对应测试与四处文档；不碰 gld，不改冻结契约的错误码。\n\n上一轮的范围：\nP42 这一轮：只加协议文档的生命周期一节、研究记录、回归测试和三处文档指向；不改任何运行行为，不碰 gld 仓库。\n\n更早各轮的范围在 git 历史里。",
     "planning_validation": {
       "at": "2026-09-08T21:22:43+09:00",
       "commands": [
@@ -2452,15 +2486,15 @@
       "limits": "本轮离线门禁；fodelf SSH 建连失败，没有新增远端资源或运行真实模型，不替代 P3.5。"
     },
     "planning_validation_latest": {
-      "at": "2026-09-20T17:20:00+09:00",
+      "at": "2026-09-22T13:31:11+09:00",
       "commands": [
-        "macOS 26.6.2 arm64，rustc 1.98.0：cargo fmt --all --check 通过；cargo clippy --workspace --all-targets -- -D warnings 通过",
-        "cargo test --workspace：890 passed / 0 failed；--test-threads=64 同样 890 passed / 0 failed",
-        "PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests：194 passed（中立 MCP 客户端 36 条）",
+        "macOS arm64，rustc 1.98.0：cargo fmt --all --check 通过；cargo clippy --workspace --all-targets -- -D warnings 通过",
+        "cargo test --workspace：898 passed / 0 failed",
+        "python3 -m unittest discover -s tests：194 passed",
         "cargo +1.89 check --workspace --all-targets --locked：通过",
         "python3 scripts/check_plan.py、python3 scripts/check_protocol.py（38 + 29 个 fixture）、git diff --check 通过"
       ],
-      "limits": "本机离线门禁；没上真机、没跑模型回合、没换任何机器上的二进制。**最要紧的没验项**：真实 Host（Claude Code / Codex）会不会给工具塞多余字段——没额度没登录，所以 P44 这条收紧对真实会话的影响是推理不是证据。理论上它们按 inputSchema 生成参数，而 schema 现在明说不收。"
+      "limits": "本机离线门禁加零额度实测；没上真机、没跑模型回合、没换任何机器上的二进制。**最要紧的没验项**：真实模型拿到 WebSearch 之后会不会用、用了对任务有没有帮助；Codex 在 CLI 默认模型下 web_search 不见效。"
     },
     "inherited_changes": [],
     "authorization": "P24 真机轮（2026-09-16）：用户同意授权清单 A0–A9（docs/plan/p24-native-real-machine-session.md 第四节），明确 root 步骤由本会话执行、完成后清理并同步文档。实际执行：A0 查登录；A1 本机一次性密钥 + hpsrv root 追加公钥（已撤）；A2 hpsrv 装 bubblewrap（保留，清单 /var/lib/ccnm-p24-20260916）；A3/A4 ccrun 名下 Codex 0.154.0 与 ccnm 7ae2d4b（保留）；A5 ccrun 配置与测试项目（已删）；A6/A7 本机 P24 构建、Agent 配置、临时 Controller（已删/已卸）；A8 模型 3 次（上限 5）；A9 nftables 单连接黑洞 5 次（每次 60 秒自动删除，已核无残留）。授权不含：fodelf 任何变更、本机已装 ccnm/config.toml/LaunchAgent/sshd、hpsrv sshd 与持久防火墙、tag/release。\n\n之前的授权记录：\nP12 真机轮已由用户授权并执行完毕（2026-09-11），三问三答：hpsrv 上按计划全做（建专用账号 ccrun、系统级装 gcc/libc6-dev/make/ripgrep、以 ccrun 身份装 rustup 与 Node）；花订阅额度做真实 Claude Code 那一腿；轮后**保留账号与工具链**、删一次性资源。特权命令由本会话经 root ssh 执行（该机 root 登录用的是用户自己的 key），没有要用户输密码。授权明确不含：改 ACL/防火墙/Tailscale 策略、动 bing 或 git 账号的任何东西、push/tag/release。保留物的撤销脚本仍在：scripts/p12-provision-linux-runtime.sh --revert（账号 + 按清单 purge 的 36 个包）、scripts/p12-runtime-toolchain.sh --revert（rustup/Node/PATH 块）；root 清单 /var/lib/ccnm-p12-20260911 为此保留。历史授权记录（P3/P7/P11 各轮）见 Git 历史；P11 那两条 macOS 的 sudo 授予（ccrun 的本轮公钥、临时进 com.apple.access_ssh）**仍未撤销**，要用户 sudo 跑对应的 --revert。 【2026-09-11 发布前收口复核】P11 那两条 macOS 临时授予**已经不在了**，只读证据：`dsmemberutil checkmembership -U ccrun -G com.apple.access_ssh` 和 `dseditgroup -o checkmember` 都说不是成员，该组 GroupMembership 键不存在（没有直接成员）；p11 那把公钥的清单目录 /var/db/ccnm-p11-local-20260911 不存在，而 --revert 的最后一步就是 rmdir 它。还留着的 /var/db/ccnm-p7-local-20260910 是更早 P7 轮的清单目录（root 0700），不是这两条要撤的东西，里面还有什么只有 sudo 看得到。要逐条确认，由用户在自己的终端跑两条只读命令：`sudo scripts/p11-authorize-local-runtime.sh --check` 和 `sudo scripts/p7-grant-local-ssh-access.sh --check`（两个脚本都要求 SUDO_USER 是 bing，--check 只读）。本会话没有也不会执行 sudo。",

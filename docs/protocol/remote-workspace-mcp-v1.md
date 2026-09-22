@@ -128,7 +128,7 @@ Claude Code 的 `mcpServers` 形状：
 
 **代价**：Claude Code 会把带 `alwaysLoad` 的 server 排进「首轮请求前必须连上」的那一组。bridge 要 ssh 到 Runtime，正常是几百毫秒（doctor 记录 555–581 ms）；**Runtime 睡着或网络不通时，你的 Claude Code 启动会卡在这里**，而不是先跑起来再说工具不可用。想避开就删掉这一行，功能不受影响，只是回到延迟加载。
 
-Managed 路径（`ccnm` 自己启动的 Claude Code 会话）不需要也没有这个设置：那条路传 `--tools ""`，`ToolSearch` 本身就不可用，七个工具一直是全量加载的。
+Managed 路径（`ccnm` 自己启动的 Claude Code 会话）不需要也没有这个设置：那条路的 `--tools` 只列 workspace 开了的几个 Agent 功能（P46 起默认是 `WebSearch`，之前是空），`ToolSearch` 永远不在里面，所以本身就不可用，ccnm 的工具一直是全量加载的。P46 实测过：把 `ToolSearch` 加进 `--tools`，ccnm 的工具就全进了延迟加载池。
 
 ### 3.4 stdio 的硬规矩
 

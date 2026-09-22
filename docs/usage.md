@@ -332,7 +332,8 @@ stop_command
 - `load_skill` 把项目自带的 skills 交给模型，见下一节；
 - `view_image` 把 Runtime 上的 PNG、JPEG、GIF、WebP 图片交给模型看（单个文件最多 3932160 字节，太大时报错并给出缩小的命令）；图片原样发出，Claude Code 会自己缩放。受管 Codex 会话里模型要在脚本里调 `image()` 才看得到图，规则见[协议第 5.3 节](protocol/remote-workspace-mcp-v1.md#53-view_image看-workspace-里的图片p39-新增)；
 - Claude 使用项目根 `CLAUDE.md` 上下文；Codex 使用根目录 `AGENTS.override.md`/`AGENTS.md` 的已测优先级；
-- remote session 使用对应 Provider 的已测工具策略，让项目访问统一走 Runtime Node。
+- remote session 使用对应 Provider 的已测工具策略，让项目访问统一走 Runtime Node；
+- 受管会话里模型还能**搜网页**（Claude 的 `WebSearch`、Codex 的 `web_search`，默认开）；抓网页、子代理、待办清单要 workspace 自己开，关掉搜索写 `agent_tools = []`。这些都不碰 Agent 本机的磁盘，Agent 自带的文件和 shell 工具一直关着，见[配置说明](configuration.md#agent_tools)。
 
 **传错参数会怎样**：`exec_command`、`apply_patch`、`stop_command` 不接受它们没声明的字段，连 `files[]` 里的每一项也一样——拒绝发生在命令跑起来、补丁落盘之前，结果里会列出它认识的字段名。只读那几个照常回答，只在末尾加一行说忽略了什么。`timeout_ms`、`preview_bytes` 超上限是拒不是钳（要跑更久用 `run_in_background`）。规则见[协议第 5.6 节](protocol/remote-workspace-mcp-v1.md#56-参数怎么验有副作用的拒绝只读的说一声p44-新增)。
 

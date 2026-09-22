@@ -419,7 +419,7 @@ claude_permission_mode = "bypassPermissions"
 Error: No such tool available: mcp__ccnm__read_file. Its MCP server 'ccnm' has disconnected.
 ```
 
-而且**连 `Read`/`Bash` 都没有**——受管会话本来就是用 `claude --tools ''` 起的，项目文件只能走 Runtime，MCP 一没就什么都不剩。
+而且**连 `Read`/`Bash` 都没有**——受管会话的 `--tools` 本来就只列 workspace 开的那几个 Agent 功能（默认只有 `WebSearch`，见 [`agent_tools`](configuration.md#agent_tools)），项目文件只能走 Runtime，MCP 一没就只剩搜索这类不碰项目的功能。
 
 **其实是**：Claude Code 的"后台"会把会话 **fork 成第二个进程**，那个进程照抄 ccnm 写的 `mcp.json`，于是**又去 Runtime 起了一个 MCP server**。同一棵工作树只允许一个写者，Runtime 当场拒了：
 

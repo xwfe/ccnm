@@ -38,9 +38,9 @@ ccnm 不需要安装 Orchestrator 也能独立使用。Orchestrator 核心不链
 
 ## 二、顺序和基线
 
-`P0 → P1 → P2 → P3 → P4 → P5 → P6 → P7 → P8 → P9 → P10 → P11 → P12 → P13 → P14 → P15 → P16 → P17 → P18 → P19 → P20 → P21 → P22 → P23 → P24 → P25 → P26 → P27 → P28 → P29 → P30 → P31 → P32 → P33 → P34 → P35 → P36 → P37 → P38 → P39 → P40 → P41 → P42 → P43 → P44 → P45 → P46`。默认每轮只执行一个阶段。P0–P8 是 ccnm v1 收口和独立 Orchestrator 的接口交接；P9–P12 是 ccnm v1.x 的 Remote Workspace MCP 扩展；P13 是按真实 Host 行为修正两个入口共用的 instructions 投影；P21–P24 是 Codex 原生执行链；P25 修 P24 真机轮发现的预检错误码；P26 补原生链在 Runtime 侧的探活；P27 让 doctor 也探这条链；P28 让 CI 在声明的 rust-version 上编译一遍；P29 补测原生链的并发、在途请求与资源上限，P30 修它查出的 fs helper 活过放锁；P31 给 Runtime 保留输出加会话总量上限、结束即删和过期清理；P32 封存原生链（用户决定）；P33 把沙箱那项收益搬到两个入口共用的 `exec_command` 上；P34 修 `apply_patch` 日志锁探测靠关文件放锁、fork 窗口里漏拦的缺陷；P35 让测试建的临时目录跑完就删（纯测试代码）；P36–P41 是"工具面对齐原生能力"那条线（跨仓方案在 toexec 的 v3 计划）：P36 项目自带的 skills、P37 搜索模式与整文件覆盖与一行 shell、P38 让搜索的 glob 不越过 `.gitignore`、P39 view_image、P40 notebook 按 cell 读写、P41 后台命令；P42–P44 是跨仓重构评审 X04–X06 的三条收口：P42 后台命令的生命周期契约、P43 停不掉的命令不交出写权、P44 服务端自己验输入。P45 让 skill 的 frontmatter 读法对齐宿主（评审 X08）；P46 给受管会话的 Agent 自带功能加开关（v3 计划第 5 节第 6 步的离线部分）。完整边界见 [双执行入口方案](runtime-surfaces.md)。
+`P0 → P1 → P2 → P3 → P4 → P5 → P6 → P7 → P8 → P9 → P10 → P11 → P12 → P13 → P14 → P15 → P16 → P17 → P18 → P19 → P20 → P21 → P22 → P23 → P24 → P25 → P26 → P27 → P28 → P29 → P30 → P31 → P32 → P33 → P34 → P35 → P36 → P37 → P38 → P39 → P40 → P41 → P42 → P43 → P44 → P45 → P46 → P47`。默认每轮只执行一个阶段。P0–P8 是 ccnm v1 收口和独立 Orchestrator 的接口交接；P9–P12 是 ccnm v1.x 的 Remote Workspace MCP 扩展；P13 是按真实 Host 行为修正两个入口共用的 instructions 投影；P21–P24 是 Codex 原生执行链；P25 修 P24 真机轮发现的预检错误码；P26 补原生链在 Runtime 侧的探活；P27 让 doctor 也探这条链；P28 让 CI 在声明的 rust-version 上编译一遍；P29 补测原生链的并发、在途请求与资源上限，P30 修它查出的 fs helper 活过放锁；P31 给 Runtime 保留输出加会话总量上限、结束即删和过期清理；P32 封存原生链（用户决定）；P33 把沙箱那项收益搬到两个入口共用的 `exec_command` 上；P34 修 `apply_patch` 日志锁探测靠关文件放锁、fork 窗口里漏拦的缺陷；P35 让测试建的临时目录跑完就删（纯测试代码）；P36–P41 是"工具面对齐原生能力"那条线（跨仓方案在 toexec 的 v3 计划）：P36 项目自带的 skills、P37 搜索模式与整文件覆盖与一行 shell、P38 让搜索的 glob 不越过 `.gitignore`、P39 view_image、P40 notebook 按 cell 读写、P41 后台命令；P42–P44 是跨仓重构评审 X04–X06 的三条收口：P42 后台命令的生命周期契约、P43 停不掉的命令不交出写权、P44 服务端自己验输入。P45 让 skill 的 frontmatter 读法对齐宿主（评审 X08）；P46 给受管会话的 Agent 自带功能加开关（v3 计划第 5 节第 6 步的离线部分）。P47 按执行账号的 `~/.agents/mcp.json` 再按名字关掉工具、给项目 skill 分四档（跨仓 toexec RFC-0001，gld 读同一个文件）。完整边界见 [双执行入口方案](runtime-surfaces.md)。
 
-**P46 之后没有已排期的阶段。**v3 计划第 5 节第 6 步卡着的那个决定用户 2026-09-22 定了（默认开 WebSearch，其他做开关），P46 做完了不花额度的部分。剩下的是真实模型轮（模型会不会用搜索、子代理的真实开销）和第 7 步的对照实验，都要模型额度，要单独授权。
+**P47 之后没有已排期的阶段。**v3 计划第 5 节第 6 步卡着的那个决定用户 2026-09-22 定了（默认开 WebSearch，其他做开关），P46 做完了不花额度的部分。剩下的是真实模型轮（模型会不会用搜索、子代理的真实开销）和第 7 步的对照实验，都要模型额度，要单独授权。
 
 ### P0 — 已有内部验证基线
 
@@ -722,3 +722,17 @@ ccnm 这一轮只定权威语义、补自己这边的证据。租约展示与状
 - **P46.5** 配置说明、支持矩阵、排错手册、协议文档里 Managed 路径那句跟着改。门禁同 P37.6。
 
 停止点：不跑真实模型；不做计划模式和"问用户"（print 模式下不存在）；Codex 的子代理不开（没量过它会不会继承关掉的 feature）；不碰 gld（它是外部客户端，自带自己的工具）；不发版。
+
+### P47 — 按执行账号的 `~/.agents/mcp.json` 收窄工具和 skills
+
+**依赖 P46。跨仓 toexec RFC-0001，解析在共享库 `toexec-agents` 0.1.0（toexec `3c1b478`，本地 tag `toexec-agents-v0.1.0`）。用户 2026-09-22 定："对于 gld、ccnm、toexec，考虑实现从 `~/.agents/mcp.json`、从 `~/.agents` 支持细粒度管理 MCP/skills 工具的暴露"，并在三层里只选了第一层（自身暴露策略；不聚合别的 server、不让受管会话接别的 server）。** 记录在 [P47 记录](../research/p47-agents-exposure-2026-09-22.md)。
+
+为什么要做：ccnm 的 11 个工具和项目 skills 没有任何按名字的开关，gld 也只有粗粒度的 tool-profile。格式不自造：外壳是通用的 `mcpServers`，工具开关照 Codex 的 `enabled_tools` / `disabled_tools`，skill 四档照 Claude Code 2.1.278 的 `skillOverrides`。
+
+- **P47.1** 依赖 `toexec-agents` 0.1.0；`Server::new` 读执行账号 HOME 下的文件，写坏时会话打不开（`CCNM_E_CONFIG`，带位置），不退回不收窄。
+- **P47.2** 工具：`offers()` 再问一次文件，手写 `call_tool` 在进路由前拒被关的工具（`CCNM_E_POLICY`，写明规则）。只收窄，`external_mcp` 的上限不变。
+- **P47.3** skills：`discover_for` 按档收窄，目录、列表、`load_skill`、prompts 一处取；`on` 放不开 frontmatter 的 `disable-model-invocation`。
+- **P47.4** 诊断：`workspace_info` 文本里列出关掉的和写错的（不加结构化字段）；doctor 的 Runtime 一半加"暴露规则"，执行账号不是当前账号时跳过并说去哪看。
+- **P47.5** 配置说明、协议文档（页首 + 第 4.3 节末尾：同 `read` 模式一类的收窄，不升 `/2`）、使用说明、支持矩阵、排错手册两条。门禁同 P37.6。
+
+停止点：不发现执行账号的 `~/.agents/skills`；不读 `mcpServers` 里别的条目、不启动也不代理别的 server；不按项目区分规则；不改 Agent 一侧的放行清单；不碰真实 Host；不发版。

@@ -412,6 +412,40 @@ external_instructions = "generic"   # generic（默认）| project | none
 - `project`：再加上项目自己的说明文件。Runtime 按固定顺序找 `AGENTS.md` → `CLAUDE.md`，取第一个存在的——外部客户端的 provider 无从得知，也不能靠它自称的名字去猜。整段握手按 Claude Code 的上限 2048 个 UTF-16 码元投影，ccnm 自己的说明和模式句约占 850，项目文件大约能放 1200 个字符（中英文都按字符数算），放不下的部分按行截掉，模型会被告知用 `read_file` 读全文。
 - `none`：什么都不给。
 
+## `~/.agents/mcp.json`：再关掉一些工具和 skills
+
+不在 config.toml 里，是另一个文件，gld 也读它（格式和四档的来历见 toexec 的 [RFC-0001](https://github.com/xwfe/toexec/blob/main/docs/rfc/0001-agents-exposure-policy.md)）。在 **Runtime 上、工具执行账号的 HOME 下**写：
+
+```json
+{
+  "mcpServers": {
+    "ccnm": {
+      "disabledTools": ["view_image"],
+      "skillOverrides": { "deploy": "user-invocable-only" }
+    }
+  },
+  "skillOverrides": { "scratch": "off", "style-guide": "name-only" }
+}
+```
+
+- `mcpServers.ccnm.enabledTools`：只给这几个工具；`disabledTools`：这几个不给。两个都写时先取白名单再去掉黑名单。工具名见 [使用说明](usage.md#当前模型能做什么)。
+- `skillOverrides`：项目 skill 按名字给一档。`on`（默认）；`name-only` 目录里只有名字；`user-invocable-only` 模型看不到、调 `load_skill` 被拒，用户还能用 `/mcp__ccnm__<名字>` 启动（等于 frontmatter 写了 `disable-model-invocation: true`）；`off` 哪里都没有，按名字找报"没有这个 skill"。顶层的对 gld 也生效，写在 `mcpServers.ccnm` 里的只管 ccnm、并且盖过顶层。
+
+**只收窄**：`external_mcp = "read"` 本来就不给的工具，这里写 `enabledTools` 也不会给；skill 作者写了 `disable-model-invocation` 的，这里写 `"on"` 也放不开。
+
+**读的是谁的 HOME**：`ccnm internal mcp-serve` 以执行账号的身份跑（`nodes.<runtime>.runtime_user`，比如 `ccrun`），读的是那个账号的 `~/.agents/mcp.json`。单账号的机器上就是你自己的。每个会话打开时读一次：**改完下一个会话生效**，正在跑的会话不变。
+
+**它不是对模型的约束**：执行账号能写自己的 HOME，所以开着 `exec_command` 的会话里，模型能改这个文件、影响下一个会话——和它能改 `~/.config/ccnm/config.toml` 一样。要真正拦住模型，用 `external_mcp` 和执行门（[生产安全](production-safety.md)）。这个文件是用来让会话的工具面小一点的。
+
+**写错会怎样**：
+
+- 文件不存在：什么都不收窄。
+- JSON 写坏、字段类型不对、档位拼错：**会话打不开**，报 `CCNM_E_CONFIG`，指出是哪一处（`~/.agents/mcp.json: mcpServers.ccnm.disabledTools: expected an array of tool names`）。不退回"不收窄"，那等于把想关的又打开了。
+- 工具名写错（`exec_comand`）：会话照常，但写错的那个工具**还开着**。`ccnm doctor` 的"暴露规则"一行报失败；`workspace_info` 的结果里也会列出"不是这里的工具名"。
+- 被关掉的工具，模型按名字硬调时拿到 `CCNM_E_POLICY`，写明是 `mcpServers.ccnm.disabledTools`（或不在 `enabledTools` 里）关的。
+
+`ccnm doctor` 的"暴露规则"那行只在敲命令的就是执行账号（或没配 `runtime_user`）时才读文件；否则跳过，并提示用执行账号跑 doctor，或者在会话里调一次 `workspace_info`。
+
 ## `[ui]`
 
 这台机器怎么跟坐在它前面的人说话。纯本地、纯显示，底下一个字都不会跨到对面那台去。

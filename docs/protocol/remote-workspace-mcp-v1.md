@@ -13,6 +13,7 @@
 > 2026-09-20（P43）**修了一处写权会被错误交出的缺口**：会话结束时如果有命令停不掉（离开了进程组、又攥着管道，信号够不着），写入互斥不再被标成可用——下一个会话被拒，并看到还剩哪些 `output_ref`（第 7 节）。错误码没变，仍是 `CCNM_E_POLICY`；变的是**什么时候放锁**，而之前那种情况下放锁等于让两个写者同时改一棵树，本就违反第 4.4 节。锁标记里同时开始记 pid，只为让诊断说得准，不改变任何判定。同一节还写明了一条一直存在、此前一个字都没写过的边界：这把锁只在一个 state 目录内有效。
 > 2026-09-20（P44）**服务端自己验参数，有副作用的三个工具收紧了**：`exec_command`、`apply_patch`、`stop_command`（连同 `files[]` 里的嵌套结构）不再接受它们没声明的字段，超上限的 `timeout_ms` / `preview_bytes` 也从"悄悄钳到上限"改成拒绝；只读那七个照旧接受，但结果里写明忽略了什么（第 5.6 节）。**这是收紧，不是加法。**它同时修好一处声明与实现不一致：`tools/list` 里以前一个 `additionalProperties` 都没有，等于声明"随便加字段"，现在每个工具都说实话。**不升 `/2` 的理由**：`/1` 从没承诺过"未知字段会被忽略"，而按 schema 生成参数的客户端一个都不受影响——schema 现在就是服务端执行的那套；拒绝发生在执行之前，是 `isError` 工具结果，不作废句柄也不改错误码。
 > 2026-09-22（P45）**skill 的 frontmatter 改成照 Claude Code 2.1.278 的读法读**（共享库 `toexec-skill` 0.2.0），工具、参数、错误码都没变，变的是同一个 SKILL.md 读出来的结果：以 `` ` `` `@` `*` 开头的描述不再让 skill 被跳过，`argument-hint: [filename] [format]` 和 `[issue-number]` 的提示不再丢；`disable-model-invocation: yes` / `on` / `1` 现在生效；写了 `user-invocable` 却不是 true（空值、认不出的字）现在不登记成 prompt；同一个键写两遍后写的赢。宿主会整段丢弃的 frontmatter、重复的键，`load_skill` 的返回开头各多一行说明。见第 5.1 节。
+> 2026-09-22（P47）**Runtime 可以再收窄工具和 skills**：执行账号 HOME 下的 `~/.agents/mcp.json`（gld 读同一个文件，格式见 toexec 的 RFC-0001）能关掉任意工具、给项目 skill 分四档。不写这个文件时一切和以前逐字节相同；写了，`tools/list` 少掉被关的工具，按名字硬调被关的工具拿到 `CCNM_E_POLICY` 的 `isError` 结果。这和第 4.3 节 `read` 模式少给工具是同一类事——由 Runtime 的配置决定给哪些——**不改任何工具的名字、参数或语义，不升 `/2`**。见第 4.3 节末尾。
 
 面向的读者是**已经在本机跑着 Claude Code / Codex / 别的 MCP Host，但项目在另一台机器上的人**。它给你的不是一条裸 SSH 通道，而是一个绑定了 workspace 的远程项目工具集。
 
@@ -194,6 +195,8 @@ external_mcp = "read"      # disabled | read | coding
 `stop_command`（P41）同理：read 模式起不了命令，也就没有可停的。
 
 > 这比 ROADMAP P9.2 的下限（"read 模式没有 `apply_patch` 和 `exec_command`"）更窄。窄的那一格是 `read_output`，理由如上。
+
+**Runtime 还能在这张表上再关掉一些**（P47）：执行账号的 `~/.agents/mcp.json` 里 `mcpServers.ccnm.enabledTools` / `disabledTools`。只收窄——上表是 ❌ 的，写进 `enabledTools` 也不会给。客户端看到的就是少了几个工具；缓存了旧表、仍按名字调的，拿到 `CCNM_E_POLICY` 的 `isError` 结果，文字写明是哪条规则关的。文件写坏时会话打不开（`CCNM_E_CONFIG`），不会退回"不收窄"。写法见[配置说明](../configuration.md#agentsmcpjson再关掉一些工具和-skills)。
 
 ### 4.4 写入互斥：只有 coding 抢
 

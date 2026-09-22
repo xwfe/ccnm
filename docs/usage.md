@@ -332,7 +332,7 @@ stop_command
 - `load_skill` 把项目自带的 skills 交给模型，见下一节；
 - `view_image` 把 Runtime 上的 PNG、JPEG、GIF、WebP 图片交给模型看（单个文件最多 3932160 字节，太大时报错并给出缩小的命令）；图片原样发出，Claude Code 会自己缩放。受管 Codex 会话里模型要在脚本里调 `image()` 才看得到图，规则见[协议第 5.3 节](protocol/remote-workspace-mcp-v1.md#53-view_image看-workspace-里的图片p39-新增)；
 - Claude 使用项目根 `CLAUDE.md` 上下文；Codex 使用根目录 `AGENTS.override.md`/`AGENTS.md` 的已测优先级；
-- remote session 使用对应 Provider 的已测工具策略，让项目访问统一走 Runtime Node；
+- remote session 使用对应 Provider 的已测工具策略，让项目访问统一走 Runtime Node；Runtime 可以用执行账号的 `~/.agents/mcp.json` 再按名字关掉上面任意几个工具（[配置说明](configuration.md#agentsmcpjson再关掉一些工具和-skills)）；
 - 受管会话里模型还能**搜网页**（Claude 的 `WebSearch`、Codex 的 `web_search`，默认开）；抓网页、子代理、待办清单要 workspace 自己开，关掉搜索写 `agent_tools = []`。这些都不碰 Agent 本机的磁盘，Agent 自带的文件和 shell 工具一直关着，见[配置说明](configuration.md#agent_tools)。
 
 **传错参数会怎样**：`exec_command`、`apply_patch`、`stop_command` 不接受它们没声明的字段，连 `files[]` 里的每一项也一样——拒绝发生在命令跑起来、补丁落盘之前，结果里会列出它认识的字段名。只读那几个照常回答，只在末尾加一行说忽略了什么。`timeout_ms`、`preview_bytes` 超上限是拒不是钳（要跑更久用 `run_in_background`）。规则见[协议第 5.6 节](protocol/remote-workspace-mcp-v1.md#56-参数怎么验有副作用的拒绝只读的说一声p44-新增)。
@@ -354,6 +354,8 @@ stop_command
 - SKILL.md 里的 `` !`命令` ``（官方 CLI 会在加载 skill 时先执行它、把输出填进正文）**不自动执行**。模型会看到一份清单，需要就自己用 `exec_command` 跑。一次"读 skill"不该变成一次"执行仓库指定的命令"。
 - frontmatter 里的 `allowed-tools`、`hooks`、`model` 等**不起作用**，模型加载时会被告知。
 - 只找项目里的。Runtime 执行账号 HOME 下的用户级 skills 不读。
+
+**不想让模型看到某个 skill**：在 Runtime 执行账号的 `~/.agents/mcp.json` 里按名字给它一档——`name-only` 只列名字、`user-invocable-only` 只给人用 `/` 启动、`off` 哪里都没有。工具也能按名字关。写法和写错会怎样见[配置说明](configuration.md#agentsmcpjson再关掉一些工具和-skills)。被关掉的 skill 不会出现在下面说的 `Not offered` 里：那一段是给"写了却没生效"的，而这个是你有意藏的。
 
 **写了 skill 但模型没用上，先这样查**：让模型（或你自己接一个 MCP 客户端）不带名字调一次 `load_skill`。返回的列表末尾有一段 `Not offered`，写着每个没被收进来的文件和原因——最常见的是 frontmatter 写错了（会说第几行）、没有 `description`、两个文件重名，以及 skills 目录是一个指到项目外面的 symlink（读路径出不了项目根，这条和 `read_file` 是同一个规矩）。另外，目录是会话开始时定下来的：会话中途新加的 skill 可以按名字加载，但要到下一个会话才出现在工具说明里。
 

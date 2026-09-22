@@ -242,9 +242,11 @@ pub fn report(
 ///   gets the same set as its parent. Simpler and stronger than naming
 ///   the tools to deny, which is why that list is only the second lock
 ///   (in settings.json), not the first.
-/// - `--strict-mcp-config` keeps out every other MCP server, including the
-///   ones the user's enabled plugins would bring. Measured on a machine
-///   with eight plugins enabled: none appeared.
+/// - `--strict-mcp-config` keeps out every MCP server `mcp.json` does not
+///   name, including the ones the user's enabled plugins would bring.
+///   Measured on a machine with eight plugins enabled: none appeared. It
+///   names ccnm's, and since P48 the Agent's own installed-skills server
+///   (`ccnm_agent`) unless this machine's `[machine_skills]` is off.
 /// - `--settings <file>` carries the allow-list; without it every MCP call
 ///   would want a permission prompt, and in print mode nobody answers.
 /// - `--permission-prompts none` turns any prompt that would still happen
@@ -519,7 +521,7 @@ mod tests {
                 .collect()
         };
         let chosen = AgentTools::of(&[AgentTool::WebSearch, AgentTool::Tasks]);
-        let s = settings(true, &chosen);
+        let s = settings(true, &chosen, false);
         let (allow, deny) = (list(&s, "allow"), list(&s, "deny"));
         assert_eq!(
             allow[crate::session::MCP_TOOLS.len()..],
@@ -538,7 +540,7 @@ mod tests {
         );
         // A colocated session keeps Claude's own settings untouched.
         assert_eq!(
-            settings(false, &chosen),
+            settings(false, &chosen, false),
             serde_json::json!({ "permissions": {} })
         );
     }

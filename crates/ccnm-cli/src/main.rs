@@ -302,6 +302,13 @@ enum InternalCommand {
         #[arg(long)]
         payload: String,
     },
+    /// Serve this Agent Node's installed skills on stdin/stdout, for the
+    /// Claude Code or Codex of one remote session (P48). Started by them,
+    /// on this machine, not over ssh
+    AgentSkills {
+        #[arg(long)]
+        payload: String,
+    },
     /// Run `codex exec-server` for a managed Codex session, filtering every
     /// request through the Runtime's rule table (P22)
     ExecServe {
@@ -1142,6 +1149,10 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
                 // and a build reaching the wrong verb fails on the name.
                 let req: session::transport::Request = payload::decode(payload)?;
                 session::transport::exec_native(&req)?;
+                Ok(0)
+            }
+            InternalCommand::AgentSkills { payload } => {
+                mcp::agent_skills::serve(&ccnm_core::protocol::payload::decode(payload)?)?;
                 Ok(0)
             }
             InternalCommand::McpServe { payload } => {

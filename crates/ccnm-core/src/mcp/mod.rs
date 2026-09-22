@@ -10,6 +10,7 @@
 
 use rmcp::schemars;
 
+pub mod agent_skills;
 pub mod bridge;
 pub mod context;
 pub mod exec;
@@ -17,6 +18,7 @@ pub mod glob;
 pub mod image;
 pub mod jobs;
 pub mod list;
+pub mod machine_skills;
 pub mod notebook;
 pub mod output;
 pub mod patch;

@@ -1447,7 +1447,7 @@ fn supervise_runs_the_session_and_writes_its_exit_record() {
         agent_tools: Default::default(),
     };
     let ssh = ccnm_core::ssh::Ssh::new("ccnm-home", "/tmp/ccnm-t/cli-sup").unwrap();
-    let session_dir = session::create(&dir, &spec, Some(&ssh)).unwrap();
+    let session_dir = session::create(&dir, &spec, Some(&ssh), &Default::default()).unwrap();
 
     let wire = payload::encode(&SuperviseRequest::new(
         session_dir.path().to_path_buf(),

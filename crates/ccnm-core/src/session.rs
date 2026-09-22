@@ -298,6 +298,12 @@ impl Dir {
         self.0.join("settings.json")
     }
 
+    /// How this session starts the Agent's installed-skills server
+    /// (P48); absent when it does not get one.
+    pub fn agent_skills(&self) -> PathBuf {
+        self.0.join("agent-skills.json")
+    }
+
     pub fn stdout(&self) -> PathBuf {
         self.0.join("stdout")
     }
@@ -409,7 +415,14 @@ pub fn read_context(dir: &Dir) -> Option<Context> {
 /// route tools to -- Claude works the project in front of it. Writing an
 /// MCP config there would point a transport at this same machine and take
 /// away the tools that are the only ones able to do the job.
-pub fn create(state: &Path, spec: &Spec, ssh: Option<&Ssh>) -> Result<Dir> {
+/// `machine_skills` is this (Agent) machine's own `[machine_skills]`: a
+/// remote session gets the server that offers them unless it is off.
+pub fn create(
+    state: &Path,
+    spec: &Spec,
+    ssh: Option<&Ssh>,
+    machine_skills: &crate::config::MachineSkills,
+) -> Result<Dir> {
     spec.validate_identity()?;
     if spec.agent_identity.is_some() && ssh.is_none() {
         return Err(Error::invalid_args(
@@ -439,17 +452,28 @@ pub fn create(state: &Path, spec: &Spec, ssh: Option<&Ssh>) -> Result<Dir> {
     fs::write(dir.meta(), pretty(spec)?)?;
     // MCP JSON cannot express env_remove. Both official CLIs launch this
     // Agent-local boundary, which strips credentials immediately before SSH.
+    let exe = std::env::current_exe()?;
     let transport = ssh
-        .map(|_| {
-            transport::launcher_for(
-                &dir,
-                &std::env::current_exe()?,
-                spec.agent_identity.as_ref(),
-            )
-        })
+        .map(|_| transport::launcher_for(&dir, &exe, spec.agent_identity.as_ref()))
         .transpose()?;
-    spec.provider()
-        .write_session_files(&dir, transport.as_ref(), &spec.agent_tools)?;
+    // Only a remote session: a colocated one has the natives' own skills,
+    // with the tools to use them.
+    let agent_skills = match transport {
+        Some(_) => crate::mcp::agent_skills::launcher(&exe, &spec.id, machine_skills)?,
+        None => None,
+    };
+    if let Some(cmd) = &agent_skills {
+        fs::write(
+            dir.agent_skills(),
+            pretty(&crate::mcp::agent_skills::Recorded::of(cmd))?,
+        )?;
+    }
+    spec.provider().write_session_files(
+        &dir,
+        transport.as_ref(),
+        &spec.agent_tools,
+        agent_skills.as_ref(),
+    )?;
     Ok(dir)
 }
 
@@ -479,9 +503,10 @@ pub fn mcp_config(spec: &Spec, ssh: &Ssh) -> Result<serde_json::Value> {
             "Codex injects MCP configuration through its CLI, not a Claude JSON file",
         ));
     }
-    Ok(crate::provider::claude::mcp_config(&mcp_transport(
-        spec, ssh,
-    )?))
+    Ok(crate::provider::claude::mcp_config(
+        &mcp_transport(spec, ssh)?,
+        None,
+    ))
 }
 
 fn mcp_transport(spec: &Spec, ssh: &Ssh) -> Result<process::Cmd> {
@@ -497,7 +522,7 @@ fn mcp_transport(spec: &Spec, ssh: &Ssh) -> Result<process::Cmd> {
 
 /// Compatibility helper for the current provider's session policy.
 pub fn settings(remote: bool, agent_tools: &crate::config::AgentTools) -> serde_json::Value {
-    crate::provider::claude::settings(remote, agent_tools)
+    crate::provider::claude::settings(remote, agent_tools, false)
 }
 
 /// How a session ended. Written by the supervisor as the last thing it
@@ -1018,7 +1043,7 @@ mod tests {
     #[test]
     fn create_writes_the_three_inputs_and_refuses_a_second_time() {
         let state = temp("create");
-        let dir = create(&state, &spec(), Some(&ssh())).unwrap();
+        let dir = create(&state, &spec(), Some(&ssh()), &Default::default()).unwrap();
         assert_eq!(
             dir.path(),
             state.join("sessions/0b4c7a1e-2d3f-4a5b-8c6d-7e8f9a0b1c2d")
@@ -1030,8 +1055,61 @@ mod tests {
         assert_eq!(load(&dir).unwrap(), spec());
         assert!(read_outcome(&dir).unwrap().is_none(), "nothing has run yet");
 
-        let err = create(&state, &spec(), Some(&ssh())).unwrap_err();
+        let err = create(&state, &spec(), Some(&ssh()), &Default::default()).unwrap_err();
         assert!(err.message().contains("already exists"), "{err}");
+    }
+
+    /// A remote session gets the server that offers this machine's
+    /// installed skills, allowed like ccnm's own tools, unless the machine's
+    /// `[machine_skills]` says no (P48). A colocated one never does: it has
+    /// the natives' own skills and the tools to use them.
+    #[test]
+    fn a_remote_session_gets_this_machines_installed_skills_unless_they_are_off() {
+        use crate::mcp::agent_skills;
+        let servers = |dir: &Dir| -> Vec<String> {
+            let text = fs::read_to_string(dir.mcp_config()).unwrap();
+            let doc: serde_json::Value = serde_json::from_str(&text).unwrap();
+            doc["mcpServers"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect()
+        };
+        let allowed = |dir: &Dir| -> bool {
+            fs::read_to_string(dir.settings())
+                .unwrap()
+                .contains(agent_skills::TOOL_PERMISSION)
+        };
+
+        let on = temp("skills-on");
+        let dir = create(&on, &spec(), Some(&ssh()), &Default::default()).unwrap();
+        assert_eq!(servers(&dir), ["ccnm", "ccnm_agent"]);
+        assert!(allowed(&dir));
+        let recorded = agent_skills::Recorded::read(&dir.agent_skills())
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            recorded.args[..3],
+            ["internal", "agent-skills", "--payload"]
+        );
+
+        let off = temp("skills-off");
+        let config = crate::config::MachineSkills {
+            enabled: false,
+            ..Default::default()
+        };
+        let dir = create(&off, &spec(), Some(&ssh()), &config).unwrap();
+        assert_eq!(servers(&dir), ["ccnm"]);
+        assert!(!allowed(&dir));
+        assert!(!dir.agent_skills().exists());
+
+        let colocated = temp("skills-colocated");
+        let mut spec = spec();
+        spec.runtime = None;
+        let dir = create(&colocated, &spec, None, &Default::default()).unwrap();
+        assert!(!dir.agent_skills().exists());
+        assert!(!dir.mcp_config().exists());
     }
 
     #[test]
@@ -1104,7 +1182,7 @@ mod tests {
     #[test]
     fn supervise_runs_claude_and_records_the_outcome() {
         let state = temp("supervise");
-        let dir = create(&state, &spec(), Some(&ssh())).unwrap();
+        let dir = create(&state, &spec(), Some(&ssh()), &Default::default()).unwrap();
         let fake = state.join("claude");
         fs::write(
             &fake,
@@ -1139,7 +1217,7 @@ mod tests {
     #[test]
     fn supervise_still_leaves_an_exit_record_when_claude_cannot_start() {
         let state = temp("supervise-missing");
-        let dir = create(&state, &spec(), Some(&ssh())).unwrap();
+        let dir = create(&state, &spec(), Some(&ssh()), &Default::default()).unwrap();
         let req = SuperviseRequest::new(dir.path().to_path_buf(), state.join("no-such-claude"));
         assert!(
             supervise(&req).is_ok(),

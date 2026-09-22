@@ -72,7 +72,7 @@ fn claude_mcp_launch_plan_and_shared_exec_environment_boundary() {
     std::fs::write(dir.meta(), serde_json::to_vec(&spec).unwrap()).unwrap();
     let launcher =
         session::transport::launcher(&dir, Path::new(env!("CARGO_BIN_EXE_ccnm"))).unwrap();
-    let config = ccnm_core::provider::claude::mcp_config(&launcher);
+    let config = ccnm_core::provider::claude::mcp_config(&launcher, None);
     let server = &config["mcpServers"]["ccnm"];
     let capture = root.join("capture");
     assert_eq!(server["command"], env!("CARGO_BIN_EXE_ccnm"));

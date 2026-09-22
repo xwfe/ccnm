@@ -260,6 +260,54 @@ agent_node = "agent"
         with self.assertRaises(RpcError):
             client.call("prompts/get", {"name": "hidden", "arguments": {}})
 
+    # -- 这台机器上装好的 skills（P48） --
+
+    def add_installed(self, name: str, description: str, files: dict | None = None) -> Path:
+        """执行账号 HOME 里装好的一个 skill，skills CLI 的放法。"""
+        skill = self.dir / "home" / ".agents" / "skills" / name
+        skill.mkdir(parents=True, exist_ok=True)
+        (skill / "SKILL.md").write_text(
+            f"---\ndescription: {description}\n---\nBody of {name}.\n", encoding="utf-8"
+        )
+        for rel, text in (files or {}).items():
+            path = skill / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding="utf-8")
+        return skill
+
+    def test_installed_skills_come_after_the_projects_and_their_files_can_be_read(self):
+        self.add_skill()
+        self.add_installed("pdf", "Fill PDF forms.", {"reference.md": "# Fields\n", ".env": "TOKEN=x\n"})
+        client = self.client("demo", "read", "neutral-installed")
+        text = self.skill_tool(client)["description"]
+        # 项目的在前：2048 个码元不够时，先挤掉的是装在机器上的。
+        self.assertLess(text.index("Skills in this workspace:"), text.index("Installed on this machine:"))
+        self.assertIn("- pdf: Fill PDF forms.", text)
+        loaded = result_text(client.call_tool("load_skill", {"name": "pdf"}))
+        self.assertIn("[other files in this skill's directory: reference.md;", loaded)
+        got = client.call_tool("load_skill", {"name": "pdf", "file": "reference.md"})
+        self.assertFalse(is_error(got), got)
+        self.assertIn("# Fields", result_text(got))
+        # read 模式没有 exec_command，read_file 又只读工作区：这是读到工作区外面的
+        # 唯一一条路，所以点文件和 skill 目录以外一律不给。
+        for name in (".env", "../../../.bashrc"):
+            refused = client.call_tool("load_skill", {"name": "pdf", "file": name})
+            self.assertTrue(is_error(refused), refused)
+            self.assertTrue(result_text(refused).startswith("CCNM_E_POLICY:"), result_text(refused))
+            self.assertNotIn("TOKEN", result_text(refused))
+
+    def test_the_machine_decides_whether_and_which_installed_skills_are_shared(self):
+        self.add_installed("pdf", "Fill PDF forms.")
+        self.add_installed("noise", "Something every session can do without.")
+        base = self.config.read_text(encoding="utf-8")
+        self.config.write_text(base + '\n[machine_skills]\nhidden = ["noise"]\n', encoding="utf-8")
+        text = self.skill_tool(self.client("demo", "read", "neutral-hidden"))["description"]
+        self.assertIn("- pdf:", text)
+        self.assertNotIn("noise", text)
+        self.config.write_text(base + "\n[machine_skills]\nenabled = false\n", encoding="utf-8")
+        text = self.skill_tool(self.client("demo", "read", "neutral-unshared"))["description"]
+        self.assertTrue(text.endswith("This workspace has no skills right now."), text)
+
     def test_annotations_say_what_the_runtime_enforces(self):
         self.write_config("coding")
         client = self.client("demo", "coding", "neutral-hints")

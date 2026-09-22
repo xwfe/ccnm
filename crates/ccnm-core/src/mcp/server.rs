@@ -46,6 +46,7 @@ use crate::mcp::exec::{self, ExecCommandArgs};
 use crate::mcp::image::{self, ViewImageArgs};
 use crate::mcp::jobs::{self, Jobs, StopCommandArgs};
 use crate::mcp::list::{self, ListFilesArgs};
+use crate::mcp::machine_skills::{self, Machine};
 use crate::mcp::notebook::{self, ReadNotebookArgs};
 use crate::mcp::output::{self, ReadOutputArgs};
 use crate::mcp::patch::{self, ApplyPatchArgs};
@@ -53,7 +54,7 @@ use crate::mcp::read::{self, ReadFileArgs};
 use crate::mcp::retention;
 use crate::mcp::sandbox;
 use crate::mcp::search::{self, SearchTextArgs};
-use crate::mcp::skills::{self, LoadSkillArgs};
+use crate::mcp::skills::{self, LoadSkillArgs, Scope};
 use crate::mcp::with_ignored;
 use crate::process::{Cmd, ProcessRunner, SystemRunner};
 use crate::protocol::mcp::ServePayload;
@@ -297,6 +298,9 @@ struct Inner {
     /// connection. A call re-scans, so a skill added since can still be
     /// loaded -- it just is not advertised until the next session.
     skills: skills::Catalog,
+    /// This machine's installed skills, when its config shares them (P48).
+    /// Scanned again on every call, like the project's.
+    machine: Option<Machine>,
     git: bool,
     git_subdir: Option<String>,
     /// Somebody is at a terminal, so a permission prompt can be answered.
@@ -417,7 +421,14 @@ impl Server {
                 None
             }
         };
-        let skills = skills::discover(&root);
+        // From the Runtime's own config, which every real session has; a
+        // server started without one (the test fixture) shares nothing
+        // from the machine.
+        let machine = exec_gate.config.as_ref().and_then(|config| {
+            let home = crate::paths::home_dir().ok()?;
+            Machine::new(&config.machine_skills, &home, machine_skills::Role::Runtime)
+        });
+        let skills = skills::discover(&Scope::project(&root).with_machine(machine.as_ref()));
         let state = crate::paths::state_dir().ok();
         let sandbox = match exec_gate.config.as_ref() {
             Some(config) => sandbox::Sandbox::resolve(
@@ -462,6 +473,7 @@ impl Server {
                 project,
                 named,
                 skills,
+                machine,
                 git,
                 git_subdir,
                 interactive: payload.interactive,
@@ -475,6 +487,11 @@ impl Server {
     /// The canonical workspace root.
     pub fn root(&self) -> &Path {
         &self.inner.root
+    }
+
+    /// What a skill scan needs, owned, for a blocking task.
+    fn skill_places(&self) -> (PathBuf, Option<Machine>) {
+        (self.inner.root.clone(), self.inner.machine.clone())
     }
 
     /// Every tool this session offers, with the interaction requirement
@@ -843,15 +860,15 @@ impl Server {
         Parameters(args): Parameters<LoadSkillArgs>,
     ) -> std::result::Result<CallToolResult, ErrorData> {
         self.count_call();
-        let root = self.inner.root.clone();
+        let (root, machine) = self.skill_places();
         let session = self.inner.session.clone();
         let ignored = args.ignored.note();
-        let loaded =
-            tokio::task::spawn_blocking(move || skills::load_skill(&root, &args, Some(&session)))
-                .await
-                .map_err(|e| {
-                    ErrorData::internal_error(format!("load_skill task failed: {e}"), None)
-                })?;
+        let loaded = tokio::task::spawn_blocking(move || {
+            let scope = Scope::project(&root).with_machine(machine.as_ref());
+            skills::load_skill(&scope, &args, Some(&session))
+        })
+        .await
+        .map_err(|e| ErrorData::internal_error(format!("load_skill task failed: {e}"), None))?;
         match loaded {
             Ok(text) => Ok(text_only(with_ignored(text, ignored))),
             Err(err) => Ok(tool_error(&err)),
@@ -1093,13 +1110,13 @@ async fn wait_while_running(
 /// hand back such as `version` and `output_ref` — is in the text, and there
 /// is no second channel to fall out of step with it. The result structs
 /// the tools build still exist; they are what the text is rendered from.
-fn text_only(text: String) -> CallToolResult {
+pub(crate) fn text_only(text: String) -> CallToolResult {
     CallToolResult::success(vec![ContentBlock::text(text)])
 }
 
 /// A failed tool call, shaped so the model can act on it: `isError` set,
 /// and one line beginning with the stable `CCNM_E_*` name.
-fn tool_error(err: &Error) -> CallToolResult {
+pub(crate) fn tool_error(err: &Error) -> CallToolResult {
     tracing::debug!(code = %err.code(), message = err.message(), "tool call refused");
     CallToolResult::error(vec![ContentBlock::text(ErrorReport::from(err).to_string())])
 }
@@ -1150,10 +1167,12 @@ impl ServerHandler for Server {
         _request: Option<rmcp::model::PaginatedRequestParams>,
         _context: rmcp::service::RequestContext<rmcp::RoleServer>,
     ) -> std::result::Result<ListPromptsResult, ErrorData> {
-        let root = self.inner.root.clone();
-        let catalog = tokio::task::spawn_blocking(move || skills::discover(&root))
-            .await
-            .map_err(|e| ErrorData::internal_error(format!("skill scan failed: {e}"), None))?;
+        let (root, machine) = self.skill_places();
+        let catalog = tokio::task::spawn_blocking(move || {
+            skills::discover(&Scope::project(&root).with_machine(machine.as_ref()))
+        })
+        .await
+        .map_err(|e| ErrorData::internal_error(format!("skill scan failed: {e}"), None))?;
         let prompts = catalog
             .skills
             .iter()
@@ -1174,12 +1193,13 @@ impl ServerHandler for Server {
         request: GetPromptRequestParams,
         _context: rmcp::service::RequestContext<rmcp::RoleServer>,
     ) -> std::result::Result<GetPromptResponse, ErrorData> {
-        let root = self.inner.root.clone();
+        let (root, machine) = self.skill_places();
         let session = self.inner.session.clone();
         let given = request.arguments.unwrap_or_default();
         let name = request.name;
         let text = tokio::task::spawn_blocking(move || {
-            let catalog = skills::discover(&root);
+            let scope = Scope::project(&root).with_machine(machine.as_ref());
+            let catalog = skills::discover(&scope);
             let declared = catalog
                 .skills
                 .iter()
@@ -1197,7 +1217,7 @@ impl ServerHandler for Server {
                 })
                 .collect::<Vec<_>>()
                 .join(" ");
-            skills::prompt_text(&root, &name, &line, Some(&session))
+            skills::prompt_text(&scope, &name, &line, Some(&session))
         })
         .await
         .map_err(|e| ErrorData::internal_error(format!("skill load failed: {e}"), None))?
@@ -1226,7 +1246,7 @@ impl ServerHandler for Server {
 /// words to the declared arguments in order, dropping any that are left
 /// over (2.1.273). So a skill that wants several words has to declare
 /// them; with nothing declared, only the first word arrives.
-fn prompt_arguments(skill: &skills::Skill) -> Vec<PromptArgument> {
+pub(crate) fn prompt_arguments(skill: &skills::Skill) -> Vec<PromptArgument> {
     let names: Vec<String> = if skill.arguments.is_empty() {
         vec!["arguments".to_string()]
     } else {
@@ -1245,7 +1265,7 @@ fn prompt_arguments(skill: &skills::Skill) -> Vec<PromptArgument> {
 
 /// One prompt argument, spelled so that splitting the line again gives it
 /// back as one word.
-fn quote_argument(text: &str) -> String {
+pub(crate) fn quote_argument(text: &str) -> String {
     if !text.is_empty() && !text.contains(|c: char| c.is_whitespace() || c == '"' || c == '\'') {
         return text.to_string();
     }

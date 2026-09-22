@@ -133,7 +133,7 @@
         },
         {
           "name": "load_skill",
-          "description": "Load one of this project's skills: task instructions the project keeps in .claude/skills, .claude/commands or .agents/skills. Before starting a task that a skill below describes, call this with the skill's name and follow what comes back. A skill's scripts and reference files are ordinary workspace files under its directory: read them with read_file and run them with exec_command. Without a name this returns the full list.\n\nThis workspace has no skills right now.",
+          "description": "Load a skill: task instructions this project keeps (.claude/skills, .claude/commands, .agents/skills) or that are installed on this machine (~/.claude/skills and the like). Before a task that a skill below describes, call this with its name and follow what comes back. A loaded skill lists its other files: read one with file, run scripts with exec_command. Without a name: the full list.\n\nThis workspace has no skills right now.",
           "inputSchema": {
             "type": "object",
             "additionalProperties": true,
@@ -143,6 +143,12 @@
               },
               "arguments": {
                 "type": "string"
+              },
+              "file": {
+                "type": "string"
+              },
+              "line": {
+                "type": "integer"
               }
             }
           },

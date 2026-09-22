@@ -77,6 +77,54 @@ pub struct Config {
     /// cosmetic: nothing under it crosses to the other node.
     #[serde(default, skip_serializing_if = "Ui::is_default")]
     pub ui: Ui,
+    /// The skills this machine's account has installed, as opposed to the
+    /// ones a project carries (P48). Local like `ui`: each machine decides
+    /// about its own, and nothing under it crosses to the other node.
+    #[serde(default, skip_serializing_if = "MachineSkills::is_default")]
+    pub machine_skills: MachineSkills,
+}
+
+/// Skills installed for this machine's account -- `~/.claude/skills`,
+/// `~/.agents/skills`, `~/.codex/skills`, `~/.claude/commands` -- and
+/// whether sessions get them (P48).
+///
+/// Read on both nodes, each for its own: on the Runtime Node by the MCP
+/// server, which adds them to `load_skill` next to the project's; on the
+/// Agent Node when a session starts, which decides whether Claude or Codex
+/// get the small server that reads this machine's (`ccnm internal
+/// agent-skills`). On by default: the user's call (2026-09-22).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct MachineSkills {
+    /// `false`: sessions get none of this machine's installed skills. A
+    /// project's own skills are not affected -- they belong to the project.
+    #[serde(default = "yes")]
+    pub enabled: bool,
+    /// Installed skills never offered, by the name a session would see.
+    /// For one that is noise in every session, or one whose files should
+    /// not be read. A project's skill of the same name is then offered as
+    /// if the installed one were not there.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    pub hidden: std::collections::BTreeSet<String>,
+}
+
+fn yes() -> bool {
+    true
+}
+
+impl Default for MachineSkills {
+    fn default() -> Self {
+        MachineSkills {
+            enabled: true,
+            hidden: Default::default(),
+        }
+    }
+}
+
+impl MachineSkills {
+    pub fn is_default(&self) -> bool {
+        self == &MachineSkills::default()
+    }
 }
 
 /// Presentation settings, which belong to the machine somebody types on

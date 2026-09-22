@@ -352,7 +352,12 @@ pub fn run(req: &RunRequest, tools: &Tools<'_>) -> Result<RunReport> {
         codex_exec_server: false,
         agent_tools: req.agent_tools.clone(),
     };
-    let dir = session::create(&tools.state, &spec, ssh.as_ref())?;
+    let dir = session::create(
+        &tools.state,
+        &spec,
+        ssh.as_ref(),
+        &tools.config.machine_skills,
+    )?;
     let pid = match controller::start_for_identity(
         &tools.controller,
         dir.path(),
@@ -700,7 +705,12 @@ fn start_fresh(
         codex_exec_server: req.codex_exec_server && selected.provider == AgentProvider::Codex,
         agent_tools: req.agent_tools.clone(),
     };
-    let dir = session::create(&tools.state, &spec, ssh.as_ref())?;
+    let dir = session::create(
+        &tools.state,
+        &spec,
+        ssh.as_ref(),
+        &tools.config.machine_skills,
+    )?;
     let server_pid = match controller::start_for_identity(
         &tools.controller,
         dir.path(),

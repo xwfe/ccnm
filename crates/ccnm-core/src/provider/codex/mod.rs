@@ -1,6 +1,7 @@
 //! Official Codex 0.154.0 only. No credential content is read or copied.
 use super::{AgentReport, Ask, AuthStatus};
 use crate::error::{Error, ErrorCode, Result};
+use crate::mcp::agent_skills;
 use crate::process::{Cmd, Output, ProcessRunner};
 use crate::session::{Dir, Mode, Spec};
 use std::ffi::OsStr;
@@ -409,6 +410,34 @@ pub(crate) fn build_launch_cmd(
             "mcp_servers.ccnm.enabled_tools={}",
             serde_json::json!(crate::session::MCP_TOOLS)
         ));
+    // Codex lists the skills it finds on this machine and leaves opening
+    // them to its shell, which ccnm turns off: measured on 0.154.0, the list
+    // is there and nothing can read what it names (P48). So it goes, and
+    // this machine's installed skills come from the server below instead.
+    cmd = cmd.args(["-c", "skills.include_instructions=false"]);
+    if let Some(agent) = agent_skills::Recorded::read(&dir.agent_skills())? {
+        let key = agent_skills::SERVER_NAME;
+        cmd = cmd
+            .arg("-c")
+            .arg(format!(
+                "mcp_servers.{key}.command={}",
+                serde_json::json!(agent.command)
+            ))
+            .arg("-c")
+            .arg(format!(
+                "mcp_servers.{key}.args={}",
+                serde_json::json!(agent.args)
+            ))
+            .arg("-c")
+            .arg(format!(
+                "mcp_servers.{key}.default_tools_approval_mode=\"approve\""
+            ))
+            .arg("-c")
+            .arg(format!(
+                "mcp_servers.{key}.enabled_tools={}",
+                serde_json::json!([crate::mcp::skills::TOOL])
+            ));
+    }
     match &spec.mode {
         Mode::Print { prompt } => cmd = cmd.arg("-").stdin(prompt.as_bytes().to_vec()),
         Mode::Interactive {

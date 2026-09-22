@@ -366,6 +366,72 @@ fn web_search_follows_the_workspace_and_nothing_else_does() {
     }
 }
 
+/// Codex's own list of the skills on this machine goes, always: it names
+/// files only a shell could open, and ccnm turns the shell off (P48). The
+/// same skills come from the Agent's own server instead, when the session
+/// directory says it has one.
+#[test]
+fn codexs_skill_list_goes_and_the_agents_server_takes_its_place() {
+    use crate::mcp::agent_skills;
+    let dir = std::env::temp_dir().join(format!("ccnm-codex-skills-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let dir = ccnm_testdir::TestDir::adopt(dir);
+    let session = Dir::at(&*dir);
+    let launch = || {
+        strings(
+            &build_launch_cmd(
+                Path::new("/agent/codex"),
+                &spec(Mode::Print {
+                    prompt: "hi".into(),
+                }),
+                &session,
+                Path::new("/agent/private-codex"),
+                Path::new("/agent/ccnm"),
+                None,
+            )
+            .unwrap(),
+        )
+    };
+    let without = launch();
+    assert!(without.contains(&"skills.include_instructions=false".to_string()));
+    assert!(
+        !without.iter().any(|a| a.contains("ccnm_agent")),
+        "{without:?}"
+    );
+
+    let recorded = agent_skills::Recorded {
+        command: "/agent/ccnm".into(),
+        args: vec![
+            "internal".into(),
+            "agent-skills".into(),
+            "--payload".into(),
+            "e30".into(),
+        ],
+    };
+    std::fs::write(
+        session.agent_skills(),
+        serde_json::to_vec(&recorded).unwrap(),
+    )
+    .unwrap();
+    let with = launch();
+    for expected in [
+        "mcp_servers.ccnm_agent.command=\"/agent/ccnm\"",
+        "mcp_servers.ccnm_agent.args=[\"internal\",\"agent-skills\",\"--payload\",\"e30\"]",
+        "mcp_servers.ccnm_agent.default_tools_approval_mode=\"approve\"",
+        "mcp_servers.ccnm_agent.enabled_tools=[\"load_skill\"]",
+    ] {
+        assert!(
+            with.contains(&expected.to_string()),
+            "{expected} not in {with:?}"
+        );
+    }
+    // Still before the prompt marker, which ends the options.
+    assert_eq!(with.last().map(String::as_str), Some("-"));
+    // And nothing else moved.
+    assert_eq!(with.len(), without.len() + 8);
+}
+
 /// What the model can reach when Code Mode is off, measured rather than
 /// assumed -- because turning Code Mode off is what the gate above does.
 ///

@@ -1,6 +1,7 @@
 //! Claude-specific MCP document and tool permission injection.
 use crate::config::{AgentTool, AgentTools};
 use crate::error::Result;
+use crate::mcp::agent_skills;
 use crate::mcp::server::SERVER_NAME;
 use crate::process::Cmd;
 use crate::session::{Dir, MCP_TOOLS, SSH_BIN, pretty};
@@ -14,7 +15,11 @@ use crate::session::{Dir, MCP_TOOLS, SSH_BIN, pretty};
 /// `NotebookEdit` and `Skill` joined in P46, when `--tools` was measured
 /// to accept both names on 2.1.278: a notebook edit writes this machine's
 /// disk and a skill is read from it. The project's own are served on the
-/// Runtime by `read_notebook` and `load_skill`.
+/// Runtime by `read_notebook` and `load_skill`; the skills installed on
+/// this machine, since P48, by `ccnm internal agent-skills`, which reads
+/// only inside each skill's own directory -- the native `Skill` would need
+/// `Read`, and a `Read` narrowed to the skills directories was measured to
+/// still read the session's working directory, ccnm's state for it.
 pub const NATIVE_TOOLS_DENIED: [&str; 8] = [
     "Read",
     "Edit",
@@ -62,7 +67,10 @@ pub fn tools_flag(agent_tools: &AgentTools) -> String {
     names(agent_tools, true).join(",")
 }
 
-pub fn mcp_config(cmd: &Cmd) -> serde_json::Value {
+/// `mcp.json`: ccnm's server, and the Agent's installed-skills server
+/// when this session gets one (P48). `--strict-mcp-config` keeps every
+/// other server out, so these two are all there is.
+pub fn mcp_config(cmd: &Cmd, agent_skills: Option<&Cmd>) -> serde_json::Value {
     let args: Vec<String> = cmd
         .args
         .iter()
@@ -73,15 +81,22 @@ pub fn mcp_config(cmd: &Cmd) -> serde_json::Value {
     } else {
         cmd.program.to_string_lossy()
     };
-    serde_json::json!({
-        "mcpServers": {
-            SERVER_NAME: {
-                "type": "stdio",
-                "command": program,
-                "args": args,
-            }
+    let mut servers = serde_json::json!({
+        SERVER_NAME: {
+            "type": "stdio",
+            "command": program,
+            "args": args,
         }
-    })
+    });
+    if let Some(cmd) = agent_skills {
+        let recorded = agent_skills::Recorded::of(cmd);
+        servers[agent_skills::SERVER_NAME] = serde_json::json!({
+            "type": "stdio",
+            "command": recorded.command,
+            "args": recorded.args,
+        });
+    }
+    serde_json::json!({ "mcpServers": servers })
 }
 
 /// The `--settings` file: permission to call each ccnm tool and each
@@ -102,13 +117,17 @@ pub fn mcp_config(cmd: &Cmd) -> serde_json::Value {
 /// The deny list exists to stop the model reaching *this* machine's disk
 /// when the project is on another one; when the project is this machine's
 /// disk, it would only be in the way.
-pub fn settings(remote: bool, agent_tools: &AgentTools) -> serde_json::Value {
+///
+/// `agent_skills`: the session has the Agent's installed-skills server,
+/// whose one tool is allowed like ccnm's (P48).
+pub fn settings(remote: bool, agent_tools: &AgentTools, agent_skills: bool) -> serde_json::Value {
     if !remote {
         return serde_json::json!({ "permissions": {} });
     }
     let allow: Vec<String> = MCP_TOOLS
         .iter()
         .map(|t| format!("mcp__{SERVER_NAME}__{t}"))
+        .chain(agent_skills.then(|| agent_skills::TOOL_PERMISSION.to_string()))
         .chain(names(agent_tools, true).into_iter().map(str::to_string))
         .collect();
     let deny: Vec<&str> = NATIVE_TOOLS_DENIED
@@ -127,13 +146,18 @@ pub(crate) fn write_session_files(
     dir: &Dir,
     transport: Option<&Cmd>,
     agent_tools: &AgentTools,
+    agent_skills: Option<&Cmd>,
 ) -> Result<()> {
     if let Some(cmd) = transport {
-        std::fs::write(dir.mcp_config(), pretty(&mcp_config(cmd))?)?;
+        std::fs::write(dir.mcp_config(), pretty(&mcp_config(cmd, agent_skills))?)?;
     }
     std::fs::write(
         dir.settings(),
-        pretty(&settings(transport.is_some(), agent_tools))?,
+        pretty(&settings(
+            transport.is_some(),
+            agent_tools,
+            agent_skills.is_some(),
+        ))?,
     )?;
     Ok(())
 }

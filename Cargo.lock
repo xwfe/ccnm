@@ -866,8 +866,8 @@ source = "git+https://github.com/xwfe/toexec.git?tag=toexec-fs-v0.2.1#3f5b9f98c5
 
 [[package]]
 name = "toexec-skill"
-version = "0.2.0"
-source = "git+https://github.com/xwfe/toexec.git?tag=toexec-skill-v0.2.0#c8cf321a590c3f6abc38cb455b0124e6594558b3"
+version = "0.3.0"
+source = "git+https://github.com/xwfe/toexec.git?tag=toexec-skill-v0.3.0#c50a0396500f513da32b53ca7b37ba8f7110c07d"
 
 [[package]]
 name = "toexec-text"

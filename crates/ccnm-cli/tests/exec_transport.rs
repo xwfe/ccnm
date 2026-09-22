@@ -85,6 +85,7 @@ fn spec(id: &str, on_chain: bool) -> Spec {
         timeout_secs: 0,
         cwd: "/tmp".into(),
         codex_exec_server: on_chain,
+        agent_tools: Default::default(),
     }
 }
 

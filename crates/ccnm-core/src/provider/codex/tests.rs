@@ -24,6 +24,7 @@ fn spec(mode: Mode) -> Spec {
         timeout_secs: 90,
         cwd: "/agent/state/workspace".into(),
         codex_exec_server: false,
+        agent_tools: Default::default(),
     }
 }
 
@@ -263,6 +264,10 @@ fn a_named_model_reaches_the_command_line_and_absence_changes_nothing() {
 /// MCP block is where the harness legitimately differs -- it points the
 /// server at `/usr/bin/env` with a scratch fixture payload rather than at
 /// the real Agent transport -- so it is excluded rather than fudged.
+///
+/// The fixture was measured with web search off, which is
+/// `agent_tools = []` since P46; the default differs from it in that one
+/// value (next test), and no real model has run the default yet.
 #[test]
 fn the_measured_fixture_records_the_launch_this_adapter_builds() {
     let outcome: serde_json::Value = serde_json::from_str(include_str!(
@@ -277,11 +282,15 @@ fn the_measured_fixture_records_the_launch_this_adapter_builds() {
         .collect();
     assert_eq!(outcome["code_mode"], false, "measured without Code Mode");
 
+    let measured_spec = Spec {
+        agent_tools: crate::config::AgentTools::none(),
+        ..spec(Mode::Print {
+            prompt: "hi".into(),
+        })
+    };
     let built = build_launch_cmd(
         Path::new("/agent/codex"),
-        &spec(Mode::Print {
-            prompt: "hi".into(),
-        }),
+        &measured_spec,
         &Dir::at("/agent/session"),
         Path::new("/agent/private-codex"),
         Path::new("/agent/ccnm"),
@@ -304,6 +313,57 @@ fn the_measured_fixture_records_the_launch_this_adapter_builds() {
     // The fixture's argv[0] is the codex binary; the built command carries
     // it separately.
     assert_eq!(upto_mcp(&measured[1..]), upto_mcp(&built));
+}
+
+/// Web search is the only agent tool Codex takes up (P46): on by default
+/// as `cached`, Codex's own default, and `disabled` when the workspace
+/// turns it off. The other switches change nothing: sub-agents stay off.
+/// Both launches -- MCP and the sealed exec-server chain -- say the same.
+#[test]
+fn web_search_follows_the_workspace_and_nothing_else_does() {
+    use crate::config::{AgentTool, AgentTools};
+    let launch = |spec: &Spec| {
+        strings(
+            &build_launch_cmd(
+                Path::new("/agent/codex"),
+                spec,
+                &Dir::at("/agent/session"),
+                Path::new("/agent/private-codex"),
+                Path::new("/agent/ccnm"),
+                None,
+            )
+            .unwrap(),
+        )
+    };
+    let print = spec(Mode::Print {
+        prompt: "hi".into(),
+    });
+    let chain = native_spec(Mode::Interactive { prompt: None });
+    for base in [print, chain] {
+        let default = launch(&base);
+        assert!(
+            default.contains(&"web_search=\"cached\"".to_string()),
+            "{default:?}"
+        );
+        let off = launch(&Spec {
+            agent_tools: AgentTools::none(),
+            ..base.clone()
+        });
+        assert!(
+            off.contains(&"web_search=\"disabled\"".to_string()),
+            "{off:?}"
+        );
+        // Turning web search off changes exactly that one value.
+        let differ: Vec<_> = default.iter().zip(&off).filter(|(a, b)| a != b).collect();
+        assert_eq!(differ.len(), 1, "{differ:?}");
+
+        let everything = launch(&Spec {
+            agent_tools: AgentTools::of(&AgentTool::ALL),
+            ..base
+        });
+        assert_eq!(everything, default, "only web search reaches Codex");
+        assert!(everything.contains(&"agents.enabled=false".to_string()));
+    }
 }
 
 /// What the model can reach when Code Mode is off, measured rather than

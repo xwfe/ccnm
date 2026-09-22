@@ -1779,6 +1779,7 @@ fn start_request(
         permission_mode: authority.permission_mode,
         prompt,
         codex_exec_server: authority.codex_exec_server,
+        agent_tools: authority.agent_tools.clone(),
     }
 }
 

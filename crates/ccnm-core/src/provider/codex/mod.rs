@@ -366,7 +366,7 @@ pub(crate) fn build_launch_cmd(
             "approval_policy=\"never\""
         },
         "-c",
-        "web_search=\"disabled\"",
+        web_search(spec),
         // Not part of Code Mode: it keeps the model from spawning Codex's
         // own sub-agents whichever tool surface it is given.
         "-c",
@@ -419,6 +419,31 @@ pub(crate) fn build_launch_cmd(
     Ok(cmd)
 }
 
+/// `web_search` for this session: the workspace's `agent_tools` (P46).
+///
+/// On is `cached`, which is Codex's own default: results come from
+/// OpenAI's index and no page is fetched live. Measured on 0.154.0 against
+/// a local fake model: `cached` adds the hosted tool
+/// `{"type": "web_search", "external_web_access": false}` when the model
+/// takes its tools at the top level (`gpt-5.1-codex`), Code Mode or not;
+/// on the CLI default model (`gpt-6-astra`) no value of this changes the
+/// request at all, so there it is a switch with nothing behind it yet.
+///
+/// The other agent tools have no Codex counterpart ccnm has measured, and
+/// change nothing here: sub-agents stay off with `agents.enabled=false`,
+/// because whether Codex hands a sub-agent the same disabled features and
+/// MCP allow-list as its parent has not been checked.
+fn web_search(spec: &Spec) -> &'static str {
+    if spec
+        .agent_tools
+        .contains(crate::config::AgentTool::WebSearch)
+    {
+        "web_search=\"cached\""
+    } else {
+        "web_search=\"disabled\""
+    }
+}
+
 /// Codex with its own tools, executed on the Runtime (P23). The flag set
 /// is the one P21.2 measured the tool surface with, and it differs from
 /// the MCP launch in exactly the ways the chain needs:
@@ -466,7 +491,7 @@ fn build_native_launch_cmd(
         "-c",
         "approval_policy=\"on-request\"",
         "-c",
-        "web_search=\"disabled\"",
+        web_search(spec),
         "-c",
         "agents.enabled=false",
     ]);

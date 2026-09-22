@@ -5,7 +5,7 @@
 //! ~/.local/state/ccnm/sessions/<uuid>/          (Agent Node)
 //! ├── session.json     the Spec: everything needed to start it
 //! ├── mcp.json         --mcp-config: the one ssh transport to the Runtime Node
-//! ├── settings.json    --settings: permission to use exactly the ccnm tools
+//! ├── settings.json    --settings: which tools run without a prompt, and which are denied
 //! ├── stdout           Claude's stdout (in print mode, the JSON result)
 //! ├── stderr           Claude's stderr
 //! ├── supervisor.log   the supervisor's own diagnostics
@@ -131,6 +131,12 @@ pub struct Spec {
     /// what those sessions were.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub codex_exec_server: bool,
+    /// Which native Agent features a remote session keeps (P46). A record
+    /// written before the field existed reads as the default, web search
+    /// on; that only matters if such a record is launched by a newer
+    /// binary, and then it gets what every new session gets.
+    #[serde(default, skip_serializing_if = "crate::config::AgentTools::is_default")]
+    pub agent_tools: crate::config::AgentTools,
 }
 
 impl Spec {
@@ -443,7 +449,7 @@ pub fn create(state: &Path, spec: &Spec, ssh: Option<&Ssh>) -> Result<Dir> {
         })
         .transpose()?;
     spec.provider()
-        .write_session_files(&dir, transport.as_ref())?;
+        .write_session_files(&dir, transport.as_ref(), &spec.agent_tools)?;
     Ok(dir)
 }
 
@@ -490,8 +496,8 @@ fn mcp_transport(spec: &Spec, ssh: &Ssh) -> Result<process::Cmd> {
 }
 
 /// Compatibility helper for the current provider's session policy.
-pub fn settings(remote: bool) -> serde_json::Value {
-    crate::provider::claude::settings(remote)
+pub fn settings(remote: bool, agent_tools: &crate::config::AgentTools) -> serde_json::Value {
+    crate::provider::claude::settings(remote, agent_tools)
 }
 
 /// How a session ended. Written by the supervisor as the last thing it
@@ -885,6 +891,7 @@ mod tests {
             timeout_secs: 600,
             cwd: PathBuf::from("/Users/fodelf/.local/state/ccnm/workspaces/fixture"),
             codex_exec_server: false,
+            agent_tools: Default::default(),
         }
     }
 
@@ -981,7 +988,9 @@ mod tests {
 
     #[test]
     fn settings_allow_exactly_the_ccnm_tools_and_deny_the_native_ones() {
-        let s = settings(true);
+        // Every agent tool off: the shape every remote session had before
+        // P46. Their names on the deny list are covered in the provider.
+        let s = settings(true, &crate::config::AgentTools::none());
         let allow: Vec<&str> = s["permissions"]["allow"]
             .as_array()
             .unwrap()
@@ -1001,7 +1010,7 @@ mod tests {
             .iter()
             .map(|a| a.as_str().unwrap())
             .collect();
-        assert_eq!(deny, NATIVE_TOOLS_DENIED);
+        assert_eq!(deny[..NATIVE_TOOLS_DENIED.len()], NATIVE_TOOLS_DENIED);
         // Nothing that would change how the user's Claude behaves elsewhere.
         assert_eq!(s.as_object().unwrap().len(), 1, "{s}");
     }

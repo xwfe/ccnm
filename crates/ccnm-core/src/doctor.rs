@@ -1999,6 +1999,7 @@ mod tests {
             allow_unisolated_credentials: false,
             allow_unattended_exec: false,
             codex_exec_server: false,
+            agent_tools: Default::default(),
         };
         let from_agent = from_agent(&config, "xshun", Ok((&authority, &probe)));
 
@@ -2026,6 +2027,7 @@ mod tests {
             allow_unisolated_credentials: false,
             allow_unattended_exec: false,
             codex_exec_server,
+            agent_tools: Default::default(),
         }
     }
 

@@ -251,9 +251,14 @@ impl AgentProvider {
         })
     }
 
-    pub(crate) fn write_session_files(self, dir: &Dir, transport: Option<&Cmd>) -> Result<()> {
+    pub(crate) fn write_session_files(
+        self,
+        dir: &Dir,
+        transport: Option<&Cmd>,
+        agent_tools: &crate::config::AgentTools,
+    ) -> Result<()> {
         match self {
-            Self::Claude => claude::write_session_files(dir, transport),
+            Self::Claude => claude::write_session_files(dir, transport, agent_tools),
             Self::Codex => Ok(()),
         }
     }

@@ -337,6 +337,7 @@ fn identity_mismatched_supervisor_transport_and_controller_requests_fail_before_
         timeout_secs: 10,
         cwd: f.0.clone(),
         codex_exec_server: false,
+        agent_tools: Default::default(),
     };
     std::fs::write(dir.meta(), serde_json::to_vec(&spec).unwrap()).unwrap();
     let supervise = SuperviseRequest::new(dir.path().to_path_buf(), fake_agent.clone());
@@ -533,6 +534,7 @@ fn actual_agent_work_path_resolves_profile_controller_binding_and_runtime_mcp() 
         prompt: "fixture".into(),
         timeout_secs: 30,
         codex_exec_server: false,
+        agent_tools: Default::default(),
     };
     let out = f
         .command()
@@ -764,6 +766,7 @@ fn a_busy_write_guard_fails_the_run_preflight_as_policy_not_unreachable() {
         prompt: "fixture".into(),
         timeout_secs: 30,
         codex_exec_server: false,
+        agent_tools: Default::default(),
     };
     let out = f
         .command()
@@ -871,6 +874,7 @@ fn supervisor_re_resolves_named_profile_without_storing_it_in_public_identity() 
         timeout_secs: 10,
         cwd,
         codex_exec_server: false,
+        agent_tools: Default::default(),
     };
     let stored = serde_json::to_string(&spec).unwrap();
     assert!(!stored.contains(profile.to_str().unwrap()));

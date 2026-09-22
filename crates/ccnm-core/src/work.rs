@@ -350,6 +350,7 @@ pub fn run(req: &RunRequest, tools: &Tools<'_>) -> Result<RunReport> {
         timeout_secs: req.timeout_secs,
         cwd,
         codex_exec_server: false,
+        agent_tools: req.agent_tools.clone(),
     };
     let dir = session::create(&tools.state, &spec, ssh.as_ref())?;
     let pid = match controller::start_for_identity(
@@ -697,6 +698,7 @@ fn start_fresh(
         // The workspace's choice, and only Codex can take it up: a Claude
         // session on the same workspace keeps its MCP tools.
         codex_exec_server: req.codex_exec_server && selected.provider == AgentProvider::Codex,
+        agent_tools: req.agent_tools.clone(),
     };
     let dir = session::create(&tools.state, &spec, ssh.as_ref())?;
     let server_pid = match controller::start_for_identity(
@@ -2461,6 +2463,7 @@ mod tests {
             prompt: prompt.into(),
             timeout_secs: 5,
             codex_exec_server: false,
+            agent_tools: Default::default(),
         }
     }
 
@@ -2566,6 +2569,7 @@ mod tests {
             timeout_secs: 0,
             cwd: dir.to_path_buf(),
             codex_exec_server: false,
+            agent_tools: Default::default(),
         };
         std::fs::write(sdir.meta(), serde_json::to_string(&spec).unwrap()).unwrap();
 
@@ -2658,6 +2662,7 @@ mod tests {
             permission_mode: crate::config::PermissionMode::default(),
             prompt: None,
             codex_exec_server: false,
+            agent_tools: Default::default(),
         }
     }
 
@@ -2756,6 +2761,7 @@ mod tests {
             timeout_secs: 0,
             cwd: dir.to_path_buf(),
             codex_exec_server: false,
+            agent_tools: Default::default(),
         };
         std::fs::write(sdir.meta(), serde_json::to_string(&spec).unwrap()).unwrap();
 
@@ -2986,6 +2992,7 @@ mod tests {
                 timeout_secs: 600,
                 cwd: dir.to_path_buf(),
                 codex_exec_server: false,
+                agent_tools: Default::default(),
             };
             std::fs::write(sdir.meta(), serde_json::to_string(&spec).unwrap()).unwrap();
             if let Some(text) = stdout {

@@ -520,6 +520,12 @@ pub struct ResolveReport {
     /// Runtime that does not know the field means too.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub codex_exec_server: bool,
+    /// The workspace's own `agent_tools` (P46). Sent only when it is not
+    /// the default, so a default workspace still reads on an older
+    /// Agent; a non-default one is refused there as an unknown field,
+    /// rather than quietly launched with a different tool set.
+    #[serde(default, skip_serializing_if = "crate::config::AgentTools::is_default")]
+    pub agent_tools: crate::config::AgentTools,
 }
 
 impl Protocol for ResolveReport {
@@ -573,6 +579,7 @@ pub fn resolve(config: &Config, request: &ResolveRequest) -> Result<ResolveRepor
         allow_unisolated_credentials: resolved.workspace.allow_unisolated_credentials,
         allow_unattended_exec: resolved.workspace.allow_unattended_exec,
         codex_exec_server,
+        agent_tools: resolved.workspace.agent_tools.clone(),
     })
 }
 
@@ -1286,6 +1293,40 @@ codex_exec_server = {opted_in}
         assert!(
             resolve(&native_config(&dir.join("gone"), false, true), &request).is_ok(),
             "a missing root is still only the open's business for the MCP chain"
+        );
+    }
+
+    /// `agent_tools` is the Runtime's decision and reaches the Agent only
+    /// through this report. The default is absent on the wire, so an
+    /// older Agent reads a default workspace as it always has; anything
+    /// else is written out, and an older Agent refuses it as an unknown
+    /// field instead of launching with a tool set nobody chose.
+    #[test]
+    fn a_resolve_carries_the_workspace_agent_tools() {
+        use crate::config::{AgentTool, AgentTools};
+        let dir = workspace_dir("resolve-agent-tools");
+        let request = ResolveRequest::new("demo", None);
+        let mut config = native_config(&dir.join("project"), false, false);
+
+        let default = resolve(&config, &request).unwrap();
+        assert!(default.agent_tools.is_default());
+        let json = serde_json::to_value(&default).unwrap();
+        assert!(json.get("agent_tools").is_none(), "{json}");
+
+        config.workspaces.get_mut("demo").unwrap().agent_tools =
+            AgentTools::of(&[AgentTool::WebFetch]);
+        let chosen = resolve(&config, &request).unwrap();
+        let json = serde_json::to_value(&chosen).unwrap();
+        assert_eq!(json["agent_tools"], serde_json::json!(["web_fetch"]));
+        let back: ResolveReport = serde_json::from_value(json).unwrap();
+        assert_eq!(back.agent_tools, AgentTools::of(&[AgentTool::WebFetch]));
+
+        config.workspaces.get_mut("demo").unwrap().agent_tools = AgentTools::none();
+        let json = serde_json::to_value(resolve(&config, &request).unwrap()).unwrap();
+        assert_eq!(
+            json["agent_tools"],
+            serde_json::json!([]),
+            "off is not the default"
         );
     }
 

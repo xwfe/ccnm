@@ -71,6 +71,7 @@ impl Fixture {
             timeout_secs: 60,
             cwd: self.root.join("cwd"),
             codex_exec_server: false,
+            agent_tools: Default::default(),
         };
         std::fs::write(dir.meta(), serde_json::to_vec(&spec).unwrap()).unwrap();
         dir
@@ -433,6 +434,7 @@ fn active_session_with_another_identity_is_never_reused_or_replaced() {
         permission_mode: Default::default(),
         prompt: None,
         codex_exec_server: false,
+        agent_tools: Default::default(),
     };
     let error = work::start(&request, &f.tools(&runner)).unwrap_err();
     assert_eq!(error.code(), ErrorCode::NotReady);

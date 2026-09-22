@@ -29,6 +29,7 @@ fn spec(remote: bool, mode: session::Mode) -> session::Spec {
             "/project"
         }),
         codex_exec_server: false,
+        agent_tools: Default::default(),
     }
 }
 
@@ -63,7 +64,7 @@ fn snapshot() -> Value {
             json!({
                 "spec": s,
                 "command": command(AgentProvider::current().launch_cmd(bin, &s, &dir).unwrap()),
-                "settings": session::settings(s.runtime.is_some()),
+                "settings": session::settings(s.runtime.is_some(), &s.agent_tools),
                 "mcp": s.runtime.as_ref().map(|_| session::mcp_config(&s, &ssh).unwrap()),
             })
         })
@@ -193,6 +194,39 @@ fn claude_behavior_matches_snapshot_except_documented_safety_and_colocated_fixes
             allow.push(Value::from("mcp__ccnm__read_notebook"));
             allow.push(Value::from("mcp__ccnm__stop_command"));
         }
+    }
+    // P46 keeps the workspace's agent tools, web search by default, in a
+    // remote session: `--tools` names it instead of nothing, settings.json
+    // allows it (print mode denied it otherwise, measured on 2.1.278), and
+    // the deny list gains the two native tools measured to reach this
+    // machine's disk plus every agent tool left off. The spec itself is
+    // unchanged on the wire, because the default is not written.
+    for launch in expected["launches"].as_array_mut().unwrap() {
+        if launch.pointer("/spec/runtime").is_none_or(Value::is_null) {
+            continue;
+        }
+        let args = launch["command"]["args"].as_array_mut().unwrap();
+        let at = args.iter().position(|a| a == "--tools").unwrap();
+        args[at + 1] = Value::from("WebSearch");
+        let permissions = &mut launch["settings"]["permissions"];
+        permissions["allow"]
+            .as_array_mut()
+            .unwrap()
+            .push(Value::from("WebSearch"));
+        permissions["deny"].as_array_mut().unwrap().extend(
+            [
+                "NotebookEdit",
+                "Skill",
+                "WebFetch",
+                "Agent",
+                "TaskStop",
+                "TaskCreate",
+                "TaskGet",
+                "TaskList",
+                "TaskUpdate",
+            ]
+            .map(Value::from),
+        );
     }
     assert_eq!(actual, expected);
 }

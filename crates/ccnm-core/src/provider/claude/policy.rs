@@ -1,14 +1,66 @@
 //! Claude-specific MCP document and tool permission injection.
+use crate::config::{AgentTool, AgentTools};
 use crate::error::Result;
 use crate::mcp::server::SERVER_NAME;
 use crate::process::Cmd;
 use crate::session::{Dir, MCP_TOOLS, SSH_BIN, pretty};
 
-/// Built-in tools that must never be available in a ccnm session (design
-/// doc section 13). `--tools ""` already removes every built-in tool; this
-/// deny list is the second lock, so that a future Claude that reads
-/// `--tools` differently still cannot hand the model this machine's disk.
-pub const NATIVE_TOOLS_DENIED: [&str; 6] = ["Read", "Edit", "Write", "Grep", "Glob", "Bash"];
+/// Built-in tools that must never be available in a remote ccnm session
+/// (design doc section 13). `--tools` already leaves out every built-in
+/// tool but the workspace's `agent_tools`; this deny list is the second
+/// lock, so that a future Claude that reads `--tools` differently still
+/// cannot hand the model this machine's disk.
+///
+/// `NotebookEdit` and `Skill` joined in P46, when `--tools` was measured
+/// to accept both names on 2.1.278: a notebook edit writes this machine's
+/// disk and a skill is read from it. The project's own are served on the
+/// Runtime by `read_notebook` and `load_skill`.
+pub const NATIVE_TOOLS_DENIED: [&str; 8] = [
+    "Read",
+    "Edit",
+    "Write",
+    "Grep",
+    "Glob",
+    "Bash",
+    "NotebookEdit",
+    "Skill",
+];
+
+/// Claude Code's own names for one agent tool, as `--tools` and
+/// settings.json spell them. Measured on 2.1.278 (P46). `--tools` drops a
+/// name it does not know without a word, so a rename upstream would show
+/// up as the feature quietly missing -- `TodoWrite` and `Task`, the older
+/// names, already are.
+pub fn tool_names(tool: AgentTool) -> &'static [&'static str] {
+    match tool {
+        AgentTool::WebSearch => &["WebSearch"],
+        AgentTool::WebFetch => &["WebFetch"],
+        // A sub-agent runs in the background by default, and TaskStop is
+        // how the model stops one.
+        AgentTool::Subagents => &["Agent", "TaskStop"],
+        AgentTool::Tasks => &["TaskCreate", "TaskGet", "TaskList", "TaskUpdate"],
+    }
+}
+
+fn names(agent_tools: &AgentTools, enabled: bool) -> Vec<&'static str> {
+    AgentTool::ALL
+        .into_iter()
+        .filter(|tool| agent_tools.contains(*tool) == enabled)
+        .flat_map(|tool| tool_names(tool).iter().copied())
+        .collect()
+}
+
+/// The `--tools` value of a remote session: the enabled agent tools and
+/// nothing else, so an empty set is the `--tools ""` every remote session
+/// had before P46.
+///
+/// `ToolSearch` is never in it. Measured: with it in the list, every MCP
+/// tool (and WebSearch) moves into the deferred pool and the model sees
+/// only ToolSearch; without it they stay loaded, even with tool search
+/// forced on.
+pub fn tools_flag(agent_tools: &AgentTools) -> String {
+    names(agent_tools, true).join(",")
+}
 
 pub fn mcp_config(cmd: &Cmd) -> serde_json::Value {
     let args: Vec<String> = cmd
@@ -32,38 +84,57 @@ pub fn mcp_config(cmd: &Cmd) -> serde_json::Value {
     })
 }
 
-/// The `--settings` file: permission to call each ccnm tool without a
-/// prompt (there is nobody to answer one in print mode), and the native
-/// file and shell tools denied by name. Nothing else — the user's own
+/// The `--settings` file: permission to call each ccnm tool and each
+/// enabled agent tool without a prompt (there is nobody to answer one in
+/// print mode), and the native file and shell tools plus the agent tools
+/// this workspace left off, denied by name. Nothing else — the user's own
 /// settings still load underneath this (design doc section 24).
 ///
-/// `remote` is false for a colocated workspace, and then neither half
+/// The enabled agent tools have to be in `allow`: measured on 2.1.278,
+/// print mode denies WebSearch and WebFetch automatically otherwise
+/// ("this session has no approval surface"). Agent and TaskCreate ran
+/// either way; they are allowed too, so that turning a switch on means
+/// the same thing for every one of them.
+///
+/// `remote` is false for a colocated workspace, and then none of this
 /// applies: there are no ccnm tools to allow, and denying the native ones
 /// would leave Claude with no way to touch the project it is sitting on.
 /// The deny list exists to stop the model reaching *this* machine's disk
 /// when the project is on another one; when the project is this machine's
 /// disk, it would only be in the way.
-pub fn settings(remote: bool) -> serde_json::Value {
+pub fn settings(remote: bool, agent_tools: &AgentTools) -> serde_json::Value {
     if !remote {
         return serde_json::json!({ "permissions": {} });
     }
     let allow: Vec<String> = MCP_TOOLS
         .iter()
         .map(|t| format!("mcp__{SERVER_NAME}__{t}"))
+        .chain(names(agent_tools, true).into_iter().map(str::to_string))
+        .collect();
+    let deny: Vec<&str> = NATIVE_TOOLS_DENIED
+        .into_iter()
+        .chain(names(agent_tools, false))
         .collect();
     serde_json::json!({
         "permissions": {
             "allow": allow,
-            "deny": NATIVE_TOOLS_DENIED,
+            "deny": deny,
         }
     })
 }
 
-pub(crate) fn write_session_files(dir: &Dir, transport: Option<&Cmd>) -> Result<()> {
+pub(crate) fn write_session_files(
+    dir: &Dir,
+    transport: Option<&Cmd>,
+    agent_tools: &AgentTools,
+) -> Result<()> {
     if let Some(cmd) = transport {
         std::fs::write(dir.mcp_config(), pretty(&mcp_config(cmd))?)?;
     }
-    std::fs::write(dir.settings(), pretty(&settings(transport.is_some()))?)?;
+    std::fs::write(
+        dir.settings(),
+        pretty(&settings(transport.is_some(), agent_tools))?,
+    )?;
     Ok(())
 }
 

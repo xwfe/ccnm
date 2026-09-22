@@ -54,6 +54,10 @@ pub struct RunRequest {
     /// that predates the field still reads every other request.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub codex_exec_server: bool,
+    /// The workspace's `agent_tools` (P46), sent only when not the default
+    /// for the same reason as `codex_exec_server`.
+    #[serde(default, skip_serializing_if = "crate::config::AgentTools::is_default")]
+    pub agent_tools: crate::config::AgentTools,
 }
 
 impl Protocol for RunRequest {
@@ -175,6 +179,9 @@ pub struct StartRequest {
     /// still reads every other request.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub codex_exec_server: bool,
+    /// The workspace's `agent_tools` (P46); see [`RunRequest::agent_tools`].
+    #[serde(default, skip_serializing_if = "crate::config::AgentTools::is_default")]
+    pub agent_tools: crate::config::AgentTools,
 }
 
 impl Protocol for StartRequest {

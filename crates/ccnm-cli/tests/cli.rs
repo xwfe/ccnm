@@ -1444,6 +1444,7 @@ fn supervise_runs_the_session_and_writes_its_exit_record() {
         timeout_secs: 60,
         cwd: dir.to_path_buf(),
         codex_exec_server: false,
+        agent_tools: Default::default(),
     };
     let ssh = ccnm_core::ssh::Ssh::new("ccnm-home", "/tmp/ccnm-t/cli-sup").unwrap();
     let session_dir = session::create(&dir, &spec, Some(&ssh)).unwrap();
@@ -1511,6 +1512,7 @@ fn codex_supervisor_records_launch_validation_failure_without_running_an_agent()
         timeout_secs: 10,
         cwd: root.to_path_buf(),
         codex_exec_server: false,
+        agent_tools: Default::default(),
     };
     std::fs::write(dir.meta(), serde_json::to_vec(&spec).unwrap()).unwrap();
     let fake_agent = root.join("must-not-run");

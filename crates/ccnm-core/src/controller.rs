@@ -1045,6 +1045,7 @@ mod tests {
             timeout_secs: 0,
             cwd: dir.join("cwd"),
             codex_exec_server: false,
+            agent_tools: Default::default(),
         };
         std::fs::write(
             session::Dir::at(&dir).meta(),

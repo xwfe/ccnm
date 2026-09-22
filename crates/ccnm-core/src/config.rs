@@ -298,6 +298,16 @@ pub struct Workspace {
     /// with the switch off, or outside ccnm.
     #[serde(default)]
     pub exec_sandbox: ExecSandbox,
+    /// Which of the Agent CLI's own features a **remote** managed session
+    /// keeps (P46). Everything else native stays off, as before.
+    ///
+    /// A Runtime field, like the switches above, because the risk lands
+    /// here: `web_fetch` can carry anything the model has read out of this
+    /// project to any URL. Absent means [`AgentTools::default`], web search
+    /// only. It says nothing to a colocated session, which has the whole
+    /// native tool set anyway, nor to an external MCP client.
+    #[serde(default, skip_serializing_if = "AgentTools::is_default")]
+    pub agent_tools: AgentTools,
     /// Hybrid only: where the restricted runner may write. Must not overlap
     /// `root`.
     #[serde(default)]
@@ -415,6 +425,81 @@ pub enum MountMode {
     /// (appendix A.12). The only mode the Hybrid design ever had.
     #[default]
     Coherence,
+}
+
+/// One native Agent feature a remote managed session may be given.
+///
+/// Only features that neither read nor write the Agent's own disk are
+/// here, so none of them is a way around "the project is only reachable
+/// through ccnm's tools". The native file, shell, notebook and skill tools
+/// are not switches at all (`provider::claude::NATIVE_TOOLS_DENIED`).
+/// What each one maps to per Agent, and what was measured, is in
+/// docs/research/p46-agent-tools-2026-09-22.md.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentTool {
+    /// Search the web. The query leaves through the Agent's own account.
+    WebSearch,
+    /// Fetch any URL. Off by default: a URL is also a way *out*.
+    WebFetch,
+    /// Delegate to a sub-agent. Measured to get exactly the parent's tools.
+    Subagents,
+    /// The model's own to-do list. Harmless, but five more tool schemas in
+    /// every request for something short print runs rarely use.
+    Tasks,
+}
+
+impl AgentTool {
+    pub const ALL: [AgentTool; 4] = [
+        AgentTool::WebSearch,
+        AgentTool::WebFetch,
+        AgentTool::Subagents,
+        AgentTool::Tasks,
+    ];
+
+    /// The value as written in config.toml.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AgentTool::WebSearch => "web_search",
+            AgentTool::WebFetch => "web_fetch",
+            AgentTool::Subagents => "subagents",
+            AgentTool::Tasks => "tasks",
+        }
+    }
+}
+
+/// The set a workspace turns on. `agent_tools = []` turns them all off.
+///
+/// A set, so writing one twice is not an error and the order in the file
+/// does not change the launch command.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(transparent)]
+pub struct AgentTools(std::collections::BTreeSet<AgentTool>);
+
+impl Default for AgentTools {
+    /// Web search only: the user's call (2026-09-22), and the one feature
+    /// whose absence a coding session actually misses.
+    fn default() -> Self {
+        AgentTools::of(&[AgentTool::WebSearch])
+    }
+}
+
+impl AgentTools {
+    pub fn of(tools: &[AgentTool]) -> Self {
+        AgentTools(tools.iter().copied().collect())
+    }
+
+    pub fn none() -> Self {
+        AgentTools::of(&[])
+    }
+
+    pub fn is_default(&self) -> bool {
+        *self == AgentTools::default()
+    }
+
+    pub fn contains(&self, tool: AgentTool) -> bool {
+        self.0.contains(&tool)
+    }
 }
 
 // The public config spelling remains Claude-compatible in phase one.
@@ -980,6 +1065,38 @@ mod tests {
     /// The file an Agent Node keeps: who it is, that the projects are
     /// listed elsewhere, and the one alias it dials them by.
     const AGENT_SIDE: &str = "this = \"agent\"\nruntime_node = \"runtime\"\n[nodes.agent]\n[nodes.runtime]\nssh = \"xdwmbp\"\n";
+
+    /// `agent_tools` absent is web search only; `[]` is nothing; a name
+    /// twice is one; a name ccnm does not know is refused, like any other
+    /// typo in this file. The default is never written back.
+    #[test]
+    fn agent_tools_default_to_web_search_and_refuse_unknown_names() {
+        let base = "this = \"runtime\"\n[nodes.agent]\nssh = \"a\"\n[nodes.runtime]\n\
+                    [workspaces.x]\nagent_node = \"agent\"\nroot = \"/p\"\n";
+        let tools = |extra: &str| {
+            Config::parse(&format!("{base}{extra}")).map(|c| c.workspaces["x"].agent_tools.clone())
+        };
+        assert_eq!(tools("").unwrap(), AgentTools::of(&[AgentTool::WebSearch]));
+        assert_eq!(tools("agent_tools = []\n").unwrap(), AgentTools::none());
+        assert_eq!(
+            tools("agent_tools = [\"web_fetch\", \"subagents\", \"web_fetch\"]\n").unwrap(),
+            AgentTools::of(&[AgentTool::Subagents, AgentTool::WebFetch])
+        );
+        let err = tools("agent_tools = [\"todo\"]\n").unwrap_err();
+        assert!(err.message().contains("web_search"), "{err}");
+
+        let written = |tools: AgentTools| {
+            let mut config = Config::parse(base).unwrap();
+            config.workspaces.get_mut("x").unwrap().agent_tools = tools;
+            toml::to_string(&config).unwrap()
+        };
+        assert!(!written(AgentTools::default()).contains("agent_tools"));
+        assert!(written(AgentTools::none()).contains("agent_tools = []"));
+        let text = written(AgentTools::of(&AgentTool::ALL));
+        for tool in AgentTool::ALL {
+            assert!(text.contains(&format!("\"{}\"", tool.as_str())), "{text}");
+        }
+    }
 
     /// A config with no workspace list is an Agent Node's, and a name it
     /// does not know is a question for the other side. A Runtime Node's

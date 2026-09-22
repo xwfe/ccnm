@@ -28,7 +28,9 @@ pub const CREDENTIALS: super::CredentialMetadata = super::CredentialMetadata {
 };
 mod policy;
 pub(crate) use policy::write_session_files;
-pub use policy::{NATIVE_TOOLS_DENIED, mcp_config, settings, transport_payload};
+pub use policy::{
+    NATIVE_TOOLS_DENIED, mcp_config, settings, tool_names, tools_flag, transport_payload,
+};
 
 use crate::error::{Error, ErrorCode, Result};
 use crate::process::{Cmd, Output, ProcessRunner};
@@ -230,11 +232,16 @@ pub fn report(
 /// Every flag was checked against 2.1.260 `--help` and one real run on
 /// 2026-09-04 (design doc section 13):
 ///
-/// - `--tools ""` removes *every* built-in tool. Measured: the session's
-///   tool list was exactly the seven `mcp__ccnm__*` names — no Read, no
-///   Bash, no Agent, no WebFetch. Simpler and stronger than naming the
-///   tools to deny, which is why that list is only the second lock (in
-///   settings.json), not the first.
+/// - `--tools <list>` names the only built-in tools a remote session
+///   keeps: the workspace's `agent_tools` (P46), by default `WebSearch`.
+///   An empty list removes *every* built-in tool, and that is what this
+///   flag was until P46; measured then: the session's tool list was
+///   exactly the seven `mcp__ccnm__*` names — no Read, no Bash, no Agent,
+///   no WebFetch. Measured again on 2.1.278 with a non-empty list: the
+///   model gets exactly those names plus ccnm's tools, and a sub-agent
+///   gets the same set as its parent. Simpler and stronger than naming
+///   the tools to deny, which is why that list is only the second lock
+///   (in settings.json), not the first.
 /// - `--strict-mcp-config` keeps out every other MCP server, including the
 ///   ones the user's enabled plugins would bring. Measured on a machine
 ///   with eight plugins enabled: none appeared.
@@ -266,7 +273,8 @@ pub fn launch_cmd(bin: &Path, spec: &Spec, dir: &Dir) -> Cmd {
         // native tools and has no mcp.json; passing these flags made it start
         // in the state directory with no usable tools.
         cmd = cmd
-            .args(["--tools", ""])
+            .arg("--tools")
+            .arg(policy::tools_flag(&spec.agent_tools))
             .arg("--mcp-config")
             .arg(dir.mcp_config())
             .arg("--strict-mcp-config");
@@ -339,6 +347,7 @@ pub fn parse_auth(out: &Output) -> Result<AuthStatus> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{AgentTool, AgentTools};
     use crate::session::RuntimeLink;
 
     #[test]
@@ -425,16 +434,22 @@ mod tests {
             timeout_secs: 600,
             cwd: PathBuf::from("/Users/me/.local/state/ccnm/workspaces/fixture"),
             codex_exec_server: false,
+            agent_tools: Default::default(),
         }
     }
 
     /// The exact argv that was proven on the real machine, and nothing on
-    /// it that was not.
+    /// it that was not. That proof had every built-in tool off, which is
+    /// `agent_tools = []` since P46.
     #[test]
     fn launch_argv_is_the_proven_shape() {
         let dir =
             Dir::at("/Users/me/.local/state/ccnm/sessions/0b4c7a1e-2d3f-4a5b-8c6d-7e8f9a0b1c2d");
-        let cmd = launch_cmd(Path::new("/opt/homebrew/bin/claude"), &spec(), &dir);
+        let proven = Spec {
+            agent_tools: AgentTools::none(),
+            ..spec()
+        };
+        let cmd = launch_cmd(Path::new("/opt/homebrew/bin/claude"), &proven, &dir);
         assert_eq!(
             cmd.display(),
             "/opt/homebrew/bin/claude --tools  --mcp-config /Users/me/.local/state/ccnm/sessions/0b4c7a1e-2d3f-4a5b-8c6d-7e8f9a0b1c2d/mcp.json --strict-mcp-config --settings /Users/me/.local/state/ccnm/sessions/0b4c7a1e-2d3f-4a5b-8c6d-7e8f9a0b1c2d/settings.json --setting-sources user,project,local --permission-mode acceptEdits --session-id 0b4c7a1e-2d3f-4a5b-8c6d-7e8f9a0b1c2d --print --output-format json --permission-prompts none --no-session-persistence"
@@ -459,6 +474,73 @@ mod tests {
         with_dir.provider_config_dir = Some(PathBuf::from("/x/claude"));
         let cmd = launch_cmd(Path::new("/c"), &with_dir, &dir);
         assert_eq!(cmd.env[0].0, "CLAUDE_CONFIG_DIR");
+    }
+
+    fn tools_arg(spec: &Spec) -> Option<String> {
+        let cmd = launch_cmd(Path::new("/c"), spec, &Dir::at("/s"));
+        let at = cmd.args.iter().position(|a| a == "--tools")?;
+        Some(cmd.args[at + 1].to_string_lossy().into_owned())
+    }
+
+    /// `--tools` names exactly the workspace's agent tools, in Claude
+    /// Code's own spelling (measured on 2.1.278, P46), and a colocated
+    /// session gets no `--tools` at all.
+    #[test]
+    fn a_remote_session_keeps_only_the_workspace_agent_tools() {
+        assert_eq!(tools_arg(&spec()).as_deref(), Some("WebSearch"), "default");
+        let all = Spec {
+            agent_tools: AgentTools::of(&AgentTool::ALL),
+            ..spec()
+        };
+        assert_eq!(
+            tools_arg(&all).as_deref(),
+            Some("WebSearch,WebFetch,Agent,TaskStop,TaskCreate,TaskGet,TaskList,TaskUpdate")
+        );
+        // Listed, it would move every ccnm tool into the deferred pool.
+        assert!(!tools_arg(&all).unwrap().contains("ToolSearch"));
+        let colocated = Spec {
+            runtime: None,
+            ..all
+        };
+        assert_eq!(tools_arg(&colocated), None);
+    }
+
+    /// Print mode has nobody to answer a prompt, so an enabled agent tool
+    /// has to be allowed outright (WebSearch was measured denied
+    /// otherwise); every agent tool left off is denied as a second lock.
+    #[test]
+    fn settings_allow_the_enabled_agent_tools_and_deny_the_rest() {
+        let list = |value: &serde_json::Value, key: &str| -> Vec<String> {
+            value["permissions"][key]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_str().unwrap().to_string())
+                .collect()
+        };
+        let chosen = AgentTools::of(&[AgentTool::WebSearch, AgentTool::Tasks]);
+        let s = settings(true, &chosen);
+        let (allow, deny) = (list(&s, "allow"), list(&s, "deny"));
+        assert_eq!(
+            allow[crate::session::MCP_TOOLS.len()..],
+            [
+                "WebSearch",
+                "TaskCreate",
+                "TaskGet",
+                "TaskList",
+                "TaskUpdate"
+            ]
+        );
+        assert_eq!(deny[..NATIVE_TOOLS_DENIED.len()], NATIVE_TOOLS_DENIED);
+        assert_eq!(
+            deny[NATIVE_TOOLS_DENIED.len()..],
+            ["WebFetch", "Agent", "TaskStop"]
+        );
+        // A colocated session keeps Claude's own settings untouched.
+        assert_eq!(
+            settings(false, &chosen),
+            serde_json::json!({ "permissions": {} })
+        );
     }
 
     /// The real document from 2.1.260, so a field rename upstream shows up

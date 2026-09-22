@@ -112,7 +112,7 @@ dependencies = [
 
 [[package]]
 name = "ccnm-cli"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "ccnm-core",
  "ccnm-testdir",
@@ -125,7 +125,7 @@ dependencies = [
 
 [[package]]
 name = "ccnm-core"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "base64",
  "ccnm-testdir",
@@ -145,7 +145,7 @@ dependencies = [
 
 [[package]]
 name = "ccnm-testdir"
-version = "0.8.0"
+version = "0.9.0"
 
 [[package]]
 name = "cfg-if"

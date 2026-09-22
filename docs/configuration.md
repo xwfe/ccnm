@@ -513,7 +513,8 @@ hidden = ["exa-search"]          # 这几个不给，哪一类都一样
 - 不带参数调 `call_mcp_tool`，每个 server 一行：能用的写"not started"或它的工具，不给的写明原因（本机的没点名、配置里关掉了、缺环境变量、老的 HTTP+SSE 传输）。
 - 结果文字超过 32 KiB 的，先交前 32 KiB（尽量断在换行后面），末尾写明 `read_mcp_result ref=… offset=…`；留在内存里 30 分钟，单条最多 16 MiB。实测 52 000 字节在 Claude Code、Codex 里都一个字节不少地读回来了。
 - HTTP 的经这台机器的 `curl` 连（没装 `curl` 的话报错说明）。地址和请求头（exa 的 key 就在地址里）写在只有你能读的临时文件里交给 `curl`，不出现在命令行上。要 OAuth 登录的 server 报"需要登录"：令牌在 Claude Code 那里，ccnm 拿不到。
-- 本机程序类的 server 拿到的环境：起 `ccnm_agent` 的客户端给它什么，它就拿什么，去掉 Agent 的登录变量（`ANTHROPIC_API_KEY`、`CODEX_HOME` 这些）和 `SSH_AUTH_SOCK`，再加配置里 `env` 写的。`GITHUB_TOKEN` 这类不去掉——你直接用 Claude Code 时它们也拿得到。Codex 只把一部分环境变量交给 MCP server，所以 Codex 会话里，配置里用 `${VAR}` 引用、而 Codex 没交过来的变量，那个 server 会报"缺"。
+- 本机程序类的 server 拿到的环境：起 `ccnm_agent` 的客户端给它什么，它就拿什么，去掉 Agent 的登录变量（`ANTHROPIC_API_KEY`、`CODEX_HOME` 这些）和 `SSH_AUTH_SOCK`，再加配置里 `env` 写的。`GITHUB_TOKEN` 这类不去掉——你直接用 Claude Code 时它们也拿得到。
+- **配置里的 `${VAR}` 在受管会话里多半查不到你在 shell 里 export 的变量**：会话里的 Claude / Codex 是 Agent 上的 Controller（launchd 起的）经 tmux 带起来的，环境里只有 `HOME`、`PATH`、`SHELL`、`TMPDIR`、`USER` 这类，`~/.zshrc` 里 export 的不在（2026-09-23 在 fodelf 上看的）。Codex 更少：它交给 MCP server 的只有 `HOME`、`PATH`、`LC_CTYPE`、`__CF_USER_TEXT_ENCODING`（0.154.0、0.155.1 实测）。查不到的，清单里那个 server 写 `its config uses GITHUB_TOKEN, which this session's server does not have`，点名调用报 `CCNM_E_CONFIG`，不起。要在受管会话里用它，把值直接写进配置的 `env` 或地址；`${VAR:-默认值}` 查不到时用默认值，不会报缺。
 - 起的程序跟着会话走：会话结束就停，闲 5 分钟也收，下次调用重起。
 - `enabled = false`：这台机器的一个都不给。改了从下一个会话开始算。
 - 同一个名字两台机器上都有（比如都装了 context7）：两个都能用，模型看到的说明是"项目那台机器上的那个在项目旁边"。

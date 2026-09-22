@@ -12,6 +12,7 @@
 > 2026-09-20（P42）第 6 节开头多了一段：四个时钟各管什么、调用方自己的调用预算为什么不是 Runtime 的运行时限，以及三句本来就成立却没写下来的话（session-bound 是权威语义、取消等待不等于取消命令、终态只有 Runtime 说了算）。**没有加工具、参数或行为**，只是把散在第 5.5、6.2 和第 8 节的规则收到一处，好让别的产品照着实现。
 > 2026-09-20（P43）**修了一处写权会被错误交出的缺口**：会话结束时如果有命令停不掉（离开了进程组、又攥着管道，信号够不着），写入互斥不再被标成可用——下一个会话被拒，并看到还剩哪些 `output_ref`（第 7 节）。错误码没变，仍是 `CCNM_E_POLICY`；变的是**什么时候放锁**，而之前那种情况下放锁等于让两个写者同时改一棵树，本就违反第 4.4 节。锁标记里同时开始记 pid，只为让诊断说得准，不改变任何判定。同一节还写明了一条一直存在、此前一个字都没写过的边界：这把锁只在一个 state 目录内有效。
 > 2026-09-20（P44）**服务端自己验参数，有副作用的三个工具收紧了**：`exec_command`、`apply_patch`、`stop_command`（连同 `files[]` 里的嵌套结构）不再接受它们没声明的字段，超上限的 `timeout_ms` / `preview_bytes` 也从"悄悄钳到上限"改成拒绝；只读那七个照旧接受，但结果里写明忽略了什么（第 5.6 节）。**这是收紧，不是加法。**它同时修好一处声明与实现不一致：`tools/list` 里以前一个 `additionalProperties` 都没有，等于声明"随便加字段"，现在每个工具都说实话。**不升 `/2` 的理由**：`/1` 从没承诺过"未知字段会被忽略"，而按 schema 生成参数的客户端一个都不受影响——schema 现在就是服务端执行的那套；拒绝发生在执行之前，是 `isError` 工具结果，不作废句柄也不改错误码。
+> 2026-09-22（P48）**`load_skill` 也交出 Runtime 执行账号装好的 skills**（`~/.claude/skills`、`~/.agents/skills`、`~/.codex/skills`、`~/.claude/commands`），排在项目的后面；同名时装好的赢（照原生）。新增两个可选参数 `file`、`line`：读 skill 目录里的其他文件，长文件分段。不带新参数、执行账号 HOME 里又没装 skill 的调用和以前一样，只有工具的固定说明文字换了。Runtime 配置 `[machine_skills]` 可以整段关掉或按名字藏。见第 5.1 节。
 > 2026-09-22（P45）**skill 的 frontmatter 改成照 Claude Code 2.1.278 的读法读**（共享库 `toexec-skill` 0.2.0），工具、参数、错误码都没变，变的是同一个 SKILL.md 读出来的结果：以 `` ` `` `@` `*` 开头的描述不再让 skill 被跳过，`argument-hint: [filename] [format]` 和 `[issue-number]` 的提示不再丢；`disable-model-invocation: yes` / `on` / `1` 现在生效；写了 `user-invocable` 却不是 true（空值、认不出的字）现在不登记成 prompt；同一个键写两遍后写的赢。宿主会整段丢弃的 frontmatter、重复的键，`load_skill` 的返回开头各多一行说明。见第 5.1 节。
 
 面向的读者是**已经在本机跑着 Claude Code / Codex / 别的 MCP Host，但项目在另一台机器上的人**。它给你的不是一条裸 SSH 通道，而是一个绑定了 workspace 的远程项目工具集。
@@ -243,28 +244,34 @@ transport 的认证边界是 **OpenSSH identity + 独立的 Runtime OS 账号**�
 
 **skill 是什么**：项目在 `.claude/skills/<名字>/SKILL.md` 里写下的"这类任务该怎么做"——开头一段 YAML（名字、描述、参数），后面是给模型的正文，旁边可以带脚本和参考文件。`.claude/commands/*.md` 是同一种格式的单文件版本。官方 CLI 靠"当前目录"发现它们；项目在远端时 CLI 的当前目录不在项目里，一个都发现不了，所以由 Runtime 这一侧来发现。
 
-**在哪找**（都相对 workspace 根，走和 `read_file` 同一套路径策略）：
+**在哪找**：项目里的都相对 workspace 根，走和 `read_file` 同一套路径策略；装好的在 Runtime 执行账号的 HOME 下（P48 起，Runtime 配置 `[machine_skills] enabled = false` 时不找）。
 
 | 位置 | 形状 |
 | --- | --- |
+| `~/.claude/skills/<名字>/SKILL.md`、`~/.agents/skills/<名字>/SKILL.md`、`~/.codex/skills/<名字>/SKILL.md` | 装好的 skill（P48）。可以是符号链接，跟着走 |
 | `.claude/skills/<名字>/SKILL.md` | skill |
 | `.agents/skills/<名字>/SKILL.md` | skill（跨 Agent 的通用写法，Codex 找的是这里） |
+| `~/.claude/commands/**/*.md`（最深 3 层） | 装好的命令（P48） |
 | `.claude/commands/**/*.md`（最深 3 层） | 命令；名字是文件名 |
 
-重名时按上表从上到下谁先谁赢，输的那个不会悄悄消失——不带名字调 `load_skill` 返回的完整列表末尾会写出它的路径和原因。读不了的 frontmatter、没有描述的文件、经 symlink 指到 workspace 外面的 skill 目录，同样列在那里。最多 100 个；单个文件超过 1 MiB 不读。
+重名时按上表从上到下谁先谁赢——装好的赢过项目的，这是 Claude Code 2.1.278 的原生规则（实测，toexec `evidence/v3-parity/machine-skills/`）。输的那个不会悄悄消失：不带名字调 `load_skill` 返回的完整列表末尾会写出它的路径和原因。读不了的 frontmatter、没有描述的文件、经 symlink 指到 workspace 外面的**项目** skill 目录，同样列在那里。两个例外不列：`[machine_skills] hidden` 里的名字（和没装一样，项目里同名的那个就回来了）；同一个装好的 skill 经符号链接出现第二次（skills CLI 就是这么装的）。目录是 HOME 本身或文件系统根的"skill"不收。最多 100 个，超了先丢装好的；单个文件超过 1 MiB 不读。
 
 **`load_skill` 怎么用：**
 
 | 调用 | 返回 |
 | --- | --- |
-| 不带 `name` | 完整列表：每个 skill 的名字、参数提示、描述（最多 1536 字符）、文件路径；只能由人启动的、没被收进来的也列出并说明原因 |
+| 不带 `name` | 完整列表：项目的在前、装好的在后，每个 skill 的名字、参数提示、描述（最多 1536 字符）、文件路径；只能由人启动的、没被收进来的也列出并说明原因 |
 | `name`（可选 `arguments`，一个字符串） | 这个 skill 的正文，见下 |
+| `name` + `file`（可选 `line`，从 1 数） | skill 目录里的一个文件（P48）：一次最多 64 KiB，在行边界截断，末尾写明下一段用 `line` 从第几行接着读。`file=SKILL.md` 读 skill 本身 |
 
 返回的正文前面有几行方括号，是 server 加的：skill 在哪个文件、`${CLAUDE_SKILL_DIR}` 是哪个目录、哪些命令**没有被执行**、哪些 frontmatter 在这里不起作用。样例见 [`call-load-skill-ok.json`](fixtures-mcp/call-load-skill-ok.json)。正文本身：
 
 - frontmatter 去掉；`$ARGUMENTS`、`$ARGUMENTS[N]`、`$N`、声明过的 `$name` 按 Claude Code 2.1.273 的实际规则替换（没给到的 `$N` 原样留着——正文里的 `awk '{print $1}'` 因此不会被抹掉）；
-- `${CLAUDE_SKILL_DIR}` 换成 skill 目录的 **workspace 相对路径**，`${CLAUDE_PROJECT_DIR}` 换成 `.`。skill 的脚本和参考文件就是 workspace 里的普通文件：模型用 `read_file` 读、用 `exec_command` 跑，所以它们在 Runtime 上、以执行身份、受同一套写入互斥和 `exec_sandbox` 约束执行；
-- 超过 64 KiB 在行边界截断，并写明用 `read_file` 从哪一行接着读。
+- `${CLAUDE_SKILL_DIR}` 换成 skill 目录的 **workspace 相对路径**（装好的换成它在 Runtime 上的**绝对路径**），`${CLAUDE_PROJECT_DIR}` 换成 `.`。项目 skill 的脚本和参考文件就是 workspace 里的普通文件：模型用 `read_file` 读、用 `exec_command` 跑，所以它们在 Runtime 上、以执行身份、受同一套写入互斥和 `exec_sandbox` 约束执行。装好的在 workspace 外面，`read_file` 读不到，用 `file` 读；脚本同样由 `exec_command` 按那个绝对路径跑；
+- skill 目录里还有别的文件时，开头多一行列出它们（不含点文件，最多 100 个）；
+- 超过 64 KiB 在行边界截断，并写明从哪一行接着读：项目的用 `read_file`，装好的用 `load_skill` 的 `file=SKILL.md` 加 `line`。
+
+**`file` 只在这个 skill 自己的目录里读**（规则在共享库 `toexec-skill` 0.3.0 的 `dir` 模块，gld 的 `get_skill` 用同一份）：`..`、绝对路径、解析后跑到目录外的符号链接、路径上任何一段以 `.` 开头的——`CCNM_E_POLICY`；不存在、是目录、超过 1 MiB、不是 UTF-8——`CCNM_E_INVALID_ARGS`，不是文本的会给出它在 Runtime 上的绝对路径，好让模型用 `exec_command` 就地使用。`read` 模式下没有 `exec_command`、`read_file` 又出不了 workspace，这是读到 workspace 外面的**唯一**一条路，所以边界卡得这么死；不想要就在 Runtime 上关掉 `[machine_skills]`。命令是单个文件，对它用 `file` 报 `CCNM_E_INVALID_ARGS`。
 
 **目录放在哪**：`load_skill` 自己的 `description` 里。它的前半段是固定文本，后半段是这个 workspace 的 skill 目录（名字、参数提示、折成一行并截到 200 字符的描述），整段不超过 2048 个 UTF-16 码元——Claude Code 2.1.273 对每个工具的 description 只留这么多（实测；Codex 0.154.0 不截）。放不下的 skill 只列名字。**这是七个老工具没有的性质：`description` 随 workspace 变。** 没有 skill 时它是固定文本，[`tools-list-*.json`](fixtures-mcp/tools-list-read.json) 逐字节比对的就是那一版。目录在会话开始时定下来（Host 整个连接期间都留着 `tools/list` 的结果）；调用时重新扫描，所以会话中途新写的 skill 能加载，只是要到下一个会话才出现在目录里。
 
@@ -272,7 +279,7 @@ transport 的认证边界是 **OpenSSH identity + 独立的 Runtime OS 账号**�
 
 1. **`` !`命令` `` 注入不执行。** 官方 CLI 在加载 skill 时先跑这些命令、把输出填进正文。这里原样保留，并在开头列出行号和命令，模型需要就自己用 `exec_command` 跑。理由：一次"读"调用不该触发仓库指定的命令——那会绕过 `exec_command` 上的人工确认（`allow_unattended_exec` 管的那一层），`read` 模式下更是直接变成了执行。
 2. **`allowed-tools`、`disallowed-tools`、`hooks`、`model`、`effort`、`context`、`agent`、`shell` 不起作用**，出现时在返回文本里点名。ccnm 改不了 Host 的权限和模型，也不在 Agent 那台机器上执行任何来自仓库的东西。Claude Code 自己对经 MCP 来的 skill 也不认 `hooks` 和 `allowed-tools`。
-3. **只找 workspace 里的。** 执行账号 HOME 下的用户级 skills 不读。
+3. **装好的 skill 的文件用 `file` 读**，而不是像原生那样给一个路径让模型自己去读：`read_file` 只读 workspace（P48 之前这里写的是"执行账号 HOME 下的用户级 skills 不读"）。
 
 `disable-model-invocation: true` 的 skill 不进目录，`load_skill` 拒绝它（`CCNM_E_POLICY`）；`user-invocable: false` 的不登记成 prompt。
 

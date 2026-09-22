@@ -427,6 +427,37 @@ lang = "zh"   # zh（默认）| en
 
 有一处它管不到：`--help` 不读这个文件。要读它就得先解析 `--config`、加载文件，而这一切发生在命令行还没校验之前——配置写坏了会连 `--help` 一起废掉，而 `--help` 恰恰是东西坏了的时候要跑的那条。所以 `--help` 只认 `--lang` 和 `CCNM_LANG`，其余情况用默认的中文。
 
+## `[machine_skills]`
+
+```toml
+[machine_skills]
+enabled = true            # 默认值，可省略
+hidden = ["pdf", "pptx"]  # 这几个不交给会话，按会话里看到的名字
+```
+
+**这台机器的账号装好的 skills 交不交给会话**（P48）。"装好的"指 `~/.claude/skills`、`~/.agents/skills`、`~/.codex/skills`、`~/.claude/commands` 里的；项目里的（`.claude/skills` 那些）一直都给，这一节管不到。**默认全开**，是用户 2026-09-22 的决定。
+
+两台机器各写各的、各管各的，和 `[ui]` 一样不跨机器：
+
+| 写在哪 | 管的是 | 模型那边是什么样 |
+| --- | --- | --- |
+| Runtime Node | 执行账号（通常是 `ccrun`）HOME 里装的 | 并进 `load_skill`，排在项目的后面。附件用 `load_skill` 的 `file` 读；脚本就在项目这台机器上，`exec_command` 按路径直接跑 |
+| Agent Node | 你自己账号 HOME 里装的 | 远端会话启动时，Claude Code / Codex 旁边多起一个小服务 `ccnm internal agent-skills`，工具叫 `mcp__ccnm_agent__load_skill`。附件同样用 `file` 读；脚本在 Agent 机器上，模型得先用 `apply_patch` 写进项目才能在 Runtime 上跑 |
+
+Agent 这边为什么不直接用 Claude Code / Codex 自己的 skills：实测（toexec `evidence/v3-parity/machine-skills/`）Claude 读附件要放开 `Read`，而只对 skills 目录放开的 `Read` 照样能读到会话的工作目录（ccnm 给这个会话记的状态）；Codex 的清单要靠 shell 去读，ccnm 把 shell 关了，列出来也读不到。所以原生的一律关着——Codex 远端会话固定带 `-c skills.include_instructions=false`，不管这一节怎么写。
+
+**会是什么样**：
+
+- 同名时装好的赢，项目的被盖掉（和 Claude Code 原生一样）。被盖掉的出现在 `load_skill` 不带名字时返回的 `Not offered` 里，写明被哪个文件盖掉；把装好的那个名字写进 `hidden`，项目的就回来了。
+- `hidden` 里的和没装一样：目录、全表、点名都没有，`Not offered` 里也不提。只管装好的，写项目 skill 的名字不起作用。
+- 同一个 skill 经符号链接出现两次（`skills` CLI 就这么装：`~/.claude/skills/x` 链到 `~/.agents/skills/x`）只算一个。
+- 读附件只在这个 skill 自己的目录里：点开头的文件（`.env` 这类）、链到目录外面的一律拒绝，报 `CCNM_E_POLICY`；不是 UTF-8 的报 `CCNM_E_INVALID_ARGS`（Runtime 上的会附上路径，让模型用 `exec_command` 就地用）。
+- 一次最多回 64 KiB，长文件分段，每段末尾写明下一段从第几行开始。
+- 目录挤不下时：Claude Code 只保留每个工具说明的前 2048 个字符，先保项目 skill 的描述，装好的依次退成只有名字、最后只剩个数；不带名字调 `load_skill` 总能拿到全表。一共最多 100 个，超了先丢装好的。
+- 关掉（`enabled = false`）：Runtime 上关，`load_skill` 回到只有项目的；Agent 上关，远端会话不再起那个小服务。都从下一个会话开始算，开着的会话不变。
+- 这台 Runtime 的执行账号是专门建的 `ccrun` 时，它的 HOME 里一般什么都没装，这一节在 Runtime 上等于没有效果；要给它装，就装到 `~ccrun/.claude/skills` 这类目录里。
+- 旧版本的 ccnm 不认识这一节，读到它会整份配置报错（配置对未知字段是严格的），先升级再写。
+
 ## CLI 改配置
 
 ```bash

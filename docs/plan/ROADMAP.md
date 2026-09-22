@@ -38,9 +38,9 @@ ccnm 不需要安装 Orchestrator 也能独立使用。Orchestrator 核心不链
 
 ## 二、顺序和基线
 
-`P0 → P1 → P2 → P3 → P4 → P5 → P6 → P7 → P8 → P9 → P10 → P11 → P12 → P13 → P14 → P15 → P16 → P17 → P18 → P19 → P20 → P21 → P22 → P23 → P24 → P25 → P26 → P27 → P28 → P29 → P30 → P31 → P32 → P33 → P34 → P35 → P36 → P37 → P38 → P39 → P40 → P41 → P42 → P43 → P44 → P45 → P46`。默认每轮只执行一个阶段。P0–P8 是 ccnm v1 收口和独立 Orchestrator 的接口交接；P9–P12 是 ccnm v1.x 的 Remote Workspace MCP 扩展；P13 是按真实 Host 行为修正两个入口共用的 instructions 投影；P21–P24 是 Codex 原生执行链；P25 修 P24 真机轮发现的预检错误码；P26 补原生链在 Runtime 侧的探活；P27 让 doctor 也探这条链；P28 让 CI 在声明的 rust-version 上编译一遍；P29 补测原生链的并发、在途请求与资源上限，P30 修它查出的 fs helper 活过放锁；P31 给 Runtime 保留输出加会话总量上限、结束即删和过期清理；P32 封存原生链（用户决定）；P33 把沙箱那项收益搬到两个入口共用的 `exec_command` 上；P34 修 `apply_patch` 日志锁探测靠关文件放锁、fork 窗口里漏拦的缺陷；P35 让测试建的临时目录跑完就删（纯测试代码）；P36–P41 是"工具面对齐原生能力"那条线（跨仓方案在 toexec 的 v3 计划）：P36 项目自带的 skills、P37 搜索模式与整文件覆盖与一行 shell、P38 让搜索的 glob 不越过 `.gitignore`、P39 view_image、P40 notebook 按 cell 读写、P41 后台命令；P42–P44 是跨仓重构评审 X04–X06 的三条收口：P42 后台命令的生命周期契约、P43 停不掉的命令不交出写权、P44 服务端自己验输入。P45 让 skill 的 frontmatter 读法对齐宿主（评审 X08）；P46 给受管会话的 Agent 自带功能加开关（v3 计划第 5 节第 6 步的离线部分）。完整边界见 [双执行入口方案](runtime-surfaces.md)。
+`P0 → P1 → P2 → P3 → P4 → P5 → P6 → P7 → P8 → P9 → P10 → P11 → P12 → P13 → P14 → P15 → P16 → P17 → P18 → P19 → P20 → P21 → P22 → P23 → P24 → P25 → P26 → P27 → P28 → P29 → P30 → P31 → P32 → P33 → P34 → P35 → P36 → P37 → P38 → P39 → P40 → P41 → P42 → P43 → P44 → P45 → P46 → P48`（P47 被 2026-09-22 做完又整个撤销的一次占用过，不再用）。默认每轮只执行一个阶段。P0–P8 是 ccnm v1 收口和独立 Orchestrator 的接口交接；P9–P12 是 ccnm v1.x 的 Remote Workspace MCP 扩展；P13 是按真实 Host 行为修正两个入口共用的 instructions 投影；P21–P24 是 Codex 原生执行链；P25 修 P24 真机轮发现的预检错误码；P26 补原生链在 Runtime 侧的探活；P27 让 doctor 也探这条链；P28 让 CI 在声明的 rust-version 上编译一遍；P29 补测原生链的并发、在途请求与资源上限，P30 修它查出的 fs helper 活过放锁；P31 给 Runtime 保留输出加会话总量上限、结束即删和过期清理；P32 封存原生链（用户决定）；P33 把沙箱那项收益搬到两个入口共用的 `exec_command` 上；P34 修 `apply_patch` 日志锁探测靠关文件放锁、fork 窗口里漏拦的缺陷；P35 让测试建的临时目录跑完就删（纯测试代码）；P36–P41 是"工具面对齐原生能力"那条线（跨仓方案在 toexec 的 v3 计划）：P36 项目自带的 skills、P37 搜索模式与整文件覆盖与一行 shell、P38 让搜索的 glob 不越过 `.gitignore`、P39 view_image、P40 notebook 按 cell 读写、P41 后台命令；P42–P44 是跨仓重构评审 X04–X06 的三条收口：P42 后台命令的生命周期契约、P43 停不掉的命令不交出写权、P44 服务端自己验输入。P45 让 skill 的 frontmatter 读法对齐宿主（评审 X08）；P46 给受管会话的 Agent 自带功能加开关（v3 计划第 5 节第 6 步的离线部分）；P48 把两台机器上装好的 skills 交给会话（toexec v4 方案第 1 步）。完整边界见 [双执行入口方案](runtime-surfaces.md)。
 
-**P46 之后没有已排期的阶段。**v3 计划第 5 节第 6 步卡着的那个决定用户 2026-09-22 定了（默认开 WebSearch，其他做开关），P46 做完了不花额度的部分。剩下的是真实模型轮（模型会不会用搜索、子代理的真实开销）和第 7 步的对照实验，都要模型额度，要单独授权。
+**P48 之后没有已排期的 ccnm 阶段。**用户 2026-09-22 要 gld / ccnm 用上两台机器上已经装好的 skills 和 MCP server，顺序是跨仓 [v4 方案](https://github.com/xwfe/toexec/blob/main/docs/plan/implementation-plan-v4-machine-skills-mcp.md) 里的四步：skills（P48，已做）→ gld 聚合本机 MCP → ccnm 在 Runtime 上代理 MCP → ccnm 会话接 Agent 上的 MCP。后三步开工时再登记阶段。v3 第 5 节第 6 步剩下的真实模型轮和第 7 步的对照实验要模型额度，要单独授权。
 
 ### P0 — 已有内部验证基线
 
@@ -722,3 +722,18 @@ ccnm 这一轮只定权威语义、补自己这边的证据。租约展示与状
 - **P46.5** 配置说明、支持矩阵、排错手册、协议文档里 Managed 路径那句跟着改。门禁同 P37.6。
 
 停止点：不跑真实模型；不做计划模式和"问用户"（print 模式下不存在）；Codex 的子代理不开（没量过它会不会继承关掉的 feature）；不碰 gld（它是外部客户端，自带自己的工具）；不发版。
+
+### P48 — 两台机器上装好的 skills 交给会话
+
+**依赖 P46。toexec v4 方案第 1 步。用户 2026-09-22 定："gld 或 ccnm 都可以使用 agent 和 runtime 机器上的已经安装的 skills 和 mcp……ccnm 默认全开……代码模块化，解耦，如果后期这块功能不需要，能简单的删除。抽取共用模块进 toexec"。** 零额度实测在 toexec 的 `evidence/v3-parity/machine-skills/`（`6741340`），ccnm 的记录在 [P48 记录](../research/p48-machine-skills-2026-09-22.md)。
+
+为什么要做：P36 只交项目里的 skills；Runtime 执行账号装的不读，Agent 上装的被 P46 的拒绝表挡着，而 Codex 在远端会话里其实已经列出 Agent 上的 skills、却读不到（ccnm 关了它的 shell）。
+
+- **P48.1** 实测原生怎么对待用户级 skills（Claude 放开 `Skill` / 只放 skills 目录的 `Read` / 同名谁赢；Codex 会不会列、能不能关），据此定 Agent 这边由 ccnm 自己提供。
+- **P48.2** Runtime：`load_skill` 同时扫执行账号 HOME 的四个目录，项目的排前面，同名时装好的赢并说明被谁盖掉；符号链接和逐字节相同的拷贝只算一个；目录放不下全部名字时列放得下的那些。
+- **P48.3** `load_skill` 加 `file` / `line`：只在 skill 自己目录里读（共享库 `toexec-skill` 0.3.0 的 `dir` 模块），64 KiB 一段。协议 fixture 手工改，不重录；`tools/list` 守住 16 KiB 预算。
+- **P48.4** Agent：`ccnm internal agent-skills`，Claude 写进 `mcp.json` 并 allow，Codex 用 `-c mcp_servers.ccnm_agent.*`；Codex 远端会话一律 `skills.include_instructions=false`。
+- **P48.5** 每台机器自己的 `[machine_skills]`（`enabled` 默认 true、`hidden`），不跨机器传，线上格式不变。
+- **P48.6** 真实 Claude Code / Codex 接上真实 Agent 端服务（假模型）；配置说明、使用说明、协议文档、支持矩阵、README 跟着改。门禁同 P37.6，外加 `tests/test_agent_skills.py`。
+
+停止点：不做 MCP server 的聚合或代理（v4 后三步）；不跑真实模型；不做 SEP-2640；不改 gld 以外的产品（gld 那一半记在 gld 自己的仓库）；不发版。

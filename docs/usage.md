@@ -353,9 +353,9 @@ stop_command
 
 - SKILL.md 里的 `` !`命令` ``（官方 CLI 会在加载 skill 时先执行它、把输出填进正文）**不自动执行**。模型会看到一份清单，需要就自己用 `exec_command` 跑。一次"读 skill"不该变成一次"执行仓库指定的命令"。
 - frontmatter 里的 `allowed-tools`、`hooks`、`model` 等**不起作用**，模型加载时会被告知。
-- 只找项目里的。Runtime 执行账号 HOME 下的用户级 skills 不读。
+- 两台机器上**装好的** skills（`~/.claude/skills`、`~/.agents/skills` 这些）也会交给模型（P48，默认全开）：Runtime 执行账号装的并进 `load_skill`，排在项目的后面；Agent 上你自己装的由一个叫 `mcp__ccnm_agent__load_skill` 的工具交出去。附件用 `load_skill` 的 `file` 读。怎么关、怎么按名字藏、同名谁赢，见[配置说明](configuration.md#machine_skills)。
 
-**写了 skill 但模型没用上，先这样查**：让模型（或你自己接一个 MCP 客户端）不带名字调一次 `load_skill`。返回的列表末尾有一段 `Not offered`，写着每个没被收进来的文件和原因——最常见的是 frontmatter 写错了（会说第几行）、没有 `description`、两个文件重名，以及 skills 目录是一个指到项目外面的 symlink（读路径出不了项目根，这条和 `read_file` 是同一个规矩）。另外，目录是会话开始时定下来的：会话中途新加的 skill 可以按名字加载，但要到下一个会话才出现在工具说明里。
+**写了 skill 但模型没用上，先这样查**：让模型（或你自己接一个 MCP 客户端）不带名字调一次 `load_skill`。返回的列表末尾有一段 `Not offered`，写着每个没被收进来的文件和原因——最常见的是 frontmatter 写错了（会说第几行）、没有 `description`、两个文件重名（包括被机器上装好的同名 skill 盖掉，会写明被谁盖掉），以及 skills 目录是一个指到项目外面的 symlink（读路径出不了项目根，这条和 `read_file` 是同一个规矩）。另外，目录是会话开始时定下来的：会话中途新加的 skill 可以按名字加载，但要到下一个会话才出现在工具说明里。
 
 完整规则见[协议文档第 5.1 节](protocol/remote-workspace-mcp-v1.md#51-load_skill-与-prompts项目自带的-skillsp36-新增)。**验到哪一步**：发现、加载、参数替换、目录长度、prompts 都有离线测试和一个不依赖 ccnm 代码的中立 MCP 客户端测试；"真实模型会不会主动去用 skill"**没有验**，见[支持矩阵](support-matrix.md)。
 

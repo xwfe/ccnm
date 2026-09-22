@@ -180,10 +180,13 @@ fn claude_behavior_matches_snapshot_except_documented_safety_and_colocated_fixes
         "{base}\n[project instructions:{marker}\n\nThis project has{list}\n\n--- CLAUDE.md{file}"
     ));
     // P36 adds an eighth tool, `load_skill`, P39 a ninth, `view_image`,
-    // P40 a tenth, `read_notebook`, and P41 an eleventh, `stop_command`,
-    // so the settings allow-list that lets the model call ccnm's tools
-    // without a prompt names them too. The seven that were there are
-    // unchanged and in the same order.
+    // P40 a tenth, `read_notebook`, P41 an eleventh, `stop_command`, and
+    // P49 a twelfth, `call_mcp_tool`, so the settings allow-list that lets
+    // the model call ccnm's tools without a prompt names them too. The seven
+    // that were there are unchanged and in the same order. (`call_mcp_tool`
+    // still asks the person in an interactive session: its tool carries the
+    // same requiresUserInteraction key as `exec_command`, which the allow
+    // list does not switch off.)
     for launch in expected["launches"].as_array_mut().unwrap() {
         if let Some(allow) = launch
             .pointer_mut("/settings/permissions/allow")
@@ -193,6 +196,7 @@ fn claude_behavior_matches_snapshot_except_documented_safety_and_colocated_fixes
             allow.push(Value::from("mcp__ccnm__view_image"));
             allow.push(Value::from("mcp__ccnm__read_notebook"));
             allow.push(Value::from("mcp__ccnm__stop_command"));
+            allow.push(Value::from("mcp__ccnm__call_mcp_tool"));
         }
     }
     // P46 keeps the workspace's agent tools, web search by default, in a

@@ -82,6 +82,10 @@ pub struct Config {
     /// about its own, and nothing under it crosses to the other node.
     #[serde(default, skip_serializing_if = "MachineSkills::is_default")]
     pub machine_skills: MachineSkills,
+    /// The MCP servers this machine relays to the sessions it is the
+    /// Runtime for (P49). Local like `machine_skills`.
+    #[serde(default, skip_serializing_if = "RuntimeMcp::is_default")]
+    pub runtime_mcp: RuntimeMcp,
 }
 
 /// Skills installed for this machine's account -- `~/.claude/skills`,
@@ -124,6 +128,49 @@ impl Default for MachineSkills {
 impl MachineSkills {
     pub fn is_default(&self) -> bool {
         self == &MachineSkills::default()
+    }
+}
+
+/// MCP servers on the Runtime Node that a session gets through
+/// `call_mcp_tool` (P49): the ones the runtime account installed for Claude
+/// Code or Codex (`~/.claude.json`, `~/.codex/config.toml`) and the ones the
+/// project declares in its `.mcp.json`.
+///
+/// Read only on the Runtime Node, by the MCP server, from this machine's own
+/// config: what runs as the runtime account is this machine's decision. On
+/// by default, both halves -- the user's call (2026-09-22). A relayed server
+/// runs a program as the runtime account, so it is behind the same gate,
+/// sandbox and confirmation as `exec_command`, and only a session that may
+/// write has the tool at all.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeMcp {
+    /// `false`: no session on this machine gets any relayed server.
+    #[serde(default = "yes")]
+    pub enabled: bool,
+    /// `false`: a project's `.mcp.json` is not read; only what the runtime
+    /// account installed is relayed. For a machine that hosts projects whose
+    /// files it would rather not have name programs to run.
+    #[serde(default = "yes")]
+    pub project: bool,
+    /// Servers never relayed, by name, wherever they are declared.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    pub hidden: std::collections::BTreeSet<String>,
+}
+
+impl Default for RuntimeMcp {
+    fn default() -> Self {
+        RuntimeMcp {
+            enabled: true,
+            project: true,
+            hidden: Default::default(),
+        }
+    }
+}
+
+impl RuntimeMcp {
+    pub fn is_default(&self) -> bool {
+        self == &RuntimeMcp::default()
     }
 }
 

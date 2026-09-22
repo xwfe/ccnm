@@ -308,6 +308,125 @@ agent_node = "agent"
         text = self.skill_tool(self.client("demo", "read", "neutral-unshared"))["description"]
         self.assertTrue(text.endswith("This workspace has no skills right now."), text)
 
+    # -- 项目那台机器上的 MCP server（P49） --
+
+    def declare_server(self) -> None:
+        """项目的 .mcp.json 里声明一个 stdio server：配置里给它一个 token，
+        还（错误地）写了一个 Agent 的登录变量——后者必须到不了它。"""
+        server = ROOT / "tests" / "fixtures" / "fake_mcp_server.py"
+        (self.root / ".mcp.json").write_text(json.dumps({"mcpServers": {
+            "fake": {
+                "command": sys.executable,
+                "args": [str(server)],
+                "env": {"DB_TOKEN": "t0k", "ANTHROPIC_API_KEY": "must-not-arrive"},
+            },
+            "web": {"type": "http", "url": "https://example.invalid/mcp"},
+        }}), encoding="utf-8")
+
+    def relay_tool(self, client: McpClient) -> dict | None:
+        return next((tool for tool in client.tools() if tool["name"] == "call_mcp_tool"), None)
+
+    def test_a_projects_mcp_server_is_relayed_to_a_coding_session(self):
+        self.declare_server()
+        self.write_config("coding", unconfined=True)
+        client = self.client("demo", "coding", "neutral-relay")
+        tool = self.relay_tool(client)
+        self.assertIsNotNone(tool, client.tool_names())
+        self.assertTrue(tool["description"].endswith("Servers here: fake."), tool["description"])
+        self.assertFalse(tool["annotations"]["readOnlyHint"])
+        self.assertTrue(tool["annotations"]["openWorldHint"])
+
+        overview = result_text(client.call_tool("call_mcp_tool", {}))
+        self.assertIn("- fake (.mcp.json): not started", overview)
+        self.assertIn("- web (.mcp.json): not relayed: it is an HTTP server", overview)
+
+        listed = result_text(client.call_tool("call_mcp_tool", {"server": "fake"}))
+        self.assertTrue(listed.startswith("[MCP server fake (fake 1.0): 4 tool(s)]"), listed)
+        self.assertIn("Keep calls small.", listed)
+
+        echoed = client.call_tool("call_mcp_tool", {"server": "fake", "tool": "echo", "arguments": {"q": 1}})
+        self.assertFalse(is_error(echoed), echoed)
+        # 一份文字，不带那份一样的 structuredContent。
+        self.assertEqual(result_text(echoed), '{"q": 1}')
+        self.assertNotIn("structuredContent", echoed)
+
+        whoami = result_text(client.call_tool("call_mcp_tool", {"server": "fake", "tool": "whoami"}))
+        self.assertEqual(whoami, "token=t0k agent=")
+
+    def test_a_long_result_continues_with_read_output(self):
+        self.declare_server()
+        self.write_config("coding", unconfined=True)
+        client = self.client("demo", "coding", "neutral-relay-long")
+        got = client.call_tool("call_mcp_tool", {"server": "fake", "tool": "big"})
+        blocks = [block["text"] for block in got["content"]]
+        self.assertLessEqual(len(blocks[0].encode()), 32768)
+        note = blocks[1]
+        self.assertIn("read_output output_ref=", note)
+        reference = note.split("output_ref=")[1].split()[0]
+        offset = int(note.split("offset=")[1].rstrip("]").split()[0])
+        whole = blocks[0].encode()
+        while True:
+            page = client.call_tool("read_output", {"output_ref": reference, "offset": offset, "limit": 32768})
+            self.assertFalse(is_error(page), page)
+            # 正文之后一行页脚，写着这一页读到第几个字节（正文不以换行结尾时，
+            # 页脚前会多一个换行，所以按页脚的数字取正文）。
+            text = result_text(page)
+            at = text.rfind("\n[")
+            body, footer = text[: at + 1], text[at + 2:]
+            if footer.startswith("end of stdout at "):
+                upto = int(footer.split(" at ")[1].split()[0])
+            else:
+                upto = int(footer.split("offset=")[1].rstrip("]"))
+            whole += body.encode()[: upto - offset]
+            offset = upto
+            if footer.startswith("end of stdout"):
+                break
+        self.assertEqual(len(whole), 52000, "分段读完一个字节不少")
+        whole = whole.decode()
+        self.assertIn("line 00999", whole)
+
+    def test_ending_the_session_stops_the_servers_it_started(self):
+        self.declare_server()
+        self.write_config("coding", unconfined=True)
+        client = self.client("demo", "coding", "neutral-relay-end")
+        pid = int(result_text(client.call_tool("call_mcp_tool", {"server": "fake", "tool": "pid"})))
+        os.kill(pid, 0)  # 活着
+        self.assertEqual(client.close(), 0)
+        # server 能写工作树，所以它得在写锁放掉之前走：ccnm 退出时它已经没了。
+        with self.assertRaises(ProcessLookupError):
+            os.kill(pid, 0)
+        # 写锁确实放了：下一个 coding 会话进得来。
+        self.client("demo", "coding", "neutral-relay-next")
+
+    def test_a_read_session_never_gets_the_relay(self):
+        self.declare_server()
+        client = self.client("demo", "read", "neutral-relay-read")
+        self.assertIsNone(self.relay_tool(client))
+        refused = client.call_tool("call_mcp_tool", {"server": "fake", "tool": "echo"})
+        self.assertTrue(result_text(refused).startswith("CCNM_E_POLICY:"), result_text(refused))
+
+    def test_an_unconfined_runtime_without_the_opt_in_starts_no_server(self):
+        self.declare_server()
+        self.write_config("coding")
+        client = self.client("demo", "coding", "neutral-relay-gate")
+        # 只是列一下：什么都不起，不用过执行门。
+        self.assertFalse(is_error(client.call_tool("call_mcp_tool", {})))
+        refused = client.call_tool("call_mcp_tool", {"server": "fake"})
+        self.assertTrue(result_text(refused).startswith("CCNM_E_POLICY:"), result_text(refused))
+        self.assertIn("like exec_command", result_text(refused))
+
+    def test_the_machine_decides_whether_mcp_servers_are_relayed(self):
+        self.declare_server()
+        self.write_config("coding", unconfined=True)
+        base = self.config.read_text(encoding="utf-8")
+        self.config.write_text(base + "\n[runtime_mcp]\nproject = false\n", encoding="utf-8")
+        # coding 会话占着这个工作树的写锁，下一个会话得等它走。
+        first = self.client("demo", "coding", "neutral-relay-noproject")
+        self.assertIsNone(self.relay_tool(first))
+        first.close()
+        self.config.write_text(base + "\n[runtime_mcp]\nenabled = false\n", encoding="utf-8")
+        self.assertIsNone(self.relay_tool(self.client("demo", "coding", "neutral-relay-off")))
+
     def test_annotations_say_what_the_runtime_enforces(self):
         self.write_config("coding")
         client = self.client("demo", "coding", "neutral-hints")

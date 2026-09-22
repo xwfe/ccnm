@@ -25,6 +25,7 @@ pub mod patch;
 pub mod path;
 pub mod probe;
 pub mod read;
+pub mod relay;
 pub mod retention;
 pub mod sandbox;
 pub mod search;

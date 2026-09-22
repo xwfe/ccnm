@@ -60,7 +60,7 @@ use crate::ssh::Ssh;
 /// `read_notebook` and P41 `stop_command`. New tools go
 /// last so that the order of the first seven -- which golden fixtures and
 /// people's memory both hold -- does not move.
-pub const MCP_TOOLS: [&str; 11] = [
+pub const MCP_TOOLS: [&str; 12] = [
     "workspace_info",
     "read_file",
     "list_files",
@@ -72,6 +72,9 @@ pub const MCP_TOOLS: [&str; 11] = [
     "view_image",
     "read_notebook",
     "stop_command",
+    // Offered only where the Runtime has an MCP server to relay (P49); being
+    // allowed here when it is absent changes nothing.
+    "call_mcp_tool",
 ];
 
 // Compatibility export; native tool names belong to the provider.

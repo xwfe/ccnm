@@ -51,6 +51,7 @@ use crate::mcp::notebook::{self, ReadNotebookArgs};
 use crate::mcp::output::{self, ReadOutputArgs};
 use crate::mcp::patch::{self, ApplyPatchArgs};
 use crate::mcp::read::{self, ReadFileArgs};
+use crate::mcp::relay::{self, CallMcpToolArgs, Relay};
 use crate::mcp::retention;
 use crate::mcp::sandbox;
 use crate::mcp::search::{self, SearchTextArgs};
@@ -301,6 +302,10 @@ struct Inner {
     /// This machine's installed skills, when its config shares them (P48).
     /// Scanned again on every call, like the project's.
     machine: Option<Machine>,
+    /// The MCP servers relayed through `call_mcp_tool` (P49), for a session
+    /// that may write on a machine whose config relays them. Their
+    /// processes are stopped in [`run`] before the write guard is let go.
+    relay: Option<Arc<Relay>>,
     git: bool,
     git_subdir: Option<String>,
     /// Somebody is at a terminal, so a permission prompt can be answered.
@@ -442,6 +447,24 @@ impl Server {
             .map(Arc::new),
             None => None,
         };
+        // Only for a session that may write: the tool is withheld from the
+        // others, and a relay would only read configs nobody asks about.
+        let relay = if payload.entry.writes() {
+            exec_gate.config.as_ref().and_then(|config| {
+                let home = crate::paths::home_dir().ok()?;
+                let codex_home = std::env::var_os("CODEX_HOME").map(PathBuf::from);
+                Relay::new(
+                    &config.runtime_mcp,
+                    &home,
+                    codex_home,
+                    &root,
+                    sandbox.clone(),
+                )
+                .map(Arc::new)
+            })
+        } else {
+            None
+        };
         tracing::info!(
             workspace = %payload.workspace,
             root = %root.display(),
@@ -454,6 +477,7 @@ impl Server {
             project_instructions = project.as_ref().map_or(0, context::Project::included),
             skills = skills.skills.len(),
             skills_skipped = skills.skipped.len(),
+            relayed_mcp = relay.as_ref().is_some_and(|relay| relay.offered()),
             "mcp server starting"
         );
         Ok(Server {
@@ -474,6 +498,7 @@ impl Server {
                 named,
                 skills,
                 machine,
+                relay,
                 git,
                 git_subdir,
                 interactive: payload.interactive,
@@ -501,12 +526,18 @@ impl Server {
             .list_all()
             .into_iter()
             .filter(|tool| self.offers(&tool.name))
+            .filter(|tool| tool.name != relay::TOOL || self.relayed().is_some())
             .map(|mut tool| {
-                // The one description that depends on the workspace: it
-                // carries the catalog. The attribute on the method is
-                // evaluated without `self`, so it is replaced here.
+                // The descriptions that depend on the workspace: they carry
+                // a catalog. The attribute on the method is evaluated
+                // without `self`, so they are replaced here.
                 if tool.name == skills::TOOL {
                     tool.description = Some(self.inner.skills.description().into());
+                }
+                if tool.name == relay::TOOL
+                    && let Some(relay) = self.relayed()
+                {
+                    tool.description = Some(relay.description().into());
                 }
                 let annotations = annotations_for(&tool.name);
                 let tool = tool.annotate(annotations);
@@ -517,7 +548,7 @@ impl Server {
                 if self.inner.interactive
                     && !self.inner.entry.is_external()
                     && !self.inner.exec_gate.accepted.unattended_exec
-                    && tool.name == INTERACTION_TOOL
+                    && INTERACTION_TOOLS.contains(&tool.name.as_ref())
                 {
                     tool.with_meta(requires_user_interaction())
                 } else {
@@ -525,6 +556,12 @@ impl Server {
                 }
             })
             .collect()
+    }
+
+    /// The relay, when this session offers `call_mcp_tool`: it may write,
+    /// this machine relays, and at least one server could run.
+    fn relayed(&self) -> Option<&Arc<Relay>> {
+        self.inner.relay.as_ref().filter(|relay| relay.offered())
     }
 
     /// Whether this session offers a tool at all.
@@ -965,6 +1002,59 @@ impl Server {
     }
 
     #[tool(
+        name = "call_mcp_tool",
+        description = "Use an MCP server on the runtime machine. The servers are listed when there are any."
+    )]
+    async fn call_mcp_tool(
+        &self,
+        Parameters(args): Parameters<CallMcpToolArgs>,
+    ) -> std::result::Result<CallToolResult, ErrorData> {
+        self.count_call();
+        if let Some(refusal) = self.refuse_withheld(relay::TOOL) {
+            return Ok(refusal);
+        }
+        let Some(relay) = self.inner.relay.clone() else {
+            return Ok(tool_error(&Error::policy(
+                "this runtime relays no MCP server: [runtime_mcp] enabled = false in its config",
+            )));
+        };
+        // Starting a server is running a program as the runtime account:
+        // the same two checks `exec_command` makes, in the same order.
+        // Listing the servers starts nothing and skips them.
+        if args.starts_a_server() {
+            if !self.inner.exec_gate.allowed() {
+                return Ok(tool_error(&Error::policy(format!(
+                    "call_mcp_tool starts a program as the runtime account, like exec_command, and is refused for the same reason: {}",
+                    self.inner.exec_gate.audit.refusal(
+                        self.inner.exec_gate.accepted,
+                        crate::safety::Refused::ExecCommand,
+                    )
+                ))));
+            }
+            let accepted = self.inner.exec_gate.accepted;
+            let checked = tokio::task::spawn_blocking(move || {
+                let home = crate::paths::home_dir()?;
+                crate::safety::credentials::runtime_gate(&home, accepted, &SystemRunner)
+            })
+            .await
+            .map_err(|_| ErrorData::internal_error("Runtime credential check failed", None))?;
+            if let Err(error) = checked {
+                return Ok(tool_error(&error));
+            }
+        }
+        let output = self.inner.output.clone();
+        let called = tokio::task::spawn_blocking(move || relay.call(&args, output.as_deref()))
+            .await
+            .map_err(|e| {
+                ErrorData::internal_error(format!("call_mcp_tool task failed: {e}"), None)
+            })?;
+        match called {
+            Ok(result) => Ok(result),
+            Err(err) => Ok(tool_error(&err)),
+        }
+    }
+
+    #[tool(
         name = "apply_patch",
         description = "Change files in the remote workspace: add, update, write, edit_notebook, delete or move. This is the only way to write. An update replaces exact strings, a write replaces a whole existing file and edit_notebook replaces, inserts or deletes Jupyter cells; like delete and move, they must carry the version read_file or read_notebook returned, so a change built on content that has since changed is refused. Either every file in the patch is applied or none is."
     )]
@@ -1021,13 +1111,19 @@ impl Server {
 /// If a client ignores the key, nothing breaks and nothing is claimed:
 /// this is a second lock. The first is `exec_gate`, on this side, which
 /// no client can talk its way past.
-const INTERACTION_TOOL: &str = "exec_command";
+const INTERACTION_TOOLS: [&str; 2] = ["exec_command", relay::TOOL];
 
-/// The tools a session without write access does not get. Three of them
-/// change things; `read_output` is here because of session scoping, see
+/// The tools a session without write access does not get. Four of them
+/// change things -- `call_mcp_tool` starts programs, like `exec_command`
+/// (P49); `read_output` is here because of session scoping, see
 /// [`Server::offers`].
-const WITHHELD_WITHOUT_WRITE: [&str; 4] =
-    ["exec_command", "apply_patch", "read_output", "stop_command"];
+const WITHHELD_WITHOUT_WRITE: [&str; 5] = [
+    "exec_command",
+    "apply_patch",
+    "read_output",
+    "stop_command",
+    relay::TOOL,
+];
 
 /// The standard MCP annotations for one tool.
 ///
@@ -1052,7 +1148,7 @@ fn annotations_for(tool: &str) -> rmcp::model::ToolAnnotations {
         Some(false),
         Some(true),
         Some(false),
-        Some(tool == "exec_command"),
+        Some(tool == "exec_command" || tool == relay::TOOL),
     )
 }
 const REQUIRES_INTERACTION: &str = "anthropic/requiresUserInteraction";
@@ -1361,6 +1457,11 @@ fn run(server: Server) -> CcnmResult<()> {
     // the guard was marked released here and the next writer walked straight
     // in beside it (评审 X05).
     let abandoned = inner.jobs.stop_all();
+    // Relayed MCP servers too (P49): one can write the working tree, so it
+    // must be gone before the guard is.
+    if let Some(relay) = &inner.relay {
+        relay.close_all();
+    }
     if !abandoned.is_empty()
         && let Some(guard) = &inner.write_guard
     {
@@ -1630,7 +1731,8 @@ mod tests {
         let payload = ServePayload::new("xshun", dir.to_path_buf(), "s").with_interactive(true);
         let server = fixture_server(&payload).unwrap();
         let tools = server.tools();
-        assert_eq!(tools.len(), crate::session::MCP_TOOLS.len());
+        // All but call_mcp_tool, which needs a server to relay (P49).
+        assert_eq!(tools.len(), crate::session::MCP_TOOLS.len() - 1);
         for tool in &tools {
             assert_eq!(
                 asks_the_user(tool),
@@ -1642,6 +1744,71 @@ mod tests {
         // get_tool has to say the same thing, or a client that asks about
         // one tool gets a different answer from the one that listed it.
         assert!(asks_the_user(&server.get_tool("exec_command").unwrap()));
+    }
+
+    /// A server with a relay: `root` gets a `.mcp.json` naming one stdio
+    /// server, and the home is an empty directory, so nothing of the
+    /// machine running the test is read.
+    fn fixture_with_relay(payload: &ServePayload, home: &Path) -> Server {
+        std::fs::write(
+            payload.root.join(".mcp.json"),
+            r#"{ "mcpServers": { "fake": { "command": "sh" } } }"#,
+        )
+        .unwrap();
+        let mut server = fixture_server(payload).unwrap();
+        let root = server.inner.root.clone();
+        let entry = server.inner.entry;
+        let inner = Arc::get_mut(&mut server.inner).expect("nobody else holds it yet");
+        inner.relay = entry.writes().then(|| {
+            Arc::new(
+                Relay::new(
+                    &crate::config::RuntimeMcp::default(),
+                    home,
+                    None,
+                    &root,
+                    None,
+                )
+                .unwrap(),
+            )
+        });
+        server
+    }
+
+    /// `call_mcp_tool` starts programs, so it goes where `exec_command`
+    /// goes: offered only with something to relay, asking the person every
+    /// time when there is one, and never to a session that cannot write.
+    #[test]
+    fn the_relay_tool_is_offered_only_with_a_server_and_asks_like_exec_command() {
+        let dir = temp("relay");
+        let home = temp("relay-home");
+        let payload = ServePayload::new("xshun", dir.to_path_buf(), "s").with_interactive(true);
+        let server = fixture_with_relay(&payload, &home);
+        let tools = server.tools();
+        assert_eq!(tools.len(), crate::session::MCP_TOOLS.len());
+        let relayed = server.get_tool(relay::TOOL).expect("offered");
+        assert!(asks_the_user(&relayed));
+        assert!(
+            relayed
+                .description
+                .as_deref()
+                .unwrap_or("")
+                .ends_with("Servers here: fake."),
+            "{:?}",
+            relayed.description
+        );
+        let annotations = relayed.annotations.clone().unwrap();
+        assert_eq!(annotations.read_only_hint, Some(false));
+        assert_eq!(annotations.open_world_hint, Some(true));
+
+        let read = temp("relay-read");
+        let payload = ServePayload::new("xshun", read.to_path_buf(), "s").with_entry(
+            crate::protocol::mcp::Entry::External(crate::runtime::ExternalMode::Read),
+        );
+        let server = fixture_with_relay(&payload, &home);
+        assert!(
+            server.get_tool(relay::TOOL).is_none(),
+            "read mode never gets it"
+        );
     }
 
     /// `--print` starts Claude with prompting switched off on purpose:
@@ -1675,7 +1842,7 @@ mod tests {
         };
         let server = fixture_server_accepting(&payload, accepted).unwrap();
         let tools = server.tools();
-        assert_eq!(tools.len(), crate::session::MCP_TOOLS.len());
+        assert_eq!(tools.len(), crate::session::MCP_TOOLS.len() - 1);
         assert!(
             !tools.iter().any(asks_the_user),
             "allow_unattended_exec is set, so nothing asks"

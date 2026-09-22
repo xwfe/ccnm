@@ -133,8 +133,9 @@ dependencies = [
  "serde",
  "serde_json",
  "toexec-fs",
+ "toexec-mcp",
  "toexec-skill",
- "toexec-text",
+ "toexec-text 0.1.0 (git+https://github.com/xwfe/toexec.git?tag=toexec-text-v0.1.0)",
  "tokio",
  "toml",
  "toml_edit",
@@ -865,9 +866,24 @@ version = "0.2.1"
 source = "git+https://github.com/xwfe/toexec.git?tag=toexec-fs-v0.2.1#3f5b9f98c5fdd23eb0d4a6c773434f9fe89f828a"
 
 [[package]]
+name = "toexec-mcp"
+version = "0.1.0"
+source = "git+https://github.com/xwfe/toexec.git?tag=toexec-mcp-v0.1.0#1e8b06aabc317ad624c6a6c9729f18cd3a92703b"
+dependencies = [
+ "serde_json",
+ "toexec-text 0.1.0 (git+https://github.com/xwfe/toexec.git?tag=toexec-mcp-v0.1.0)",
+ "toml",
+]
+
+[[package]]
 name = "toexec-skill"
 version = "0.3.0"
 source = "git+https://github.com/xwfe/toexec.git?tag=toexec-skill-v0.3.0#c50a0396500f513da32b53ca7b37ba8f7110c07d"
+
+[[package]]
+name = "toexec-text"
+version = "0.1.0"
+source = "git+https://github.com/xwfe/toexec.git?tag=toexec-mcp-v0.1.0#1e8b06aabc317ad624c6a6c9729f18cd3a92703b"
 
 [[package]]
 name = "toexec-text"

@@ -100,22 +100,6 @@ Codex exec-server       FAIL   CCNM_E_POLICY: ccnm internal exec-serve on runtim
 
 **顺带**：`timeout_ms`、`preview_bytes` 超过上限现在是**拒绝**（以前悄悄钳到上限，调用方以为自己要到了 27 小时）。命令要跑更久就 `run_in_background`，它没有期限。`read_output` 的 `wait_ms` 超界仍然钳，但结果里会说钳了多少。
 
-### 会话打不开，报 `CCNM_E_CONFIG` 并提到 `~/.agents/mcp.json`
-
-**症状**：`ccnm run` 或外部客户端连上来就失败，错误里是 `~/.agents/mcp.json: mcpServers.ccnm.disabledTools: expected an array of tool names` 这类话；`ccnm doctor` 的"暴露规则"一行 FAIL。
-
-**其实是**：Runtime 执行账号 HOME 下的 `~/.agents/mcp.json` 写坏了——JSON 语法错、字段类型不对，或档位拼错（只认 `on` / `name-only` / `user-invocable-only` / `off`）。这个文件是用来**关掉**工具的，读不了时 ccnm 不会当它不存在，那等于把你想关的又打开了，所以整个会话拒绝。
-
-**怎么办**：照错误里的位置改好；急着用就先把文件挪走（挪走后什么都不收窄）。注意是**执行账号**的 HOME（`runtime_user`，比如 `ccrun`），不一定是你自己的。格式见[配置说明](configuration.md#agentsmcpjson再关掉一些工具和-skills)。
-
-### 某个工具不见了，或者调用时说 `turned off on this Runtime`
-
-**症状**：模型说没有 `exec_command`（或别的工具）；硬调时拿到 `CCNM_E_POLICY: exec_command is turned off on this Runtime: it is listed in mcpServers.ccnm.disabledTools in ~/.agents/mcp.json`。
-
-**其实是**：有人在执行账号的 `~/.agents/mcp.json` 里把它关了（`disabledTools`，或者写了 `enabledTools` 而它不在里面）。和 `external_mcp = "read"` 少给工具不是一回事——那个是按模式，这个是按名字。在会话里调一次 `workspace_info`，结果里有一行 `turned off by ~/.agents/mcp.json: …` 列出全部被关的。
-
-**反过来**：你明明写了关掉，它还在——多半是名字写错了。`ccnm doctor` 的"暴露规则"会把不认识的名字当失败报出来，`workspace_info` 里也有 `names in ~/.agents/mcp.json that are not tools here`。改完**下一个会话**才生效。
-
 ### 开了 `exec_sandbox` 之后命令报 `Operation not permitted`、`git commit` 失败、`cargo build` 下不了依赖
 
 只出现在 workspace 写了 [`exec_sandbox = "codex"`](configuration.md#exec_sandbox) 的会话里；每条 `exec_command` 结果末尾都有一行 `[sandboxed: …]`，看到它就知道命令跑在沙箱里。**这不是坏了，是沙箱在挡**：命令只能写工作区（`.git` 除外）、`$TMPDIR` 和 `/tmp`，不能连网。被挡的命令按普通失败报（退出码非 0，stderr 里 `Operation not permitted`，Linux 上是 `Read-only file system`），不会有"不带沙箱重试"的路。

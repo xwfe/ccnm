@@ -461,7 +461,6 @@ fn workspace_checks(r: &Resolved<'_>, agent: Option<&str>, env: &Env<'_>) -> Vec
             checks.push(project_instructions(r));
         }
         checks.push(runtime_ccnm(r, env));
-        checks.push(exposure_row(r, env));
         // The safety rows used to be added here, from an audit of this
         // process. They are not this machine's to answer: the account that
         // runs the tools is the one the Agent's transport lands on, so they
@@ -470,12 +469,7 @@ fn workspace_checks(r: &Resolved<'_>, agent: Option<&str>, env: &Env<'_>) -> Vec
         // confined?" -- and answer it FAIL for every normal operator.
     } else {
         let why = format!("the project is on {}, not on this machine", ws.runtime_node);
-        for name in [
-            "Runtime workspace",
-            "Project instructions",
-            "Runtime ccnm",
-            "Exposure rules",
-        ] {
+        for name in ["Runtime workspace", "Project instructions", "Runtime ccnm"] {
             checks.push(Check::skip(name, &why));
         }
     }
@@ -1064,7 +1058,6 @@ fn row_label(lang: Lang, name: &str) -> &str {
         "Runtime workspace" => "Runtime 上的项目",
         "Project instructions" => "项目指令",
         "Runtime ccnm" => "Runtime 的 ccnm",
-        "Exposure rules" => "暴露规则",
         "Agent ccnm" => "Agent 的 ccnm",
         "Agent SSH" => "连 Agent 的 SSH",
         "Agent selection" => "选哪个 Agent",
@@ -1221,12 +1214,10 @@ fn external_only_checks(r: &Resolved<'_>, env: &Env<'_>) -> Vec<Check> {
     if r.topology() == Topology::FromRuntime {
         checks.push(runtime_workspace(&ws.root));
         checks.push(runtime_ccnm(r, env));
-        checks.push(exposure_row(r, env));
     } else {
         let why = format!("the project is on {}, not on this machine", ws.runtime_node);
         checks.push(Check::skip("Runtime workspace", &why));
         checks.push(Check::skip("Runtime ccnm", &why));
-        checks.push(Check::skip("Exposure rules", &why));
     }
     const NO_AGENT: &str =
         "not checked: this workspace has no Agent, so there is no Agent session to diagnose";
@@ -1325,85 +1316,6 @@ fn project_instructions(r: &Resolved<'_>) -> Check {
             ),
         ),
     }
-}
-
-/// `~/.agents/mcp.json` (P47): what it turns off, and whether it can be
-/// read at all -- a broken one refuses every session on this Runtime.
-///
-/// Read as the account running doctor, which is only the right file when
-/// that is the account the tools run as. With a `runtime_user` that is
-/// somebody else, the row says where to look instead of reading the
-/// operator's own file and presenting it as the Runtime's.
-fn exposure_row(r: &Resolved<'_>, env: &Env<'_>) -> Check {
-    const NAME: &str = "Exposure rules";
-    if let Some(expected) = r.runtime.runtime_user.as_deref() {
-        let me = env
-            .runner
-            .run(&crate::process::Cmd::new("/usr/bin/id").arg("-un"))
-            .ok()
-            .filter(|out| out.success())
-            .map(|out| out.stdout_lossy().trim().to_string());
-        if me.as_deref() != Some(expected) {
-            return Check::skip(
-                NAME,
-                format!(
-                    "the tools run as {expected} and read {expected}'s ~/.agents/mcp.json, not this account's: run ccnm doctor as {expected}, or call workspace_info in a session"
-                ),
-            );
-        }
-    }
-    let path = toexec_agents::path_in(&env.home);
-    let policy = match toexec_agents::Policy::load(&path) {
-        Ok(policy) => policy,
-        Err(e) => {
-            return Check::fail_with(
-                NAME,
-                ErrorCode::Config,
-                format!(
-                    "{e}
-every session on this Runtime is refused until it is fixed or moved away"
-                ),
-            );
-        }
-    };
-    let unknown = crate::exposure::unknown_tools(&policy);
-    if !unknown.is_empty() {
-        return Check::fail_with(
-            NAME,
-            ErrorCode::Config,
-            format!(
-                "{} names tools this ccnm does not have: {}
-a misspelt name in disabledTools leaves on the tool it meant; the tools are {}",
-                path.display(),
-                unknown.join(", "),
-                crate::session::MCP_TOOLS.join(", ")
-            ),
-        );
-    }
-    if !path.exists() {
-        return Check::ok(
-            NAME,
-            format!("no {}: nothing is turned off", path.display()),
-        );
-    }
-    let hidden: Vec<&str> = crate::exposure::hidden_tools(&policy)
-        .into_iter()
-        .map(|(tool, _)| tool)
-        .collect();
-    let skills = crate::exposure::rules(&policy).skill_overrides().len();
-    Check::ok(
-        NAME,
-        format!(
-            "{}: {} tool(s) turned off{}; {skills} skill override(s)",
-            path.display(),
-            hidden.len(),
-            if hidden.is_empty() {
-                String::new()
-            } else {
-                format!(" ({})", hidden.join(", "))
-            }
-        ),
-    )
 }
 
 /// The project root must exist on this (home) machine.
@@ -1562,84 +1474,6 @@ mod tests {
     /// alone is about 60, so socket directories go under /tmp instead.
     fn control(dir: &Path) -> PathBuf {
         PathBuf::from("/tmp/ccnm-t").join(dir.file_name().unwrap())
-    }
-
-    /// P47: `~/.agents/mcp.json` as the account running doctor sees it.
-    /// A file that would refuse every session, and a tool name that would
-    /// leave on the tool it meant to turn off, are failures; a Runtime
-    /// whose tools run as somebody else is not answered from here.
-    #[test]
-    fn the_exposure_row_reads_this_accounts_agents_file() {
-        let dir = std::env::temp_dir().join(format!("ccnm-doctor-exposure-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let file = dir.join("home/.agents/mcp.json");
-        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
-        let config = Config::parse(
-            "this = \"runtime\"\n[nodes.runtime]\n[workspaces.w]\nroot = \"/tmp\"\nexternal_mcp = \"read\"\n",
-        )
-        .unwrap();
-        let resolved = config.workspace("w").unwrap();
-        let fake = FakeRunner::new();
-        let row = |text: Option<&str>| {
-            match text {
-                Some(text) => std::fs::write(&file, text).unwrap(),
-                None => {
-                    let _ = std::fs::remove_file(&file);
-                }
-            }
-            exposure_row(&resolved, &env(&fake, &dir))
-        };
-
-        let none = row(None);
-        assert_eq!(none.status, Status::Ok);
-        assert!(
-            none.detail.contains("nothing is turned off"),
-            "{}",
-            none.detail
-        );
-
-        let good = row(Some(
-            r#"{"mcpServers": {"ccnm": {"disabledTools": ["exec_command"]}}, "skillOverrides": {"x": "off"}}"#,
-        ));
-        assert_eq!(good.status, Status::Ok);
-        assert!(
-            good.detail
-                .contains("1 tool(s) turned off (exec_command); 1 skill override(s)"),
-            "{}",
-            good.detail
-        );
-
-        let typo = row(Some(
-            r#"{"mcpServers": {"ccnm": {"disabledTools": ["exec_comand"]}}}"#,
-        ));
-        assert_eq!(typo.status, Status::Fail(ErrorCode::Config));
-        assert!(typo.detail.contains("exec_comand"), "{}", typo.detail);
-
-        let broken = row(Some(r#"{"skillOverrides": {"x": "hidden"}}"#));
-        assert_eq!(broken.status, Status::Fail(ErrorCode::Config));
-        assert!(
-            broken.detail.contains("skillOverrides.x"),
-            "{}",
-            broken.detail
-        );
-        assert!(
-            fake.calls().is_empty(),
-            "no runtime_user, so no need to ask who this is"
-        );
-
-        let other = Config::parse(
-            "this = \"runtime\"\n[nodes.runtime]\nruntime_user = \"ccrun\"\n[workspaces.w]\nroot = \"/tmp\"\nexternal_mcp = \"read\"\n",
-        )
-        .unwrap();
-        fake.push(Output::exited(0, "operator\n"));
-        let elsewhere = exposure_row(&other.workspace("w").unwrap(), &env(&fake, &dir));
-        assert_eq!(elsewhere.status, Status::Skip);
-        assert!(
-            elsewhere.detail.contains("run ccnm doctor as ccrun"),
-            "{}",
-            elsewhere.detail
-        );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn env<'a>(fake: &'a FakeRunner, dir: &Path) -> Env<'a> {
@@ -1921,8 +1755,7 @@ mod tests {
         .unwrap();
 
         let fake = FakeRunner::new();
-        // The local ccnm's own version. (`id -un` gets the fake's default
-        // answer, which is not ccrun.)
+        // The one command this path runs: the local ccnm's own version.
         fake.push(Output::exited(0, format!("ccnm {}\n", crate::VERSION)));
         let report = run(&config, Some("remote"), &env(&fake, &dir));
         let text = report.render();
@@ -1965,19 +1798,10 @@ mod tests {
                 .contains("belongs to the account the tools run as"),
             "{text}"
         );
-        // Only local commands ran: there is nowhere to dial. The version
-        // check, and -- since P47's exposure row, because this Runtime
-        // names a runtime_user -- `id -un`, to tell whether this account's
-        // ~/.agents/mcp.json is the one the tools read.
-        let calls: Vec<String> = fake.calls().iter().map(|c| c.display()).collect();
-        assert_eq!(calls.len(), 2, "{calls:?}");
-        assert!(calls[0].ends_with("ccnm --version"), "{calls:?}");
-        assert_eq!(calls[1], "/usr/bin/id -un", "{calls:?}");
-        assert_eq!(
-            row(&report, "Exposure rules").status,
-            Status::Skip,
-            "{text}"
-        );
+        // Only the local version check ran: there is nowhere to dial.
+        let calls = fake.calls();
+        assert_eq!(calls.len(), 1, "{calls:?}");
+        assert!(calls[0].display().ends_with("ccnm --version"), "{calls:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

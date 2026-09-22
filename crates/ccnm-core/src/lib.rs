@@ -7,7 +7,6 @@ pub mod configedit;
 pub mod controller;
 pub mod doctor;
 pub mod error;
-pub mod exposure;
 pub mod instance;
 pub mod lang;
 pub mod launchagent;

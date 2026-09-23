@@ -51,11 +51,11 @@ Linux 那个在 `ubuntu-24.04` 上本机构建，**glibc 下限是从二进制�
 
 ## 机器上装的是哪个版本
 
-**最新的 release 是 `v0.8.0`**（2026-09-20，tag 指向 `a5b6a3e`），四个产物齐全：macOS universal 和 linux-x86_64 各一个 tar.gz 加 sha256。
+**最新的 release 是 `v0.9.0`**（2026-09-23，tag 指向 `86bdac0`），四个产物齐全：macOS universal 和 linux-x86_64 各一个 tar.gz 加 sha256。它带的是 P45–P50：两台机器上装好的 skills 和 MCP server、受管会话的 `agent_tools` 开关，以及两个客户端截大结果的修复。
 
-发版前先在自己的两台 macOS 上跑了一轮（`scripts/deploy.sh fodelf`，Runtime 与 Agent 装同一个构建），确认 P43 的写权语义和 P44 的参数校验这两处收紧不咬真实 Host，再推的 tag。
+发版前两台 macOS 装的就是这个构建（`scripts/deploy.sh fodelf`），并用它跑了一轮真实模型会话验 P50，再按那一轮查出的缺陷（`curl` 的请求文件留在 Agent 的 `$TMPDIR`）修完才打的 tag。`ccnm doctor` 的远端 MCP 握手现在报 **12 个工具**（19417 B）。
 
-这一步换来的第一个真机事实：`ccnm doctor` 的远端 MCP 握手报 **11 个工具**（16137 B），之前是 7 个——P36–P41 加的 `load_skill`、`view_image`、`read_notebook`、`stop_command` 第一次经真实 SSH 链路握手并列出成功。**它只证明工具表到得了 Agent 那一侧，不证明模型会调它们**——那一步在同一天单跑了一轮，花了 $0.57，见[真实模型第一次用上这批工具](research/real-machine-p36-p44-2026-09-20.md)：`read_notebook`、`view_image`、`load_skill`、`exec_command` 的 `shell` 都被用上了，`run_in_background` 没拿到证据。
+上一版 `v0.8.0`（2026-09-20，tag 指向 `a5b6a3e`）把工具从 7 个带到 11 个；同一天那轮 $0.57 的真机验证见[真实模型第一次用上这批工具](research/real-machine-p36-p44-2026-09-20.md)。**握手列得出工具，不等于模型会调它们**——这两轮都是单跑一次真实会话才拿到的证据。
 
 **版本号必须跟着代码走，不能只换二进制。** 双机握手按版本字符串比，两台都报 `0.7.0` 就会被判成一致而放行，然后一边有 P43/P44 的收紧、一边没有——比直接拒绝难查得多。
 

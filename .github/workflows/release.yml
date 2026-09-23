@@ -192,14 +192,24 @@ jobs:
           # tag 自己那段话在前，安装说明在后。`%(contents)` 的第一行是 tag 名
           # （历史上每个 tag 都这么写的），删掉它免得和 release 标题重复。
           # 拿不到就只发安装说明——发版不能因为少一段说明而失败。
-          git tag -l --format='%(contents)' "$GITHUB_REF_NAME" \
-            | tail -n +2 > tagnotes.md || true
+          #
+          # 先把 tag 对象取回来：actions/checkout 在 tag 触发时建的是**轻量**
+          # tag（直接指向提交），这种 tag 的 `%(contents)` 给的是**提交说明**，
+          # 不是 `git tag -a` 写的那段。v0.9.0 的 release 页就这么错了一次：
+          # 正文成了最后一条 docs 提交的说明。所以显式 fetch 这个 ref，并且只在
+          # 它确实是 tag 对象时才读正文——读不到宁可只发安装说明。
+          git fetch --force --no-recurse-submodules origin \
+            "refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}" || true
+          if [ "$(git cat-file -t "refs/tags/$GITHUB_REF_NAME" 2>/dev/null)" = tag ]; then
+            git tag -l --format='%(contents)' "$GITHUB_REF_NAME" \
+              | tail -n +2 > tagnotes.md || true
+          fi
           if [ -s tagnotes.md ]; then
             cat tagnotes.md > notes.md
             printf '\n---\n\n' >> notes.md
             cat install.md >> notes.md
           else
-            echo "::warning::tag $GITHUB_REF_NAME 没有 annotation，release 只带安装说明"
+            echo "::warning::tag $GITHUB_REF_NAME 没有 annotation、或者 tag 对象取不回来，release 只带安装说明"
             cp install.md notes.md
           fi
           gh release create "$GITHUB_REF_NAME" \

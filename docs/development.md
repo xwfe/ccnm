@@ -30,10 +30,26 @@ cargo +1.89 check --workspace --all-targets --locked
 ### 本地跑测试
 
 ```bash
-cargo test --workspace        # 702 个测试，不需要第二台机器，不启动真实 Agent
+cargo test --workspace        # 测试数以本次输出为准，不启动真实 Agent
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 ```
+
+### 文档与公开契约也要过门禁
+
+```bash
+cargo build --workspace --locked
+python3 -B -m unittest discover -s tests -q
+python3 scripts/check_plan.py
+python3 scripts/check_protocol.py
+git diff --check
+```
+
+先构建 CLI，避免 Python 的中立客户端测试因找不到二进制跳过，或误用旧二进制。计划检查验证全仓相对文件链接，不验证所有标题锚点或语义；协议检查验证 schema/fixture 一致性，不能代替真实字节流行为和 Host 验收。
+
+**2026-09-23 的 CI/release workflow 尚未运行这组 Python/文档/协议门禁**，只有 Rust 门禁与构建，不能把 CI 绿说成全部契约已验。本轮审计将补齐列为高优先级，见[审计 C51-03](research/2026-09-23-lifecycle-and-docs-audit.md)。本地执行这些命令不等于工作流已经改好。
+
+维护顺序：变更契约/默认值 → 实现及回归 → 使用/配置/安全/支持矩阵 → 状态与证据。工具数量按实际 `tools/list`、权限和可用 server 说明；文档不再到处固定一个过期的测试总数。历史测量保留日期，不全局替换旧数字。文档职责见[导航](README.md)。
 
 ### 改到给人看的输出时
 
@@ -145,7 +161,7 @@ initialize in 113 ms, tools/list (7 tools, 8236 B), instructions 453 B (...),
 workspace_info x100 p50 0 ms p95 0 ms max 0 ms, pid 44296 throughout
 ```
 
-（毫秒那一栏在本机全是 0 —— 后面跟着的 JSON 里有微秒：`call_p50_us: 65`、
+（上面是早期七工具阶段的历史测量，不是 v0.9.0 的固定工具数；当前清单按配置生成。毫秒那一栏在本机全是 0 —— 后面跟着的 JSON 里有微秒：`call_p50_us: 65`、
 `call_p95_us: 89`、`call_max_us: 189`。走 ssh 的时候这些数变成 20–30 毫秒，
 差的那部分就是链路。）
 
@@ -178,11 +194,7 @@ cargo test -p ccnm-core --lib launcher
 cargo test -p ccnm-cli --test cli sitting_at
 ```
 
-坐在Runtime Node：带 `--detached` 正好一次 ssh，终端留在本地；不带，第二次 ssh 带 `-t` 把终端送过去，
-第三次问会话怎么结束的。坐在Agent Node：发给Runtime Node的那一行就是人在那边会敲的命令加 `--detached`；
-attach 在本地发生（是 tmux 在答，不是对面）；`ccnm result` 也在本地答（读的是这台自己写的
-session 目录）；config 里写的Runtime Node ccnm 路径是真被跑的那个。能这么做是因为 ccnm 自己调 ssh
-是按名字找的——只有 `mcp.json` 里给 Claude 的那行 transport 写的是绝对路径。
+坐在 Runtime Node 的 Operator 发起时，通过 SSH 在 Agent 起会话；`--detached` 不 attach。坐在 Agent Node 时，只通过 `internal runtime-resolve` 向 Runtime 问 workspace 绑定，会话在 Agent 本机创建，attach/status/result/stop 留在 Agent 本机。**不是把 `ccnm run --detached` 交给 Runtime Executor 再回连 Agent**；P7.4 已移除那条旧控制链。当前端到端假 SSH 测试包含 `sitting_at_the_agent_only_the_question_goes_to_the_runtime`，库层不得重新引入回连。
 
 开场白那条单拎出来说，因为它是唯一一个**不在 argv 里**的跨机器值：假 ssh 除了记 argv，还在
 命令行里出现 `--prompt-stdin` 时把 stdin `cat` 到另一个文件。测试要的是三件事同时成立——
@@ -203,15 +215,13 @@ session 目录）；config 里写的Runtime Node ccnm 路径是真被跑的那�
 只有把另一半的命令逐条对着提一遍才看得见。
 
 **还是测不到的**：controller / 登录会话是不是真的能读到 Keychain、tmux 里 Claude 到底起没起来、
-真实的延迟——那些需要两台机器（或者一台机器 ssh 自己，见下）。
+真实的延迟——那些需要受支持的双节点部署，单机环回不能代替验收。
 
-### 单机环回（一台 Mac 也能跑全链路）
+### 单机环回：历史思路，不是支持承诺
 
-把两个角色都指向 `localhost`：打开「系统设置 → 通用 → 共享 → 远程登录」，把自己的公钥加进
-`~/.ssh/authorized_keys`，然后 config 里两个 host 都写 `localhost`。
+早期曾提出让两个角色都经 SSH 指向 `localhost` 的实验思路，但没有形成支持验收；不要把它当成跳过双节点和身份隔离的部署步骤。
 
-**这条路我没在这台机器上验过**——它要往你的 `~/.ssh/authorized_keys` 里加东西，那是你的机器，
-我不动。机制上没有理由不通（ccnm 对两端唯一的要求就是 ssh 别名能通），但我没跑过就不说它跑通了。
+这是历史实验思路，不是已支持的 colocated 快速开始。SSH 可达不代表 topology 与凭据隔离已通过；必须区分逻辑节点、进程身份和各自配置，不能靠两个 localhost alias 绕过拒绝项。本轮未改用户的 SSH 配置，也没有为这种部署新增验收证据。
 
 ### 两台机器的开发循环
 
@@ -221,7 +231,7 @@ bash scripts/deploy.sh <另一台的 ssh 别名> [workspace]
 
 在有 Rust toolchain 的那台上跑（通常是Agent Node，Runtime Node常常没装 cargo）。它编译、按
 [运维的「安装与升级」](operations.md#安装与升级)那个安全办法装到两边、重启 controller（哪台有它就重启哪台）、然后跑一次
-`ccnm doctor`。正在跑的会话不受影响。
+`ccnm doctor`。部署成功不证明旧会话跨版本兼容；升级前按运维手册停止会话、保留回退版本，再检查 Controller 与 Runtime 两侧版本。
 
 最后那次 `doctor` 是**先在本机跑、只在收到 `CCNM_E_CONFIG`(10) 时才转去另一台**。别改成
 "有 config 文件就在这台跑"：Agent Node也有 config，里面只有回家的路、一个 workspace 都没有，
@@ -280,7 +290,7 @@ bash scripts/dist-linux.sh
 ```
 
 产出 `dist/ccnm-<version>-linux-x86_64.tar.gz`（+ `.sha256`）。**这一个只是 Runtime 那一半**
-（`internal mcp-serve` 和七个工具）。Agent 那一半是 launchd LaunchAgent，在 Linux 上根本不跑；
+（`internal mcp-serve` 和按权限/配置提供的 Runtime 工具）。Agent 那一半是 launchd LaunchAgent，在 Linux 上根本不跑；
 发这个包不等于说它跑。
 
 它是**本机构建，不交叉编译**：链接别人家的 glibc 要别人家的工具链，而一个本机跑不起来的
@@ -308,6 +318,7 @@ bash scripts/dist-linux.sh
 ci.yml       每次 push / PR：
              test           (macos-latest)  fmt + clippy + 全部测试 + 跑一下二进制
              linux-runtime  (ubuntu-24.04)  clippy + 全部测试 + 构建 Linux 发布物
+             msrv           (ubuntu-24.04)  按 Cargo.toml 的 rust-version 编译全部 targets
 release.yml  推 tag（v*）：
              macos    门禁 → dist.sh       → 校验 tag 和版本号一致 → 上传
              linux    门禁 → dist-linux.sh → 校验 tag 和版本号一致 → 上传

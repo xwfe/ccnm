@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-09-23T00:23:57+09:00",
-  "current_task": null,
+  "last_updated": "2026-09-23T15:14:02+09:00",
+  "current_task": "P52",
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
     "source": "docs/research/codex-internal-wiring-2026-09-07.md",
@@ -2537,9 +2537,49 @@
         }
       ],
       "blockers": []
+    },
+    {
+      "id": "P51",
+      "title": "v0.9.0 完成度、生命周期与文档审计",
+      "status": "completed",
+      "depends_on": ["P50"],
+      "owner": null,
+      "started_at": "2026-09-23T14:45:00+09:00",
+      "last_updated": "2026-09-23T15:14:02+09:00",
+      "completed_criteria": ["P51.1", "P51.2", "P51.3", "P51.4"],
+      "evidence": [
+        {
+          "kind": "review",
+          "criteria": ["P51.1", "P51.2", "P51.3"],
+          "ref": "docs/research/2026-09-23-lifecycle-and-docs-audit.md",
+          "result": "起点 main/7f0e018 干净，Cargo 0.9.0，50 个历史阶段已完成。核对实现、契约与阶段证据，新增生命周期职责矩阵和导航，同步 README 与当前架构、安全、使用、配置、运维、排错、支持矩阵、协议说明和开发流程；保留历史证据。已复现 C51-01（Runtime relay 正常退出后同组子进程继续写、guard released、第二 writer 进入），仅披露未修复；登记 P52 pending。另列 CI 缺 Python/计划/协议门禁等后续项。"
+        },
+        {
+          "kind": "offline",
+          "criteria": ["P51.1", "P51.4"],
+          "ref": "docs/research/2026-09-23-lifecycle-and-docs-audit.md",
+          "result": "macOS 26.6.2 arm64、rustc 1.98.0。cargo build/test --workspace --offline --locked 通过，Rust 935 项（全量测试退出 0，另用 --list 核对数目）；fmt 与严格 clippy 通过；Python 全量 209 passed 无 skip，文档调整后复跑仍通过；check_plan、check_protocol（38+29 fixtures）、git diff --check 通过。隔离探针输出 defect_reproduced=true 且 owned_child_cleaned=true；不是产品通过验收。未改 Rust、依赖、fixture 或 CI；不部署、不运行真实模型、不复验远端、不推送。"
+        }
+      ],
+      "blockers": []
+    },
+    {
+      "id": "P52",
+      "title": "MCP relay 可靠收尾与写权交接",
+      "status": "pending",
+      "depends_on": ["P51"],
+      "owner": null,
+      "started_at": null,
+      "last_updated": "2026-09-23T15:05:41+09:00",
+      "completed_criteria": [],
+      "evidence": [],
+      "blockers": []
     }
   ],
   "observed_gaps": [
+    "【P51 当前未修复 / C51-01】Runtime MCP relay 的 leader 正常退出后，同进程组子进程仍可写文件，guard 却 released，第二 coding writer 成功进入。本机真实二进制隔离探针已复现并清理。优先 P52：可靠收尾结果必须参与交权判定；不能把文档披露当作修复。见 docs/research/2026-09-23-lifecycle-and-docs-audit.md。",
+    "【P51 当前未实现 / C51-03】CI 和 release workflow 尚未运行 Python 中立客户端全套、check_plan 或 check_protocol；本地要求没有全部转成自动门禁。P52 后优先补齐，不把当前 CI 绿当完整契约证明。",
+    "【P51 文档已同步 / 实际边界不变】Agent 的 skills/MCP 与 Runtime 项目工具分属不同身份；Runtime 沙箱不覆盖 Agent 本机 MCP，关闭 web_fetch 不保证阻止外发。Machine API 缺分页/busy、后台命令连接绑定、state 锁域与跨身份 purge 限制见生命周期和审计文档。后面的 observed_gaps 保留各阶段原始日期及处理标记，不应全部视为当前未修复清单。",
     "macOS 上 /tmp 与 /var 都是符号链接，而凭据检查见到祖先目录是 symlink 即判 accessibility unknown——不可豁免，allow_unconfined_exec 无效，表现为 MCP 握手 connection closed: initialize response。任何把 Runtime 执行身份的 home 放在系统临时目录下的部署或测试都会踩到；已写进运维手册，采集脚本已改为对临时目录 resolve()。",
     "Codex 0.154.0 新增 stable 且默认开启的 unified_exec_tty，而 ccnm 的 DISABLED 列表只关 unified_exec——已补上并重测（这正是版本 pin 存在的理由，不是改个常量）。同版本还把 --enable code_mode_only 变成会发 item.completed/type=error 的告警，解析器本就认得。留下的一条事实：gpt-5.3-codex-spark 不宣称支持 Code Mode，而 ccnm 固定传 --enable code_mode_only，本轮跑通了但那是观察不是保证。",
     "ccnm 用 --ignore-user-config 启动 Codex，所以 CLI 配置文件里的 model 不生效；能选模型的唯一入口是 Agent 本机 instance 注册表里新加的 model 字段。它仅 Codex 可用、不上 wire，写错 provider 会被配置校验拒绝。Claude 的模型选择属于它自己的配置，ccnm 不传。",
@@ -2588,8 +2628,8 @@
     "【P41 记下不修】mcp-serve 被 SIGKILL（或别的不走正常退出的死法）时，它起的命令的进程组没人收：前台命令一直如此，P41 的后台命令没有期限，所以可能一直跑下去；它们的 run 在 read_output 里读作 exit status unknown。正常路径（客户端断开、stdin EOF、心跳发现对端不在）会先停掉所有命令再放写锁。要收干净得给子进程加会话标记、下次启动时按标记扫（封存的原生链 P26/P30 有类似做法），需另立阶段。依据 docs/research/p41-background-commands-2026-09-18.md 第 5 节。"
   ],
   "handoff": {
-    "next_action": "**2026-09-23 00:23 P50 补验与修复（用户：推送三仓并验证 P50 没验的五项）。**三仓已推（toexec 20ff434 + tag toexec-mcp-v0.2.0、ccnm fa95ebf、gld 2d49b34，CI 全绿），版本提到 0.9.0（f2baec7，不推 tag、不发版）并用 scripts/deploy.sh 装到本机和 fodelf；旧的 0.8.0 备份在两台的 ~/.local/opt/ccnm-0.8.0/ccnm。五项都有结论，见 P50 记录“2026-09-23 补验”：真实模型（fodelf 上的 Claude，claude-opus-5）没被提示就用了 Agent 上的 DeepWiki，走的是 ccnm_agent 的 curl；六个真实 OAuth 地址都报要登录；Linux（hpsrv Debian 13）上的 curl 通、读全 407 KB；Codex 只交 4 个环境变量，用到别的 ${VAR} 的 server 写明缺哪个——受管 Claude 会话也拿不到 shell 里 export 的变量，配置说明写了怎么办。**真机那轮查出一个缺陷并修了**（828e1f5）：会话结束后 curl 的请求文件留在 Agent 的 $TMPDIR，因为 Claude Code 退出时强杀 MCP server、不关 stdin；现在请求结束就删。修复版已重新装到两台。fodelf 上临时加的 DeepWiki 已删、~/.claude.json 的 mcpServers 回到空。**下一步可选**：发 v0.9.0（要用户决定）；Codex 当 Agent 的受管会话（fodelf 没装 Codex）；~/.claude.json 里的 server 调用超时没法调（慢网络上大结果会撞 60 秒）；调用失败后清单仍写 not started，模型会挨个试。\n\n之前的交接：\n**2026-09-22 23:10 P50 完成：Agent 机器上装好的 MCP server 交给会话（toexec v4 方案第 4 步，四步全部做完）。**先量了：把 server 直接写进 Claude / Codex 的配置，大结果会丢（Claude 超过约 5 万字符存盘只给 2 KB 预览、受管会话没有 Read 读不回；Codex 指定模型时只留约 12 KB），所以由 ccnm 在 Agent 上的 ccnm_agent 服务转：多了 call_mcp_tool（和 Runtime 上的同名同用法）与 read_mcp_result（长结果 32 KiB 一段接着读）。**默认只给别的机器上的 HTTP 地址**（exa、DeepWiki），本机跑的（npx/uvx 起的程序、127.0.0.1 上的服务）要 Agent 的 [agent_mcp] local 点名；workspace 的 agent_tools 多了 mcp_servers（默认开，去掉就不给——它和 web_fetch 默认关的理由冲突，文档照实写了）。HTTP 经系统的 curl，key 不上命令行；真实 DeepWiki 经它读全 407 KB。**附带修了两处已有问题**：Codex 指定模型时 ccnm 每页都被砍到 12 KB（加 tool_output_token_limit=20000），Claude 会把 read_file/load_skill 64 KiB 的一页存盘（这三个工具声明 maxResultSizeChars）——P49 说的\"32 KiB 一段不会丢\"当时只在 Claude 上成立。共用代码：toexec-mcp 0.2.0 加 kept、sse（toexec a7c84bc，本地 tag，未推送），gld 改用。**没做的**：真实模型；受管会话经 SSH 的整条路；OAuth server；Linux 上的 curl；ccnm/gld/toexec 的新提交都没推送——推送顺序仍是 toexec（含 toexec-mcp-v0.2.0 tag）→ ccnm → gld；没发版。\n\n之前的交接：\n**2026-09-22 21:35 P49 完成：Runtime 上的 MCP server 转给会话（toexec v4 方案第 3 步）。**第十二个工具 call_mcp_tool：项目 .mcp.json 里声明的、执行账号给 Claude Code / Codex 装的 server，经它交给能写的会话；不带参数列、带 server 列工具（这才起它）、再带 tool/arguments 调用。起 server 就是以执行账号跑程序，所以和 exec_command 过同一道门（read 模式没有、执行门、凭据检查、OS 沙箱、环境清理、有人值守时每次问人），会话结束先停 server 再放写锁；大结果接 read_output。默认全开，Runtime 的 [runtime_mcp] 可关、可不读项目的、可按名字藏。只转 stdio，HTTP 的留给第 4 步从 Agent 那边连。**共用代码成了 toexec-mcp 0.1.0**（toexec 1e8b06a，本地 tag，未推送），gld 第 2 步那份整块搬过去、gld 改链它；gld hub 同步加了 remote_call_mcp_tool。**没做的**：真实模型；受管会话经 SSH 的路径；Codex 0.154.0；Linux；三仓都没推送、没发版——推送顺序仍是 toexec（含 toexec-skill-v0.3.0、toexec-mcp-v0.1.0 两个 tag）→ ccnm → gld；v4 第 4 步（ccnm 会话接 Agent 上的 MCP）没开工。\n\n之前的交接：\n**2026-09-22 18:07 P48 完成：两台机器上装好的 skills 交给会话（toexec v4 方案第 1 步）。**用户要 gld / ccnm 都用上 Agent 和 Runtime 机器上已经装好的 skills，ccnm 默认全开、共用代码进 toexec、不要了能整块删。**先量了再做**（toexec 6741340）：Claude 原生的 Skill 要放开 Read 才读得到附件，而只放 skills 目录的 Read 仍会读到会话工作目录；Codex 在远端会话里其实已经列出 Agent 上的 skills、却因 shell 被关读不到。于是 Agent 上的由 ccnm 自己起一个只读服务 ccnm internal agent-skills 交出去（mcp__ccnm_agent__load_skill），Codex 那份清单一律关掉；Runtime 上执行账号装的并进 load_skill，排在项目后面，同名时装好的赢（照原生）。load_skill 多了 file / line 读附件（toexec-skill 0.3.0 的 dir 模块，gld 同用）。开关是每台机器自己的 [machine_skills]，线上格式一个字段没加。**实测改掉的**：开发机 97 个装好的 skill 名字放不进 2048 码元，目录原先只剩一个数字，现在列放得下的 84 个；30 个逐字节相同的拷贝不再刷屏。**没做的**：真实模型没跑；toexec-skill 0.3.0 的 tag（c50a039）只打在本地、没推送，所以推送顺序必须是先 toexec（含 tag）再 ccnm、gld；三仓都没推送、没发版；v4 后三步（MCP）没开工。",
-    "scope": "P46 这一轮：config.rs 的 AgentTool/AgentTools 与 workspace 字段、runtime.rs / protocol/run.rs / session.rs 的 agent_tools 字段、provider/claude/policy.rs 的 --tools 与 allow/deny、provider/codex/mod.rs 的 web_search，加对应测试；配置说明、支持矩阵、排错手册、协议文档 alwaysLoad 一节、ROADMAP、研究记录。toexec：evidence/v3-parity/agent-surface/。没有加依赖，没有耗额度，没有推送。\n\n上一轮的范围：\nP44 这一轮：三个写/执行工具及其嵌套结构的 deny_unknown_fields 与超界拒绝、只读工具的忽略提示、两份 tools-list fixture、协议与三处文档；不碰 gld，不改错误码。\n\n上一轮的范围：\nP43 这一轮：mcp/jobs.rs 的 stop_all 返回值、mcp/write_guard.rs 的放弃状态与诊断、mcp/server.rs 的退出路径，加对应测试与四处文档；不碰 gld，不改冻结契约的错误码。\n\n上一轮的范围：\nP42 这一轮：只加协议文档的生命周期一节、研究记录、回归测试和三处文档指向；不改任何运行行为，不碰 gld 仓库。\n\n更早各轮的范围在 git 历史里。",
+    "next_action": "**2026-09-23 P51 文档与生命周期审计完成，P52 pending、未实施。** 起点 main/7f0e018 干净、版本 0.9.0。当前最重要的事实：真实二进制隔离探针复现 C51-01，Runtime MCP server leader 正常退出、同组子进程仍写、guard released、第二 writer 进入；临时进程已清理，产品逻辑未修。下一步先做 P52 可靠收尾与交权，再补 Python/计划/协议 CI 门禁 C51-03，再做具名真实项目验收。见 docs/research/2026-09-23-lifecycle-and-docs-audit.md；不要增加新 Provider 或重开封存 exec-server。P51 只改文档与探针，不推送；P52 不继承历史 sudo/真机/额度授权。\n\n之前的交接：\n**2026-09-23 发布记录。** v0.9.0 已发布，tag 指向 86bdac0；7f0e018 同步说明。不能再把发 v0.9.0 作为待办。本轮没有在线复查 Release，也没有复验远端安装。\n\n之前的交接：\n**2026-09-23 P50 真机补验。** 已有 Claude 经双机 SSH 调用 Agent DeepWiki、Linux curl 与 OAuth 拒绝证据，828e1f5 修复 curl 请求文件残留。仍缺 Codex 受管真模型、真实模型读长结果、local 本机服务真机；该轮未验证 Runtime relay 的真实模型路径。细节和当时的部署/清理见 P50 evidence，不重抄为当前实测。\n\n之前的交接：\n**2026-09-22 P48–P50 实现与初验。** 两侧机器 skills、Runtime stdio MCP、Agent MCP 已接入 toexec 共用机制；当时的零额度证据与限制保留在各任务及研究文档，更早推送/发布待办已被后续记录取代。",
+    "scope": "P51：当前代码/文档/验收证据审计，README、导航、生命周期、安全、配置、使用、运维、排错、架构、支持矩阵、公开协议说明、开发流程及计划同步；新增 docs/research/probes/p51-relay-cleanup.py 隔离探针。未修改 Rust 产品代码、依赖、fixture、CI 工作流、系统权限、登录、已安装二进制或其他仓库；不调用付费模型、不部署、不推送、不发版。P52 仅登记待实施，不延续历史系统授权。",
     "planning_validation": {
       "at": "2026-09-08T21:22:43+09:00",
       "commands": [
@@ -2601,15 +2641,15 @@
       "limits": "本轮离线门禁；fodelf SSH 建连失败，没有新增远端资源或运行真实模型，不替代 P3.5。"
     },
     "planning_validation_latest": {
-      "at": "2026-09-22T13:31:11+09:00",
+      "at": "2026-09-23T15:14:02+09:00",
       "commands": [
-        "macOS arm64，rustc 1.98.0：cargo fmt --all --check 通过；cargo clippy --workspace --all-targets -- -D warnings 通过",
-        "cargo test --workspace：898 passed / 0 failed",
-        "python3 -m unittest discover -s tests：194 passed",
-        "cargo +1.89 check --workspace --all-targets --locked：通过",
-        "python3 scripts/check_plan.py、python3 scripts/check_protocol.py（38 + 29 个 fixture）、git diff --check 通过"
+        "macOS 26.6.2 arm64，rustc 1.98.0；cargo build --workspace --offline --locked 通过",
+        "cargo test --workspace --offline --locked 通过（935 项，另用 --list 核数）；cargo fmt --all --check 与严格 clippy --offline --locked 通过",
+        "python3 -B -m unittest discover -s tests -q：209 passed，无 skip；文档同步后复跑通过",
+        "python3 scripts/check_plan.py、python3 scripts/check_protocol.py（38 + 29 fixtures）、git diff --check 通过",
+        "python3 -B docs/research/probes/p51-relay-cleanup.py：已复现 C51-01，临时进程已清理；这是失败证据，不是产品通过验收"
       ],
-      "limits": "本机离线门禁加零额度实测；没上真机、没跑模型回合、没换任何机器上的二进制。**最要紧的没验项**：真实模型拿到 WebSearch 之后会不会用、用了对任务有没有帮助；Codex 在 CLI 默认模型下 web_search 不见效。"
+      "limits": "仅本机回归与隔离故障注入；没有重跑 MSRV、Linux、双机 SSH、真实 Host/模型、网络出口、已发布产物安装或生产安全验收。不改产品逻辑、不改其他仓库、不部署、不推送。历史证据仍保留原日期；P52 待实施。"
     },
     "inherited_changes": [],
     "authorization": "P24 真机轮（2026-09-16）：用户同意授权清单 A0–A9（docs/plan/p24-native-real-machine-session.md 第四节），明确 root 步骤由本会话执行、完成后清理并同步文档。实际执行：A0 查登录；A1 本机一次性密钥 + hpsrv root 追加公钥（已撤）；A2 hpsrv 装 bubblewrap（保留，清单 /var/lib/ccnm-p24-20260916）；A3/A4 ccrun 名下 Codex 0.154.0 与 ccnm 7ae2d4b（保留）；A5 ccrun 配置与测试项目（已删）；A6/A7 本机 P24 构建、Agent 配置、临时 Controller（已删/已卸）；A8 模型 3 次（上限 5）；A9 nftables 单连接黑洞 5 次（每次 60 秒自动删除，已核无残留）。授权不含：fodelf 任何变更、本机已装 ccnm/config.toml/LaunchAgent/sshd、hpsrv sshd 与持久防火墙、tag/release。\n\n之前的授权记录：\nP12 真机轮已由用户授权并执行完毕（2026-09-11），三问三答：hpsrv 上按计划全做（建专用账号 ccrun、系统级装 gcc/libc6-dev/make/ripgrep、以 ccrun 身份装 rustup 与 Node）；花订阅额度做真实 Claude Code 那一腿；轮后**保留账号与工具链**、删一次性资源。特权命令由本会话经 root ssh 执行（该机 root 登录用的是用户自己的 key），没有要用户输密码。授权明确不含：改 ACL/防火墙/Tailscale 策略、动 bing 或 git 账号的任何东西、push/tag/release。保留物的撤销脚本仍在：scripts/p12-provision-linux-runtime.sh --revert（账号 + 按清单 purge 的 36 个包）、scripts/p12-runtime-toolchain.sh --revert（rustup/Node/PATH 块）；root 清单 /var/lib/ccnm-p12-20260911 为此保留。历史授权记录（P3/P7/P11 各轮）见 Git 历史；P11 那两条 macOS 的 sudo 授予（ccrun 的本轮公钥、临时进 com.apple.access_ssh）**仍未撤销**，要用户 sudo 跑对应的 --revert。 【2026-09-11 发布前收口复核】P11 那两条 macOS 临时授予**已经不在了**，只读证据：`dsmemberutil checkmembership -U ccrun -G com.apple.access_ssh` 和 `dseditgroup -o checkmember` 都说不是成员，该组 GroupMembership 键不存在（没有直接成员）；p11 那把公钥的清单目录 /var/db/ccnm-p11-local-20260911 不存在，而 --revert 的最后一步就是 rmdir 它。还留着的 /var/db/ccnm-p7-local-20260910 是更早 P7 轮的清单目录（root 0700），不是这两条要撤的东西，里面还有什么只有 sudo 看得到。要逐条确认，由用户在自己的终端跑两条只读命令：`sudo scripts/p11-authorize-local-runtime.sh --check` 和 `sudo scripts/p7-grant-local-ssh-access.sh --check`（两个脚本都要求 SUDO_USER 是 bing，--check 只读）。本会话没有也不会执行 sudo。",

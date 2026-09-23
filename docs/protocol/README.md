@@ -13,12 +13,12 @@
 
 | 文件 | 是什么 |
 | --- | --- |
-| [remote-workspace-mcp-v1.md](remote-workspace-mcp-v1.md) | Remote Workspace MCP 契约：`ccnm mcp bridge`、read/coding 权限、七工具与 annotations、生命周期、错误边界 |
-| [schema/remote-workspace-mcp-v1.schema.json](schema/remote-workspace-mcp-v1.schema.json) + [fixtures-mcp/](fixtures-mcp/) | 它的消息形状与 21 个样例 |
+| [remote-workspace-mcp-v1.md](remote-workspace-mcp-v1.md) | Remote Workspace MCP 契约：`ccnm mcp bridge`、read/coding 权限、动态工具表与 annotations、生命周期、错误边界 |
+| [schema/remote-workspace-mcp-v1.schema.json](schema/remote-workspace-mcp-v1.schema.json) + [fixtures-mcp/](fixtures-mcp/) | 消息形状和样例；实际数量以 `check_protocol.py` 输出为准 |
 
 写编排项目的人还要看[执行接口交接](../orchestrator-handoff.md)：状态归属边界，以及建在这套协议上的最小 `ExecutionBackend` 示例。
 
-**当前状态：草案，有实现。** `ccnm rpc` 已经能说这套协议的 `print` 模式：
+**当前状态：契约已冻结，实现仍有下列差距。** `ccnm rpc` 已经能说这套协议的 `print` 模式：
 
 ```bash
 ccnm rpc

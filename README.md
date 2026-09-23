@@ -2,9 +2,9 @@
 
 把 AI Coding Agent 和真实项目**放在两台机器上**。
 
-Agent Node 跑官方 Claude Code / Codex CLI，只有它持有 AI 登录凭证；Runtime Node 放源码、Git、构建和工具链，模型的每一次读写和命令执行都落在这里。两者之间是一条持久的 SSH stdio MCP 通道（MCP 是 AI 客户端调用外部工具的通用协议）。
+Agent Node 跑官方 Claude Code / Codex CLI 并持有 AI 登录；Runtime Node 放源码、Git、构建和工具链，项目工具经持久的 SSH stdio MCP 通道在这里执行。Agent 侧另可提供已安装的 skills 和经配置允许的 MCP，不能把“禁用原生 Read/Bash”理解为 Agent 上没有任何文件访问或执行。
 
-**不复制源码，不把 AI 凭证下放到 Runtime Node，也不实现私有模型 API Client。**
+**不整库同步，不把 AI 登录凭据下放到 Runtime Node，也不实现私有模型 API Client。** 模型需要的源码片段仍会经工具结果进入 Agent 与模型服务；节点分离不是“源码数据永不离开 Runtime”的保证。
 
 ```text
 Runtime Node                              Agent Node
@@ -19,6 +19,10 @@ Runtime Node                              Agent Node
 
 ## 什么时候用
 
+当前版本 **v0.9.0**。ccnm 是执行层，不是任务规划、审查、发布或多 Agent 调度平台。能否覆盖一个项目的完整交付，见[生命周期与职责](docs/project-lifecycle.md)。
+
+**重要已知缺陷（2026-09-23）**：Runtime MCP 转接服务正常退出后，其子进程可能仍在写工作区，但写锁已释放；本轮用真实二进制复现，**尚未修复**。需要可靠单写交接的项目应先停用 `[runtime_mcp]`，核实并清理旧进程后再换会话；停用转接也不等于普通命令已具备完整进程隔离。见[审计与修复优先级](docs/research/2026-09-23-lifecycle-and-docs-audit.md)。
+
 - **项目在一台机器上，AI 订阅登录在另一台上，两边都不想挪。** 比如源码和工具链在工作机或服务器上，不能（或不想）在那里登录 Claude；而登录着 Claude 的那台 Mac 上又不该出现源码。
 - **不想让模型用你自己的账号跑命令。** Runtime 那边可以用一个专用的低权限账号执行，模型读不到你的 SSH 私钥和 AI 登录；还可以再给每条命令套一层 OS 沙箱。
 - **项目在远端，而 Claude Code 已经在你本机开着。** 不用 ccnm 启动 Agent，只把远端项目作为一组 MCP 工具交给它（见[另外两个入口](#另外两个入口)）。
@@ -32,6 +36,7 @@ Runtime Node                              Agent Node
 
 ```bash
 tar -xzf ccnm-<版本>-macos-universal.tar.gz
+mkdir -p ~/.local/bin
 mv ccnm ~/.local/bin/ccnm.new && mv ~/.local/bin/ccnm.new ~/.local/bin/ccnm
 ```
 
@@ -42,7 +47,7 @@ mv ccnm ~/.local/bin/ccnm.new && mv ~/.local/bin/ccnm.new ~/.local/bin/ccnm
 
 ## 快速开始
 
-前提：两台机器能互相非交互 SSH（不要密码），Agent Node 上官方 CLI 已登录，Runtime Node 上装好项目要用的 toolchain 和 `ripgrep`。
+前提：按入口配置好非交互 SSH（Operator → Agent、Agent → Runtime Executor，不要求执行身份持有出站私钥），Agent Node 上官方 CLI 已登录，Runtime Node 上装好 `git`、`ripgrep` 和项目工具链。真实项目先准备低权限执行身份；配置向导不会代建账号或授予 ACL。
 
 在 **Runtime Node**（放项目那台）：
 
@@ -82,9 +87,9 @@ ccnm my-project --print "修复 parser 测试"   # 一问一答，不进 tmux，
 
 每一步的完整说明和 `doctor` 红了怎么办见[快速开始](docs/getting-started.md)；Codex、Agent Instance、多行 prompt 见[使用说明](docs/usage.md)。ccnm 默认说中文，要英文加 `--lang en`（细节见[使用说明](docs/usage.md#说什么语言)）。
 
-## 跑通之后马上要做的一件事
+## 真实项目接入前：配置执行身份
 
-默认配置里，模型的命令是用**你自己的账号**跑的——那样 ccnm 只帮你分开了机器，没帮你分开权限。真实项目应该在 Runtime Node 建一个专用低权限账号：
+默认配置没有替你创建隔离账号。模型命令若以**你自己的账号**跑，ccnm 只帮你分开机器，没有分开权限；诊断可能因此拒绝执行。真实项目应该先在 Runtime Node 建一个专用低权限账号：
 
 ```toml
 [nodes.runtime]
@@ -97,43 +102,43 @@ runtime_user = "ccrun"
 
 ## 会话里模型能用什么
 
-八个工具，全部落在 Runtime Node 上；模型自己机器上的文件工具是关掉的。
+Runtime 有 **12 个工具定义**；实际提供哪些取决于读写模式、配置和可用服务，以 `tools/list` 为准。外部 `read` 模式只有七个只读工具；coding 会话没有可转接 MCP 时是十一个工具。
 
 ```text
-workspace_info   read_file   list_files   search_text
-apply_patch      exec_command            read_output
-load_skill
+workspace_info  read_file      list_files     search_text
+apply_patch     exec_command   read_output    load_skill
+view_image      read_notebook  stop_command   call_mcp_tool
 ```
 
 `load_skill` 把项目自带的 skills（`.claude/skills/`、`.claude/commands/`、`.agents/skills/`）交给模型：官方 CLI 靠当前目录发现它们，而 CLI 的当前目录不在项目机器上，所以由 Runtime 这边来找。skill 里的脚本照样在 Runtime 上跑。两台机器上装好的 skills（`~/.claude/skills` 这些）默认也交出去，见[配置说明](docs/configuration.md#machine_skills)。项目那台机器上的 MCP server（项目的 `.mcp.json`、执行账号装的）经 `call_mcp_tool` 交给能写的会话，和 `exec_command` 过同一道门，见[使用说明](docs/usage.md#项目那台机器上的-mcp-server)；Agent 机器上装的经 `ccnm_agent` 下的同名工具交出去，默认只给远端地址的，本机跑的要点名，见[使用说明](docs/usage.md#agent-机器上的-mcp-server)。细节和三处与官方不同的地方见[使用说明](docs/usage.md#项目自带的-skills)。
 
+Agent 侧的 `ccnm_agent` 是另一组工具，不计入上面的 Runtime 工具数。`agent_tools` 默认开启 `web_search`、`mcp_servers`；抓取网页、子代理和待办清单须另行开启。两侧同名 MCP 工具使用不同节点的身份；Agent 的 `[agent_mcp] local` 点名允许本机服务，是额外信任，不是只读白名单。
+
+后台命令支持启动、分页读输出与停止，但**活不过 MCP 连接**。断开 Operator 终端可能只是离开 tmux；MCP 断线会触发 Runtime 命令收尾，Runtime 笔记本睡眠后不能承诺继续构建。
+
 两个按 workspace 打开的开关，默认都关：
 
-- `exec_sandbox = "codex"`：每条 `exec_command` 包进一层 OS 沙箱——只能写工作区（`.git` 除外）和临时目录，不能连网。代价是 `git commit` 和依赖下载得在沙箱外做，见[配置说明](docs/configuration.md#exec_sandbox)。
+- `exec_sandbox = "codex"`：Runtime 命令与 Runtime MCP server 包进 OS 沙箱——限制工作区外写入、`.git` 写入与网络。`git commit` 和依赖下载不能据此声称自动跑通；**它不覆盖 Agent MCP**，见[配置说明](docs/configuration.md#exec_sandbox)。
 - `codex_exec_server = true`：让 Codex 用它自带的执行工具。**2026-09-17 已封存**，代码保留但不再维护，别在新项目上用；原因见[双执行入口方案](docs/plan/runtime-surfaces.md)第 12.0 节。
 
 ## 另外两个入口
 
 **项目在远端，而 Claude Code 已经在你本机跑着**——用 `ccnm mcp bridge <workspace>`，把远端项目作为一组 MCP 工具交给它。权限由 Runtime 侧的 `external_mcp` 决定（默认关）。契约 `ccnm.workspace-mcp/1` 已于 2026-09-11 冻结，上手步骤见[使用说明](docs/usage.md#把远端项目给已经在跑的-agent-用)。
 
-**要让别的程序驱动 ccnm**——用 `ccnm rpc`：stdio 上的 JSON-RPC 2.0，不开网络端口。契约 `ccnm.machine/1` 已于 2026-09-10 冻结，schema、fixture 和一个可以直接抄走的 Python 客户端见[协议说明](docs/protocol/README.md)。
+**要让别的程序驱动 ccnm**——用 `ccnm rpc`：stdio 上的 JSON-RPC 2.0，不开网络端口。契约 `ccnm.machine/1` 已于 2026-09-10 冻结；当前只实现非交互 `print`，结果仅最后 8 KiB、无分页，启动不返回契约中的 busy 码。实现差距、schema、fixture 和 Python 客户端见[协议说明](docs/protocol/README.md)。
 
 要写的是一个**编排项目**（决定谁做什么、验收和重试），先看[执行接口交接](docs/orchestrator-handoff.md)：哪份状态归你、哪份归 ccnm。ccnm 自己不做编排。
 
 ## 文档
 
-- [快速开始](docs/getting-started.md)：安装、SSH 前提、首次配置、Controller
-- [使用说明](docs/usage.md)：run、attach、status、stop、result、prompt
-- [配置说明](docs/configuration.md)：`nodes`、workspace、双向 SSH 字段
-- [故障排查](docs/troubleshooting.md)：真撞过的问题，按现象找
-- [生产安全](docs/production-safety.md)：`ccrun`、ACL、凭证、sudo、网络出口边界
-- [运维](docs/operations.md)：安装、回退、配置迁移、状态清理、故障恢复
-- [支持矩阵](docs/support-matrix.md)：Provider、版本、topology、验收级别与明确拒绝项
-- [架构说明](docs/architecture.md)：Node / Agent / Runtime / Controller 与 SSH stdio MCP
-- [公开协议](docs/protocol/README.md)：给外部程序的 machine API 契约与客户端示例
-- [执行接口交接](docs/orchestrator-handoff.md)：独立 Orchestrator 的状态归属边界
-- [开发与发布](docs/development.md)：测试、CI、release、mutation test
-- [研究记录](docs/research/)：实现调研和历史测量数据
+总入口：[文档导航](docs/README.md)；评估与下一步：[生命周期与职责](docs/project-lifecycle.md)、[2026-09-23 审计](docs/research/2026-09-23-lifecycle-and-docs-audit.md)。
+
+| 用途 | 文档 |
+| --- | --- |
+| 上手与使用 | [快速开始](docs/getting-started.md) · [使用](docs/usage.md) · [配置](docs/configuration.md) |
+| 安全部署与恢复 | [生产安全](docs/production-safety.md) · [运维](docs/operations.md) · [排错](docs/troubleshooting.md) |
+| 能力与集成 | [支持矩阵](docs/support-matrix.md) · [架构](docs/architecture.md) · [公开协议](docs/protocol/README.md) |
+| 维护与演进 | [执行接口交接](docs/orchestrator-handoff.md) · [开发与发布](docs/development.md) · [研究记录](docs/research/) |
 
 ## 这个项目对"没验过"这件事很较真
 
@@ -142,6 +147,8 @@ load_skill
 - **不声明任何网络出口边界**。模型的命令能连到哪里没有逐项验证，需要这种保证就由 OS 和网络层自己落实。
 - **Linux 只验过 Runtime 那一半**，而且只验过 Debian 13 / x86_64。
 - 项目和 Agent 同机（colocated）没有真实验收，因此明确拒绝，不静默降级。
+
+关闭 `web_fetch` 不等于禁止其他 MCP 或命令外发数据；同一工作树的写互斥还要求各入口共用同一个 state 目录。阶段完成、Agent 退出成功与项目验收通过是不同结论。
 
 旧设计文档里偶尔出现的 `home`/`work` 是历史叫法，对应关系见[架构说明](docs/architecture.md#历史术语)。
 

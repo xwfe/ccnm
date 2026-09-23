@@ -8,7 +8,7 @@
 
 ## 四种身份，别混成一个
 
-一套 ccnm 里有四个操作系统身份。它们可能分布在两台机器上，也可能有几个在同一台，但**不能是同一个账号**：
+一套 ccnm 区分四种操作身份。它们是职责，不要求为每种职责都创建一个账号；**可信隔离部署必须把 Runtime Executor 与持有 Agent/Operator 私有凭据的身份分开**。同账号风险接受不构成隔离证明：
 
 | 身份 | 干什么 | 可以持有 | 不该持有 |
 | --- | --- | --- | --- |
@@ -21,7 +21,7 @@
 
 > **以 Runtime Executor 身份运行、会碰到 Agent 输入或项目数据的 ccnm 进程，不能为了完成 ccnm 自己的控制链而主动 SSH 到别处。** `ccrun` 只接受入站连接。
 
-**为什么要分。** Runtime Executor 是唯一会执行模型产出内容的身份。它多一把出站私钥，就等于把"Agent 让我跑一条命令"变成"Agent 可以以我的名义连到别的机器"。而 Operator 手上有出站钥匙是正常的——因为 Operator 不执行模型的命令，它只发号施令。
+**为什么要分。** Runtime Executor 执行模型的项目命令；它多一把出站私钥，就等于把“Agent 让我跑一条命令”变成“Agent 可以以我的名义连到别的机器”。Operator 持有控制链所需钥匙，不应直接执行未经审查的模型命令。P50 的 Agent 本机 MCP opt-in 是另一处执行授权，不能借此宣称 Agent Identity 永远不执行模型输入。
 
 **代码里怎么落实的**（P7.3 真机量出问题，P7.4 四批改完）：
 
@@ -83,6 +83,19 @@ privilege inheritance
 - egress policy。
 
 ccnm 不会假装“禁止 `curl` / `wget` / 某几个程序名”就等于 sandbox，因为 shell、解释器、绝对路径、wrapper 和自定义二进制都可以绕过这种黑名单。
+
+## 两侧 skills 与 MCP 的信任边界
+
+| 能力 | 使用什么身份 | 不能被误读成什么 |
+| --- | --- | --- |
+| Runtime 项目工具与 stdio MCP relay | Runtime Executor | 第三方程序不自动受结构化文件工具的逐路径校验；项目 `.mcp.json` 是可执行配置 |
+| Agent 安装的 skills | Agent Identity，按 skill 目录提供读取 | 只读 skill 不等于整个 `ccnm_agent` 服务只读，也不意味着内容可信 |
+| Agent 远端 HTTP MCP | 从 Agent 发起，携带服务配置的认证信息 | `mcp_servers` 默认开启，不是外发审批；关闭 `web_fetch` 仍可能外发项目内容 |
+| Agent `[agent_mcp] local` 点名的本机服务 | Agent Identity | Runtime `exec_sandbox` 不覆盖它；它可能读写本机、接触账号可访问的凭据和服务 |
+
+Agent 子进程去掉部分继承的登录环境和 `SSH_AUTH_SOCK`，随后会加入用户 MCP 配置的显式 `env`；这不是独立 OS 身份隔离，也不是“任何形式的凭据都不可达”的证明。敏感配置只留在相应节点的账号私有文件里，不写进项目仓库、日志、提示或交接文档。缺变量时不要让模型读取个人认证文件来补值。
+
+**写互斥当前还有已确认缺陷**：Runtime MCP 服务 leader 正常退出后，同进程组子进程仍能写，而写锁已释放（[P51 探针](research/2026-09-23-lifecycle-and-docs-audit.md)）。要求可靠交权的环境先设 `[runtime_mcp] enabled = false`，关闭旧会话并核实旧进程树；仅改配置不会结束已运行的进程。本轮只修正文档，没有修复产品逻辑。
 
 ## ccnm 当前会检查什么
 

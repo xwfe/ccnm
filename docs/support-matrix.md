@@ -1,10 +1,34 @@
 # 支持矩阵
 
-本页只描述当前代码和现有证据。`docs/plan/status.json` 是阶段进度的唯一事实来源；历史真机记录不能替代当前 build 的重新验收。
+本页区分当前支持结论与分阶段证据。`docs/plan/status.json` 是阶段进度的唯一事实来源；历史真机记录不能替代当前 build 的重新验收。
 
-## Provider 与 topology
+## 当前能力与证据汇总（2026-09-23，v0.9.0）
 
-| 配置 / 入口 | 当前状态 | 证据与限制 |
+本表是当前判断入口。下方详细记录保留阶段初验与后来补验，不把“阶段完成”换算成所有环境通过。本轮重新执行的范围仅为 macOS 本地回归与隔离探针，见[P51 审计](research/2026-09-23-lifecycle-and-docs-audit.md)。
+
+| 能力 | 当前结论 | 尚不能宣称 |
+| --- | --- | --- |
+| Managed Claude / Codex | 两 Provider 有历史双机证据；Codex 受管 adapter 仍 pin `0.154.0` | 零额度测过 `0.155.1` 不代表受管支持；不是全部新工具都已验完整 SSH 链 |
+| 平台与拓扑 | Agent 仅 macOS；Runtime 的 macOS、Debian 13 x86_64 有证据 | Linux Agent、Windows、colocated；Linux curl/容器探针不等于扩展了完整支持平台 |
+| Runtime 工具表 | 共 12 个工具定义；read 模式 7 个，coding 通常 11 个，有可转接服务才出现第 12 个 | 固定“七/八/十二工具”适用于所有连接；以实际 `tools/list` 为准 |
+| shell、搜索、图片与项目 skills | 已实现，有各自的离线测试和部分真实模型记录 | 每个入口/平台/Provider 都有同等级证据；不能再统一标为“只有离线证据” |
+| notebook | 已实现按 cell 读取与编辑，有读取的真实模型记录 | notebook 编辑、执行与可视化全链路均已实测 |
+| 后台命令 | 已实现启动、读取、等待、停止；本机离线回归 | 跨 MCP 断线存活、持久任务恢复或完整进程树清理；先前真实模型尝试未形成成功用例 |
+| 机器级 skills（P48） | 两侧已实现；真实 Host + 假模型零额度探测 | 新机器级技能在真实模型的受管 SSH 全链路已验收 |
+| Runtime MCP relay（P49） | stdio 转接已实现，有本机测试及零额度 Host 证据 | 可靠停止后代再交权；**P51 已复现同组子进程残留并放锁**；仍缺完整真实模型组合验收 |
+| Agent MCP relay（P50） | 已有真实 Claude + 双机 SSH + Agent DeepWiki 调用；Linux curl 及 OAuth 拒绝补验 | Codex 受管真模型、真实模型读取超过 32 KiB、本机 `local` 服务真机、OAuth 登录；不能再统一标为“只有零额度证据” |
+| Browser / 专用 Git 工具 | 没有内建专用工具；可以经命令或安装第三方 MCP 扩展 | 已有统一浏览器/调试验收或完整 PR/发布流程 |
+| 单写 guard | 同一 state 域、canonical 资源的互斥与异常 marker 已实现 | 跨 state 全局锁、普通程序隔离、当前 relay 后代的可靠交权 |
+| Machine API | 契约冻结；实现 print、状态、结果、停止和启动幂等键 | interactive、结果分页/过期、start 提前返回 `busy` |
+| 整个项目生命周期 | 作为执行层支撑编码/构建/测试并组合外部系统 | 单靠 ccnm 完成需求审批、独立审查、上线授权、回退与运维闭环；见[职责矩阵](project-lifecycle.md) |
+
+**C51-01 的临时收敛**：要求可靠单写交接时，先停用 `[runtime_mcp]`，关闭现有会话并核实旧进程树；仅改配置不能清理旧进程，删除 guard 不能证明可以安全重开。产品逻辑本轮未修复。
+
+## Provider 与 topology：分阶段证据明细
+
+下表是阶段初验标签及其逐次补验记录，**不是另一份当前结论表**。例如“只有离线证据/零额度证据”是初验时的标签，后续真实模型证据在同格内按日期追加；2026-09-23 的支持结论统一以上方汇总为准。旧的工具数和测试计数仅描述当时测量，不得再当作当前 HEAD 的数量。
+
+| 配置 / 入口 | 阶段初验标签 | 按日期追加的证据与限制 |
 | --- | --- | --- |
 | legacy Claude，remote SSH MCP，从 Runtime Node 发起 | 支持 | 旧公开命令、Claude v1 wire 与 remote CLI golden 保持兼容；双机真机跑通。 |
 | legacy Claude，remote SSH MCP，从 Agent Node 发起 | 支持 | `run` 先委托 Runtime 解析 workspace，`attach/status/result/stop` 继续在 Agent 本机管理已有 session；`--print` 仍需在 Runtime Node 执行。 |
@@ -50,6 +74,8 @@ Linux 那个在 `ubuntu-24.04` 上本机构建，**glibc 下限是从二进制�
 **Runtime Node 的前置条件**（Managed 与 Remote MCP 两个入口都要）：`git`、**`ripgrep`**（`search_text` 调 `rg`，没有它七工具就少一个），加上项目自己需要的工具链。装什么、谁维护，见[运维手册](operations.md#runtime-node-的前置条件与项目工具链)。
 
 ## 机器上装的是哪个版本
+
+下面是各轮操作的历史安装/发布记录，不是本轮对远端节点的实时查询。P51 起点 Cargo 为 `0.9.0`、HEAD 为 `7f0e018`，没有更换任何已安装二进制。
 
 **最新的 release 是 `v0.9.0`**（2026-09-23，tag 指向 `86bdac0`），四个产物齐全：macOS universal 和 linux-x86_64 各一个 tar.gz 加 sha256。它带的是 P45–P50：两台机器上装好的 skills 和 MCP server、受管会话的 `agent_tools` 开关，以及两个客户端截大结果的修复。
 

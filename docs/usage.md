@@ -317,7 +317,10 @@ load_skill
 view_image
 read_notebook
 stop_command
+call_mcp_tool
 ```
+
+这里列的是 Runtime 的全部工具定义，不是每条连接固定提供十二个。外部 read 只有七个只读工具；coding 没有可转接 server 时不提供 `call_mcp_tool`。Agent 的 `ccnm_agent` 另有自己的工具表，不能与 Runtime 的同名工具混用位置或身份。
 
 主要行为：
 
@@ -335,9 +338,9 @@ stop_command
 - remote session 使用对应 Provider 的已测工具策略，让项目访问统一走 Runtime Node；
 - 受管会话里模型还能**搜网页**（Claude 的 `WebSearch`、Codex 的 `web_search`，默认开），能用 **Agent 机器上装好的 MCP server**（默认只给远端地址的，见下面[那一节](#agent-机器上的-mcp-server)）；抓网页、子代理、待办清单要 workspace 自己开，全关写 `agent_tools = []`。Agent 自带的文件和 shell 工具一直关着，见[配置说明](configuration.md#agent_tools)。
 
-**传错参数会怎样**：`exec_command`、`apply_patch`、`stop_command` 不接受它们没声明的字段，连 `files[]` 里的每一项也一样——拒绝发生在命令跑起来、补丁落盘之前，结果里会列出它认识的字段名。只读那几个照常回答，只在末尾加一行说忽略了什么。`timeout_ms`、`preview_bytes` 超上限是拒不是钳（要跑更久用 `run_in_background`）。规则见[协议第 5.6 节](protocol/remote-workspace-mcp-v1.md#56-参数怎么验有副作用的拒绝只读的说一声p44-新增)。
+**传错参数会怎样**：`exec_command`、`apply_patch`、`stop_command` 不接受它们没声明的字段，连 `files[]` 里的每一项也一样——拒绝发生在命令跑起来、补丁落盘之前。P49 的 `call_mcp_tool` 外层参数也拒绝未知字段，嵌套 `arguments` 则是目标 server 的参数对象，不能套用 ccnm 文件工具的 schema。只读文件工具通常接受额外字段并在末尾说明；Agent 的 `read_mcp_result` 有自己的严格 schema，不应据此推定所有只读工具都相同。`timeout_ms`、`preview_bytes` 超上限是拒不是钳，规则见[协议](protocol/remote-workspace-mcp-v1.md)。
 
-**Codex 还有一条 opt-in 的路（已封存）**：workspace 写 `codex_exec_server = true` 后，Codex 交互会话不再拿这七个工具，而是用它自带的 `exec_command` / `apply_patch`，由 Runtime 上受 ccnm 监督和过滤的官方 `codex exec-server` 执行；只开交互模式，print 会被拒绝；Claude 不受影响。2026-09-17 起封存：只认 Codex 0.154.0、不再维护、新项目别开，原因见[双执行入口方案](plan/runtime-surfaces.md)第 12.0 节，开关和边界见[配置说明](configuration.md#codex_exec_server)。
+**Codex 还有一条 opt-in 的路（已封存）**：`codex_exec_server = true` 是历史原生执行链，不是当前 MCP 工具的新版本。只支持已测的 Codex 0.154.0 交互模式，不支持 print，2026-09-17 起不再维护、新项目不要启用。原因见[双执行入口方案](plan/runtime-surfaces.md)第 12.0 节，开关和边界见[配置说明](configuration.md#codex_exec_server)。
 
 ## 项目自带的 skills
 
@@ -361,6 +364,8 @@ stop_command
 
 ## 项目那台机器上的 MCP server
 
+**2026-09-23 已知缺陷**：服务自己正常退出不保证其子进程已结束，但当前可能照常交出写权。需要可靠交权时先停用 Runtime relay、清场再重开，详见[审计 C51-01](research/2026-09-23-lifecycle-and-docs-audit.md)；不要把下面的正常路径说明理解为完整进程树保证。
+
 项目的 `.mcp.json` 里声明了 server（比如一个连本地数据库的），或者 Runtime 的执行账号给 Claude Code / Codex 装了 server，模型会多一个工具 `call_mcp_tool`（P49，默认全开）：
 
 ```text
@@ -379,6 +384,8 @@ call_mcp_tool  server=db  tool=query  arguments={…}  调用
 **起不来，先这样查**：不带参数调一次 `call_mcp_tool`，每个 server 后面写着状态；"not relayed" 的写着原因（HTTP 的、配置里用了执行账号环境里没有的变量）。带 `server` 调失败时报 `CCNM_E_DEPENDENCY`，后面是它在 stderr 上说的最后一段话——最常见的是程序不在执行账号的 `PATH` 上（`npx`、`uvx` 装在你自己账号的 mise / nvm 目录里，`ccrun` 看不到）。
 
 ## Agent 机器上的 MCP server
+
+这组工具使用 Agent Identity，不受 Runtime 的 `exec_sandbox` 保护。本机服务显式 opt-in 后可能读写 Agent 文件或调用其本地服务；关闭原生 Read/Bash 不封锁第三方 server 的能力。信任范围见[生产安全](production-safety.md#两侧-skills-与-mcp-的信任边界)。
 
 你自己给 Claude Code / Codex 装的 MCP server（`~/.claude.json`、`~/.codex/config.toml` 里的），远端会话也能用（P50）：模型看到 `ccnm_agent` 下的 `call_mcp_tool`，用法和上一节一样，另有 `read_mcp_result` 读长结果的后面部分。
 

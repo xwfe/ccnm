@@ -459,7 +459,7 @@ Agent 这边为什么不直接用 Claude Code / Codex 自己的 skills：实测�
 - 读附件只在这个 skill 自己的目录里：点开头的文件（`.env` 这类）、链到目录外面的一律拒绝，报 `CCNM_E_POLICY`；不是 UTF-8 的报 `CCNM_E_INVALID_ARGS`（Runtime 上的会附上路径，让模型用 `exec_command` 就地用）。
 - 一次最多回 64 KiB，长文件分段，每段末尾写明下一段从第几行开始。
 - 目录挤不下时：Claude Code 只保留每个工具说明的前 2048 个字符，先保项目 skill 的描述，装好的依次退成只有名字、最后只剩个数；不带名字调 `load_skill` 总能拿到全表。一共最多 100 个，超了先丢装好的。
-- 关掉（`enabled = false`）：Runtime 上关，`load_skill` 回到只有项目的；Agent 上关，远端会话不再起那个小服务。都从下一个会话开始算，开着的会话不变。
+- 关掉（`enabled = false`）：Runtime 上关，`load_skill` 回到只有项目的；Agent 上关，只移除它的 skills 部分，P50 的 Agent MCP 仍开启且有可用 server 时，`ccnm_agent` 服务仍会启动。都从下一个会话开始算，开着的会话不变。
 - 这台 Runtime 的执行账号是专门建的 `ccrun` 时，它的 HOME 里一般什么都没装，这一节在 Runtime 上等于没有效果；要给它装，就装到 `~ccrun/.claude/skills` 这类目录里。
 - 旧版本的 ccnm 不认识这一节，读到它会整份配置报错（配置对未知字段是严格的），先升级再写。
 
@@ -481,7 +481,7 @@ hidden = ["computer"]  # 这几个不转，按名字
 - 项目的 `.mcp.json` 排最前、同名压过装好的（Claude Code 的规矩）。只转 stdio 的；HTTP 的列出来、写明"从 Agent 那边连"（Agent 上装的见 [`[agent_mcp]`](#agent_mcp)）。配置里自己关掉的（Codex 的 `enabled = false`、JSON 里的 `"disabled": true`）列出来、写明关着，不起。
 - server 配置里自己的 `env` 照传，token 也传；Agent 的登录变量（`ANTHROPIC_API_KEY` 这些）不传。`${VAR}` 查不到像凭据的变量名——ccnm 的执行门本来就不许 Runtime 的环境里有它们——这样的 server 标成"缺什么"，不起。
 - 结果文字超过 32 KiB 的，先交前 32 KiB，其余像命令输出一样用 `read_output` 接着读。
-- 会话结束时先停 server、再放写锁（它能写工作树）；闲 5 分钟的也会被收掉，下次调用重起。
+- 正常收尾先关闭 server、再放写锁；闲 5 分钟也会回收连接，下次调用重起。**当前存在已复现缺陷：server leader 正常退出、子进程仍写文件时，写锁仍可能被释放**，因此这不是“整棵进程树已停干净”的保证；详见[审计 C51-01](research/2026-09-23-lifecycle-and-docs-audit.md)。
 - `project = false`：只转执行账号装的，不读项目的 `.mcp.json`——给托管别人项目、不想让项目文件点名要跑什么程序的机器。`hidden` 里的在哪声明都不转。
 - 执行账号是专门建的 `ccrun` 时，它的 HOME 里一般什么都没装，转的就只有项目自己声明的。
 - 改了从下一个会话开始算；开着的会话的工具说明（列了哪些 server）不变，但每次调用都重新读配置。
@@ -515,7 +515,7 @@ hidden = ["exa-search"]          # 这几个不给，哪一类都一样
 - HTTP 的经这台机器的 `curl` 连（没装 `curl` 的话报错说明）。地址和请求头（exa 的 key 就在地址里）写在只有你能读的临时文件里交给 `curl`，不出现在命令行上。要 OAuth 登录的 server 报"需要登录"：令牌在 Claude Code 那里，ccnm 拿不到。
 - 本机程序类的 server 拿到的环境：起 `ccnm_agent` 的客户端给它什么，它就拿什么，去掉 Agent 的登录变量（`ANTHROPIC_API_KEY`、`CODEX_HOME` 这些）和 `SSH_AUTH_SOCK`，再加配置里 `env` 写的。`GITHUB_TOKEN` 这类不去掉——你直接用 Claude Code 时它们也拿得到。
 - **配置里的 `${VAR}` 在受管会话里多半查不到你在 shell 里 export 的变量**：会话里的 Claude / Codex 是 Agent 上的 Controller（launchd 起的）经 tmux 带起来的，环境里只有 `HOME`、`PATH`、`SHELL`、`TMPDIR`、`USER` 这类，`~/.zshrc` 里 export 的不在（2026-09-23 在 fodelf 上看的）。Codex 更少：它交给 MCP server 的只有 `HOME`、`PATH`、`LC_CTYPE`、`__CF_USER_TEXT_ENCODING`（0.154.0、0.155.1 实测）。查不到的，清单里那个 server 写 `its config uses GITHUB_TOKEN, which this session's server does not have`，点名调用报 `CCNM_E_CONFIG`，不起。要在受管会话里用它，把值直接写进配置的 `env` 或地址；`${VAR:-默认值}` 查不到时用默认值，不会报缺。
-- 起的程序跟着会话走：会话结束就停，闲 5 分钟也收，下次调用重起。
+- 正常路径在会话结束或闲置 5 分钟时回收 server，下次调用重起；Host 强杀服务及派生后代的清理不能据此保证。Agent 和 Runtime relay 复用了关闭回调，Runtime 已复现的后代残留问题在 Agent 侧仍须专项复验。
 - `enabled = false`：这台机器的一个都不给。改了从下一个会话开始算。
 - 同一个名字两台机器上都有（比如都装了 context7）：两个都能用，模型看到的说明是"项目那台机器上的那个在项目旁边"。
 - 旧版本的 ccnm 不认识这一节，读到它会整份配置报错，先升级再写。

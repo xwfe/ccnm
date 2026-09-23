@@ -25,7 +25,7 @@ legacy 配置运行官方 Claude Code；Agent Instance 通过明确 enum 分发�
 
 保存真实 workspace 和项目 toolchain。
 
-当前 MCP 工具都在这里执行，包括：
+Runtime 工具在这里执行，包括：
 
 - 文件读取；
 - 目录列举；
@@ -36,6 +36,8 @@ legacy 配置运行官方 Claude Code；Agent Instance 通过明确 enum 分发�
 - 后续可能加入的 Browser 等 runtime provider。
 
 项目的事实来源在 Runtime Node，不通过 rsync、SMB 或云盘复制到 Agent Node。
+
+P48/P50 后另有 Agent 侧 `ccnm_agent`：提供 Agent 安装的 skills，以及按配置允许的 MCP server。它不是 Runtime 工具的别名，使用 Agent Identity；本机 MCP opt-in 会扩大 Agent 的执行面。默认值与风险见[生产安全](production-safety.md#两侧-skills-与-mcp-的信任边界)。
 
 ## Controller
 
@@ -61,7 +63,7 @@ Node 说的是"哪台机器负责什么"，身份说的是"哪个账号在动手
 - **Runtime Executor**（建议叫 `ccrun`）：Runtime Node 上跑 `internal mcp-serve` 和全部项目工具的低权限账号。**入站专用**——Agent 连进来，它不为 ccnm 的控制链连出去。
 - **Administrator**：建账号、配 ACL、改网络策略，不参与日常 session。
 
-它不是新的 Node 角色，也不是 AI 账号。要分开是因为：**`exec_command` 到底继承哪个操作系统身份的权限**，而 Runtime Executor 是唯一真正执行模型产出内容的那个。
+它不是新的 Node 角色，也不是 AI 账号。要分开是因为：**`exec_command` 到底继承哪个操作系统身份的权限**。Runtime Executor 执行项目命令；若启用 Agent 本机 MCP，Agent Identity 也可能执行模型请求，不能再声明它只有登录和控制能力。
 
 完整表格、硬约束和当前实现与它的差距见 [生产安全](production-safety.md)；差距怎么收敛见[双执行入口方案](plan/runtime-surfaces.md)。
 
@@ -151,7 +153,7 @@ Agent B ─┼── coordination ──> Runtime Node(s)
 Agent C ─┘
 ```
 
-多 Agent 编排还没有实现。现在只是保证底层概念不会再次被 `home/work` 这种物理位置命名限制住。
+ccnm 不实现多 Agent 编排；图中的 coordination 属于独立 Orchestrator。节点概念保持通用，不代表 ccnm 承诺内建任务图、调度或业务验收；见[生命周期与职责](project-lifecycle.md)。
 
 ## 信任边界
 
@@ -202,7 +204,7 @@ work machine ≈ Agent Node
 - `provider/types.rs`：Controller、work 和报告消费者使用的 Agent 观测/结果；保留 v1 字段形状。
 - `provider` 的凭据元数据声明环境前缀、已知目录/容器、文件名和 egress 检查目标。P1 由 `safety/` 统一执行所有已知 Provider 的可访问性检查和分来源环境策略。凭据可访问或未知**不可由 `allow_unconfined_exec` 跳过**——那个开关只接受 confinement 风险，要接受凭据这一条得单独写 `allow_unisolated_credentials`；身份未知和继承来的认证环境两个开关都放不开。不读取或传递凭据内容。
 - `session/transport.rs` 是两 Provider 共用的 Agent-side stdio wrapper；Claude MCP JSON 和 Codex 会话参数均指向它，再由它清理环境并执行 OpenSSH。SSH 与 Runtime child 的机制不放在 Codex 模块里；详情见 [安全契约](provider-safety.md)。
-- session/Controller 仍负责进程、tmux 和生命周期；launcher/work 仍负责 topology、OpenSSH alias 与 Runtime Node 握手。Runtime MCP 的 7 个工具和执行边界未变。
+- session/Controller 负责进程、tmux 和生命周期；launcher/work 负责 topology、OpenSSH alias 与 Runtime Node 握手。Runtime 当前有 12 个工具定义，实际工具表按权限和配置生成；Agent 的 skills/MCP 是另一执行面，不能用早期七工具的边界概括它。
 
 legacy 公开配置仍是 `claude_config_dir`、`claude_permission_mode`。Rust 内部使用通用字段名，通过 serde 显式保留旧 session/协议的 `claude_config_dir`、`claude_bin`、`claude-auth`、`claude`；没有顺便重命名旧字段。
 
@@ -218,7 +220,7 @@ P3 将 Claude colocated 候选命令中的 remote-only `--tools ""`、`--mcp-con
 
 专用 HOME 由 Agent 自己按 ccnm 配置目录解析，不接受 Runtime 传来的路径，不读取认证文件内容。用户必须在 Agent 登录会话中独立使用官方 CLI 登录；目录与认证文件要求仅属主可访问、非符号链接。启动前通过官方 CLI 检查版本、登录和空 MCP inventory。所有 Codex SSH 连接在 Agent 侧清除敏感环境、禁止 agent forwarding，不复用个人 ControlMaster；Runtime payload 只有 workspace、root、session 和 provider 等执行上下文。
 
-Codex 项目上下文仅投影 Runtime 根目录的 `AGENTS.override.md` 或 `AGENTS.md`，空 override 仍覆盖 base。它不是完整的 Codex 本机文件遍历：不读 Agent 私人配置，不自动枚举嵌套 instructions。Runtime/MCP 七工具及 ccrun/ACL/sudo/network policy 仍是原边界，固定 CLI tool policy 不等于 sandbox。
+Codex 项目上下文仅投影 Runtime 根目录的 `AGENTS.override.md` 或 `AGENTS.md`，空 override 仍覆盖 base；不自动枚举嵌套 instructions。P48/P50 后，Agent 侧会按配置读取已安装 skills 和 MCP 定义，不能再笼统声明“不读 Agent 私人配置”。原生 CLI 文件/shell 工具策略、Runtime 账号权限与第三方 MCP 权限是不同层，固定 CLI tool policy 不等于 sandbox。
 
 实测依据见 [Codex 内部接线](research/codex-internal-wiring-2026-09-07.md)；P3 公共入口的当前验收级别见[支持矩阵](support-matrix.md)。不扩展为多 Agent coordination 或并行 worktree 调度。
 
@@ -244,10 +246,12 @@ Runtime MCP 初始化再用自己的配置重算 binding；legacy payload 不能
 
 两种 wire 靠 `protocol` 数字区分，没有第三条路也没有回退：本 build 不认识的数字直接 `CCNM_E_VERSION`。旧 build 拿到 protocol 4 也一样——它缺 `root` 又多 `agent`，解码就失败。
 
-**当前公共 launcher 仍然发旧 payload**，切换控制链是 Batch C；这一批只把边界建好并可离线验证。
+**公共 launcher 已在 P7.4 Batch C 接入无 root 的 open 请求**（这条授权边界在 protocol 4 引入）；外部 Workspace MCP 使用自己的 protocol 5 请求，也由 Runtime 解析 root。前文描述 Batch B 的动机，不表示当前仍待切换；实际版本以实现的握手为准，历史 payload 的兼容解析不应被当作新增调用方的默认入口。
 
 ## Runtime 单写者
 
-每个 MCP server 在 Runtime 初始化时按 canonical workspace resource 获取内核独占锁，并持有到 server 结束。Git workspace 使用 canonical `git-common-dir`，所以不同 Agent Node、CLI/RPC 入口、路径 alias 及共享 common dir 的 worktree 不能获得两份受管写权限。
+有写权限的 MCP server 在 Runtime 初始化时按 canonical workspace resource 获取内核独占锁，并持有到收尾结束；外部 read 连接不因此占写权。Git workspace 使用 canonical `git-common-dir`，所以**共用同一 state 目录时**，不同 Agent Node、CLI/RPC 入口、路径 alias 及共享 common-dir 的 worktree 不能获得两份受管写权限。不同账号或不同 `XDG_STATE_HOME` 形成不同锁域，不提供全机或跨 state 的互斥。
 
 正常退出写 `released` 并显式 unlock；异常退出保留 `held` marker。后者即使内核锁已经释放也保持 unknown，直到 Runtime 操作者证明旧进程与子进程结束后人工恢复，不按时钟自动转让。这个机制拒绝并发受管 writer，不承诺任意 shell 的 exactly-once、事务回滚或 sandbox。操作边界见[支持矩阵](support-matrix.md)。
+
+P43 在普通命令收尾报告残留时保留 `held/abandoned`；但这不是任意后代进程的完整证明。**P51 已复现 Runtime MCP relay 的 leader 正常退出、同组子进程仍写文件、写锁却 `released` 的缺陷**；当前不得声明“所有 server 后代已结束才放锁”，细节和修复验收见[审计 C51-01](research/2026-09-23-lifecycle-and-docs-audit.md)。

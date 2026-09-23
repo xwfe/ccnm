@@ -260,7 +260,7 @@ ssh <runtime-alias> 'command -v cargo node npm rg git'
 sessions/<ccnm-session-id>/
 ├── session.json     启动这个会话需要的全部信息
 ├── mcp.json         给官方 CLI 的 --mcp-config：通往 Runtime 的那一条 ssh
-├── settings.json    --settings：只允许 ccnm 的那几个工具
+├── settings.json    --settings：Runtime 工具及按配置允许的 Agent 能力
 ├── stdout           官方 CLI 的 stdout（print 模式下是 JSON 结果）
 ├── stderr           官方 CLI 的 stderr
 ├── supervisor.log   supervisor 自己的诊断
@@ -333,6 +333,14 @@ ccnm stop demo --agent codex-main --session <id>  # 精确停一个
 
   > 早于 v1 的构建在第一种情况下也报退出码 3。写清理脚本时如果要兼容旧版本，容忍这个码即可。
 - **`status` 看不见 `ccnm run --print` 的会话。** 它只报 Agent Node 上的 tmux 会话，非交互的 print 运行不在其中——会话正跑着、写入 guard 是 `held`、MCP 进程也在，`status` 照样说 `no live sessions`。据此判断"没人在用"然后起第二个会话，撞上的就是被占的写入 guard，而那个失败长得像别的毛病。要判断真没人用，看写入 guard 和进程列表，别只看 `status`。
+
+## 两侧 MCP 的停止与结果保留
+
+**P51 已复现：Runtime MCP server 自己退出后，其同组子进程仍在写，但写锁已 `released`。** 不要只看 server pid、`ccnm stop` 或锁标记就认定整棵进程树清空。需要可靠交权的环境先停用 `[runtime_mcp]`，关闭现有会话，按实际执行身份核实其创建的进程和项目写入，再放行下一 writer；不要盲目删除 guard，也不要按模糊进程名批量 kill。复现、边界和待修复项见[审计](research/2026-09-23-lifecycle-and-docs-audit.md)。
+
+Agent 的长 MCP 结果另存 `ccnm_agent` 进程内存：`read_mcp_result` 每页最多 32 KiB，30 分钟保留，单条最多 16 MiB、总量 64 MiB；服务结束不能恢复。它不属于上述磁盘 `output/`，也不会被 `workspace remove --purge` 补存或恢复。正式验收报告应另存项目产物或交付系统。
+
+Runtime Managed 输出的保留不等于后台命令继续运行；外部连接的输出断开即清理，Managed 输出按会话和保留规则读取。不要用旧 `output_ref` 代替新的命令执行或跨连接的持久任务身份。
 
 ## 故障恢复
 

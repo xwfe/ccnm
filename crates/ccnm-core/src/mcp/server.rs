@@ -1476,29 +1476,49 @@ fn run(server: Server) -> CcnmResult<()> {
     // the guard was marked released here and the next writer walked straight
     // in beside it (评审 X05).
     let abandoned = inner.jobs.stop_all();
-    // Relayed MCP servers too (P49): one can write the working tree, so it
-    // must be gone before the guard is.
-    if let Some(relay) = &inner.relay {
-        relay.close_all();
-    }
-    if !abandoned.is_empty()
+    // Dropping the runtime waits for what is left in `spawn_blocking`:
+    // results being written, so runs are finished before they are removed,
+    // and a `call_mcp_tool` still waiting on its server.
+    drop(rt);
+    // Relayed MCP servers too (P49), and only now: a call still running a
+    // moment ago could have started one after an earlier close. A server
+    // can write the working tree and so can what it left in its process
+    // group; what could not be cleared keeps the guard like a command that
+    // could not be stopped. Until P52 a server's own clean exit counted as
+    // cleared, children and all (C51-01).
+    let servers = inner
+        .relay
+        .as_ref()
+        .map(|relay| relay.close_all())
+        .unwrap_or_default();
+    if let Some(what) = left_behind(&abandoned, &servers)
         && let Some(guard) = &inner.write_guard
     {
-        guard.abandon(&format!(
-            "{} command(s) ({})",
-            abandoned.len(),
-            abandoned.join(", ")
-        ));
+        guard.abandon(&what);
     }
-    // Dropping the runtime waits for what is left in `spawn_blocking`, which
-    // is now only results being written, so runs are finished before they
-    // are removed.
-    drop(rt);
     if let Some(output) = discard {
         output.discard_started();
     }
     drop(inner);
     served
+}
+
+/// What a session ends with that it could not stop and that can still write
+/// the working tree, in words for [`WriteGuard::abandon`]: the commands by
+/// output_ref, then each relayed server's leftovers. `None` when nothing.
+///
+/// [`WriteGuard::abandon`]: crate::mcp::write_guard::WriteGuard::abandon
+fn left_behind(commands: &[String], servers: &[String]) -> Option<String> {
+    let mut parts = Vec::new();
+    if !commands.is_empty() {
+        parts.push(format!(
+            "{} command(s) ({})",
+            commands.len(),
+            commands.join(", ")
+        ));
+    }
+    parts.extend(servers.iter().cloned());
+    (!parts.is_empty()).then(|| parts.join("; "))
 }
 
 /// Serve until the client closes the stream or can no longer be written to.
@@ -1826,6 +1846,24 @@ mod tests {
             )
         });
         server
+    }
+
+    /// Commands that could not be stopped and servers whose groups could
+    /// not be cleared both keep the guard; the wording for commands is what
+    /// `external_mcp.rs` and people's notes already match on.
+    #[test]
+    fn what_a_session_left_behind_names_commands_then_servers() {
+        assert_eq!(left_behind(&[], &[]), None);
+        assert_eq!(
+            left_behind(&["r-a".into(), "r-b".into()], &[]).as_deref(),
+            Some("2 command(s) (r-a, r-b)")
+        );
+        let server = "MCP server db (process group 9: 12 still running after SIGKILL)";
+        assert_eq!(left_behind(&[], &[server.into()]).as_deref(), Some(server));
+        assert_eq!(
+            left_behind(&["r-a".into()], &[server.into()]).as_deref(),
+            Some(format!("1 command(s) (r-a); {server}").as_str())
+        );
     }
 
     /// `call_mcp_tool` starts programs, so it goes where `exec_command`

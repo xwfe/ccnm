@@ -227,7 +227,8 @@ fn left_held(rest: &str, runner: &dyn ProcessRunner) -> String {
             "recover on the Runtime Node, in this order:\n\
              1. end what is named above. Each output_ref's command line is in\n\
                 ${{XDG_STATE_HOME:-~/.local/state}}/ccnm/sessions/{session}/output/<ref>/status;\n\
-                look for the process group it left behind\n\
+                look for the process group it left behind. An MCP server's leftovers are\n\
+                the process group and pids named; `ps -A -o pid,pgid,stat,command` shows them\n\
              2. only then back up and delete the single marker naming {session} in\n\
                 ${{XDG_STATE_HOME:-~/.local/state}}/ccnm/write-guards/"
         ),

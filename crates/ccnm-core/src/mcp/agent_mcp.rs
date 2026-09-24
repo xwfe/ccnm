@@ -137,6 +137,10 @@ pub struct Relay {
     /// (a client keeps `tools/list` for the connection). A call reads the
     /// files again.
     catalog: Vec<String>,
+    /// What closing a server could not clear. Nothing on this machine holds
+    /// a write guard, so the warning [`relay::start`] logs is all there is
+    /// to do about it; this is only emptied.
+    left: relay::Left,
 }
 
 impl Relay {
@@ -149,6 +153,7 @@ impl Relay {
             pool,
             kept: Kept::new(KEEP),
             catalog: Vec::new(),
+            left: relay::Left::default(),
         };
         relay.catalog = relay
             .read()
@@ -169,9 +174,14 @@ impl Relay {
         relay::describe(INTRO, &self.catalog)
     }
 
-    /// Stop every server this session started.
+    /// Stop every server this session started, each with whatever it left
+    /// in its process group ([`relay::start`]).
     pub fn close_all(&self) {
         self.pool.close_all();
+        self.left
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
     }
 
     fn read(&self) -> Installed {
@@ -186,7 +196,10 @@ impl Relay {
     /// One call. Blocking: run it off the async thread.
     pub fn call(&self, args: &CallMcpToolArgs) -> Result<CallToolResult> {
         let installed = self.read();
-        let opener = Opener { home: &self.home };
+        let opener = Opener {
+            home: &self.home,
+            left: &self.left,
+        };
         let local = &self.payload.local;
         let keep = |whole: &str, end: usize| -> Result<String> {
             let stored = self.kept.put("", whole.to_string());
@@ -284,6 +297,7 @@ fn unusable(server: &Server, local: &[String]) -> Option<String> {
 /// How a server starts here: a program in this account's home, or curl.
 struct Opener<'a> {
     home: &'a Path,
+    left: &'a relay::Left,
 }
 
 impl Open for Opener<'_> {
@@ -326,15 +340,15 @@ impl Open for Opener<'_> {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        std::os::unix::process::CommandExt::process_group(&mut process, 0);
-        let child = process.spawn().map_err(|error| {
-            toexec_mcp::Error::Start(if error.kind() == std::io::ErrorKind::NotFound {
-                format!("`{command}` is not on the PATH this session's server has")
-            } else {
-                format!("cannot start `{command}`: {error}")
-            })
-        })?;
-        Ok(Box::new(ChildTransport::new(child, relay::stop())?))
+        let (child, stop) =
+            relay::start(&mut process, &server.name, self.left).map_err(|error| {
+                toexec_mcp::Error::Start(if error.kind() == std::io::ErrorKind::NotFound {
+                    format!("`{command}` is not on the PATH this session's server has")
+                } else {
+                    format!("cannot start `{command}`: {error}")
+                })
+            })?;
+        Ok(Box::new(ChildTransport::new(child, stop)?))
     }
 
     fn me(&self) -> (&str, &str) {
@@ -528,6 +542,38 @@ done
             .unwrap_err();
         assert!(past.to_string().contains("past the end"), "{past}");
         relay.close_all();
+    }
+
+    /// A local server here closes the way the Runtime's do (C51-01): what
+    /// it left in its process group goes with it. Checked on this side on
+    /// its own -- the Runtime's tests do not start this `Opener`.
+    #[test]
+    fn a_local_servers_helper_goes_with_it() {
+        use crate::mcp::relay::tests::{runs, wait_for_pid};
+        let h = home("leaving");
+        let script = h.join("leaving-mcp.sh");
+        fs::write(
+            &script,
+            "#!/bin/sh\nsleep 60 </dev/null >/dev/null 2>&1 &\necho $! > child.pid\nexec ./here-mcp.sh\n",
+        )
+        .unwrap();
+        let mut perms = fs::metadata(&script).unwrap().permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+        fs::set_permissions(&script, perms).unwrap();
+        fs::write(
+            h.join(".claude.json"),
+            format!(
+                r#"{{ "mcpServers": {{ "leaving": {{ "command": "{}" }} }} }}"#,
+                script.display()
+            ),
+        )
+        .unwrap();
+        let relay = Relay::new(&payload(&["leaving"], &[]), &h);
+        relay.call(&args(Some("leaving"), None)).unwrap();
+        let child = wait_for_pid(&h.join("child.pid"));
+        assert!(runs(child));
+        relay.close_all();
+        assert!(!runs(child));
     }
 
     #[test]

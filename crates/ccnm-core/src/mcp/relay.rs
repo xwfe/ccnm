@@ -57,10 +57,11 @@
 //! the name in `session::MCP_TOOLS`, and the `toexec-mcp` dependency.
 
 use std::io::Write;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
-use std::sync::Arc;
-use std::time::Duration;
+use std::process::{Child, Command, Stdio};
+use std::sync::{Arc, Mutex, PoisonError};
+use std::time::{Duration, Instant};
 
 use rmcp::model::{CallToolResult, ContentBlock};
 use rmcp::schemars;
@@ -135,6 +136,8 @@ pub struct Relay {
     /// client keeps `tools/list` for the life of the connection, so the
     /// catalog is what the model was told. A call reads the files again.
     catalog: Vec<String>,
+    /// What closing a server could not clear, whenever it was closed.
+    left: Left,
 }
 
 impl Relay {
@@ -160,6 +163,7 @@ impl Relay {
             sandbox,
             pool,
             catalog: Vec::new(),
+            left: Left::default(),
         };
         relay.catalog = relay
             .read()
@@ -181,10 +185,14 @@ impl Relay {
         describe(INTRO, &self.catalog)
     }
 
-    /// Stop every server this session started. Called before the session's
-    /// write guard is let go: a server can write the working tree.
-    pub fn close_all(&self) {
+    /// Stop every server this session started, and say what could not be
+    /// cleared: now, or earlier -- an idle server reaped, a call that timed
+    /// out. Called before the session's write guard is let go: a server can
+    /// write the working tree, and so can what it left in its process group,
+    /// so anything returned here keeps the guard held (C51-01).
+    pub fn close_all(&self) -> Vec<String> {
         self.pool.close_all();
+        std::mem::take(&mut *self.left.lock().unwrap_or_else(PoisonError::into_inner))
     }
 
     /// What the configs say now, hidden names left out.
@@ -206,6 +214,7 @@ impl Relay {
         let opener = Opener {
             root: &self.root,
             sandbox: self.sandbox.as_deref(),
+            left: &self.left,
         };
         let notes: Vec<String> = self
             .sandbox
@@ -470,6 +479,7 @@ fn sandbox_note() -> &'static str {
 struct Opener<'a> {
     root: &'a Path,
     sandbox: Option<&'a Sandbox>,
+    left: &'a Left,
 }
 
 impl Open for Opener<'_> {
@@ -518,11 +528,10 @@ impl Open for Opener<'_> {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        std::os::unix::process::CommandExt::process_group(&mut process, 0);
-        let child = process.spawn().map_err(|error| {
+        let (child, stop) = start(&mut process, &server.name, self.left).map_err(|error| {
             toexec_mcp::Error::Start(format!("cannot start `{command}`: {error}"))
         })?;
-        Ok(Box::new(ChildTransport::new(child, stop())?))
+        Ok(Box::new(ChildTransport::new(child, stop)?))
     }
 
     fn me(&self) -> (&str, &str) {
@@ -530,21 +539,172 @@ impl Open for Opener<'_> {
     }
 }
 
-/// A server that did not exit on EOF gets its whole process group killed,
-/// the way `process::kill_group` does it: a `kill` of `-<pid>`, since this
-/// crate has no `unsafe` for `killpg`. Only then, while the child has not
-/// been collected and its pid cannot belong to anyone else; one that exited
-/// by itself is left alone for the same reason.
-pub(crate) fn stop() -> Stop {
-    Box::new(|child, exited| {
-        if !exited {
-            let _ = std::process::Command::new("kill")
-                .args(["-KILL", "--", &format!("-{}", child.id())])
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status();
+/// What closing servers could not clear, one line each; drained by
+/// whoever decides what that means ([`Relay::close_all`]).
+pub(crate) type Left = Arc<Mutex<Vec<String>>>;
+
+/// The program that holds a server's process group ([`start`]).
+const ANCHOR: &str = "/bin/cat";
+/// Absolute, like the managed stop's (`work.rs`): which `kill` and `ps` run
+/// is not up to whatever `PATH` this process was given.
+const KILLER: &str = "/bin/kill";
+const LISTER: &str = "/bin/ps";
+/// How long a process group has to empty after `SIGKILL` before what is
+/// still in it is reported. Only something no signal reaches -- a setuid
+/// program, a process stuck in the kernel -- lasts this long.
+const CLEAR_WITHIN: Duration = Duration::from_secs(5);
+const CLEAR_PAUSE_MIN: Duration = Duration::from_millis(20);
+const CLEAR_PAUSE_MAX: Duration = Duration::from_millis(500);
+
+/// Spawn `process` -- a stdio server, pipes already set -- in a process
+/// group that can be killed whole however the server ends, and return it
+/// with the [`Stop`] that does so when the connection closes. What that
+/// cannot clear goes to `left`, named after `server`.
+///
+/// **Why an anchor.** A group is named by its leader's pid, and once that
+/// pid is collected the number can go to a stranger, who can then lead a
+/// group of the same number. So a server that led its own group could only
+/// have it killed while the server itself was uncollected -- when it
+/// ignored EOF. One that exited cleanly left its group alone, and a child
+/// still in it went on writing after the write guard was let go: C51-01,
+/// found in P51 with a server that started a background child and exited.
+///
+/// Here the group is led by an anchor ccnm holds instead, started first,
+/// and the server joins it. The anchor is collected last, once the group is
+/// seen empty; until then the number stays reserved -- no pid is handed out
+/// while a process group of that number exists, and the anchor, running or
+/// a zombie, keeps it existing. So the group is always ccnm's to kill.
+///
+/// `cat` because every system has it and it ends by itself when ccnm does:
+/// its stdin is a pipe only ccnm holds. One per running server.
+///
+/// Not reached: a descendant that left the group (`setsid`, a daemon's
+/// double fork). Nothing short of an OS container sees those; that is the
+/// line between what ccnm supervises and what it cannot.
+pub(crate) fn start(
+    process: &mut Command,
+    server: &str,
+    left: &Left,
+) -> std::io::Result<(Child, Stop)> {
+    let mut anchor = Command::new(ANCHOR)
+        .env_clear()
+        .current_dir("/")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .spawn()
+        .map_err(|error| {
+            std::io::Error::other(format!(
+                "cannot start {ANCHOR} to hold its process group: {error}"
+            ))
+        })?;
+    process.process_group(anchor.id() as i32);
+    let child = match process.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            let _ = anchor.kill();
+            let _ = anchor.wait();
+            return Err(error);
         }
-    })
+    };
+    let server = server.to_string();
+    let left = Arc::clone(left);
+    let stop: Stop = Box::new(move |_, _| {
+        if let Some(problem) = clear(&mut anchor, KILLER, LISTER, CLEAR_WITHIN) {
+            tracing::warn!(server, problem, "an MCP server left processes behind");
+            left.lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(format!("MCP server {server} ({problem})"));
+        }
+    });
+    Ok((child, stop))
+}
+
+/// Kill everything in the anchor's group until nothing that can run is
+/// left or `within` has passed, then collect the anchor. `None` when the
+/// group is cleared; otherwise what is left, in words for the write guard.
+///
+/// `KILL` straight away, whether or not the server exited: it has had its
+/// EOF and `CLOSE_GRACE` to end properly, and what is still in its group
+/// now is what it left behind. Killing again on every round is safe for as
+/// long as the anchor is uncollected (see [`start`]), and catches a child
+/// forked while the first kill was on its way.
+fn clear(anchor: &mut Child, killer: &str, lister: &str, within: Duration) -> Option<String> {
+    let group = anchor.id();
+    let deadline = Instant::now() + within;
+    let mut pause = CLEAR_PAUSE_MIN;
+    let outcome = loop {
+        // Whether `kill` ran is not the answer; the process list is.
+        let _ = Command::new(killer)
+            .args(["-KILL", "--", &format!("-{group}")])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        let seen = members(lister, group);
+        if seen.as_ref().is_ok_and(Vec::is_empty) {
+            break None;
+        }
+        if Instant::now() >= deadline {
+            break Some(match seen {
+                Ok(pids) => format!(
+                    "process group {group}: {} still running after SIGKILL",
+                    pids.iter()
+                        .map(u32::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+                Err(why) => format!("process group {group} could not be checked: {why}"),
+            });
+        }
+        std::thread::sleep(pause);
+        pause = (pause * 2).min(CLEAR_PAUSE_MAX);
+    };
+    let _ = anchor.kill();
+    let _ = anchor.wait();
+    outcome
+}
+
+/// The processes of `group` that can still run, from `lister -A -o
+/// pid=,pgid=,stat=` (the same on macOS and procps).
+fn members(lister: &str, group: u32) -> std::result::Result<Vec<u32>, String> {
+    let listed = Command::new(lister)
+        .args(["-A", "-o", "pid=,pgid=,stat="])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .map_err(|error| format!("cannot run {lister}: {error}"))?;
+    if !listed.status.success() {
+        return Err(format!("{lister} failed ({})", listed.status));
+    }
+    running_in(&String::from_utf8_lossy(&listed.stdout), group)
+}
+
+/// Neither the anchor, whose pid names the group, nor a zombie -- dead,
+/// only waiting for whoever inherited it to collect it. A list that cannot
+/// be read proves nothing, so it is an error, never an empty group.
+fn running_in(listing: &str, group: u32) -> std::result::Result<Vec<u32>, String> {
+    let mut rows = 0;
+    let mut found = Vec::new();
+    for line in listing.lines().filter(|line| !line.trim().is_empty()) {
+        rows += 1;
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        let (pid, pgid, state) = match fields[..] {
+            [pid, pgid, state] => (pid.parse::<u32>(), pgid.parse::<u32>(), state),
+            _ => return Err(format!("cannot read the process list line `{line}`")),
+        };
+        let (Ok(pid), Ok(pgid)) = (pid, pgid) else {
+            return Err(format!("cannot read the process list line `{line}`"));
+        };
+        if pgid == group && pid != group && !state.starts_with('Z') {
+            found.push(pid);
+        }
+    }
+    if rows == 0 {
+        return Err("the process list was empty".to_string());
+    }
+    Ok(found)
 }
 
 fn tool_names(server: &Server, tools: &[Value]) -> Vec<String> {
@@ -674,7 +834,7 @@ fn utf16(text: &str) -> usize {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use ccnm_testdir::TestDir;
     use std::fs;
@@ -687,7 +847,8 @@ mod tests {
     }
 
     /// A stdio MCP server in sh: answers initialize, lists `echo` and
-    /// `big`, echoes its arguments, and writes 50 000 bytes for `big`.
+    /// `big`, echoes its arguments, writes 50 000 bytes for `big`, and for
+    /// `slow` sleeps five seconds and says nothing.
     const SERVER: &str = r#"#!/bin/sh
 while IFS= read -r line; do
   id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
@@ -697,6 +858,7 @@ while IFS= read -r line; do
     *'"tools/list"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"tools":[{"name":"echo","inputSchema":{"type":"object"}},{"name":"big","inputSchema":{"type":"object"}},{"name":"env","inputSchema":{"type":"object"}}]}}\n' "$id" ;;
     *'"name":"big"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"%s"}]}}\n' "$id" "$(head -c 50000 /dev/zero | tr '\0' 'x')" ;;
     *'"name":"env"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"token=%s agent=%s"}],"structuredContent":{"x":1}}}\n' "$id" "$DB_TOKEN" "$ANTHROPIC_API_KEY" ;;
+    *'"name":"slow"'*) sleep 5 ;;
     *'"tools/call"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"echoed"}]}}\n' "$id" ;;
   esac
 done
@@ -874,5 +1036,291 @@ done
             utf16(&description)
         );
         assert!(description.contains(" more; call without server for all of them."));
+    }
+
+    // -- what a server leaves in its process group (C51-01, P52) --
+
+    /// Whether `pid` can still run: neither gone nor a zombie.
+    pub(crate) fn runs(pid: u32) -> bool {
+        let state = Command::new(LISTER)
+            .args(["-o", "stat=", "-p", &pid.to_string()])
+            .output()
+            .unwrap();
+        let state = String::from_utf8_lossy(&state.stdout);
+        let state = state.trim();
+        !state.is_empty() && !state.starts_with('Z')
+    }
+
+    pub(crate) fn wait_for_pid(path: &Path) -> u32 {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
+            if let Some(pid) = fs::read_to_string(path)
+                .ok()
+                .and_then(|text| text.trim().parse().ok())
+            {
+                return pid;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        panic!("no pid in {}", path.display());
+    }
+
+    fn group_of(pid: u32) -> u32 {
+        let group = Command::new(LISTER)
+            .args(["-o", "pgid=", "-p", &pid.to_string()])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&group.stdout)
+            .trim()
+            .parse()
+            .unwrap()
+    }
+
+    /// A background helper the way a server starts one: `sleep 60` with its
+    /// pipes closed and, the shell having no job control, in the server's
+    /// process group -- no `setsid`. Its pid goes to `child.pid`; `then` is
+    /// what the server does next.
+    fn leaving(name: &str, then: &str) -> (TestDir, TestDir) {
+        let (home, root) = project(name);
+        let script = root.join("leaving-mcp.sh");
+        fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\necho $$ > server.pid\nsleep 60 </dev/null >/dev/null 2>&1 &\necho $! > child.pid\n{then}\n"
+            ),
+        )
+        .unwrap();
+        let mut perms = fs::metadata(&script).unwrap().permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+        fs::set_permissions(&script, perms).unwrap();
+        fs::write(
+            root.join(".mcp.json"),
+            r#"{ "mcpServers": { "leaving": { "command": "./leaving-mcp.sh" } } }"#,
+        )
+        .unwrap();
+        (home, root)
+    }
+
+    /// C51-01 itself: the server reads EOF and exits cleanly, and until P52
+    /// its helper went on running after the write guard was let go.
+    #[test]
+    fn a_server_that_exits_on_eof_takes_what_it_left_in_its_group_along() {
+        let (home, root) = leaving("eof", "exec ./fake-mcp.sh");
+        let relay = relay(&home, &root);
+        relay.call(&args(Some("leaving"), None), None).unwrap();
+        let server = wait_for_pid(&root.join("server.pid"));
+        let child = wait_for_pid(&root.join("child.pid"));
+        assert_eq!(group_of(child), group_of(server), "same group, no setsid");
+        assert_ne!(group_of(server), server, "the group is the anchor's");
+        assert!(runs(child));
+
+        assert!(relay.close_all().is_empty(), "nothing is left");
+        assert!(!runs(server));
+        assert!(!runs(child), "the helper went with the server");
+    }
+
+    /// A server still there after the grace was already killed with its
+    /// group; now the group is checked as well.
+    #[test]
+    fn a_server_that_ignores_eof_is_killed_with_what_it_started() {
+        let (home, root) = leaving("stubborn", "./fake-mcp.sh\nsleep 60");
+        let relay = relay(&home, &root);
+        relay.call(&args(Some("leaving"), None), None).unwrap();
+        let server = wait_for_pid(&root.join("server.pid"));
+        let child = wait_for_pid(&root.join("child.pid"));
+        assert!(relay.close_all().is_empty());
+        assert!(!runs(server));
+        assert!(!runs(child));
+    }
+
+    /// Killed from outside, the server leaves its helper in the group; the
+    /// close that follows still finds it.
+    #[test]
+    fn a_server_killed_from_outside_still_has_its_group_cleared() {
+        let (home, root) = leaving("killed", "exec ./fake-mcp.sh");
+        let relay = relay(&home, &root);
+        relay.call(&args(Some("leaving"), None), None).unwrap();
+        let server = wait_for_pid(&root.join("server.pid"));
+        let child = wait_for_pid(&root.join("child.pid"));
+        // The server alone, not its group.
+        Command::new(KILLER)
+            .args(["-KILL", &server.to_string()])
+            .status()
+            .unwrap();
+        assert!(relay.close_all().is_empty());
+        assert!(!runs(child));
+    }
+
+    /// Closed because it sat idle or because a call timed out: the same
+    /// close, so the same clearing, and nothing reported.
+    #[test]
+    fn an_idle_server_and_one_whose_call_timed_out_are_cleared_the_same_way() {
+        let (home, root) = leaving("idle", "exec ./fake-mcp.sh");
+        let installed = relay(&home, &root).read();
+        let server = installed.find("leaving").unwrap();
+        let left = Left::default();
+        let opener = Opener {
+            root: &root,
+            sandbox: None,
+            left: &left,
+        };
+        let wait = Duration::from_secs(5);
+
+        let pool = Pool::new().idle_after(Duration::ZERO);
+        pool.with(server, "first", &opener, wait, |_| Ok(()))
+            .unwrap();
+        let idle = wait_for_pid(&root.join("child.pid"));
+        fs::remove_file(root.join("child.pid")).unwrap();
+        // A call reaps what has been idle -- zero seconds is enough -- first.
+        pool.with(server, "second", &opener, wait, |_| Ok(()))
+            .unwrap();
+        assert!(!runs(idle), "reaped with its server");
+        let second = wait_for_pid(&root.join("child.pid"));
+        pool.close_all();
+        assert!(!runs(second));
+        fs::remove_file(root.join("child.pid")).unwrap();
+
+        // Idle servers are not reaped here, so it is the timeout that ends
+        // this one.
+        let pool = Pool::new();
+        let error = pool
+            .with(server, "", &opener, wait, |live| {
+                live.client
+                    .call_tool("slow", json!({}), Duration::from_millis(300))
+            })
+            .unwrap_err();
+        assert!(
+            matches!(error, toexec_mcp::Error::Timeout { .. }),
+            "{error}"
+        );
+        let timed_out = wait_for_pid(&root.join("child.pid"));
+        assert!(!runs(timed_out), "dropped with the broken connection");
+        assert!(pool.known_tools("leaving", "").is_none());
+        assert!(left.lock().unwrap().is_empty());
+    }
+
+    /// The line this cannot cross: a helper that left the group (`setsid`)
+    /// is neither killed nor reported, and the guard is handed on beside
+    /// it. Pinned so that it is not forgotten; support-matrix.md says the
+    /// same. If something here ever does reach it, change both.
+    #[test]
+    fn a_child_that_left_the_group_is_beyond_reach_and_not_reported() {
+        let (home, root) = project("setsid");
+        let script = root.join("escaping-mcp.sh");
+        fs::write(
+            &script,
+            "#!/bin/sh\npython3 -c 'import os,time; os.setsid(); time.sleep(60)' </dev/null >/dev/null 2>&1 &\necho $! > child.pid\nexec ./fake-mcp.sh\n",
+        )
+        .unwrap();
+        let mut perms = fs::metadata(&script).unwrap().permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+        fs::set_permissions(&script, perms).unwrap();
+        fs::write(
+            root.join(".mcp.json"),
+            r#"{ "mcpServers": { "escaping": { "command": "./escaping-mcp.sh" } } }"#,
+        )
+        .unwrap();
+        let relay = relay(&home, &root);
+        relay.call(&args(Some("escaping"), None), None).unwrap();
+        let child = wait_for_pid(&root.join("child.pid"));
+        // setsid runs a moment after the fork.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while group_of(child) != child && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(group_of(child), child, "it left");
+
+        assert!(relay.close_all().is_empty());
+        let escaped = runs(child);
+        let _ = Command::new(KILLER)
+            .args(["-KILL", &child.to_string()])
+            .status();
+        assert!(escaped, "out of reach, as documented");
+    }
+
+    /// An anchor with one more process in its group, for [`clear`].
+    fn group_with_a_member() -> (Child, Child) {
+        let anchor = Command::new(ANCHOR)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let member = Command::new("sleep")
+            .arg("60")
+            .process_group(anchor.id() as i32)
+            .spawn()
+            .unwrap();
+        (anchor, member)
+    }
+
+    /// When the group does not empty, what is still in it is said, pid by
+    /// pid -- here because the killer never kills.
+    #[test]
+    fn a_group_that_does_not_empty_is_reported_with_what_is_in_it() {
+        let (mut anchor, mut member) = group_with_a_member();
+        let group = anchor.id();
+        let said = clear(&mut anchor, "false", LISTER, Duration::from_millis(300));
+        let running = runs(member.id());
+        member.kill().unwrap();
+        member.wait().unwrap();
+        assert_eq!(
+            said.as_deref(),
+            Some(
+                format!(
+                    "process group {group}: {} still running after SIGKILL",
+                    member.id()
+                )
+                .as_str()
+            )
+        );
+        assert!(running);
+        assert!(
+            anchor.try_wait().unwrap().is_some(),
+            "collected all the same"
+        );
+    }
+
+    /// A process list that cannot be had proves nothing: reported, never
+    /// taken for an empty group.
+    #[test]
+    fn a_group_that_cannot_be_checked_is_reported_not_taken_as_empty() {
+        let (mut anchor, mut member) = group_with_a_member();
+        let said = clear(&mut anchor, KILLER, "false", Duration::from_millis(300)).unwrap();
+        assert!(said.contains("could not be checked"), "{said}");
+        // The killer did run: the member is dead, just not seen to be.
+        member.wait().unwrap();
+    }
+
+    #[test]
+    fn the_process_list_counts_what_can_run_and_refuses_what_it_cannot_read() {
+        let listing =
+            "    1     1 Ss\n  500   500 Z\n  501   500 R+\n  502   500 Z+\n  503   600 S\n";
+        assert_eq!(
+            running_in(listing, 500),
+            Ok(vec![501]),
+            "not the anchor, no zombie"
+        );
+        assert_eq!(running_in(listing, 700), Ok(vec![]));
+        assert!(running_in("", 500).is_err());
+        assert!(running_in("  501   500\n", 500).is_err());
+        assert!(running_in("  x   500 S\n", 500).is_err());
+    }
+
+    #[test]
+    fn closing_hands_over_what_earlier_closes_left_and_only_once() {
+        let (home, root) = project("left");
+        let relay = relay(&home, &root);
+        relay
+            .left
+            .lock()
+            .unwrap()
+            .push("MCP server db (process group 9: 12 still running after SIGKILL)".into());
+        assert_eq!(
+            relay.close_all(),
+            ["MCP server db (process group 9: 12 still running after SIGKILL)"]
+        );
+        assert!(relay.close_all().is_empty());
     }
 }

@@ -71,6 +71,23 @@ WITHHELD = {
 }
 
 
+def still_running(pid: int) -> bool:
+    """还能运行：既不是没了，也不是只等着被收的僵尸。"""
+    state = subprocess.run(
+        ["/bin/ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True, check=False,
+    ).stdout.strip()
+    return bool(state) and not state.startswith("Z")
+
+
+def stop_if_still_ours(pid: int, marker: str) -> None:
+    """测试失败时收掉本轮起的进程：命令行里有本轮的临时路径才动，pid 换了人就不碰。"""
+    found = subprocess.run(
+        ["/bin/ps", "-o", "command=", "-p", str(pid)], capture_output=True, text=True, check=False,
+    ).stdout
+    if marker in found:
+        os.kill(pid, 9)
+
+
 def external_payload(workspace: str, session: str, mode: str) -> str:
     """internal 协议 5 的 payload，由这个测试自己拼。
 
@@ -397,6 +414,57 @@ agent_node = "agent"
             os.kill(pid, 0)
         # 写锁确实放了：下一个 coding 会话进得来。
         self.client("demo", "coding", "neutral-relay-next")
+
+    def test_a_child_left_in_the_servers_process_group_ends_before_the_next_writer(self):
+        """C51-01：P51 探针（docs/research/probes/p51-relay-cleanup.py）转成的回归。
+
+        server 起一个子进程：同一个进程组、没有 setsid、关掉继承的管道、一直
+        写文件；然后 server 读到 EOF 正常退出。P52 之前 ccnm 把"server 自己退
+        了"当成清理完，写锁标 released，第二个 writer 进来时旧子进程还在写。
+        """
+        self.write_config("coding", unconfined=True)
+        tick = self.root / "child-tick"
+        child_file = self.root / "child.pid"
+        child_code = (
+            "import time; from pathlib import Path; "
+            f"p=Path({str(tick)!r}); "
+            "[(p.write_text(str(i)),time.sleep(0.1)) for i in range(600)]"
+        )
+        server = self.root / "leaving-server.py"
+        server.write_text(
+            "import subprocess,sys,runpy; from pathlib import Path\n"
+            f"p=subprocess.Popen([sys.executable,'-c',{child_code!r}],"
+            "stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)\n"
+            f"Path({str(child_file)!r}).write_text(str(p.pid))\n"
+            f"runpy.run_path({str(ROOT / 'tests/fixtures/fake_mcp_server.py')!r},run_name='__main__')\n",
+            encoding="utf-8",
+        )
+        (self.root / ".mcp.json").write_text(json.dumps({"mcpServers": {
+            "leaving": {"command": sys.executable, "args": [str(server)]},
+        }}), encoding="utf-8")
+
+        first = self.client("demo", "coding", "neutral-relay-group")
+        got = first.call_tool("call_mcp_tool", {"server": "leaving", "tool": "pid"})
+        self.assertFalse(is_error(got), got)
+        server_pid = int(result_text(got))
+        child = int(child_file.read_text())
+        self.addCleanup(stop_if_still_ours, child, str(tick))
+        self.assertEqual(os.getpgid(child), os.getpgid(server_pid), "同一个进程组")
+        self.assertTrue(still_running(child))
+
+        self.assertEqual(first.close(), 0)
+        self.assertFalse(still_running(child), "server 组里剩下的在交出写锁前没了")
+        before = tick.read_text(encoding="utf-8")
+        time.sleep(0.4)
+        self.assertEqual(tick.read_text(encoding="utf-8"), before, "关掉之后不再写")
+        markers = [p.read_text(encoding="utf-8") for p in (self.dir / "state").rglob("*.lock")]
+        self.assertEqual(markers, ["released\n"])
+
+        second = self.client("demo", "coding", "neutral-relay-group-next")
+        changed = second.call_tool("apply_patch", {"files": [
+            {"op": "add", "path": "second-writer.txt", "content": "second writer\n"},
+        ]})
+        self.assertFalse(is_error(changed), changed)
 
     def test_a_read_session_never_gets_the_relay(self):
         self.declare_server()

@@ -3,6 +3,9 @@
 只操作临时工作区、合成 HOME 和本次创建的进程，不读取真实配置，不连接 SSH。
 先 cargo build，再从仓库根执行 python3 -B docs/research/probes/p51-relay-cleanup.py。
 输出 defect_reproduced，不把探针执行成功等同于产品通过验收。
+P52 起正式回归是 tests/test_remote_workspace_mcp.py 里的
+test_a_child_left_in_the_servers_process_group_ends_before_the_next_writer，
+这里留作 P51 的复现记录。P52 后进程组的组长不再是 server 自己，所以比的是两者的组号。
 """
 from __future__ import annotations
 
@@ -52,7 +55,7 @@ def main() -> None:
             raise RuntimeError(result_text(got))
         server_pid = int(result_text(got))
         child_pid = int(child_file.read_text())
-        report["same_process_group"] = os.getpgid(child_pid) == server_pid
+        report["same_process_group"] = os.getpgid(child_pid) == os.getpgid(server_pid)
         report["first_close_exit"] = first.close()
         before = tick.read_text() if tick.exists() else None
         time.sleep(0.4)

@@ -481,7 +481,7 @@ hidden = ["computer"]  # 这几个不转，按名字
 - 项目的 `.mcp.json` 排最前、同名压过装好的（Claude Code 的规矩）。只转 stdio 的；HTTP 的列出来、写明"从 Agent 那边连"（Agent 上装的见 [`[agent_mcp]`](#agent_mcp)）。配置里自己关掉的（Codex 的 `enabled = false`、JSON 里的 `"disabled": true`）列出来、写明关着，不起。
 - server 配置里自己的 `env` 照传，token 也传；Agent 的登录变量（`ANTHROPIC_API_KEY` 这些）不传。`${VAR}` 查不到像凭据的变量名——ccnm 的执行门本来就不许 Runtime 的环境里有它们——这样的 server 标成"缺什么"，不起。
 - 结果文字超过 32 KiB 的，先交前 32 KiB，其余像命令输出一样用 `read_output` 接着读。
-- 正常收尾先关闭 server、再放写锁；闲 5 分钟也会回收连接，下次调用重起。关闭时 server 进程组里剩下的一起杀掉并确认，清不掉写锁就不放（P52）；离开进程组的后代不在其内，Linux 还没验，见 [P52 记录](research/2026-09-25-p52-relay-group-cleanup.md)。
+- 正常收尾先关闭 server、再放写锁；闲 5 分钟也会回收连接，下次调用重起。关闭时 server 进程组里剩下的一起杀掉并确认，清不掉写锁就不放（P52）；离开进程组的后代不在其内，见 [P52 记录](research/2026-09-25-p52-relay-group-cleanup.md)。
 - `project = false`：只转执行账号装的，不读项目的 `.mcp.json`——给托管别人项目、不想让项目文件点名要跑什么程序的机器。`hidden` 里的在哪声明都不转。
 - 执行账号是专门建的 `ccrun` 时，它的 HOME 里一般什么都没装，转的就只有项目自己声明的。
 - 改了从下一个会话开始算；开着的会话的工具说明（列了哪些 server）不变，但每次调用都重新读配置。

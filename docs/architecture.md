@@ -254,4 +254,4 @@ Runtime MCP 初始化再用自己的配置重算 binding；legacy payload 不能
 
 正常退出写 `released` 并显式 unlock；异常退出保留 `held` marker。后者即使内核锁已经释放也保持 unknown，直到 Runtime 操作者证明旧进程与子进程结束后人工恢复，不按时钟自动转让。这个机制拒绝并发受管 writer，不承诺任意 shell 的 exactly-once、事务回滚或 sandbox。操作边界见[支持矩阵](support-matrix.md)。
 
-P43 在普通命令收尾报告残留时保留 `held/abandoned`；但这不是任意后代进程的完整证明。Runtime MCP relay 的 server 自 P52 起放在 ccnm 持有的进程组里，关闭时整组清掉并用进程列表确认，清不掉就 `abandoned`，修的是 P51 复现的 C51-01（leader 正常退出、同组子进程仍写、写锁却 `released`）。离开进程组的后代仍在监督范围外，Linux 回归还没跑，见 [P52 记录](research/2026-09-25-p52-relay-group-cleanup.md)。
+P43 在普通命令收尾报告残留时保留 `held/abandoned`；但这不是任意后代进程的完整证明。Runtime MCP relay 的 server 自 P52 起放在 ccnm 持有的进程组里，关闭时整组清掉并用进程列表确认，清不掉就 `abandoned`，修的是 P51 复现的 C51-01（leader 正常退出、同组子进程仍写、写锁却 `released`），macOS 与 Linux 均已验证。离开进程组的后代仍在监督范围外，见 [P52 记录](research/2026-09-25-p52-relay-group-cleanup.md)。

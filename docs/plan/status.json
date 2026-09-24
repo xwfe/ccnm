@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-09-25T00:35:00+09:00",
-  "current_task": "P52",
+  "last_updated": "2026-09-25T01:20:20+09:00",
+  "current_task": "P53",
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
     "source": "docs/research/codex-internal-wiring-2026-09-07.md",
@@ -2566,12 +2566,12 @@
     {
       "id": "P52",
       "title": "MCP relay 可靠收尾与写权交接",
-      "status": "blocked",
+      "status": "completed",
       "depends_on": ["P51"],
       "owner": null,
       "started_at": "2026-09-25T00:08:00+09:00",
-      "last_updated": "2026-09-25T00:35:00+09:00",
-      "completed_criteria": ["P52.1", "P52.2", "P52.3"],
+      "last_updated": "2026-09-25T01:20:20+09:00",
+      "completed_criteria": ["P52.1", "P52.2", "P52.3", "P52.4"],
       "evidence": [
         {
           "kind": "offline",
@@ -2579,15 +2579,15 @@
           "ref": "docs/research/2026-09-25-p52-relay-group-cleanup.md",
           "commit": "818bed6",
           "result": "macOS 26.6.2 arm64、rustc 1.98.0。Runtime relay 与 Agent 本机 MCP 的 stdio server 改由 /bin/cat 锚进程持有进程组，任何关闭都整组 SIGKILL 并用 /bin/ps 确认，清不掉或查不了记残留，Runtime 写锁因此 abandoned 而非 released。新中立客户端回归在旧代码（stash crates/ 后重编）上失败于关闭后子进程仍在运行，新代码上通过；把 Stop 改回旧行为时 EOF、外部强杀、闲置/超时 3 条 Rust 测试失败。fmt、严格 clippy 通过；cargo test --workspace 946 passed / 0 failed，--test-threads=64 全过，relay 与 Agent MCP 的 20 条测试 64 线程连跑 5 轮全过；Python 全套 210 passed 无 skip；check_protocol 38+29 fixtures、test_check_protocol 24 passed。未覆盖：Linux；离开进程组的后代（测试钉住为边界）；真实二进制里组清不掉导致 abandoned 的端到端（需系统权限造不可杀进程）；OS 沙箱里的 server；ccnm 自身被 SIGKILL。未推送、未部署、未运行真实模型。"
+        },
+        {
+          "kind": "real_nodes",
+          "criteria": ["P52.1", "P52.2", "P52.3", "P52.4"],
+          "ref": "docs/research/2026-09-25-p52-relay-group-cleanup.md",
+          "result": "用户本轮授权：hpsrv（Debian 13 / x86_64，内核 6.12.101）以 ccrun（uid 1002）身份跑，临时目录跑完即删，不装包、不改系统、不替换已装的 ccnm 0.8.0。本机交叉编译 x86_64-unknown-linux-musl（rustc 1.98.0；发布件是 ubuntu 原生 glibc 构建，此处不同）的 3b18d56 与修复前 ae06327 两个 ccnm 及 ccnm-core 单测程序。relay、Agent MCP、left_behind、写锁 28 条通过，relay 与 Agent MCP 20 条 64 线程 3 轮全过；新构建跑 tests/test_remote_workspace_mcp.py 45 条全过、探针 defect_reproduced=false；旧构建使新回归失败于关闭后子进程仍在运行，探针 defect_reproduced=true（C51-01 首次在 Linux 复现）。/bin/cat 在，/bin/kill、/bin/ps 来自 procps，ps 输出格式与 macOS 相同。未跑 Linux 上的 Rust 全量测试。清理：删 /home/ccrun/ccnm-p52-check 与 /root 上传包，无 ccrun 残留进程和 /tmp 测试目录；本机移除临时 musl 目标与交叉编译产物。"
         }
       ],
-      "blockers": [
-        {
-          "criteria": ["P52.4"],
-          "reason": "P52.4 要求 macOS 与 Linux 的相应回归，本轮只有 macOS。hpsrv 真机、推送触发 GitHub CI、本机新建 Linux 虚拟机都需要本轮没有的授权；P52 不继承历史真机授权。",
-          "unblock": "用户选定并授权一种 Linux 验证：(a) 以 ccrun 身份在 hpsrv 上取得 818bed6 并跑 cargo test -p ccnm-core --lib mcp::relay:: mcp::agent_mcp:: 与 cargo build 后的 python3 -m unittest tests.test_remote_workspace_mcp，另核实 /bin/ps、/bin/kill、/bin/cat 存在；(b) 推送后看 GitHub Linux job 的 Rust 部分（Python 门禁属 P53）；(c) 本机建 OrbStack Linux 机器跑同样两组。通过后写入 P52.4 evidence，把文档里的“Linux 未跑”改掉，再关闭 C51-01。"
-        }
-      ]
+      "blockers": []
     },
     {
       "id": "P53",
@@ -2639,7 +2639,7 @@
     }
   ],
   "observed_gaps": [
-    "【P52 代码已修、Linux 未验 / C51-01】Runtime MCP relay 的 leader 正常退出后，同进程组子进程仍可写文件，guard 却 released，第二 coding writer 成功进入（P51 真实二进制复现，见 docs/research/2026-09-23-lifecycle-and-docs-audit.md）。818bed6 改为锚进程持有进程组、关闭时整组清掉并确认，清不掉写锁 abandoned；macOS 正反两面已验证，Linux 回归跑完前不关闭。离开进程组的后代仍在范围外。见 docs/research/2026-09-25-p52-relay-group-cleanup.md。",
+    "【P52 已处理 / C51-01】Runtime MCP relay 的 leader 正常退出后，同进程组子进程仍可写文件，guard 却 released，第二 coding writer 成功进入（P51 真实二进制复现，见 docs/research/2026-09-23-lifecycle-and-docs-audit.md）。818bed6 改为锚进程持有进程组、关闭时整组清掉并确认，清不掉写锁 abandoned；macOS 与 Linux（hpsrv/ccrun）正反两面均已验证。仍在范围外：离开进程组的后代（setsid、守护进程）、ccnm 自身被 SIGKILL、OS 沙箱里的 server。见 docs/research/2026-09-25-p52-relay-group-cleanup.md。",
     "【P51 当前未实现 / C51-03】CI 和 release workflow 尚未运行 Python 中立客户端全套、check_plan 或 check_protocol；本地要求没有全部转成自动门禁。P52 后优先补齐，不把当前 CI 绿当完整契约证明。",
     "【P51 文档已同步 / 实际边界不变】Agent 的 skills/MCP 与 Runtime 项目工具分属不同身份；Runtime 沙箱不覆盖 Agent 本机 MCP，关闭 web_fetch 不保证阻止外发。Machine API 缺分页/busy、后台命令连接绑定、state 锁域与跨身份 purge 限制见生命周期和审计文档。后面的 observed_gaps 保留各阶段原始日期及处理标记，不应全部视为当前未修复清单。",
     "macOS 上 /tmp 与 /var 都是符号链接，而凭据检查见到祖先目录是 symlink 即判 accessibility unknown——不可豁免，allow_unconfined_exec 无效，表现为 MCP 握手 connection closed: initialize response。任何把 Runtime 执行身份的 home 放在系统临时目录下的部署或测试都会踩到；已写进运维手册，采集脚本已改为对临时目录 resolve()。",
@@ -2690,8 +2690,8 @@
     "【P41 记下不修】mcp-serve 被 SIGKILL（或别的不走正常退出的死法）时，它起的命令的进程组没人收：前台命令一直如此，P41 的后台命令没有期限，所以可能一直跑下去；它们的 run 在 read_output 里读作 exit status unknown。正常路径（客户端断开、stdin EOF、心跳发现对端不在）会先停掉所有命令再放写锁。要收干净得给子进程加会话标记、下次启动时按标记扫（封存的原生链 P26/P30 有类似做法），需另立阶段。依据 docs/research/p41-background-commands-2026-09-18.md 第 5 节。"
   ],
   "handoff": {
-    "next_action": "**2026-09-25 P52 代码与 macOS 验证完成，blocked 于 Linux 回归。** 起点 main/ae06327。818bed6 修 C51-01：Runtime relay 与 Agent 本机 MCP 的 stdio server 由 /bin/cat 锚进程持有进程组，任何关闭都整组 SIGKILL 并用 ps 确认，清不掉写锁 abandoned；证据、行为变更与边界见 docs/research/2026-09-25-p52-relay-group-cleanup.md。下一步：用户授权一种 Linux 验证方式（hpsrv/ccrun、推送看 GitHub CI、本机 OrbStack）后跑 relay/agent_mcp 的 Rust 测试和 tests.test_remote_workspace_mcp，写入 P52.4 evidence，改掉各文档的“Linux 未跑”并关闭 C51-01，然后才是 P53。未推送。仓库根目录的 ccnm-mobile-handoff.md 是用户从外部下载的交接摘要，未跟踪、未提交。\n\n之前的交接：\n**2026-09-24 移动端两方案规划完成，未实施或部署。** 起点 main/2eeaf7b 干净。新增 docs/plan/mobile-access.md、mobile-ssh.md、mobile-web-terminal.md；用户只选 Tailscale + 手机 SSH 与 ttyd + Tailscale Serve。P53 将既有 C51-03 CI 门禁正式编号，P54 手机 SSH，P55 attach-only 离线适配，P56 私网部署与真机验收，全部 pending。current_task 仍是 P52：先修 C51-01 收尾/交权，再按 P53→P54→P55→P56 每轮一个阶段。网页不启动新 Agent、不暴露 shell/RPC、不含长期服务或项目预览代理；系统/网络/模型/部署权限分项授权，不继承历史授权。本轮仅写计划及文档导航；验收结果见 planning_validation_latest。\n\n之前的交接：\n**2026-09-23 P51 文档与生命周期审计完成，P52 pending、未实施。** 起点 main/7f0e018 干净、版本 0.9.0。当前最重要的事实：真实二进制隔离探针复现 C51-01，Runtime MCP server leader 正常退出、同组子进程仍写、guard released、第二 writer 进入；临时进程已清理，产品逻辑未修。下一步先做 P52 可靠收尾与交权，再补 Python/计划/协议 CI 门禁 C51-03，再做具名真实项目验收。见 docs/research/2026-09-23-lifecycle-and-docs-audit.md；不要增加新 Provider 或重开封存 exec-server。P51 只改文档与探针，不推送；P52 不继承历史 sudo/真机/额度授权。\n\n之前的交接：\n**2026-09-23 发布记录。** v0.9.0 已发布，tag 指向 86bdac0；7f0e018 同步说明。不能再把发 v0.9.0 作为待办。本轮没有在线复查 Release，也没有复验远端安装。",
-    "scope": "2026-09-25 用户要求从 docs/plan/mobile-access.md 开始；按其第 7 节先做 current_task P52。本轮改 relay、agent_mcp、server、write_guard 与相应测试，新增 Python 中立回归，P51 探针改为比较组号，并同步 C51-01 相关文档与本记录；没有连接手机/hpsrv/fodelf、读取凭据、运行真实模型、改系统/网络权限、安装、部署、push 或发版。Linux 验证待用户授权。",
+    "next_action": "**2026-09-25 P52 完成，C51-01 关闭。** 起点 main/ae06327。818bed6 修复：Runtime relay 与 Agent 本机 MCP 的 stdio server 由 /bin/cat 锚进程持有进程组，任何关闭都整组 SIGKILL 并用 ps 确认，清不掉写锁 abandoned；macOS 全量门禁与 hpsrv（ccrun）Linux 回归都过，两平台都有旧代码失败的反证。证据、行为变更与边界（离开进程组的后代够不着）见 docs/research/2026-09-25-p52-relay-group-cleanup.md。下一步 P53：核对 .github/workflows/ci.yml 与 release.yml 的真实构建顺序，接入 check_plan、check_protocol 和 Python 全套（需先构建 debug 二进制），发布依赖门禁；线上 runner 验证需另行授权推送。本地 main 比 origin 多 5 个提交，未推送。仓库根目录的 ccnm-mobile-handoff.md 是用户从外部下载的交接摘要，未跟踪、未提交。\n\n之前的交接：\n**2026-09-24 移动端两方案规划完成，未实施或部署。** 起点 main/2eeaf7b 干净。新增 docs/plan/mobile-access.md、mobile-ssh.md、mobile-web-terminal.md；用户只选 Tailscale + 手机 SSH 与 ttyd + Tailscale Serve。P53 将既有 C51-03 CI 门禁正式编号，P54 手机 SSH，P55 attach-only 离线适配，P56 私网部署与真机验收，全部 pending。current_task 仍是 P52：先修 C51-01 收尾/交权，再按 P53→P54→P55→P56 每轮一个阶段。网页不启动新 Agent、不暴露 shell/RPC、不含长期服务或项目预览代理；系统/网络/模型/部署权限分项授权，不继承历史授权。本轮仅写计划及文档导航；验收结果见 planning_validation_latest。\n\n之前的交接：\n**2026-09-23 P51 文档与生命周期审计完成，P52 pending、未实施。** 起点 main/7f0e018 干净、版本 0.9.0。当前最重要的事实：真实二进制隔离探针复现 C51-01，Runtime MCP server leader 正常退出、同组子进程仍写、guard released、第二 writer 进入；临时进程已清理，产品逻辑未修。下一步先做 P52 可靠收尾与交权，再补 Python/计划/协议 CI 门禁 C51-03，再做具名真实项目验收。见 docs/research/2026-09-23-lifecycle-and-docs-audit.md；不要增加新 Provider 或重开封存 exec-server。P51 只改文档与探针，不推送；P52 不继承历史 sudo/真机/额度授权。\n\n之前的交接：\n**2026-09-23 发布记录。** v0.9.0 已发布，tag 指向 86bdac0；7f0e018 同步说明。不能再把发 v0.9.0 作为待办。本轮没有在线复查 Release，也没有复验远端安装。",
+    "scope": "2026-09-25 用户要求从 docs/plan/mobile-access.md 开始；按其第 7 节先做 current_task P52。本轮改 relay、agent_mcp、server、write_guard 与相应测试，新增 Python 中立回归，P51 探针改为比较组号，同步 C51-01 相关文档与本记录。用户授权后在 hpsrv 以 ccrun 跑 Linux 回归（临时目录已删）。没有连接手机/fodelf、读取凭据、运行真实模型、改系统/网络权限、安装、部署、push 或发版。",
     "planning_validation": {
       "at": "2026-09-08T21:22:43+09:00",
       "commands": [

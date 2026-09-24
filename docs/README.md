@@ -10,6 +10,7 @@ README 负责说明产品、上手与关键边界；本目录保存详细用法�
 | 编写外部客户端或编排器 | [公开协议](protocol/README.md) → [执行接口交接](orchestrator-handoff.md) |
 | 维护 ccnm | [架构](architecture.md) → [开发与发布](development.md) → [计划入口](plan/README.md) |
 | 了解缺口与下一步 | [2026-09-23 审计](research/2026-09-23-lifecycle-and-docs-audit.md) → [状态账本](plan/status.json) |
+| 实施手机远程操作（待实施） | [移动端总纲](plan/mobile-access.md) → [手机 SSH](plan/mobile-ssh.md) / [浏览器终端](plan/mobile-web-terminal.md) |
 
 ## 哪份文档回答哪种事实
 

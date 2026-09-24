@@ -133,6 +133,8 @@ Agent 侧的 `ccnm_agent` 是另一组工具，不计入上面的 Runtime 工具
 
 总入口：[文档导航](docs/README.md)；评估与下一步：[生命周期与职责](docs/project-lifecycle.md)、[2026-09-23 审计](docs/research/2026-09-23-lifecycle-and-docs-audit.md)。
 
+手机远程操作的[实施计划](docs/plan/mobile-access.md)：方案一为 Tailscale + 手机 SSH，方案二为 ttyd + Tailscale Serve 浏览器终端。**尚未部署或做手机验收**，任务与前置门禁见计划，不代表新增已支持入口。
+
 | 用途 | 文档 |
 | --- | --- |
 | 上手与使用 | [快速开始](docs/getting-started.md) · [使用](docs/usage.md) · [配置](docs/configuration.md) |

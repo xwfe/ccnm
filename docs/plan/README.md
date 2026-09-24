@@ -13,6 +13,8 @@
 | [runtime-surfaces.md](runtime-surfaces.md) | Managed Agent Runtime、Remote Workspace MCP、OS 身份和 v1/v1.x 实施边界，以及 Codex 原生执行链的设计 |
 | [../research/](../research/) | 脱敏的实测记录；回归 fixture 放在 `tests/fixtures/` |
 | [三仓重构落地清单](../research/2026-09-19-cross-project-refactor-actions.md) | 2026-09-19 跨仓评审建议、依赖与验收；不替代 status，也不自动认领新阶段 |
+| [移动端实施总纲](mobile-access.md) | 两种移动终端入口的共同边界、P53–P56 依赖、授权和交接；仍先完成 P52 |
+| [手机 SSH](mobile-ssh.md) · [浏览器终端](mobile-web-terminal.md) | 方案一 P54 与方案二 P55/P56 的任务、交付、真机验收及回退；计划不等于已部署 |
 
 `AGENTS.md` 是模型入口，`CLAUDE.md` 只指向它。开发命令见 [开发文档](../development.md)。整个接续流程只依赖 Git、仓库文件和项目自身命令，不要求任何特定 MCP、IDE 插件、Agent harness 或私有任务系统。旧的“在 ccnm 内做多 Agent”计划已被本路线替代，不要恢复执行。
 

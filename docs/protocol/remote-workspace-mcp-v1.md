@@ -1,6 +1,6 @@
 # ccnm Remote Workspace MCP v1（契约）
 
-> **2026-09-23 实现缺陷披露（P51）**：Runtime MCP relay 的 server leader 正常退出后，其同组子进程仍可能写入，当前却释放写锁并允许第二个 writer。关闭请求完成不等于后代清理已证明；这是待修复的实现缺陷，不是新的许可语义，不修改冻结契约。复现、临时收敛与回归条件见[审计 C51-01](../research/2026-09-23-lifecycle-and-docs-audit.md)。
+> **实现缺陷披露（P51 发现，P52 修复）**：Runtime MCP relay 的 server leader 正常退出后，其同组子进程曾仍可写入，写锁却释放并允许第二个 writer（[审计 C51-01](../research/2026-09-23-lifecycle-and-docs-audit.md)）。P52 起关闭时清掉整组并确认，清不掉不交出写锁；macOS 已验证，Linux 未跑，离开进程组的后代仍在范围外（[P52 记录](../research/2026-09-25-p52-relay-group-cleanup.md)）。这是实现修复，不是新的许可语义，不修改冻结契约。
 
 > **状态：`ccnm.workspace-mcp/1` 于 2026-09-11 冻结。**
 > 依据是两轮真机：允许矩阵在真实 Claude Code 2.1.268 上跑过（[P11 记录](../research/p11-real-host-2026-09-11.md)、[证据](../research/p11-matrix-20260911.json)），远端真实项目 dogfood 在 Debian 13 / x86_64 的 Runtime 上跑过（[P12 记录](../research/p12-real-project-2026-09-11.md)、[证据](../research/p12-dogfood-20260911.json)）。

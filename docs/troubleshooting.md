@@ -2,9 +2,11 @@
 
 ## 会话已经结束，工作区却仍有后台写入
 
-先停止向该工作区派发新的写任务。2026-09-23 已复现 Runtime MCP 转接的一个缺陷：server leader 正常退出，其同组子进程仍在写文件，写锁却已 `released`，第二个 coding 会话也能进来。不能凭 `stop` 成功或 leader pid 消失推断所有后代已停。
+先停止向该工作区派发新的写任务。不能凭 `stop` 成功或 leader pid 消失推断所有后代已停。
 
-要求可靠交权的环境先在 Runtime 配置 `[runtime_mcp] enabled = false`，结束旧会话，并由实际执行身份核实和清理本次创建的进程。不要删除 guard 来强行恢复，不要按模糊名字批量 kill。完整复现与修复验收见[审计 C51-01](research/2026-09-23-lifecycle-and-docs-audit.md)。这是已知缺陷，尚未修复，不是推荐的后台服务运行方式。
+Runtime MCP 转接（`call_mcp_tool`）的 server 自 P52 起：关闭时它进程组里剩下的进程被杀掉并确认，清不掉写锁就留 `held` 加 `abandoned` 一行，按[写入 guard 残留](operations.md#写入-guard-残留)处理。仍会漏的有两种：server 派生的、离开了进程组的后代（`setsid`、守护进程）；还没跑过这条回归的 Linux Runtime。2026-09-23 复现的缺陷——server 正常退出，同组子进程接着写，写锁却 `released`——就是 P52 修的那一种（[审计 C51-01](research/2026-09-23-lifecycle-and-docs-audit.md)、[P52 记录](research/2026-09-25-p52-relay-group-cleanup.md)）。
+
+属于这两种、又要求可靠交权的环境，先在 Runtime 配置 `[runtime_mcp] enabled = false`，结束旧会话，并由实际执行身份核实和清理本次创建的进程。不要删除 guard 来强行恢复，不要按模糊名字批量 kill。
 
 ## 其他常见现象
 

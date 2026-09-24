@@ -45,7 +45,7 @@ Machine API 的 `session.result` 当前只有最后 8 KiB、无分页；Runtime 
 
 RPC 有响应、Agent 退出码为 0、项目验收通过是三件事。`unknown` 不等于失败且无副作用，不能盲目重放；普通 shell 和第三方服务没有 exactly-once 承诺。
 
-写互斥只在同一 state 目录及相同 canonical Git common-dir / 非 Git workspace 资源范围内有效，不拦普通编辑器或旁路命令。**当前 Runtime MCP 转接还有已复现的“旧子进程仍在写却交出写权”缺陷**，见审计中的 C51-01；不能拿 `released` 或 server leader 已退出当作完整进程清场证据。
+写互斥只在同一 state 目录及相同 canonical Git common-dir / 非 Git workspace 资源范围内有效，不拦普通编辑器或旁路命令。Runtime MCP 转接的“旧子进程仍在写却交出写权”（C51-01）P52 已修：同组后代交权前清掉并确认，但离开进程组的后代看不见、Linux 还没验，所以 `released` 仍不是整棵进程树的证明，见 [P52 记录](research/2026-09-25-p52-relay-group-cleanup.md)。
 
 ## 一个项目宣布交付闭环前，至少留下什么
 

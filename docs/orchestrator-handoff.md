@@ -145,7 +145,7 @@ with CcnmBackend.spawn() as backend:
 
 `ccnm.machine/1` 当前只有 print、结果尾部 8 KiB、无分页/过期；`session.start` 不发 `-32008 busy`，写锁冲突可能在 Agent 启动后表现为执行失败。不要按一个永远不返回的错误码编排退避，也不要把尾部文本当完整验收产物，详见[协议实现差距](protocol/README.md)。
 
-写互斥要求共享 state 域及 canonical 资源；Runtime MCP relay 还存在已复现的子进程未退出即交权缺陷（[审计 C51-01](research/2026-09-23-lifecycle-and-docs-audit.md)）。在修复并验收前，不应把此实现当成可靠的无人值守并行或连续交权基础。消费者不能用旁路 SSH、删除锁或无限重试“修复”它。
+写互斥要求共享 state 域及 canonical 资源；Runtime MCP relay 的子进程未退出即交权缺陷（C51-01）P52 已在代码上修复，macOS 已验证、Linux 未跑，离开进程组的后代仍在范围外（[P52 记录](research/2026-09-25-p52-relay-group-cleanup.md)）。Linux 验收完成前，不应把此实现当成可靠的无人值守并行或连续交权基础。消费者不能用旁路 SSH、删除锁或无限重试“修复”它。
 
 ## 9. 这份文档不保证什么
 

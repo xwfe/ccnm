@@ -363,6 +363,8 @@ abandoned 1 command(s) (r-e69acf4e804643a2)
 
 **有 `abandoned` 这一行 = 不是异常退出。**上一个会话结束时有命令停不掉（离开了进程组、又攥着管道那种，ccnm 的信号够不着它），ccnm 明知有东西可能还在改这棵树，**故意**没把写权交出去。所以**先去收那些命令，别急着删 marker**——删了就是放第二个写者进同一棵树，那正是这把锁存在的理由。每条命令的命令行在 `${XDG_STATE_HOME:-~/.local/state}/ccnm/sessions/<session>/output/<ref>/status` 里；进程要按它自己留下的进程组找，`ccnm status` 看不到它们。`ccnm status` 这时会说"故意留着的"，不是"异常退出留下的"。
 
+第二行也可能是 `abandoned MCP server <名字> (process group <组号>: <pid>, ... still running after SIGKILL)`，或 `... could not be checked: ...`（P52 起）：`call_mcp_tool` 转接的 server 关掉后，它进程组里还有 SIGKILL 也杀不掉的进程（setuid 程序、卡在内核里的），或者 ccnm 跑不了 `/bin/ps` 没法确认。用 `ps -A -o pid,pgid,stat,command` 按组号找，那几个 pid 都结束了再往下删 marker。一直是"查不了"的，先看这台机器有没有 `ps`（精简 Linux 镜像要装 procps）。
+
 **没有第二行 = 异常退出留下的**，状态是 unknown。**ccnm 不会因为时间过去就自动接管**——它证明不了旧的执行者已经结束。marker 里的 pid 只帮你少找一步：拒绝信息会告诉你那个 pid 现在是什么（还在跑，连命令行一起给你；已经不在；或者被别的程序复用了）。**pid 没了不等于可以接管**——它起的命令可能还活着，而这里看不见它们。
 
 恢复必须由 Runtime 操作者做，顺序不能反：

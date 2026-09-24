@@ -364,7 +364,7 @@ call_mcp_tool
 
 ## 项目那台机器上的 MCP server
 
-**2026-09-23 已知缺陷**：服务自己正常退出不保证其子进程已结束，但当前可能照常交出写权。需要可靠交权时先停用 Runtime relay、清场再重开，详见[审计 C51-01](research/2026-09-23-lifecycle-and-docs-audit.md)；不要把下面的正常路径说明理解为完整进程树保证。
+**进程收尾（P52）**：server 关闭时，它留在自己进程组里的子进程一起被杀掉并确认；清不掉就不交出写权。离开进程组的后代（`setsid`、守护进程）够不着。Linux 上还没跑这条回归，要求可靠交权的 Linux Runtime 暂按[支持矩阵](support-matrix.md)里 C51-01 那段先停用 relay。详见 [P52 记录](research/2026-09-25-p52-relay-group-cleanup.md)。
 
 项目的 `.mcp.json` 里声明了 server（比如一个连本地数据库的），或者 Runtime 的执行账号给 Claude Code / Codex 装了 server，模型会多一个工具 `call_mcp_tool`（P49，默认全开）：
 

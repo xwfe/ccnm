@@ -38,16 +38,15 @@ cargo clippy --workspace --all-targets -- -D warnings
 ### 文档与公开契约也要过门禁
 
 ```bash
-cargo build --workspace --locked
-python3 -B -m unittest discover -s tests -q
-python3 scripts/check_plan.py
-python3 scripts/check_protocol.py
+python3 scripts/ci_gates.py
 git diff --check
 ```
 
-先构建 CLI，避免 Python 的中立客户端测试因找不到二进制跳过，或误用旧二进制。计划检查验证全仓相对文件链接，不验证所有标题锚点或语义；协议检查验证 schema/fixture 一致性，不能代替真实字节流行为和 Host 验收。
+`ci_gates.py` 就是 CI 和发版跑的那一步（P53）：先 `cargo build -p ccnm-cli`，把刚构建出的二进制交给 `CCNM_BIN`，再依次跑计划检查、协议检查和 `tests/` 下全部 Python 测试。**任何一条被跳过都算失败。**原因：依赖二进制的 Python 测试类找不到二进制时整类 skip，unittest 照样报 OK——P53 之前 CI 只跑 Rust，这组测试从没在 CI 上跑过，本机忘了构建也只会看到一行 `skipped`（[审计 C51-03](research/2026-09-23-lifecycle-and-docs-audit.md)）。确实只能在某些机器上跑的测试，写进脚本里的 `ALLOWED_SKIPS` 并写明原因；现在它是空的。
 
-**2026-09-23 的 CI/release workflow 尚未运行这组 Python/文档/协议门禁**，只有 Rust 门禁与构建，不能把 CI 绿说成全部契约已验。本轮审计将补齐列为高优先级，见[审计 C51-03](research/2026-09-23-lifecycle-and-docs-audit.md)。本地执行这些命令不等于工作流已经改好。
+要的东西：`cargo`、`python3`（3.9 起，只用标准库）、`git`、`rg`、`/bin/ps`。机器上没有 cargo、二进制已经有了（比如在 Runtime 真机上），用 `--bin <ccnm 的路径>`。红了看最后几行：它列出每条失败、出错和被跳过的测试；在 GitHub 上同一份清单还会作为注解出现在提交页，不登录也看得到。
+
+计划检查验证全仓相对文件链接，不验证所有标题锚点或语义；协议检查验证 schema/fixture 一致性，不能代替真实字节流行为和 Host 验收。
 
 维护顺序：变更契约/默认值 → 实现及回归 → 使用/配置/安全/支持矩阵 → 状态与证据。工具数量按实际 `tools/list`、权限和可用 server 说明；文档不再到处固定一个过期的测试总数。历史测量保留日期，不全局替换旧数字。文档职责见[导航](README.md)。
 
@@ -104,13 +103,13 @@ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"hello","params":{"client":"me",
 黑盒契约测试（不 import 任何 ccnm 库，只走字节流）：
 
 ```bash
-cargo build                                    # 测试要找 target/debug/ccnm
+cargo build                                    # 测试要找 target/debug/ccnm，或用 CCNM_BIN 指定
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_blackbox_client -q
 ```
 
 用的客户端是 [clients/python/ccnm_machine_client.py](../clients/python/ccnm_machine_client.py)——**那个文件是给外部程序抄走的**，只用标准库，复制到别的项目就能跑（有一条测试专门证明这点）。坏对端的场景（说别的协议版本、答应了握手就消失、以退出码 0 代替回答）由 [tests/fixtures/fake_rpc_peer.py](../tests/fixtures/fake_rpc_peer.py) 扮演。
 
-找不到二进制时这组测试会 skip 而不是失败，因为 Python 测试不该依赖 cargo。看到 skip 就是没构建。
+单独跑一个文件时，找不到二进制这组测试会 skip 而不是失败——测试文件本身不依赖 cargo。看到 skip 就是没构建；`scripts/ci_gates.py` 自己构建，并把任何 skip 判成失败。
 
 **没有真实 Agent 的验收。** 用真 provider 做双机闭环排在 P6.3。
 
@@ -118,9 +117,9 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_blackbox_client -q
 
 内部接线后的回归另跑 `cargo test -p ccnm-core provider::codex`；覆盖已测 JSONL、失败/拒绝/截断、私有目录权限、工具策略和版本边界。P3 公共 instance 回归另见 `cargo test -p ccnm-cli --test instance_execution`、`cargo test -p ccnm-core --test public_lifecycle`、`cargo test -p ccnm-core --test session_identity` 和 `cargo test -p ccnm-cli --test write_guard`。不要手改已有 session 的 Provider/identity；临时 Controller、历史真机与当前未复验边界见[内部接线记录](research/codex-internal-wiring-2026-09-07.md)和[支持矩阵](support-matrix.md)。
 
-这三条就是 CI 的全部内容。测试里所有外部命令（ssh、tmux、launchctl、claude）都是注进去的
+CI 跑的就是「本地跑测试」那三条，加上 `scripts/ci_gates.py`。Rust 测试里所有外部命令（ssh、tmux、launchctl、claude）都是注进去的
 假 runner，**除了**几个故意用真东西的：`git`（list_files 的 git 模式）、`rg`（search_text）、
-`/bin/sh`（进程超时和进程组那几个）。所以本机要有 `git` 和 `ripgrep`。
+`/bin/sh`（进程超时和进程组那几个）、`/bin/cat` `/bin/kill` `/bin/ps`（MCP relay 的进程组收尾，P52）。所以本机要有 `git` 和 `ripgrep`。
 
 **`cargo test` 是 fail-fast 的**：第一个失败的测试二进制之后就不跑了，而 cli 集成测试排在
 core lib 前面。看到 cli 红了一条，别以为 lib 那 379 个是绿的——它们根本没跑。要全跑
@@ -316,14 +315,16 @@ bash scripts/dist-linux.sh
 
 ```text
 ci.yml       每次 push / PR：
-             test           (macos-latest)  fmt + clippy + 全部测试 + 跑一下二进制
-             linux-runtime  (ubuntu-24.04)  clippy + 全部测试 + 构建 Linux 发布物
+             test           (macos-latest)  fmt + clippy + 全部测试 + ci_gates.py + 跑一下二进制
+             linux-runtime  (ubuntu-24.04)  clippy + 全部测试 + ci_gates.py + 构建 Linux 发布物
              msrv           (ubuntu-24.04)  按 Cargo.toml 的 rust-version 编译全部 targets
 release.yml  推 tag（v*）：
              macos    门禁 → dist.sh       → 校验 tag 和版本号一致 → 上传
              linux    门禁 → dist-linux.sh → 校验 tag 和版本号一致 → 上传
              publish  两个都绿之后，用两份产物建一个 release
 ```
+
+两个 release job 的「门禁」是同一个步骤里的 Rust 门禁加 `scripts/ci_gates.py`，排在构建和上传之前；任何一条命令失败，这一步就停，后面不构建、不上传，`publish` 也等不到两个都绿。`tests/test_ci_gates.py` 钉住这个顺序、「没有 `continue-on-error` / `always()`」和 `publish` 依赖两个 job，改工作流时挪错了它会红。**`ci_gates.py` 在 GitHub runner 上的实际结果见 [P53 记录](research/2026-09-25-p53-ci-gates.md)**——本机跑通不等于 runner 上跑通。
 
 **Linux job 那一栏绿了，意思是"代码在 Linux 上编得过、测试过得去"，不是"Agent 那一半支持
 Linux"。** 别因为这个 job 绿了就去改支持矩阵。它存在的理由很具体：P12 在真实 Debian 13 上第一次

@@ -1,4 +1,8 @@
-# Format, lint and the whole test suite, on every push and pull request.
+# Format, lint and the whole test suite, on every push and pull request:
+# the Rust tests, then the plan and protocol checks and the Python suite
+# (scripts/ci_gates.py, P53). Until P53 only the Rust half ran here, so a
+# green run said nothing about the neutral clients or the contracts
+# (C51-03).
 #
 # Two platform jobs, because ccnm has two halves that do not run in the same
 # places. The **Agent** half (Controller, sessions) is a launchd
@@ -41,6 +45,9 @@ jobs:
   test:
     # macos-latest is arm64 today; nothing here depends on the arch.
     runs-on: macos-latest
+    # The Python gate drives real processes; a hung one would otherwise hold
+    # the runner for GitHub's default of six hours.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
@@ -76,6 +83,14 @@ jobs:
 
       - name: Test
         run: cargo test --workspace
+
+      # The script builds the CLI itself and hands that path to the
+      # neutral-client tests, so a binary the cache above restored is never
+      # what they drive, and a test class that finds no binary cannot skip
+      # itself green: any skip fails the gate. The same command a developer
+      # runs (docs/development.md).
+      - name: Plan, protocol and Python gates
+        run: python3 scripts/ci_gates.py
 
       # The one thing a release must not get wrong: a binary that cannot
       # say what it is. Cheap here, expensive to find out from a tarball.
@@ -156,6 +171,13 @@ jobs:
             echo "::error title=cargo test --workspace failed::${msg}"
             exit 1
           fi
+
+      # Here too, not only on macOS: the neutral clients drive a real
+      # Runtime, and Linux is where the Runtime usually runs. The script
+      # annotates its own failures; `timeout` does for a hang what it does
+      # for the Rust tests above.
+      - name: Plan, protocol and Python gates
+        run: timeout --signal=INT --kill-after=30s 10m python3 scripts/ci_gates.py
 
       # The Linux download is built by this script; a release is a bad
       # place to find out it does not run.

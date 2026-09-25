@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-09-25T10:17:12+09:00",
-  "current_task": "P53",
+  "last_updated": "2026-09-25T10:32:05+09:00",
+  "current_task": "P54",
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
     "source": "docs/research/codex-internal-wiring-2026-09-07.md",
@@ -2592,13 +2592,28 @@
     {
       "id": "P53",
       "title": "Python、计划与协议 CI 门禁",
-      "status": "in_progress",
+      "status": "completed",
       "depends_on": ["P52"],
-      "owner": "claude-opus-5-5（Claude 桌面端会话）",
+      "owner": null,
       "started_at": "2026-09-25T01:25:00+09:00",
-      "last_updated": "2026-09-25T10:17:12+09:00",
-      "completed_criteria": [],
-      "evidence": [],
+      "last_updated": "2026-09-25T10:32:05+09:00",
+      "completed_criteria": ["P53.1", "P53.2", "P53.3", "P53.4"],
+      "evidence": [
+        {
+          "kind": "offline",
+          "criteria": ["P53.1", "P53.2", "P53.3", "P53.4"],
+          "ref": "docs/research/2026-09-25-p53-ci-gates.md",
+          "commit": "650c705",
+          "result": "macOS 26.6.2 arm64。新增 scripts/ci_gates.py：自行 cargo build -p ccnm-cli 并把 cargo 报告的 ccnm 交给 CCNM_BIN，跑 check_plan、check_protocol 与 tests/ 全部；skip、失败、出错、零条、二进制不是 ccnm 都退出非零，GitHub 上另出注解。ci.yml 两个平台 job 在 Rust 测试后调用；release.yml 两个平台 job 放在门禁步骤内、先于构建和上传，publish needs 两者；macOS CI job 加 45 分钟、两个 release job 加 60 分钟超时。漏洞量化：无 target/ 的副本用旧命令 210 条中 95 条跳过仍 OK、退出 0。tests/test_ci_gates.py 9 条（策略 7 条对临时目录跑真实脚本；工作流 2 条改前红、改后绿），PyYAML 独立核对结构一致。本机 ci_gates.py 通过：219 ran、0 skipped、0 failed。开发文档与 AGENTS.md 同步。"
+        },
+        {
+          "kind": "offline",
+          "criteria": ["P53.2", "P53.3"],
+          "ref": "docs/research/2026-09-25-p53-ci-gates.md",
+          "commit": "7bc09a8",
+          "result": "用户授权推送 main（7f0e018..7bc09a8，不打 tag）。GitHub Actions ci.yml run 36081836169 三个 job 全绿：test（macos-latest）的 Plan, protocol and Python gates 步骤 success 71 秒，linux-runtime（ubuntu-24.04）同一步 success 27 秒，msrv success。步骤结论经匿名 API 读取；日志需登录，线上测试条数未读到，按脚本判法成功即无 skip/失败/出错。线上只有通过的一次，失败阻断为本机与配置证据；release.yml 需推 tag 才运行，本阶段未推，首次线上执行将是下一次发版。"
+        }
+      ],
       "blockers": []
     },
     {
@@ -2690,8 +2705,8 @@
     "【P41 记下不修】mcp-serve 被 SIGKILL（或别的不走正常退出的死法）时，它起的命令的进程组没人收：前台命令一直如此，P41 的后台命令没有期限，所以可能一直跑下去；它们的 run 在 read_output 里读作 exit status unknown。正常路径（客户端断开、stdin EOF、心跳发现对端不在）会先停掉所有命令再放写锁。要收干净得给子进程加会话标记、下次启动时按标记扫（封存的原生链 P26/P30 有类似做法），需另立阶段。依据 docs/research/p41-background-commands-2026-09-18.md 第 5 节。"
   ],
   "handoff": {
-    "next_action": "**2026-09-25 P52 完成，C51-01 关闭。** 起点 main/ae06327。818bed6 修复：Runtime relay 与 Agent 本机 MCP 的 stdio server 由 /bin/cat 锚进程持有进程组，任何关闭都整组 SIGKILL 并用 ps 确认，清不掉写锁 abandoned；macOS 全量门禁与 hpsrv（ccrun）Linux 回归都过，两平台都有旧代码失败的反证。证据、行为变更与边界（离开进程组的后代够不着）见 docs/research/2026-09-25-p52-relay-group-cleanup.md。下一步 P53：核对 .github/workflows/ci.yml 与 release.yml 的真实构建顺序，接入 check_plan、check_protocol 和 Python 全套（需先构建 debug 二进制），发布依赖门禁；线上 runner 验证需另行授权推送。本地 main 比 origin 多 5 个提交，未推送。仓库根目录的 ccnm-mobile-handoff.md 是用户从外部下载的交接摘要，未跟踪、未提交。\n\n之前的交接：\n**2026-09-24 移动端两方案规划完成，未实施或部署。** 起点 main/2eeaf7b 干净。新增 docs/plan/mobile-access.md、mobile-ssh.md、mobile-web-terminal.md；用户只选 Tailscale + 手机 SSH 与 ttyd + Tailscale Serve。P53 将既有 C51-03 CI 门禁正式编号，P54 手机 SSH，P55 attach-only 离线适配，P56 私网部署与真机验收，全部 pending。current_task 仍是 P52：先修 C51-01 收尾/交权，再按 P53→P54→P55→P56 每轮一个阶段。网页不启动新 Agent、不暴露 shell/RPC、不含长期服务或项目预览代理；系统/网络/模型/部署权限分项授权，不继承历史授权。本轮仅写计划及文档导航；验收结果见 planning_validation_latest。\n\n之前的交接：\n**2026-09-23 P51 文档与生命周期审计完成，P52 pending、未实施。** 起点 main/7f0e018 干净、版本 0.9.0。当前最重要的事实：真实二进制隔离探针复现 C51-01，Runtime MCP server leader 正常退出、同组子进程仍写、guard released、第二 writer 进入；临时进程已清理，产品逻辑未修。下一步先做 P52 可靠收尾与交权，再补 Python/计划/协议 CI 门禁 C51-03，再做具名真实项目验收。见 docs/research/2026-09-23-lifecycle-and-docs-audit.md；不要增加新 Provider 或重开封存 exec-server。P51 只改文档与探针，不推送；P52 不继承历史 sudo/真机/额度授权。\n\n之前的交接：\n**2026-09-23 发布记录。** v0.9.0 已发布，tag 指向 86bdac0；7f0e018 同步说明。不能再把发 v0.9.0 作为待办。本轮没有在线复查 Release，也没有复验远端安装。",
-    "scope": "2026-09-25 用户要求从 docs/plan/mobile-access.md 开始；按其第 7 节先做 current_task P52。本轮改 relay、agent_mcp、server、write_guard 与相应测试，新增 Python 中立回归，P51 探针改为比较组号，同步 C51-01 相关文档与本记录。用户授权后在 hpsrv 以 ccrun 跑 Linux 回归（临时目录已删）。没有连接手机/fodelf、读取凭据、运行真实模型、改系统/网络权限、安装、部署、push 或发版。",
+    "next_action": "**2026-09-25 P53 完成，C51-03 关闭。** 起点 main/daea088。650c705 新增 scripts/ci_gates.py（自建 CLI、设 CCNM_BIN、跑 check_plan/check_protocol/Python 全套，任何 skip 即失败）并接入 ci.yml 两个平台 job 与 release.yml 两个门禁步骤（先于构建和上传）；7bc09a8 已按用户授权推送，GitHub run 36081836169 三个 job 全绿、两个平台的门禁步骤都 success。release.yml 要到下一次推 tag 才第一次在线上跑。证据见 docs/research/2026-09-25-p53-ci-gates.md。下一步 P54（手机 SSH，见 docs/plan/mobile-ssh.md）：先做获准范围内的只读基线核查，并列出分项授权清单（真机写入、模型额度、SSH/网络规则、系统变更各自授权）；用户要求本轮完成 P53 后等待下一步，所以 P54 未开始。注意本轮途中 tailnet 改名为 eel-krait.ts.net，~/.ssh/config 的 hpsrv 仍指旧名字，连接前先核实。仓库根目录的 ccnm-mobile-handoff.md 是用户从外部下载的交接摘要，未跟踪、未提交。\n\n之前的交接：\n**2026-09-25 P52 完成，C51-01 关闭。** 起点 main/ae06327。818bed6 修复：Runtime relay 与 Agent 本机 MCP 的 stdio server 由 /bin/cat 锚进程持有进程组，任何关闭都整组 SIGKILL 并用 ps 确认，清不掉写锁 abandoned；macOS 全量门禁与 hpsrv（ccrun）Linux 回归都过，两平台都有旧代码失败的反证。证据、行为变更与边界（离开进程组的后代够不着）见 docs/research/2026-09-25-p52-relay-group-cleanup.md。下一步 P53：核对 .github/workflows/ci.yml 与 release.yml 的真实构建顺序，接入 check_plan、check_protocol 和 Python 全套（需先构建 debug 二进制），发布依赖门禁；线上 runner 验证需另行授权推送。本地 main 比 origin 多 5 个提交，未推送。仓库根目录的 ccnm-mobile-handoff.md 是用户从外部下载的交接摘要，未跟踪、未提交。\n\n之前的交接：\n**2026-09-24 移动端两方案规划完成，未实施或部署。** 起点 main/2eeaf7b 干净。新增 docs/plan/mobile-access.md、mobile-ssh.md、mobile-web-terminal.md；用户只选 Tailscale + 手机 SSH 与 ttyd + Tailscale Serve。P53 将既有 C51-03 CI 门禁正式编号，P54 手机 SSH，P55 attach-only 离线适配，P56 私网部署与真机验收，全部 pending。current_task 仍是 P52：先修 C51-01 收尾/交权，再按 P53→P54→P55→P56 每轮一个阶段。网页不启动新 Agent、不暴露 shell/RPC、不含长期服务或项目预览代理；系统/网络/模型/部署权限分项授权，不继承历史授权。本轮仅写计划及文档导航；验收结果见 planning_validation_latest。\n\n之前的交接：\n**2026-09-23 P51 文档与生命周期审计完成，P52 pending、未实施。** 起点 main/7f0e018 干净、版本 0.9.0。当前最重要的事实：真实二进制隔离探针复现 C51-01，Runtime MCP server leader 正常退出、同组子进程仍写、guard released、第二 writer 进入；临时进程已清理，产品逻辑未修。下一步先做 P52 可靠收尾与交权，再补 Python/计划/协议 CI 门禁 C51-03，再做具名真实项目验收。见 docs/research/2026-09-23-lifecycle-and-docs-audit.md；不要增加新 Provider 或重开封存 exec-server。P51 只改文档与探针，不推送；P52 不继承历史 sudo/真机/额度授权。",
+    "scope": "2026-09-25 同一会话内：先按 docs/plan/mobile-access.md 第 7 节完成 P52（hpsrv/ccrun Linux 回归经用户授权），随后用户要求完成 P53 后等待下一步。P53 只改 CI/release 工作流、新增 scripts/ci_gates.py 与 tests/test_ci_gates.py、同步开发文档与 AGENTS.md；经用户授权推送 main 一次（不打 tag、不发版）。没有修改移动入口、运行真实模型、改系统/网络权限或部署。",
     "planning_validation": {
       "at": "2026-09-08T21:22:43+09:00",
       "commands": [

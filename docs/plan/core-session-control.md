@@ -6,7 +6,7 @@
 
 ### 1.1 当前落点
 
-[rpc/session.rs](../../crates/ccnm-core/src/rpc/session.rs) 的 `SystemRuns::stop` 调用 `launcher::stop_selected` 时 session 为 `None`；正在运行的 RPC Record 只在最终 Finish 中得到 ccnm 受管 ID。`spawn_run` 和 `stop` 保存不同 Record 副本。[rpc/store.rs](../../crates/ccnm-core/src/rpc/store.rs) 的 rename 只保证文件不被半读，不保证读改写互斥或状态不回退。P57 必须覆盖这些窗口，不能以现有单写锁推导“必定不会停错”。
+[rpc/session.rs](../../crates/ccnm-core/src/rpc/session.rs) 的 `SystemRuns::stop` 调用 `launcher::stop_selected` 时 session 为 `None`；正在运行的 RPC Record 只在最终 Finish 中得到 ccnm 受管 ID。`spawn_run` 和 `stop` 保存不同 Record 副本。[rpc/store.rs](../../crates/ccnm-core/src/rpc/store.rs) 的 rename 只保证文件不被半读，不保证读改写互斥或状态不回退。P57 必须覆盖这些窗口，不能以现有单写锁推导“必定不会停错”。P57 实测还发现 Agent 侧的另一半：[work.rs](../../crates/ccnm-core/src/work.rs) 的 `stop` 没有 session 时只按 `ccnm-<workspace>` 查 tmux，而 print 运行由 Controller 起、不在 tmux 里，所以 RPC stop 停不到 print 运行，同 workspace 有交互会话时改停那个；带精确 id 的 `stop_print_session` 路径已经存在并会校验 supervisor（[P57 记录](../research/2026-09-28-p57-core-baseline.md) 第 3.2 节）。P58 的精确停止要落到这条路径上。
 
 主要文件：上述 RPC 模块、[launcher.rs](../../crates/ccnm-core/src/launcher.rs)、[work.rs](../../crates/ccnm-core/src/work.rs)、[protocol/run.rs](../../crates/ccnm-core/src/protocol/run.rs)、[session.rs](../../crates/ccnm-core/src/session.rs)。确需拆文件时按 admission / store / observation 分职责，不把大文件机械切块或另建执行层。
 

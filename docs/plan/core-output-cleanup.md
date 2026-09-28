@@ -9,7 +9,7 @@
 | 数据 | 现有来源 | 本阶段处理 |
 | --- | --- | --- |
 | Provider 最终回答、usage/cost、thread ID | Agent stdout 解析后的结构化结果 | 保持现有 text/outcome/usage/cost 语义；不存在的字段不制造零值 |
-| 官方 CLI 的 stdout/stderr 诊断 | Agent session 目录；`RunReport` 当前只传尾部，解析成功时 stdout_tail 可为空 | 新增受控、可分页的完整保留视图，源头为 Agent，不是已经裁剪的 RunReport |
+| 官方 CLI 的 stdout/stderr 诊断 | Agent session 目录；`RunReport` 当前只传末尾 2 KiB（P57 实测，见[记录](../research/2026-09-28-p57-core-baseline.md)第 3.5 节），解析成功时 stdout_tail 为空；stderr 到 RPC 层整个丢掉 | 新增受控、可分页的完整保留视图，源头为 Agent，不是已经裁剪的 RunReport |
 | Runtime 工具输出与第三方 MCP 大结果 | Runtime `read_output`、Agent `read_mcp_result` | 保持各自 ref 与连接/内存寿命；不冒充可跨重连永久访问的任务日志 |
 
 核查落点：[work.rs](../../crates/ccnm-core/src/work.rs) 的 `run_print` / `result`，[protocol/run.rs](../../crates/ccnm-core/src/protocol/run.rs)，[rpc/session.rs](../../crates/ccnm-core/src/rpc/session.rs) 的 `result` / `finish_from`，[rpc/store.rs](../../crates/ccnm-core/src/rpc/store.rs)，[Provider 结果](../../crates/ccnm-core/src/provider/result.rs)。Runtime 的 [output.rs](../../crates/ccnm-core/src/mcp/output.rs) / [retention.rs](../../crates/ccnm-core/src/mcp/retention.rs) 可参考边界，但不得把两类身份的数据目录合并。

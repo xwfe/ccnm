@@ -14,19 +14,19 @@ PocketShell 等外部工具仅提供 SSH/PTY 终端，不新增移动端、网�
 
 ## 2. 本次核查：事实与待复现问题分开
 
-本轮只读取仓库代码、契约和既有证据，并验证计划文档；没有运行新故障探针、真实模型、远端或最新版本兼容性测试。下表的“静态风险”必须先复现，不能据此宣称已经发生事故。
+制定本表时只读了代码、契约和既有证据。**2026-09-28 P57 已对每一行跑了零额度探针**（真实二进制 + 假 Agent / 中立 MCP 客户端，未连远端、未跑模型），“现状”一栏按复现结果更新，方法与原始输出只写在 [P57 记录](../research/2026-09-28-p57-core-baseline.md)，这里不重复。仍标“静态待验证”的不能据此宣称已经发生事故。
 
 | 标识 | 现状 / 判断等级 | 核查落点与后续处理 |
 | --- | --- | --- |
 | BASE-01 | **历史验收已完成**：P52 修复同组 relay 子进程收尾，P53 加入 CI 门禁 | [P52 证据](../research/2026-09-25-p52-relay-group-cleanup.md)、[P53 证据](../research/2026-09-25-p53-ci-gates.md)；不重做，不把真机临时构建当现网已部署 |
-| CTRL-01 | **静态风险**：RPC 的 stop 最终不传精确受管 session ID；单写锁并不能证明所有 starting 请求属于同一个 Agent | [rpc/session.rs](../../crates/ccnm-core/src/rpc/session.rs) 的 `SystemRuns::stop`、`stop`；[launcher.rs](../../crates/ccnm-core/src/launcher.rs) 已有 `stop_selected(..., session)`；P57 复现，P58 收口 |
-| CTRL-02 | **静态风险**：启动线程和 stop 各写自己的 Record 副本，存储用固定 `.tmp`；注释说保留 stop 标志，但没有原子读改写合并 | [rpc/session.rs](../../crates/ccnm-core/src/rpc/session.rs) 的 `spawn_run`、[rpc/store.rs](../../crates/ccnm-core/src/rpc/store.rs) 的 `write`、`write_atomically`；P58 修状态并发，不只换临时文件名 |
-| CTRL-03 | **静态风险**：session 文件路径直接拼接输入；start_key 文件名经 `safe_name` 转换；记录的启动参数与后续重新加载配置可能不再指同一目标 | [rpc/store.rs](../../crates/ccnm-core/src/rpc/store.rs) 的 `session_path` / `key_path`、[rpc/session.rs](../../crates/ccnm-core/src/rpc/session.rs)；P57 用边界与配置漂移用例核对，P58 修实证缺口 |
-| OUT-01 | **代码已确认**：result 拒绝非空 cursor，未落实 max_bytes；保存的是最多 8192 字节的 `RunReport.stdout_tail` | [rpc/session.rs](../../crates/ccnm-core/src/rpc/session.rs) 的 `result` / `finish_from`；P59 必须贯通源头，而非仅对尾部再分页 |
-| OUT-02 | **代码已确认**：Agent 的 print 结果解析成功时 stdout_tail 为空，失败时也只是尾部；不是所有最终回答只剩 8 KiB，结构化 text 是另一字段 | [work.rs](../../crates/ccnm-core/src/work.rs) 的 `run_print` / `result`；P59 分清最终回答、stdout/stderr、Runtime 工具输出 |
-| AUTH-01 | **代码与契约已确认**：start 不返回 busy；实际写锁在 Runtime 的 MCP 握手中竞争 | [协议实现差距](../protocol/README.md)、[write_guard.rs](../../crates/ccnm-core/src/mcp/write_guard.rs)；P60 提供真实占用诊断和有限的提前拒绝，不伪造原子预留 |
-| AUTH-02 | **已知边界**：普通命令在 mcp-serve 被强杀后可能残留；held/abandoned 阻止盲目交权，不能靠 PID 消失自动解锁 | [jobs.rs](../../crates/ccnm-core/src/mcp/jobs.rs)、[write_guard.rs](../../crates/ccnm-core/src/mcp/write_guard.rs)、[运维](../operations.md)；P60 诊断而非承诺完整自动回收 |
-| CLEAN-01 | **代码与文档已确认**：purge 的本地部分删的是调用者 state，不保证删到 Runtime Executor 的输出；RPC keys/results 另有寿命 | [launcher.rs](../../crates/ccnm-core/src/launcher.rs) 的 `purge`、[retention.rs](../../crates/ccnm-core/src/mcp/retention.rs)、[生命周期](../project-lifecycle.md)；P61 跨身份预览和精确清理 |
+| CTRL-01 | **P57 复现，比原判断更重**：RPC 的 stop 不传任何会话身份；Agent 收到无 session 的 stop 只查 tmux，print 运行不在 tmux 里，所以**根本停不到**，同 workspace 有交互会话时改停那个并回报成功（[P57 记录](../research/2026-09-28-p57-core-baseline.md) A1、B） | [rpc/session.rs](../../crates/ccnm-core/src/rpc/session.rs) 的 `SystemRuns::stop`、`stop`；[launcher.rs](../../crates/ccnm-core/src/launcher.rs) 已有 `stop_selected(..., session)`；P57 复现，P58 收口 |
+| CTRL-02 | **P57 复现**：stop 标志被运行线程的旧副本写回 false；完成先落盘时 stop 把 `completed` 改回 `stopping`、finish 丢失（A2、A3 确定性，A4 120 轮无一次两者都保住）。固定 `.tmp` 冲突未撞出，仍是静态待验证 | [rpc/session.rs](../../crates/ccnm-core/src/rpc/session.rs) 的 `spawn_run`、[rpc/store.rs](../../crates/ccnm-core/src/rpc/store.rs) 的 `write`、`write_atomically`；P58 修状态并发，不只换临时文件名 |
+| CTRL-03 | **P57 复现**：不同 start_key 经 `safe_name` 合并（A5）；`../`、绝对路径、symlink 句柄读到 `sessions/` 以外的记录（A6）；运行中改绑后旧句柄的 stop 发往新机器（A7）；空键文件回 `uncertain` 但 `data.session` 为空串（A8） | [rpc/store.rs](../../crates/ccnm-core/src/rpc/store.rs) 的 `session_path` / `key_path`、[rpc/session.rs](../../crates/ccnm-core/src/rpc/session.rs)；P57 用边界与配置漂移用例核对，P58 修实证缺口 |
+| OUT-01 | **P57 复现并纠正**：源头截断在 Agent——RunReport 只带回 stdout 末尾 2 KiB（加 `...`），RPC 的 8 KiB 截断对真实运行从不触发；`bytes_total` 取这段尾巴的长度、`truncated` 报 false；`max_bytes` 被忽略、非法值也收；非空 cursor 回 expired（C0–C2、C4） | [rpc/session.rs](../../crates/ccnm-core/src/rpc/session.rs) 的 `result` / `finish_from`；P59 必须贯通源头，而非仅对尾部再分页 |
+| OUT-02 | **P57 复现**：解析成功时最终回答完整走 `text`（无大小上限）、`output` 为空页；stderr 在 RPC 结果和记录里都没有（C0、C3、C5） | [work.rs](../../crates/ccnm-core/src/work.rs) 的 `run_print` / `result`；P59 分清最终回答、stdout/stderr、Runtime 工具输出 |
+| AUTH-01 | **P57 复现**：同 workspace 第二个 start 回 `starting`、两次都派到 Agent，`-32008` 无任何生产路径返回；拒绝发生在 Runtime MCP 握手，同 workspace 与同 git common-dir 都拒（A1、D1、D2） | [协议实现差距](../protocol/README.md)、[write_guard.rs](../../crates/ccnm-core/src/mcp/write_guard.rs)；P60 提供真实占用诊断和有限的提前拒绝，不伪造原子预留 |
+| AUTH-02 | **已知边界，P57 复核行为如文档**：mcp-serve 被 SIGKILL 后后台命令仍在、marker 停在 held、下一个 writer 被拒；两个 state 域各自放行（D3、D4） | [jobs.rs](../../crates/ccnm-core/src/mcp/jobs.rs)、[write_guard.rs](../../crates/ccnm-core/src/mcp/write_guard.rs)、[运维](../operations.md)；P60 诊断而非承诺完整自动回收 |
+| CLEAN-01 | **P57 复现（同用户两目录的路由测试）**：本机只删调用者 state 下的 `sessions/<id>`，Executor state 的输出、RPC 记录与 start_key 不动，workspace 配置照删；purge 请求走协议 1、不带实例身份（E） | [launcher.rs](../../crates/ccnm-core/src/launcher.rs) 的 `purge`、[retention.rs](../../crates/ccnm-core/src/mcp/retention.rs)、[生命周期](../project-lifecycle.md)；P61 跨身份预览和精确清理 |
 | REAL-01 | **证据缺口**：P48/P49/P50 的各类零额度及真机记录覆盖不同范围；当前 Provider pin、发行包和实际安装不能互相替代 | [支持矩阵](../support-matrix.md)、[交接](../orchestrator-handoff.md)；P62 做具名组合验证，不用测试总数代替 |
 
 ## 3. 实施队列

@@ -1,0 +1,12 @@
+{
+  "name": "p57-ts-mini",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "test": "node --test test/duration.test.ts",
+    "bigout": "node src/bigout.ts"
+  }
+}

@@ -1,0 +1,13 @@
+diff --git a/tests/duration.rs b/tests/duration.rs
+index c4a4945..caf482d 100644
+--- a/tests/duration.rs
++++ b/tests/duration.rs
+@@ -14,3 +14,8 @@ fn bad_input_is_an_error_not_a_zero() {
+     assert!(parse_duration_ms("3d").is_err());
+     assert!(parse_duration_ms("18446744073709551615s").is_err());
+ }
++
++#[test]
++fn hours_are_supported() {
++    assert_eq!(parse_duration_ms("2h"), Ok(7_200_000));
++}

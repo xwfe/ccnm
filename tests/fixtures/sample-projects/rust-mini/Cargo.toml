@@ -1,0 +1,13 @@
+[package]
+name = "p57-rust-mini"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# 自成一个 workspace：它放在 ccnm 仓库里只是当样例存放，
+# 不写这一行，在这个目录里跑 cargo 会被仓库根的 workspace 认领然后报错。
+[workspace]
+
+[[bin]]
+name = "bigout"
+path = "src/bin/bigout.rs"

@@ -1,0 +1,12 @@
+diff --git a/src/lib.rs b/src/lib.rs
+index ae999f2..35121f1 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -14,6 +14,7 @@ pub fn parse_duration_ms(text: &str) -> Result<u64, String> {
+         "ms" => 1,
+         "s" => 1_000,
+         "m" => 60_000,
++        "h" => 3_600_000,
+         _ => return Err(format!("unknown unit {unit:?}")),
+     };
+     value

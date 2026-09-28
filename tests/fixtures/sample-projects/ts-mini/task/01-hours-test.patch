@@ -1,0 +1,12 @@
+diff --git a/test/duration.test.ts b/test/duration.test.ts
+index 160f0cc..250697f 100644
+--- a/test/duration.test.ts
++++ b/test/duration.test.ts
+@@ -13,3 +13,7 @@ test("bad input is an error, not a zero", () => {
+     assert.throws(() => parseDurationMs(bad), undefined, bad);
+   }
+ });
++
++test("hours are supported", () => {
++  assert.equal(parseDurationMs("2h"), 7_200_000);
++});

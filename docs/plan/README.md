@@ -13,8 +13,7 @@
 | [runtime-surfaces.md](runtime-surfaces.md) | Managed Agent Runtime、Remote Workspace MCP、OS 身份和 v1/v1.x 实施边界，以及 Codex 原生执行链的设计 |
 | [../research/](../research/) | 脱敏的实测记录；回归 fixture 放在 `tests/fixtures/` |
 | [三仓重构落地清单](../research/2026-09-19-cross-project-refactor-actions.md) | 2026-09-19 跨仓评审建议、依赖与验收；不替代 status，也不自动认领新阶段 |
-| [移动端实施总纲](mobile-access.md) | 两种移动终端入口的共同边界、P53–P56 依赖、授权和交接；仍先完成 P52 |
-| [手机 SSH](mobile-ssh.md) · [浏览器终端](mobile-web-terminal.md) | 方案一 P54 与方案二 P55/P56 的任务、交付、真机验收及回退；计划不等于已部署 |
+| [外部终端接入决策](terminal-access.md) | 直接通过 PocketShell 等第三方终端使用 CLI；原 P54–P56 未实施即撤销，不继续移动端工程 |
 
 `AGENTS.md` 是模型入口，`CLAUDE.md` 只指向它。开发命令见 [开发文档](../development.md)。整个接续流程只依赖 Git、仓库文件和项目自身命令，不要求任何特定 MCP、IDE 插件、Agent harness 或私有任务系统。旧的“在 ccnm 内做多 Agent”计划已被本路线替代，不要恢复执行。
 
@@ -36,6 +35,10 @@
 - `blocked`：blockers 非空；写清解除条件，不拿“未轮到”冒充阻塞。
 - `pending`：尚未开始；未来步骤统一保持此状态，不能因为前置完成就自动变为进行中。
 - 同一时刻最多一个 `in_progress`；`current_task` 指向首个未完成阶段，所有完成/进行中阶段的依赖必须已完成。
+
+用户撤销尚未实施的阶段时，同步移出 ROADMAP 验收队列与 `status.json.tasks`，在决策文档保留原因、退役编号和原提交；不伪标完成、不悬挂 pending、不复用编号。已实施阶段不能套用这条规则抹除证据。P54–P56 的撤销见[终端接入决策](terminal-access.md)。保留队列全部完成时 `current_task` 为 `null`，只表示没有已排定的下一阶段，不表示产品没有缺口。
+
+根目录若存在 `ccnm-mobile-handoff.md`，它是外部下载的旧方案摘要，不是接续入口；不要据此恢复已撤销阶段。历史 handoff 中的“下一步”也只描述当时决定，以最新 `next_action`、活动阶段和撤销记录为准。
 
 `blockers` 每项为 `{"criteria":["P1.3"],"reason":"实际阻塞原因","unblock":"具体解锁动作"}`。暂停交接清空 owner；`pending` 不携带已经实施的验收或证据，已做一部分则保持 `in_progress` 或 `blocked`。
 

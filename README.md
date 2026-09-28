@@ -133,7 +133,7 @@ Agent 侧的 `ccnm_agent` 是另一组工具，不计入上面的 Runtime 工具
 
 总入口：[文档导航](docs/README.md)；评估与下一步：[生命周期与职责](docs/project-lifecycle.md)、[2026-09-23 审计](docs/research/2026-09-23-lifecycle-and-docs-audit.md)。
 
-手机远程操作的[实施计划](docs/plan/mobile-access.md)：方案一为 Tailscale + 手机 SSH，方案二为 ttyd + Tailscale Serve 浏览器终端。**尚未部署或做手机验收**，任务与前置门禁见计划，不代表新增已支持入口。
+手机或浏览器接入直接复用 PocketShell 等第三方终端，在远端运行现有 ccnm CLI，见[使用说明](docs/usage.md#通过第三方终端使用)。ccnm 不另做移动端或网页终端；这是使用方式，不代表某个客户端版本已通过验收。
 
 | 用途 | 文档 |
 | --- | --- |

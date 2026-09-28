@@ -74,6 +74,28 @@ ccnm 给自己的 tmux server（`tmux -L ccnm`，跟你自己开的 tmux 完全�
 
 输出要能随手复制、不想进 tmux 的话，用[非交互 `--print`](#非交互---print)：结果直接打在你本机终端里。
 
+## 通过第三方终端使用
+
+PocketShell 等第三方工具只作为终端入口；只要能在目标机器提供可输入自定义命令的交互终端（PTY），就按普通终端使用 ccnm，不需要安装手机端 ccnm、开发适配插件或另外部署 ccnm 网页服务。这里描述接入条件，不代表某个 PocketShell/浏览器版本已经实测兼容。
+
+默认进入 **Agent Node 的 Operator shell**：该机器上既有 ccnm 配置、Controller 和官方 Agent 登录；workspace 对应的项目和工具仍在 hpsrv Runtime。外部工具若有自己的后端，以最终 shell 的机器、UID、PATH 为准，不能把浏览器所在地当成执行位置。若从 Runtime Node 发起，也须使用其已配置的 Operator，而不是让 `ccrun` 持有回连 Agent 的凭据。
+
+在进入的远端终端中使用现有命令，`my-project` 替换成已注册 workspace：
+
+```bash
+ccnm ls
+ccnm run my-project                 # 需要启动或进入会话时使用
+ccnm status my-project --all
+ccnm attach my-project              # 离开后接回已有会话
+ccnm stop my-project                # 仅在明确要结束会话时使用
+```
+
+多 instance 或需要精确目标时，用现有 `--agent` 和 `--session`，见[单个项目](#单个项目)。不另做“只允许 attach”的网页绑定；`--print` 仍遵循[非交互模式](#非交互---print)的发起侧限制，不能为了手机方便把回连身份改成 `ccrun`。
+
+离开时使用 tmux detach，按键以 ccnm 状态栏/现有配置为准；不要用 Claude 的“后台会话”替代，也不要让外部工具另起裸 Claude/Codex 来接管 ccnm 会话。终端断开与 Agent→Runtime MCP 断开是两件事：前者在受管会话仍存活时可重新 attach，后者会触发 Runtime 命令收尾。外部客户端主动退出 Agent、停止后端、机器睡眠或重启不能套用“只是 detach”的保证；重连后先核对状态，不盲目重发未确认的输入。
+
+SSH、认证、手机 VPN/代理、隧道和网页访问方式由外部工具/部署环境负责，ccnm 不要求手机必须连接 Tailscale，也不自动开放任何公网端口。入口按 Operator 权限保护，不能将 AI 登录或转发的凭据下放给 Runtime。键盘、渲染和连接问题先在客户端侧定位；能在普通终端复现的 ccnm 执行/会话问题再按[排错手册](troubleshooting.md)处理，不新增客户端专属产品阶段。
+
 ## 选择 Agent Instance
 
 使用 `agent = { node = "worker", instance = "claude-main" }` 的 workspace 会默认选择该 instance。同一个 Agent Node 上可显式覆盖：

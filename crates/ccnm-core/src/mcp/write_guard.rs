@@ -49,7 +49,7 @@ impl WriteGuard {
         std::fs::set_permissions(&locks, std::fs::Permissions::from_mode(0o700))?;
         let path = locks.join(format!(
             "{:016x}.lock",
-            fnv1a(resource.as_os_str().as_bytes())
+            crate::paths::fnv1a(resource.as_os_str().as_bytes())
         ));
         let mut file = OpenOptions::new()
             .read(true)
@@ -294,12 +294,6 @@ fn reject_overlapping_roots(root: &Path, workspace: &str, config: Option<&Config
     Ok(())
 }
 
-fn fnv1a(bytes: &[u8]) -> u64 {
-    bytes.iter().fold(0xcbf29ce484222325, |hash, byte| {
-        (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -341,7 +335,10 @@ mod tests {
         let (state, root) = fixture("stale");
         let locks = state.join("write-guards");
         std::fs::create_dir_all(&locks).unwrap();
-        let path = locks.join(format!("{:016x}.lock", fnv1a(root.as_os_str().as_bytes())));
+        let path = locks.join(format!(
+            "{:016x}.lock",
+            crate::paths::fnv1a(root.as_os_str().as_bytes())
+        ));
         std::fs::write(path, "held old-session\n").unwrap();
         let runner = FakeRunner::new();
         runner.push(Output::exited(1, ""));
@@ -366,9 +363,10 @@ mod tests {
         guard.abandon("2 command(s) (r-aaa, r-bbb)");
         drop(guard);
 
-        let path = state
-            .join("write-guards")
-            .join(format!("{:016x}.lock", fnv1a(root.as_os_str().as_bytes())));
+        let path = state.join("write-guards").join(format!(
+            "{:016x}.lock",
+            crate::paths::fnv1a(root.as_os_str().as_bytes())
+        ));
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.starts_with("held s1 one pid "), "{text:?}");
         assert!(
@@ -404,7 +402,10 @@ mod tests {
             let (state, root) = fixture("pid");
             let locks = state.join("write-guards");
             std::fs::create_dir_all(&locks).unwrap();
-            let path = locks.join(format!("{:016x}.lock", fnv1a(root.as_os_str().as_bytes())));
+            let path = locks.join(format!(
+                "{:016x}.lock",
+                crate::paths::fnv1a(root.as_os_str().as_bytes())
+            ));
             std::fs::write(&path, "held old-session demo pid 4242\n").unwrap();
             let runner = FakeRunner::new();
             runner.push(Output::exited(1, ""));
@@ -425,7 +426,10 @@ mod tests {
             let (state, root) = fixture("partial");
             let locks = state.join("write-guards");
             std::fs::create_dir_all(&locks).unwrap();
-            let path = locks.join(format!("{:016x}.lock", fnv1a(root.as_os_str().as_bytes())));
+            let path = locks.join(format!(
+                "{:016x}.lock",
+                crate::paths::fnv1a(root.as_os_str().as_bytes())
+            ));
             std::fs::write(path, marker).unwrap();
             let runner = FakeRunner::new();
             runner.push(Output::exited(1, ""));

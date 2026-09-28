@@ -379,12 +379,28 @@ mod tests {
     /// Stands in for the launcher. No ssh, no Agent, no controller: these
     /// tests are about the protocol and the record, and a test that needs a
     /// real Agent is not an offline test.
+    ///
+    /// With `hold`, a run waits until the test (or a stop) releases its
+    /// session, which is how the P58 windows -- stop while running, stop
+    /// racing the end -- are driven without sleeping and hoping.
     #[derive(Default)]
     struct FakeRuns {
-        /// What `run_print` should do. `None` means "fail to start".
+        /// What `run_print` answers. `None` means it fails with `fail`.
         report: Option<crate::protocol::run::RunReport>,
+        fail: Option<crate::ErrorCode>,
+        hold: bool,
+        released: Mutex<std::collections::HashSet<String>>,
+        wake: std::sync::Condvar,
+        /// Sessions a stop ended, the way the Agent ends them: killed, no
+        /// exit code.
+        killed: Mutex<std::collections::HashSet<String>>,
+        /// A stop only records itself instead of ending the run.
+        stop_leaves_it_running: bool,
+        /// Before answering a stop, wait until this record says the run is
+        /// over: "the end lands before the stop" as a fixed order.
+        stop_waits_for: Mutex<Option<PathBuf>>,
         asks: Mutex<Vec<RunAsk>>,
-        stops: Mutex<Vec<String>>,
+        stops: Mutex<Vec<session::StopAsk>>,
     }
 
     impl FakeRuns {
@@ -394,18 +410,86 @@ mod tests {
                 ..FakeRuns::default()
             }
         }
+
+        fn holding(exit_code: i32) -> Self {
+            FakeRuns {
+                hold: true,
+                ..FakeRuns::ok(exit_code, "held\n")
+            }
+        }
+
+        fn failing(code: crate::ErrorCode) -> Self {
+            FakeRuns {
+                fail: Some(code),
+                ..FakeRuns::default()
+            }
+        }
+
+        fn release(&self, session: &str) {
+            self.released.lock().unwrap().insert(session.to_string());
+            self.wake.notify_all();
+        }
+
+        /// The managed id of the n-th run that reached the "Agent".
+        fn started(&self, n: usize) -> String {
+            for _ in 0..1000 {
+                if let Some(ask) = self.asks.lock().unwrap().get(n) {
+                    return ask.session.clone();
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            panic!("run {n} never reached the Agent");
+        }
     }
 
     impl Runs for FakeRuns {
         fn run_print(&self, ask: &RunAsk) -> crate::error::Result<crate::protocol::run::RunReport> {
             self.asks.lock().unwrap().push(ask.clone());
-            self.report
-                .clone()
-                .ok_or_else(|| crate::Error::new(crate::ErrorCode::AgentUnreachable, "no route"))
+            if self.hold {
+                let released = self.released.lock().unwrap();
+                let (released, timeout) = self
+                    .wake
+                    .wait_timeout_while(released, std::time::Duration::from_secs(20), |r| {
+                        !r.contains(&ask.session)
+                    })
+                    .unwrap();
+                assert!(!timeout.timed_out(), "a held run was never released");
+                drop(released);
+            }
+            let Some(mut report) = self.report.clone() else {
+                return Err(crate::Error::new(
+                    self.fail.unwrap_or(crate::ErrorCode::NotReady),
+                    "no route",
+                ));
+            };
+            // The real Agent runs under the id it was given.
+            report.session = ask.session.clone();
+            if self.killed.lock().unwrap().contains(&ask.session) {
+                report.outcome.exit_code = None;
+            }
+            Ok(report)
         }
 
-        fn stop(&self, workspace: &str, _instance: Option<&str>) -> crate::error::Result<bool> {
-            self.stops.lock().unwrap().push(workspace.to_string());
+        fn stop(&self, ask: &session::StopAsk) -> crate::error::Result<bool> {
+            self.stops.lock().unwrap().push(ask.clone());
+            if !self.stop_leaves_it_running {
+                if self.stop_waits_for.lock().unwrap().is_none() {
+                    self.killed.lock().unwrap().insert(ask.session.clone());
+                }
+                self.release(&ask.session);
+            }
+            if let Some(path) = self.stop_waits_for.lock().unwrap().clone() {
+                for _ in 0..2000 {
+                    let over = std::fs::read(&path)
+                        .ok()
+                        .and_then(|b| serde_json::from_slice::<store::Record>(&b).ok())
+                        .is_some_and(|r| r.state.terminal());
+                    if over {
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+            }
             Ok(true)
         }
     }
@@ -1070,7 +1154,16 @@ root = "/runtime/legacy"
         // released write guard -- makes it over.
         assert_eq!(out[0]["result"]["state"], "stopping");
         assert_eq!(out[0]["result"]["stop_requested"], true);
-        assert_eq!(peer.runs.stops.lock().unwrap().as_slice(), &["demo"]);
+        // Addressed by the session the run was sent under, not by workspace.
+        assert_eq!(
+            peer.runs.stops.lock().unwrap().as_slice(),
+            &[session::StopAsk {
+                workspace: "demo".into(),
+                node: "worker".into(),
+                instance: "claude-main".into(),
+                session: record.managed_session.clone().unwrap(),
+            }]
+        );
     }
 
     #[test]
@@ -1200,12 +1293,14 @@ root = "/runtime/legacy"
         }
         // The ccnm session id is kept in the record so the two names for one
         // run stay tied together, but it is not what the protocol addresses.
+        // Since P58 it is chosen here before the run is sent, and the Agent's
+        // answer carries the same one back.
         let store = store::Store::open(&peer.state).unwrap();
         let record = store.read(&session).unwrap().unwrap();
-        assert_eq!(
-            record.finish.unwrap().ccnm_session.as_deref(),
-            Some("ccnm-uuid-1")
-        );
+        let managed = record.managed_session.clone().unwrap();
+        assert!(crate::session::valid_id(&managed), "{managed}");
+        assert!(!text.contains(&managed), "the managed id is internal");
+        assert_eq!(record.finish.unwrap().ccnm_session, Some(managed));
     }
 
     #[test]
@@ -1246,5 +1341,292 @@ root = "/runtime/legacy"
         peer.settle(&session);
         let asks = peer.runs.asks.lock().unwrap();
         assert_eq!(asks[0].instance.as_deref(), Some("codex-main"));
+    }
+
+    // ---- P58: exact control, atomic state, keys and handles ----
+
+    fn stop_line(session: &str) -> String {
+        format!(
+            "{{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"session.stop\",\"params\":{{\"session\":\"{session}\"}}}}"
+        )
+    }
+
+    fn status_line(session: &str) -> String {
+        format!(
+            "{{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"session.status\",\"params\":{{\"session\":\"{session}\"}}}}"
+        )
+    }
+
+    fn handle_of(out: &[Value]) -> String {
+        out[0]["result"]["session"].as_str().unwrap().to_string()
+    }
+
+    /// CT-01: two runs on one workspace; the stop for B names B's session on
+    /// the Agent and nothing else, and A keeps running.
+    #[test]
+    fn ct01_a_stop_names_exactly_its_own_session() {
+        let peer = Peer::new("ct01", FakeRuns::holding(0));
+        let a = handle_of(&peer.call(&[&start_call("")]));
+        let managed_a = peer.runs.started(0);
+        let b = handle_of(&peer.call(&[&start_call("")]));
+        let managed_b = peer.runs.started(1);
+        assert_ne!(managed_a, managed_b);
+
+        let out = peer.call(&[&stop_line(&b)]);
+        assert_eq!(out[0]["result"]["state"], "stopping", "{out:?}");
+        let stops = peer.runs.stops.lock().unwrap().clone();
+        assert_eq!(stops.len(), 1);
+        assert_eq!(stops[0].session, managed_b);
+
+        let ended_b = peer.settle(&b);
+        assert_eq!(ended_b.state, store::State::Failed);
+        assert!(ended_b.stop_requested);
+        assert_eq!(
+            peer.call(&[&status_line(&a)])[0]["result"]["state"],
+            "running"
+        );
+        peer.runs.release(&managed_a);
+        let ended_a = peer.settle(&a);
+        assert_eq!(ended_a.state, store::State::Completed);
+        assert!(!ended_a.stop_requested);
+    }
+
+    /// CT-02: a stop that lands before the run is sent keeps it from ever
+    /// being sent, and asks the Agent nothing.
+    #[test]
+    fn ct02_a_stop_before_the_run_is_sent_means_it_is_never_sent() {
+        let peer = Peer::new("ct02", FakeRuns::ok(0, "x"));
+        let store = store::Store::open(&peer.state).unwrap();
+        let managed = crate::session::new_id();
+        let record = store::Record {
+            session: "s-ct02".into(),
+            launch: store::Launch {
+                workspace: "demo".into(),
+                agent: Some(crate::instance::InstanceRef {
+                    node: "worker".into(),
+                    instance: "claude-main".into(),
+                }),
+                mode: "print".into(),
+                prompt: "go".into(),
+            },
+            start_key: None,
+            state: store::State::Starting,
+            accepted_at: "2026-09-28T00:00:00Z".into(),
+            stop_requested: false,
+            timeout_ms: None,
+            owner_pid: std::process::id(),
+            owner_started: String::new(),
+            managed_session: Some(managed.clone()),
+            dispatched: false,
+            finish: None,
+        };
+        store.create(&record).unwrap();
+        let out = peer.call(&[&stop_line("s-ct02")]);
+        assert_eq!(out[0]["result"]["state"], "stopping");
+        assert!(
+            peer.runs.stops.lock().unwrap().is_empty(),
+            "nothing was sent, so nothing to stop there"
+        );
+
+        // The thread's turn comes after the stop.
+        session::run_to_end(
+            peer.runs.as_ref(),
+            &store,
+            "s-ct02",
+            &RunAsk {
+                workspace: "demo".into(),
+                instance: None,
+                prompt: "go".into(),
+                timeout: session::DEFAULT_TIMEOUT,
+                session: managed,
+            },
+        );
+        assert!(
+            peer.runs.asks.lock().unwrap().is_empty(),
+            "a stopped start must not be sent"
+        );
+        let ended = store.read("s-ct02").unwrap().unwrap();
+        assert_eq!(ended.state, store::State::Failed);
+        assert!(ended.stop_requested);
+        assert!(!ended.dispatched);
+    }
+
+    /// CT-03: a stop recorded while the run is going survives the run's own
+    /// write of how it ended.
+    #[test]
+    fn ct03_the_stop_flag_survives_the_end_of_the_run() {
+        let peer = Peer::new(
+            "ct03-flag",
+            FakeRuns {
+                stop_leaves_it_running: true,
+                ..FakeRuns::holding(0)
+            },
+        );
+        let s = handle_of(&peer.call(&[&start_call("")]));
+        let managed = peer.runs.started(0);
+        assert_eq!(
+            peer.call(&[&stop_line(&s)])[0]["result"]["stop_requested"],
+            true
+        );
+        peer.runs.release(&managed);
+        let ended = peer.settle(&s);
+        assert_eq!(ended.state, store::State::Completed, "it ended on its own");
+        assert!(ended.stop_requested, "and the stop is still on record");
+    }
+
+    /// CT-03: when the end is written first, the stop does not turn it back
+    /// into `stopping` or drop the result.
+    #[test]
+    fn ct03_an_end_written_before_the_stop_is_kept() {
+        let peer = Peer::new("ct03-order", FakeRuns::holding(0));
+        let s = handle_of(&peer.call(&[&start_call("")]));
+        peer.runs.started(0);
+        *peer.runs.stop_waits_for.lock().unwrap() =
+            Some(peer.state.join("rpc/sessions").join(format!("{s}.json")));
+        let out = peer.call(&[&stop_line(&s)]);
+        assert_eq!(out[0]["result"]["state"], "completed", "{out:?}");
+        let ended = store::Store::open(&peer.state)
+            .unwrap()
+            .read(&s)
+            .unwrap()
+            .unwrap();
+        assert_eq!(ended.state, store::State::Completed);
+        assert!(
+            ended.finish.is_some(),
+            "the result the Agent sent back is kept"
+        );
+        assert!(ended.stop_requested);
+    }
+
+    /// CT-04 at the protocol level: two keys the old layout merged are two
+    /// tasks.
+    #[test]
+    fn ct04_distinct_keys_are_distinct_tasks() {
+        let peer = Peer::new("ct04", FakeRuns::ok(0, "x"));
+        let first = handle_of(&peer.call(&[&start_call(",\"start_key\":\"任务-一\"")]));
+        let second = handle_of(&peer.call(&[&start_call(",\"start_key\":\"任务-二\"")]));
+        assert_ne!(first, second);
+        let again = peer.call(&[&start_call(",\"start_key\":\"任务-二\"")]);
+        assert_eq!(handle_of(&again), second);
+        assert_eq!(again[0]["result"]["reused"], true);
+        peer.settle(&first);
+        peer.settle(&second);
+        assert_eq!(peer.runs.asks.lock().unwrap().len(), 2);
+        // The record of the start that lost the key was taken back.
+        let records = std::fs::read_dir(peer.state.join("rpc/sessions"))
+            .unwrap()
+            .count();
+        assert_eq!(records, 2);
+    }
+
+    /// CT-05: an old half-written key is "cannot tell", with no empty handle
+    /// in the answer and no run.
+    #[test]
+    fn ct05_a_half_written_old_key_is_uncertain_and_starts_nothing() {
+        let peer = Peer::new("ct05", FakeRuns::ok(0, "x"));
+        let keys = peer.state.join("rpc/keys/demo");
+        std::fs::create_dir_all(&keys).unwrap();
+        std::fs::write(keys.join("k-empty"), "").unwrap();
+        let out = peer.call(&[&start_call(",\"start_key\":\"k-empty\"")]);
+        assert_eq!(out[0]["error"]["code"], code::UNCERTAIN);
+        assert_eq!(out[0]["error"]["data"]["effect"], "unknown");
+        assert!(out[0]["error"]["data"].get("session").is_none(), "{out:?}");
+        assert!(peer.runs.asks.lock().unwrap().is_empty());
+    }
+
+    /// CT-06: a handle this server could not have issued is refused before
+    /// any file is read, by every method.
+    #[test]
+    fn ct06_handles_outside_the_issued_shape_are_invalid_params() {
+        let peer = Peer::new("ct06", FakeRuns::ok(0, "x"));
+        for handle in ["../outside", "/etc/passwd", "a/b", ".hidden", "-x"] {
+            for method in ["session.status", "session.result", "session.stop"] {
+                let out = peer.call(&[&format!(
+                    "{{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"{method}\",\"params\":{{\"session\":\"{handle}\"}}}}"
+                )]);
+                assert_eq!(
+                    out[0]["error"]["code"],
+                    code::INVALID_PARAMS,
+                    "{method} {handle}"
+                );
+            }
+        }
+    }
+
+    /// CT-07: rebinding the workspace to another node does not carry an old
+    /// handle's stop to the new machine, and does not record a stop that was
+    /// never sent.
+    #[test]
+    fn ct07_an_old_handle_does_not_follow_a_rebound_workspace() {
+        let peer = Peer::new("ct07", FakeRuns::holding(0));
+        let s = handle_of(&peer.call(&[&start_call("")]));
+        let managed = peer.runs.started(0);
+        std::fs::write(
+            &peer.config,
+            r#"
+this = "runtime"
+[nodes.runtime]
+[nodes.worker]
+ssh = "agent-alias"
+[nodes.worker2]
+ssh = "agent2-alias"
+[workspaces.demo]
+root = "/runtime/project"
+agent = { node = "worker2", instance = "claude-main" }
+"#,
+        )
+        .unwrap();
+        let out = peer.call(&[&stop_line(&s)]);
+        assert_eq!(out[0]["error"]["code"], code::POLICY, "{out:?}");
+        assert_eq!(out[0]["error"]["data"]["effect"], "none");
+        assert!(peer.runs.stops.lock().unwrap().is_empty());
+        assert_eq!(
+            peer.call(&[&status_line(&s)])[0]["result"]["stop_requested"],
+            false
+        );
+        peer.runs.release(&managed);
+        peer.settle(&s);
+    }
+
+    /// CT-08: after the run was sent, only a refusal the Agent gave before
+    /// starting anything is `failed`. A broken connection or an internal
+    /// failure may have left a run behind: `unknown`.
+    #[test]
+    fn ct08_an_unclear_end_is_unknown_not_failed() {
+        for (code, expected) in [
+            (crate::ErrorCode::AgentUnreachable, store::State::Unknown),
+            (crate::ErrorCode::Internal, store::State::Unknown),
+            (crate::ErrorCode::NotReady, store::State::Failed),
+            (crate::ErrorCode::Auth, store::State::Failed),
+            (crate::ErrorCode::Policy, store::State::Failed),
+            (crate::ErrorCode::Version, store::State::Failed),
+        ] {
+            let peer = Peer::new(&format!("ct08-{}", code.name()), FakeRuns::failing(code));
+            let s = handle_of(&peer.call(&[&start_call("")]));
+            assert_eq!(peer.settle(&s).state, expected, "{code:?}");
+        }
+    }
+
+    /// A running record from before P58 carries no Agent-side id. It is not
+    /// stopped by workspace as a fallback; it is refused, with nothing sent.
+    #[test]
+    fn a_session_from_before_p58_is_not_stopped_by_guess() {
+        let peer = Peer::new("legacy-stop", FakeRuns::ok(0, "x"));
+        let s = handle_of(&peer.call(&[&start_call("")]));
+        peer.settle(&s);
+        let store = store::Store::open(&peer.state).unwrap();
+        let mut record = store.read(&s).unwrap().unwrap();
+        record.state = store::State::Running;
+        record.finish = None;
+        record.managed_session = None;
+        record.dispatched = false;
+        store.write(&record).unwrap();
+        let out = peer.call(&[&stop_line(&s)]);
+        assert_eq!(out[0]["error"]["code"], code::NOT_READY, "{out:?}");
+        assert!(peer.runs.stops.lock().unwrap().is_empty());
+        assert_eq!(
+            peer.call(&[&status_line(&s)])[0]["result"]["stop_requested"],
+            false
+        );
     }
 }

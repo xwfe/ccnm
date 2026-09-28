@@ -1,0 +1,144 @@
+#!/usr/bin/env python3
+"""冒充 Agent Node 的 ssh，给 `ccnm rpc` 的会话控制测试用。
+
+ccnm 以 `ssh <选项> -T <alias> <ccnm> internal <sub> --payload X` 调 Agent；把一个
+叫 `ssh` 的包装脚本放在 PATH 最前面，它就调到这里。被测的始终是真实 ccnm，这里
+只演对面那台机器，而且只演协议里约定的样子：
+
+- `agent-run` 停在“等放行”上，放行后回一份 RunReport；请求带了 Runtime 分配的
+  会话 id，就用它（真实 Agent 也是这样）。
+- `agent-stop` 把请求记下来；被停的那次运行随即以“被信号杀掉”结束。
+- 控制目录（环境变量 FAKE_AGENT_DIR）里的文件决定每次怎么演：
+
+    release/<key>        放行某个 prompt 的运行（key 见 key_of）
+    release/ALL          放行全部
+    reply-<key>.json     这次运行回什么：exit_code、stdout_tail、stderr_tail、
+                         result，或 {"transport_error": true} 表示连接断在半路
+    stop-mode.json       {"kind": "ack"}（默认）、{"kind": "unreachable"}、
+                         {"kind": "release-and-wait-final", "prompt": ..., "record": ...}
+    calls.jsonl          每次调用：alias、子命令、解开的请求
+
+控制目录被删就立即退出：测试收尾时 ccnm rpc 已经走了，没人再等这个回答。
+"""
+from __future__ import annotations
+
+import base64
+import json
+import os
+from pathlib import Path
+import sys
+import time
+import uuid
+
+
+def key_of(prompt: str) -> str:
+    return uuid.uuid5(uuid.NAMESPACE_OID, prompt).hex
+
+
+def unb64(text: str) -> dict:
+    return json.loads(base64.urlsafe_b64decode(text + "=" * (-len(text) % 4)))
+
+
+def identity(agent: dict) -> dict:
+    return {"node": agent["node"], "instance": agent["instance"], "provider": "claude", "profile_ref": "default"}
+
+
+def wait_for(predicate, timeout: float) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.02)
+    return False
+
+
+def run(request: dict, fake: Path) -> int:
+    prompt = request["prompt"]
+    session = request.get("session") or str(uuid.uuid4())
+    released = fake / "release" / key_of(prompt)
+    stopped = fake / "stopped" / session
+
+    def done() -> bool:
+        return released.exists() or stopped.exists() or (fake / "release/ALL").exists() or not fake.exists()
+
+    if not wait_for(done, 120) or not fake.exists():
+        return 255
+    reply_file = fake / f"reply-{key_of(prompt)}.json"
+    reply = json.loads(reply_file.read_text()) if reply_file.exists() else {}
+    if reply.get("transport_error"):
+        print("Connection to worker closed by remote host.", file=sys.stderr)
+        return 255
+    if stopped.exists():
+        outcome = {"exit_code": None, "timed_out": False, "duration_ms": 5, "error": None}
+    else:
+        outcome = {"exit_code": reply.get("exit_code", 0), "timed_out": False, "duration_ms": 7, "error": None}
+    report = {
+        "protocol": 3,
+        "agent_identity": identity(request["agent"]),
+        "session": session,
+        "session_dir": f"/fake/agent/state/sessions/{session}",
+        "controller": {
+            "hello": {"protocol": 1, "ccnm_version": "fake", "user": "fake", "platform": "fake/fake", "exe": None, "root": None},
+            "pid": 1,
+            "manager": {"Ok": "Aqua"},
+        },
+        "pid": 2,
+        "outcome": outcome,
+        "result": reply.get("result"),
+        "stdout_tail": reply.get("stdout_tail", f"done: {prompt}\n"),
+        "stderr_tail": reply.get("stderr_tail", ""),
+    }
+    sys.stdout.write(json.dumps(report, ensure_ascii=False))
+    return 0
+
+
+def stop(request: dict, fake: Path) -> int:
+    mode_file = fake / "stop-mode.json"
+    mode = json.loads(mode_file.read_text()) if mode_file.exists() else {"kind": "ack"}
+    if mode["kind"] == "unreachable":
+        print("ssh: connect to host worker port 22: Connection refused", file=sys.stderr)
+        return 255
+    if mode["kind"] == "release-and-wait-final":
+        # 先让被停的那次运行自己跑完、把终态写进记录，再回答 stop：
+        # “完成”和“停止”交错的一种确定顺序。
+        (fake / "release" / key_of(mode["prompt"])).write_text("go\n")
+        record = Path(mode["record"])
+
+        def final() -> bool:
+            try:
+                return json.loads(record.read_text()).get("state") in ("completed", "failed")
+            except (OSError, ValueError):
+                return False
+
+        if not wait_for(final, 20):
+            return 255
+    elif request.get("session"):
+        (fake / "stopped").mkdir(exist_ok=True)
+        (fake / "stopped" / request["session"]).write_text("stopped\n")
+    report = {"protocol": 1, "tmux_session": "ccnm-" + request["workspace"], "killed": True}
+    if request.get("session"):
+        report["session"] = request["session"]
+    if request.get("agent"):
+        report["protocol"] = 3
+        report["agent_identity"] = identity(request["agent"])
+    sys.stdout.write(json.dumps(report))
+    return 0
+
+
+def main(argv: list) -> int:
+    fake = Path(os.environ["FAKE_AGENT_DIR"])
+    alias = argv[argv.index("-T") + 1] if "-T" in argv else None
+    sub = argv[argv.index("internal") + 1] if "internal" in argv else None
+    request = unb64(argv[-1]) if "--payload" in argv else {}
+    with open(fake / "calls.jsonl", "a", encoding="utf-8") as log:
+        log.write(json.dumps({"alias": alias, "sub": sub, "request": request}) + "\n")
+    if sub == "agent-run":
+        return run(request, fake)
+    if sub == "agent-stop":
+        return stop(request, fake)
+    print(f"fake agent: unexpected call {sub!r}", file=sys.stderr)
+    return 97
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

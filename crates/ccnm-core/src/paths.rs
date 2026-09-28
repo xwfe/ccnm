@@ -118,6 +118,19 @@ pub fn controller_socket(state: &Path) -> PathBuf {
     state.join("controller.sock")
 }
 
+/// 64-bit FNV-1a: a stable file name for something that is not one.
+///
+/// Not a security boundary and not collision-free, so no caller may treat
+/// equal names as equal inputs: a collision has to cost a shared file, never
+/// a mix-up. The write guard's lock file shares (two roots would exclude each
+/// other, the safe direction); the RPC start-key index keeps the original
+/// strings in the file and compares them.
+pub(crate) fn fnv1a(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf29ce484222325, |hash, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
+    })
+}
+
 /// A single path segment that can only ever be a single path segment.
 ///
 /// Filtering rather than escaping: a `..` or a `/` cannot survive, so

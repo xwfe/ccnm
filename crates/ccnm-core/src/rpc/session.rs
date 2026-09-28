@@ -1,14 +1,21 @@
 //! `session.start` / `status` / `result` / `stop`.
 //!
 //! These call the same application functions the human CLI calls --
-//! `launcher::run_print_with_agent`, `launcher::stop_selected` -- rather
-//! than shelling out to `ccnm` and reading its output. Parsing a CLI's prose
+//! `launcher::run_print_assigned`, `launcher::stop_assigned` -- rather than
+//! shelling out to `ccnm` and reading its output. Parsing a CLI's prose
 //! would freeze wording into an API and lose everything the wording rounds
 //! off.
 //!
 //! `session.start` answers as soon as it has a handle and hands the run to a
 //! background thread. That is what lets a client disconnect and come back:
 //! the record on disk, not the connection, is what a session belongs to.
+//!
+//! **One handle, one Agent session, from the first moment** (P58). The
+//! record gets a ccnm session id before anything is sent, the Agent is told
+//! to use exactly that id, and a stop names exactly that id. Before P58 the
+//! id only came back with the finished run, so a stop could only say "stop
+//! this workspace": on the Agent that looked at tmux alone, missed every
+//! print run, and stopped someone's interactive session instead (P57 B).
 
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -20,7 +27,7 @@ use super::wire::{self, Effect, RpcError, code};
 use super::{Context, reject_unknown, require_str};
 use crate::config::Config;
 // ccnm 自己的 Result 是单参数别名，和 std 的同名，起个别名免得混。
-use crate::error::Result as CcnmResult;
+use crate::error::{ErrorCode, Result as CcnmResult};
 use crate::instance::InstanceRef;
 use crate::protocol::run::RunReport;
 
@@ -33,6 +40,22 @@ pub struct RunAsk {
     pub instance: Option<String>,
     pub prompt: String,
     pub timeout: Duration,
+    /// The ccnm session id the Agent must run this under: already in the
+    /// record, so a stop can name it before the run answers.
+    pub session: String,
+}
+
+/// One session to stop, named the way the record names it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StopAsk {
+    pub workspace: String,
+    /// The node the session was started on. Checked against the current
+    /// binding by whoever resolves the connection, so an edited config
+    /// cannot redirect an old handle to another machine.
+    pub node: String,
+    pub instance: String,
+    /// The ccnm session id the run was sent under.
+    pub session: String,
 }
 
 /// What actually executes. The real one goes through `launcher`; tests put
@@ -40,8 +63,9 @@ pub struct RunAsk {
 /// ssh.
 pub trait Runs: Send + Sync + 'static {
     fn run_print(&self, ask: &RunAsk) -> CcnmResult<RunReport>;
-    /// Stop whatever managed session the workspace currently has.
-    fn stop(&self, workspace: &str, instance: Option<&str>) -> CcnmResult<bool>;
+    /// Stop exactly `ask.session`: kill it, or fence it off if the run has
+    /// not reached the Agent yet. Never "whatever the workspace is running".
+    fn stop(&self, ask: &StopAsk) -> CcnmResult<bool>;
 }
 
 /// How long a run may take when the caller does not say.
@@ -72,26 +96,29 @@ impl Runs for SystemRuns {
     fn run_print(&self, ask: &RunAsk) -> CcnmResult<RunReport> {
         let config = Config::load(&self.config_path)?;
         let resolved = config.workspace(&ask.workspace)?;
-        crate::launcher::run_print_with_agent(
+        crate::launcher::run_print_assigned(
             &resolved,
             &Self::env()?,
             &ask.prompt,
             ask.timeout,
             ask.instance.as_deref(),
+            &ask.session,
         )
     }
 
-    fn stop(&self, workspace: &str, instance: Option<&str>) -> CcnmResult<bool> {
+    fn stop(&self, ask: &StopAsk) -> CcnmResult<bool> {
         let config = Config::load(&self.config_path)?;
-        let resolved = config.workspace(workspace)?;
-        // No session id: in print mode ccnm's own id only comes back when
-        // the run ends. Still precise -- the workspace has at most one
-        // managed write session at a time -- and the Agent side verifies the
-        // process group before reporting anything stopped.
-        let report = crate::launcher::stop_selected(&resolved, &Self::env()?, instance, None)?;
-        Ok(report.killed)
+        let resolved = config.workspace(&ask.workspace)?;
+        // The session layer checked this against the config it loaded; this
+        // is the config the connection is actually built from.
+        if resolved.workspace.agent.as_ref().map(|a| a.node.as_str()) != Some(ask.node.as_str()) {
+            return Err(crate::Error::policy(REBOUND));
+        }
+        crate::launcher::stop_assigned(&resolved, &Self::env()?, &ask.instance, &ask.session)
     }
 }
+
+const REBOUND: &str = "this workspace is bound to another Agent node than the one this session was started on; its stop is not sent to the new one";
 
 pub fn start(ctx: &Context, params: &Map<String, Value>) -> Result<Value, RpcError> {
     reject_unknown(
@@ -141,7 +168,7 @@ pub fn start(ctx: &Context, params: &Map<String, Value>) -> Result<Value, RpcErr
         Some(value) => Some(
             value
                 .as_str()
-                .filter(|key| !key.is_empty() && key.len() <= 128)
+                .filter(|key| !key.is_empty() && key.chars().count() <= 128)
                 .ok_or_else(|| {
                     RpcError::refused(
                         code::INVALID_PARAMS,
@@ -168,21 +195,10 @@ pub fn start(ctx: &Context, params: &Map<String, Value>) -> Result<Value, RpcErr
         prompt: prompt.clone(),
     };
 
-    // Claim the key before creating anything: whoever wins the claim is the
-    // one that gets to start an Agent.
-    let session = new_session_id();
-    if let Some(key) = &start_key
-        && let KeyClaim::Held(existing) = store
-            .claim_key(&workspace, key, &session)
-            .map_err(|e| wire::from_ccnm(&e))?
-    {
-        return reuse_or_conflict(ctx, &store, &existing, &launch);
-    }
-
     let owner_pid = std::process::id();
     let record = Record {
-        session: session.clone(),
-        launch,
+        session: new_session_id(),
+        launch: launch.clone(),
         start_key: start_key.clone(),
         state: State::Starting,
         accepted_at: now_rfc3339(),
@@ -191,26 +207,41 @@ pub fn start(ctx: &Context, params: &Map<String, Value>) -> Result<Value, RpcErr
         owner_pid,
         owner_started: super::store::process_started(ctx.runner.as_ref(), owner_pid)
             .unwrap_or_default(),
+        managed_session: Some(crate::session::new_id()),
+        dispatched: false,
         finish: None,
     };
-    if let Err(err) = store.write(&record) {
-        // Nothing was started, so give the key back rather than leaving it
-        // pointing at a session that does not exist.
-        if let Some(key) = &start_key {
-            store.release_key(&workspace, key);
+    // The record first, then the key: whoever finds the key finds the
+    // record behind it. Nothing is sent to the Agent until both exist.
+    store.create(&record).map_err(|e| wire::from_ccnm(&e))?;
+    if let Some(key) = &start_key {
+        match store.claim_key(&workspace, key, &record.session) {
+            Ok(KeyClaim::Taken) => {}
+            Ok(KeyClaim::Held(existing)) => {
+                // Never handed out and never sent: taking it back is safe.
+                store.remove_unpublished(&record.session);
+                return reuse_or_conflict(ctx, &store, existing.as_deref(), &launch);
+            }
+            Err(err) => {
+                store.remove_unpublished(&record.session);
+                return Err(wire::from_ccnm(&err));
+            }
         }
-        return Err(wire::from_ccnm(&err));
     }
 
     spawn_run(
         ctx.runs.clone(),
         ctx.state.clone(),
-        record.clone(),
+        record.session.clone(),
         RunAsk {
             workspace,
             instance,
             prompt,
             timeout,
+            session: record
+                .managed_session
+                .clone()
+                .expect("a new record carries its managed session"),
         },
     );
 
@@ -229,9 +260,19 @@ pub fn start(ctx: &Context, params: &Map<String, Value>) -> Result<Value, RpcErr
 fn reuse_or_conflict(
     ctx: &Context,
     store: &Store,
-    existing: &str,
+    existing: Option<&str>,
     launch: &Launch,
 ) -> Result<Value, RpcError> {
+    let Some(existing) = existing else {
+        // An entry from before P58 that its server never finished writing:
+        // there is no session id to give back, and an empty one is not a
+        // handle anybody can look up.
+        return Err(RpcError::new(
+            code::UNCERTAIN,
+            "start_key has an entry an earlier server never finished writing; which session it names cannot be known",
+            Effect::Unknown,
+        ));
+    };
     let Some(record) = store.read(existing).map_err(|e| wire::from_ccnm(&e))? else {
         // The key points at a record that is gone. Something removed it
         // behind our back; that is not a state to start a second Agent from.
@@ -369,41 +410,112 @@ pub fn stop(ctx: &Context, params: &Map<String, Value>) -> Result<Value, RpcErro
             "mode must be \"graceful\"",
         ));
     }
-    let mut record = load(ctx, id)?;
+    let record = load(ctx, id)?;
     let state = record.observed_state(ctx.owner_of(&record));
     if state.terminal() {
         // Idempotent: stopping something already over is a success, so a
         // client retrying does not have to check the state first.
-        return Ok(serde_json::json!({
-            "session": record.session,
-            "state": state_name(state),
-            "stop_requested": record.stop_requested,
-        }));
+        return Ok(stop_answer(&record.session, state, record.stop_requested));
+    }
+    let Some(managed) = record.managed_session.clone() else {
+        // Accepted by a build before P58, which kept no Agent-side id to
+        // name. The only stop left would be "this workspace's session",
+        // which is exactly what could hit the wrong one.
+        return Err(RpcError::refused(
+            code::NOT_READY,
+            "this session was started by an older ccnm that did not record its Agent-side id, so it cannot be stopped exactly; look on the Agent Node before stopping anything by workspace",
+        )
+        .with_session(id));
+    };
+    let agent = record
+        .launch
+        .agent
+        .clone()
+        .expect("recorded launches bind an instance");
+    // The handle stays bound to the machine it was started on. A workspace
+    // rebound in the meantime does not carry the stop to the new Agent.
+    let config = ctx.config()?;
+    let bound = binding(&config, &record.launch.workspace)?;
+    if bound.node != agent.node {
+        return Err(RpcError::refused(code::POLICY, REBOUND).with_session(id));
     }
 
-    // Addressed by workspace, not by ccnm session id, because in print mode
-    // that id only comes back when the run ends. It is still precise: P3.3's
-    // write guard means one workspace has at most one managed write session,
-    // so "the workspace's session" is this one. The Agent side does the
-    // process-group verification before it reports anything stopped.
-    let instance = record.launch.agent.as_ref().map(|a| a.instance.clone());
-    ctx.runs
-        .stop(&record.launch.workspace, instance.as_deref())
-        .map_err(|e| wire::from_ccnm(&e))?;
-
     let store = ctx.store()?;
-    record.stop_requested = true;
-    // Deliberately not a terminal state: the request was accepted, and only
-    // an observed end -- process group, MCP transport, released write guard
-    // -- makes it over. Reporting `completed` here would hand the write
-    // permission to the next caller on a guess.
-    record.state = State::Stopping;
-    store.write(&record).map_err(|e| wire::from_ccnm(&e))?;
-    Ok(serde_json::json!({
-        "session": record.session,
-        "state": "stopping",
-        "stop_requested": true,
-    }))
+    // Decided under the store lock against the run thread's own check: the
+    // run is either not sent yet -- and now never will be -- or sent, and
+    // the Agent has to be asked.
+    let dispatched = store
+        .update(id, |r| {
+            if r.state.terminal() {
+                return None;
+            }
+            if !r.dispatched {
+                r.stop_requested = true;
+                r.state = State::Stopping;
+            }
+            Some(r.dispatched)
+        })
+        .map_err(|e| wire::from_ccnm(&e))?
+        .flatten();
+    match dispatched {
+        // Over in the meantime, or no longer there to change.
+        None => {
+            let now = load(ctx, id)?;
+            let state = now.observed_state(ctx.owner_of(&now));
+            Ok(stop_answer(&now.session, state, now.stop_requested))
+        }
+        Some(false) => Ok(stop_answer(id, State::Stopping, true)),
+        Some(true) => {
+            ctx.runs
+                .stop(&StopAsk {
+                    workspace: record.launch.workspace.clone(),
+                    node: agent.node,
+                    instance: agent.instance,
+                    session: managed,
+                })
+                .map_err(|e| stop_failed(&e, id))?;
+            // Not a terminal state: the request was accepted, and only an
+            // observed end -- the run's own answer -- makes it over.
+            // Reporting `completed` here would hand the write permission to
+            // the next caller on a guess. A run that already ended keeps its
+            // end; the stop is still on record.
+            let now = store
+                .update(id, |r| {
+                    r.stop_requested = true;
+                    if !r.state.terminal() {
+                        r.state = State::Stopping;
+                    }
+                    r.state
+                })
+                .map_err(|e| wire::from_ccnm(&e))?
+                .unwrap_or(State::Stopping);
+            Ok(stop_answer(id, now, true))
+        }
+    }
+}
+
+fn stop_answer(session: &str, state: State, stop_requested: bool) -> Value {
+    serde_json::json!({
+        "session": session,
+        "state": state_name(state),
+        "stop_requested": stop_requested,
+    })
+}
+
+/// A stop the Agent could not confirm.
+///
+/// When the ssh broke or the answer made no sense, the stop may still have
+/// landed: `effect: unknown`. Resending a stop is harmless either way; the
+/// point is not to tell the caller that nothing happened.
+fn stop_failed(err: &crate::Error, session: &str) -> RpcError {
+    let mut rpc = wire::from_ccnm(err).with_session(session);
+    if matches!(
+        err.code(),
+        ErrorCode::AgentUnreachable | ErrorCode::Internal
+    ) {
+        rpc.data.effect = Effect::Unknown;
+    }
+    rpc
 }
 
 fn load(ctx: &Context, id: &str) -> Result<Record, RpcError> {
@@ -492,42 +604,100 @@ pub fn state_name(state: State) -> &'static str {
     }
 }
 
-/// Run it, then write down what happened.
-///
-/// The thread owns the record from here on. Every exit path writes a
-/// terminal state: a record stuck at `running` with nobody to finish it is
-/// exactly the case the owner check has to rescue later.
-fn spawn_run(runs: Arc<dyn Runs>, state_dir: std::path::PathBuf, mut record: Record, ask: RunAsk) {
-    std::thread::spawn(move || {
-        let store = match Store::open(&state_dir) {
-            Ok(store) => store,
-            Err(err) => {
-                tracing::error!(%err, "cannot open the rpc store; the session record stays stale");
-                return;
-            }
-        };
-        record.state = State::Running;
-        if let Err(err) = store.write(&record) {
-            tracing::error!(%err, "cannot mark the session running");
-        }
-        let (state, finish) = match runs.run_print(&ask) {
-            Ok(report) => finish_from(&report),
-            Err(err) => (
-                State::Failed,
-                Finish {
-                    error: Some(err.message().to_string()),
-                    ..Finish::default()
-                },
-            ),
-        };
-        // A stop that was asked for mid-run keeps its flag; the state comes
-        // from what actually happened.
-        record.state = state;
-        record.finish = Some(finish);
-        if let Err(err) = store.write(&record) {
-            tracing::error!(%err, "cannot record how the session ended");
+/// Run it on a thread of its own; see [`run_to_end`].
+fn spawn_run(runs: Arc<dyn Runs>, state_dir: std::path::PathBuf, handle: String, ask: RunAsk) {
+    std::thread::spawn(move || match Store::open(&state_dir) {
+        Ok(store) => run_to_end(runs.as_ref(), &store, &handle, &ask),
+        Err(err) => {
+            tracing::error!(%err, "cannot open the rpc store; the session record stays stale");
         }
     });
+}
+
+/// Send the run unless a stop got there first, then write down how it
+/// ended.
+///
+/// Both writes change the record as it is on disk at that moment, so a stop
+/// recorded meanwhile keeps its flag, and an end already recorded is never
+/// replaced. Every path leaves a terminal state behind: a record stuck at
+/// `running` with nobody to finish it is exactly the case the owner check
+/// has to rescue later.
+pub(super) fn run_to_end(runs: &dyn Runs, store: &Store, handle: &str, ask: &RunAsk) {
+    let send = store.update(handle, |r| {
+        if r.state.terminal() {
+            return false;
+        }
+        if r.stop_requested {
+            r.state = State::Failed;
+            r.finish = Some(Finish {
+                error: Some("stopped before it was sent to the Agent".to_string()),
+                ..Finish::default()
+            });
+            return false;
+        }
+        r.state = State::Running;
+        r.dispatched = true;
+        true
+    });
+    match send {
+        Ok(Some(true)) => {}
+        Ok(_) => return,
+        Err(err) => {
+            // Not recorded as sent, so not sent: a run nobody could stop
+            // exactly is worse than one that never started.
+            tracing::error!(%err, "cannot record that the session is being sent; not sending it");
+            let _ = store.update(handle, |r| {
+                if !r.state.terminal() {
+                    r.state = State::Failed;
+                    r.finish = Some(Finish {
+                        error: Some(
+                            "the session could not be recorded as sent, so it was not sent"
+                                .to_string(),
+                        ),
+                        ..Finish::default()
+                    });
+                }
+            });
+            return;
+        }
+    }
+    let (state, finish) = match runs.run_print(ask) {
+        Ok(report) => finish_from(&report),
+        Err(err) => (
+            after_dispatch(&err),
+            Finish {
+                error: Some(err.message().to_string()),
+                ..Finish::default()
+            },
+        ),
+    };
+    let written = store.update(handle, |r| {
+        if !r.state.terminal() {
+            r.state = state;
+            r.finish = Some(finish);
+        }
+    });
+    if let Err(err) = written {
+        tracing::error!(%err, "cannot record how the session ended");
+    }
+}
+
+/// What a run that failed after it was sent is, as far as this side knows.
+///
+/// Every refusal the Agent gives before it starts anything carries its own
+/// code -- no controller, not logged in, the Runtime busy or unreachable, a
+/// fenced id -- and that is `failed`: nothing ran. Two codes cannot promise
+/// that. `AgentUnreachable` is ssh dying or timing out, which happens just
+/// as well after the Agent started the run. `Internal` covers the Agent
+/// failing once the supervisor was up and an answer that does not match
+/// what was sent. Either may have left a run behind, so either is `unknown`:
+/// `failed` would invite a retry of work that may already have changed the
+/// tree.
+fn after_dispatch(err: &crate::Error) -> State {
+    match err.code() {
+        ErrorCode::AgentUnreachable | ErrorCode::Internal => State::Unknown,
+        _ => State::Failed,
+    }
 }
 
 fn finish_from(report: &RunReport) -> (State, Finish) {

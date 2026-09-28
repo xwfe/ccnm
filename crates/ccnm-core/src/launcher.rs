@@ -43,17 +43,69 @@ pub fn run_print_with_agent(
     timeout: Duration,
     agent: Option<&str>,
 ) -> Result<RunReport> {
+    let (selected, report) = send_run(resolved, env, prompt, timeout, agent, None)?;
+    verify_identity(selected.as_ref(), report.agent_identity.as_ref())?;
+    Ok(report)
+}
+
+/// A print run under a ccnm session id the caller already chose and
+/// recorded (P58): what `ccnm rpc` sends, so its stop can name this run
+/// before the run reports back.
+///
+/// Only an Agent instance can be addressed this way. An answer that names a
+/// different identity or session is `CCNM_E_INTERNAL`, not the
+/// `CCNM_E_VERSION` the human path gives: by the time the report exists the
+/// Agent may have run something, so the caller must not read it as a refusal
+/// that left nothing behind.
+pub fn run_print_assigned(
+    resolved: &Resolved<'_>,
+    env: &Env<'_>,
+    prompt: &str,
+    timeout: Duration,
+    agent: Option<&str>,
+    session: &str,
+) -> Result<RunReport> {
+    let (selected, report) = send_run(resolved, env, prompt, timeout, agent, Some(session))?;
+    if verify_identity(selected.as_ref(), report.agent_identity.as_ref()).is_err()
+        || report.session != session
+    {
+        return Err(Error::internal(format!(
+            "the Agent answered run {session} with another identity or session; what ran there is unknown"
+        )));
+    }
+    Ok(report)
+}
+
+fn send_run(
+    resolved: &Resolved<'_>,
+    env: &Env<'_>,
+    prompt: &str,
+    timeout: Duration,
+    agent: Option<&str>,
+    session: Option<&str>,
+) -> Result<(Option<crate::instance::InstanceRef>, RunReport)> {
     check_local_root(resolved)?;
     let root = &resolved.workspace.root;
     let ssh = Ssh::new(resolved.agent_ssh()?, &env.control_dir)?
         .with_ccnm_bin(resolved.require_agent()?.ccnm_bin());
     ssh.check_control_path()?;
     let selected = resolved.agent_reference(agent)?;
+    if session.is_some() && selected.is_none() {
+        return Err(Error::invalid_args(
+            "an assigned session id needs an Agent instance binding",
+        ));
+    }
     let req = RunRequest {
         agent: selected.clone(),
 
         provider: Default::default(),
-        protocol: if selected.is_some() { 3 } else { PROTOCOL },
+        protocol: if session.is_some() {
+            crate::instance::ASSIGNED_SESSION_PROTOCOL
+        } else if selected.is_some() {
+            3
+        } else {
+            PROTOCOL
+        },
         workspace: resolved.name.to_string(),
         root: root.clone(),
         runtime_node: resolved.workspace.runtime_node.clone(),
@@ -66,6 +118,7 @@ pub fn run_print_with_agent(
         timeout_secs: timeout.as_secs(),
         codex_exec_server: resolved.workspace.codex_exec_server,
         agent_tools: resolved.workspace.agent_tools.clone(),
+        session: session.map(str::to_string),
     };
     // The Agent side waits the session timeout plus its grace; this call
     // has to outlive both, plus the ssh itself.
@@ -77,8 +130,7 @@ pub fn run_print_with_agent(
         timeout + Duration::from_secs(120),
         ErrorCode::AgentUnreachable,
     )?;
-    verify_identity(selected.as_ref(), report.agent_identity.as_ref())?;
-    Ok(report)
+    Ok((selected, report))
 }
 
 pub struct Env<'a> {
@@ -226,6 +278,7 @@ pub fn stop_selected(
 
         protocol: if selected.is_some() { 3 } else { PROTOCOL },
         workspace: resolved.name.to_string(),
+        assigned: false,
     };
     let report: StopReport = ssh.call_ccnm(
         env.runner,
@@ -237,6 +290,48 @@ pub fn stop_selected(
     )?;
     verify_identity(selected.as_ref(), report.agent_identity.as_ref())?;
     Ok(report)
+}
+
+/// Stop exactly the print run `ccnm rpc` assigned `session` to (P58).
+///
+/// Unlike [`stop_selected`] there is no fallback to the workspace: the Agent
+/// either stops this session, fences the id when the run has not reached it
+/// yet, or says why it cannot. `true` when something was killed.
+pub fn stop_assigned(
+    resolved: &Resolved<'_>,
+    env: &Env<'_>,
+    agent: &str,
+    session: &str,
+) -> Result<bool> {
+    let ssh = agent_ssh(resolved, env)?;
+    let selected = resolved.agent_reference(Some(agent))?.ok_or_else(|| {
+        Error::invalid_args("an assigned session id needs an Agent instance binding")
+    })?;
+    let req = StopRequest {
+        agent: Some(selected.clone()),
+        session: Some(session.to_string()),
+        protocol: crate::instance::ASSIGNED_SESSION_PROTOCOL,
+        workspace: resolved.name.to_string(),
+        assigned: true,
+    };
+    let report: StopReport = ssh.call_ccnm(
+        env.runner,
+        Master::Reuse,
+        &["internal", "agent-stop"],
+        &req,
+        Duration::from_secs(60),
+        ErrorCode::AgentUnreachable,
+    )?;
+    // Internal, not Version, for the same reason as `run_print_assigned`:
+    // the Agent has already acted by the time its answer can be checked.
+    if verify_identity(Some(&selected), report.agent_identity.as_ref()).is_err()
+        || report.session.as_deref() != Some(session)
+    {
+        return Err(Error::internal(format!(
+            "the Agent answered the stop of {session} for another identity or session; what it stopped is unknown"
+        )));
+    }
+    Ok(report.killed)
 }
 
 /// What a session produced, for a `--print` run whose ssh did not survive

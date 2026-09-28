@@ -58,6 +58,11 @@ pub struct RunRequest {
     /// for the same reason as `codex_exec_server`.
     #[serde(default, skip_serializing_if = "crate::config::AgentTools::is_default")]
     pub agent_tools: crate::config::AgentTools,
+    /// The ccnm session id the Runtime already chose and recorded (P58), so
+    /// it can stop exactly this run before the run reports back. `None` for
+    /// the human `ccnm run --print`, where the Agent picks one as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
 }
 
 impl Protocol for RunRequest {
@@ -65,7 +70,9 @@ impl Protocol for RunRequest {
         self.protocol
     }
     fn expected_protocol(&self) -> u32 {
-        if self.agent.is_some() {
+        if self.session.is_some() {
+            crate::instance::ASSIGNED_SESSION_PROTOCOL
+        } else if self.agent.is_some() {
             3
         } else {
             self.provider.control_protocol()
@@ -343,6 +350,14 @@ pub struct StopRequest {
     pub agent: Option<InstanceRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session: Option<String>,
+    /// `session` is an id the Runtime assigned to a print run it sent or is
+    /// about to send (P58). Stop exactly that run; if the Agent has not
+    /// created it yet, fence the id so the run refuses when it arrives. Never
+    /// falls back to "whatever the workspace is running" -- that fallback
+    /// looked only at tmux, missed every print run and stopped an unrelated
+    /// interactive session instead (P57 B1/B2).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub assigned: bool,
 }
 
 impl Protocol for StopRequest {
@@ -350,7 +365,13 @@ impl Protocol for StopRequest {
         self.protocol
     }
     fn expected_protocol(&self) -> u32 {
-        if self.agent.is_some() { 3 } else { 1 }
+        if self.assigned {
+            crate::instance::ASSIGNED_SESSION_PROTOCOL
+        } else if self.agent.is_some() {
+            3
+        } else {
+            1
+        }
     }
 }
 

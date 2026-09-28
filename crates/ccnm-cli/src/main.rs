@@ -987,6 +987,7 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
                     workspace: workspace.to_string(),
                     agent: selected,
                     session: session.clone(),
+                    assigned: false,
                 };
                 let rep = work::stop(&req, &agent_tools(config_path().ok().as_deref())?)?;
                 println!(

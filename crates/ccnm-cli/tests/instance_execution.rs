@@ -535,6 +535,7 @@ fn actual_agent_work_path_resolves_profile_controller_binding_and_runtime_mcp() 
         timeout_secs: 30,
         codex_exec_server: false,
         agent_tools: Default::default(),
+        session: None,
     };
     let out = f
         .command()
@@ -767,6 +768,7 @@ fn a_busy_write_guard_fails_the_run_preflight_as_policy_not_unreachable() {
         timeout_secs: 30,
         codex_exec_server: false,
         agent_tools: Default::default(),
+        session: None,
     };
     let out = f
         .command()

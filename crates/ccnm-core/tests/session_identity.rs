@@ -253,6 +253,7 @@ fn exact_stop_checks_identity_before_kill_and_records_confirmed_terminal_state()
             workspace: "demo".into(),
             agent: Some(reference("codex-main")),
             session: Some(id.into()),
+            assigned: false,
         },
         &f.tools(&wrong),
     )
@@ -277,6 +278,7 @@ fn exact_stop_checks_identity_before_kill_and_records_confirmed_terminal_state()
             workspace: "demo".into(),
             agent: Some(reference("claude-main")),
             session: Some(id.into()),
+            assigned: false,
         },
         &f.tools(&runner),
     )
@@ -298,6 +300,7 @@ fn exact_stop_checks_identity_before_kill_and_records_confirmed_terminal_state()
             workspace: "demo".into(),
             agent: Some(reference("claude-main")),
             session: Some(id.into()),
+            assigned: false,
         },
         &f.tools(&repeated),
     )
@@ -326,6 +329,7 @@ fn stopping_a_workspace_with_nothing_running_succeeds_and_still_names_the_select
             workspace: "demo".into(),
             agent: Some(reference("claude-main")),
             session: None,
+            assigned: false,
         },
         &f.tools(&runner),
     )
@@ -366,6 +370,7 @@ fn stopping_a_session_whose_terminal_vanished_records_its_terminal_outcome() {
             workspace: "demo".into(),
             agent: Some(reference("claude-main")),
             session: Some(id.into()),
+            assigned: false,
         },
         &f.tools(&runner),
     )
@@ -397,6 +402,7 @@ fn a_running_terminal_without_a_verifiable_identity_is_still_refused() {
             workspace: "demo".into(),
             agent: Some(reference("claude-main")),
             session: None,
+            assigned: false,
         },
         &f.tools(&runner),
     )
@@ -466,6 +472,7 @@ fn completed_print_stop_still_checks_recorded_groups_without_signalling() {
         workspace: "demo".into(),
         agent: Some(reference("claude-main")),
         session: Some(id.into()),
+        assigned: false,
     };
     for observations in [
         vec![Output::exited(0, "9000 4242\n")],
@@ -513,6 +520,7 @@ fn completed_print_stop_distinguishes_missing_and_invalid_pid_records() {
         workspace: "demo".into(),
         agent: Some(reference("codex-main")),
         session: Some(id.into()),
+        assigned: false,
     };
     let runner = FakeRunner::new();
     assert!(!work::stop(&request, &f.tools(&runner)).unwrap().killed);
@@ -559,6 +567,7 @@ fn exact_print_stop_verifies_the_supervisor_before_signalling_its_process_group(
         workspace: "demo".into(),
         agent: Some(reference("claude-main")),
         session: Some(id.into()),
+        assigned: false,
     };
 
     let mut supervise =
@@ -669,6 +678,7 @@ fn print_stop_checks_the_whole_group_and_rejects_reparented_agent() {
         workspace: "demo".into(),
         agent: Some(reference("claude-main")),
         session: Some(id.into()),
+        assigned: false,
     };
     let mut supervise =
         session::SuperviseRequest::new(dir.path().to_path_buf(), "/agent/claude".into());

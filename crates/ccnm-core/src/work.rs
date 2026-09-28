@@ -263,6 +263,24 @@ const EXIT_GRACE: Duration = Duration::from_secs(30);
 /// cannot read its own credentials, and the failure it would produce
 /// ("not logged in") is a lie about the machine.
 pub fn run(req: &RunRequest, tools: &Tools<'_>) -> Result<RunReport> {
+    // An id the Runtime assigned (P58) is checked before anything else runs:
+    // if a stop already fenced it, nothing -- not even a preflight that dials
+    // the Runtime -- should happen on its behalf.
+    if let Some(id) = req.session.as_deref() {
+        if req.agent.is_none() || !session::valid_id(id) {
+            return Err(Error::invalid_args(
+                "an assigned session id must be a ccnm session id for an Agent instance",
+            ));
+        }
+        if paths::session_dir(&tools.state, id).exists() {
+            return Err(Error::new(
+                ErrorCode::NotReady,
+                format!(
+                    "session {id} already exists on this machine or was stopped before it started; it is not started again"
+                ),
+            ));
+        }
+    }
     let selected = select_agent(
         req.agent.as_ref(),
         req.provider,
@@ -334,7 +352,7 @@ pub fn run(req: &RunRequest, tools: &Tools<'_>) -> Result<RunReport> {
         agent_identity: selected.identity.clone(),
         provider: selected.provider,
         protocol: selected.session_protocol(),
-        id: session::new_id(),
+        id: req.session.clone().unwrap_or_else(session::new_id),
         workspace: req.workspace.clone(),
         root: req.root.clone(),
         runtime,
@@ -359,6 +377,19 @@ pub fn run(req: &RunRequest, tools: &Tools<'_>) -> Result<RunReport> {
         &tools.config.machine_skills,
         &tools.config.agent_mcp,
     )?;
+    // From the stop-marker check until the pid is on disk, an exact stop
+    // waits: it must see either nothing started or a pid it can signal.
+    let control = session::Control::lock(&dir)?;
+    if dir.stopping().exists() {
+        session::record_terminal_failure(&dir, session::STOPPED_BEFORE_START.trim_end())?;
+        return Err(Error::new(
+            ErrorCode::NotReady,
+            format!(
+                "session {} was stopped before the Agent started it",
+                spec.id
+            ),
+        ));
+    }
     let pid = match controller::start_for_identity(
         &tools.controller,
         dir.path(),
@@ -375,6 +406,7 @@ pub fn run(req: &RunRequest, tools: &Tools<'_>) -> Result<RunReport> {
         }
     };
     session::write_supervisor_pid(&dir, pid)?;
+    drop(control);
     let outcome = redact_outcome(
         spec.provider(),
         selected.profile_dir.as_deref(),
@@ -858,6 +890,9 @@ fn already_stopped(
 /// End the workspace's session: tmux kills the supervisor, which kills
 /// Claude, which drops the ssh transport its MCP server was on.
 pub fn stop(req: &StopRequest, tools: &Tools<'_>) -> Result<StopReport> {
+    if req.assigned {
+        return stop_assigned(req, tools);
+    }
     if let Some(id) = req.session.as_deref() {
         if paths::safe_name(id, "") != id {
             return Err(Error::invalid_args(
@@ -981,6 +1016,67 @@ pub fn stop(req: &StopRequest, tools: &Tools<'_>) -> Result<StopReport> {
         tmux_session: name,
         killed: out.success(),
     })
+}
+
+/// Stop exactly the print session the Runtime assigned this id to (P58).
+///
+/// Never looks at tmux and never picks "the workspace's session": the
+/// untargeted stop does, and for a print run that meant stopping nothing, or
+/// stopping someone's interactive session instead (P57 B1/B2). Decided under
+/// the session's control lock, so a start is never seen half done:
+///
+/// - no directory yet: the run has not reached this machine. Fence the id;
+///   the run refuses when it arrives.
+/// - a directory but no supervisor pid: nothing was started, and the marker
+///   left here keeps it that way.
+/// - a supervisor pid: the verified process-group stop that `ccnm stop
+///   --session` uses.
+fn stop_assigned(req: &StopRequest, tools: &Tools<'_>) -> Result<StopReport> {
+    let (Some(id), Some(_)) = (req.session.as_deref(), req.agent.as_ref()) else {
+        return Err(Error::invalid_args(
+            "an assigned stop names both its Agent instance and its session",
+        ));
+    };
+    if !session::valid_id(id) {
+        return Err(Error::invalid_args(
+            "session id is not a valid ccnm identifier",
+        ));
+    }
+    let identity = requested_identity(req.agent.as_ref(), tools)?;
+    let not_started = || StopReport {
+        protocol: crate::instance::INSTANCE_SESSION_PROTOCOL,
+        tmux_session: tmux::session_name(&req.workspace),
+        session: Some(id.to_string()),
+        agent_identity: identity.clone(),
+        killed: false,
+    };
+    if session::fence(&tools.state, id)? {
+        return Ok(not_started());
+    }
+    let dir = session::Dir::at(paths::session_dir(&tools.state, id));
+    let _control = session::Control::lock(&dir)?;
+    // A spec that is still being written reads as absent: the run holds no
+    // pid yet either, and will see the marker once it gets the lock.
+    let spec = session::load(&dir).ok();
+    if let Some(spec) = &spec {
+        check_session_selection(spec, &req.workspace, req.agent.as_ref(), tools)?;
+        if spec.mode.is_interactive() {
+            return Err(Error::invalid_args(
+                "an assigned stop is for print sessions; this one is interactive",
+            ));
+        }
+    }
+    match (spec, session::read_supervisor_pid(&dir)) {
+        (Some(spec), Some(_)) => stop_print_session(&spec, &dir, tools),
+        (None, Some(_)) => Err(Error::new(
+            ErrorCode::NotReady,
+            format!("session {id} has a supervisor but no readable record; state is unknown"),
+        )),
+        (_, None) => {
+            std::fs::write(dir.stopping(), session::STOPPED_BEFORE_START)?;
+            Ok(not_started())
+        }
+    }
 }
 
 fn stop_print_session(spec: &Spec, dir: &session::Dir, tools: &Tools<'_>) -> Result<StopReport> {
@@ -2476,6 +2572,7 @@ mod tests {
             timeout_secs: 5,
             codex_exec_server: false,
             agent_tools: Default::default(),
+            session: None,
         }
     }
 
@@ -2852,6 +2949,7 @@ mod tests {
 
                 protocol: PROTOCOL,
                 workspace: "xshun".into(),
+                assigned: false,
             },
             &tools,
         )
@@ -2895,6 +2993,7 @@ mod tests {
 
                 protocol: PROTOCOL,
                 workspace: "xshun".into(),
+                assigned: false,
             },
             &tmux_tools(&fake, &dir, "stop-none"),
         )
@@ -3544,6 +3643,159 @@ mod tests {
                 .env
                 .iter()
                 .any(|(k, v)| k == "CLAUDE_CONFIG_DIR" && v == "/x/claude")
+        );
+    }
+
+    // ---- P58: the assigned (exact) stop and the fenced run ----
+
+    const INSTANCE_AGENT: &str = "this = \"worker\"\nruntime_node = \"runtime\"\n[nodes.worker]\n[nodes.runtime]\nssh = \"runtime-alias\"\n[agents.claude-main]\nprovider = \"claude\"\nprofile_ref = \"default\"\n";
+
+    fn instance_tools<'a>(fake: &'a FakeRunner, dir: &Path, test: &str) -> Tools<'a> {
+        Tools {
+            local: None,
+            config: Config::parse(INSTANCE_AGENT).unwrap(),
+            runner: fake,
+            state: dir.to_path_buf(),
+            control_dir: control(dir),
+            agents: crate::provider::AgentBinaries::with_claude(None),
+            tmux: Some(PathBuf::from("/opt/homebrew/bin/tmux")),
+            controller: absent_socket(test),
+        }
+    }
+
+    fn assigned_stop(id: &str, workspace: &str) -> StopRequest {
+        StopRequest {
+            protocol: crate::instance::ASSIGNED_SESSION_PROTOCOL,
+            workspace: workspace.into(),
+            agent: Some(crate::instance::InstanceRef {
+                node: "worker".into(),
+                instance: "claude-main".into(),
+            }),
+            session: Some(id.into()),
+            assigned: true,
+        }
+    }
+
+    fn instance_print_spec(dir: &Path, id: &str, workspace: &str) -> session::Dir {
+        let session_dir = session::Dir::at(paths::session_dir(dir, id));
+        std::fs::create_dir_all(session_dir.path()).unwrap();
+        std::fs::write(
+            session_dir.meta(),
+            format!(
+                r#"{{"protocol":3,"agent_identity":{{"node":"worker","instance":"claude-main","provider":"claude","profile_ref":"default"}},"id":"{id}","workspace":"{workspace}","root":"/srv/demo","runtime_node":"runtime","runtime":{{"alias":"runtime-alias","ccnm_bin":"ccnm"}},"claude_config_dir":null,"permission_mode":"acceptEdits","mode":{{"mode":"print","prompt":"go"}},"timeout_secs":900,"cwd":"/tmp/x"}}"#
+            ),
+        )
+        .unwrap();
+        session_dir
+    }
+
+    /// The stop got here first: the id is fenced, nothing is asked of tmux
+    /// or `ps`, and the run that follows refuses before it dials anything.
+    #[test]
+    fn an_assigned_stop_before_its_run_fences_the_id_and_the_run_refuses() {
+        let dir = temp("assigned-fence");
+        let fake = FakeRunner::new();
+        let tools = instance_tools(&fake, &dir, "assigned-fence");
+        let id = session::new_id();
+        let rep = stop(&assigned_stop(&id, "demo"), &tools).unwrap();
+        assert!(!rep.killed);
+        assert_eq!(rep.session.as_deref(), Some(id.as_str()));
+        assert_eq!(rep.agent_identity.as_ref().unwrap().instance, "claude-main");
+        assert!(
+            session::Dir::at(paths::session_dir(&dir, &id))
+                .stopping()
+                .exists()
+        );
+        assert!(fake.calls().is_empty(), "{:?}", fake.calls());
+
+        let mut req = run_request("go");
+        req.protocol = crate::instance::ASSIGNED_SESSION_PROTOCOL;
+        req.agent = assigned_stop(&id, "demo").agent;
+        req.session = Some(id.clone());
+        let err = run(&req, &tools).unwrap_err();
+        assert_eq!(err.code(), ErrorCode::NotReady, "{err}");
+        assert!(
+            fake.calls().is_empty(),
+            "nothing is dialled for a fenced run"
+        );
+        // A repeated stop is still a success, and still touches nothing.
+        assert!(!stop(&assigned_stop(&id, "demo"), &tools).unwrap().killed);
+    }
+
+    /// A session created but not started -- no supervisor pid under the
+    /// control lock -- is marked so its start refuses; nothing is signalled.
+    #[test]
+    fn an_assigned_stop_of_an_unstarted_session_leaves_the_marker() {
+        let dir = temp("assigned-unstarted");
+        let fake = FakeRunner::new();
+        let tools = instance_tools(&fake, &dir, "assigned-unstarted");
+        let id = session::new_id();
+        let session_dir = instance_print_spec(&dir, &id, "demo");
+        let rep = stop(&assigned_stop(&id, "demo"), &tools).unwrap();
+        assert!(!rep.killed);
+        assert!(session_dir.stopping().exists());
+        assert!(fake.calls().is_empty(), "{:?}", fake.calls());
+    }
+
+    /// With a supervisor pid, the assigned stop is the verified group stop
+    /// -- and it never asks tmux, where a print run is not and someone's
+    /// interactive session may be (P57 B2).
+    #[test]
+    fn an_assigned_stop_of_a_started_session_verifies_its_supervisor_and_never_asks_tmux() {
+        let dir = temp("assigned-started");
+        let fake = FakeRunner::new();
+        fake.push(Output::exited(1, "")); // ps: the recorded supervisor is gone
+        let tools = instance_tools(&fake, &dir, "assigned-started");
+        let id = session::new_id();
+        let session_dir = instance_print_spec(&dir, &id, "demo");
+        session::write_supervisor_pid(&session_dir, 424_242).unwrap();
+        let err = stop(&assigned_stop(&id, "demo"), &tools).unwrap_err();
+        assert_eq!(err.code(), ErrorCode::NotReady, "{err}");
+        let ran: Vec<String> = fake.calls().iter().map(|cmd| cmd.display()).collect();
+        assert!(ran.iter().all(|c| c.starts_with("/bin/ps")), "{ran:?}");
+        assert!(!ran.iter().any(|c| c.contains("tmux")), "{ran:?}");
+    }
+
+    /// The id belongs to another workspace on this Agent: refused, not
+    /// stopped.
+    #[test]
+    fn an_assigned_stop_for_another_workspaces_session_is_refused() {
+        let dir = temp("assigned-other");
+        let fake = FakeRunner::new();
+        let tools = instance_tools(&fake, &dir, "assigned-other");
+        let id = session::new_id();
+        let session_dir = instance_print_spec(&dir, &id, "other");
+        let err = stop(&assigned_stop(&id, "demo"), &tools).unwrap_err();
+        assert_eq!(err.code(), ErrorCode::InvalidArgs, "{err}");
+        assert!(!session_dir.stopping().exists());
+    }
+
+    #[test]
+    fn an_assigned_stop_needs_a_real_session_id_and_an_instance() {
+        let dir = temp("assigned-invalid");
+        let fake = FakeRunner::new();
+        let tools = instance_tools(&fake, &dir, "assigned-invalid");
+        for bad in [
+            "../x",
+            "s-not-a-uuid",
+            "",
+            "0B4C7A1E-2D3F-4A5B-8C6D-7E8F9A0B1C2D",
+        ] {
+            let err = stop(&assigned_stop(bad, "demo"), &tools).unwrap_err();
+            assert_eq!(err.code(), ErrorCode::InvalidArgs, "{bad}");
+        }
+        let mut no_agent = assigned_stop(&session::new_id(), "demo");
+        no_agent.agent = None;
+        assert_eq!(
+            stop(&no_agent, &tools).unwrap_err().code(),
+            ErrorCode::InvalidArgs
+        );
+        assert!(
+            !dir.join("sessions").exists()
+                || std::fs::read_dir(dir.join("sessions"))
+                    .unwrap()
+                    .next()
+                    .is_none()
         );
     }
 }

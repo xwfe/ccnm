@@ -11,6 +11,15 @@ pub use profiles::{AgentProfiles, ResolvedProfile};
 
 pub const INSTANCE_SESSION_PROTOCOL: u32 = 3;
 
+/// An instance print run whose ccnm session id the Runtime chose (P58), and
+/// the stop that names that id -- possibly before the Agent has created the
+/// session. Its own number because the answer differs: a stop at 7 may fence
+/// an id off instead of saying "no such session", and a run at 7 must refuse
+/// an id that was fenced. A build that does not know 7 stops with
+/// `CCNM_E_VERSION` (both requests also carry a field it rejects), instead of
+/// starting the session under an id of its own that no stop could name.
+pub const ASSIGNED_SESSION_PROTOCOL: u32 = 7;
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct InstanceRef {

@@ -276,6 +276,75 @@ pub fn new_id() -> String {
     uuid::Uuid::new_v4().hyphenated().to_string()
 }
 
+/// Is `id` one [`new_id`] could have made? Checked on ids that arrive from
+/// the other machine (P58) before they name a directory.
+pub fn valid_id(id: &str) -> bool {
+    uuid::Uuid::parse_str(id).is_ok_and(|parsed| parsed.hyphenated().to_string() == id)
+}
+
+/// Claim `id` for a stop that got here before its run (P58).
+///
+/// `true`: this call created the session directory, so no run had, and the
+/// `stopping` marker left in it makes the run refuse if it still arrives --
+/// [`create`] cannot make a directory that exists. `false`: the directory
+/// was already there; the caller has to look at what is in it.
+pub fn fence(state: &Path, id: &str) -> Result<bool> {
+    if !valid_id(id) {
+        return Err(Error::invalid_args(
+            "session id is not a valid ccnm identifier",
+        ));
+    }
+    let dir = Dir::at(paths::session_dir(state, id));
+    fs::create_dir_all(paths::sessions_dir(state))?;
+    match fs::create_dir(dir.path()) {
+        Ok(()) => {
+            fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700))?;
+            fs::write(dir.stopping(), STOPPED_BEFORE_START)?;
+            Ok(true)
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// What the `stopping` marker says when the stop came before the start.
+pub const STOPPED_BEFORE_START: &str = "stopped before the Agent was started\n";
+
+/// A session's start and an exact stop, one at a time (P58).
+///
+/// Held by `agent-run` from "is there a stop marker?" until the supervisor's
+/// pid is on disk, and by an assigned stop while it decides. So a stop sees
+/// either a session with nothing started -- it leaves the marker and the run
+/// will not start -- or one with a pid it can verify and signal, never a
+/// start half done. `flock` on a file in the session directory: the two
+/// sides are separate `ccnm internal` processes.
+pub struct Control(fs::File);
+
+impl Control {
+    pub fn lock(dir: &Dir) -> Result<Control> {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .open(dir.path().join("control.lock"))?;
+        file.lock()?;
+        Ok(Control(file))
+    }
+}
+
+impl Drop for Control {
+    fn drop(&mut self) {
+        // Explicitly, not by closing: a child forked meanwhile shares the
+        // descriptor until it execs, and the lock with it.
+        if let Err(error) = self.0.unlock() {
+            tracing::warn!(?error, "could not release a session's control lock");
+        }
+    }
+}
+
 /// The directory of one session and the fixed names inside it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Dir(PathBuf);
@@ -446,13 +515,23 @@ pub fn create(
             "session state cannot live in Codex's private authentication directory",
         ));
     }
-    if dir.path().exists() {
-        return Err(Error::internal(format!(
-            "session directory already exists: {}",
-            dir.path().display()
-        )));
+    fs::create_dir_all(paths::sessions_dir(state))?;
+    // `create_dir`, not a check followed by `create_dir_all`: two callers
+    // racing for one id -- a run and a stop that fenced it (P58) -- must not
+    // both come away believing the directory is theirs.
+    if let Err(e) = fs::create_dir(dir.path()) {
+        return Err(if e.kind() == std::io::ErrorKind::AlreadyExists {
+            Error::new(
+                crate::error::ErrorCode::NotReady,
+                format!(
+                    "session {} already exists on this machine or was stopped before it started; it is not started again",
+                    spec.id
+                ),
+            )
+        } else {
+            e.into()
+        });
     }
-    fs::create_dir_all(dir.path())?;
     // The settings file names what the model may do; keep it the owner's.
     fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700))?;
     fs::write(dir.meta(), pretty(spec)?)?;
@@ -1336,5 +1415,72 @@ mod tests {
             outcome.error.as_deref().unwrap().contains("cannot spawn"),
             "{outcome:?}"
         );
+    }
+
+    /// P58: a fenced id cannot be created afterwards, a second fence is not
+    /// a second claim, and the refusal names the id, not the private path.
+    #[test]
+    fn a_fenced_id_is_never_created() {
+        let state = temp("fence");
+        let id = spec().id;
+        assert!(fence(&state, &id).unwrap());
+        assert!(
+            !fence(&state, &id).unwrap(),
+            "the directory is already there"
+        );
+        let dir = Dir::at(paths::session_dir(&state, &id));
+        assert_eq!(
+            fs::read_to_string(dir.stopping()).unwrap(),
+            STOPPED_BEFORE_START
+        );
+        let err = create(
+            &state,
+            &spec(),
+            Some(&ssh()),
+            &Default::default(),
+            &Default::default(),
+        )
+        .unwrap_err();
+        assert_eq!(err.code(), crate::error::ErrorCode::NotReady, "{err}");
+        assert!(!err.message().contains(&*state.to_string_lossy()), "{err}");
+        assert!(
+            !dir.meta().exists(),
+            "nothing was written into the fenced directory"
+        );
+        assert!(fence(&state, "../escape").is_err());
+    }
+
+    /// The control lock excludes a second holder -- a separate open, as the
+    /// run and the stop are separate processes -- until it is dropped.
+    #[test]
+    fn the_control_lock_is_held_until_dropped() {
+        let state = temp("control-lock");
+        let dir = Dir::at(state.join("s"));
+        fs::create_dir_all(dir.path()).unwrap();
+        let held = Control::lock(&dir).unwrap();
+        let other = fs::OpenOptions::new()
+            .write(true)
+            .open(dir.path().join("control.lock"))
+            .unwrap();
+        assert!(matches!(
+            other.try_lock(),
+            Err(fs::TryLockError::WouldBlock)
+        ));
+        drop(held);
+        other.try_lock().unwrap();
+    }
+
+    #[test]
+    fn only_ids_new_id_could_make_are_valid() {
+        assert!(valid_id(&new_id()));
+        for bad in [
+            "",
+            "../x",
+            "s-1",
+            "0B4C7A1E-2D3F-4A5B-8C6D-7E8F9A0B1C2D",
+            "0b4c7a1e2d3f4a5b8c6d7e8f9a0b1c2d",
+        ] {
+            assert!(!valid_id(bad), "{bad}");
+        }
     }
 }

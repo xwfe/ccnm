@@ -35,6 +35,16 @@ ccnm rpc
 - 结果**不过期**：记录一直留着，`expires_at` 不出现。清理靠 ccnm 本来的维护动作。
 - **`-32008`（`busy`）从来不会返回。** 工作树的写入 guard 是 Runtime 侧的 MCP 进程在会话跑起来之后才去拿的，`session.start` 那一刻没人检查它。所以工作树被别人占着时，你看到的不是启动被拒，而是**会话起来了然后失败**。按 `-32008` 写退避重试的客户端等不到这个码。
 
+P58（2026-09-28）起，下面几条是当前实现的行为。它们都在契约允许的范围内，写在这里是因为写客户端时会碰到：
+
+- **`session.stop` 只停这一个 session。** 服务端在派发前就给这次运行定好了 Agent 上的会话 id，stop 点名停它；运行还没到 Agent 时，Agent 先把这个 id 占住，运行到了也不会启动。之前的实现只按 workspace 找 tmux，停不到 print 运行，同 workspace 有交互会话时反而停掉那个（[P57 实测](../research/2026-09-28-p57-core-baseline.md)）。
+- **还没派发就收到 stop，这次运行不会发出去**，终态 `failed`、`stop_requested: true`。
+- **不合 `session_id` 形状的句柄一律 `-32602`**，在读任何文件之前拒绝；合形状但不存在的仍是 `-32009`。
+- **session 创建后改绑 workspace（换了 Agent 节点），旧句柄的 stop 回 `-32007`**，`effect: none`，不会发到新机器上，也不记成请求过 stop。
+- **P58 之前的服务端接受的、还没结束的 session 不能用 `session.stop` 停**：那时没记 Agent 上的会话 id，只能按 workspace 猜，现在拒绝猜，回 `-32000`。
+- **运行派发之后连接断了或 Agent 在启动后出错，终态是 `unknown`**，不是 `failed`——Agent 那边可能已经在跑。Agent 在启动任何东西之前的拒绝（没登录、Runtime 不通、写锁被占等）仍是 `failed`。
+- 同一个 `start_key` 按原串逐字节比较，不同的键不会再合并（此前 `任务-一` 与 `任务-二`、`a/b` 与 `ab` 会被当成一个键）；升级前写下的键照样认，不会把已接受的任务当新任务重跑。
+
 校验 schema 和 fixture：
 
 ```bash

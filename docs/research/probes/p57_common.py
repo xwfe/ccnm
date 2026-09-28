@@ -280,7 +280,8 @@ def fake_ssh(argv: list, fake: Path) -> int:
             return 255
         reply_file = fake / f"reply-{key}.json"
         reply = json.loads(reply_file.read_text()) if reply_file.exists() else {}
-        session = str(uuid.uuid4())
+        # P58 起 Runtime 在请求里指定会话 id，真实 Agent 按它运行并回报。
+        session = request.get("session") or str(uuid.uuid4())
         report = {
             "protocol": 3,
             "agent_identity": identity(request["agent"]),
@@ -319,6 +320,8 @@ def fake_ssh(argv: list, fake: Path) -> int:
         elif mode["kind"] == "release":
             (fake / "release" / key_of(mode["prompt"])).write_text("go\n")
         report = {"protocol": 3, "tmux_session": "ccnm-" + request["workspace"], "killed": True}
+        if request.get("session"):
+            report["session"] = request["session"]
         if request.get("agent"):
             report["agent_identity"] = identity(request["agent"])
         else:

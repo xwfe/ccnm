@@ -14,6 +14,8 @@
 
 这是 doctor 拦下来的，不是协议层拦的——协议只在**协议号**不同时才拒。所以版本不同的两端有可能跑起来，只是没人验证过那种组合，别让它发生。
 
+**Machine API（`ccnm rpc`）的 print 运行从 P58 起用内部协议 7**：Runtime 在派发前定好 Agent 上的会话 id，好让 `session.stop` 能点名停它。只升级 Runtime、Agent 还是 P58 之前的 build 时，每次 `session.start` 都会以 `failed` 结束、错误是 `CCNM_E_VERSION`（旧 Agent 在解析请求时就拒绝，什么都没创建）——这是两端版本不一致，装成同一个 build 即可，不是 Agent 坏了。人类用的 `ccnm run --print` 不受影响。升级前还在跑的 `ccnm rpc` 会话，新 build 的 `session.stop` 会拒绝（它们没有记 Agent 上的会话 id，见[协议说明](protocol/README.md)），所以按下一节先把会话停掉再升级。
+
 ```bash
 bash scripts/deploy.sh <另一台的 ssh 别名> [workspace]
 ```

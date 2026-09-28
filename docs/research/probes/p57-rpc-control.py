@@ -204,7 +204,13 @@ def a5_start_key_lossy_mapping() -> dict:
                 "key_2_other_input": different_input.get("error", {}).get("code", "new session"),
                 "key_2_same_input_reused_session_of_key_1": same_input.get("result", {}).get("session") == s1,
             })
-        keys = sorted(p.name for p in (sb.state / "rpc/keys/demo").iterdir())
+        # P58 起键按原串存进 rpc/start-keys/，旧布局 rpc/keys/<workspace>/ 只读不写。
+        old_layout = sb.state / "rpc/keys/demo"
+        keys = (
+            sorted(p.name for p in old_layout.iterdir())
+            if old_layout.exists()
+            else sorted(p.name for p in (sb.state / "rpc/start-keys").iterdir() if p.suffix == ".json")
+        )
         # 九次 start 里只有三次是新会话；等这三次都到了假 Agent，再多等半秒确认没有第四次。
         wait_until(lambda: len(sb.calls_of("agent-run")) >= len(cases), timeout=10)
         time.sleep(0.5)
@@ -283,11 +289,13 @@ def a7_old_handle_follows_edited_config() -> dict:
         stopped = peer.call("session.stop", {"session": h})
         status = peer.call("session.status", {"session": h})["result"]
         run_alias = sb.calls_of("agent-run")[0]["alias"]
-        stop_call = sb.calls_of("agent-stop")[0]
+        # P58 起改绑后的旧句柄被拒，一个 stop 都不发。
+        stop_calls = sb.calls_of("agent-stop")
+        stop_call = stop_calls[0] if stop_calls else {"alias": None, "request": {}}
         # 再删掉 workspace：旧句柄还能不能停。
         sb.config.write_text('this = "runtime"\n[nodes.runtime]\n[nodes.worker]\nssh = "worker-alias"\n')
         stop_removed = peer.call("session.stop", {"session": h})
-        redirected = stop_call["alias"] != run_alias
+        redirected = stop_call["alias"] is not None and stop_call["alias"] != run_alias
         return {
             "id": "A7",
             "gap": ["CTRL-03"],

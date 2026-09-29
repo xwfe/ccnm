@@ -21,6 +21,7 @@
 | Browser / 专用 Git 工具 | 没有内建专用工具；可以经命令或安装第三方 MCP 扩展 | 已有统一浏览器/调试验收或完整 PR/发布流程 |
 | 单写 guard | 同一 state 域、canonical 资源的互斥与异常 marker 已实现；P52 修复同组 relay 后代收尾/交权；P60 起 Runtime 执行账号可只读回答 free/held/abandoned/unknown（`ccnm status <ws>` 显示） | 跨 state 全局锁、普通程序隔离、脱组后代与强杀情况下的完整进程树保证；观察结果不是预留，也不是清理 |
 | Machine API | 契约冻结；实现 print、状态、可分页的结果、停止、启动幂等键；P60 起启动前问 Runtime 写锁，被占回 `busy`、残留回 `policy` | interactive、结果过期；`busy` 只覆盖启动那一刻，之后被抢先仍是接受后 `failed` |
+| 清理（`ccnm cleanup`、`workspace remove --purge`，P61） | 先预览再按令牌执行；Agent 会话记录、Runtime 执行账号的 `exec_command` 输出、Operator 的 Machine API 拷贝由各自账号删，Machine API 记录留作墓碑（`result` 回 `expired`，`start_key` 不重跑）；没结束、说不清、写锁标着、在用的保留；`--purge` 有剩余就保留配置。**只有离线证据**（三个 state 目录模拟三个账号） | 跨 UID 的真实权限隔离（P62 在 hpsrv/ccrun 验）；自动过期；清理 P61 之前旧 `--purge` 留在执行账号那边的孤儿输出（只靠 7 天过期） |
 | CI / 发布门禁（P53） | 已接入计划、协议与 Python 全套；CI 两个平台有 runner 成功记录 | release 首次线上执行、线上故意失败阻断已实测；见[P53 证据](research/2026-09-25-p53-ci-gates.md) |
 | 整个项目生命周期 | 作为执行层支撑编码/构建/测试并组合外部系统 | 单靠 ccnm 完成需求审批、独立审查、上线授权、回退与运维闭环；见[职责矩阵](project-lifecycle.md) |
 

@@ -16,7 +16,7 @@
 
 **Machine API（`ccnm rpc`）的 print 运行从 P58 起用内部协议 7**：Runtime 在派发前定好 Agent 上的会话 id，好让 `session.stop` 能点名停它。只升级 Runtime、Agent 还是 P58 之前的 build 时，每次 `session.start` 都会以 `failed` 结束、错误是 `CCNM_E_VERSION`（旧 Agent 在解析请求时就拒绝，什么都没创建）——这是两端版本不一致，装成同一个 build 即可，不是 Agent 坏了。人类用的 `ccnm run --print` 不受影响。P59 起 `session.result` 用新请求 `agent-output`（内部协议 8）从 Agent 拷输出；Agent 还是 P59 之前的版本时结果照常返回，只是 `output` 降级为旧尾巴并带 `unavailable_reason: agent_refused`，不是出错。升级前还在跑的 `ccnm rpc` 会话，新 build 的 `session.stop` 会拒绝（它们没有记 Agent 上的会话 id，见[协议说明](protocol/README.md)），所以按下一节先把会话停掉再升级。
 
-**Machine API 的输出占多少盘、在哪**（P59）：Agent 在会话目录里为读过的流各存一份只读视图（`sessions/<id>/stdout.view` 等，每个流最多约 32 MiB，全是非法 UTF-8 的极端情况最多约 96 MiB）；Runtime 这边第一次 `session.result` 时整份拷到 `${XDG_STATE_HOME:-~/.local/state}/ccnm/rpc/outputs/<session>/`。两边都不会自动删，目前清理靠删这些目录（不会影响会话记录本身，下次读时会重新拷）；有预览和确认的清理命令是 P61 的事。
+**Machine API 的输出占多少盘、在哪**（P59）：Agent 在会话目录里为读过的流各存一份只读视图（`sessions/<id>/stdout.view` 等，每个流最多约 32 MiB，全是非法 UTF-8 的极端情况最多约 96 MiB）；Runtime 这边第一次 `session.result` 时整份拷到 `${XDG_STATE_HOME:-~/.local/state}/ccnm/rpc/outputs/<session>/`。两边都不会自动删；要腾地方用 [`ccnm cleanup`](#想立刻腾地方ccnm-cleanup)，它先预览，由各自的账号删，Machine API 的记录留作墓碑。
 
 ```bash
 bash scripts/deploy.sh <另一台的 ssh 别名> [workspace]
@@ -280,12 +280,15 @@ controller.sock      controller 的监听 socket
 **Runtime Node：**
 
 ```text
-sessions/<ccnm-session-id>/output/   exec_command 留下的命令输出（会自己清，见下）
-write-guards/                        工作树级独占锁
-rpc/sessions/<handle>.json           machine API 的会话记录
-rpc/keys/<workspace>/<start_key>     启动幂等键
+sessions/<ccnm-session-id>/output/   exec_command 留下的命令输出（会自己清，见下）       执行账号的
+write-guards/                        工作树级独占锁                                       执行账号的
+rpc/sessions/<handle>.json           machine API 的会话记录                               Operator 的
+rpc/start-keys/                      启动幂等键（P58 之前的 rpc/keys/ 只读）               Operator 的
+rpc/outputs/<handle>/                session.result 从 Agent 拷来的输出（P59）             Operator 的
 ssh/                                 ControlPath socket
 ```
+
+最后一列是"在谁的 state 目录里"。推荐部署下 Operator（敲 `ccnm`、跑 `ccnm rpc` 的账号）和 Runtime 执行账号（Agent 的 ssh 落到的账号，通常是 `ccrun`）是两个账号，这两组东西在两个不同的目录里，谁的东西只能由谁删。
 
 `tmux.conf` 写在会话目录里，是因为那是 ccnm 一定拥有、一定存在的目录。tmux **只在启动 server 的那一刻**读它，所以哪个会话的那份起的作用不重要，跟着会话一起被删也不影响任何东西。里面设了什么、怎么改回去，见[使用说明](usage.md#会话在-tmux-里所以滚屏和复制跟你平时不一样)。
 
@@ -298,25 +301,39 @@ ssh/                                 ControlPath socket
 - Managed 会话断开不删，`/mcp Reconnect` 回来还要读。它的输出在**最后一次运行过去 7 天、且这台机器上没有 `mcp-serve` 在服务它**之后删。
 - 过期检查在执行账号每次起 `mcp-serve` 时做（任何会话都算，包括 `ccnm doctor` 的握手），在后台跑，不拖慢连接。`ps` 跑不了时一个都不删。
 
-所以一台 Runtime 上 `output/` 的总量最多大约是"最近 7 天里跑过命令的 Managed 会话数 × 256 MiB"。想立刻腾地方，在 Runtime 上用**执行账号**删：
+所以一台 Runtime 上 `output/` 的总量最多大约是"最近 7 天里跑过命令的 Managed 会话数 × 256 MiB"。
+
+### 想立刻腾地方：`ccnm cleanup`
+
+在 Runtime Node 上用 Operator 账号（平时敲 `ccnm` 的那个）：
 
 ```bash
-rm -rf "${XDG_STATE_HOME:-$HOME/.local/state}"/ccnm/sessions/*/output
+ccnm cleanup demo                          # 只列清单，什么都不删
+ccnm cleanup demo --apply <预览打印的令牌>   # 照清单删
 ```
 
-删之前先在 Runtime 上跑 `ccnm status`，确认没有 `mcp-serve` 行。正在用的会话被删了输出，它已经拿到的 `output_ref` 再去 `read_output` 会报 `no output kept for r-…`。zsh 下一个都匹配不到时会报 `no matches found`，那是没东西可删，不是命令错了。
+预览逐项列出三个账号各自为这个 workspace 留下的东西：Agent 的会话记录，Runtime 执行账号的 `exec_command` 输出，Operator 自己的 Machine API 结果拷贝。每一项都写明属于哪个 uid、多大，打算删还是留，留的话为什么。确认后把最后一行命令原样执行一遍。
+
+- **令牌 15 分钟有效。** apply 时会重新向三方各收一遍清单，只要有任何变化（有会话跑了、文件写了、配置改了），就整份拒绝、一个都不删，报 `no longer what was previewed`（退出码 3），重新预览即可。令牌不是秘密，只是用来确认"删的就是你看过的那份"。
+- **各删各的。** Operator 只删自己的 `rpc/outputs/`；Agent 的会话记录由 Agent 删；Runtime 的输出由 Agent 经它到 Runtime 的那条 ssh 请执行账号删。不需要 root，也不需要 Operator 能读执行账号的目录。
+- **会留下的**：还没结束、结没结束说不清、正在被用（有 `mcp-serve` 在服务、命令还在跑、会话控制锁被占）、写锁标着的会话（恢复要用它的记录，见[写入 guard 残留](#写入-guard-残留)），以及不是 ccnm 建的普通目录（比如符号链接）或属于别的账号的东西。`ps` 跑不了时 Runtime 那边一律不删。Runtime 那一半没删掉的会话，Agent 上的记录也先留着：Runtime 的输出不记属于哪个 workspace，以后要找它，只能靠 Agent 上这条记录。
+- **Machine API 的记录不删，只清输出。** `rpc/sessions/<handle>.json` 里大的部分（最终回答、尾巴）清掉，其余留作墓碑：`session.status` 照常回答，`session.result` 回 `-32012`（`reason: cleaned`），同一个 `start_key` 仍指回原会话、**不会重跑**。`rpc/start-keys/` 永远不删。
+- **不会碰**：项目本身、写锁、登录凭据、别的 workspace。
+- **没做完怎么办**：预览里说要删的，有一项没删成（输出里是 `FAILED`，或者当场发现在用、变了而留下），或者有一方问不到，退出码就是 3；预览时本来就说要留的不算。已删的不会恢复，也不会重删；再预览一次就能对剩下的重试。
+
+**不是恢复工具**：它不杀进程、不动写锁。写锁标着的会话要先按[写入 guard 残留](#写入-guard-残留)处理完，再来清。
 
 要连 workspace 一起清：
 
 ```bash
-ccnm workspace remove demo --purge     # 先停会话，再删 ccnm 为它保存的东西
+ccnm workspace remove demo --purge     # 先停会话，再清 ccnm 为它保存的东西，最后从配置里去掉
 ```
 
-`--purge` 删的只有 ccnm 自己的记账：会话记录和官方 CLI 的工作目录。**永远不碰项目本身**——那是两台机器上唯一不是 ccnm 创建的东西，一个可能删掉别人源码树的清理命令不叫清理命令。
+`--purge` 走的是同一个清理服务，`--purge` 本身就算确认，不再要令牌；另外还会删 Agent 上这个 workspace 的 CLI 工作目录。区别在最后一步：**只要有任何东西没清掉（包括上面"会留下的"），workspace 就留在配置里、退出码 3**，因为配置是以后唯一还能找到那些东西的入口。处理完再跑一次；只想忘掉 workspace、数据留着不管，去掉 `--purge`。
 
-**按推荐部署，`--purge` 删不到 Runtime 上的 `output/`。**它先让 Agent 删掉这个 workspace 的会话记录、报回会话 id，再删**敲命令这个账号自己**状态目录里同名的 `sessions/<id>/`。Operator 和 Runtime Executor 是两个账号时（推荐就是这样），输出在执行账号的目录里，这一步什么也删不到，只能等上面的 7 天过期或手动删。外部 MCP 会话 Agent 那边本来就没有记录，也不在 `--purge` 范围内，不过它们断开时已经删了。
+P61 之前的 `--purge` 删的是**敲命令这个账号自己**状态目录里同名的 `sessions/<id>/`，推荐部署下那根本不是执行账号的输出所在，那份输出从此没人找得到（只能等 7 天过期）；配置却照删。升级前用旧 `--purge` 删过的 workspace，执行账号那边可能还剩输出，按 7 天过期处理或由执行账号手动删 `sessions/<id>/output`。
 
-machine API 的记录（`rpc/`）不在 `--purge` 范围内，目前只能手动删。删之前确认没有正在跑的会话——记录没了，`session.status` 会回 `-32009`，而 Agent 那边可能还在跑。
+两端版本要一致：清理用内部协议 10，旧 Agent 不认识 `agent-cleanup`，预览会说 Agent 问不到；新 Agent 收到旧 Operator 的 `agent-purge` 会以 `CCNM_E_VERSION` 拒绝，不再照旧删。
 
 ## 停止
 

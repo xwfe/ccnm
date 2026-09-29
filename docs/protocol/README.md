@@ -31,7 +31,7 @@ ccnm rpc
 冻结的是**契约**。实现仍然比契约少，下面这份清单就是差在哪里——补上它们属于加法，不需要升版本，也不违反冻结。差距全是这个方向，没有反过来的：
 
 - `interactive` 模式没有实现，也不在 `hello` 的 `capabilities.modes` 里——调用它得到 `-32013`。
-- 结果**不过期**：记录一直留着，`expires_at` 不出现。清理靠 ccnm 本来的维护动作。
+- 结果**不会自动过期**，`expires_at` 不出现。P61 起运维人员可以用 `ccnm cleanup` 显式清理：清过的 session `session.result` 回 `-32012`（`reason: cleaned`），`status` 照常，`start_key` 仍指回原 session。
 - **`-32008`（`busy`）只覆盖"启动那一刻已经被占"。** P60 起 `session.start` 先请 Runtime 看一眼写入 guard，有进程正持有就回 `-32008`（详见[协议第 10 节](machine-protocol-v1.md#错误码表)下的表）。但这只是一次观察，不是预留：看完之后、会话打开工具之前被别人抢先的，表现仍是**会话起来了然后失败**；Runtime 问不到时这一步不做，启动照常进行。按 `-32008` 退避的客户端，还得处理"接受了但因写锁 `failed`"这种结局。
 
 P58（2026-09-28）起，下面几条是当前实现的行为。它们都在契约允许的范围内，写在这里是因为写客户端时会碰到：
@@ -47,6 +47,8 @@ P58（2026-09-28）起，下面几条是当前实现的行为。它们都在契�
 P59（2026-09-29）起 `session.result` 的输出按[协议第 9 节](machine-protocol-v1.md#输出引用)实现：每个流保留最后 32 MiB，第一页是末尾、`cursor` 往前翻，`max_bytes` 生效，stderr 用 `output.stream` 单独取。完整内容在 Agent 上生成、在第一次读时整份拷到本机，之后翻页不再联系 Agent。Agent 还是 P59 之前的版本或这时联系不上，服务端给的是旧版本留下的那段尾部，并用 `unavailable_reason` 说明，不当成完整输出。游标只在发出它的 `ccnm rpc` 进程里有效。详见 [P59 记录](../research/2026-09-29-p59-output-snapshot.md)。
 
 P60（2026-09-29）起 `session.start` 在分配 session id 之前先问写入 guard：Operator 经 Agent 问到 Runtime 执行账号（内部协议 9），因为锁在执行账号自己的 state 目录里。有进程正持有回 `-32008`；没人持有却也交不出去（上一个会话故意留着、异常退出留下的、标记损坏或读不了）回 `-32007`，`data.reason` 说是哪一种，这种要人处理，重试不会好。同一个 `start_key` 的重发先按原记录回答，不经过这一步。Agent、Runtime 任何一端早于 P60 时问不到，启动照 P59 的样子进行。详见 [P60 记录](../research/2026-09-29-p60-write-guard-observation.md)。
+
+P61（2026-09-30）起，session 的输出只会被运维人员显式清掉（`ccnm cleanup <workspace> --apply <令牌>` 或 `workspace remove --purge`）。清理只删 Operator 这边的输出拷贝和记录里大的部分，记录本身留作墓碑，所以清过的 session 仍然查得到状态，`result` 回 `-32012` 并带 `reason: cleaned`，同一个 `start_key` 不会被当成新任务重跑。还没结束、状态说不清的 session 不会被清。详见 [P61 记录](../research/2026-09-30-p61-cleanup.md)。
 
 校验 schema 和 fixture：
 

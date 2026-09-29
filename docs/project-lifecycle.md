@@ -21,7 +21,7 @@
 | Git 与协作 | 未启用阻止 `.git` 写入的沙箱时，可按账号权限执行 Git | 没有专用 PR/合并流程或凭证代理；同一 common-dir 的 worktree 不能视为可并行写 |
 | 构建物与发布 | 可运行明确授权的脚本，读取日志和结果 | 没有制品登记、签名验证、环境晋级、发布授权或幂等部署；归 CI/CD，不自动注入个人发布凭证 |
 | 运行与维护 | doctor、会话状态、日志、停止、手工恢复与保留输出 | 不是生产服务管理器、监控告警或灾备系统；没有已验收的持续无人值守闭环 |
-| 下线、清理与交接 | workspace 移除、部分 purge、到期清理、文档交接 | Operator 的 purge 不能保证跨身份删除 Runtime 全部输出；第三方数据、凭据撤销和云资源须另行处理 |
+| 下线、清理与交接 | workspace 移除；`ccnm cleanup` 先预览、由 Agent / Runtime 执行账号 / Operator 各删各的（P61）；`--purge` 删不干净就保留配置；到期清理、文档交接 | 跨 UID 的真实权限只在 P62 真机验；不自动过期、不清项目、不撤销凭据；第三方数据和云资源须另行处理 |
 
 ## 三处必须分清的边界
 
@@ -39,7 +39,7 @@ Agent 的 `ccnm_agent` 在 Agent Identity 下运行。skills 的目录内读取�
 
 关掉 Operator 终端可能只断开 tmux attach；Agent 可以仍在运行。Agent 到 Runtime 的 MCP 连接结束则会触发命令收尾。Runtime 本身睡眠或不可达时，不保证持续工作；要合盖使用，应让真实 Runtime 位于不会睡眠的机器，并验收实际网络与供电条件。
 
-Machine API 的 `session.result` 自 P59 起可倒序分页读回每个流最后 32 MiB 的保留内容，但只在会话结束后提供，结果与本机拷贝都没有过期清理（清理属于 P61）；Runtime `read_output` 可分页，但 ref 属于产生它的连接/会话，不能当跨重连的持久任务句柄；Agent `read_mcp_result` 的长结果只保存在内存中，最多 30 分钟、单条 16 MiB、总量 64 MiB，服务结束即失去。**正式测试报告、构建物和发布证据应保存为项目产物，并由交付系统归档，不能只留在对话或某个 ref 里。**
+Machine API 的 `session.result` 自 P59 起可倒序分页读回每个流最后 32 MiB 的保留内容，但只在会话结束后提供，结果与本机拷贝都不会自动过期，要腾地方用 `ccnm cleanup`（清过的会话 `session.result` 回 `expired`、`start_key` 仍指回原会话）；Runtime `read_output` 可分页，但 ref 属于产生它的连接/会话，不能当跨重连的持久任务句柄；Agent `read_mcp_result` 的长结果只保存在内存中，最多 30 分钟、单条 16 MiB、总量 64 MiB，服务结束即失去。**正式测试报告、构建物和发布证据应保存为项目产物，并由交付系统归档，不能只留在对话或某个 ref 里。**
 
 ### 成功、停止和交权必须有不同证据
 

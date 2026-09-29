@@ -483,6 +483,13 @@ Agent 的输出可能很大，协议不会把它整个塞进一条响应：
 
 对一个已经不在的 session 调 `status` / `result`，得到 `-32012`（`expired`）而不是 `-32009`（`not_found`）——"曾经存在但已清理"和"从来没有过"对调用方是不同的信息，前者说明你的记录没错、只是过期了。
 
+**当前实现怎么清理**（P61 起）：结果只在运维人员执行 `ccnm cleanup <workspace> --apply` 或 `ccnm workspace remove <workspace> --purge` 之后才会被删，不会按时间自动过期，所以 `expires_at` 仍不出现。清过的 session：
+
+- `session.result` 回 `-32012`，`data.reason` 是 `cleaned`，`data.session` 是这个 id；
+- `session.status` 照常回答它结束时的状态——删掉的是输出和最终回答，不是这个 session 存在过的事实；
+- 同一个 `start_key` 的 `session.start` 仍然返回原 session（`reused: true`），**不会重新执行**；
+- 旧游标同样 `-32012`。
+
 不过这要求服务端留一条墓碑记录才知道这个 id 曾经存在。**墓碑本身也会过期**：那之后同一个 id 会得到 `-32009`（`not_found`）。所以 `not_found` 的准确含义是"服务端不知道这个东西"，既可能从来没有过，也可能久到连墓碑都清了。客户端不要把 `not_found` 当成"我记错了"的证据。
 
 ## 10. 错误

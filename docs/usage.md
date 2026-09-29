@@ -205,6 +205,17 @@ ccnm session id 与 Claude/Codex 自己的 thread/resume id 是两类值，不�
 
 session 建立后，Agent Node 上的 `attach/status/result/stop` 继续本机管理记录，不依赖重新解析 workspace root。Runtime Node 发起的命令仍由 Runtime 默认选择或 `--agent` 选择约束。
 
+### 清掉结束了的会话留下的东西
+
+在 Runtime Node 上：
+
+```bash
+ccnm cleanup my-project                 # 先看：列出会删什么、留什么、为什么，什么都不删
+ccnm cleanup my-project --apply <令牌>   # 照预览删，令牌在预览最后一行
+```
+
+三台机器、三个账号各删各的，项目、写锁和凭据都不碰，还在跑或说不清的会话不碰；Machine API 的会话删的是输出，记录和 `start_key` 留着，之后 `session.result` 回 `expired`。细节和会留下哪些东西见[运维手册](operations.md#想立刻腾地方ccnm-cleanup)。
+
 ## 非交互 `--print`
 
 当前应在定义 workspace 的一侧执行，通常就是 Runtime Node：

@@ -1,0 +1,17 @@
+{
+  "$schema_ref": "#/$defs/response_error",
+  "$note": "session 的结果被运维人员用 ccnm cleanup 清掉了（P61）。和 not_found 分开：这个 session 确实跑过，session.status 仍能查到它怎么结束的，同一个 start_key 也仍指回它、不会重跑；只是输出和最终回答已经删了。reason 固定是 cleaned。",
+  "message": {
+    "jsonrpc": "2.0",
+    "id": 15,
+    "error": {
+      "code": -32012,
+      "message": "this session's result was removed by ccnm cleanup; its state is still kept",
+      "data": {
+        "effect": "none",
+        "session": "s-2026091012-7f3a",
+        "reason": "cleaned"
+      }
+    }
+  }
+}

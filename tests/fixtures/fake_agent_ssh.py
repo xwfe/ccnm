@@ -8,6 +8,7 @@ ccnm 以 `ssh <选项> -T <alias> <ccnm> internal <sub> --payload X` 调 Agent�
 - `agent-run` 停在“等放行”上，放行后回一份 RunReport；请求带了 Runtime 分配的
   会话 id，就用它（真实 Agent 也是这样）。
 - `agent-stop` 把请求记下来；被停的那次运行随即以“被信号杀掉”结束。
+- `agent-status` 答“没有活着的交互会话”；`agent-guard` / `runtime-guard` 见下。
 - 控制目录（环境变量 FAKE_AGENT_DIR）里的文件决定每次怎么演：
 
     release/<key>        放行某个 prompt 的运行（key 见 key_of）
@@ -19,6 +20,12 @@ ccnm 以 `ssh <选项> -T <alias> <ccnm> internal <sub> --payload X` 调 Agent�
     view-<key>-<stream>  agent-output 要交回的保留视图（字节原样），按 prompt 找
     output-mode.json     {"kind": "serve"}（默认）、{"kind": "unreachable"}、
                          {"kind": "unknown-command"}（演一个还不认识这个请求的旧 Agent）
+    guard-mode.json      agent-guard 怎么演：{"kind": "free"}（默认）、"unreachable"、
+                         "unknown-command"，或 {"kind": "relay", ...}——换成真实 ccnm
+                         当 Agent 端（ccnm、agent_config、agent_env），它拨 Runtime 时
+                         又回到本脚本
+    runtime.json         Agent 拨 Runtime 那一跳：{"ccnm", "env"} 以“执行账号”的环境
+                         跑真实 `ccnm internal runtime-guard`；{"kind": "unreachable"} 连不上
     calls.jsonl          每次调用：alias、子命令、解开的请求
 
 `agent-output` 只演协议：按偏移切视图、base64 交回。脱敏与 UTF-8 规整是真实 Agent
@@ -166,6 +173,62 @@ def output(request: dict, fake: Path) -> int:
     return 0
 
 
+def guard(argv: list, request: dict, fake: Path) -> int:
+    """agent-guard：默认答 free；relay 时换成真实 ccnm 去问，它再经本脚本拨 Runtime。"""
+    mode_file = fake / "guard-mode.json"
+    mode = json.loads(mode_file.read_text()) if mode_file.exists() else {"kind": "free"}
+    if mode["kind"] == "unreachable":
+        print("ssh: connect to host worker port 22: Connection refused", file=sys.stderr)
+        return 255
+    if mode["kind"] == "unknown-command":
+        print("error: unrecognized subcommand 'agent-guard'", file=sys.stderr)
+        return 2
+    if mode["kind"] == "relay":
+        # 真实的 Agent 端：认实例、按自己的配置拨 runtime-alias（又回到本脚本，
+        # 见 runtime_guard），把 Runtime 的回答转回来。
+        os.execve(
+            mode["ccnm"],
+            [mode["ccnm"], "--config", mode["agent_config"], *argv[argv.index("internal"):]],
+            mode["agent_env"],
+        )
+    report = {
+        "protocol": 9,
+        "agent_identity": identity(request["agent"]),
+        "runtime": {
+            "protocol": 9,
+            "workspace": request["workspace"],
+            "observation": {
+                "state": "free",
+                "reason": "never_taken",
+                "resource": {"kind": "root", "id": "0000000000000000"},
+                "observed_at": int(time.time()),
+            },
+        },
+    }
+    sys.stdout.write(json.dumps(report))
+    return 0
+
+
+def runtime_guard(argv: list, fake: Path) -> int:
+    """Agent 拨到 Runtime 的那一跳：落到“执行账号”上跑真实 ccnm。"""
+    mode = json.loads((fake / "runtime.json").read_text())
+    if mode.get("kind") == "unreachable":
+        print("ssh: connect to host runtime port 22: Connection refused", file=sys.stderr)
+        return 255
+    os.execve(mode["ccnm"], [mode["ccnm"], *argv[argv.index("internal"):]], mode["env"])
+    return 0
+
+
+def status(request: dict) -> int:
+    """agent-status：这台 Agent 上没有活着的交互会话。"""
+    report = {"protocol": 1, "tmux": {"Ok": "3.5a"}, "sessions": []}
+    if request.get("agent"):
+        report["protocol"] = 3
+        report["agent_identity"] = identity(request["agent"])
+    sys.stdout.write(json.dumps(report))
+    return 0
+
+
 def main(argv: list) -> int:
     fake = Path(os.environ["FAKE_AGENT_DIR"])
     alias = argv[argv.index("-T") + 1] if "-T" in argv else None
@@ -179,6 +242,12 @@ def main(argv: list) -> int:
         return stop(request, fake)
     if sub == "agent-output":
         return output(request, fake)
+    if sub == "agent-guard":
+        return guard(argv, request, fake)
+    if sub == "runtime-guard":
+        return runtime_guard(argv, fake)
+    if sub == "agent-status":
+        return status(request)
     print(f"fake agent: unexpected call {sub!r}", file=sys.stderr)
     return 97
 

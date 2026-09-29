@@ -338,20 +338,8 @@ impl Store {
     pub fn claim_key(&self, workspace: &str, key: &str, session: &str) -> Result<KeyClaim> {
         let _locked = self.lock()?;
         let path = self.key_path(workspace, key);
-        let mut bucket: KeyBucket = match fs::read(&path) {
-            Ok(bytes) => serde_json::from_slice(&bytes)
-                .map_err(|e| Error::internal("the start_key index is unreadable").with_source(e))?,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => KeyBucket::default(),
-            Err(e) => return Err(Error::internal("cannot read the start_key index").with_source(e)),
-        };
-        if let Some(entry) = bucket
-            .entries
-            .iter()
-            .find(|entry| entry.workspace == workspace && entry.start_key == key)
-        {
-            return Ok(KeyClaim::Held(Some(entry.session.clone())));
-        }
-        if let Some(held) = self.legacy_key(workspace, key)? {
+        let mut bucket = self.bucket(&path)?;
+        if let Some(held) = self.held_key(&bucket, workspace, key)? {
             return Ok(KeyClaim::Held(held));
         }
         bucket.entries.push(KeyEntry {
@@ -361,6 +349,41 @@ impl Store {
         });
         write_atomically(&path, &encode(&bucket)?)?;
         Ok(KeyClaim::Taken)
+    }
+
+    /// Who a start key already points at, without claiming it: `None` when
+    /// nobody, `Some(None)` when an old half-written entry makes that
+    /// unknowable. A key free now may still be taken before
+    /// [`claim_key`](Self::claim_key); that one decides.
+    pub fn find_key(&self, workspace: &str, key: &str) -> Result<Option<Option<String>>> {
+        let _locked = self.lock()?;
+        let bucket = self.bucket(&self.key_path(workspace, key))?;
+        self.held_key(&bucket, workspace, key)
+    }
+
+    fn bucket(&self, path: &Path) -> Result<KeyBucket> {
+        match fs::read(path) {
+            Ok(bytes) => serde_json::from_slice(&bytes)
+                .map_err(|e| Error::internal("the start_key index is unreadable").with_source(e)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(KeyBucket::default()),
+            Err(e) => Err(Error::internal("cannot read the start_key index").with_source(e)),
+        }
+    }
+
+    fn held_key(
+        &self,
+        bucket: &KeyBucket,
+        workspace: &str,
+        key: &str,
+    ) -> Result<Option<Option<String>>> {
+        if let Some(entry) = bucket
+            .entries
+            .iter()
+            .find(|entry| entry.workspace == workspace && entry.start_key == key)
+        {
+            return Ok(Some(Some(entry.session.clone())));
+        }
+        self.legacy_key(workspace, key)
     }
 
     fn key_path(&self, workspace: &str, key: &str) -> PathBuf {

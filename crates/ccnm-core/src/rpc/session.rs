@@ -72,6 +72,14 @@ pub struct OutputAsk {
     pub limit: u64,
 }
 
+/// Whose write guard to look at before a start (P60): the workspace, and
+/// the instance whose Agent relays the question.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GuardAsk {
+    pub workspace: String,
+    pub instance: Option<String>,
+}
+
 /// What actually executes. The real one goes through `launcher`; tests put
 /// in one that finishes immediately, so no test starts an Agent or dials
 /// ssh.
@@ -82,6 +90,8 @@ pub trait Runs: Send + Sync + 'static {
     fn stop(&self, ask: &StopAsk) -> CcnmResult<bool>;
     /// A slice of `ask.session`'s retained output view on the Agent.
     fn output(&self, ask: &OutputAsk) -> CcnmResult<crate::protocol::run::OutputReport>;
+    /// The workspace's write guard, as its Runtime Executor sees it.
+    fn guard(&self, ask: &GuardAsk) -> CcnmResult<crate::protocol::run::AgentGuardReport>;
 }
 
 /// How long a run may take when the caller does not say.
@@ -150,6 +160,12 @@ impl Runs for SystemRuns {
             ask.offset,
             ask.limit,
         )
+    }
+
+    fn guard(&self, ask: &GuardAsk) -> CcnmResult<crate::protocol::run::AgentGuardReport> {
+        let config = Config::load(&self.config_path)?;
+        let resolved = config.workspace(&ask.workspace)?;
+        crate::launcher::observe_guard(&resolved, &Self::env()?, ask.instance.as_deref())
     }
 }
 
@@ -229,6 +245,25 @@ pub fn start(ctx: &Context, params: &Map<String, Value>) -> Result<Value, RpcErr
         mode: "print".to_string(),
         prompt: prompt.clone(),
     };
+
+    // A key that is already taken is answered from its record before the
+    // Runtime is asked anything: the guard may well be held by that very
+    // session, and a client looking its task up again must get the task
+    // back, not `busy` (P60).
+    if let Some(key) = &start_key
+        && let Some(existing) = store
+            .find_key(&workspace, key)
+            .map_err(|e| wire::from_ccnm(&e))?
+    {
+        return reuse_or_conflict(ctx, &store, existing.as_deref(), &launch);
+    }
+    preflight(
+        ctx.runs.as_ref(),
+        &GuardAsk {
+            workspace: workspace.clone(),
+            instance: instance.clone(),
+        },
+    )?;
 
     let owner_pid = std::process::id();
     let record = Record {
@@ -337,6 +372,56 @@ fn reuse_or_conflict(
         ),
         "accepted_at": record.accepted_at,
     }))
+}
+
+/// Refuse a start the Runtime has already said cannot write (P60).
+///
+/// **Not a reservation.** A `free` here grants nothing: another client can
+/// take the guard a moment later, and the one thing that hands out write
+/// authority is still the Runtime's guard when the session's tools open --
+/// which refuses the later of two writers exactly as before. What this buys
+/// is the common case: a tree that is plainly taken is refused now, with
+/// nothing started, instead of accepted and failed a minute later.
+///
+/// Only an answer from the Runtime refuses. When the question cannot be put
+/// at all -- the Agent is unreachable, or a peer is too old to know it --
+/// there is no verdict either way, and the start goes on exactly as it did
+/// before this check existed. That is not reading silence as `free`: the
+/// start was never authorized by this check, and the guard still decides.
+fn preflight(runs: &dyn Runs, ask: &GuardAsk) -> Result<(), RpcError> {
+    use crate::mcp::write_guard::Observed;
+    let report = match runs.guard(ask) {
+        Ok(report) => report,
+        Err(error) => {
+            tracing::info!(
+                workspace = %ask.workspace,
+                %error,
+                "write guard not observed; the start goes on and the Runtime decides when the session opens"
+            );
+            return Ok(());
+        }
+    };
+    let seen = &report.runtime.observation;
+    let reason = serde_json::to_value(seen.reason)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_string))
+        .unwrap_or_default();
+    match seen.state {
+        Observed::Free => Ok(()),
+        // Another process holds it now: waiting can help.
+        Observed::Held => Err(RpcError::refused(
+            code::BUSY,
+            "another writer holds this workspace's write guard on the Runtime; nothing was started",
+        )
+        .with_reason(reason)),
+        // Nothing is holding it, and it is not free either: something a
+        // person has to look at. Retrying on a timer would only repeat this.
+        Observed::Abandoned | Observed::Unknown => Err(RpcError::refused(
+            code::POLICY,
+            "the Runtime cannot hand this workspace's write guard to a new session until someone recovers it; nothing was started",
+        )
+        .with_reason(reason)),
+    }
 }
 
 pub fn status(ctx: &Context, params: &Map<String, Value>) -> Result<Value, RpcError> {

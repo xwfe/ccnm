@@ -416,6 +416,16 @@ mod tests {
         /// view changing under a copy in progress.
         shift_after: Mutex<Option<usize>>,
         outputs: Mutex<Vec<session::OutputAsk>>,
+        /// What the Runtime says about the write guard; `None` is free.
+        guard_seen: Mutex<
+            Option<(
+                crate::mcp::write_guard::Observed,
+                crate::mcp::write_guard::Reason,
+            )>,
+        >,
+        /// `guard` cannot get an answer at all, with this.
+        guard_fails: Mutex<Option<crate::ErrorCode>>,
+        guards: Mutex<Vec<session::GuardAsk>>,
     }
 
     impl FakeRuns {
@@ -554,6 +564,55 @@ mod tests {
                 }
             }
             Ok(true)
+        }
+
+        fn guard(
+            &self,
+            ask: &session::GuardAsk,
+        ) -> crate::error::Result<crate::protocol::run::AgentGuardReport> {
+            use crate::mcp::write_guard::{
+                Observation, Observed, Owner, Reason, Resource, ResourceKind,
+            };
+            self.guards.lock().unwrap().push(ask.clone());
+            if let Some(code) = *self.guard_fails.lock().unwrap() {
+                return Err(crate::Error::new(code, "no answer about the guard"));
+            }
+            let (state, reason) = self
+                .guard_seen
+                .lock()
+                .unwrap()
+                .unwrap_or((Observed::Free, Reason::Released));
+            Ok(crate::protocol::run::AgentGuardReport {
+                protocol: crate::runtime::GUARD_PROTOCOL,
+                agent_identity: crate::instance::AgentIdentity {
+                    node: "worker".into(),
+                    instance: ask.instance.clone().unwrap_or("claude-main".into()),
+                    provider: crate::provider::AgentProvider::Claude,
+                    profile_ref: "default".into(),
+                },
+                runtime: crate::runtime::GuardReport {
+                    protocol: crate::runtime::GUARD_PROTOCOL,
+                    workspace: ask.workspace.clone(),
+                    observation: Observation {
+                        state,
+                        reason,
+                        resource: Resource {
+                            kind: ResourceKind::GitCommonDir,
+                            id: "0123456789abcdef".into(),
+                        },
+                        owner: (state != Observed::Free).then(|| Owner {
+                            session: "11111111-2222-4333-8444-555555555555".into(),
+                            workspace: Some(ask.workspace.clone()),
+                            pid: Some(4242),
+                            process: None,
+                            legacy: false,
+                        }),
+                        leftovers: None,
+                        observed_at: 0,
+                    },
+                },
+                owner_on_agent: None,
+            })
         }
     }
 
@@ -1046,6 +1105,122 @@ root = "/runtime/legacy"
         let record = peer.settle(&session);
         assert_eq!(record.state, store::State::Failed);
         assert!(record.finish.unwrap().error.is_some());
+    }
+
+    // ---- P60：启动前问 Runtime 的写锁 ----
+
+    /// Runtime 说另一个 writer 正持锁：-32008、什么都没起、没留记录、键也没占。
+    #[test]
+    fn a_tree_the_runtime_says_is_held_is_busy_and_nothing_starts() {
+        use crate::mcp::write_guard::{Observed, Reason};
+        let runs = FakeRuns::ok(0, "ok\n");
+        *runs.guard_seen.lock().unwrap() = Some((Observed::Held, Reason::LiveHolder));
+        let peer = Peer::new("busy", runs);
+        let out = peer.call(&[&start_call(",\"start_key\":\"task-busy\"")]);
+        let error = &out[0]["error"];
+        assert_eq!(error["code"], code::BUSY, "{out:?}");
+        assert_eq!(error["data"]["effect"], "none");
+        assert_eq!(error["data"]["reason"], "live_holder");
+        assert!(error["data"].get("session").is_none(), "no handle was made");
+        assert!(
+            peer.runs.asks.lock().unwrap().is_empty(),
+            "nothing reached the Agent"
+        );
+        assert_eq!(
+            peer.runs.guards.lock().unwrap()[0],
+            session::GuardAsk {
+                workspace: "demo".into(),
+                instance: None,
+            }
+        );
+        // 键没被占：树空出来以后，同一个 start 是新任务，不是复用一个没跑过的记录。
+        *peer.runs.guard_seen.lock().unwrap() = None;
+        let again = peer.call(&[&start_call(",\"start_key\":\"task-busy\"")]);
+        assert_eq!(again[0]["result"]["reused"], false, "{again:?}");
+        peer.settle(again[0]["result"]["session"].as_str().unwrap());
+        let records = std::fs::read_dir(peer.state.join("rpc/sessions"))
+            .unwrap()
+            .count();
+        assert_eq!(records, 1, "the refused start left no record");
+    }
+
+    /// 没人持锁、却也不是空闲：要人来看，不是等一等再试的 busy。
+    #[test]
+    fn a_guard_nobody_can_hand_over_is_policy_not_busy() {
+        use crate::mcp::write_guard::{Observed, Reason};
+        for (state, reason, name) in [
+            (
+                Observed::Abandoned,
+                Reason::KeptOnPurpose,
+                "kept_on_purpose",
+            ),
+            (Observed::Unknown, Reason::LeftHeld, "left_held"),
+            (
+                Observed::Unknown,
+                Reason::MalformedMarker,
+                "malformed_marker",
+            ),
+            (Observed::Unknown, Reason::Unreadable, "unreadable"),
+            (
+                Observed::Unknown,
+                Reason::LockQueryFailed,
+                "lock_query_failed",
+            ),
+        ] {
+            let runs = FakeRuns::ok(0, "ok\n");
+            *runs.guard_seen.lock().unwrap() = Some((state, reason));
+            let peer = Peer::new("policy", runs);
+            let out = peer.call(&[&start_call("")]);
+            assert_eq!(out[0]["error"]["code"], code::POLICY, "{name}: {out:?}");
+            assert_eq!(out[0]["error"]["data"]["effect"], "none");
+            assert_eq!(out[0]["error"]["data"]["reason"], name);
+            assert!(peer.runs.asks.lock().unwrap().is_empty(), "{name}");
+        }
+    }
+
+    /// 问不到不是空闲，也不是占用：不下结论，照 P59 的样子启动，由会话打开时的
+    /// guard 裁决。
+    #[test]
+    fn no_answer_about_the_guard_is_no_verdict() {
+        for fails in [
+            crate::ErrorCode::AgentUnreachable,
+            crate::ErrorCode::RuntimeUnreachable,
+            crate::ErrorCode::Version,
+        ] {
+            let runs = FakeRuns::ok(0, "ok\n");
+            *runs.guard_fails.lock().unwrap() = Some(fails);
+            let peer = Peer::new("no-verdict", runs);
+            let out = peer.call(&[&start_call("")]);
+            let session = out[0]["result"]["session"]
+                .as_str()
+                .unwrap_or_else(|| panic!("{fails:?}: {out:?}"));
+            peer.settle(session);
+            assert_eq!(peer.runs.asks.lock().unwrap().len(), 1, "{fails:?}");
+        }
+    }
+
+    /// 同一个 start_key 的重查先于预检：占着锁的正是它自己的 writer，也得把
+    /// 原会话还回去，而不是回 busy。
+    #[test]
+    fn a_taken_start_key_is_answered_before_the_guard_is_asked() {
+        use crate::mcp::write_guard::{Observed, Reason};
+        let peer = Peer::new("key-first", FakeRuns::ok(0, "ok\n"));
+        let first = peer.call(&[&start_call(",\"start_key\":\"task-9\"")]);
+        let session = first[0]["result"]["session"].as_str().unwrap().to_string();
+        assert_eq!(peer.runs.guards.lock().unwrap().len(), 1);
+        *peer.runs.guard_seen.lock().unwrap() = Some((Observed::Held, Reason::LiveHolder));
+        let again = peer.call(&[&start_call(",\"start_key\":\"task-9\"")]);
+        assert_eq!(again[0]["result"]["session"], session.as_str(), "{again:?}");
+        assert_eq!(again[0]["result"]["reused"], true);
+        let other =
+            peer.call(&[&start_call(",\"start_key\":\"task-9\"").replace("\"go\"", "\"else\"")]);
+        assert_eq!(other[0]["error"]["code"], code::CONFLICT, "{other:?}");
+        assert_eq!(
+            peer.runs.guards.lock().unwrap().len(),
+            1,
+            "a taken key never asks the Runtime"
+        );
+        peer.settle(&session);
     }
 
     #[test]

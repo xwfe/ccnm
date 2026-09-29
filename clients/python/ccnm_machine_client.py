@@ -252,11 +252,93 @@ class MachineClient:
     def session_status(self, session: str) -> dict[str, Any]:
         return self.call("session.status", {"session": session})
 
-    def session_result(self, session: str, max_bytes: int | None = None) -> dict[str, Any]:
+    def session_result(
+        self,
+        session: str,
+        max_bytes: int | None = None,
+        cursor: str | None = None,
+        stream: str | None = None,
+    ) -> dict[str, Any]:
+        """一次调用、一页输出。完整读回用 `read_output()`。
+
+        第一页（`cursor` 为 None）是**末尾**那一段；它的 `output.cursor` 指向更早的
+        部分。`stream` 可选 `"stdout"`（默认）或 `"stderr"`。
+        """
         params: dict[str, Any] = {"session": session}
+        output: dict[str, Any] = {}
         if max_bytes is not None:
-            params["output"] = {"max_bytes": max_bytes}
+            output["max_bytes"] = max_bytes
+        if cursor is not None:
+            output["cursor"] = cursor
+        if stream is not None:
+            output["stream"] = stream
+        if output:
+            params["output"] = output
         return self.call("session.result", params)
+
+    def read_output(
+        self,
+        session: str,
+        stream: str = "stdout",
+        page_bytes: int = 65536,
+        limit_bytes: int = 16 * 1024 * 1024,
+    ) -> dict[str, Any]:
+        """把一个已结束 session 的一个流读回来，**最多 `limit_bytes` 字节**。
+
+        返回的字典：
+
+        - `data`：读到的字节，顺序就是原来的顺序。
+        - `complete`：是否读到了保留内容的开头。为了守住 `limit_bytes` 停下时是
+          False，这时 `data` 是离末尾最近的那一段。
+        - `bytes_total`：服务端保留的总字节数。
+        - `source_bytes` / `source_truncated`：进程实际写了多少、保留的是否少于
+          写出的（少了的永久没了）。服务端没说就是 None，不是 False。
+        - `unavailable_reason`：非 None 时 `data` 只是旧版本留下的尾部，不是完整输出。
+        - `result`：最后一次 `session.result` 的原样返回，里面有 `state`、`text`。
+
+        session 还没结束时没有输出，`complete` 为 False、`data` 为空。
+
+        两件容易弄反的事：页是倒着来的，后取到的页要**拼在前面**；游标只在
+        这一个 `ccnm rpc` 进程里有效，连接断了就从头重读，别拿旧游标续。
+        """
+        if page_bytes < 4:
+            # 一个 UTF-8 字符最多 4 字节；再小服务端可能一页都给不出来。
+            raise ValueError("page_bytes 至少是 4")
+        data = b""
+        cursor = None
+        result: dict[str, Any] = {}
+        output: dict[str, Any] = {}
+        complete = False
+        while True:
+            room = limit_bytes - len(data)
+            if room < 1:
+                break
+            try:
+                result = self.session_result(
+                    session, max_bytes=min(page_bytes, room), cursor=cursor, stream=stream
+                )
+            except RpcError as exc:
+                if exc.data.get("reason") == "max_bytes_too_small":
+                    # 剩下的额度装不下下一个字符：到上限了。
+                    break
+                raise
+            output = result.get("output") or {}
+            if not output:
+                break
+            data = output["tail"].encode("utf-8") + data
+            cursor = output.get("cursor")
+            if cursor is None:
+                complete = True
+                break
+        return {
+            "data": data,
+            "complete": complete,
+            "bytes_total": output.get("bytes_total"),
+            "source_bytes": output.get("source_bytes"),
+            "source_truncated": output.get("source_truncated"),
+            "unavailable_reason": output.get("unavailable_reason"),
+            "result": result,
+        }
 
     def session_stop(self, session: str) -> dict[str, Any]:
         """请求结束。**返回不代表已经停了**——只有状态变成终态才算。"""

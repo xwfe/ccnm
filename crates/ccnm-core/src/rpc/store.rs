@@ -82,11 +82,16 @@ pub struct Finish {
     pub input_tokens: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_tokens: Option<u64>,
-    /// Bounded tail of what the run printed. Never the whole thing.
+    /// Bounded tail of what the run printed, as the Agent's report carried
+    /// it. Never the whole thing; since P59 it is only what `session.result`
+    /// falls back to when the Agent's retained view cannot be read.
     #[serde(default)]
     pub output: String,
     #[serde(default)]
     pub output_total: u64,
+    /// The same for stderr, which the record did not keep before P59.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub stderr: String,
     /// Why it could not be started or observed, when that is the answer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
@@ -299,6 +304,20 @@ impl Store {
         let out = change(&mut record);
         write_atomically(&self.session_path(id), &encode(&record)?)?;
         Ok(Some(out))
+    }
+
+    /// `rpc/outputs/<id>/`, where copies of a session's retained output
+    /// live (P59). Created 0700; the handle is checked like any other.
+    pub fn output_dir(&self, id: &str) -> Result<PathBuf> {
+        if !valid_handle(id) {
+            return Err(Error::invalid_args(
+                "session is not a handle this server issues",
+            ));
+        }
+        let dir = self.root.join("outputs").join(id);
+        create_private(&self.root.join("outputs"))?;
+        create_private(&dir)?;
+        Ok(dir)
     }
 
     /// Take back a record this call created and never handed out.

@@ -8,7 +8,7 @@
 
 里面三块东西：
 
-1. `ExecutionBackend`：协调层唯一能碰执行层的入口，五个方法。
+1. `ExecutionBackend`：协调层唯一能碰执行层的入口，五个必需方法，外加后来加的 `output`（读回完整输出，有总量上限）。
 2. `CcnmBackend`：把它接到 ccnm 的公开协议（`ccnm rpc`）上。
 3. `FakeBackend`：内存实现。**没有 ccnm、没有 Agent、没有订阅额度也能跑**，
    用来测你自己的协调逻辑——任务怎么排、什么时候算验收通过、失败重试几次。
@@ -16,7 +16,7 @@
 为什么要有这一层，直接调 `MachineClient` 不行吗？可以，但你会把 ccnm 的
 JSON-RPC 错误码、`node/instance` 结构、`session` 这些词写进协调逻辑里。那样
 一来协调逻辑就没法脱离 ccnm 单独测试，二来将来接第二种执行后端要改的地方遍布
-全项目。这个接口把"执行"收成五个方法和五种错误，ccnm 特有的东西只留在
+全项目。这个接口把"执行"收成几个方法和五种错误，ccnm 特有的东西只留在
 `CcnmBackend` 这一个类里。
 
 最小用法：
@@ -191,10 +191,29 @@ class ExecutionResult:
         return self.state in TERMINAL_STATES
 
 
+@dataclass(frozen=True)
+class ExecutionOutput:
+    """一次执行某个输出流的内容，有总量上限地读回来。
+
+    - `complete` 为 False：要么为了守住上限没读到开头（`data` 是末尾那段），要么
+      执行还没结束。
+    - `lost` 为 True：后端保留下来的少于执行实际写出的，缺的永久没了。None 表示
+      后端没说，不是"没丢"。
+    - `unavailable` 非空：后端这次拿不到完整内容，`data` 只是它手头的一段尾部。
+    """
+
+    id: str
+    stream: str
+    data: bytes
+    complete: bool
+    lost: Optional[bool] = None
+    unavailable: Optional[str] = None
+
+
 class ExecutionBackend(abc.ABC):
     """协调层能对执行层做的全部事情。
 
-    五个方法之外没有别的口子：想直接 SSH 上去、自己起进程、自己往工作树写文件，
+    这几个方法之外没有别的口子：想直接 SSH 上去、自己起进程、自己往工作树写文件，
     都是绕过这层边界。真需要新能力就给后端提一个新方法，不要在协调层里另起一套
     执行路径——那样两边会同时改同一棵工作树，而写入互斥在执行层。
     """
@@ -218,6 +237,16 @@ class ExecutionBackend(abc.ABC):
     @abc.abstractmethod
     def stop(self, execution_id: str) -> ExecutionStatus:
         """请求停止。幂等。**返回不代表已经停了**，到终态才算。"""
+
+    def output(
+        self, execution_id: str, stream: str = "stdout", limit_bytes: int = 16 * 1024 * 1024
+    ) -> ExecutionOutput:
+        """读回一个输出流，最多 `limit_bytes` 字节。`result()` 不带完整输出，免得
+        一次查询就把几十 MiB 读进内存。
+
+        后来加的第六个方法，所以不是抽象的：不支持的后端直接拒绝。
+        """
+        raise BackendError(KIND_REJECTED, "这个后端不提供完整输出", effect="none")
 
     def close(self) -> None:
         """释放这条连接。**已经接受的执行不会因此停止。**"""
@@ -366,7 +395,7 @@ class CcnmBackend(ExecutionBackend):
             code=exc.code,
         )
 
-    # -- 五个方法 --
+    # -- 六个方法 --
 
     def agents(self) -> List[AgentRef]:
         try:
@@ -462,6 +491,26 @@ class CcnmBackend(ExecutionBackend):
             engine=agent.get("provider"),
             usage=raw.get("usage") or {},
             cost_usd=cost.get("total_usd"),
+        )
+
+    def output(
+        self, execution_id: str, stream: str = "stdout", limit_bytes: int = 16 * 1024 * 1024
+    ) -> ExecutionOutput:
+        try:
+            # 只读，断了就整段重读：旧连接上的游标在新连接里本来就无效。
+            raw = self._call(
+                lambda c: c.read_output(execution_id, stream=stream, limit_bytes=limit_bytes),
+                retry_on_disconnect=True,
+            )
+        except RpcError as exc:
+            raise self._translate(exc) from exc
+        return ExecutionOutput(
+            id=execution_id,
+            stream=stream,
+            data=raw["data"],
+            complete=raw["complete"],
+            lost=raw["source_truncated"],
+            unavailable=raw["unavailable_reason"],
         )
 
     def stop(self, execution_id: str) -> ExecutionStatus:

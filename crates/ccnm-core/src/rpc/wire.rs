@@ -75,6 +75,10 @@ pub struct ErrorData {
     pub session: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    /// With `max_bytes_too_small`: the size of the character that did not
+    /// fit, so the caller knows what budget to ask for (P59).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_bytes: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub supported: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -102,6 +106,7 @@ impl RpcError {
                 detail: None,
                 session: None,
                 reason: None,
+                min_bytes: None,
                 supported: None,
                 unknown: None,
             }),

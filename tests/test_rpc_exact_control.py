@@ -65,8 +65,9 @@ def key_of(prompt: str) -> str:
     return uuid.uuid5(uuid.NAMESPACE_OID, prompt).hex
 
 
-@unittest.skipIf(BINARY is None, "先 cargo build，或用 CCNM_BIN 指定二进制")
-class ExactControlTests(unittest.TestCase):
+class RpcSandbox(unittest.TestCase):
+    """一套独立的配置、state 和假 Agent。没有用例，只给子类继承（P59 的输出测试也用它）。"""
+
     def setUp(self):
         self.dir = Path(tempfile.mkdtemp(prefix="ccnm-exact-", dir="/tmp"))
         self.addCleanup(shutil.rmtree, self.dir, True)
@@ -157,6 +158,9 @@ class ExactControlTests(unittest.TestCase):
     def start(self, client: MachineClient, prompt: str, **kw) -> dict:
         return client.session_start("demo", prompt, **kw)
 
+
+@unittest.skipIf(BINARY is None, "先 cargo build，或用 CCNM_BIN 指定二进制")
+class ExactControlTests(RpcSandbox):
     # -- CT-01：停 B 不能碰到 A --
 
     def test_stopping_one_start_never_reaches_another_on_the_same_workspace(self):

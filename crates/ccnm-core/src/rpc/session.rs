@@ -58,6 +58,20 @@ pub struct StopAsk {
     pub session: String,
 }
 
+/// A slice of the retained output of one session, asked of the Agent it ran
+/// on (P59). Named like a stop: the node it was started on, and the id it
+/// was sent under.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutputAsk {
+    pub workspace: String,
+    pub node: String,
+    pub instance: String,
+    pub session: String,
+    pub stream: crate::session::view::Stream,
+    pub offset: u64,
+    pub limit: u64,
+}
+
 /// What actually executes. The real one goes through `launcher`; tests put
 /// in one that finishes immediately, so no test starts an Agent or dials
 /// ssh.
@@ -66,6 +80,8 @@ pub trait Runs: Send + Sync + 'static {
     /// Stop exactly `ask.session`: kill it, or fence it off if the run has
     /// not reached the Agent yet. Never "whatever the workspace is running".
     fn stop(&self, ask: &StopAsk) -> CcnmResult<bool>;
+    /// A slice of `ask.session`'s retained output view on the Agent.
+    fn output(&self, ask: &OutputAsk) -> CcnmResult<crate::protocol::run::OutputReport>;
 }
 
 /// How long a run may take when the caller does not say.
@@ -115,6 +131,25 @@ impl Runs for SystemRuns {
             return Err(crate::Error::policy(REBOUND));
         }
         crate::launcher::stop_assigned(&resolved, &Self::env()?, &ask.instance, &ask.session)
+    }
+
+    fn output(&self, ask: &OutputAsk) -> CcnmResult<crate::protocol::run::OutputReport> {
+        let config = Config::load(&self.config_path)?;
+        let resolved = config.workspace(&ask.workspace)?;
+        // Same rule as stop: the output of a session is read from the machine
+        // it ran on, not from whatever the workspace points at now.
+        if resolved.workspace.agent.as_ref().map(|a| a.node.as_str()) != Some(ask.node.as_str()) {
+            return Err(crate::Error::policy(REBOUND));
+        }
+        crate::launcher::read_output_assigned(
+            &resolved,
+            &Self::env()?,
+            &ask.instance,
+            &ask.session,
+            ask.stream,
+            ask.offset,
+            ask.limit,
+        )
     }
 }
 
@@ -333,21 +368,9 @@ pub fn status(ctx: &Context, params: &Map<String, Value>) -> Result<Value, RpcEr
 pub fn result(ctx: &Context, params: &Map<String, Value>) -> Result<Value, RpcError> {
     reject_unknown(params, &["session", "output"])?;
     let id = require_str(params, "session")?;
-    if let Some(output) = params.get("output") {
-        let output = output
-            .as_object()
-            .ok_or_else(|| RpcError::refused(code::INVALID_PARAMS, "output must be an object"))?;
-        reject_unknown(output, &["max_bytes", "cursor"])?;
-        // One page is all this build keeps, so any cursor a caller sends
-        // back is one this build never issued.
-        if output.get("cursor").is_some_and(|c| !c.is_null()) {
-            return Err(
-                RpcError::refused(code::EXPIRED, "output cursor is no longer valid")
-                    .with_reason("cursor_expired")
-                    .with_session(id),
-            );
-        }
-    }
+    // Checked before anything is read, so a bad budget or stream costs
+    // nothing and a bad cursor is judged against a record that exists.
+    let asked = super::output::params(params.get("output"))?;
     let record = load(ctx, id)?;
     let state = record.observed_state(ctx.owner_of(&record));
     let mut out = serde_json::json!({
@@ -390,12 +413,7 @@ pub fn result(ctx: &Context, params: &Map<String, Value>) -> Result<Value, RpcEr
     if let Some(cost) = finish.total_cost_usd {
         out["cost"] = serde_json::json!({"total_usd": cost});
     }
-    out["output"] = serde_json::json!({
-        "bytes_total": finish.output_total,
-        "truncated": finish.output_total > finish.output.len() as u64,
-        "cursor": Value::Null,
-        "tail": finish.output,
-    });
+    out["output"] = super::output::page(ctx, &record, finish, &asked)?;
     Ok(out)
 }
 
@@ -728,6 +746,7 @@ fn finish_from(report: &RunReport) -> (State, Finish) {
             output_tokens: tokens.map(|(_, output)| output),
             output: tail(stdout, TAIL),
             output_total: stdout.len() as u64,
+            stderr: tail(&report.stderr_tail, TAIL),
             error: outcome.error.clone(),
         },
     )

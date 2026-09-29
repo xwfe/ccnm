@@ -10,6 +10,7 @@
 //! background thread and answers with a handle, which is what lets a client
 //! disconnect and come back for the result later.
 
+pub mod output;
 pub mod session;
 pub mod store;
 pub mod wire;
@@ -34,6 +35,7 @@ fn capabilities() -> Value {
     serde_json::json!({
         "modes": ["print"],
         "session_output": true,
+        "output_streams": ["stdout", "stderr"],
         "start_key": true,
         "stop": true,
     })
@@ -48,6 +50,9 @@ pub struct Context {
     pub runs: std::sync::Arc<dyn session::Runs>,
     /// For asking `ps` whether a record's owning process is still there.
     pub runner: std::sync::Arc<dyn crate::process::ProcessRunner + Send + Sync>,
+    /// Output pages this process handed out (P59). Lives and dies with the
+    /// process: a cursor from before a restart is `expired`.
+    pub cursors: output::Cursors,
 }
 
 impl Context {
@@ -401,12 +406,29 @@ mod tests {
         stop_waits_for: Mutex<Option<PathBuf>>,
         asks: Mutex<Vec<RunAsk>>,
         stops: Mutex<Vec<session::StopAsk>>,
+        /// The Agent's retained views, by stream: what `output` serves.
+        views: Mutex<std::collections::HashMap<crate::session::view::Stream, Vec<u8>>>,
+        /// `output` fails with this, from the n-th call on (0 = always).
+        output_fails: Mutex<Option<(crate::ErrorCode, usize)>>,
+        /// The generation `output` reports.
+        generation: Mutex<String>,
+        /// From this call on, `output` reports a different generation: the
+        /// view changing under a copy in progress.
+        shift_after: Mutex<Option<usize>>,
+        outputs: Mutex<Vec<session::OutputAsk>>,
     }
 
     impl FakeRuns {
         fn ok(exit_code: i32, text: &str) -> Self {
+            // What the Agent retained holds at least the tail its report
+            // carried; here, exactly that.
+            let views = std::collections::HashMap::from([(
+                crate::session::view::Stream::Stdout,
+                text.as_bytes().to_vec(),
+            )]);
             FakeRuns {
                 report: Some(report(exit_code, text)),
+                views: Mutex::new(views),
                 ..FakeRuns::default()
             }
         }
@@ -470,6 +492,47 @@ mod tests {
             Ok(report)
         }
 
+        fn output(
+            &self,
+            ask: &session::OutputAsk,
+        ) -> crate::error::Result<crate::protocol::run::OutputReport> {
+            use base64::Engine as _;
+            let n = {
+                let mut outputs = self.outputs.lock().unwrap();
+                outputs.push(ask.clone());
+                outputs.len() - 1
+            };
+            if let Some((code, from)) = *self.output_fails.lock().unwrap()
+                && n >= from
+            {
+                return Err(crate::Error::new(code, "no output here"));
+            }
+            let views = self.views.lock().unwrap();
+            let view = views.get(&ask.stream).cloned().unwrap_or_default();
+            let start = (ask.offset as usize).min(view.len());
+            let end = (start + ask.limit as usize).min(view.len());
+            Ok(crate::protocol::run::OutputReport {
+                protocol: crate::instance::OUTPUT_PROTOCOL,
+                agent_identity: crate::instance::AgentIdentity {
+                    node: ask.node.clone(),
+                    instance: ask.instance.clone(),
+                    provider: crate::provider::AgentProvider::Claude,
+                    profile_ref: "default".into(),
+                },
+                session: ask.session.clone(),
+                stream: ask.stream,
+                generation: match *self.shift_after.lock().unwrap() {
+                    Some(from) if n >= from => "shifted".into(),
+                    _ => self.generation.lock().unwrap().clone(),
+                },
+                view_bytes: view.len() as u64,
+                source_bytes: view.len() as u64 + 7,
+                source_truncated: true,
+                offset: ask.offset,
+                data: base64::engine::general_purpose::STANDARD.encode(&view[start..end]),
+            })
+        }
+
         fn stop(&self, ask: &session::StopAsk) -> crate::error::Result<bool> {
             self.stops.lock().unwrap().push(ask.clone());
             if !self.stop_leaves_it_running {
@@ -530,6 +593,7 @@ mod tests {
                 state,
                 runs,
                 runner: Arc::new(SystemRunner),
+                cursors: Default::default(),
             },
             std::io::BufReader::new(input.as_bytes()),
             &mut out,
@@ -691,6 +755,7 @@ mod tests {
                 state: state.to_path_buf(),
                 runs: Arc::new(FakeRuns::default()),
                 runner: Arc::new(SystemRunner),
+                cursors: Default::default(),
             },
             std::io::BufReader::new(&input[..]),
             &mut out,
@@ -1228,7 +1293,11 @@ root = "/runtime/legacy"
         assert_eq!(output["bytes_total"], 20_000);
         assert_eq!(output["truncated"], true);
         assert_eq!(output["tail"].as_str().unwrap().len(), 8192);
-        assert_eq!(output["cursor"], Value::Null);
+        // Since P59 the rest is there to page back to, not dropped.
+        assert!(
+            output["cursor"].as_str().unwrap().starts_with("c-"),
+            "{output}"
+        );
     }
 
     #[test]
@@ -1627,6 +1696,265 @@ agent = { node = "worker2", instance = "claude-main" }
         assert_eq!(
             peer.call(&[&status_line(&s)])[0]["result"]["stop_requested"],
             false
+        );
+    }
+
+    // ---- P59: output snapshots and pages ----
+
+    fn result_line(session: &str, output: &str) -> String {
+        format!(
+            "{{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"session.result\",\"params\":{{\"session\":\"{session}\",\"output\":{output}}}}}"
+        )
+    }
+
+    fn finished_with(test: &str, stdout: &[u8], stderr: &[u8]) -> (Peer, String) {
+        let runs = FakeRuns::ok(0, "old tail");
+        runs.views
+            .lock()
+            .unwrap()
+            .insert(crate::session::view::Stream::Stdout, stdout.to_vec());
+        runs.views
+            .lock()
+            .unwrap()
+            .insert(crate::session::view::Stream::Stderr, stderr.to_vec());
+        *runs.generation.lock().unwrap() = "g1".into();
+        let peer = Peer::new(test, runs);
+        let s = handle_of(&peer.call(&[&start_call("")]));
+        peer.settle(&s);
+        (peer, s)
+    }
+
+    /// Reassemble the way the contract says: first page is the end, every
+    /// later page goes in front. All on one connection, since cursors live
+    /// in the process that issued them.
+    fn read_all(peer: &Peer, s: &str, stream: &str, budget: u64) -> Result<Vec<u8>, Value> {
+        let mut whole = Vec::new();
+        let mut cursor = Value::Null;
+        let mut lines = Vec::new();
+        // One process for the whole walk: pages are requested one per line,
+        // but each needs the previous answer, so drive `serve` a page at a
+        // time with a shared Context.
+        let ctx = Context {
+            config_path: peer.config.clone(),
+            state: peer.state.to_path_buf(),
+            runs: peer.runs.clone(),
+            runner: Arc::new(SystemRunner),
+            cursors: Default::default(),
+        };
+        loop {
+            let params = serde_json::json!({"session": s, "output": {"stream": stream, "max_bytes": budget, "cursor": cursor}});
+            let answer = session::result(&ctx, params.as_object().unwrap());
+            let out = match answer {
+                Ok(v) => v["output"].clone(),
+                Err(e) => return Err(serde_json::to_value(&e).unwrap()),
+            };
+            let page = out["tail"].as_str().unwrap().as_bytes().to_vec();
+            assert!(page.len() as u64 <= budget, "a page over max_bytes");
+            lines.push(out.clone());
+            whole.splice(0..0, page);
+            cursor = out["cursor"].clone();
+            if cursor.is_null() {
+                return Ok(whole);
+            }
+        }
+    }
+
+    /// OUT-01/07: every byte of the retained view comes back, in order,
+    /// under any budget, and the two streams stay apart.
+    #[test]
+    fn out_pages_reassemble_to_the_view_under_any_budget() {
+        let stdout = format!("{}中文😀{}", "x".repeat(5000), "y".repeat(3000)).into_bytes();
+        let (peer, s) = finished_with("out-pages", &stdout, b"only stderr\n");
+        for budget in [4, 5, 7, 100, 4096, 1 << 20] {
+            assert_eq!(
+                read_all(&peer, &s, "stdout", budget).unwrap(),
+                stdout,
+                "budget {budget}"
+            );
+        }
+        assert_eq!(read_all(&peer, &s, "stderr", 4).unwrap(), b"only stderr\n");
+        // Copied once per stream, however many pages were read.
+        let fetched: Vec<_> = peer
+            .runs
+            .outputs
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|a| a.stream)
+            .collect();
+        assert_eq!(
+            fetched,
+            [
+                crate::session::view::Stream::Stdout,
+                crate::session::view::Stream::Stderr
+            ]
+        );
+    }
+
+    /// A budget that cannot hold the next character is refused with the
+    /// size it needs -- not an empty page that would loop forever.
+    #[test]
+    fn out_a_budget_below_one_character_says_what_it_needs() {
+        let (peer, s) = finished_with("out-small", "ab😀".as_bytes(), b"");
+        let err = read_all(&peer, &s, "stdout", 3).unwrap_err();
+        assert_eq!(err["code"], code::INVALID_PARAMS);
+        assert_eq!(err["data"]["reason"], "max_bytes_too_small");
+        assert_eq!(err["data"]["min_bytes"], 4);
+        assert_eq!(read_all(&peer, &s, "stdout", 4).unwrap(), "ab😀".as_bytes());
+    }
+
+    #[test]
+    fn out_bad_budgets_and_streams_are_invalid_params() {
+        let (peer, s) = finished_with("out-params", b"x", b"");
+        for bad in [
+            "{\"max_bytes\":0}",
+            "{\"max_bytes\":-1}",
+            "{\"max_bytes\":\"8\"}",
+            "{\"max_bytes\":1.5}",
+            "{\"stream\":\"both\"}",
+            "{\"cursor\":5}",
+            "{\"extra\":1}",
+        ] {
+            let out = peer.call(&[&result_line(&s, bad)]);
+            assert_eq!(out[0]["error"]["code"], code::INVALID_PARAMS, "{bad}");
+        }
+    }
+
+    /// Cursors belong to the process, the session, the stream and the view
+    /// they were cut from.
+    #[test]
+    fn out_cursors_expire_outside_what_issued_them() {
+        let (peer, s) = finished_with("out-cursor", &[b'a'; 3000], &[b'b'; 3000]);
+        let first = peer.call(&[&result_line(&s, "{\"max_bytes\":1000}")]);
+        let cursor = first[0]["result"]["output"]["cursor"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        // `peer.call` is a new process every time: the cursor is gone.
+        let later = peer.call(&[&result_line(
+            &s,
+            &format!("{{\"max_bytes\":1000,\"cursor\":\"{cursor}\"}}"),
+        )]);
+        assert_eq!(later[0]["error"]["code"], code::EXPIRED);
+        assert_eq!(later[0]["error"]["data"]["reason"], "cursor_expired");
+        // Inside one process: the stream and the session have to match too.
+        let one = peer.call(&[
+            &result_line(&s, "{\"max_bytes\":1000}"),
+            &result_line(&s, "{\"max_bytes\":1000}"),
+        ]);
+        let c = one[0]["result"]["output"]["cursor"].as_str().unwrap();
+        assert_eq!(
+            one[1]["result"]["output"]["cursor"], c,
+            "the same page keeps its cursor"
+        );
+        let crossed = peer.call(&[
+            &result_line(&s, "{\"max_bytes\":1000}"),
+            &result_line(
+                &s,
+                &format!("{{\"max_bytes\":1000,\"stream\":\"stderr\",\"cursor\":\"{c}\"}}"),
+            ),
+        ]);
+        assert_eq!(crossed[1]["error"]["code"], code::EXPIRED);
+    }
+
+    /// OUT-06: no Agent, no view: the old tail, saying why, never
+    /// presented as the whole output. A later read gets the real thing.
+    #[test]
+    fn out_an_unreachable_agent_falls_back_to_the_old_tail_and_says_so() {
+        let (peer, s) = finished_with("out-fallback", b"the whole thing", b"");
+        *peer.runs.output_fails.lock().unwrap() = Some((crate::ErrorCode::AgentUnreachable, 0));
+        let out = &peer.call(&[&result_line(&s, "{}")])[0]["result"]["output"];
+        assert_eq!(out["unavailable_reason"], "agent_unreachable");
+        assert_eq!(out["tail"], "old tail");
+        assert!(out.get("source_truncated").is_none());
+        *peer.runs.output_fails.lock().unwrap() = Some((crate::ErrorCode::Version, 0));
+        let out = &peer.call(&[&result_line(&s, "{}")])[0]["result"]["output"];
+        assert_eq!(out["unavailable_reason"], "agent_refused");
+        *peer.runs.output_fails.lock().unwrap() = None;
+        let out = &peer.call(&[&result_line(&s, "{}")])[0]["result"]["output"];
+        assert!(out.get("unavailable_reason").is_none(), "{out}");
+        assert_eq!(out["tail"], "the whole thing");
+        assert_eq!(
+            out["source_truncated"], true,
+            "the Agent's own flag is passed on"
+        );
+    }
+
+    /// OUT-06: a copy that breaks half way, or whose view changes under it,
+    /// leaves nothing behind that could later pass for complete.
+    #[test]
+    fn out_a_broken_or_shifting_copy_leaves_no_snapshot() {
+        let big = vec![b'z'; 3 * 1024 * 1024 + 10];
+        let (peer, s) = finished_with("out-broken", &big, b"");
+        *peer.runs.output_fails.lock().unwrap() = Some((crate::ErrorCode::AgentUnreachable, 2));
+        let out = &peer.call(&[&result_line(&s, "{}")])[0]["result"]["output"];
+        assert_eq!(out["unavailable_reason"], "agent_unreachable");
+        let dir = peer.state.join("rpc/outputs").join(&s);
+        let left: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert!(left.is_empty(), "{left:?}");
+
+        *peer.runs.output_fails.lock().unwrap() = None;
+        // The view changes after the first slice: refused, nothing kept.
+        peer.runs.outputs.lock().unwrap().clear();
+        *peer.runs.shift_after.lock().unwrap() = Some(1);
+        let out = &peer.call(&[&result_line(&s, "{}")])[0]["result"]["output"];
+        assert_eq!(out["unavailable_reason"], "agent_refused");
+        let left: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert!(left.is_empty(), "{left:?}");
+
+        *peer.runs.shift_after.lock().unwrap() = None;
+        peer.runs.outputs.lock().unwrap().clear();
+        let out = &peer.call(&[&result_line(&s, "{}")])[0]["result"]["output"];
+        assert!(out.get("unavailable_reason").is_none(), "{out}");
+        assert_eq!(out["bytes_total"], big.len() as u64);
+        let copied = peer.runs.outputs.lock().unwrap().len();
+        assert_eq!(copied, 4, "3 MiB + 10 bytes in 1 MiB slices");
+        assert!(
+            std::fs::read_dir(&dir).unwrap().all(|e| !e
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .ends_with(".tmp"))
+        );
+    }
+
+    /// A record from before P58 has no Agent-side id to ask with: its old
+    /// tail is paged and named for what it is. A run stopped before it was
+    /// sent has nothing at all, and says nothing more.
+    #[test]
+    fn out_records_without_an_agent_run_page_what_they_kept() {
+        let (peer, s) = finished_with("out-legacy", b"never read", b"");
+        let store = store::Store::open(&peer.state).unwrap();
+        let mut record = store.read(&s).unwrap().unwrap();
+        record.managed_session = None;
+        store.write(&record).unwrap();
+        let out = &peer.call(&[&result_line(&s, "{\"max_bytes\":4}")])[0]["result"]["output"];
+        assert_eq!(out["unavailable_reason"], "legacy_tail");
+        assert_eq!(out["tail"], "tail");
+        assert_eq!(out["truncated"], true);
+
+        let mut record = store.read(&s).unwrap().unwrap();
+        record.managed_session = Some(crate::session::new_id());
+        record.dispatched = false;
+        record.finish = Some(store::Finish {
+            error: Some("stopped before it was sent to the Agent".into()),
+            ..Default::default()
+        });
+        record.state = store::State::Failed;
+        store.write(&record).unwrap();
+        peer.runs.outputs.lock().unwrap().clear();
+        let out = &peer.call(&[&result_line(&s, "{}")])[0]["result"]["output"];
+        assert_eq!(out["bytes_total"], 0);
+        assert!(out.get("unavailable_reason").is_none(), "{out}");
+        assert!(
+            peer.runs.outputs.lock().unwrap().is_empty(),
+            "nothing ran, so the Agent is not asked"
         );
     }
 }

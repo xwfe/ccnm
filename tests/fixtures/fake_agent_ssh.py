@@ -16,7 +16,13 @@ ccnm 以 `ssh <选项> -T <alias> <ccnm> internal <sub> --payload X` 调 Agent�
                          result，或 {"transport_error": true} 表示连接断在半路
     stop-mode.json       {"kind": "ack"}（默认）、{"kind": "unreachable"}、
                          {"kind": "release-and-wait-final", "prompt": ..., "record": ...}
+    view-<key>-<stream>  agent-output 要交回的保留视图（字节原样），按 prompt 找
+    output-mode.json     {"kind": "serve"}（默认）、{"kind": "unreachable"}、
+                         {"kind": "unknown-command"}（演一个还不认识这个请求的旧 Agent）
     calls.jsonl          每次调用：alias、子命令、解开的请求
+
+`agent-output` 只演协议：按偏移切视图、base64 交回。脱敏与 UTF-8 规整是真实 Agent
+的事，由 Rust 测试覆盖；这里的视图就是测试放进去的那份。
 
 控制目录被删就立即退出：测试收尾时 ccnm rpc 已经走了，没人再等这个回答。
 """
@@ -55,6 +61,9 @@ def wait_for(predicate, timeout: float) -> bool:
 def run(request: dict, fake: Path) -> int:
     prompt = request["prompt"]
     session = request.get("session") or str(uuid.uuid4())
+    # 记下哪个会话跑的是哪个 prompt：agent-output 按会话 id 来问。
+    (fake / "sessions").mkdir(exist_ok=True)
+    (fake / "sessions" / session).write_text(key_of(prompt))
     released = fake / "release" / key_of(prompt)
     stopped = fake / "stopped" / session
 
@@ -125,6 +134,38 @@ def stop(request: dict, fake: Path) -> int:
     return 0
 
 
+def output(request: dict, fake: Path) -> int:
+    mode_file = fake / "output-mode.json"
+    mode = json.loads(mode_file.read_text()) if mode_file.exists() else {"kind": "serve"}
+    if mode["kind"] == "unreachable":
+        print("ssh: connect to host worker port 22: Connection refused", file=sys.stderr)
+        return 255
+    if mode["kind"] == "unknown-command":
+        print("error: unrecognized subcommand 'agent-output'", file=sys.stderr)
+        return 2
+    owner = fake / "sessions" / request["session"]
+    if not owner.exists():
+        print("CCNM_E_NOT_READY:\nno session on this machine", file=sys.stderr)
+        return 3
+    view_file = fake / f"view-{owner.read_text()}-{request['stream']}"
+    view = view_file.read_bytes() if view_file.exists() else b""
+    offset, limit = request["offset"], request["limit"]
+    report = {
+        "protocol": 8,
+        "agent_identity": identity(request["agent"]),
+        "session": request["session"],
+        "stream": request["stream"],
+        "generation": "g-" + owner.read_text()[:12],
+        "view_bytes": len(view),
+        "source_bytes": len(view),
+        "source_truncated": False,
+        "offset": offset,
+        "data": base64.b64encode(view[offset:offset + limit]).decode("ascii"),
+    }
+    sys.stdout.write(json.dumps(report))
+    return 0
+
+
 def main(argv: list) -> int:
     fake = Path(os.environ["FAKE_AGENT_DIR"])
     alias = argv[argv.index("-T") + 1] if "-T" in argv else None
@@ -136,6 +177,8 @@ def main(argv: list) -> int:
         return run(request, fake)
     if sub == "agent-stop":
         return stop(request, fake)
+    if sub == "agent-output":
+        return output(request, fake)
     print(f"fake agent: unexpected call {sub!r}", file=sys.stderr)
     return 97
 

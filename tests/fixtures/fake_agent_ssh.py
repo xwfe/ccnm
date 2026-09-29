@@ -25,7 +25,10 @@ ccnm 以 `ssh <选项> -T <alias> <ccnm> internal <sub> --payload X` 调 Agent�
                          当 Agent 端（ccnm、agent_config、agent_env），它拨 Runtime 时
                          又回到本脚本
     runtime.json         Agent 拨 Runtime 那一跳：{"ccnm", "env"} 以“执行账号”的环境
-                         跑真实 `ccnm internal runtime-guard`；{"kind": "unreachable"} 连不上
+                         跑真实 `ccnm internal runtime-guard` / `runtime-cleanup`；
+                         {"kind": "unreachable"} 连不上
+    cleanup-mode.json    agent-cleanup 怎么演：缺省像不认识它的旧 Agent；"unreachable"；
+                         或 {"kind": "relay", ...}，同 guard-mode.json
     calls.jsonl          每次调用：alias、子命令、解开的请求
 
 `agent-output` 只演协议：按偏移切视图、base64 交回。脱敏与 UTF-8 规整是真实 Agent
@@ -209,6 +212,24 @@ def guard(argv: list, request: dict, fake: Path) -> int:
     return 0
 
 
+def relay(argv: list, fake: Path, mode_name: str, sub: str) -> int:
+    """agent-cleanup 等：按 mode 文件演，relay 时换成真实 ccnm 当 Agent 端。"""
+    mode_file = fake / mode_name
+    mode = json.loads(mode_file.read_text()) if mode_file.exists() else {"kind": "unknown-command"}
+    if mode["kind"] == "unreachable":
+        print("ssh: connect to host worker port 22: Connection refused", file=sys.stderr)
+        return 255
+    if mode["kind"] == "unknown-command":
+        print(f"error: unrecognized subcommand '{sub}'", file=sys.stderr)
+        return 2
+    os.execve(
+        mode["ccnm"],
+        [mode["ccnm"], "--config", mode["agent_config"], *argv[argv.index("internal"):]],
+        mode["agent_env"],
+    )
+    return 0
+
+
 def runtime_guard(argv: list, fake: Path) -> int:
     """Agent 拨到 Runtime 的那一跳：落到“执行账号”上跑真实 ccnm。"""
     mode = json.loads((fake / "runtime.json").read_text())
@@ -244,8 +265,10 @@ def main(argv: list) -> int:
         return output(request, fake)
     if sub == "agent-guard":
         return guard(argv, request, fake)
-    if sub == "runtime-guard":
+    if sub in ("runtime-guard", "runtime-cleanup"):
         return runtime_guard(argv, fake)
+    if sub == "agent-cleanup":
+        return relay(argv, fake, "cleanup-mode.json", sub)
     if sub == "agent-status":
         return status(request)
     print(f"fake agent: unexpected call {sub!r}", file=sys.stderr)

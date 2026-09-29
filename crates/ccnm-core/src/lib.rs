@@ -2,6 +2,7 @@
 //! home MCP runtime). The CLI crate is a thin argument parser over this.
 
 pub mod claude;
+pub mod cleanup;
 pub mod config;
 pub mod configedit;
 pub mod controller;

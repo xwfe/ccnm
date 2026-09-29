@@ -671,7 +671,7 @@ impl RootStatus {
     }
 }
 
-fn current_uid(runner: &dyn ProcessRunner) -> Option<u32> {
+pub(crate) fn current_uid(runner: &dyn ProcessRunner) -> Option<u32> {
     let out = runner
         .run(&crate::process::Cmd::new("/usr/bin/id").args(["-u"]))
         .ok()?;
@@ -844,11 +844,22 @@ pub fn guard(
             ),
         ));
     }
-    let resolved = config.workspace(&request.workspace)?;
-    // The same two facts an open checks before it takes the guard: this
-    // machine is where the workspace lives, and the caller is the Agent
-    // Node it is bound to. Anything else would describe a guard nobody here
-    // would ever take for that caller.
+    let root = bound_root(config, &request.workspace, &request.node)?;
+    Ok(GuardReport {
+        protocol: GUARD_PROTOCOL,
+        workspace: request.workspace.clone(),
+        observation: crate::mcp::write_guard::observe(state, &root, runner),
+    })
+}
+
+/// The workspace's canonical root, for a question from `node` about it.
+///
+/// The same two facts an open checks before it takes the guard: this
+/// machine is where the workspace lives, and the caller is the Agent Node it
+/// is bound to. Answering anyone else -- about a guard, or about what may be
+/// removed -- would describe state nobody here keeps for that caller.
+pub(crate) fn bound_root(config: &Config, workspace: &str, node: &str) -> Result<PathBuf> {
+    let resolved = config.workspace(workspace)?;
     if config.this.as_deref() != Some(resolved.workspace.runtime_node.as_str()) {
         return Err(Error::config(
             "this machine is not the authoritative Runtime for that workspace",
@@ -861,17 +872,12 @@ pub fn guard(
         .map_or(resolved.workspace.agent_node.as_str(), |agent| {
             agent.node.as_str()
         });
-    if bound != request.node {
+    if bound != node {
         return Err(Error::config(
             "the workspace is bound to another Agent Node than the one asking",
         ));
     }
-    let root = canonical_root(&resolved.workspace.root)?;
-    Ok(GuardReport {
-        protocol: GUARD_PROTOCOL,
-        workspace: request.workspace.clone(),
-        observation: crate::mcp::write_guard::observe(state, &root, runner),
-    })
+    canonical_root(&resolved.workspace.root)
 }
 
 /// What arrived on `internal mcp-serve --payload`.

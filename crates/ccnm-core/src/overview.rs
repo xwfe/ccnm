@@ -560,7 +560,7 @@ fn state_word(state: SessionState, lang: Lang) -> &'static str {
 }
 
 /// Lines padded by display width, so Chinese cells line up.
-fn table(rows: &[Vec<String>]) -> String {
+pub(crate) fn table(rows: &[Vec<String>]) -> String {
     let columns = rows.iter().map(Vec::len).max().unwrap_or(0);
     let widths: Vec<usize> = (0..columns)
         .map(|i| {

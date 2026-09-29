@@ -334,6 +334,25 @@ impl Control {
         file.lock()?;
         Ok(Control(file))
     }
+
+    /// [`lock`](Self::lock) without waiting: `None` while someone else holds
+    /// it (a start, a stop, a view being built). For removing a session,
+    /// which must step aside rather than pull files out from under them.
+    pub fn try_lock(dir: &Dir) -> Result<Option<Control>> {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .open(dir.path().join("control.lock"))?;
+        match file.try_lock() {
+            Ok(()) => Ok(Some(Control(file))),
+            Err(fs::TryLockError::WouldBlock) => Ok(None),
+            Err(fs::TryLockError::Error(e)) => Err(e.into()),
+        }
+    }
 }
 
 impl Drop for Control {

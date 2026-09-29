@@ -13,9 +13,9 @@ use crate::protocol::mcp::{ProbeReport, ServePayload};
 use crate::protocol::payload;
 use crate::protocol::probe::{ProbeReport as WorkProbeReport, ProbeRequest};
 use crate::protocol::run::{
-    AttachRequest, HistoryReport, HistoryRequest, OutputReport, OutputRequest, PurgeReport,
-    PurgeRequest, ResultReport, ResultRequest, RunReport, RunRequest, StartReport, StartRequest,
-    StatusReport, StatusRequest, StopReport, StopRequest,
+    AttachRequest, HistoryReport, HistoryRequest, OutputReport, OutputRequest, ResultReport,
+    ResultRequest, RunReport, RunRequest, StartReport, StartRequest, StatusReport, StatusRequest,
+    StopReport, StopRequest,
 };
 use crate::provider::AgentProvider;
 use crate::ssh::{Master, Ssh};
@@ -462,29 +462,45 @@ pub fn result_selected(
 /// The Agent Node knows which sessions belonged to it; this machine
 /// holds the other half of those same sessions (what `exec_command`
 /// printed). Neither half is the project.
-pub fn purge(resolved: &Resolved<'_>, env: &Env<'_>) -> Result<PurgeReport> {
+/// Ask the Agent for its and the Runtime's half of a cleanup (P61): the
+/// list when `apply` is `None`, the removal of exactly those items when it
+/// is not. The Agent asks the Runtime itself, over its own link; nothing is
+/// removed from this machine's state here -- that was the defect P57 E
+/// found, since this machine's state is not the Runtime Executor's.
+pub fn cleanup(
+    resolved: &Resolved<'_>,
+    env: &Env<'_>,
+    purge: bool,
+    apply: Option<Vec<crate::cleanup::Item>>,
+) -> Result<crate::cleanup::AgentCleanupReport> {
     let ssh = agent_ssh(resolved, env)?;
-    let req = PurgeRequest {
-        protocol: PROTOCOL,
-        workspace: resolved.name.to_string(),
-    };
-    let mut report: PurgeReport = ssh.call_ccnm(
+    let selected = resolved.agent_reference(None)?;
+    let report: crate::cleanup::AgentCleanupReport = ssh.call_ccnm(
         env.runner,
         Master::Reuse,
-        &["internal", "agent-purge"],
-        &req,
-        Duration::from_secs(60),
+        &["internal", "agent-cleanup"],
+        &crate::cleanup::AgentCleanupRequest {
+            protocol: crate::cleanup::CLEANUP_PROTOCOL,
+            workspace: resolved.name.to_string(),
+            agent: selected.clone(),
+            runtime_node: resolved.workspace.runtime_node.clone(),
+            purge,
+            apply,
+        },
+        // Removing a few hundred MiB of retained output takes a while, and
+        // the Agent waits for the Runtime's half first.
+        Duration::from_secs(900),
         ErrorCode::AgentUnreachable,
     )?;
-
-    // This machine's half: the retained output of those same sessions.
-    if let Ok(state) = crate::paths::state_dir() {
-        for id in &report.sessions {
-            let dir = crate::paths::session_dir(&state, id);
-            if dir.is_dir() && std::fs::remove_dir_all(&dir).is_ok() {
-                report.removed.push(dir.display().to_string());
-            }
-        }
+    if report
+        .agent_identity
+        .as_ref()
+        .map(crate::instance::AgentIdentity::reference)
+        != selected
+    {
+        return Err(Error::internal(
+            "the Agent answered a cleanup as another instance; nothing it reported is trusted",
+        ));
     }
     Ok(report)
 }

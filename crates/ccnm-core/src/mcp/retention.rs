@@ -365,6 +365,11 @@ pub(crate) fn in_progress(run: &Path) -> bool {
     }
 }
 
+/// Whether any run in this session's `output/` is still being written.
+pub(crate) fn any_in_progress(output: &Path) -> bool {
+    runs_in(output).iter().any(|run| in_progress(&run.dir))
+}
+
 /// Remove the output of every session that nobody serves and nobody has
 /// run anything in for [`Limits::expiry`].
 ///

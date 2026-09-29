@@ -602,12 +602,9 @@ impl ResultReport {
     }
 }
 
-/// `ccnm internal agent-purge`: delete what ccnm kept for a workspace.
-///
-/// Only ccnm's own bookkeeping -- the session records and the directory
-/// Claude ran in. **Never the project**: that is the one thing on either
-/// machine ccnm did not create, and a cleanup command that could delete
-/// someone's source tree is not a cleanup command.
+/// `ccnm internal agent-purge`, as an Operator older than P61 sends it.
+/// Kept only so this build can decode it and refuse by name; the cleanup
+/// it used to trigger is [`crate::cleanup`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PurgeRequest {
@@ -616,23 +613,6 @@ pub struct PurgeRequest {
 }
 
 impl Protocol for PurgeRequest {
-    fn protocol(&self) -> u32 {
-        self.protocol
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PurgeReport {
-    pub protocol: u32,
-    /// What was deleted, as paths, for the caller to print.
-    pub removed: Vec<String>,
-    /// The session ids that were removed, so the other machine can clear
-    /// its half of the same sessions.
-    #[serde(default)]
-    pub sessions: Vec<String>,
-}
-
-impl Protocol for PurgeReport {
     fn protocol(&self) -> u32 {
         self.protocol
     }

@@ -1223,6 +1223,39 @@ root = "/runtime/legacy"
         peer.settle(&session);
     }
 
+    /// 清理过的会话：result 回 expired（不是 not_found），status 照常，同一个
+    /// start_key 仍然指回它、不重跑（P61 CL-06）。
+    #[test]
+    fn a_cleaned_session_is_expired_but_still_known_and_never_rerun() {
+        let peer = Peer::new("cleaned", FakeRuns::ok(0, "answer\n"));
+        let first = peer.call(&[&start_call(",\"start_key\":\"task-c\"")]);
+        let session = first[0]["result"]["session"].as_str().unwrap().to_string();
+        peer.settle(&session);
+        let store = store::Store::open(&peer.state).unwrap();
+        assert_eq!(
+            store.clean(&session, |_| true).unwrap(),
+            Some(store::Cleaned::Done)
+        );
+
+        let out = peer.call(&[
+            &format!(
+                "{{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"session.result\",\"params\":{{\"session\":\"{session}\"}}}}"
+            ),
+            &format!(
+                "{{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"session.status\",\"params\":{{\"session\":\"{session}\"}}}}"
+            ),
+            &start_call(",\"start_key\":\"task-c\""),
+        ]);
+        let error = &out[0]["error"];
+        assert_eq!(error["code"], code::EXPIRED, "{out:?}");
+        assert_eq!(error["data"]["reason"], "cleaned");
+        assert_eq!(error["data"]["session"], session.as_str());
+        assert_eq!(out[1]["result"]["state"], "completed");
+        assert_eq!(out[2]["result"]["session"], session.as_str());
+        assert_eq!(out[2]["result"]["reused"], true);
+        assert_eq!(peer.runs.asks.lock().unwrap().len(), 1, "never run again");
+    }
+
     #[test]
     fn the_same_start_key_and_input_reuses_the_session() {
         let peer = Peer::new("idempotent", FakeRuns::ok(0, "ok\n"));
@@ -1663,6 +1696,7 @@ root = "/runtime/legacy"
             managed_session: Some(managed.clone()),
             dispatched: false,
             finish: None,
+            cleaned_at: None,
         };
         store.create(&record).unwrap();
         let out = peer.call(&[&stop_line("s-ct02")]);

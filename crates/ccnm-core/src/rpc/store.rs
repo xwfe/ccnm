@@ -145,6 +145,12 @@ pub struct Record {
     pub dispatched: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub finish: Option<Finish>,
+    /// When `ccnm cleanup` removed this session's output (P61). The record
+    /// stays as a tombstone: `status` still answers, the start key still
+    /// names this session instead of starting it again, and `result` says
+    /// `expired` rather than `not_found`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cleaned_at: Option<String>,
 }
 
 impl Record {
@@ -320,6 +326,77 @@ impl Store {
         Ok(dir)
     }
 
+    /// `rpc/outputs/<id>/` without creating it: what cleanup looks at.
+    pub fn outputs_of(&self, id: &str) -> Option<PathBuf> {
+        valid_handle(id).then(|| self.root.join("outputs").join(id))
+    }
+
+    /// Every handle with a record here, in no particular order. Names that
+    /// are not handles this server issues are not records and are skipped.
+    pub fn handles(&self) -> Result<Vec<String>> {
+        let entries = fs::read_dir(self.root.join("sessions"))
+            .map_err(|e| Error::internal("cannot list session records").with_source(e))?;
+        Ok(entries
+            .flatten()
+            .filter_map(|entry| {
+                let name = entry
+                    .file_name()
+                    .to_str()?
+                    .strip_suffix(".json")?
+                    .to_string();
+                valid_handle(&name).then_some(name)
+            })
+            .collect())
+    }
+
+    /// Remove a session's output copy and the large parts of its record,
+    /// keeping the rest as a tombstone (P61).
+    ///
+    /// `still` sees the record as it is on disk now, under the store lock,
+    /// and says whether it is still the one that was previewed. The
+    /// tombstone goes in before the copy goes: a `session.result` from then
+    /// on answers `expired` instead of reading files that are about to
+    /// disappear. A copy still being written (`.tmp` inside) is left alone
+    /// and nothing changes. `None`: no such record.
+    pub fn clean(&self, id: &str, still: impl FnOnce(&Record) -> bool) -> Result<Option<Cleaned>> {
+        let _locked = self.lock()?;
+        let Some(mut record) = self.read(id)? else {
+            return Ok(None);
+        };
+        if !still(&record) {
+            return Ok(Some(Cleaned::Changed));
+        }
+        let outputs = self.root.join("outputs").join(id);
+        let copying = fs::read_dir(&outputs).is_ok_and(|entries| {
+            entries
+                .flatten()
+                .any(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
+        });
+        if copying {
+            return Ok(Some(Cleaned::InUse));
+        }
+        if record.cleaned_at.is_none() {
+            record.cleaned_at = Some(super::session::now_rfc3339());
+            if let Some(finish) = &mut record.finish {
+                finish.text = None;
+                finish.output.clear();
+                finish.stderr.clear();
+            }
+            write_atomically(&self.session_path(id), &encode(&record)?)?;
+        }
+        match fs::remove_dir_all(&outputs) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                return Err(
+                    Error::internal(format!("cannot remove the output copy of {id}"))
+                        .with_source(e),
+                );
+            }
+        }
+        Ok(Some(Cleaned::Done))
+    }
+
     /// Take back a record this call created and never handed out.
     pub fn remove_unpublished(&self, id: &str) {
         if valid_handle(id) {
@@ -439,6 +516,16 @@ impl Store {
         let _locked = self.lock()?;
         write_atomically(&self.session_path(&record.session), &encode(record)?)
     }
+}
+
+/// What [`Store::clean`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Cleaned {
+    Done,
+    /// Not the record that was previewed any more: nothing touched.
+    Changed,
+    /// Its output is being copied right now: nothing touched.
+    InUse,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -593,6 +680,7 @@ mod tests {
             managed_session: Some("0b4c7a1e-2d3f-4a5b-8c6d-7e8f9a0b1c2d".into()),
             dispatched: false,
             finish: None,
+            cleaned_at: None,
         }
     }
 

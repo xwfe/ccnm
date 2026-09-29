@@ -174,6 +174,16 @@ enum Command {
         #[arg(long, value_name = "ID")]
         session: Option<String>,
     },
+    /// Remove what ccnm kept for a workspace's finished sessions, on every
+    /// machine, by the account that owns it. Only previews unless given the
+    /// token a preview printed
+    Cleanup {
+        /// Workspace name from config.toml
+        workspace: String,
+        /// Carry out the preview that printed this token
+        #[arg(long, value_name = "TOKEN")]
+        apply: Option<String>,
+    },
     /// Speak the machine protocol on stdin/stdout, for programs rather than
     /// people: stdout carries only protocol lines, logs go to stderr. The
     /// contract is in docs/protocol/
@@ -342,6 +352,18 @@ enum InternalCommand {
     },
     /// Work-side relay of a write-guard question to the Runtime
     AgentGuard {
+        #[arg(long)]
+        payload: String,
+    },
+    /// List or remove what this Runtime account kept for sessions the
+    /// Agent names. Never the write guard, never a session still served
+    RuntimeCleanup {
+        #[arg(long)]
+        payload: String,
+    },
+    /// Work-side cleanup: this Agent's records of finished sessions, after
+    /// asking the Runtime for its half
+    AgentCleanup {
         #[arg(long)]
         payload: String,
     },
@@ -1052,6 +1074,29 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
             }
             Ok(0)
         }
+        Command::Cleanup { workspace, apply } => {
+            let config = Config::load(&config_path()?)?;
+            let resolved = config.workspace(workspace)?;
+            let (env, state) = (launch_env()?, paths::state_dir()?);
+            match apply {
+                None => {
+                    let preview = ccnm_core::cleanup::preview(&resolved, &env, &state, false)?;
+                    print!("{}", preview.render(lang));
+                    Ok(0)
+                }
+                Some(token) => {
+                    let applied = ccnm_core::cleanup::apply(&resolved, &env, &state, token)?;
+                    print!("{}", applied.render(lang));
+                    // Something planned was not removed, or a machine could
+                    // not be asked: say so in the exit code too.
+                    Ok(if applied.complete() {
+                        0
+                    } else {
+                        ccnm_core::ErrorCode::NotReady.exit_code()
+                    })
+                }
+            }
+        }
         Command::Rpc => {
             // The store lives beside every other bit of ccnm state, so a
             // session started through the API is visible to the same
@@ -1251,6 +1296,25 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
                     &agent_tools(config_path().ok().as_deref())?,
                 )?)
             }
+            InternalCommand::RuntimeCleanup { payload } => {
+                // As the account the Agent's ssh lands on: what it removes
+                // is in *its* state directory, which is the point.
+                let req: ccnm_core::cleanup::RuntimeCleanupRequest = payload::decode(payload)?;
+                let config = Config::load(&config_path()?)?;
+                print_json(&ccnm_core::cleanup::runtime(
+                    &config,
+                    &req,
+                    &paths::state_dir()?,
+                    &SystemRunner,
+                )?)
+            }
+            InternalCommand::AgentCleanup { payload } => {
+                let req: ccnm_core::cleanup::AgentCleanupRequest = payload::decode(payload)?;
+                print_json(&ccnm_core::cleanup::agent(
+                    &req,
+                    &agent_tools(config_path().ok().as_deref())?,
+                )?)
+            }
             InternalCommand::Controller => {
                 let socket = paths::controller_socket(&paths::state_dir()?);
                 let listener = controller::Listener::bind(&socket)?;
@@ -1340,10 +1404,8 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
             }
             InternalCommand::AgentPurge { payload } => {
                 let req: PurgeRequest = payload::decode(payload)?;
-                print_json(&work::purge(
-                    &req,
-                    &agent_tools(config_path().ok().as_deref())?,
-                ))
+                work::purge(&req)?;
+                Ok(0)
             }
         },
     }
@@ -1609,22 +1671,28 @@ fn remove_workspace(path: &std::path::Path, name: &str, purge: bool, lang: Lang)
             ),
         }
         if purge {
-            match launcher::purge(&resolved, &launch_env()?) {
-                Ok(rep) => {
-                    for line in rep.removed {
-                        println!(
-                            "{}",
-                            lang.pick(format!("删了 {line}"), format!("removed {line}"))
-                        );
+            // The same cleanup `ccnm cleanup` previews, applied at once:
+            // `--purge` is the confirmation. What it cannot remove keeps the
+            // workspace in the config, because the config is the only thing
+            // that says where the rest is.
+            let kept =
+                match ccnm_core::cleanup::purge(&resolved, &launch_env()?, &paths::state_dir()?) {
+                    Ok(applied) => {
+                        print!("{}", applied.render(lang));
+                        (!applied.nothing_left()).then(String::new)
                     }
-                }
-                Err(e) => eprintln!(
+                    Err(e) => Some(e.to_string()),
+                };
+            if let Some(why) = kept {
+                eprintln!(
                     "{}",
                     lang.pick(
-                        format!("够不到 Agent Node，那边没清理：{e}"),
-                        format!("could not clean up on the Agent Node: {e}"),
+                        format!("{why}\n{name} 还留在配置里：还有东西没清掉，删了配置就再也找不到它们。处理完再跑一次 `ccnm workspace remove {name} --purge`；只想忘掉这个 workspace、不清数据，就去掉 --purge"),
+                        format!("{why}\n{name} stays in the config: something was not removed, and without the config nothing could find it again. Fix that and run `ccnm workspace remove {name} --purge` again, or drop --purge to forget the workspace and leave the data"),
                     )
-                ),
+                    .trim_start()
+                );
+                return Ok(ccnm_core::ErrorCode::NotReady.exit_code());
             }
         }
     }

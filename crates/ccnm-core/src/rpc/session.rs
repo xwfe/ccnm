@@ -280,6 +280,7 @@ pub fn start(ctx: &Context, params: &Map<String, Value>) -> Result<Value, RpcErr
         managed_session: Some(crate::session::new_id()),
         dispatched: false,
         finish: None,
+        cleaned_at: None,
     };
     // The record first, then the key: whoever finds the key finds the
     // record behind it. Nothing is sent to the Agent until both exist.
@@ -457,6 +458,17 @@ pub fn result(ctx: &Context, params: &Map<String, Value>) -> Result<Value, RpcEr
     // nothing and a bad cursor is judged against a record that exists.
     let asked = super::output::params(params.get("output"))?;
     let record = load(ctx, id)?;
+    // Cleaned by `ccnm cleanup` (P61). Not `not_found`: the session did
+    // run, `status` still says how it ended, and its start key still names
+    // it -- only what it produced is gone, and no cursor into it can work.
+    if record.cleaned_at.is_some() {
+        return Err(RpcError::refused(
+            code::EXPIRED,
+            "this session's result was removed by ccnm cleanup; its state is still kept",
+        )
+        .with_reason("cleaned")
+        .with_session(&record.session));
+    }
     let state = record.observed_state(ctx.owner_of(&record));
     let mut out = serde_json::json!({
         "session": record.session,

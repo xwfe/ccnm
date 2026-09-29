@@ -24,9 +24,9 @@ use crate::protocol::payload;
 use crate::protocol::probe::{ProbeReport, ProbeRequest};
 use crate::protocol::run::{
     AgentGuardReport, AgentGuardRequest, AttachRequest, HistoryEntry, HistoryReport,
-    HistoryRequest, OutputReport, OutputRequest, OwnerOnAgent, PurgeReport, PurgeRequest,
-    ResultReport, ResultRequest, RunReport, RunRequest, SessionRecord, SessionState, StartReport,
-    StartRequest, StatusReport, StatusRequest, StopReport, StopRequest,
+    HistoryRequest, OutputReport, OutputRequest, OwnerOnAgent, PurgeRequest, ResultReport,
+    ResultRequest, RunReport, RunRequest, SessionRecord, SessionState, StartReport, StartRequest,
+    StatusReport, StatusRequest, StopReport, StopRequest,
 };
 use crate::protocol::{self};
 use crate::provider::{AgentProvider, AgentReport, AgentResult, Ask};
@@ -208,7 +208,7 @@ impl Tools<'_> {
     ///
     /// `None` means the name is this machine: agent and project colocated,
     /// nothing to dial, Claude working the project with its native tools.
-    fn runtime_link(&self, node: &str) -> Result<Option<RuntimeLink>> {
+    pub(crate) fn runtime_link(&self, node: &str) -> Result<Option<RuntimeLink>> {
         if self.config.this.as_deref() == Some(node) {
             return Ok(None);
         }
@@ -1405,7 +1405,7 @@ fn session_record(
 
 /// What a session record says about its session, asking tmux and `ps` only
 /// when the record alone cannot: an outcome file means it finished.
-fn session_state(
+pub(crate) fn session_state(
     spec: &Spec,
     dir: &session::Dir,
     outcome: Option<&session::Outcome>,
@@ -1565,43 +1565,20 @@ fn live_sessions(
         .collect()
 }
 
-/// Delete ccnm's own bookkeeping for a workspace: the session records and
-/// the directory Claude ran in.
+/// `ccnm internal agent-purge` from an Operator older than P61.
 ///
-/// **Never the project.** The root is the one thing here ccnm did not
-/// create, and it is not even looked at. Everything removed is under this
-/// machine's `~/.local/state/ccnm`.
-pub fn purge(req: &PurgeRequest, tools: &Tools<'_>) -> PurgeReport {
-    let mut removed = Vec::new();
-    let mut sessions = Vec::new();
-
-    let dir = paths::sessions_dir(&tools.state);
-    if let Ok(entries) = std::fs::read_dir(&dir) {
-        for entry in entries.flatten() {
-            let session_dir = session::Dir::at(entry.path());
-            let Ok(spec) = session::load(&session_dir) else {
-                continue;
-            };
-            if spec.workspace != req.workspace {
-                continue;
-            }
-            if std::fs::remove_dir_all(session_dir.path()).is_ok() {
-                removed.push(session_dir.path().display().to_string());
-                sessions.push(spec.id);
-            }
-        }
-    }
-
-    let workspace_dir = paths::workspace_dir(&tools.state, &req.workspace);
-    if workspace_dir.is_dir() && std::fs::remove_dir_all(&workspace_dir).is_ok() {
-        removed.push(workspace_dir.display().to_string());
-    }
-
-    PurgeReport {
-        protocol: PROTOCOL,
-        removed,
-        sessions,
-    }
+/// Refused rather than served: that request deleted every record of the
+/// workspace, running sessions included, and left the Runtime's half to a
+/// caller that removed it from the wrong account (P57 E). The one cleanup
+/// this build performs is [`crate::cleanup::agent`], after a preview.
+pub fn purge(_req: &PurgeRequest) -> Result<()> {
+    Err(Error::new(
+        ErrorCode::Version,
+        format!(
+            "agent-purge is no longer served; since P61 the Operator cleans up through agent-cleanup (protocol {}), so run the same ccnm build on both ends",
+            crate::cleanup::CLEANUP_PROTOCOL
+        ),
+    ))
 }
 
 /// What a session produced, for a caller that was not there when it

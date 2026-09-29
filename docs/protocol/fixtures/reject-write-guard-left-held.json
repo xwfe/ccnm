@@ -1,0 +1,16 @@
+{
+  "$schema_ref": "#/$defs/response_error",
+  "$note": "session.start 之前 Runtime 看到写入 guard 的标记说被占、却没有进程持有：上一个写者被异常中断，它起的命令可能还活着，所以不能交给新会话（P60）。这不是 busy：等多久都不会自己好，要人按运维手册「写入 guard 残留」处理。data.reason 的其他取值：kept_on_purpose、malformed_marker、unreadable、lock_query_failed。",
+  "message": {
+    "jsonrpc": "2.0",
+    "id": 9,
+    "error": {
+      "code": -32007,
+      "message": "the Runtime cannot hand this workspace's write guard to a new session until someone recovers it; nothing was started",
+      "data": {
+        "effect": "none",
+        "reason": "left_held"
+      }
+    }
+  }
+}

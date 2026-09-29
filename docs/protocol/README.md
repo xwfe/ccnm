@@ -32,7 +32,7 @@ ccnm rpc
 
 - `interactive` 模式没有实现，也不在 `hello` 的 `capabilities.modes` 里——调用它得到 `-32013`。
 - 结果**不过期**：记录一直留着，`expires_at` 不出现。清理靠 ccnm 本来的维护动作。
-- **`-32008`（`busy`）从来不会返回。** 工作树的写入 guard 是 Runtime 侧的 MCP 进程在会话跑起来之后才去拿的，`session.start` 那一刻没人检查它。所以工作树被别人占着时，你看到的不是启动被拒，而是**会话起来了然后失败**。按 `-32008` 写退避重试的客户端等不到这个码。
+- **`-32008`（`busy`）只覆盖"启动那一刻已经被占"。** P60 起 `session.start` 先请 Runtime 看一眼写入 guard，有进程正持有就回 `-32008`（详见[协议第 10 节](machine-protocol-v1.md#错误码表)下的表）。但这只是一次观察，不是预留：看完之后、会话打开工具之前被别人抢先的，表现仍是**会话起来了然后失败**；Runtime 问不到时这一步不做，启动照常进行。按 `-32008` 退避的客户端，还得处理"接受了但因写锁 `failed`"这种结局。
 
 P58（2026-09-28）起，下面几条是当前实现的行为。它们都在契约允许的范围内，写在这里是因为写客户端时会碰到：
 
@@ -46,6 +46,8 @@ P58（2026-09-28）起，下面几条是当前实现的行为。它们都在契�
 
 P59（2026-09-29）起 `session.result` 的输出按[协议第 9 节](machine-protocol-v1.md#输出引用)实现：每个流保留最后 32 MiB，第一页是末尾、`cursor` 往前翻，`max_bytes` 生效，stderr 用 `output.stream` 单独取。完整内容在 Agent 上生成、在第一次读时整份拷到本机，之后翻页不再联系 Agent。Agent 还是 P59 之前的版本或这时联系不上，服务端给的是旧版本留下的那段尾部，并用 `unavailable_reason` 说明，不当成完整输出。游标只在发出它的 `ccnm rpc` 进程里有效。详见 [P59 记录](../research/2026-09-29-p59-output-snapshot.md)。
 
+P60（2026-09-29）起 `session.start` 在分配 session id 之前先问写入 guard：Operator 经 Agent 问到 Runtime 执行账号（内部协议 9），因为锁在执行账号自己的 state 目录里。有进程正持有回 `-32008`；没人持有却也交不出去（上一个会话故意留着、异常退出留下的、标记损坏或读不了）回 `-32007`，`data.reason` 说是哪一种，这种要人处理，重试不会好。同一个 `start_key` 的重发先按原记录回答，不经过这一步。Agent、Runtime 任何一端早于 P60 时问不到，启动照 P59 的样子进行。详见 [P60 记录](../research/2026-09-29-p60-write-guard-observation.md)。
+
 校验 schema 和 fixture：
 
 ```bash
@@ -54,7 +56,7 @@ python3 scripts/check_protocol.py
 
 只用 Python 标准库，不需要装任何东西。它一次检查两套契约：fixture 符合各自声明的 schema、错误码（机器协议是数字码，Remote MCP 是 `CCNM_E_*` 名字）和说明文档一致、schema 自己没有拼错的关键字。
 
-**它证明的是这几份文件互相自洽，不是 `ccnm rpc` 的行为和它们一致。** 那要靠 `tests/test_blackbox_client.py` 的契约测试（只走字节流）和上面那两次真机闭环。上面 `-32008` 那条就是这个区别的例子：fixture 和说明文档对得上，实现却从不发它。
+**它证明的是这几份文件互相自洽，不是 `ccnm rpc` 的行为和它们一致。** 那要靠 `tests/test_blackbox_client.py` 的契约测试（只走字节流）和上面那两次真机闭环。`-32008` 就是这个区别的例子：P60 之前 fixture 和说明文档一直对得上，实现却从不发它。
 
 ## fixture 的格式
 

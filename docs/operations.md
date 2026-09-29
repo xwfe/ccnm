@@ -336,7 +336,15 @@ ccnm stop demo --agent codex-main --session <id>  # 精确停一个
   另外，`--session <id>` 指到一个这台机器上没有记录的 id，仍然报 `no session <id> on this machine`：不知道那个会话，和知道它已经结束，是两件事。
 
   > 早于 v1 的构建在第一种情况下也报退出码 3。写清理脚本时如果要兼容旧版本，容忍这个码即可。
-- **`status` 看不见 `ccnm run --print` 的会话。** 它只报 Agent Node 上的 tmux 会话，非交互的 print 运行不在其中——会话正跑着、写入 guard 是 `held`、MCP 进程也在，`status` 照样说 `no live sessions`。据此判断"没人在用"然后起第二个会话，撞上的就是被占的写入 guard，而那个失败长得像别的毛病。要判断真没人用，看写入 guard 和进程列表，别只看 `status`。
+- **`status` 的会话列表看不见 `ccnm run --print` 的会话。** 它只报 Agent Node 上的 tmux 会话，非交互的 print 运行不在其中——会话正跑着，`status` 照样说 `no live sessions`。要判断有没有人在写，看同一条命令输出最后的**写锁**那一行（P60 起，在 Runtime Node 上跑 `ccnm status <workspace>` 才有），它由 Runtime 执行账号自己回答，print 运行和外部 MCP 客户端占着锁都看得见：
+
+  ```text
+  写锁  被占：会话 402638ca 正持有（09-29 13:40）
+         pid 4242 还是 ccnm 进程；Agent 那边这个会话：运行中
+         标记文件：Runtime 执行账号的 write-guards/00aa11bb22cc33dd.lock
+  ```
+
+  它只是看一眼：不建文件、不改标记、不拿写权。"空闲"是那一刻的样子，不是替你占住；"问不到 Runtime"不等于空闲。为什么要绕 Agent 去问：写锁在执行账号自己的 state 目录里，Operator 账号通常读不到，读自己的 `write-guards/` 看到的是另一个写域（见[一棵树配两个 state 目录](#一棵树配两个-state-目录--两个互不知晓的写域)）。
 
 ## 两侧 MCP 的停止与结果保留
 
@@ -350,7 +358,18 @@ Runtime Managed 输出的保留不等于后台命令继续运行；外部连接�
 
 ### 写入 guard 残留
 
-症状：新会话起不来，报工作树被占，但没有会话在跑。
+症状：新会话起不来，报工作树被占，但没有会话在跑。Machine API 的 `session.start` 这时回 `-32007`，`data.reason` 是 `left_held` 或 `kept_on_purpose`（P60 起）。
+
+先在 Runtime Node 上跑 `ccnm status <workspace>`，看最后的写锁行。它告诉你是哪一种、标记文件叫什么、标记里的 pid 现在是什么：
+
+| 写锁行说 | 意思 | 往下看 |
+| --- | --- | --- |
+| 被占 | 有进程正持有。等它结束，或者去结束它；Agent 那边说这个会话已经结束的，多半是孤儿 `mcp-serve`（见[排错手册](troubleshooting.md#mcp-初始化报-workspace-write-guard-is-busy-或-unknown)） | 不是残留，下面的步骤不适用 |
+| 故意留着 | 上一个会话有东西停不掉 | 下面"有 `abandoned` 这一行" |
+| 说不清：标记说……占着，但没有进程持锁 | 异常退出留下的 | 下面"没有第二行" |
+| 说不清：标记内容不完整 / 读不了 | 标记损坏，或执行账号读不了自己的目录 | 按"没有第二行"的顺序处理；读不了的先查目录属主和权限 |
+
+这一行只是看，不清理任何东西；下面的恢复仍然要人按顺序做。
 
 Runtime 的 `write-guards/` 里那个 marker 长这样（P43 起多了 pid）：
 

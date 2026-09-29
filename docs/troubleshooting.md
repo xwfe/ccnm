@@ -559,7 +559,9 @@ kill <那个 sshd-session 的 pid>
 
 拒绝信息里还会说上一个会话的 pid 现在是什么（还在跑，连命令行一起给；已经不在；或者被别的程序复用了）。**pid 没了不等于可以接管**——它起的命令可能还活着，而 ccnm 看不见它们。
 
-先在 Agent Node 用 `ccnm status <workspace> --agent <instance-id> --session <ccnm-session-id>` 定位会话，再由 Runtime 操作者确认旧 MCP 和子进程。完整人工恢复边界见[支持矩阵](support-matrix.md#runtime-单写-guard)。`doctor`/MCP probe 同样经过写 guard，活动 writer 下诊断被拒绝不等于 SSH 损坏。
+先在 Runtime Node 上跑 `ccnm status <workspace>`，看最后那一行写锁：谁占着、那个 pid 现在是什么、Agent 那边这个会话是不是早结束了（P60 起；它经 Agent 问 Runtime 执行账号，只看不动）。说"Agent 那边已经结束"的，就是上一条那种孤儿 `mcp-serve`。再在 Agent Node 用 `ccnm status <workspace> --agent <instance-id> --session <ccnm-session-id>` 定位会话，由 Runtime 操作者确认旧 MCP 和子进程。完整人工恢复边界见[支持矩阵](support-matrix.md#runtime-单写-guard)。`doctor`/MCP probe 同样经过写 guard，活动 writer 下诊断被拒绝不等于 SSH 损坏；写锁那一行不拿锁，不会被拒，也不会挡别人。
+
+Machine API 那边看到的是同一件事的两种码：有进程正持有，`session.start` 回 `-32008`，等它结束再发；异常退出或故意留下的，回 `-32007`，`data.reason` 是 `left_held` / `kept_on_purpose` 等，按上面处理，重发不会好。
 
 **两个会话都开起来了、都能写同一棵树**，那不是锁坏了：写锁只在一个 state 目录内有效，两边的 `XDG_STATE_HOME` 不同就是两把互不相干的锁。见[运维手册](operations.md#一棵树配两个-state-目录--两个互不知晓的写域)。
 

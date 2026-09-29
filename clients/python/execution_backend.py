@@ -287,7 +287,7 @@ _KIND_BY_CODE = {
     -32000: KIND_UNAVAILABLE,  # not_ready：没验证通过，不是失败
     -32004: KIND_UNAVAILABLE,  # agent_unreachable
     -32005: KIND_UNAVAILABLE,  # runtime_unreachable
-    -32008: KIND_UNAVAILABLE,  # busy：当前 build 从不返回，留着以防将来实现
+    -32008: KIND_UNAVAILABLE,  # busy：有人正持有写锁，等它结束再来（-32007 的残留锁要人处理，归 rejected）
     -32603: KIND_UNAVAILABLE,  # 服务端内部错误，不是调用方的输入问题
     -32009: KIND_NOT_FOUND,
     -32010: KIND_CONFLICT,

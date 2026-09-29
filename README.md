@@ -125,7 +125,7 @@ Agent 侧的 `ccnm_agent` 是另一组工具，不计入上面的 Runtime 工具
 
 **项目在远端，而 Claude Code 已经在你本机跑着**——用 `ccnm mcp bridge <workspace>`，把远端项目作为一组 MCP 工具交给它。权限由 Runtime 侧的 `external_mcp` 决定（默认关）。契约 `ccnm.workspace-mcp/1` 已于 2026-09-11 冻结，上手步骤见[使用说明](docs/usage.md#把远端项目给已经在跑的-agent-用)。
 
-**要让别的程序驱动 ccnm**——用 `ccnm rpc`：stdio 上的 JSON-RPC 2.0，不开网络端口。契约 `ccnm.machine/1` 已于 2026-09-10 冻结；当前只实现非交互 `print`；结果输出可倒序分页读回（每个流保留最后 32 MiB），启动不返回契约中的 busy 码。实现差距、schema、fixture 和 Python 客户端见[协议说明](docs/protocol/README.md)。
+**要让别的程序驱动 ccnm**——用 `ccnm rpc`：stdio 上的 JSON-RPC 2.0，不开网络端口。契约 `ccnm.machine/1` 已于 2026-09-10 冻结；当前只实现非交互 `print`；结果输出可倒序分页读回（每个流保留最后 32 MiB）；启动前问 Runtime 的写锁，被占回 busy，但这只是一次观察、不是预留。实现差距、schema、fixture 和 Python 客户端见[协议说明](docs/protocol/README.md)。
 
 要写的是一个**编排项目**（决定谁做什么、验收和重试），先看[执行接口交接](docs/orchestrator-handoff.md)：哪份状态归你、哪份归 ccnm。ccnm 自己不做编排。
 

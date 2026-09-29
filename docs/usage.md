@@ -197,6 +197,8 @@ ccnm attach my-project --agent codex-main --session <ccnm-session-id>
 ccnm stop my-project --agent codex-main --session <ccnm-session-id>
 ```
 
+在 Runtime Node 上跑 `ccnm status my-project`，最后一行是这个项目的写锁：空闲、被谁占着、故意留着，还是说不清（P60 起）。它经 Agent 问 Runtime 执行账号，所以 `--print` 运行和外部 MCP 客户端占着锁也看得见；它只看不拿锁，"空闲"也不代表替你占住了。各种说法怎么处理见[运维手册](operations.md#写入-guard-残留)。
+
 ccnm session id 与 Claude/Codex 自己的 thread/resume id 是两类值，不能互换。精确操作会校验 session 的 workspace 和 Agent identity。状态区分 `starting`、`running`、`completed`、`failed`、`stopping`、`unknown`；不能证明进程已经结束时不会猜成 failed。
 
 精确停止 print session 时，即使已有结果，也会检查已记录的 supervisor/Agent 进程组；组仍存在、PID 记录损坏或进程查询失败会返回 `NotReady`，不对历史 PID 发信号，也不改写结果。

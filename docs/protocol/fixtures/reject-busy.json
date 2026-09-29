@@ -1,15 +1,15 @@
 {
   "$schema_ref": "#/$defs/response_error",
-  "$note": "同一棵工作树已经有受管写 session。effect 是 none：什么都没发生，换个时间重发是安全的。这是契约样例，不是实测：当前 build 从不返回 -32008，理由见 ../README.md。",
+  "$note": "session.start 之前 Runtime 看到另一个进程正持有这棵工作树的写入 guard（P60 起实现）。effect 是 none：没分配 session、什么都没启动，等那个会话结束后重发是安全的。这只是启动那一刻的观察，不是预留，见说明文档第 10 节错误码表下的说明。",
   "message": {
     "jsonrpc": "2.0",
     "id": 9,
     "error": {
       "code": -32008,
-      "message": "workspace already has a managed write session",
+      "message": "another writer holds this workspace's write guard on the Runtime; nothing was started",
       "data": {
         "effect": "none",
-        "detail": "另一个 session 持有这棵工作树的写入 guard"
+        "reason": "live_holder"
       }
     }
   }

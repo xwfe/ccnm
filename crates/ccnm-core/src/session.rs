@@ -35,6 +35,7 @@
 //! lifetime is Claude's, not any outer process's.
 
 pub mod transport;
+pub mod view;
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;

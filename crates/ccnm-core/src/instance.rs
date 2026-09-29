@@ -20,6 +20,11 @@ pub const INSTANCE_SESSION_PROTOCOL: u32 = 3;
 /// starting the session under an id of its own that no stop could name.
 pub const ASSIGNED_SESSION_PROTOCOL: u32 = 7;
 
+/// Reading the retained output view of an assigned session, a slice at a
+/// time (P59). A new request with its own number, so an Agent that predates
+/// it refuses by name instead of answering some other question.
+pub const OUTPUT_PROTOCOL: u32 = 8;
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct InstanceRef {

@@ -396,6 +396,62 @@ impl Protocol for StopReport {
     }
 }
 
+/// `ccnm internal agent-output`: a slice of the retained view of one output
+/// stream of a finished print session (P59).
+///
+/// Names the session by the id the Runtime assigned and the stream by name;
+/// never a path. The Agent answers from a view it builds once -- redacted,
+/// valid UTF-8, capped, frozen -- see [`crate::session::view`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OutputRequest {
+    pub protocol: u32,
+    pub workspace: String,
+    pub agent: InstanceRef,
+    pub session: String,
+    pub stream: crate::session::view::Stream,
+    pub offset: u64,
+    /// At most this many bytes back. The Agent may send fewer.
+    pub limit: u64,
+}
+
+impl Protocol for OutputRequest {
+    fn protocol(&self) -> u32 {
+        self.protocol
+    }
+    fn expected_protocol(&self) -> u32 {
+        crate::instance::OUTPUT_PROTOCOL
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OutputReport {
+    pub protocol: u32,
+    pub agent_identity: AgentIdentity,
+    pub session: String,
+    pub stream: crate::session::view::Stream,
+    /// Which build of the view this slice comes from; see
+    /// [`crate::session::view::Meta`].
+    pub generation: String,
+    pub view_bytes: u64,
+    pub source_bytes: u64,
+    pub source_truncated: bool,
+    pub offset: u64,
+    /// The slice, base64 (standard alphabet). Base64 rather than a string
+    /// because a slice boundary may fall inside a character.
+    pub data: String,
+}
+
+impl Protocol for OutputReport {
+    fn protocol(&self) -> u32 {
+        self.protocol
+    }
+    fn expected_protocol(&self) -> u32 {
+        crate::instance::OUTPUT_PROTOCOL
+    }
+}
+
 /// `ccnm internal agent-result`: what a session that already ran produced.
 ///
 /// This exists for the interruption `--print` cannot survive. The session

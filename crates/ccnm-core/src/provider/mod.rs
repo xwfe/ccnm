@@ -22,6 +22,20 @@ mod types;
 pub use claude::PermissionMode;
 pub use types::{AgentReport, Ask, AuthStatus, RunResult, Usage};
 
+/// What stands in for an Agent-private directory in anything shown outside.
+pub const REDACTED: &str = "<agent-private-config>";
+
+/// See [`AgentProvider::output_redaction`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Redaction {
+    /// Nothing private is known to be in it.
+    Keep,
+    /// Replace every occurrence of this path with [`REDACTED`].
+    Replace(String),
+    /// Send this sentence instead of the output.
+    Withhold(&'static str),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AgentProvider {
@@ -217,17 +231,28 @@ impl AgentProvider {
     }
 
     pub fn redact_output_at(self, text: String, profile_dir: Option<&Path>) -> String {
-        let text = if let Some(dir) = profile_dir {
-            text.replace(dir.to_string_lossy().as_ref(), "<agent-private-config>")
-        } else {
-            text
-        };
+        match self.output_redaction(profile_dir) {
+            Redaction::Keep => text,
+            Redaction::Replace(private) => text.replace(&private, REDACTED),
+            Redaction::Withhold(why) => why.to_string(),
+        }
+    }
+
+    /// What has to go before this provider's output leaves the Agent.
+    ///
+    /// The one rule both the short tails in a report and the full retained
+    /// output view (P59) apply, so the two cannot drift apart. At most one
+    /// directory is ever replaced: the profile when there is one, Codex's
+    /// home when there is not.
+    pub fn output_redaction(self, profile_dir: Option<&Path>) -> Redaction {
+        if let Some(dir) = profile_dir {
+            return Redaction::Replace(dir.to_string_lossy().into_owned());
+        }
         match self {
-            Self::Claude => text,
-            Self::Codex if profile_dir.is_some() => text,
-            Self::Codex => codex::home().map_or_else(
-                |_| "Codex output withheld: Agent home unavailable".into(),
-                |home| text.replace(home.to_string_lossy().as_ref(), "<agent-private-config>"),
+            Self::Claude => Redaction::Keep,
+            Self::Codex => codex::home().map_or(
+                Redaction::Withhold("Codex output withheld: Agent home unavailable"),
+                |home| Redaction::Replace(home.to_string_lossy().into_owned()),
             ),
         }
     }

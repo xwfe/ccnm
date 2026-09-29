@@ -1,7 +1,7 @@
 use ccnm_core::instance::{AgentIdentity, AgentLocal, AgentProfiles, InstanceRef};
 use ccnm_core::process::{FakeRunner, Output};
 use ccnm_core::protocol::run::{
-    ResultRequest, SessionState, StartRequest, StatusRequest, StopRequest,
+    OutputRequest, ResultRequest, SessionState, StartRequest, StatusRequest, StopRequest,
 };
 use ccnm_core::provider::{AgentBinaries, AgentProvider};
 use ccnm_core::session::{self, Dir, Mode, RuntimeLink, Spec};
@@ -768,4 +768,169 @@ fn print_stop_checks_the_whole_group_and_rejects_reparented_agent() {
             "unknown group state must not stop supervisor"
         );
     }
+}
+
+fn output_request(
+    id: &str,
+    workspace: &str,
+    stream: session::view::Stream,
+    offset: u64,
+    limit: u64,
+) -> OutputRequest {
+    OutputRequest {
+        protocol: ccnm_core::instance::OUTPUT_PROTOCOL,
+        workspace: workspace.into(),
+        agent: reference("claude-main"),
+        session: id.into(),
+        stream,
+        offset,
+        limit,
+    }
+}
+
+fn read_view(
+    f: &Fixture,
+    runner: &FakeRunner,
+    id: &str,
+    stream: session::view::Stream,
+    slice: u64,
+) -> (Vec<u8>, ccnm_core::protocol::run::OutputReport) {
+    use base64::Engine as _;
+    let mut whole = Vec::new();
+    loop {
+        let report = work::output(
+            &output_request(id, "demo", stream, whole.len() as u64, slice),
+            &f.tools(runner),
+        )
+        .unwrap();
+        let data = base64::engine::general_purpose::STANDARD
+            .decode(&report.data)
+            .unwrap();
+        let done = data.is_empty() || whole.len() as u64 + data.len() as u64 == report.view_bytes;
+        whole.extend(data);
+        if done {
+            return (whole, report);
+        }
+    }
+}
+
+/// P59: the Agent answers from a view built once, after the session ended:
+/// the private profile path is gone wherever it sat -- including across the
+/// edge of a slice -- later writes to the file are not in it, and the two
+/// streams stay separate.
+#[test]
+fn agent_output_is_a_redacted_frozen_view_of_a_finished_session() {
+    let f = Fixture::new();
+    let runner = FakeRunner::new();
+    let id = session::new_id();
+    let dir = f.record(
+        &id,
+        "demo",
+        Some(f.identity("claude-main", AgentProvider::Claude)),
+        Mode::Print {
+            prompt: "go".into(),
+        },
+    );
+    let private = f.home.join(".claude").display().to_string();
+    let mut stdout = format!("start {private} 中文\n").into_bytes();
+    // Put a second copy of the path across the 1000-byte slice edge used below.
+    stdout.resize(1000 - private.len() / 2, b'x');
+    stdout.extend_from_slice(private.as_bytes());
+    stdout.extend_from_slice(" end 😀\n".as_bytes());
+    std::fs::write(dir.stdout(), &stdout).unwrap();
+    std::fs::write(dir.stderr(), format!("warn {private}\n")).unwrap();
+
+    let early = work::output(
+        &output_request(&id, "demo", session::view::Stream::Stdout, 0, 1000),
+        &f.tools(&runner),
+    )
+    .unwrap_err();
+    assert_eq!(early.code(), ErrorCode::NotReady, "{early}");
+
+    session::record_terminal_failure(&dir, "done").unwrap();
+    let (view, report) = read_view(&f, &runner, &id, session::view::Stream::Stdout, 1000);
+    let text = String::from_utf8(view.clone()).unwrap();
+    assert!(!text.contains(&private), "{text}");
+    assert_eq!(text.matches("<agent-private-config>").count(), 2, "{text}");
+    assert!(text.ends_with(" end 😀\n"));
+    assert_eq!(report.view_bytes, view.len() as u64);
+    assert_eq!(report.source_bytes, stdout.len() as u64);
+    assert!(!report.source_truncated);
+    assert_eq!(report.agent_identity.instance, "claude-main");
+
+    // Frozen: a late write does not change what is served.
+    std::fs::write(dir.stdout(), [stdout.as_slice(), b"late\n"].concat()).unwrap();
+    let (again, again_report) = read_view(&f, &runner, &id, session::view::Stream::Stdout, 1 << 20);
+    assert_eq!(again, view);
+    assert_eq!(again_report.generation, report.generation);
+
+    let (err, _) = read_view(&f, &runner, &id, session::view::Stream::Stderr, 1 << 20);
+    assert_eq!(err, b"warn <agent-private-config>\n");
+    assert!(runner.calls().is_empty(), "reading output runs nothing");
+}
+
+#[test]
+fn agent_output_never_crosses_workspace_instance_or_mode() {
+    let f = Fixture::new();
+    let runner = FakeRunner::new();
+    let print = session::new_id();
+    let dir = f.record(
+        &print,
+        "demo",
+        Some(f.identity("claude-main", AgentProvider::Claude)),
+        Mode::Print {
+            prompt: "go".into(),
+        },
+    );
+    session::record_terminal_failure(&dir, "done").unwrap();
+    let wrong_workspace = work::output(
+        &output_request(&print, "other", session::view::Stream::Stdout, 0, 10),
+        &f.tools(&runner),
+    )
+    .unwrap_err();
+    assert_eq!(
+        wrong_workspace.code(),
+        ErrorCode::InvalidArgs,
+        "{wrong_workspace}"
+    );
+    let mut wrong_instance = output_request(&print, "demo", session::view::Stream::Stdout, 0, 10);
+    wrong_instance.agent = reference("codex-main");
+    assert!(work::output(&wrong_instance, &f.tools(&runner)).is_err());
+
+    let interactive = session::new_id();
+    let idir = f.record(
+        &interactive,
+        "demo",
+        Some(f.identity("claude-main", AgentProvider::Claude)),
+        Mode::Interactive { prompt: None },
+    );
+    session::record_terminal_failure(&idir, "done").unwrap();
+    let err = work::output(
+        &output_request(&interactive, "demo", session::view::Stream::Stdout, 0, 10),
+        &f.tools(&runner),
+    )
+    .unwrap_err();
+    assert_eq!(err.code(), ErrorCode::InvalidArgs, "{err}");
+
+    let missing = work::output(
+        &output_request(
+            &session::new_id(),
+            "demo",
+            session::view::Stream::Stdout,
+            0,
+            10,
+        ),
+        &f.tools(&runner),
+    )
+    .unwrap_err();
+    assert_eq!(missing.code(), ErrorCode::NotReady);
+    let bad = work::output(
+        &output_request("../x", "demo", session::view::Stream::Stdout, 0, 10),
+        &f.tools(&runner),
+    )
+    .unwrap_err();
+    assert_eq!(bad.code(), ErrorCode::InvalidArgs);
+    assert!(
+        !dir.path().join("stdout.view").exists() || dir.path().join("stdout.view.json").exists()
+    );
 }

@@ -23,9 +23,9 @@ use crate::protocol::mcp::{ProbeReport as McpProbeReport, ServePayload};
 use crate::protocol::payload;
 use crate::protocol::probe::{ProbeReport, ProbeRequest};
 use crate::protocol::run::{
-    AttachRequest, HistoryEntry, HistoryReport, HistoryRequest, PurgeReport, PurgeRequest,
-    ResultReport, ResultRequest, RunReport, RunRequest, SessionRecord, SessionState, StartReport,
-    StartRequest, StatusReport, StatusRequest, StopReport, StopRequest,
+    AttachRequest, HistoryEntry, HistoryReport, HistoryRequest, OutputReport, OutputRequest,
+    PurgeReport, PurgeRequest, ResultReport, ResultRequest, RunReport, RunRequest, SessionRecord,
+    SessionState, StartReport, StartRequest, StatusReport, StatusRequest, StopReport, StopRequest,
 };
 use crate::protocol::{self};
 use crate::provider::{AgentProvider, AgentReport, AgentResult, Ask};
@@ -1667,6 +1667,73 @@ pub fn result(req: &ResultRequest, tools: &Tools<'_>) -> Result<ResultReport> {
             tail(&std::fs::read(dir.stderr()).unwrap_or_default()),
             profile.as_deref(),
         ),
+    })
+}
+
+/// Most bytes one `agent-output` answer carries. Each answer is one ssh
+/// round trip and is held whole in memory on both sides, so this is what
+/// bounds memory, not the size of the output.
+pub const OUTPUT_SLICE_MAX: u64 = 4 * 1024 * 1024;
+
+/// A slice of the retained view of one stream of a finished print session
+/// the Runtime assigned (P59).
+///
+/// Only a session this identity ran for this workspace, only once it has
+/// ended -- a view of a file still growing would be a snapshot of nothing in
+/// particular -- and only through the view: redacted with the same rule as
+/// the report tails, never the raw file.
+pub fn output(req: &OutputRequest, tools: &Tools<'_>) -> Result<OutputReport> {
+    use base64::Engine as _;
+    if !session::valid_id(&req.session) {
+        return Err(Error::invalid_args(
+            "session id is not a valid ccnm identifier",
+        ));
+    }
+    let dir = session::Dir::at(paths::session_dir(&tools.state, &req.session));
+    let spec = session::load(&dir).map_err(|_| {
+        Error::new(
+            ErrorCode::NotReady,
+            format!("no session {} on this machine", req.session),
+        )
+    })?;
+    check_session_selection(&spec, &req.workspace, Some(&req.agent), tools)?;
+    if spec.mode.is_interactive() {
+        return Err(Error::invalid_args(
+            "an interactive session's output went to its terminal; there is nothing retained to read",
+        ));
+    }
+    if session::read_outcome(&dir)?.is_none() {
+        return Err(Error::new(
+            ErrorCode::NotReady,
+            format!(
+                "session {} has not ended; its output is read once it has",
+                req.session
+            ),
+        ));
+    }
+    let profile = profile_for_spec(&spec, tools)?;
+    let redaction = spec.provider().output_redaction(profile.as_deref());
+    let meta = session::view::ensure(&dir, req.stream, &redaction)?;
+    let data = session::view::read(
+        &dir,
+        req.stream,
+        &meta,
+        req.offset,
+        req.limit.min(OUTPUT_SLICE_MAX),
+    )?;
+    Ok(OutputReport {
+        protocol: crate::instance::OUTPUT_PROTOCOL,
+        agent_identity: spec.agent_identity.clone().ok_or_else(|| {
+            Error::invalid_args("only an Agent instance session has an assigned output")
+        })?,
+        session: req.session.clone(),
+        stream: req.stream,
+        generation: meta.generation,
+        view_bytes: meta.view_bytes,
+        source_bytes: meta.source_bytes,
+        source_truncated: meta.source_truncated,
+        offset: req.offset,
+        data: base64::engine::general_purpose::STANDARD.encode(data),
     })
 }
 

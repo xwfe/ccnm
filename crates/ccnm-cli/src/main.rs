@@ -372,6 +372,11 @@ enum InternalCommand {
         #[arg(long)]
         payload: String,
     },
+    /// Work-side read of a slice of a finished session's retained output
+    AgentOutput {
+        #[arg(long)]
+        payload: String,
+    },
     /// Work-side deletion of a workspace's session records
     AgentPurge {
         #[arg(long)]
@@ -1036,6 +1041,7 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
                     config_path: path,
                 }),
                 runner: std::sync::Arc::new(SystemRunner),
+                cursors: Default::default(),
             };
             let stdin = std::io::stdin();
             let stdout = std::io::stdout();
@@ -1278,6 +1284,13 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
             InternalCommand::AgentResult { payload } => {
                 let req: ResultRequest = payload::decode(payload)?;
                 print_json(&work::result(
+                    &req,
+                    &agent_tools(config_path().ok().as_deref())?,
+                )?)
+            }
+            InternalCommand::AgentOutput { payload } => {
+                let req: ccnm_core::protocol::run::OutputRequest = payload::decode(payload)?;
+                print_json(&work::output(
                     &req,
                     &agent_tools(config_path().ok().as_deref())?,
                 )?)

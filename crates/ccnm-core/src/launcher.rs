@@ -13,9 +13,9 @@ use crate::protocol::mcp::{ProbeReport, ServePayload};
 use crate::protocol::payload;
 use crate::protocol::probe::{ProbeReport as WorkProbeReport, ProbeRequest};
 use crate::protocol::run::{
-    AttachRequest, HistoryReport, HistoryRequest, PurgeReport, PurgeRequest, ResultReport,
-    ResultRequest, RunReport, RunRequest, StartReport, StartRequest, StatusReport, StatusRequest,
-    StopReport, StopRequest,
+    AttachRequest, HistoryReport, HistoryRequest, OutputReport, OutputRequest, PurgeReport,
+    PurgeRequest, ResultReport, ResultRequest, RunReport, RunRequest, StartReport, StartRequest,
+    StatusReport, StatusRequest, StopReport, StopRequest,
 };
 use crate::provider::AgentProvider;
 use crate::ssh::{Master, Ssh};
@@ -332,6 +332,54 @@ pub fn stop_assigned(
         )));
     }
     Ok(report.killed)
+}
+
+/// A slice of the retained output of the run `ccnm rpc` assigned `session`
+/// to (P59).
+///
+/// An answer about another identity, session, stream or offset is
+/// `CCNM_E_INTERNAL`: whatever it is, it is not the slice that was asked for,
+/// and the caller must not keep it.
+pub fn read_output_assigned(
+    resolved: &Resolved<'_>,
+    env: &Env<'_>,
+    agent: &str,
+    session: &str,
+    stream: crate::session::view::Stream,
+    offset: u64,
+    limit: u64,
+) -> Result<OutputReport> {
+    let ssh = agent_ssh(resolved, env)?;
+    let selected = resolved.agent_reference(Some(agent))?.ok_or_else(|| {
+        Error::invalid_args("an assigned session id needs an Agent instance binding")
+    })?;
+    let req = OutputRequest {
+        protocol: crate::instance::OUTPUT_PROTOCOL,
+        workspace: resolved.name.to_string(),
+        agent: selected.clone(),
+        session: session.to_string(),
+        stream,
+        offset,
+        limit,
+    };
+    let report: OutputReport = ssh.call_ccnm(
+        env.runner,
+        Master::Reuse,
+        &["internal", "agent-output"],
+        &req,
+        Duration::from_secs(120),
+        ErrorCode::AgentUnreachable,
+    )?;
+    if report.agent_identity.reference() != selected
+        || report.session != session
+        || report.stream != stream
+        || report.offset != offset
+    {
+        return Err(Error::internal(format!(
+            "the Agent answered the output of {session} with another session, stream or offset"
+        )));
+    }
+    Ok(report)
 }
 
 /// What a session produced, for a `--print` run whose ssh did not survive

@@ -14,7 +14,9 @@
 
 这是 doctor 拦下来的，不是协议层拦的——协议只在**协议号**不同时才拒。所以版本不同的两端有可能跑起来，只是没人验证过那种组合，别让它发生。
 
-**Machine API（`ccnm rpc`）的 print 运行从 P58 起用内部协议 7**：Runtime 在派发前定好 Agent 上的会话 id，好让 `session.stop` 能点名停它。只升级 Runtime、Agent 还是 P58 之前的 build 时，每次 `session.start` 都会以 `failed` 结束、错误是 `CCNM_E_VERSION`（旧 Agent 在解析请求时就拒绝，什么都没创建）——这是两端版本不一致，装成同一个 build 即可，不是 Agent 坏了。人类用的 `ccnm run --print` 不受影响。升级前还在跑的 `ccnm rpc` 会话，新 build 的 `session.stop` 会拒绝（它们没有记 Agent 上的会话 id，见[协议说明](protocol/README.md)），所以按下一节先把会话停掉再升级。
+**Machine API（`ccnm rpc`）的 print 运行从 P58 起用内部协议 7**：Runtime 在派发前定好 Agent 上的会话 id，好让 `session.stop` 能点名停它。只升级 Runtime、Agent 还是 P58 之前的 build 时，每次 `session.start` 都会以 `failed` 结束、错误是 `CCNM_E_VERSION`（旧 Agent 在解析请求时就拒绝，什么都没创建）——这是两端版本不一致，装成同一个 build 即可，不是 Agent 坏了。人类用的 `ccnm run --print` 不受影响。P59 起 `session.result` 用新请求 `agent-output`（内部协议 8）从 Agent 拷输出；Agent 还是 P59 之前的版本时结果照常返回，只是 `output` 降级为旧尾巴并带 `unavailable_reason: agent_refused`，不是出错。升级前还在跑的 `ccnm rpc` 会话，新 build 的 `session.stop` 会拒绝（它们没有记 Agent 上的会话 id，见[协议说明](protocol/README.md)），所以按下一节先把会话停掉再升级。
+
+**Machine API 的输出占多少盘、在哪**（P59）：Agent 在会话目录里为读过的流各存一份只读视图（`sessions/<id>/stdout.view` 等，每个流最多约 32 MiB，全是非法 UTF-8 的极端情况最多约 96 MiB）；Runtime 这边第一次 `session.result` 时整份拷到 `${XDG_STATE_HOME:-~/.local/state}/ccnm/rpc/outputs/<session>/`。两边都不会自动删，目前清理靠删这些目录（不会影响会话记录本身，下次读时会重新拷）；有预览和确认的清理命令是 P61 的事。
 
 ```bash
 bash scripts/deploy.sh <另一台的 ssh 别名> [workspace]

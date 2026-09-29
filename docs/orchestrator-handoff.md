@@ -88,7 +88,7 @@ Orchestrator                                   ccnm
 
 | 名字 | 是什么 |
 | --- | --- |
-| `ExecutionBackend` | 协调层唯一能碰执行层的入口：`agents` / `start` / `status` / `result` / `stop` |
+| `ExecutionBackend` | 协调层唯一能碰执行层的入口：`agents` / `start` / `status` / `result` / `stop`，以及 P59 加的 `output`（按流读回完整输出，有总量上限；`result` 不带完整输出） |
 | `CcnmBackend` | 接到 ccnm 公开协议上的适配器，只依赖 [ccnm_machine_client.py](../clients/python/ccnm_machine_client.py)，不 import 任何 ccnm 库 |
 | `FakeBackend` | 内存实现。**没有 ccnm、没有 Agent、不烧订阅额度也能跑**，用来测协调逻辑 |
 
@@ -116,7 +116,7 @@ with CcnmBackend.spawn() as backend:
 
 每个错误还带一个 `effect`：`none` 什么都没发生（重发安全）、`unknown` 不确定、`applied` 已经生效。**判断重发安不安全看 `effect`，不看 kind，也不要去解析错误文本。**
 
-为什么不直接用 `MachineClient` 调协议？可以，但那样 JSON-RPC 错误码、`node/instance` 这种写法会散进整个协调层，协调逻辑就再也没法脱离 ccnm 单独测试了。这一层把执行收成五个方法五种错误，ccnm 特有的东西只留在 `CcnmBackend` 一个类里。接口测试见 [tests/test_execution_backend.py](../tests/test_execution_backend.py)。
+为什么不直接用 `MachineClient` 调协议？可以，但那样 JSON-RPC 错误码、`node/instance` 这种写法会散进整个协调层，协调逻辑就再也没法脱离 ccnm 单独测试了。这一层把执行收成几个方法和五种错误，ccnm 特有的东西只留在 `CcnmBackend` 一个类里。接口测试见 [tests/test_execution_backend.py](../tests/test_execution_backend.py)。
 
 ## 6. 几条不能越的线
 
@@ -143,7 +143,7 @@ with CcnmBackend.spawn() as backend:
 
 ## 8. 当前消费者必须处理的实现边界
 
-`ccnm.machine/1` 当前只有 print、结果尾部 8 KiB、无分页/过期；`session.start` 不发 `-32008 busy`，写锁冲突可能在 Agent 启动后表现为执行失败。不要按一个永远不返回的错误码编排退避，也不要把尾部文本当完整验收产物，详见[协议实现差距](protocol/README.md)。
+`ccnm.machine/1` 当前只有 print；结果输出自 P59 起可分页读回（每流最后 32 MiB，结束后才有），但没有过期；`session.start` 不发 `-32008 busy`，写锁冲突可能在 Agent 启动后表现为执行失败。不要按一个永远不返回的错误码编排退避，也不要把尾部文本当完整验收产物，详见[协议实现差距](protocol/README.md)。
 
 写互斥要求共享 state 域及 canonical 资源；Runtime MCP relay 的子进程未退出即交权缺陷（C51-01）P52 已修复，macOS 与 Linux 均已验证；离开进程组的后代仍在范围外（[P52 记录](research/2026-09-25-p52-relay-group-cleanup.md)），所以写锁 `released` 不证明整棵进程树已停，不应单凭它编排无人值守的并行或连续交权。消费者不能用旁路 SSH、删除锁或无限重试“修复”它。
 

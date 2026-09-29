@@ -39,7 +39,7 @@ Agent 的 `ccnm_agent` 在 Agent Identity 下运行。skills 的目录内读取�
 
 关掉 Operator 终端可能只断开 tmux attach；Agent 可以仍在运行。Agent 到 Runtime 的 MCP 连接结束则会触发命令收尾。Runtime 本身睡眠或不可达时，不保证持续工作；要合盖使用，应让真实 Runtime 位于不会睡眠的机器，并验收实际网络与供电条件。
 
-Machine API 的 `session.result` 当前只有最后 8 KiB、无分页；Runtime `read_output` 可分页，但 ref 属于产生它的连接/会话，不能当跨重连的持久任务句柄；Agent `read_mcp_result` 的长结果只保存在内存中，最多 30 分钟、单条 16 MiB、总量 64 MiB，服务结束即失去。**正式测试报告、构建物和发布证据应保存为项目产物，并由交付系统归档，不能只留在对话或某个 ref 里。**
+Machine API 的 `session.result` 自 P59 起可倒序分页读回每个流最后 32 MiB 的保留内容，但只在会话结束后提供，结果与本机拷贝都没有过期清理（清理属于 P61）；Runtime `read_output` 可分页，但 ref 属于产生它的连接/会话，不能当跨重连的持久任务句柄；Agent `read_mcp_result` 的长结果只保存在内存中，最多 30 分钟、单条 16 MiB、总量 64 MiB，服务结束即失去。**正式测试报告、构建物和发布证据应保存为项目产物，并由交付系统归档，不能只留在对话或某个 ref 里。**
 
 ### 成功、停止和交权必须有不同证据
 

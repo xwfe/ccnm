@@ -5,6 +5,9 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
+use std::time::Duration;
+
+use serde::{Deserialize, Serialize};
 
 use crate::config::Config;
 use crate::error::{Error, Result};
@@ -25,6 +28,18 @@ const RELEASED: &str = "released\n";
 /// session could not stop, as [`Jobs::stop_all`](crate::mcp::jobs::Jobs::stop_all)
 /// named them.
 const ABANDONED: &str = "abandoned ";
+
+/// How often [`WriteGuard::acquire`] looks again before calling the guard
+/// busy, and how long it waits in between.
+///
+/// An [`observe`] holds the lock shared for the few microseconds it takes to
+/// read the marker. A writer arriving in exactly that instant would
+/// otherwise be refused as busy by a diagnostic, which is the one thing an
+/// observation must not do (P60). 5 × 20 ms is far longer than any read of a
+/// one-line file and far shorter than anything a person or client notices on
+/// a real refusal.
+const BUSY_RETRIES: u32 = 5;
+const BUSY_BACKOFF: Duration = Duration::from_millis(20);
 
 impl WriteGuard {
     pub fn acquire(
@@ -47,10 +62,7 @@ impl WriteGuard {
         let locks = state.join("write-guards");
         std::fs::create_dir_all(&locks)?;
         std::fs::set_permissions(&locks, std::fs::Permissions::from_mode(0o700))?;
-        let path = locks.join(format!(
-            "{:016x}.lock",
-            crate::paths::fnv1a(resource.as_os_str().as_bytes())
-        ));
+        let path = lock_path(state, &resource);
         let mut file = OpenOptions::new()
             .read(true)
             .write(true)
@@ -59,7 +71,17 @@ impl WriteGuard {
             .mode(0o600)
             .open(&path)?;
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
-        match file.try_lock() {
+        let mut looked = 0;
+        let locked = loop {
+            match file.try_lock() {
+                Err(std::fs::TryLockError::WouldBlock) if looked < BUSY_RETRIES => {
+                    looked += 1;
+                    std::thread::sleep(BUSY_BACKOFF);
+                }
+                other => break other,
+            }
+        };
+        match locked {
             Ok(()) => {}
             Err(std::fs::TryLockError::WouldBlock) => {
                 return Err(Error::policy(
@@ -261,6 +283,261 @@ fn owner_now(pid: u32, runner: &dyn ProcessRunner) -> Option<String> {
     (!line.is_empty()).then_some(line)
 }
 
+/// The write guard of one workspace as the Runtime that keeps it sees it
+/// right now (P60).
+///
+/// **A report, not a grant.** Nothing here reserves the tree: by the time a
+/// `free` reaches whoever asked, another writer may have taken it, and the
+/// only thing that hands out write authority is still
+/// [`WriteGuard::acquire`] when a session opens. That is also why the state
+/// comes from the lock and the owner from the marker: the lock says whether
+/// some process holds it now, the marker says who took it last, and neither
+/// alone says both.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Observation {
+    pub state: Observed,
+    pub reason: Reason,
+    pub resource: Resource,
+    /// Who the marker names. Absent when it names nobody, or when a live
+    /// holder has not finished writing it yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<Owner>,
+    /// What the last session could not stop, in its own words: commands by
+    /// `output_ref`, relayed MCP servers by process group. Only for
+    /// [`Observed::Abandoned`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub leftovers: Option<String>,
+    /// Unix seconds on the Runtime.
+    pub observed_at: u64,
+}
+
+/// Four answers, and **not** session states: a Machine API session never
+/// ends up `held`, and none of these ends one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Observed {
+    /// The next session would get the guard, if nobody takes it first.
+    Free,
+    /// A process holds it now.
+    Held,
+    /// The last session ended with something it could not stop and kept
+    /// the guard on purpose.
+    Abandoned,
+    /// Nobody can say. A person has to look before anyone writes.
+    Unknown,
+}
+
+/// Why, from a fixed list, so that nobody has to parse a sentence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Reason {
+    /// No marker: nobody using this state directory has taken it yet.
+    NeverTaken,
+    /// The last owner ended cleanly.
+    Released,
+    /// Some process holds the lock.
+    LiveHolder,
+    /// See [`WriteGuard::abandon`].
+    KeptOnPurpose,
+    /// The marker says held and nobody holds the lock: the owner was
+    /// interrupted. What it started may still be running, and nothing here
+    /// can see it, so this is unknown rather than free (P43).
+    LeftHeld,
+    /// Neither empty, `released` nor `held …`: half written, or not ours.
+    MalformedMarker,
+    /// The marker or its directory could not be read by this account.
+    Unreadable,
+    /// The lock itself could not be asked.
+    LockQueryFailed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Resource {
+    pub kind: ResourceKind,
+    /// The marker's file name without `.lock`, so a person can find the one
+    /// file to look at. A hash, not the path: this answer leaves the Runtime.
+    pub id: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResourceKind {
+    /// One guard for every worktree of the repository.
+    GitCommonDir,
+    /// Not a git repository: the workspace root itself.
+    Root,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Owner {
+    pub session: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<String>,
+    /// For diagnosis only. It never decides [`Observation::state`]: a pid
+    /// that is gone says nothing about the children it left.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u32>,
+    /// What that pid is now; absent when the marker has none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub process: Option<Process>,
+    /// A marker from before P43, which recorded no pid.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub legacy: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Process {
+    /// A ccnm process has that pid.
+    Ccnm,
+    /// Something else has it now: the pid was reused.
+    Other,
+    /// No process has it.
+    Gone,
+    /// `ps` could not be asked.
+    Unchecked,
+}
+
+/// Look at the guard of `root` (canonical) without touching it.
+///
+/// Creates nothing and writes nothing: no directory, no marker, no lock
+/// that outlives this call. To tell a live holder from a marker left behind
+/// it has to ask the lock, so it takes it **shared** for as long as reading
+/// one line takes and then releases it explicitly -- not by closing: a
+/// child forked meanwhile shares the open file, and a lock released only
+/// by close would live on in it until it execs (P34). A writer that
+/// arrives in that instant is covered by [`BUSY_RETRIES`].
+pub fn observe(state: &Path, root: &Path, runner: &dyn ProcessRunner) -> Observation {
+    let resource = resource_root(root, runner);
+    let reference = Resource {
+        kind: if resource == root {
+            ResourceKind::Root
+        } else {
+            ResourceKind::GitCommonDir
+        },
+        id: resource_id(&resource),
+    };
+    let seen = |state, reason, owner, leftovers| Observation {
+        state,
+        reason,
+        resource: reference.clone(),
+        owner,
+        leftovers,
+        observed_at: crate::overview::now_secs(),
+    };
+    let file = match File::open(lock_path(state, &resource)) {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return seen(Observed::Free, Reason::NeverTaken, None, None);
+        }
+        Err(_) => return seen(Observed::Unknown, Reason::Unreadable, None, None),
+    };
+    let live = match file.try_lock_shared() {
+        Ok(()) => false,
+        Err(std::fs::TryLockError::WouldBlock) => true,
+        Err(_) => return seen(Observed::Unknown, Reason::LockQueryFailed, None, None),
+    };
+    let mut text = String::new();
+    let read = (&file).read_to_string(&mut text);
+    if !live {
+        // Before anything below forks a `ps`.
+        let _ = file.unlock();
+    }
+    drop(file);
+    let marker = parse_marker(&text);
+    let owner = marker.as_ref().map(|(owner, _)| Owner {
+        process: owner.pid.map(|pid| process_now(pid, runner)),
+        ..owner.clone()
+    });
+    if live {
+        // Read without the lock, so possibly mid-write: the owner is a
+        // best guess, and a writer that has not written its line yet shows
+        // none (the line before it can only be empty or `released`, or it
+        // would not have got the lock).
+        return seen(Observed::Held, Reason::LiveHolder, owner, None);
+    }
+    if read.is_err() {
+        return seen(Observed::Unknown, Reason::Unreadable, None, None);
+    }
+    match (text.as_str(), marker) {
+        ("", _) => seen(Observed::Free, Reason::NeverTaken, None, None),
+        (RELEASED, _) => seen(Observed::Free, Reason::Released, None, None),
+        (_, Some((_, Some(what)))) => seen(
+            Observed::Abandoned,
+            Reason::KeptOnPurpose,
+            owner,
+            Some(what),
+        ),
+        (_, Some((_, None))) => seen(Observed::Unknown, Reason::LeftHeld, owner, None),
+        (_, None) => seen(Observed::Unknown, Reason::MalformedMarker, None, None),
+    }
+}
+
+/// `held <session> [<workspace> [pid <pid>]]`, then an optional
+/// `abandoned …` line: the owner, and what it could not stop.
+fn parse_marker(text: &str) -> Option<(Owner, Option<String>)> {
+    let first = text.lines().next()?.strip_prefix("held ")?;
+    let mut words = first.split_whitespace();
+    let session = words.next()?.to_string();
+    let workspace = words.next().map(str::to_string);
+    // Read the way `left_held` reads it, so that whatever the refusal
+    // names, this names too.
+    let (legacy, pid) = match (words.next(), words.next()) {
+        (None, _) => (true, None),
+        (Some("pid"), Some(pid)) => (false, pid.parse::<u32>().ok()),
+        _ => (false, None),
+    };
+    let abandoned = text
+        .lines()
+        .skip(1)
+        .find_map(|line| line.strip_prefix(ABANDONED))
+        .map(str::to_string);
+    Some((
+        Owner {
+            session,
+            workspace,
+            pid,
+            process: None,
+            legacy,
+        },
+        abandoned,
+    ))
+}
+
+/// [`owner_now`], keeping "no such process" apart from "could not ask":
+/// the second is not evidence of anything.
+fn process_now(pid: u32, runner: &dyn ProcessRunner) -> Process {
+    let Ok(output) = runner.run(&Cmd::new("ps").args(["-o", "command=", "-p", &pid.to_string()]))
+    else {
+        return Process::Unchecked;
+    };
+    let command = output.stdout_lossy().trim().to_string();
+    match (output.success(), command.is_empty()) {
+        (true, false) if command.contains("ccnm") => Process::Ccnm,
+        (true, false) => Process::Other,
+        // Both `ps`es exit 1 with nothing on stdout for a pid that is not
+        // there. Anything else is `ps` failing.
+        (false, true) if output.exit_code == Some(1) => Process::Gone,
+        _ => Process::Unchecked,
+    }
+}
+
+fn lock_path(state: &Path, resource: &Path) -> PathBuf {
+    state
+        .join("write-guards")
+        .join(format!("{}.lock", resource_id(resource)))
+}
+
+fn resource_id(resource: &Path) -> String {
+    format!(
+        "{:016x}",
+        crate::paths::fnv1a(resource.as_os_str().as_bytes())
+    )
+}
+
 fn resource_root(root: &Path, runner: &dyn ProcessRunner) -> PathBuf {
     let output = runner.run(
         &Cmd::new("git")
@@ -454,6 +731,220 @@ mod tests {
         runner.push(Output::exited(0, format!("{}\n", common.display())));
         assert!(WriteGuard::acquire(&state, &other, "two", "s2", None, &runner).is_err());
         drop(first);
+        std::fs::remove_dir_all(state).unwrap();
+    }
+
+    fn marker_path(state: &Path, root: &Path) -> PathBuf {
+        state.join("write-guards").join(format!(
+            "{:016x}.lock",
+            crate::paths::fnv1a(root.as_os_str().as_bytes())
+        ))
+    }
+
+    /// 观察说 free，当且仅当下一个 acquire 真能拿到；而且观察本身一个字节都不改。
+    ///
+    /// 这是两个判断同一件事的函数，一个给人和调用方看、一个真正交权。它们
+    /// 说法不一致，就会出现"说空闲却进不去"或者更糟的"说被占其实没人"。
+    #[test]
+    fn observation_agrees_with_acquire_and_changes_nothing() {
+        let cases: &[(Option<&str>, Observed, Reason)] = &[
+            (None, Observed::Free, Reason::NeverTaken),
+            (Some(""), Observed::Free, Reason::NeverTaken),
+            (Some("released\n"), Observed::Free, Reason::Released),
+            (
+                Some("held s0 demo pid 4242\n"),
+                Observed::Unknown,
+                Reason::LeftHeld,
+            ),
+            // P43 之前的两种格式：没有 pid。
+            (Some("held s0 demo\n"), Observed::Unknown, Reason::LeftHeld),
+            (Some("held s0\n"), Observed::Unknown, Reason::LeftHeld),
+            (
+                Some("held s0 demo pid 4242\nabandoned 1 command(s) (r-a)\n"),
+                Observed::Abandoned,
+                Reason::KeptOnPurpose,
+            ),
+            (Some("rel"), Observed::Unknown, Reason::MalformedMarker),
+            (
+                Some("released\nold-bytes"),
+                Observed::Unknown,
+                Reason::MalformedMarker,
+            ),
+            (Some("held \n"), Observed::Unknown, Reason::MalformedMarker),
+        ];
+        for (marker, state_seen, reason) in cases {
+            let (state, root) = fixture("agree");
+            if let Some(marker) = marker {
+                std::fs::create_dir_all(state.join("write-guards")).unwrap();
+                std::fs::write(marker_path(&state, &root), marker).unwrap();
+            }
+            // 空的 runner：git 和 ps 都问不到。资源退回 root，pid 核对不了。
+            let seen = observe(&state, &root, &FakeRunner::new());
+            assert_eq!(
+                (seen.state, seen.reason),
+                (*state_seen, *reason),
+                "{marker:?}"
+            );
+            assert_eq!(seen.resource.kind, ResourceKind::Root);
+            match marker {
+                None => assert!(!state.join("write-guards").exists(), "观察不建目录"),
+                Some(marker) => assert_eq!(
+                    std::fs::read_to_string(marker_path(&state, &root)).unwrap(),
+                    *marker,
+                    "观察不改 marker"
+                ),
+            }
+            let runner = FakeRunner::new();
+            let acquired = WriteGuard::acquire(&state, &root, "demo", "s1", None, &runner);
+            assert_eq!(
+                acquired.is_ok(),
+                *state_seen == Observed::Free,
+                "{marker:?}: {:?}",
+                acquired.err()
+            );
+            drop(acquired);
+            std::fs::remove_dir_all(state).unwrap();
+        }
+    }
+
+    #[test]
+    fn a_live_holder_is_held_named_and_left_alone() {
+        let (state, root) = fixture("live");
+        let runner = FakeRunner::new();
+        let holder = WriteGuard::acquire(&state, &root, "demo", "s1", None, &runner).unwrap();
+        let before = std::fs::read(marker_path(&state, &root)).unwrap();
+
+        let ps = FakeRunner::new();
+        ps.push(Output::exited(1, "")); // git
+        ps.push(Output::exited(0, "ccnm internal mcp-serve --payload x\n"));
+        let seen = observe(&state, &root, &ps);
+        assert_eq!(
+            (seen.state, seen.reason),
+            (Observed::Held, Reason::LiveHolder)
+        );
+        let owner = seen.owner.expect("the marker names who holds it");
+        assert_eq!(owner.session, "s1");
+        assert_eq!(owner.workspace.as_deref(), Some("demo"));
+        assert_eq!(owner.pid, Some(std::process::id()));
+        assert_eq!(owner.process, Some(Process::Ccnm));
+        assert!(!owner.legacy);
+
+        assert_eq!(std::fs::read(marker_path(&state, &root)).unwrap(), before);
+        // 持有者还是它：别人照样进不来，它自己收尾照样写 released。
+        assert!(
+            WriteGuard::acquire(&state, &root, "demo", "s2", None, &FakeRunner::new()).is_err()
+        );
+        drop(holder);
+        assert_eq!(
+            std::fs::read_to_string(marker_path(&state, &root)).unwrap(),
+            RELEASED
+        );
+        std::fs::remove_dir_all(state).unwrap();
+    }
+
+    /// pid 只是诊断：四种说法都有，状态一个都不变（评审 X05）。
+    #[test]
+    fn the_pid_is_described_and_never_decides() {
+        for (ps, expected) in [
+            (
+                Some(Output::exited(0, "ccnm internal mcp-serve\n")),
+                Process::Ccnm,
+            ),
+            (Some(Output::exited(0, "vim notes.txt\n")), Process::Other),
+            (Some(Output::exited(1, "")), Process::Gone),
+            (Some(Output::exited(2, "")), Process::Unchecked),
+            (None, Process::Unchecked),
+        ] {
+            let (state, root) = fixture("pid-seen");
+            std::fs::create_dir_all(state.join("write-guards")).unwrap();
+            std::fs::write(marker_path(&state, &root), "held old demo pid 4242\n").unwrap();
+            let runner = FakeRunner::new();
+            runner.push(Output::exited(1, "")); // git
+            if let Some(ps) = ps {
+                runner.push(ps);
+            }
+            let seen = observe(&state, &root, &runner);
+            assert_eq!(
+                (seen.state, seen.reason),
+                (Observed::Unknown, Reason::LeftHeld)
+            );
+            let owner = seen.owner.unwrap();
+            assert_eq!((owner.pid, owner.process), (Some(4242), Some(expected)));
+            std::fs::remove_dir_all(state).unwrap();
+        }
+    }
+
+    #[test]
+    fn what_this_account_cannot_read_is_unknown_not_free() {
+        let (state, root) = fixture("unreadable");
+        let locks = state.join("write-guards");
+        std::fs::create_dir_all(&locks).unwrap();
+        std::fs::write(marker_path(&state, &root), "released\n").unwrap();
+        std::fs::set_permissions(&locks, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let seen = observe(&state, &root, &FakeRunner::new());
+        // root 读得到一切，这条对它不成立。
+        let denied = File::open(marker_path(&state, &root)).is_err();
+        std::fs::set_permissions(&locks, std::fs::Permissions::from_mode(0o700)).unwrap();
+        if denied {
+            assert_eq!(
+                (seen.state, seen.reason),
+                (Observed::Unknown, Reason::Unreadable)
+            );
+        }
+        std::fs::remove_dir_all(state).unwrap();
+    }
+
+    /// 观察那一瞬间的共享锁不让新 writer 被拒成 busy。
+    #[test]
+    fn a_writer_arriving_during_an_observation_still_gets_the_guard() {
+        let (state, root) = fixture("overlap-observe");
+        std::fs::create_dir_all(state.join("write-guards")).unwrap();
+        std::fs::write(marker_path(&state, &root), RELEASED).unwrap();
+        // 一次拉长了的观察：共享锁攥 40 ms。
+        let peek = File::open(marker_path(&state, &root)).unwrap();
+        peek.try_lock_shared().unwrap();
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(40));
+            peek.unlock().unwrap();
+        });
+        let guard = WriteGuard::acquire(&state, &root, "demo", "s1", None, &FakeRunner::new());
+        release.join().unwrap();
+        assert!(guard.is_ok(), "{:?}", guard.err());
+        drop(guard);
+        std::fs::remove_dir_all(state).unwrap();
+    }
+
+    /// fork 压力下观察不留锁：每次观察一结束，排他锁马上拿得到。
+    ///
+    /// 靠 close 放锁的写法在这里会偶发失败：别的线程刚 fork 出来、还没
+    /// exec 的子进程和我们共享同一个打开的文件，锁跟着它活到 exec（P34）。
+    #[test]
+    fn observing_under_fork_pressure_leaves_no_lock_behind() {
+        let (state, root) = fixture("fork");
+        std::fs::create_dir_all(state.join("write-guards")).unwrap();
+        std::fs::write(marker_path(&state, &root), RELEASED).unwrap();
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let forkers: Vec<_> = (0..4)
+            .map(|_| {
+                let stop = stop.clone();
+                std::thread::spawn(move || {
+                    while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                        let _ = std::process::Command::new("/usr/bin/true").status();
+                    }
+                })
+            })
+            .collect();
+        for round in 0..200 {
+            let seen = observe(&state, &root, &FakeRunner::new());
+            assert_eq!(seen.state, Observed::Free);
+            let check = File::open(marker_path(&state, &root)).unwrap();
+            assert!(check.try_lock().is_ok(), "round {round}: 观察留下了锁");
+            check.unlock().unwrap();
+        }
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        for forker in forkers {
+            forker.join().unwrap();
+        }
         std::fs::remove_dir_all(state).unwrap();
     }
 

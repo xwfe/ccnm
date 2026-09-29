@@ -193,7 +193,11 @@ class ExactControlTests(RpcSandbox):
         client = self.client()
         session = self.start(client, "run stop-kept")["session"]
         self.wait_started("run stop-kept")
-        self.assertEqual(client.session_stop(session)["state"], "stopping")
+        # 假 Agent 一收到 stop 就放那次运行结束，所以运行可能抢在 stop 回话前落盘，
+        # 那时回的是终态：两种都合协议（30 次里约 1 次是后者）。要守的是标志没丢。
+        answer = client.session_stop(session)
+        self.assertIn(answer["state"], ("stopping", "failed"))
+        self.assertTrue(answer["stop_requested"])
         final = self.settle(client, session)
         self.assertEqual(final["state"], "failed")
         self.assertTrue(final["stop_requested"], "stop 标志被运行线程写回了 false")

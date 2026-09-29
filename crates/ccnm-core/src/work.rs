@@ -23,9 +23,10 @@ use crate::protocol::mcp::{ProbeReport as McpProbeReport, ServePayload};
 use crate::protocol::payload;
 use crate::protocol::probe::{ProbeReport, ProbeRequest};
 use crate::protocol::run::{
-    AttachRequest, HistoryEntry, HistoryReport, HistoryRequest, OutputReport, OutputRequest,
-    PurgeReport, PurgeRequest, ResultReport, ResultRequest, RunReport, RunRequest, SessionRecord,
-    SessionState, StartReport, StartRequest, StatusReport, StatusRequest, StopReport, StopRequest,
+    AgentGuardReport, AgentGuardRequest, AttachRequest, HistoryEntry, HistoryReport,
+    HistoryRequest, OutputReport, OutputRequest, OwnerOnAgent, PurgeReport, PurgeRequest,
+    ResultReport, ResultRequest, RunReport, RunRequest, SessionRecord, SessionState, StartReport,
+    StartRequest, StatusReport, StatusRequest, StopReport, StopRequest,
 };
 use crate::protocol::{self};
 use crate::provider::{AgentProvider, AgentReport, AgentResult, Ask};
@@ -1735,6 +1736,72 @@ pub fn output(req: &OutputRequest, tools: &Tools<'_>) -> Result<OutputReport> {
         offset: req.offset,
         data: base64::engine::general_purpose::STANDARD.encode(data),
     })
+}
+
+/// `ccnm internal agent-guard` (P60): ask the Runtime about the workspace's
+/// write guard over this Agent's link to it, and add the one thing only
+/// this machine knows -- what became of the session the marker names.
+///
+/// Checks the instance against this machine's registry and nothing more:
+/// no profile directory is opened, because nothing here runs an Agent.
+pub fn guard(req: &AgentGuardRequest, tools: &Tools<'_>) -> Result<AgentGuardReport> {
+    let identity = tools.config.resolve_identity(&req.agent)?;
+    let Some(link) = tools.runtime_link(&req.runtime_node)? else {
+        return Err(Error::new(
+            ErrorCode::NotReady,
+            "the Runtime Node is this machine; a colocated workspace has no Runtime write guard to ask about",
+        ));
+    };
+    let ssh = Ssh::new(&link.alias, &tools.control_dir)?
+        .with_ccnm_bin(&link.ccnm_bin)
+        .for_provider(identity.provider);
+    let runtime: crate::runtime::GuardReport = ssh.call_ccnm(
+        tools.runner,
+        Master::Reuse,
+        &["internal", "runtime-guard"],
+        &crate::runtime::GuardRequest {
+            protocol: crate::runtime::GUARD_PROTOCOL,
+            workspace: req.workspace.clone(),
+            node: identity.node.clone(),
+        },
+        Duration::from_secs(30),
+        ErrorCode::RuntimeUnreachable,
+    )?;
+    if runtime.workspace != req.workspace {
+        return Err(Error::internal(
+            "the Runtime answered about another workspace's write guard",
+        ));
+    }
+    let owner_on_agent = runtime
+        .observation
+        .owner
+        .as_ref()
+        .and_then(|owner| owner_on_agent(&owner.session, tools));
+    Ok(AgentGuardReport {
+        protocol: crate::runtime::GUARD_PROTOCOL,
+        agent_identity: identity,
+        runtime,
+        owner_on_agent,
+    })
+}
+
+/// This machine's record of the session a guard marker names. `None` for a
+/// name that was never an Agent session id (`bridge-…`, `probe-…`).
+fn owner_on_agent(id: &str, tools: &Tools<'_>) -> Option<OwnerOnAgent> {
+    if !session::valid_id(id) {
+        return None;
+    }
+    let dir = session::Dir::at(paths::session_dir(&tools.state, id));
+    let Ok(spec) = session::load(&dir) else {
+        return Some(OwnerOnAgent::NotHere);
+    };
+    let outcome = session::read_outcome(&dir).ok().flatten();
+    Some(OwnerOnAgent::State(session_state(
+        &spec,
+        &dir,
+        outcome.as_ref(),
+        tools,
+    )))
 }
 
 /// The workspace's most recent **print** session, by when its directory

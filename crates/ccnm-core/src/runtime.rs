@@ -773,6 +773,107 @@ pub fn audit(
     })
 }
 
+/// The wire version of a write-guard observation (P60).
+///
+/// A number of its own, like 4 and 5: an older Runtime has no such
+/// question, and must say so with `CCNM_E_VERSION` rather than answer
+/// something else. The Agent relays the answer under the same number.
+pub const GUARD_PROTOCOL: u32 = 9;
+
+/// "What does the write guard of this workspace look like right now?"
+///
+/// Asked over the Agent's ssh, like [`AuditRequest`], because the answer
+/// lives in the state directory of the account that runs the tools: the
+/// Operator typing `ccnm status` usually cannot read it, and its own
+/// `write-guards/` belongs to another state domain entirely (P43).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GuardRequest {
+    pub protocol: u32,
+    pub workspace: String,
+    /// The Agent Node asking. It must be the one the workspace is bound to.
+    pub node: String,
+}
+
+impl Protocol for GuardRequest {
+    fn protocol(&self) -> u32 {
+        self.protocol
+    }
+    fn expected_protocol(&self) -> u32 {
+        GUARD_PROTOCOL
+    }
+}
+
+/// The Runtime's answer. It names the workspace and a hash of the resource,
+/// never a path: it travels back through the Agent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GuardReport {
+    pub protocol: u32,
+    pub workspace: String,
+    pub observation: crate::mcp::write_guard::Observation,
+}
+
+impl Protocol for GuardReport {
+    fn protocol(&self) -> u32 {
+        self.protocol
+    }
+    fn expected_protocol(&self) -> u32 {
+        GUARD_PROTOCOL
+    }
+}
+
+/// Look at a workspace's write guard as whoever runs this process.
+///
+/// Read-only in the way [`resolve`] is, and a little more: it starts no
+/// server, takes no guard and writes no marker (see
+/// [`observe`](crate::mcp::write_guard::observe)). `state` is this
+/// account's ccnm state directory, the one `mcp-serve` takes the guard in.
+pub fn guard(
+    config: &Config,
+    request: &GuardRequest,
+    state: &Path,
+    runner: &dyn ProcessRunner,
+) -> Result<GuardReport> {
+    if request.protocol != GUARD_PROTOCOL {
+        return Err(Error::new(
+            ErrorCode::Version,
+            format!(
+                "guard request is protocol {}, this Runtime answers protocol {GUARD_PROTOCOL}",
+                request.protocol
+            ),
+        ));
+    }
+    let resolved = config.workspace(&request.workspace)?;
+    // The same two facts an open checks before it takes the guard: this
+    // machine is where the workspace lives, and the caller is the Agent
+    // Node it is bound to. Anything else would describe a guard nobody here
+    // would ever take for that caller.
+    if config.this.as_deref() != Some(resolved.workspace.runtime_node.as_str()) {
+        return Err(Error::config(
+            "this machine is not the authoritative Runtime for that workspace",
+        ));
+    }
+    let bound = resolved
+        .workspace
+        .agent
+        .as_ref()
+        .map_or(resolved.workspace.agent_node.as_str(), |agent| {
+            agent.node.as_str()
+        });
+    if bound != request.node {
+        return Err(Error::config(
+            "the workspace is bound to another Agent Node than the one asking",
+        ));
+    }
+    let root = canonical_root(&resolved.workspace.root)?;
+    Ok(GuardReport {
+        protocol: GUARD_PROTOCOL,
+        workspace: request.workspace.clone(),
+        observation: crate::mcp::write_guard::observe(state, &root, runner),
+    })
+}
+
 /// What arrived on `internal mcp-serve --payload`.
 ///
 /// Two shapes, told apart by the `protocol` number that every ccnm message
@@ -936,6 +1037,44 @@ root = "{}"
 
     fn external(workspace: &str, mode: ExternalMode) -> ExternalOpenPayload {
         ExternalOpenPayload::new(workspace, "bridge-1", mode)
+    }
+
+    /// 写锁只问它真正所在的那台：不是这个 workspace 的 Runtime、或者问的不是
+    /// 绑定的那个 Agent Node，都不答——答了也是一把没人会在这里拿的锁（P60）。
+    #[test]
+    fn a_guard_is_described_only_by_its_runtime_for_its_agent() {
+        let dir = workspace_dir("guard-authority");
+        let root = dir.join("project");
+        let ask = |node: &str| GuardRequest {
+            protocol: GUARD_PROTOCOL,
+            workspace: "demo".into(),
+            node: node.into(),
+        };
+        let state = dir.join("state");
+        let runner = crate::process::FakeRunner::new();
+        let here = guard(&config(&root), &ask("agent"), &state, &runner).unwrap();
+        assert_eq!(
+            here.observation.state,
+            crate::mcp::write_guard::Observed::Free
+        );
+        assert!(!state.exists(), "an observation creates nothing");
+
+        let other = guard(&config(&root), &ask("someone-else"), &state, &runner).unwrap_err();
+        assert_eq!(other.code(), ErrorCode::Config);
+        let mut elsewhere = config(&root);
+        elsewhere.this = Some("agent".into());
+        let not_here = guard(&elsewhere, &ask("agent"), &state, &runner).unwrap_err();
+        assert_eq!(not_here.code(), ErrorCode::Config);
+        let old = GuardRequest {
+            protocol: OPEN_PROTOCOL,
+            ..ask("agent")
+        };
+        assert_eq!(
+            guard(&config(&root), &old, &state, &runner)
+                .unwrap_err()
+                .code(),
+            ErrorCode::Version
+        );
     }
 
     /// The default is closed. Being able to reach this machine is not

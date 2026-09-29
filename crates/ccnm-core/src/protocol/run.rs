@@ -452,6 +452,66 @@ impl Protocol for OutputReport {
     }
 }
 
+/// `ccnm internal agent-guard` (P60): ask the Runtime, over this Agent's own
+/// link to it, what the workspace's write guard looks like.
+///
+/// Relayed rather than asked directly because the Agent's ssh is the one
+/// that lands on the Runtime Executor -- the account whose state directory
+/// holds the guard. The Operator knows the Runtime Node by name only.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentGuardRequest {
+    pub protocol: u32,
+    pub workspace: String,
+    pub agent: InstanceRef,
+    pub runtime_node: String,
+}
+
+impl Protocol for AgentGuardRequest {
+    fn protocol(&self) -> u32 {
+        self.protocol
+    }
+    fn expected_protocol(&self) -> u32 {
+        crate::runtime::GUARD_PROTOCOL
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentGuardReport {
+    pub protocol: u32,
+    pub agent_identity: AgentIdentity,
+    /// The Runtime's answer, as it gave it.
+    pub runtime: crate::runtime::GuardReport,
+    /// What this Agent's own records say about the session the marker
+    /// names. The one fact the Runtime cannot see: a guard held for a
+    /// session the Agent finished hours ago is an orphan server, not a
+    /// busy workspace (see `overview`). Absent when the marker names
+    /// nobody, or a session that was never an Agent session (an external
+    /// client's `bridge-…`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_on_agent: Option<OwnerOnAgent>,
+}
+
+impl Protocol for AgentGuardReport {
+    fn protocol(&self) -> u32 {
+        self.protocol
+    }
+    fn expected_protocol(&self) -> u32 {
+        crate::runtime::GUARD_PROTOCOL
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OwnerOnAgent {
+    /// This Agent has no record of it: another Agent's session, or one
+    /// whose records were removed.
+    NotHere,
+    /// This Agent's record, and what state it is in.
+    State(SessionState),
+}
+
 /// `ccnm internal agent-result`: what a session that already ran produced.
 ///
 /// This exists for the interruption `--print` cannot survive. The session

@@ -387,6 +387,152 @@ fn parse_guard(text: &str) -> Option<Guard> {
     })
 }
 
+/// `ccnm status <workspace>`'s write-guard lines (P60): what the Runtime
+/// Executor said about its own guard, or that it could not be asked.
+///
+/// Never a guess in either direction. "Could not ask" is said as such and
+/// is not free; "free" says it is an observation, because the next session
+/// still has to take the guard itself and someone may take it first.
+pub fn render_guard(
+    answer: &crate::Result<crate::protocol::run::AgentGuardReport>,
+    offset_secs: i64,
+    lang: Lang,
+) -> String {
+    use crate::mcp::write_guard::{Observed, Process, Reason};
+    use crate::protocol::run::OwnerOnAgent;
+    let report = match answer {
+        Ok(report) => report,
+        Err(e) => {
+            return lang.pick(
+                format!("写锁  问不到 Runtime（{e}）——这不等于空闲\n"),
+                format!("guard  could not ask the Runtime ({e}); that does not mean free\n"),
+            );
+        }
+    };
+    let seen = &report.runtime.observation;
+    let at = clock(seen.observed_at, offset_secs);
+    let marker = format!("write-guards/{}.lock", seen.resource.id);
+    let owner = seen
+        .owner
+        .as_ref()
+        .map_or("-", |owner| short(&owner.session));
+    let pid = seen
+        .owner
+        .as_ref()
+        .and_then(|owner| Some((owner.pid?, owner.process?)))
+        .map(|(pid, process)| match process {
+            Process::Ccnm => lang.pick(
+                format!("pid {pid} 还是 ccnm 进程"),
+                format!("pid {pid} is still a ccnm process"),
+            ),
+            Process::Other => lang.pick(
+                format!("pid {pid} 现在是别的程序（号被复用了）"),
+                format!("pid {pid} is something else now (reused)"),
+            ),
+            Process::Gone => lang.pick(
+                format!("pid {pid} 已经没了——这不等于它起的命令也没了"),
+                format!("pid {pid} is gone -- which does not mean its children are"),
+            ),
+            Process::Unchecked => lang.pick(
+                format!("pid {pid} 查不了（ps 跑不了）"),
+                format!("pid {pid} could not be checked (no ps)"),
+            ),
+        });
+    let legacy = seen.owner.as_ref().is_some_and(|owner| owner.legacy);
+    let on_agent = match report.owner_on_agent {
+        Some(OwnerOnAgent::State(state @ (SessionState::Completed | SessionState::Failed))) => {
+            Some(lang.pick(
+                format!(
+                    "Agent 那边这个会话已经{}——占锁的多半是它留下的孤儿 mcp-serve",
+                    state_word(state, lang)
+                ),
+                format!(
+                    "the Agent says this session {} -- likely an orphan mcp-serve",
+                    state_word(state, lang)
+                ),
+            ))
+        }
+        Some(OwnerOnAgent::State(state)) => Some(lang.pick(
+            format!("Agent 那边这个会话：{}", state_word(state, lang)),
+            format!("on the Agent: {}", state_word(state, lang)),
+        )),
+        Some(OwnerOnAgent::NotHere) => Some(lang.pick(
+            "这台 Agent 没有这个会话的记录".to_string(),
+            "this Agent has no record of it".to_string(),
+        )),
+        None => None,
+    };
+    let facts: Vec<String> = pid.into_iter().chain(on_agent).collect();
+    let facts = if facts.is_empty() {
+        String::new()
+    } else {
+        lang.pick(
+            format!("\n       {}", facts.join("；")),
+            format!("\n       {}", facts.join("; ")),
+        )
+    };
+    let recover = lang.pick(
+        "恢复见 docs/operations.md「写入 guard 残留」",
+        "recovery: docs/operations.md, \"write guard left held\"",
+    );
+    let line = match (seen.state, seen.reason) {
+        (Observed::Free, _) => lang.pick(
+            format!("写锁  空闲（Runtime {at} 看的；不是预留，下一个会话仍要自己去拿）"),
+            format!("guard  free (seen by the Runtime at {at}; not a reservation)"),
+        ),
+        (Observed::Held, _) if seen.owner.is_none() => lang.pick(
+            format!("写锁  被占：有进程正持有，还没写上是谁（{at}）"),
+            format!("guard  held by a process that has not written its name yet ({at})"),
+        ),
+        (Observed::Held, _) => lang.pick(
+            format!("写锁  被占：会话 {owner} 正持有（{at}）{facts}"),
+            format!("guard  held by session {owner} ({at}){facts}"),
+        ),
+        (Observed::Abandoned, _) => lang.pick(
+            format!(
+                "写锁  故意留着：会话 {owner} 结束时有 {} 停不掉，可能还在改这棵树；先收掉它们，{recover}{facts}",
+                seen.leftovers.as_deref().unwrap_or("-")
+            ),
+            format!(
+                "guard  kept on purpose: session {owner} ended with {} it could not stop; end those first, {recover}{facts}",
+                seen.leftovers.as_deref().unwrap_or("-")
+            ),
+        ),
+        (Observed::Unknown, Reason::LeftHeld) => lang.pick(
+            format!(
+                "写锁  说不清：标记说 {owner} 占着，但没有进程持锁（异常退出留下的{}），它起的命令可能还活着；新会话会被拒，{recover}{facts}",
+                if legacy { "，旧格式标记，没记 pid" } else { "" }
+            ),
+            format!(
+                "guard  unknown: the marker says {owner} holds it and no process does (interrupted{}); what it started may still run, new sessions are refused, {recover}{facts}",
+                if legacy { ", old marker without a pid" } else { "" }
+            ),
+        ),
+        (Observed::Unknown, Reason::Unreadable) => lang.pick(
+            "写锁  说不清：Runtime 执行账号读不了自己的 write-guards/".to_string(),
+            "guard  unknown: the Runtime Executor cannot read its own write-guards/".to_string(),
+        ),
+        (Observed::Unknown, Reason::LockQueryFailed) => lang.pick(
+            "写锁  说不清：锁本身问不了".to_string(),
+            "guard  unknown: the lock itself could not be asked".to_string(),
+        ),
+        (Observed::Unknown, _) => lang.pick(
+            format!("写锁  说不清：标记内容不完整或不认识；新会话会被拒，{recover}"),
+            format!(
+                "guard  unknown: the marker is incomplete or not ours; new sessions are refused, {recover}"
+            ),
+        ),
+    };
+    let file = match seen.state {
+        Observed::Free => String::new(),
+        _ => lang.pick(
+            format!("\n       标记文件：Runtime 执行账号的 {marker}"),
+            format!("\n       marker: the Runtime Executor's {marker}"),
+        ),
+    };
+    format!("{line}{file}\n")
+}
+
 /// How long, the way a person says it.
 pub fn span(secs: u64, lang: Lang) -> String {
     let (d, h, m) = (secs / 86400, secs % 86400 / 3600, secs % 3600 / 60);
@@ -979,6 +1125,126 @@ mod tests {
         assert!(status.contains("kill 28397"), "{status}");
         // The busy workspace comes first, although it sorts after by name.
         assert!(status.find("gld").unwrap() < status.find("ccnm ").unwrap());
+    }
+
+    /// 每种写锁状态各说各的，问不到的时候说问不到——哪一种都不能读成"空闲"（AU-03）。
+    #[test]
+    fn the_guard_line_says_what_the_runtime_saw_and_nothing_more() {
+        use crate::mcp::write_guard::{
+            Observation, Observed, Owner, Process, Reason, Resource, ResourceKind,
+        };
+        use crate::protocol::run::{AgentGuardReport, OwnerOnAgent};
+        let report = |state, reason, owner: Option<Owner>, leftovers: Option<&str>, on_agent| {
+            Ok(AgentGuardReport {
+                protocol: crate::runtime::GUARD_PROTOCOL,
+                agent_identity: crate::instance::AgentIdentity {
+                    node: "worker".into(),
+                    instance: "claude-main".into(),
+                    provider: crate::provider::AgentProvider::Claude,
+                    profile_ref: "default".into(),
+                },
+                runtime: crate::runtime::GuardReport {
+                    protocol: crate::runtime::GUARD_PROTOCOL,
+                    workspace: "demo".into(),
+                    observation: Observation {
+                        state,
+                        reason,
+                        resource: Resource {
+                            kind: ResourceKind::GitCommonDir,
+                            id: "00aa11bb22cc33dd".into(),
+                        },
+                        owner,
+                        leftovers: leftovers.map(str::to_string),
+                        observed_at: 1_789_391_418,
+                    },
+                },
+                owner_on_agent: on_agent,
+            })
+        };
+        let owner = |pid, process, legacy| Owner {
+            session: "402638ca-0000-4000-8000-000000000000".into(),
+            workspace: Some("demo".into()),
+            pid,
+            process,
+            legacy,
+        };
+        let say = |answer| render_guard(&answer, 9 * 3600, Lang::Zh);
+
+        let free = say(report(Observed::Free, Reason::Released, None, None, None));
+        assert!(free.contains("空闲") && free.contains("不是预留"), "{free}");
+        assert!(!free.contains("write-guards/"), "{free}");
+
+        let orphan = say(report(
+            Observed::Held,
+            Reason::LiveHolder,
+            Some(owner(Some(4242), Some(Process::Ccnm), false)),
+            None,
+            Some(OwnerOnAgent::State(SessionState::Completed)),
+        ));
+        assert!(orphan.contains("被占：会话 402638ca 正持有"), "{orphan}");
+        assert!(orphan.contains("pid 4242 还是 ccnm 进程"), "{orphan}");
+        assert!(orphan.contains("孤儿 mcp-serve"), "{orphan}");
+        assert!(
+            orphan.contains("write-guards/00aa11bb22cc33dd.lock"),
+            "{orphan}"
+        );
+
+        let kept = say(report(
+            Observed::Abandoned,
+            Reason::KeptOnPurpose,
+            Some(owner(Some(4242), Some(Process::Gone), false)),
+            Some("1 command(s) (r-e69a)"),
+            None,
+        ));
+        assert!(
+            kept.contains("故意留着") && kept.contains("r-e69a"),
+            "{kept}"
+        );
+        assert!(kept.contains("不等于它起的命令也没了"), "{kept}");
+
+        let left = say(report(
+            Observed::Unknown,
+            Reason::LeftHeld,
+            Some(owner(None, None, true)),
+            None,
+            Some(OwnerOnAgent::NotHere),
+        ));
+        assert!(
+            left.contains("说不清") && left.contains("旧格式标记"),
+            "{left}"
+        );
+        assert!(left.contains("没有这个会话的记录"), "{left}");
+
+        let unreadable = say(report(
+            Observed::Unknown,
+            Reason::Unreadable,
+            None,
+            None,
+            None,
+        ));
+        assert!(
+            unreadable.contains("读不了自己的 write-guards/"),
+            "{unreadable}"
+        );
+
+        let unasked = say(Err(crate::Error::new(
+            crate::ErrorCode::RuntimeUnreachable,
+            "ssh runtime-alias: Connection refused",
+        )));
+        assert!(
+            unasked.contains("问不到 Runtime") && unasked.contains("不等于空闲"),
+            "{unasked}"
+        );
+
+        let en = render_guard(
+            &report(Observed::Free, Reason::NeverTaken, None, None, None),
+            0,
+            Lang::En,
+        );
+        assert!(
+            en.starts_with("guard  free") && en.contains("not a reservation"),
+            "{en}"
+        );
     }
 
     #[test]

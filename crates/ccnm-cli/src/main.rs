@@ -334,6 +334,17 @@ enum InternalCommand {
         #[arg(long)]
         payload: String,
     },
+    /// Answer what a workspace's write guard looks like, from this
+    /// account's own state directory. Takes nothing and writes nothing
+    RuntimeGuard {
+        #[arg(long)]
+        payload: String,
+    },
+    /// Work-side relay of a write-guard question to the Runtime
+    AgentGuard {
+        #[arg(long)]
+        payload: String,
+    },
     /// Work-side run: create the session, have the controller start it,
     /// wait, report
     AgentRun {
@@ -911,14 +922,26 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
                 return Ok(0);
             }
             let resolved = config.workspace(workspace)?;
+            let env = launch_env()?;
             let rep = launcher::status_selected(
                 &resolved,
-                &launch_env()?,
+                &env,
                 *all,
                 agent.as_deref(),
                 session.as_deref(),
             )?;
             print!("{}", rep.render_in(lang));
+            // What the Agent's session list cannot show: a --print run, or
+            // an external client, holding the tree (P60). Asked of the
+            // Runtime Executor, whose state directory the guard is in.
+            print!(
+                "{}",
+                ccnm_core::overview::render_guard(
+                    &launcher::observe_guard(&resolved, &env, agent.as_deref()),
+                    ccnm_core::overview::utc_offset(&SystemRunner),
+                    lang,
+                )
+            );
             Ok(0)
         }
         Command::List => {
@@ -1207,6 +1230,26 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
                 let req: ccnm_core::runtime::AuditRequest = payload::decode(payload)?;
                 let config = Config::load(&config_path()?)?;
                 print_json(&ccnm_core::runtime::audit(&config, &req, &SystemRunner)?)
+            }
+            InternalCommand::RuntimeGuard { payload } => {
+                // Like the audit, meaningful only as the account the
+                // Agent's ssh lands on: the guard is in *its* state
+                // directory, the one `mcp-serve` takes it in.
+                let req: ccnm_core::runtime::GuardRequest = payload::decode(payload)?;
+                let config = Config::load(&config_path()?)?;
+                print_json(&ccnm_core::runtime::guard(
+                    &config,
+                    &req,
+                    &paths::state_dir()?,
+                    &SystemRunner,
+                )?)
+            }
+            InternalCommand::AgentGuard { payload } => {
+                let req: ccnm_core::protocol::run::AgentGuardRequest = payload::decode(payload)?;
+                print_json(&work::guard(
+                    &req,
+                    &agent_tools(config_path().ok().as_deref())?,
+                )?)
             }
             InternalCommand::Controller => {
                 let socket = paths::controller_socket(&paths::state_dir()?);

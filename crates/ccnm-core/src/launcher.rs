@@ -382,6 +382,44 @@ pub fn read_output_assigned(
     Ok(report)
 }
 
+/// The workspace's write guard, as its Runtime Executor sees it (P60).
+///
+/// Operator -> Agent -> Runtime, the way a session's own tools get there:
+/// the Operator's config names the Runtime Node but has no way into the
+/// account that keeps the guard, and reading this machine's own
+/// `write-guards/` would describe another state domain (P43). An answer
+/// about another instance or another workspace is refused rather than
+/// shown.
+pub fn observe_guard(
+    resolved: &Resolved<'_>,
+    env: &Env<'_>,
+    agent: Option<&str>,
+) -> Result<crate::protocol::run::AgentGuardReport> {
+    let ssh = agent_ssh(resolved, env)?;
+    let selected = resolved.agent_reference(agent)?.ok_or_else(|| {
+        Error::config("asking the Runtime about its write guard needs an Agent instance binding")
+    })?;
+    let report: crate::protocol::run::AgentGuardReport = ssh.call_ccnm(
+        env.runner,
+        Master::Reuse,
+        &["internal", "agent-guard"],
+        &crate::protocol::run::AgentGuardRequest {
+            protocol: crate::runtime::GUARD_PROTOCOL,
+            workspace: resolved.name.to_string(),
+            agent: selected.clone(),
+            runtime_node: resolved.workspace.runtime_node.clone(),
+        },
+        Duration::from_secs(60),
+        ErrorCode::AgentUnreachable,
+    )?;
+    if report.agent_identity.reference() != selected || report.runtime.workspace != resolved.name {
+        return Err(Error::internal(
+            "the Agent answered about another instance or workspace's write guard",
+        ));
+    }
+    Ok(report)
+}
+
 /// What a session produced, for a `--print` run whose ssh did not survive
 /// to hear the answer.
 pub fn result(

@@ -1,0 +1,34 @@
+{
+  "$schema_ref": "#/$defs/session_result_response_ok",
+  "$note": "取 stderr 的第一页。第一页是末尾那一段；cursor 指向更早的部分，取回来的内容拼在前面。source_bytes 是进程实际写出的字节数，source_truncated 为 false 表示没有永久丢失。",
+  "message": {
+    "jsonrpc": "2.0",
+    "id": 17,
+    "result": {
+      "session": "s-2026091012-7f3a",
+      "state": "failed",
+      "workspace": "ccnm",
+      "agent": {
+        "node": "work",
+        "instance": "claude-main",
+        "provider": "claude"
+      },
+      "outcome": {
+        "exit_code": 1,
+        "timed_out": false,
+        "duration_ms": 9120,
+        "stop_requested": false
+      },
+      "text": null,
+      "output": {
+        "stream": "stderr",
+        "bytes_total": 70112,
+        "source_bytes": 70112,
+        "source_truncated": false,
+        "truncated": true,
+        "cursor": "c-4f1d2b7e9a0c4d6e8f10213243546576",
+        "tail": "…stderr 的最后 64 KiB…"
+      }
+    }
+  }
+}

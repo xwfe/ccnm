@@ -1,0 +1,18 @@
+{
+  "$schema_ref": "#/$defs/response_error",
+  "$note": "max_bytes 装不下下一个完整字符。服务端不切字符、不回空页，告诉你至少要多大。",
+  "message": {
+    "jsonrpc": "2.0",
+    "id": 19,
+    "error": {
+      "code": -32602,
+      "message": "max_bytes is smaller than the next character",
+      "data": {
+        "effect": "none",
+        "session": "s-2026091012-7f3a",
+        "reason": "max_bytes_too_small",
+        "min_bytes": 3
+      }
+    }
+  }
+}

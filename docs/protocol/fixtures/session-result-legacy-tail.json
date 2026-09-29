@@ -1,0 +1,33 @@
+{
+  "$schema_ref": "#/$defs/session_result_response_ok",
+  "$note": "拿不到完整保留内容（这里是升级前接受的 session），给的是旧版本留下的尾部，并写明原因。不要把它当成完整输出。",
+  "message": {
+    "jsonrpc": "2.0",
+    "id": 18,
+    "result": {
+      "session": "s-2026091012-7f3a",
+      "state": "completed",
+      "workspace": "ccnm",
+      "agent": {
+        "node": "work",
+        "instance": "claude-main",
+        "provider": "claude"
+      },
+      "outcome": {
+        "exit_code": 0,
+        "timed_out": false,
+        "duration_ms": 48213,
+        "stop_requested": false
+      },
+      "text": "三个用例失败…",
+      "output": {
+        "stream": "stdout",
+        "bytes_total": 2051,
+        "truncated": false,
+        "cursor": null,
+        "unavailable_reason": "legacy_tail",
+        "tail": "...最后 2 KiB"
+      }
+    }
+  }
+}

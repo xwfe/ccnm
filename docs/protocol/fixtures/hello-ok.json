@@ -15,6 +15,10 @@
           "print"
         ],
         "session_output": true,
+        "output_streams": [
+          "stdout",
+          "stderr"
+        ],
         "start_key": true,
         "stop": true
       }

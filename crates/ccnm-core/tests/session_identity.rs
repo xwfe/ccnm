@@ -707,7 +707,11 @@ fn print_stop_checks_the_whole_group_and_rejects_reparented_agent() {
     residual.push(Output::exited(0, supervisor.as_str()));
     residual.push(Output::exited(0, "4343 4242\n"));
     residual.push(Output::exited(0, ""));
-    residual.push(Output::exited(0, "8888 4343\n"));
+    // A member that outlives the whole grace a stop waits after SIGTERM
+    // (P63, F17: five seconds, a look every 100 ms): still NotReady.
+    for _ in 0..60 {
+        residual.push(Output::exited(0, "8888 4343\n"));
+    }
     assert_eq!(
         work::stop(&req, &f.tools(&residual)).unwrap_err().code(),
         ErrorCode::NotReady
@@ -738,7 +742,9 @@ fn print_stop_checks_the_whole_group_and_rejects_reparented_agent() {
     supervisor_child.push(Output::exited(0, ""));
     supervisor_child.push(Output::exited(0, "1 1\n"));
     supervisor_child.push(Output::exited(0, ""));
-    supervisor_child.push(Output::exited(0, "9999 4242\n"));
+    for _ in 0..60 {
+        supervisor_child.push(Output::exited(0, "9999 4242\n"));
+    }
     assert_eq!(
         work::stop(&req, &f.tools(&supervisor_child))
             .unwrap_err()

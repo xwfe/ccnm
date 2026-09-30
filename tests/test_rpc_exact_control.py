@@ -231,6 +231,39 @@ class ExactControlTests(RpcSandbox):
         leftovers = [p.name for p in (self.state / "rpc/sessions").iterdir() if not p.name.endswith(".json")]
         self.assertEqual(leftovers, [], "临时文件不能留在记录目录里")
 
+    # -- F17（P62 真机）：Agent 还确认不了"已停"时，停止请求也不能丢 --
+
+    def test_a_stop_the_agent_cannot_confirm_yet_is_kept_and_answered_stopping(self):
+        client = self.client()
+        session = self.start(client, "run not-ended")["session"]
+        self.wait_started("run not-ended")
+        self.stop_mode({"kind": "not-ended"})
+        # 契约 5.6：返回 stopping 不代表已经停了。信号已经发出去，这不是"停止失败"。
+        answer = client.session_stop(session)
+        self.assertEqual(answer["state"], "stopping")
+        self.assertTrue(answer["stop_requested"])
+        self.assertTrue(self.record(session)["stop_requested"], "停止标志必须在问 Agent 之前就落盘")
+        self.release("run not-ended")
+        final = self.settle(client, session)
+        self.assertEqual(final["state"], "failed")
+        self.assertTrue(final["stop_requested"], "Agent 那一刻没确认，标志也不能丢")
+
+    def test_a_stop_that_cannot_reach_the_agent_keeps_the_request_on_record(self):
+        client = self.client()
+        session = self.start(client, "run stop-unreachable")["session"]
+        self.wait_started("run stop-unreachable")
+        self.stop_mode({"kind": "unreachable"})
+        with self.assertRaises(RpcError) as caught:
+            client.session_stop(session)
+        # 连 Agent 都没到：这次 stop 什么都没做成，调用方该知道并重发。
+        self.assertEqual(caught.exception.effect, "none")
+        self.assertTrue(self.record(session)["stop_requested"])
+        self.assertEqual(client.session_status(session)["state"], "running", "没送到的停止不能把状态说成 stopping")
+        self.release("run stop-unreachable")
+        final = self.settle(client, session)
+        self.assertEqual(final["state"], "completed")
+        self.assertTrue(final["stop_requested"])
+
     # -- CT-04：不同的 start_key 就是不同的任务 --
 
     def test_distinct_start_keys_stay_distinct(self):

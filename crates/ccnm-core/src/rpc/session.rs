@@ -677,14 +677,16 @@ pub fn stop(ctx: &Context, params: &Map<String, Value>) -> Result<Value, RpcErro
     let store = ctx.store()?;
     // Decided under the store lock against the run thread's own check: the
     // run is either not sent yet -- and now never will be -- or sent, and
-    // the Agent has to be asked.
+    // the Agent has to be asked. Either way the request is on record from
+    // here on: before P63 a sent run only got the flag after the Agent
+    // confirmed, so any other answer lost it for good (F17).
     let dispatched = store
         .update(id, |r| {
             if r.state.terminal() {
                 return None;
             }
+            r.stop_requested = true;
             if !r.dispatched {
-                r.stop_requested = true;
                 r.state = State::Stopping;
             }
             Some(r.dispatched)
@@ -700,14 +702,24 @@ pub fn stop(ctx: &Context, params: &Map<String, Value>) -> Result<Value, RpcErro
         }
         Some(false) => Ok(stop_answer(id, State::Stopping, true)),
         Some(true) => {
-            ctx.runs
-                .stop(&StopAsk {
-                    workspace: record.launch.workspace.clone(),
-                    node: agent.node,
-                    instance: agent.instance,
-                    session: managed,
-                })
-                .map_err(|e| stop_failed(&e, id))?;
+            let asked = ctx.runs.stop(&StopAsk {
+                workspace: record.launch.workspace.clone(),
+                node: agent.node,
+                instance: agent.instance,
+                session: managed,
+            });
+            match asked {
+                Ok(_) => {}
+                // The Agent took the stop and cannot say yet that the run
+                // is over: on a real machine the signal lands before the
+                // process group is gone. That is what `stopping` means
+                // (section 5.6), not a failed stop; the run's own end
+                // decides the rest, and stop stays safe to send again.
+                Err(err) if err.code() == ErrorCode::NotReady => {
+                    tracing::info!(session = id, %err, "stop sent; the Agent has not seen the run end yet");
+                }
+                Err(err) => return Err(stop_failed(&err, id)),
+            }
             // Not a terminal state: the request was accepted, and only an
             // observed end -- the run's own answer -- makes it over.
             // Reporting `completed` here would hand the write permission to
@@ -743,10 +755,14 @@ fn stop_answer(session: &str, state: State, stop_requested: bool) -> Value {
 /// point is not to tell the caller that nothing happened.
 fn stop_failed(err: &crate::Error, session: &str) -> RpcError {
     let mut rpc = wire::from_ccnm(err).with_session(session);
-    if matches!(
-        err.code(),
-        ErrorCode::AgentUnreachable | ErrorCode::Internal
-    ) {
+    let may_have_landed = match err.code() {
+        // ssh that never reached the Agent cannot have delivered anything
+        // (F14); the caller should just send the stop again.
+        ErrorCode::AgentUnreachable => !crate::ssh::never_reached(err.message()),
+        ErrorCode::Internal => true,
+        _ => false,
+    };
+    if may_have_landed {
         rpc.data.effect = Effect::Unknown;
     }
     rpc

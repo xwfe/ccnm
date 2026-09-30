@@ -16,6 +16,7 @@ ccnm 以 `ssh <选项> -T <alias> <ccnm> internal <sub> --payload X` 调 Agent�
     reply-<key>.json     这次运行回什么：exit_code、stdout_tail、stderr_tail、
                          result，或 {"transport_error": true} 表示连接断在半路
     stop-mode.json       {"kind": "ack"}（默认）、{"kind": "unreachable"}、
+                         {"kind": "not-ended"}（信号送到了、进程组还没退完，回 NOT_READY）、
                          {"kind": "release-and-wait-final", "prompt": ..., "record": ...}
     view-<key>-<stream>  agent-output 要交回的保留视图（字节原样），按 prompt 找
     output-mode.json     {"kind": "serve"}（默认）、{"kind": "unreachable"}、
@@ -117,6 +118,14 @@ def stop(request: dict, fake: Path) -> int:
     if mode["kind"] == "unreachable":
         print("ssh: connect to host worker port 22: Connection refused", file=sys.stderr)
         return 255
+    if mode["kind"] == "not-ended":
+        # 真 Agent 在 SIGTERM 之后进程组还没退完时就这样答（P62 F17）：
+        # 信号已经送到，那次运行随后以"被停止"结束，只是这一刻确认不了。
+        if request.get("session"):
+            (fake / "stopped").mkdir(exist_ok=True)
+            (fake / "stopped" / request["session"]).write_text("stopped\n")
+        print("CCNM_E_NOT_READY:\nAgent process group has not ended; state remains stopping", file=sys.stderr)
+        return 3
     if mode["kind"] == "release-and-wait-final":
         # 先让被停的那次运行自己跑完、把终态写进记录，再回答 stop：
         # “完成”和“停止”交错的一种确定顺序。

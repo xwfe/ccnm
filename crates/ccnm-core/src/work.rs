@@ -1167,7 +1167,7 @@ fn stop_print_session(spec: &Spec, dir: &session::Dir, tools: &Tools<'_>) -> Res
             // it Linux `kill` reads it as a signal and signals nothing.
             &crate::process::Cmd::new("/bin/kill").args(["-TERM", "--", &format!("-{agent_pid}")]),
         )?;
-        if process_group_alive(agent_pid, tools)? {
+        if !group_ended_within(agent_pid, STOP_GRACE, tools)? {
             return Err(Error::new(
                 ErrorCode::NotReady,
                 if killed.success() {
@@ -1187,7 +1187,7 @@ fn stop_print_session(spec: &Spec, dir: &session::Dir, tools: &Tools<'_>) -> Res
     let _ = tools
         .runner
         .run(&crate::process::Cmd::new("/bin/kill").args(["-TERM", "--", &format!("-{pid}")]))?;
-    if process_group_alive(pid, tools)? {
+    if !group_ended_within(pid, STOP_GRACE, tools)? {
         return Err(Error::new(
             ErrorCode::NotReady,
             "supervisor process group has not ended; state remains stopping",
@@ -1246,6 +1246,32 @@ fn confirm_recorded_print_groups_ended(dir: &session::Dir, tools: &Tools<'_>) ->
         }
     }
     Ok(())
+}
+
+/// How long a stop waits for a group it just sent SIGTERM to (F17).
+///
+/// The signal is delivered at once; the processes take a moment to exit.
+/// The check used to run the instant `kill` returned, and on the P62
+/// machines it found the group still there on every real stop -- so a stop
+/// that worked answered NotReady, and the Machine API dropped the stop
+/// flag with it. Five seconds is long past what Claude and Codex took there;
+/// a group that is still alive after it is reported as before, and is never
+/// escalated to SIGKILL here.
+const STOP_GRACE: Duration = Duration::from_secs(5);
+const STOP_POLL: Duration = Duration::from_millis(100);
+
+/// Whether `pgid` is gone within `grace`, asking `ps` every [`STOP_POLL`].
+fn group_ended_within(pgid: u32, grace: Duration, tools: &Tools<'_>) -> Result<bool> {
+    let deadline = std::time::Instant::now() + grace;
+    loop {
+        if !process_group_alive(pgid, tools)? {
+            return Ok(true);
+        }
+        if std::time::Instant::now() >= deadline {
+            return Ok(false);
+        }
+        std::thread::sleep(STOP_POLL);
+    }
 }
 
 fn process_group_alive(pgid: u32, tools: &Tools<'_>) -> Result<bool> {
@@ -3865,6 +3891,55 @@ mod tests {
         let ran: Vec<String> = fake.calls().iter().map(|cmd| cmd.display()).collect();
         assert!(ran.iter().all(|c| c.starts_with("/bin/ps")), "{ran:?}");
         assert!(!ran.iter().any(|c| c.contains("tmux")), "{ran:?}");
+    }
+
+    /// F17 (P62, real machines): SIGTERM lands at once, the processes take
+    /// a moment to exit. The check used to run right after `kill` returned
+    /// and saw the group still there on every real stop, so the stop
+    /// answered NotReady although it worked. It now waits, boundedly.
+    #[test]
+    fn an_assigned_stop_waits_for_the_signalled_group_to_go() {
+        let dir = temp("assigned-grace");
+        let fake = FakeRunner::new();
+        let tools = instance_tools(&fake, &dir, "assigned-grace");
+        let id = session::new_id();
+        let session_dir = instance_print_spec(&dir, &id, "demo");
+        let (supervisor, agent) = (424_242u32, 424_243u32);
+        session::write_supervisor_pid(&session_dir, supervisor).unwrap();
+        session::write_agent_pid(&session_dir, agent).unwrap();
+        let spec = session::load(&session_dir).unwrap();
+        let mut req = session::SuperviseRequest::new(
+            session_dir.path().to_path_buf(),
+            PathBuf::from("/opt/homebrew/bin/claude"),
+        );
+        req.provider = spec.provider();
+        req.identity = spec.agent_identity.clone();
+        req.protocol = 3;
+        let wire = payload::encode(&req).unwrap();
+        fake.push(Output::exited(
+            0,
+            format!("{supervisor} /opt/ccnm/ccnm internal supervise --payload {wire}\n"),
+        ));
+        fake.push(Output::exited(0, format!("{agent} {supervisor}\n"))); // ps: Agent child
+        fake.push(Output::exited(0, "")); // kill -TERM -- -agent
+        let alive = format!("{supervisor} {supervisor}\n{agent} {agent}\n1 1\n");
+        let agent_gone = format!("{supervisor} {supervisor}\n1 1\n");
+        fake.push(Output::exited(0, alive)); // right after the signal: still there
+        fake.push(Output::exited(0, agent_gone)); // a moment later: gone
+        fake.push(Output::exited(0, "")); // kill -TERM -- -supervisor
+        fake.push(Output::exited(0, "1 1\n")); // supervisor's group gone too
+
+        let rep = stop(&assigned_stop(&id, "demo"), &tools).unwrap();
+        assert!(rep.killed);
+        assert_eq!(rep.session.as_deref(), Some(id.as_str()));
+        let kills: Vec<String> = fake
+            .calls()
+            .iter()
+            .map(|cmd| cmd.display())
+            .filter(|c| c.starts_with("/bin/kill"))
+            .collect();
+        assert_eq!(kills.len(), 2, "TERM only, never escalated: {kills:?}");
+        assert!(kills.iter().all(|c| c.contains("-TERM")), "{kills:?}");
     }
 
     /// The id belongs to another workspace on this Agent: refused, not

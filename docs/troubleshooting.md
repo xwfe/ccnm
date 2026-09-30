@@ -663,28 +663,24 @@ CODEX_HOME=~/.config/ccnm/agents/codex /path/to/codex-0.154.0/codex login
 
 **症状**：Agent 的 ssh 别名解析不了或拒绝连接，`session.status` 却是 `unknown` 而不是 `failed`。
 
-**原因**：ssh 失败一律被当成"可能已经派发出去、之后才断的"，为了不让你重放不明副作用而记 `unknown`（P58 的保守设计）。可 ssh 在认证完成之前就失败，其实一定什么都没发出去。macOS 上黑盒测试没暴露这一点，是因为临时目录太长、ControlPath 检查先失败了（P62 研究记录 F14，还没修）。
+**P63（2026-09-30）起已修**：ssh 自己说还没连进去（解析不了主机名、TCP 连不上、认证被拒、主机指纹不符、密钥交换失败）的会话记 `failed`，这时 stop 失败的 `effect` 是 `none`。还看到这个现象，说明 Runtime 上跑 `ccnm rpc` 的是 P63 之前的构建（P62 研究记录 F14）。
 
-**怎么办**：记录里的 `finish.error` 以 `ssh <别名>: ssh: Could not resolve hostname`、`Connection refused`、`No route to host` 开头的，可以按"没派发"处理，修好连接后换一个新的 `start_key` 重来；其他 `unknown` 仍按 `unknown` 对待：先看工作树和 Agent 上的会话，别直接重试。
+**旧构建上怎么办**：记录里的 `finish.error` 以 `ssh <别名>: ssh: Could not resolve hostname`、`ssh: connect to host` 开头，或是 `Permission denied (publickey…)` 的，可以按"没派发"处理，修好连接后换一个新的 `start_key` 重来；其他 `unknown` 仍按 `unknown` 对待：先看工作树和 Agent 上的会话，别直接重试。
 
 ### Machine API：`session.start` 之后马上断开，会话一直是 `unknown`
 
-**症状**：程序调完 `session.start` 拿到句柄就关掉了 `ccnm rpc`（关 stdin 或退出），打算过会儿再来查。再连上查，`session.status` 是 `unknown`，Agent 上却没有任何运行。
+**症状**：程序调完 `session.start` 拿到句柄就关掉了 `ccnm rpc`，再连上查，`session.status` 是 `unknown`，Agent 上却没有任何运行；或者运行在 Agent 上跑完了，这边一直是 `unknown`。
 
-**原因**：`session.start` 返回时任务还没发出去——真机上派发前要先经 ssh 问一次 Runtime 的写锁，要好几秒——而 `ccnm rpc` 在 stdin 关闭后不等这一步就退出了。记录里写着"没派发"（`dispatched` 为空），状态却按"说不清"读成 `unknown`。这违反了协议 8.1 节"客户端断开，已接受的任务照跑"的承诺（P62 研究记录 F16，还没修）。
+**P63（2026-09-30）起已修**：每个 session 由自己的 owner 进程（`ccnm internal rpc-run --handle s-…`，独立进程组）带着跑，`ccnm rpc` 退出不影响它，断开后回来查得到真实状态和结果（P62 研究记录 F16）。还看到这个现象，说明 Runtime 上是 P63 之前的构建：运行挂在 `ccnm rpc` 进程里，进程一退就没了。
 
-**怎么办**：修好之前，**`session.start` 之后保持这条 `ccnm rpc` 连接，至少等到 `session.status` 变成 `running`** 再断开（参考客户端的 `wait()` 本来就是这样做的）。已经撞上的：Operator 记录里 `dispatched` 为空的 `unknown` 可以确定没有执行过，换一个新的 `start_key` 重来；`dispatched` 为真的仍按 `unknown` 对待。
+**旧构建上怎么办**：`session.start` 之后保持这条连接，直到 `session.status` 变成终态（参考客户端的 `wait()` 就是这样做的）。已经撞上的：Operator 记录里 `dispatched` 为空的 `unknown` 可以确定没有执行过，换一个新的 `start_key` 重来；`dispatched` 为真的仍按 `unknown` 对待。
+
+**升级之后仍是 `unknown`**：带着它的 owner 进程真的没了（被 `kill -9`、机器重启）。这时不知道 Agent 上跑到了哪一步，按 `unknown` 对待，别自动重试。
 
 ### Machine API：`session.stop` 回 `-32000 … Agent process group has not ended`
 
-**症状**：对一个正在跑的 print 会话调 `session.stop`，回的是错误而不是 `stopping`：
+**症状**：对一个正在跑的 print 会话调 `session.stop`，回的是 `-32000 … Agent process group has not ended; state remains stopping`，再调一次还是这样；一两秒后状态已经是 `failed`（`exit_code` 143，被 SIGTERM 结束），但 `stop_requested` 是 `false`。
 
-```text
--32000 ccnm internal agent-stop on <别名> failed (no exit status reported): Agent process group has not ended; state remains stopping
-```
+**P63（2026-09-30）起已修**：停止标志在联系 Agent 之前就记下；Agent 发完 SIGTERM 最多等 5 秒进程组退出，正常情况下直接确认；还确认不了时回 `stopping`（契约第 5.6 节），不再回错误（P62 研究记录 F17）。
 
-再调一次还是这样。一两秒后 `session.status` 已经是 `failed`，`outcome.exit_code` 是 143（被 SIGTERM 结束），但 `stop_requested` 是 `false`。
-
-**原因**：Agent 发出停止信号后立刻检查进程组、不等它退出（和交互会话 stop 的 F4 同一个模式），RPC 把这个"还没退完"原样当错误回给了你，停止标志也没记上（P62 研究记录 F17，还没修）。
-
-**怎么办**：把这个错误当成"停止已发出、还没确认"，隔一两秒查 `session.status`；到了终态就算停了。判断"是不是我停的"暂时别依赖 `stop_requested`。
+**升级之后**：`stopping` 表示停止已经发出、还没看到结束——继续查 `session.status`，到终态才算停了；一直不结束（进程不理 SIGTERM）就再发一次 stop，或者按[运维手册](operations.md#写入-guard-残留)去 Agent 上找那个进程组。Agent 连不上时 stop 仍然回错误，`effect` 告诉你它有没有可能已经送到。

@@ -41,8 +41,13 @@ P58（2026-09-28）起，下面几条是当前实现的行为。它们都在契�
 - **不合 `session_id` 形状的句柄一律 `-32602`**，在读任何文件之前拒绝；合形状但不存在的仍是 `-32009`。
 - **session 创建后改绑 workspace（换了 Agent 节点），旧句柄的 stop 回 `-32007`**，`effect: none`，不会发到新机器上，也不记成请求过 stop。
 - **P58 之前的服务端接受的、还没结束的 session 不能用 `session.stop` 停**：那时没记 Agent 上的会话 id，只能按 workspace 猜，现在拒绝猜，回 `-32000`。
-- **运行派发之后连接断了或 Agent 在启动后出错，终态是 `unknown`**，不是 `failed`——Agent 那边可能已经在跑。Agent 在启动任何东西之前的拒绝（没登录、Runtime 不通、写锁被占等）仍是 `failed`。
+- **运行派发之后连接断了或 Agent 在启动后出错，终态是 `unknown`**，不是 `failed`——Agent 那边可能已经在跑。Agent 在启动任何东西之前的拒绝（没登录、Runtime 不通、写锁被占等）仍是 `failed`；P63 起，ssh 自己说还没连进去（解析不了主机名、TCP 连不上、认证被拒、主机指纹不符、密钥交换失败）的也是 `failed`，这时 stop 失败的 `effect` 是 `none`。
 - 同一个 `start_key` 按原串逐字节比较，不同的键不会再合并（此前 `任务-一` 与 `任务-二`、`a/b` 与 `ab` 会被当成一个键）；升级前写下的键照样认，不会把已接受的任务当新任务重跑。
+
+P63（2026-09-30）起，P62 真机查出的两处与契约不符的行为修正了（[P62 记录](../research/2026-09-30-p62-real-machine.md) F16、F17）：
+
+- **客户端断开之后，已接受的 session 照常派发、跑完**（第 8.1 节）。每个 session 由自己的 owner 进程（`ccnm internal rpc-run`，独立进程组）带着跑，不再挂在 `ccnm rpc` 进程上；客户端关 stdin 后 `ccnm rpc` 立刻退出，重连能查到真实的 `running` / 终态与结果。此前派发前断开的任务从未发出却读成 `unknown`，派发后断开的永远 `unknown`。owner 进程真的消失（被 `kill -9`）时仍读成 `unknown`。
+- **`session.stop` 对已派发的 session，停止标志在联系 Agent 之前就记下**，Agent 怎么回答都不会丢；Agent 发出 SIGTERM 后最多等 5 秒进程组退出，还确认不了时回 `stopping`（第 5.6 节），不再回 `-32000`。Agent 连不上等其他错误照样返回错误，标志同样保留。
 
 P59（2026-09-29）起 `session.result` 的输出按[协议第 9 节](machine-protocol-v1.md#输出引用)实现：每个流保留最后 32 MiB，第一页是末尾、`cursor` 往前翻，`max_bytes` 生效，stderr 用 `output.stream` 单独取。完整内容在 Agent 上生成、在第一次读时整份拷到本机，之后翻页不再联系 Agent。Agent 还是 P59 之前的版本或这时联系不上，服务端给的是旧版本留下的那段尾部，并用 `unavailable_reason` 说明，不当成完整输出。游标只在发出它的 `ccnm rpc` 进程里有效。详见 [P59 记录](../research/2026-09-29-p59-output-snapshot.md)。
 

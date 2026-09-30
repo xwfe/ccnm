@@ -180,7 +180,7 @@ Operator 在 hpsrv 上 `ccnm run p62rust --detached`，会话在 fodelf 的 tmux
 
 ## 5. 发现
 
-F1–F14 按对用户的影响排序，F15 起按发现顺序追加。"已修"只有 F13 一条；其余都是记录，修复另立阶段。
+F1–F14 按对用户的影响排序，F15 起按发现顺序追加。F13 在本轮修了；F14、F16、F17 在 [P63](2026-09-30-p63-rpc-disconnect-stop.md) 离线修好、等 P62 续跑时真机复验；其余仍是记录。
 
 | 编号 | 影响 | 现象（真机） | 原因 | 建议 |
 | --- | --- | --- | --- | --- |
@@ -197,10 +197,10 @@ F1–F14 按对用户的影响排序，F15 起按发现顺序追加。"已修"�
 | F11 | 低（文档） | 外部 MCP 会话的 `mcp-serve` 被 SIGKILL：后台命令继续运行；输出不会"连接一断就删"，`ccnm cleanup` 也不列 bridge 会话，只能等 7 天过期 | 删除靠 `mcp-serve` 正常退出；清理按设计不收 `bridge-*` | 使用说明和运维手册写明 |
 | F12 | 低（工具） | `p12_dogfood_check.py` 说明里"同一棵树再配一个 read workspace"会被 `roots overlap` 拒绝 | 规则后加 | 改脚本说明为"各用一份克隆" |
 | F13 | 已修 | P61 的 3 条 Agent 侧清理单元测试在 Linux（ccrun uid 1002）上失败 | 假 `id -u` 写死 501 | `8ffe7a5` 改用当前 uid，本机与 hpsrv 都 1020/1020 |
-| F14 | 中 | Linux 上 Operator 连 Agent 时 ssh 报 `Could not resolve hostname`，Machine API 把会话记成 `unknown`；两条 Python 黑盒用例因此在 Linux 上失败（CI 的 ubuntu job 会同样失败）。macOS 上同一用例通过，是因为临时目录太长、ControlPath 超过 103 字节的配置检查先失败，根本没走到 ssh | P58 把所有 `AgentUnreachable` 都当作"可能已派发" | ssh 在认证完成前就失败（解析不了、拒绝连接、没有路由）时一定没有派发，应记 `failed`；测试别依赖平台的路径长度 |
+| F14 | 中；**P63 已修（离线）** | Linux 上 Operator 连 Agent 时 ssh 报 `Could not resolve hostname`，Machine API 把会话记成 `unknown`；两条 Python 黑盒用例因此在 Linux 上失败（CI 的 ubuntu job 会同样失败）。macOS 上同一用例通过，是因为临时目录太长、ControlPath 超过 103 字节的配置检查先失败，根本没走到 ssh | P58 把所有 `AgentUnreachable` 都当作"可能已派发" | ssh 在认证完成前就失败（解析不了、拒绝连接、没有路由）时一定没有派发，应记 `failed`；测试别依赖平台的路径长度 |
 | F15 | 低（已有文档） | 执行账号 `~/.config/ccnm/` 里放一份配置备份（`config.toml.p62-before-fodelf`），doctor 的 `No SSH keys` 报 `a possible private SSH key is accessible or unknown`，`exec_command` 整个被拒 | 检查不读内容，`~/.config/ccnm` 里除 `*.toml`、`*.pub` 外一律当作可能的私钥（fail-closed） | [排错手册](../troubleshooting.md#exec_command-is-refused理由说有-ssh-私钥可你明明一把都没有)早有这一条；这次是我自己踩到，不需要改 |
-| F16 | **高** | 冻结协议 8.1 节："客户端断开不等于任务停止，已经接受的 session 继续跑"。真机上 `session.start` 返回后客户端立刻关掉 stdin，`ccnm rpc` 在派发前退出：记录停在 `starting`、`dispatched: null`，Agent 上没有这次会话，状态读成 `unknown` | 派发在 `session.start` 返回之后由后台线程做，真机上派发前还要经 ssh 问一次写锁（P60），有好几秒；进程在 EOF 后不等这个线程 | EOF 后先把已接受的启动派发完（或至少记成"没派发"的 `failed`，而不是 `unknown`）；加一条"start 后立即 EOF"的回归 |
-| F17 | 中 | Machine API 运行中 `session.stop`：返回 `-32000 CCNM_E_NOT_READY: Agent process group has not ended`（重复调用同样），实际已停（`exit_code` 143），终态 `failed` 且 `stop_requested: false`；契约说 stop 幂等、返回 `stopping` | Agent 侧停止后立刻查进程组、不等（与 F4 同一模式）；RPC 把这个错误原样回给调用方，stop 标志没有落下 | 停止请求先落标志再下发；Agent 侧有界等待；调用方始终拿到 `stopping` 或终态 |
+| F16 | 高；**P63 已修（离线）** | 冻结协议 8.1 节："客户端断开不等于任务停止，已经接受的 session 继续跑"。真机上 `session.start` 返回后客户端立刻关掉 stdin，`ccnm rpc` 在派发前退出：记录停在 `starting`、`dispatched: null`，Agent 上没有这次会话，状态读成 `unknown` | 派发在 `session.start` 返回之后由后台线程做，真机上派发前还要经 ssh 问一次写锁（P60），有好几秒；进程在 EOF 后不等这个线程 | EOF 后先把已接受的启动派发完（或至少记成"没派发"的 `failed`，而不是 `unknown`）；加一条"start 后立即 EOF"的回归 |
+| F17 | 中；**P63 已修（离线）** | Machine API 运行中 `session.stop`：返回 `-32000 CCNM_E_NOT_READY: Agent process group has not ended`（重复调用同样），实际已停（`exit_code` 143），终态 `failed` 且 `stop_requested: false`；契约说 stop 幂等、返回 `stopping` | Agent 侧停止后立刻查进程组、不等（与 F4 同一模式）；RPC 把这个错误原样回给调用方，stop 标志没有落下 | 停止请求先落标志再下发；Agent 侧有界等待；调用方始终拿到 `stopping` 或终态 |
 | F18 | 低 | 人类 CLI `--print` 输出末尾写 `session directory on work: …`，而节点叫 fodelf | 历史叫法残留 | 用节点名 |
 | F19 | 待复现 | 运行中停止后约 1 秒，hpsrv 上 ccrun 的 `sleep 150` 仍在；25 秒后已没有、写锁 `released`。"命令收掉"与"写锁放开"谁先谁后这轮没有精确采样 | — | 用 P52 的采样方法（进程表与 guard 同一时刻采）复现，确认没有"命令还在、写锁已放"的窗口 |
 

@@ -480,7 +480,7 @@ fn reuse_or_conflict(
         )
         .with_session(existing));
     }
-    let state = record.observed_state(ctx.owner_of(&record));
+    let (record, state) = observe(ctx, record)?;
     Ok(serde_json::json!({
         "session": record.session,
         "state": state_name(state),
@@ -548,7 +548,7 @@ pub fn status(ctx: &Context, params: &Map<String, Value>) -> Result<Value, RpcEr
     reject_unknown(params, &["session"])?;
     let id = require_str(params, "session")?;
     let record = load(ctx, id)?;
-    let state = record.observed_state(ctx.owner_of(&record));
+    let (record, state) = observe(ctx, record)?;
     let mut out = serde_json::json!({
         "session": record.session,
         "state": state_name(state),
@@ -588,7 +588,7 @@ pub fn result(ctx: &Context, params: &Map<String, Value>) -> Result<Value, RpcEr
         .with_reason("cleaned")
         .with_session(&record.session));
     }
-    let state = record.observed_state(ctx.owner_of(&record));
+    let (record, state) = observe(ctx, record)?;
     let mut out = serde_json::json!({
         "session": record.session,
         "state": state_name(state),
@@ -645,7 +645,7 @@ pub fn stop(ctx: &Context, params: &Map<String, Value>) -> Result<Value, RpcErro
         ));
     }
     let record = load(ctx, id)?;
-    let state = record.observed_state(ctx.owner_of(&record));
+    let (record, state) = observe(ctx, record)?;
     if state.terminal() {
         // Idempotent: stopping something already over is a success, so a
         // client retrying does not have to check the state first.
@@ -696,8 +696,7 @@ pub fn stop(ctx: &Context, params: &Map<String, Value>) -> Result<Value, RpcErro
     match dispatched {
         // Over in the meantime, or no longer there to change.
         None => {
-            let now = load(ctx, id)?;
-            let state = now.observed_state(ctx.owner_of(&now));
+            let (now, state) = observe(ctx, load(ctx, id)?)?;
             Ok(stop_answer(&now.session, state, now.stop_requested))
         }
         Some(false) => Ok(stop_answer(id, State::Stopping, true)),
@@ -766,6 +765,37 @@ fn stop_failed(err: &crate::Error, session: &str) -> RpcError {
         rpc.data.effect = Effect::Unknown;
     }
     rpc
+}
+
+/// The state to report for a record, and the record that state is about.
+///
+/// An owner writes the outcome and then exits. So a record read a moment
+/// before that, put together with a `ps` asked a moment after, reads as
+/// "still running, owner gone" -- `unknown`, for a session that ended
+/// normally and whose record already says how. Since P63 every session has
+/// an owner of its own that exits the instant it is done, so every session
+/// passes through that window; callers polling `status` saw it about once in
+/// forty runs, and `unknown` is a terminal answer that says "do not retry".
+///
+/// Seeing the owner gone is what makes the second read safe: whatever it was
+/// ever going to write is on disk by then. A record that is still not
+/// terminal after that really was left behind.
+fn observe(ctx: &Context, record: Record) -> Result<(Record, State), RpcError> {
+    if record.state.terminal() {
+        let state = record.state;
+        return Ok((record, state));
+    }
+    match ctx.owner_of(&record) {
+        OwnerCheck::Alive => {
+            let state = record.state;
+            Ok((record, state))
+        }
+        gone => {
+            let now = load(ctx, &record.session)?;
+            let state = now.observed_state(gone);
+            Ok((now, state))
+        }
+    }
 }
 
 fn load(ctx: &Context, id: &str) -> Result<Record, RpcError> {

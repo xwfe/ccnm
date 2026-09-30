@@ -1486,6 +1486,97 @@ root = "/runtime/legacy"
         assert_eq!(out[0]["result"]["state"], "unknown");
     }
 
+    /// `ps`, answered at the worst possible moment: by the time it says the
+    /// owner's pid is gone, the owner has written how the session ended.
+    struct OwnerFinishedMeanwhile {
+        state: PathBuf,
+        ended: store::Record,
+    }
+
+    impl crate::process::ProcessRunner for OwnerFinishedMeanwhile {
+        fn run(&self, _cmd: &crate::process::Cmd) -> crate::Result<crate::process::Output> {
+            store::Store::open(&self.state)
+                .unwrap()
+                .write(&self.ended)
+                .unwrap();
+            // What `ps -p <pid>` says about a pid that no longer exists.
+            Ok(crate::process::Output::exited(1, ""))
+        }
+    }
+
+    /// An owner writes the outcome and then exits. A reader that loaded the
+    /// record just before that and asked `ps` just after used to put the two
+    /// together as "still running, owner gone" and answer `unknown` -- for a
+    /// session that had ended normally and whose record already said so.
+    /// Since P63 every session has an owner process of its own that exits
+    /// the moment it is done, so every session passes through that window;
+    /// a caller polling `session.status` hit it about once in forty runs.
+    /// `unknown` is a terminal answer that tells the caller not to retry.
+    #[test]
+    fn an_owner_that_finished_between_the_read_and_the_ps_is_not_unknown() {
+        let peer = Peer::new("owner-finished-meanwhile", FakeRuns::ok(0, "done"));
+        let session = peer.call(&[&start_call("")])[0]["result"]["session"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let ended = peer.settle(&session);
+        assert_eq!(ended.state, store::State::Completed);
+
+        let calls = [
+            format!(
+                "{{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"session.status\",\"params\":{{\"session\":\"{session}\"}}}}"
+            ),
+            format!(
+                "{{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"session.result\",\"params\":{{\"session\":\"{session}\"}}}}"
+            ),
+            format!(
+                "{{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"session.stop\",\"params\":{{\"session\":\"{session}\"}}}}"
+            ),
+        ];
+        for call in &calls {
+            // Put the record back to what the reader sees first: running,
+            // owned by another process.
+            let store = store::Store::open(&peer.state).unwrap();
+            let mut running = ended.clone();
+            running.state = store::State::Running;
+            running.owner_pid = 999_999;
+            running.owner_started = "Thu Jan  1 00:00:00 1970".to_string();
+            running.finish = None;
+            store.write(&running).unwrap();
+            let mut finished = ended.clone();
+            finished.owner_pid = running.owner_pid;
+            finished.owner_started = running.owner_started.clone();
+
+            let mut out = Vec::new();
+            serve(
+                Context {
+                    config_path: peer.config.clone(),
+                    state: peer.state.to_path_buf(),
+                    runs: peer.runs.clone(),
+                    runner: Arc::new(OwnerFinishedMeanwhile {
+                        state: peer.state.to_path_buf(),
+                        ended: finished,
+                    }),
+                    cursors: Default::default(),
+                },
+                std::io::BufReader::new(format!("{HELLO}\n{call}\n").as_bytes()),
+                &mut out,
+            )
+            .unwrap();
+            let answers: Vec<Value> = String::from_utf8(out)
+                .unwrap()
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect();
+            assert_eq!(
+                answers[1]["result"]["state"], "completed",
+                "{call}\n{answers:?}"
+            );
+        }
+        // Nothing was asked to stop: by the time anyone looked, it was over.
+        assert!(peer.runs.stops.lock().unwrap().is_empty());
+    }
+
     #[test]
     fn a_long_output_is_truncated_and_says_so() {
         let long = "x".repeat(20_000);

@@ -868,10 +868,16 @@ fn already_stopped(
         // `status` keeps reporting it as unknown for good.
         let dir = session::Dir::at(paths::session_dir(&tools.state, id));
         if session::read_outcome(&dir)?.is_none() {
-            session::record_terminal_failure(
-                &dir,
-                "no managed terminal was running when ccnm stopped this session",
-            )?;
+            if dir.stopping().exists() {
+                // An earlier stop killed the terminal and could not confirm
+                // it then. It is still that stop which ended the session.
+                record_stop(&dir)?;
+            } else {
+                session::record_terminal_failure(
+                    &dir,
+                    "no managed terminal was running when ccnm stopped this session",
+                )?;
+            }
         }
         session = Some(id.to_string());
     }
@@ -984,9 +990,9 @@ pub fn stop(req: &StopRequest, tools: &Tools<'_>) -> Result<StopReport> {
             ));
         }
         if let Some(dir) = tracked_dir.as_ref() {
-            match transport_alive(dir, tools) {
-                Some(false) => {}
-                Some(true) => {
+            match transport_ended_within(dir, STOP_GRACE, tools) {
+                Some(true) => {}
+                Some(false) => {
                     return Err(Error::new(
                         ErrorCode::NotReady,
                         "terminal ended but its Runtime MCP transport is still alive; state remains stopping",
@@ -1003,10 +1009,7 @@ pub fn stop(req: &StopRequest, tools: &Tools<'_>) -> Result<StopReport> {
         if let Some(dir) = tracked_dir.as_ref()
             && session::read_outcome(dir)?.is_none()
         {
-            session::record_terminal_failure(
-                dir,
-                "stopped by ccnm after the managed terminal ended",
-            )?;
+            record_stop(dir)?;
         }
     }
     Ok(StopReport {
@@ -1194,10 +1197,7 @@ fn stop_print_session(spec: &Spec, dir: &session::Dir, tools: &Tools<'_>) -> Res
         ));
     }
     if session::read_outcome(dir)?.is_none() {
-        session::record_terminal_failure(
-            dir,
-            "stopped by ccnm after the managed print process group ended",
-        )?;
+        record_stop(dir)?;
     }
     Ok(StopReport {
         protocol: if spec.agent_identity.is_some() {
@@ -1259,6 +1259,45 @@ fn confirm_recorded_print_groups_ended(dir: &session::Dir, tools: &Tools<'_>) ->
 /// escalated to SIGKILL here.
 const STOP_GRACE: Duration = Duration::from_secs(5);
 const STOP_POLL: Duration = Duration::from_millis(100);
+
+/// Whether an interactive session's Runtime MCP transport is gone within
+/// `grace` of its terminal being killed (F4).
+///
+/// tmux reports the terminal gone at once; the ssh it carried takes a moment
+/// longer. Looking once, right after the kill, found it still there on every
+/// Codex stop on the P62 machines, and a stop that had worked answered
+/// NotReady. `None` is [`transport_alive`]'s "cannot tell", returned without
+/// waiting: a `ps` that cannot be read does not become readable by asking
+/// again, and an answer nobody could check is not a confirmation.
+fn transport_ended_within(dir: &session::Dir, grace: Duration, tools: &Tools<'_>) -> Option<bool> {
+    let deadline = std::time::Instant::now() + grace;
+    loop {
+        if !transport_alive(dir, tools)? {
+            return Some(true);
+        }
+        if std::time::Instant::now() >= deadline {
+            return Some(false);
+        }
+        std::thread::sleep(STOP_POLL);
+    }
+}
+
+/// Write the outcome of a session a stop ended, with how long it had run.
+///
+/// Counted from when the session record was written to when the stop was
+/// asked for -- the `stopping` marker, which every path that gets here wrote
+/// just before it killed anything. Not to "now": a stop confirmed only on a
+/// later call would otherwise grow by however long somebody took to ask
+/// again. A time that cannot be read, or a clock that went backwards, is 0.
+fn record_stop(dir: &session::Dir) -> Result<()> {
+    let modified = |path: PathBuf| std::fs::metadata(path).and_then(|m| m.modified());
+    let asked = modified(dir.stopping()).unwrap_or_else(|_| std::time::SystemTime::now());
+    let ran = modified(dir.meta())
+        .ok()
+        .and_then(|started| asked.duration_since(started).ok())
+        .unwrap_or_default();
+    session::record_stopped(dir, ran)
+}
 
 /// Whether `pgid` is gone within `grace`, asking `ps` every [`STOP_POLL`].
 fn group_ended_within(pgid: u32, grace: Duration, tools: &Tools<'_>) -> Result<bool> {

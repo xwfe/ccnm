@@ -1,11 +1,12 @@
 use ccnm_core::instance::{AgentIdentity, AgentLocal, AgentProfiles, InstanceRef};
 use ccnm_core::process::{FakeRunner, Output};
 use ccnm_core::protocol::run::{
-    OutputRequest, ResultRequest, SessionState, StartRequest, StatusRequest, StopRequest,
+    HistoryRequest, OutputRequest, ResultRequest, SessionState, StartRequest, StatusRequest,
+    StopRequest,
 };
 use ccnm_core::provider::{AgentBinaries, AgentProvider};
 use ccnm_core::session::{self, Dir, Mode, RuntimeLink, Spec};
-use ccnm_core::{Config, ErrorCode, paths, work};
+use ccnm_core::{Config, ErrorCode, Lang, overview, paths, work};
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 
@@ -82,7 +83,7 @@ impl Fixture {
         ))
         .unwrap()
     }
-    fn tools<'a>(&self, runner: &'a FakeRunner) -> work::Tools<'a> {
+    fn tools<'a>(&self, runner: &'a dyn ccnm_core::ProcessRunner) -> work::Tools<'a> {
         work::Tools {
             runner,
             config: self.config(),
@@ -285,14 +286,12 @@ fn exact_stop_checks_identity_before_kill_and_records_confirmed_terminal_state()
     .unwrap();
     assert!(report.killed);
     assert_eq!(report.session.as_deref(), Some(id));
-    assert!(
-        session::read_outcome(&dir)
-            .unwrap()
-            .unwrap()
-            .error
-            .unwrap()
-            .contains("stopped by ccnm")
-    );
+    // Its own outcome since P64 (F4): `error` means "never started", and
+    // this session did.
+    let outcome = session::read_outcome(&dir).unwrap().unwrap();
+    assert!(outcome.stopped);
+    assert_eq!(outcome.error, None);
+    assert_eq!(outcome.exit_code, None);
     let repeated = FakeRunner::new();
     let report = work::stop(
         &StopRequest {
@@ -385,6 +384,352 @@ fn stopping_a_session_whose_terminal_vanished_records_its_terminal_outcome() {
             .unwrap()
             .contains("no managed terminal was running")
     );
+}
+
+fn exact_interactive_stop(id: &str) -> StopRequest {
+    StopRequest {
+        protocol: 3,
+        workspace: "demo".into(),
+        agent: Some(reference("claude-main")),
+        session: Some(id.into()),
+        assigned: false,
+    }
+}
+
+/// One `ps` line for the session's own Runtime MCP transport: the payload is
+/// what `stop` looks for, and it is unique to the session.
+fn transport_line(dir: &Dir) -> Output {
+    let payload = AgentProvider::Claude
+        .transport_payload(dir)
+        .expect("a remote session has a transport payload");
+    Output::exited(
+        0,
+        format!("/usr/bin/ssh runtime /runtime/ccnm internal mcp-serve --payload {payload}\n"),
+    )
+}
+
+/// Pretend the file was written `secs` ago.
+fn backdate(path: &std::path::Path, secs: u64) {
+    let then = std::time::SystemTime::now() - std::time::Duration::from_secs(secs);
+    std::fs::File::options()
+        .write(true)
+        .open(path)
+        .unwrap()
+        .set_modified(then)
+        .unwrap();
+}
+
+/// The one `ccnm log` line this fixture's only session gets.
+fn log_line(f: &Fixture) -> String {
+    let runner = FakeRunner::new();
+    let report = work::history(
+        &HistoryRequest {
+            protocol: 1,
+            workspace: Some("demo".into()),
+            limit: 10,
+        },
+        &f.tools(&runner),
+    )
+    .unwrap();
+    assert_eq!(report.sessions.len(), 1);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let text = overview::render_history(&report.sessions, now, 0, Lang::En);
+    text.lines().nth(1).expect("one row").to_string()
+}
+
+/// F4, first half. The terminal is gone the moment tmux says so; the ssh it
+/// carried to the Runtime takes a little longer. `stop` used to look at `ps`
+/// once, right after the kill, and on the P62 machines a Codex session was
+/// still there all three times -- so a stop that had worked answered
+/// `CCNM_E_NOT_READY`. It now looks again until the transport is gone.
+#[test]
+fn exact_stop_waits_for_the_runtime_transport_instead_of_looking_once() {
+    let f = Fixture::new();
+    let id = "00000000-0000-4000-8000-000000000030";
+    let dir = f.record(
+        id,
+        "demo",
+        Some(f.identity("claude-main", AgentProvider::Claude)),
+        Mode::Interactive { prompt: None },
+    );
+    let runner = FakeRunner::new();
+    runner.push(Output::exited(0, "")); // tmux has-session
+    runner.push(Output::exited(0, format!("CCNM_SESSION={id}\n")));
+    runner.push(Output::exited(0, "")); // tmux kill-session
+    runner.push(Output::exited(1, "")); // tmux has-session: gone
+    runner.push(transport_line(&dir)); // ps: the ssh is still exiting
+    runner.push(transport_line(&dir));
+    runner.push(Output::exited(0, "/sbin/launchd\n")); // ps: gone
+    let report = work::stop(&exact_interactive_stop(id), &f.tools(&runner)).unwrap();
+    assert!(report.killed);
+    assert_eq!(report.session.as_deref(), Some(id));
+    assert!(session::read_outcome(&dir).unwrap().is_some());
+}
+
+/// A tmux server of this test's own, and something to take it down again.
+///
+/// ccnm always talks to `tmux -L ccnm`, which on a developer's machine is
+/// the server their real sessions live on. The "binary" handed to ccnm here
+/// is a wrapper that moves the socket directory, so nothing this test starts
+/// or kills is ever in that server. Under `/tmp` because a socket path has
+/// to fit in 104 bytes and `$TMPDIR` on macOS does not leave room.
+struct OwnTmux {
+    dir: ccnm_testdir::TestDir,
+    wrapper: PathBuf,
+}
+
+impl OwnTmux {
+    fn new(real: &std::path::Path) -> Self {
+        let dir = PathBuf::from(format!(
+            "/tmp/ccnm-f4-{}-{}",
+            std::process::id(),
+            &session::new_id()[..8]
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let wrapper = dir.join("tmux");
+        std::fs::write(
+            &wrapper,
+            format!(
+                "#!/bin/sh\nTMUX_TMPDIR='{}' exec '{}' \"$@\"\n",
+                dir.display(),
+                real.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
+        Self {
+            dir: ccnm_testdir::TestDir::adopt(dir),
+            wrapper,
+        }
+    }
+
+    fn run(&self, args: &[&str]) -> std::process::Output {
+        std::process::Command::new(&self.wrapper)
+            .args(["-L", "ccnm"])
+            .args(args)
+            .output()
+            .unwrap()
+    }
+}
+
+impl Drop for OwnTmux {
+    fn drop(&mut self) {
+        let _ = self.run(&["kill-server"]);
+    }
+}
+
+/// The same stop with nothing faked: a real tmux server, a real `ps`, and a
+/// process that does what the ssh transport did on the P62 machines -- it
+/// carries the session's payload on its command line and takes a second and
+/// a half to go away after the terminal is killed.
+///
+/// The scripted tests above prove the decision; this one proves the things
+/// they assume -- that `ps` really shows the process that way, that tmux
+/// really reports the session gone while it lingers, and that the loop ends
+/// on a real exit rather than on a scripted line.
+#[test]
+fn exact_stop_against_a_real_terminal_waits_out_a_transport_that_lingers() {
+    let Some(real) = ccnm_core::tmux::locate_from_env() else {
+        // CI installs tmux on both platforms for exactly this.
+        assert!(
+            std::env::var_os("CI").is_none(),
+            "tmux is not installed on this runner"
+        );
+        eprintln!("skipped: no tmux on this machine");
+        return;
+    };
+    let own = OwnTmux::new(&real);
+    let f = Fixture::new();
+    let id = "00000000-0000-4000-8000-000000000035";
+    let dir = f.record(
+        id,
+        "demo",
+        Some(f.identity("claude-main", AgentProvider::Claude)),
+        Mode::Interactive { prompt: None },
+    );
+    backdate(&dir.meta(), 3 * 60 + 20);
+    let payload = AgentProvider::Claude.transport_payload(&dir).unwrap();
+
+    // The pane runs a script rather than the lingering command itself: the
+    // tmux server keeps the command line of the client that started it, and
+    // a payload there would look like a transport that never exits.
+    let linger = own.dir.join("linger.py");
+    std::fs::write(
+        &linger,
+        "import signal, sys, time\n\
+         signal.signal(signal.SIGHUP, signal.SIG_IGN)\n\
+         try:\n    sys.stdin.buffer.read()\nexcept OSError:\n    pass\n\
+         time.sleep(1.5)\n",
+    )
+    .unwrap();
+    let pane = own.dir.join("pane.sh");
+    std::fs::write(
+        &pane,
+        format!(
+            "exec python3 '{}' internal mcp-serve --payload {payload}\n",
+            linger.display()
+        ),
+    )
+    .unwrap();
+    let started = own.run(&[
+        "new-session",
+        "-d",
+        "-s",
+        "ccnm-demo",
+        "-e",
+        &format!("CCNM_SESSION={id}"),
+        "/bin/sh",
+        pane.to_str().unwrap(),
+    ]);
+    assert!(started.status.success(), "{started:?}");
+    let listed = || {
+        let out = std::process::Command::new("/bin/ps")
+            .args(["-Awwo", "command="])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).contains(&payload)
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !listed() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the stand-in transport never appeared in ps"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+
+    let mut tools = f.tools(&ccnm_core::process::SystemRunner);
+    tools.tmux = Some(own.wrapper.clone());
+    let began = std::time::Instant::now();
+    let report = work::stop(&exact_interactive_stop(id), &tools).unwrap();
+    let took = began.elapsed();
+    assert!(report.killed);
+    assert!(
+        took >= std::time::Duration::from_secs(1),
+        "returned after {took:?}, before the transport could have exited"
+    );
+    assert!(!listed(), "confirmed while the transport was still there");
+    let outcome = session::read_outcome(&dir).unwrap().unwrap();
+    assert!(outcome.stopped);
+    assert!(
+        (200_000..260_000).contains(&outcome.duration_ms),
+        "{} ms",
+        outcome.duration_ms
+    );
+}
+
+/// The wait is bounded, and what it cannot confirm it still does not claim:
+/// a transport that outlives the whole grace is `CCNM_E_NOT_READY`, the
+/// session stays `stopping`, and no outcome is written. A `ps` that cannot be
+/// read is not waited on at all -- more looking would not make it readable.
+#[test]
+fn exact_stop_gives_up_after_the_grace_and_never_confirms_what_it_cannot_see() {
+    let f = Fixture::new();
+    let id = "00000000-0000-4000-8000-000000000031";
+    let dir = f.record(
+        id,
+        "demo",
+        Some(f.identity("claude-main", AgentProvider::Claude)),
+        Mode::Interactive { prompt: None },
+    );
+    let runner = FakeRunner::new();
+    runner.push(Output::exited(0, ""));
+    runner.push(Output::exited(0, format!("CCNM_SESSION={id}\n")));
+    runner.push(Output::exited(0, ""));
+    runner.push(Output::exited(1, ""));
+    // More answers than five seconds of looking every 100 ms can use up.
+    for _ in 0..200 {
+        runner.push(transport_line(&dir));
+    }
+    let began = std::time::Instant::now();
+    let error = work::stop(&exact_interactive_stop(id), &f.tools(&runner)).unwrap_err();
+    assert_eq!(error.code(), ErrorCode::NotReady);
+    assert!(error.message().contains("still alive"), "{error}");
+    assert!(
+        began.elapsed() >= std::time::Duration::from_secs(4),
+        "gave up after {:?}, without waiting",
+        began.elapsed()
+    );
+    assert!(dir.stopping().exists(), "state remains stopping");
+    assert!(session::read_outcome(&dir).unwrap().is_none());
+
+    let id = "00000000-0000-4000-8000-000000000032";
+    let dir = f.record(
+        id,
+        "demo",
+        Some(f.identity("claude-main", AgentProvider::Claude)),
+        Mode::Interactive { prompt: None },
+    );
+    let runner = FakeRunner::new();
+    runner.push(Output::exited(0, ""));
+    runner.push(Output::exited(0, format!("CCNM_SESSION={id}\n")));
+    runner.push(Output::exited(0, ""));
+    runner.push(Output::exited(1, ""));
+    runner.push(Output::exited(1, "")); // ps itself failed
+    let began = std::time::Instant::now();
+    let error = work::stop(&exact_interactive_stop(id), &f.tools(&runner)).unwrap_err();
+    assert_eq!(error.code(), ErrorCode::NotReady);
+    assert!(error.message().contains("unknown"), "{error}");
+    assert!(began.elapsed() < std::time::Duration::from_secs(2));
+    assert!(session::read_outcome(&dir).unwrap().is_none());
+}
+
+/// F4, second half. A session somebody stopped is not one that failed to
+/// start. On the P62 machines a Claude session that had run for seven minutes
+/// was listed by `ccnm log` as `failed to start`, `<1m`: the stop borrowed
+/// the could-not-start outcome, whose duration is always 0.
+#[test]
+fn a_stopped_session_is_logged_as_stopped_with_how_long_it_ran() {
+    let f = Fixture::new();
+    let id = "00000000-0000-4000-8000-000000000033";
+    let dir = f.record(
+        id,
+        "demo",
+        Some(f.identity("claude-main", AgentProvider::Claude)),
+        Mode::Interactive { prompt: None },
+    );
+    backdate(&dir.meta(), 7 * 60 + 20);
+    let runner = FakeRunner::new();
+    runner.push(Output::exited(0, ""));
+    runner.push(Output::exited(0, format!("CCNM_SESSION={id}\n")));
+    runner.push(Output::exited(0, ""));
+    runner.push(Output::exited(1, ""));
+    runner.push(Output::exited(0, ""));
+    work::stop(&exact_interactive_stop(id), &f.tools(&runner)).unwrap();
+    let line = log_line(&f);
+    assert!(line.contains("stopped"), "{line}");
+    assert!(line.contains("7m"), "{line}");
+    assert!(!line.contains("failed to start"), "{line}");
+}
+
+/// A stop whose first call could not confirm the transport leaves the
+/// `stopping` marker behind; the next call finds no terminal. That is still
+/// the same stop, ended when it was asked for -- not a session with "no
+/// terminal", and not one that ran until whenever somebody asked again.
+#[test]
+fn a_stop_confirmed_on_the_second_call_is_still_a_stop_at_the_time_it_was_asked() {
+    let f = Fixture::new();
+    let id = "00000000-0000-4000-8000-000000000034";
+    let dir = f.record(
+        id,
+        "demo",
+        Some(f.identity("claude-main", AgentProvider::Claude)),
+        Mode::Interactive { prompt: None },
+    );
+    backdate(&dir.meta(), 7 * 60 + 20);
+    std::fs::write(dir.stopping(), b"requested\n").unwrap();
+    backdate(&dir.stopping(), 2 * 60);
+    let runner = FakeRunner::new();
+    runner.push(Output::exited(1, "")); // tmux has-session: nothing there
+    let report = work::stop(&exact_interactive_stop(id), &f.tools(&runner)).unwrap();
+    assert!(!report.killed);
+    let line = log_line(&f);
+    assert!(line.contains("stopped"), "{line}");
+    assert!(line.contains("5m"), "{line}");
+    assert!(!line.contains("failed to start"), "{line}");
 }
 
 /// Idempotency does not mean stop can never fail. A terminal that *is*
@@ -617,14 +962,11 @@ fn exact_print_stop_verifies_the_supervisor_before_signalling_its_process_group(
             .display()
             .contains("/bin/kill -TERM -- -4242")
     );
-    assert!(
-        session::read_outcome(&dir)
-            .unwrap()
-            .unwrap()
-            .error
-            .unwrap()
-            .contains("print process group ended")
-    );
+    // The supervisor left no outcome here, so the stop writes it -- as a
+    // stop, the same way the interactive path does since P64.
+    let outcome = session::read_outcome(&dir).unwrap().unwrap();
+    assert!(outcome.stopped);
+    assert_eq!(outcome.error, None);
 
     let done = FakeRunner::new();
     done.push(Output::exited(0, "1 1\n"));

@@ -644,6 +644,15 @@ pub struct Outcome {
     /// why instead of waiting for a process that never existed.
     #[serde(default)]
     pub error: Option<String>,
+    /// `ccnm stop` ended this session and had to write the outcome itself,
+    /// because the supervisor died with the terminal before it could.
+    ///
+    /// Its own flag rather than a message in `error` (F4): `error` means
+    /// "never started", so a session stopped after seven minutes used to be
+    /// listed by `ccnm log` as `failed to start`, `<1m`. Absent on the wire
+    /// when false, so a record written before P64 reads as it always did.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub stopped: bool,
 }
 
 impl Outcome {
@@ -653,6 +662,9 @@ impl Outcome {
 
     pub fn describe(&self) -> String {
         let secs = self.duration_ms as f64 / 1000.0;
+        if self.stopped {
+            return format!("stopped by ccnm after {secs:.1} s");
+        }
         match (&self.error, self.timed_out, self.exit_code) {
             (Some(e), _, _) => format!("could not start: {e}"),
             (None, true, _) => format!("killed after {secs:.1} s (timeout)"),
@@ -735,6 +747,25 @@ pub fn record_terminal_failure(dir: &Dir, message: &str) -> Result<()> {
             timed_out: false,
             duration_ms: 0,
             error: Some(message.to_string()),
+            stopped: false,
+        },
+    )
+}
+
+/// Record that `ccnm stop` ended the session after it had run for `ran`.
+///
+/// Only for a session whose supervisor left no outcome of its own: killing
+/// the tmux session takes the supervisor with it, so nobody else is left to
+/// say how the session ended or how long it lasted.
+pub fn record_stopped(dir: &Dir, ran: Duration) -> Result<()> {
+    write_outcome(
+        dir,
+        &Outcome {
+            exit_code: None,
+            timed_out: false,
+            duration_ms: ran.as_millis() as u64,
+            error: None,
+            stopped: true,
         },
     )
 }
@@ -885,11 +916,13 @@ pub fn supervise(req: &SuperviseRequest) -> Result<Outcome> {
             timed_out: captured.timed_out,
             duration_ms: captured.duration.as_millis() as u64,
             error: None,
+            stopped: false,
         },
         Err(e) => Outcome {
             exit_code: None,
             timed_out: false,
             duration_ms: 0,
+            stopped: false,
             error: Some(if spec.agent_identity.is_some() {
                 format!(
                     "{}: bound Agent launch validation failed; private details withheld",
@@ -1314,6 +1347,7 @@ mod tests {
             timed_out: false,
             duration_ms: 7900,
             error: None,
+            stopped: false,
         };
         write_outcome(&dir, &outcome).unwrap();
         assert!(
@@ -1345,6 +1379,7 @@ mod tests {
             timed_out: false,
             duration_ms: 1500,
             error: None,
+            stopped: false,
         };
         assert!(base.ok());
         assert_eq!(base.describe(), "exited 0 in 1.5 s");
@@ -1363,8 +1398,17 @@ mod tests {
         let never = Outcome {
             exit_code: None,
             error: Some("cannot spawn claude".into()),
+            ..base.clone()
+        };
+        // Stopped is neither of the above: it did start, and no signal or
+        // clock of the supervisor's ended it.
+        let stopped = Outcome {
+            exit_code: None,
+            stopped: true,
             ..base
         };
+        assert!(!stopped.ok());
+        assert_eq!(stopped.describe(), "stopped by ccnm after 1.5 s");
         assert!(!never.ok());
         assert!(never.describe().starts_with("could not start:"));
     }

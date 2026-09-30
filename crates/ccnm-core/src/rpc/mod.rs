@@ -636,6 +636,7 @@ mod tests {
                 timed_out: false,
                 duration_ms: 1234,
                 error: None,
+                stopped: false,
             },
             result: None,
             stdout_tail: text.to_string(),

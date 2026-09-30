@@ -1162,6 +1162,7 @@ mod tests {
                 timed_out: false,
                 duration_ms: 1,
                 error: None,
+                stopped: false,
             },
             result,
             stdout_tail: String::new(),

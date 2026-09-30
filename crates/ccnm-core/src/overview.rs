@@ -893,6 +893,8 @@ pub fn render_history(entries: &[HistoryEntry], now: u64, offset_secs: i64, lang
         };
         let state = match &e.outcome {
             Some(o) if o.timed_out => lang.pick("超时被杀", "timed out").to_string(),
+            // Before "failed to start": a stop is a session that did run.
+            Some(o) if o.stopped => lang.pick("被停止", "stopped").to_string(),
             Some(o) if o.error.is_some() => lang.pick("没起来", "failed to start").to_string(),
             Some(o) if !o.ok() => match o.exit_code {
                 Some(code) => lang.pick(format!("退出码 {code}"), format!("exit {code}")),
@@ -1254,6 +1256,77 @@ mod tests {
         assert_eq!(parse_offset("+0900"), Some(32400));
         assert_eq!(parse_offset("-0330"), Some(-12600));
         assert_eq!(parse_offset("UTC"), None);
+    }
+
+    /// The three ways a session that is not `ok` can have ended read as three
+    /// different things (F4). A stop used to be recorded as the first of
+    /// them, so a session stopped after seven minutes was listed as
+    /// `failed to start`, `<1m`.
+    #[test]
+    fn the_log_keeps_stopped_apart_from_never_started_and_killed() {
+        let entry = |session: &str, outcome: &str| HistoryEntry {
+            session: session.into(),
+            workspace: "demo".into(),
+            instance: None,
+            mode: "interactive".into(),
+            prompt: None,
+            started: 1_789_391_418,
+            ended: Some(1_789_391_418 + 420),
+            state: SessionState::Failed,
+            outcome: Some(serde_json::from_str(outcome).unwrap()),
+        };
+        let entries = [
+            entry(
+                "aaaaaaaa-stopped",
+                r#"{"exit_code":null,"timed_out":false,"duration_ms":420000,"error":null,"stopped":true}"#,
+            ),
+            entry(
+                "bbbbbbbb-never",
+                r#"{"exit_code":null,"timed_out":false,"duration_ms":0,"error":"cannot spawn claude"}"#,
+            ),
+            entry(
+                "cccccccc-killed",
+                r#"{"exit_code":null,"timed_out":false,"duration_ms":61000,"error":null}"#,
+            ),
+            // What a stop wrote before P64: still readable, still shown the
+            // way it was -- the duration it never recorded cannot be made up.
+            entry(
+                "dddddddd-legacy",
+                r#"{"exit_code":null,"timed_out":false,"duration_ms":0,"error":"stopped by ccnm after the managed terminal ended"}"#,
+            ),
+        ];
+        let line = |text: &str, id: &str| {
+            text.lines()
+                .find(|l| l.contains(id))
+                .unwrap_or_else(|| panic!("no row for {id} in\n{text}"))
+                .to_string()
+        };
+        let en = render_history(&entries, 0, 0, Lang::En);
+        let stopped = line(&en, "aaaaaaaa");
+        assert!(
+            stopped.contains("stopped") && stopped.contains("7m"),
+            "{stopped}"
+        );
+        assert!(!stopped.contains("failed to start"), "{stopped}");
+        let never = line(&en, "bbbbbbbb");
+        assert!(
+            never.contains("failed to start") && never.contains("<1m"),
+            "{never}"
+        );
+        let killed = line(&en, "cccccccc");
+        assert!(
+            killed.contains("killed") && killed.contains("1m"),
+            "{killed}"
+        );
+        assert!(line(&en, "dddddddd").contains("failed to start"));
+
+        let zh = render_history(&entries, 0, 0, Lang::Zh);
+        let stopped = line(&zh, "aaaaaaaa");
+        assert!(
+            stopped.contains("被停止") && stopped.contains("7 分钟"),
+            "{stopped}"
+        );
+        assert!(line(&zh, "bbbbbbbb").contains("没起来"));
     }
 
     #[test]

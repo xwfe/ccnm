@@ -201,6 +201,7 @@ fn public_default_and_explicit_instance_selection_use_v3_without_private_paths()
             timed_out: false,
             duration_ms: 1,
             error: None,
+            stopped: false,
         },
         result: Some(AgentResult::Claude(RunResult {
             is_error: false,

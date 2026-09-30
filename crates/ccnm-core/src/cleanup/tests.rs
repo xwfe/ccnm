@@ -24,6 +24,18 @@ fn id(n: u8) -> String {
     format!("{n:08x}-0000-4000-8000-000000000000")
 }
 
+/// The answer the Agent's `id -u` gets: the uid that really owns the session
+/// directories these tests create. A fixed number only matches one developer's
+/// machine; anywhere else the Agent sees someone else's records and keeps them
+/// (P62: all three Agent tests failed on Linux as uid 1002).
+fn me() -> u32 {
+    crate::runtime::current_uid(&SystemRunner).expect("id -u")
+}
+
+fn id_u() -> Output {
+    Output::exited(0, format!("{}\n", me()))
+}
+
 /// Runtime output for a session, the way `exec_command` leaves it.
 fn output(state: &Path, id: &str, bytes: usize) -> PathBuf {
     let run = crate::paths::session_dir(state, id).join("output/r-0000000000000001");
@@ -359,7 +371,7 @@ fn the_agent_lists_its_own_sessions_and_keeps_what_the_runtime_keeps() {
     .unwrap();
 
     let runner = FakeRunner::new();
-    runner.push(Output::exited(0, "501\n")); // id -u
+    runner.push(id_u());
     runner.push(runtime_answer(
         vec![
             runtime_output_item(&done, None),
@@ -368,7 +380,7 @@ fn the_agent_lists_its_own_sessions_and_keeps_what_the_runtime_keeps() {
         Some(guarded.clone()),
     ));
     let report = agent(&agent_request(None, false), &agent_tools(&dir, &runner)).unwrap();
-    assert_eq!((report.uid, report.runtime_uid), (Some(501), Some(1002)));
+    assert_eq!((report.uid, report.runtime_uid), (Some(me()), Some(1002)));
     let agent_ids: Vec<&str> = report
         .items
         .iter()
@@ -406,7 +418,7 @@ fn without_the_runtime_the_agent_keeps_its_records() {
     let state = dir.join("agent");
     agent_session(&state, &id(1), "demo", true);
     let runner = FakeRunner::new();
-    runner.push(Output::exited(0, "501\n"));
+    runner.push(id_u());
     runner.push(Output {
         stderr: b"ssh: connect to host runtime port 22: Connection refused\n".to_vec(),
         ..Output::exited(255, "")
@@ -430,7 +442,7 @@ fn the_agent_removes_a_record_only_after_its_runtime_half() {
     fs::create_dir_all(crate::paths::workspace_dir(&state, "demo")).unwrap();
 
     let runner = FakeRunner::new();
-    runner.push(Output::exited(0, "501\n"));
+    runner.push(id_u());
     runner.push(runtime_answer(
         vec![runtime_output_item(&a, None), runtime_output_item(&b, None)],
         None,
@@ -445,7 +457,7 @@ fn the_agent_removes_a_record_only_after_its_runtime_half() {
     assert_eq!(asked.len(), 5, "{asked:?}");
 
     let runner = FakeRunner::new();
-    runner.push(Output::exited(0, "501\n"));
+    runner.push(id_u());
     runner.push(runtime_answer(
         vec![
             runtime_output_item(&a, None).finish(Done::Removed, None, None),

@@ -71,6 +71,7 @@ fn default_and_override_flow_through_attach_status_result_and_stop_with_exact_id
             tmux: Ok("3.7c".into()),
             sessions: vec![],
             records: vec![],
+            other_instances: vec![],
         })
         .unwrap(),
     ));
@@ -142,6 +143,7 @@ fn default_and_override_flow_through_attach_status_result_and_stop_with_exact_id
             tmux: Ok("3.7c".into()),
             sessions: vec![],
             records: vec![],
+            other_instances: vec![],
         })
         .unwrap(),
     ));
@@ -157,6 +159,7 @@ fn default_and_override_flow_through_attach_status_result_and_stop_with_exact_id
             tmux: Ok("3.7c".into()),
             sessions: vec![],
             records: vec![],
+            other_instances: vec![],
         })
         .unwrap(),
     ));

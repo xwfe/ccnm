@@ -1179,6 +1179,7 @@ fn sitting_at_home_detached_starts_the_session_and_keeps_the_terminal_here() {
     .unwrap();
     let nothing_running = serde_json::to_string(&StatusReport {
         records: vec![],
+        other_instances: vec![],
         agent_identity: None,
 
         protocol: PROTOCOL,

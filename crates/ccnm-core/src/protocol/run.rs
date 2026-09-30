@@ -651,6 +651,17 @@ pub struct StatusReport {
     pub sessions: Vec<LiveSession>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub records: Vec<SessionRecord>,
+    /// Instances other than the one asked about that have a live session
+    /// of the requested workspace (F6).
+    ///
+    /// A workspace has one terminal, and a status that names an instance
+    /// lists only that instance's session. Left at that, asking about the
+    /// default instance while another one holds the terminal reads "no live
+    /// sessions" -- true of the instance, and the opposite of what the
+    /// person wanted to know about the project. Empty when nothing was left
+    /// out, and absent on the wire then.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub other_instances: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -756,19 +767,36 @@ impl StatusReport {
             ),
             Err(e) => format!("tmux: {}\n", e.message),
         };
+        let asked = self.agent_identity.as_ref().map(|id| id.instance.as_str());
         if self.sessions.is_empty() {
             // Worth reading twice before trusting: this counts tmux
             // sessions on the Agent Node, and a `--print` run is not one
             // of them even though it holds the workspace's write guard.
             // See docs/operations.md.
-            out.push_str(lang.pick(
-                "没有在跑的会话（--print 的运行不算在内）\n",
-                "no live sessions\n",
-            ));
+            match asked.filter(|_| !self.other_instances.is_empty()) {
+                // Said about the instance, because said about the project
+                // it would be false (F6).
+                Some(instance) => out.push_str(&lang.pick(
+                    format!("实例 {instance} 没有在跑的会话（--print 的运行不算在内）\n"),
+                    format!("no live sessions for instance {instance}\n"),
+                )),
+                None => out.push_str(lang.pick(
+                    "没有在跑的会话（--print 的运行不算在内）\n",
+                    "no live sessions\n",
+                )),
+            }
         }
         for s in &self.sessions {
             out.push_str(&s.describe());
             out.push('\n');
+        }
+        for other in &self.other_instances {
+            out.push_str(&lang.pick(
+                format!("这个项目的终端现在是实例 {other} 的会话：加 --agent {other} 看它\n"),
+                format!(
+                    "this workspace's terminal is a session of instance {other}: add --agent {other} to see it\n"
+                ),
+            ));
         }
         for record in &self.records {
             out.push_str(&format!(

@@ -234,6 +234,60 @@ fn exact_status_distinguishes_terminal_starting_and_unknown_without_guessing() {
     assert_eq!(report.records[0].state, SessionState::Unknown);
 }
 
+/// F6. A workspace has one terminal, and whichever instance started it has
+/// it. On the P62 machine `ccnm status p62rust` -- no `--agent`, so the
+/// default instance -- said "no live sessions" while a Codex session of that
+/// very workspace was running. The filter is right (the question named an
+/// instance); the answer left out the one thing the person was looking for.
+#[test]
+fn status_for_one_instance_says_when_another_instance_has_the_workspace() {
+    let f = Fixture::new();
+    let id = "00000000-0000-4000-8000-000000000040";
+    f.record(
+        id,
+        "demo",
+        Some(f.identity("codex-main", AgentProvider::Codex)),
+        Mode::Interactive { prompt: None },
+    );
+    let asked = |agent: &str| {
+        let runner = FakeRunner::new();
+        runner.push(Output::exited(0, "tmux 3.7c\n")); // -V
+        runner.push(Output::exited(0, "ccnm-demo\t1788496263\t0\t1\n")); // list-sessions
+        runner.push(Output::exited(0, format!("CCNM_SESSION={id}\n")));
+        runner.push(Output::exited(0, "/sbin/launchd\n")); // ps, for the transport
+        work::status_checked(
+            &StatusRequest {
+                protocol: 3,
+                workspace: Some("demo".into()),
+                agent: Some(reference(agent)),
+                session: None,
+            },
+            &f.tools(&runner),
+        )
+        .unwrap()
+    };
+
+    let claude = asked("claude-main");
+    assert!(
+        claude.sessions.is_empty(),
+        "it is not claude-main's session"
+    );
+    for (lang, hint) in [
+        (Lang::En, "--agent codex-main"),
+        (Lang::Zh, "--agent codex-main"),
+    ] {
+        let said = claude.render_in(lang);
+        assert!(said.contains(hint), "{said}");
+        // And it no longer reads as "nothing is running for this project".
+        assert!(said.contains("claude-main"), "{said}");
+    }
+
+    // Asked about the instance that has it: the session, and no hint.
+    let codex = asked("codex-main");
+    assert_eq!(codex.sessions.len(), 1);
+    assert!(!codex.render_in(Lang::En).contains("--agent"));
+}
+
 #[test]
 fn exact_stop_checks_identity_before_kill_and_records_confirmed_terminal_state() {
     let f = Fixture::new();

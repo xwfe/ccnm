@@ -852,6 +852,17 @@ fn terminal_row(r: &Subject<'_>, rep: &ProbeReport) -> Check {
     };
     let wanted = crate::tmux::session_name(r.workspace);
     match status.sessions.iter().find(|s| s.tmux_session == wanted) {
+        // The instance that was asked about has none, and the workspace's
+        // one terminal belongs to another: not the same as "nothing is
+        // running for this project" (F6).
+        None if !status.other_instances.is_empty() => Check::ok(
+            NAME,
+            format!(
+                "tmux {version}, no live session of this instance; {}'s terminal is a session of instance {}",
+                r.workspace,
+                status.other_instances.join(", ")
+            ),
+        ),
         None => Check::ok(
             NAME,
             format!("tmux {version}, no live session for {}", r.workspace),
@@ -1753,6 +1764,7 @@ mod tests {
             exec_server: None,
             terminal: Some(crate::protocol::run::StatusReport {
                 records: vec![],
+                other_instances: vec![],
                 agent_identity: None,
 
                 protocol: PROTOCOL,

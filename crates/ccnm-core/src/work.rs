@@ -1373,6 +1373,7 @@ pub fn status(req: &StatusRequest, tools: &Tools<'_>) -> StatusReport {
         tmux: Err(error.into()),
         sessions: Vec::new(),
         records: Vec::new(),
+        other_instances: Vec::new(),
     })
 }
 
@@ -1390,6 +1391,7 @@ pub fn status_checked(req: &StatusRequest, tools: &Tools<'_>) -> Result<StatusRe
         .transpose()?
         .into_iter()
         .collect();
+    let mut other_instances = Vec::new();
     let (tmux_version, sessions) = match tools.tmux() {
         Err(e) => (Err(e.into()), Vec::new()),
         Ok(tmux) => {
@@ -1407,13 +1409,19 @@ pub fn status_checked(req: &StatusRequest, tools: &Tools<'_>) -> Result<StatusRe
                     }
                 })
                 .map_err(Into::into);
-            let sessions = live_sessions(&tmux, tools, req.workspace.as_deref())
+            let (sessions, others): (Vec<_>, Vec<_>) =
+                live_sessions(&tmux, tools, req.workspace.as_deref())
+                    .into_iter()
+                    .partition(|session| {
+                        expected.as_ref().is_none_or(|identity| {
+                            session.agent_identity.as_ref() == Some(identity)
+                        })
+                    });
+            // What the filter left out is still this workspace's terminal;
+            // say whose it is instead of only not listing it (F6).
+            other_instances = others
                 .into_iter()
-                .filter(|session| {
-                    expected
-                        .as_ref()
-                        .is_none_or(|identity| session.agent_identity.as_ref() == Some(identity))
-                })
+                .filter_map(|session| session.agent_identity.map(|id| id.instance))
                 .collect();
             (version, sessions)
         }
@@ -1424,6 +1432,7 @@ pub fn status_checked(req: &StatusRequest, tools: &Tools<'_>) -> Result<StatusRe
         tmux: tmux_version,
         sessions,
         records,
+        other_instances,
     })
 }
 

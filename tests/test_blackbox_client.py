@@ -21,6 +21,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 
@@ -93,6 +94,8 @@ class BlackBoxTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.home = Path(self.temp.name)
         self.state = self.home / "state"
+        # 清理按登记的反序跑：这一条排在删目录之前、各个 client.close 之后。
+        self.addCleanup(self.wait_for_owners)
         (self.home / "demo").mkdir()
         (self.home / "other").mkdir()
         self.config = self.write_config(
@@ -100,6 +103,39 @@ class BlackBoxTests(unittest.TestCase):
                 root=self.home / "demo", other=self.home / "other"
             )
         )
+
+    def wait_for_owners(self, timeout: float = 30.0) -> None:
+        """删目录之前，等每个会话的 owner 进程退出。
+
+        P63 起，`session.start` 接受的会话由一个脱离 `ccnm rpc` 的进程跑完，连接
+        关了它还在。用例一结束就删目录，它正好在这时把结局写进
+        `rpc/sessions/`：删除报 `Directory not empty`，/tmp 下留一个只剩一份记录的
+        目录。单跑 25 次撞到 1 次，留下的记录里写着 `config not found`——它启动时
+        配置已经被删了。owner 的 pid 在 `session.start` 回应之前就写进了记录。
+        """
+        pids = set()
+        for record in (self.state / "ccnm/rpc/sessions").glob("*.json"):
+            try:
+                pid = json.loads(record.read_text(encoding="utf-8")).get("owner_pid")
+            except (OSError, ValueError):
+                continue
+            if isinstance(pid, int):
+                pids.add(pid)
+
+        def alive(pid: int) -> bool:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return False
+            except PermissionError:
+                return True
+            return True
+
+        deadline = time.monotonic() + timeout
+        while any(alive(pid) for pid in pids) and time.monotonic() < deadline:
+            time.sleep(0.02)
+        left = sorted(pid for pid in pids if alive(pid))
+        self.assertFalse(left, f"owner 进程 {left} 过了 {timeout} 秒还没退出")
 
     def write_config(self, body: str) -> Path:
         path = self.home / "config.toml"

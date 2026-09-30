@@ -182,11 +182,29 @@ Work SSH   FAIL   CCNM_E_VERSION: ~/.local/bin/ccnm on work is there but not exe
 
 **现在不会了**：stdout 为空时 ccnm 改看 stderr，shell 的抱怨和远程 ccnm 自己的
 `CCNM_E_*` 都能认出来。要是你还看到这句，那才是真的版本对不上——
-两边比 `sha256sum`（macOS 用 `shasum -a 256`），**不要只比 `--version`**：P62 实测，
-未发版的构建和已装的旧构建都报 `0.9.0`，doctor 0 失败，起会话才撞上这句（内部协议不同）。
+**不要只比 `--version`**：P62 实测，未发版的构建和已装的旧构建都报 `0.9.0`，
+当时的 doctor 0 失败，起会话才撞上这句（内部协议不同）。P64 起 doctor 会直接说，
+见下一节。
 
 顺带：这个特性也意味着**你自己在命令行上 `ssh work '任何会失败的命令'` 都会得到 `$? = 0`**，
 调试的时候别信那个退出码。
+
+### doctor 报 `reports ccnm 0.9.0 like this machine, but it is not the same build`
+
+**症状**：两台机器 `ccnm --version` 一样，doctor 的 `Agent 的 ccnm`（`Agent ccnm`）或 `反向 SSH`（`Reverse SSH`）那一行却失败：
+
+```text
+Agent 的 ccnm           失败   CCNM_E_VERSION: work reports ccnm 0.9.0 like this machine, but it is not the same build: it does not say how far its internal protocols go, so it is older than this build; this machine speaks up to 10
+                               install the same build on both
+```
+
+起会话时 Agent 问 Runtime 的那次握手对不上，报的是同一个意思（`the Runtime Node reports ccnm … like this one, but it is not the same build`）。
+
+**原因**：版本号取自 Cargo.toml，两次发版之间从 main 编出来的每个构建都叫上一个发布的号。号一样，能说的内部协议（两台机器上的 ccnm 互相说话用的那套请求格式）可以不一样。P64（2026-09-30）起，每个构建在握手时多报一个数——它认得的内部协议最高号，两边版本号相同时再比这个数。`it does not say how far its internal protocols go` 说的是对方是 P64 之前的构建，根本没报；`it speaks internal protocols up to 6` 这种是报了，但和这边不是同一个数。
+
+**怎么办**：两台装同一个构建——同一个 release 的两个平台包，或者同一个提交编出来的两份。哪一边旧，看各自二进制的修改时间，或者拿 release 页上的 sha256 对本平台那一份（**两个平台的 sha256 本来就不同，别拿两台机器互相比**）。
+
+**这一行只在新的那一端看得出来。** 旧构建的 doctor 只比版本号，它看新构建仍然是"同一个 0.9.0"；所以在旧的那台上跑 doctor 全绿不算数，到新的那台上再跑一次。
 
 ### 会话里工具全废，报 "xxx is not installed"、`workspace_info` 却一切正常
 
@@ -624,7 +642,7 @@ python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["finish"].get("e
   ~/.local/state/ccnm/rpc/sessions/<句柄>.json
 ```
 
-P62 实测见到的三种：`Claude is not authenticated on the Agent Node`（去 Agent 上 `claude auth login`）、`the Runtime Node runs ccnm 0.8.0, this one runs 0.9.0`（两端装同一个构建）、`message is not valid for protocol 1; ccnm versions probably differ`（版本号一样但构建不同，比 sha256）。
+P62 实测见到的三种：`Claude is not authenticated on the Agent Node`（去 Agent 上 `claude auth login`）、`the Runtime Node runs ccnm 0.8.0, this one runs 0.9.0`（两端装同一个构建）、`message is not valid for protocol 1; ccnm versions probably differ`（版本号一样但构建不同；P64 起 doctor 会[直接指出来](#doctor-报-reports-ccnm-090-like-this-machine-but-it-is-not-the-same-build)）。
 
 ### `ccnm stop --session` 报 `terminal ended but its Runtime MCP transport is still alive`，之后 `ccnm log` 说 `failed to start`
 
@@ -635,11 +653,20 @@ CCNM_E_NOT_READY:
 … terminal ended but its Runtime MCP transport is still alive; state remains stopping
 ```
 
-几秒后再 stop 一次说 `nothing to stop`，`ccnm log` 把这个会话列成 `failed to start`。
+几秒后再 stop 一次说 `nothing to stop`，`ccnm log` 把这个会话列成 `failed to start`、时长 `<1m`，不管它实际跑了多久。
 
-**原因**：终端已经关了，通往 Runtime 的 ssh 通道要再过一小会儿才退出，而 stop 杀完终端**只看了一眼**就下结论；第二次 stop 走的是"本来就没在跑"那条路，把结局写成了"没有终端"（P62 研究记录 F4，还没修）。P62 真机上 Codex 会话 3 次停止 3 次如此，Claude 会话那一次第一次就成功——但**只要是 stop 停掉的交互会话，`ccnm log` 都写成 `failed to start`、时长 `<1m`**，不管它跑了多久。**会话其实已经正常停了**，不是启动失败。
+**P64（2026-09-30）起已修**（P62 研究记录 F4）：
 
-**怎么办**：等几秒，用 `ccnm status <ws>` 确认会话没了、写锁行是 `free`，就算停成功；`log` 里那条"failed to start"忽略即可。写锁不是 `free` 的，按[写入 guard 残留](operations.md#写入-guard-残留)查。
+- stop 关掉终端之后，每 100 毫秒看一次通往 Runtime 的 ssh 通道退了没有，最多等 5 秒，退了才报成功。P62 真机上 Codex 会话 3 次停止 3 次撞上的就是"只看一眼"。
+- 被 stop 停掉的会话，`ccnm log` 显示"被停止"（`stopped`），时长是从会话建立到你敲 stop 的那一刻；`ccnm result <ws> --session <id>` 显示 `stopped by ccnm after N s`。
+
+还看到上面的现象，说明 Agent Node 上是 P64 之前的构建（记结局的是 Agent 那一端）。P64 之前写下的记录不会变：那时没记时长，补不出来。
+
+**升级之后仍然报这一句**：通道过了 5 秒还没退。等几秒再 stop 一次——这一次会把会话记成"被停止"，时长仍算到第一次敲 stop 为止。再用 `ccnm status <ws>` 确认写锁行是 `free`；不是的，按[写入 guard 残留](operations.md#写入-guard-残留)查。
+
+**旧构建上怎么办**：等几秒，用 `ccnm status <ws>` 确认会话没了、写锁行是 `free`，就算停成功；`log` 里那条 `failed to start` 忽略即可——会话其实是正常停的。
+
+**`log` 里仍是 `failed to start` 的另一种情况**：终端不是 stop 停的，而是自己没了（tmux server 被杀、机器重启），之后才有人对它 stop。ccnm 不知道它什么时候结束的，仍然记成"没有终端"。
 
 ### doctor 说 Codex 已登录，会话里第一条消息却报 `refresh token was revoked`
 
@@ -676,6 +703,8 @@ CODEX_HOME=~/.config/ccnm/agents/codex /path/to/codex-0.154.0/codex login
 **旧构建上怎么办**：`session.start` 之后保持这条连接，直到 `session.status` 变成终态（参考客户端的 `wait()` 就是这样做的）。已经撞上的：Operator 记录里 `dispatched` 为空的 `unknown` 可以确定没有执行过，换一个新的 `start_key` 重来；`dispatched` 为真的仍按 `unknown` 对待。
 
 **升级之后仍是 `unknown`**：带着它的 owner 进程真的没了（被 `kill -9`、机器重启）。这时不知道 Agent 上跑到了哪一步，按 `unknown` 对待，别自动重试。
+
+**P63 的构建上还有一种假的 `unknown`**：任务正常结束的那一刻去查，约 40 次里有 1 次被回成 `unknown`——查询先读了记录、再去看 owner 进程，owner 恰好在两步之间写完结局退出了（P64 已修）。分辨方法：再查一次 `session.status`，结局已经落盘的话第二次就是 `completed` 或 `failed`；两次都是 `unknown` 才是真的。
 
 ### Machine API：`session.stop` 回 `-32000 … Agent process group has not ended`
 

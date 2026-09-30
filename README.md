@@ -22,8 +22,8 @@ Runtime Node                              Agent Node
 | | |
 | --- | --- |
 | 最新发布 | [v0.9.0](https://github.com/xwfe/ccnm/releases)（2026-09-23） |
-| main 分支 | 比 v0.9.0 多了精确停止、完整结果分页、写锁预检、跨账号清理（P58–P61），以及 Machine API 断开后任务照跑、停止标志不丢、ssh 连不上记 `failed`（P63）。**内部协议和 v0.9.0 不兼容，版本号却还是 0.9.0**——两台机器必须装同一个构建，核对 sha256，别只看 `--version` |
-| 真机验收 | P62（macOS Agent → Debian 13 Runtime）**受阻**：Claude 那一半全部跑通，Codex 那一半被账号额度挡住。它查出的 19 个问题里，Machine API 的三处已在 P63 离线修好（[P63 记录](docs/research/2026-09-30-p63-rpc-disconnect-stop.md)），真机复验等 P62 续跑。见 [P62 记录](docs/research/2026-09-30-p62-real-machine.md) |
+| main 分支 | 比 v0.9.0 多了精确停止、完整结果分页、写锁预检、跨账号清理（P58–P61），Machine API 断开后任务照跑、停止标志不丢、ssh 连不上记 `failed`（P63），以及交互会话 stop 等通道退出再确认、`ccnm log` 把被停掉的会话记成"被停止"（P64）。**内部协议和 v0.9.0 不兼容，版本号却还是 0.9.0**——两台机器必须装同一个构建，别只看 `--version`；P64 起 main 这一端的 doctor 会指出来，v0.9.0 那一端不会 |
+| 真机验收 | P62（macOS Agent → Debian 13 Runtime）**受阻**：Claude 那一半全部跑通，Codex 那一半被账号额度挡住。它查出的 19 个问题里，Machine API 的三处已在 P63 离线修好（[P63 记录](docs/research/2026-09-30-p63-rpc-disconnect-stop.md)），交互 stop 与同版本号不同构建两处在 P64 离线修好（[P64 记录](docs/research/2026-09-30-p64-stop-outcome-same-number-builds.md)），真机复验等 P62 续跑。见 [P62 记录](docs/research/2026-09-30-p62-real-machine.md) |
 
 每一项能力验到了哪一步、明确**没**验过什么，逐条在[支持矩阵](docs/support-matrix.md)里。
 
@@ -57,7 +57,7 @@ mv ccnm ~/.local/bin/ccnm.new && mv ~/.local/bin/ccnm.new ~/.local/bin/ccnm
 
 - **别用 `cp` 覆盖跑过的 ccnm。** Apple Silicon 上写进已执行过的 Mach-O 会让代码签名失效，之后每次执行都 `Killed: 9`，而老进程还在用老代码跑。上面"新文件 + 改名"就是为了避开它。
 - **浏览器下载的包带隔离属性**，macOS 拒绝执行：`xattr -d com.apple.quarantine ccnm`。用 `curl` 下载不会带。
-- **版本号一样不代表是同一个构建。** 自己从 main 编的和发布件都可能叫 0.9.0，doctor 分不出来，起会话时才报 `message is not valid for protocol 1`。两边比 `shasum -a 256` / `sha256sum`。
+- **版本号一样不代表是同一个构建。** 自己从 main 编的和发布件都可能叫 0.9.0。P64 起 doctor 在版本号相同时再比内部协议最高号，对不上就报 `not the same build`——但只有新的那一端会说，v0.9.0 的 doctor 照样全绿，起会话时才报 `message is not valid for protocol 1`。所以两台都跑一遍 doctor，以新的那台为准。
 
 ## 快速开始
 
@@ -143,7 +143,7 @@ view_image      read_notebook  stop_command   call_mcp_tool
 - **写互斥要求各入口用同一个 state 目录。** 同一棵树配两个 `XDG_STATE_HOME` 就是两把互不知晓的锁。
 - **离开进程组的后代够不着。** Runtime MCP server 派生的 `setsid` / 守护进程、以及 `mcp-serve` 被 `kill -9` 后留下的后台命令，ccnm 停不掉；写锁会因此保持 unknown，按[运维手册](docs/operations.md#写入-guard-残留)人工收。
 - **项目和 Agent 同机（colocated）没有真实验收**，明确拒绝，不静默降级。
-- P62 查出、还没修的问题（交互会话 stop 先报 NotReady 且 `ccnm log` 写成 `failed to start`、Debian 家目录 0700、Machine API 失败原因丢失等）列在 [P62 记录](docs/research/2026-09-30-p62-real-machine.md)第 5 节，现象和绕法在[排错手册](docs/troubleshooting.md)。
+- P62 查出、还没修的问题（Debian 家目录 0700、Machine API 失败原因丢失、Codex 令牌失效 doctor 看不出等）列在 [P62 记录](docs/research/2026-09-30-p62-real-machine.md)第 5 节，现象和绕法在[排错手册](docs/troubleshooting.md)。
 
 阶段完成、Agent 退出成功和项目验收通过是三个不同的结论。
 

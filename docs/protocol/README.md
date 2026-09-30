@@ -49,6 +49,8 @@ P63（2026-09-30）起，P62 真机查出的两处与契约不符的行为修正
 - **客户端断开之后，已接受的 session 照常派发、跑完**（第 8.1 节）。每个 session 由自己的 owner 进程（`ccnm internal rpc-run`，独立进程组）带着跑，不再挂在 `ccnm rpc` 进程上；客户端关 stdin 后 `ccnm rpc` 立刻退出，重连能查到真实的 `running` / 终态与结果。此前派发前断开的任务从未发出却读成 `unknown`，派发后断开的永远 `unknown`。owner 进程真的消失（被 `kill -9`）时仍读成 `unknown`。
 - **`session.stop` 对已派发的 session，停止标志在联系 Agent 之前就记下**，Agent 怎么回答都不会丢；Agent 发出 SIGTERM 后最多等 5 秒进程组退出，还确认不了时回 `stopping`（第 5.6 节），不再回 `-32000`。Agent 连不上等其他错误照样返回错误，标志同样保留。
 
+P64（2026-09-30）修了上面第一条带出来的一个缺陷：owner 进程先写结局再退出，而 `session.status` / `result` / `stop` 是先读记录、再查 owner 在不在——两步正好夹住它退出的那一刻时，一个正常结束的 session 会被回成 `unknown`（实测轮询时约 40 次 1 次）。现在查到 owner 不在了就把记录重读一遍，结局已经落盘的按结局回；重读后仍没有结局的才是 `unknown`。**P63 的构建上拿到 `unknown` 时再查一次 `session.status`**，结局已经写下的话第二次就是对的。详见 [P64 记录](../research/2026-09-30-p64-stop-outcome-same-number-builds.md)第 5.1 节。
+
 P59（2026-09-29）起 `session.result` 的输出按[协议第 9 节](machine-protocol-v1.md#输出引用)实现：每个流保留最后 32 MiB，第一页是末尾、`cursor` 往前翻，`max_bytes` 生效，stderr 用 `output.stream` 单独取。完整内容在 Agent 上生成、在第一次读时整份拷到本机，之后翻页不再联系 Agent。Agent 还是 P59 之前的版本或这时联系不上，服务端给的是旧版本留下的那段尾部，并用 `unavailable_reason` 说明，不当成完整输出。游标只在发出它的 `ccnm rpc` 进程里有效。详见 [P59 记录](../research/2026-09-29-p59-output-snapshot.md)。
 
 P60（2026-09-29）起 `session.start` 在分配 session id 之前先问写入 guard：Operator 经 Agent 问到 Runtime 执行账号（内部协议 9），因为锁在执行账号自己的 state 目录里。有进程正持有回 `-32008`；没人持有却也交不出去（上一个会话故意留着、异常退出留下的、标记损坏或读不了）回 `-32007`，`data.reason` 说是哪一种，这种要人处理，重试不会好。同一个 `start_key` 的重发先按原记录回答，不经过这一步。Agent、Runtime 任何一端早于 P60 时问不到，启动照 P59 的样子进行。详见 [P60 记录](../research/2026-09-29-p60-write-guard-observation.md)。

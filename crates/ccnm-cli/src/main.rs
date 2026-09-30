@@ -682,6 +682,13 @@ fn zh_help(command: clap::Command) -> clap::Command {
         .mut_subcommand("stop", |c| {
             workspace_args(c.about("结束一个 workspace 的会话：Agent、终端和 MCP 通道一起没"))
         })
+        .mut_subcommand("cleanup", |c| {
+            c.about(
+                "删掉 ccnm 为某个 workspace 已结束的会话留下的东西：每台机器上的，各由它所属的账号来删。不给预览打出的令牌就只预览",
+            )
+            .mut_arg("workspace", |a| a.help("config.toml 里的 workspace 名字"))
+            .mut_arg("apply", |a| a.help("照打出这个令牌的那次预览去删"))
+        })
         .mut_subcommand("rpc", |c| {
             c.about(
                 "在 stdin/stdout 上说机器协议，给程序用不是给人用：stdout 上只有协议行，日志走 stderr。契约在 docs/protocol/",
@@ -689,9 +696,43 @@ fn zh_help(command: clap::Command) -> clap::Command {
         })
         .mut_subcommand("mcp", |c| {
             c.about("MCP 通道：诊断一条，或者把远端 workspace 交给外部 MCP Host")
+                .mut_subcommand("probe", |c| {
+                    c.about(
+                        "向这个 workspace 的 Runtime 起一条 MCP 会话，调 N 次 workspace_info，报延迟，并证明回答的是同一个 server 进程；跑完就关掉",
+                    )
+                    .mut_arg("workspace", |a| a.help("config.toml 里的 workspace 名字"))
+                    .mut_arg("calls", |a| a.help("计时的 workspace_info 调用次数"))
+                    .mut_arg("local", |a| {
+                        a.help("把 server 起成这个进程的子进程，不走 work -> ssh -> home：量不含网络的那部分")
+                    })
+                })
+                .mut_subcommand("bridge", |c| {
+                    c.about(
+                        "把远端 workspace 经 stdio 交给外部 MCP Host：这个进程就是一条通往 Runtime 的 ssh，真正的 server 跑在那边。写进 Host 的 MCP 配置里当启动命令",
+                    )
+                    .mut_arg("workspace", |a| {
+                        a.help("**Runtime** 那边的 workspace 名字。它必须用 `external_mcp` 开放过；这台机器不存 workspace 列表")
+                    })
+                    .mut_arg("node", |a| {
+                        a.help("这台机器配置里的哪个 node。只有一个 node 配了 ssh alias 时可以不给")
+                    })
+                    .mut_arg("mode", |a| {
+                        a.help("要多大的权限。workspace 没开放 `coding` 就拒绝，不会悄悄降成 read")
+                    })
+                })
         })
         .mut_subcommand("controller", |c| {
             c.about("登录会话里的 controller。这几条要在 Agent Node 上跑，或者 ssh 过去跑：`ssh work ccnm controller install`")
+                .mut_subcommand("install", |c| {
+                    c.about("装上 LaunchAgent、把它起起来，并确认它是从登录会话里回话的")
+                        .mut_arg("dry_run", |a| {
+                            a.help("只打印 plist 和 launchctl 命令，什么都不改")
+                        })
+                })
+                .mut_subcommand("status", |c| {
+                    c.about("有没有 controller 在监听，它在哪个安全会话里")
+                })
+                .mut_subcommand("uninstall", |c| c.about("停掉 controller，删掉它的 LaunchAgent"))
         })
 }
 

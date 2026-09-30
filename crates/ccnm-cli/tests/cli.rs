@@ -267,6 +267,63 @@ fn help_is_in_the_ui_language_too() {
     assert!(zh.contains("remove"), "{zh}");
 }
 
+/// Every subcommand a person can see has a Chinese description, at every
+/// level. `zh_help` is a table next to the derive, so a subcommand added
+/// without a line there shows up in English -- which is how `cleanup` (P61)
+/// came to be the one English line in `ccnm --help` (F9). Walking the help
+/// pages, rather than listing names here, is what catches the next one.
+#[test]
+fn every_visible_subcommand_is_described_in_chinese() {
+    fn commands_of(page: &str) -> Vec<(String, String)> {
+        page.lines()
+            .skip_while(|line| line.trim() != "Commands:")
+            .skip(1)
+            .take_while(|line| !line.trim().is_empty())
+            .filter_map(|line| {
+                let mut words = line.split_whitespace();
+                let name = words.next()?.to_string();
+                Some((name, words.collect::<Vec<_>>().join(" ")))
+            })
+            // clap's own; ccnm has no hook to translate it.
+            .filter(|(name, _)| name != "help")
+            .collect()
+    }
+    fn walk(path: &[String], english: &mut Vec<String>) {
+        let page = stdout(
+            &ccnm_default_lang()
+                .args(path)
+                .arg("--help")
+                .output()
+                .unwrap(),
+        );
+        for (name, about) in commands_of(&page) {
+            let mut here = path.to_vec();
+            here.push(name);
+            if !about.chars().any(is_cjk) {
+                english.push(format!("{}: {about}", here.join(" ")));
+            }
+            walk(&here, english);
+        }
+    }
+    let mut english = Vec::new();
+    walk(&[], &mut english);
+    assert!(
+        english.is_empty(),
+        "still in English:\n{}",
+        english.join("\n")
+    );
+
+    // And the arguments of the one that started this.
+    let page = stdout(
+        &ccnm_default_lang()
+            .args(["cleanup", "--help"])
+            .output()
+            .unwrap(),
+    );
+    assert!(!page.contains("Workspace name from config.toml"), "{page}");
+    assert!(!page.contains("Carry out the preview"), "{page}");
+}
+
 /// A language ccnm cannot speak is refused rather than silently answered
 /// in English: the person asked for something that is not there.
 #[test]

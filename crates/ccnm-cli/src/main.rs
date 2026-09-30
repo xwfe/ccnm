@@ -1544,6 +1544,16 @@ fn init(
     Ok(0)
 }
 
+/// `path` exactly as written, when that is unambiguous: absolute, with no
+/// `.` or `..` in it. For a root this account is not allowed to resolve.
+fn spelled_out(path: &std::path::Path) -> Option<PathBuf> {
+    use std::path::Component;
+    let plain = path
+        .components()
+        .all(|c| matches!(c, Component::RootDir | Component::Normal(_)));
+    (path.is_absolute() && plain).then(|| path.components().collect())
+}
+
 fn workspace_command(
     path: &std::path::Path,
     command: &WorkspaceCommand,
@@ -1565,13 +1575,36 @@ fn workspace_command(
             // a running session was started with, and `.`, `~/x/../x` and
             // a symlinked path are all the same directory with three
             // different spellings.
-            let root = root.canonicalize().map_err(|e| {
-                ccnm_core::Error::new(
-                    ccnm_core::ErrorCode::WrongWorkspace,
-                    format!("{} is not a directory on this machine", root.display()),
-                )
-                .with_source(e)
-            })?;
+            let mut unseen = false;
+            let root = match root.canonicalize() {
+                Ok(root) => root,
+                // Registering a project is the Operator's job, and the
+                // project is the Runtime Executor's: in the Executor's home,
+                // behind a 0700 the Operator cannot see through. That is the
+                // layout the manual recommends, and this used to refuse it
+                // as "not a directory" (F1). What cannot be resolved is
+                // taken as written -- but only when there is one way to read
+                // it.
+                Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                    unseen = true;
+                    spelled_out(&root).ok_or_else(|| {
+                        ccnm_core::Error::new(
+                            ccnm_core::ErrorCode::WrongWorkspace,
+                            format!(
+                                "{} cannot be resolved from this account (Permission denied), and as written it is not an absolute path without `.` or `..`\ngive the full path the Runtime account uses for the project",
+                                root.display()
+                            ),
+                        )
+                    })?
+                }
+                Err(e) => {
+                    return Err(ccnm_core::Error::new(
+                        ccnm_core::ErrorCode::WrongWorkspace,
+                        format!("{} is not a directory on this machine", root.display()),
+                    )
+                    .with_source(e));
+                }
+            };
             let name = match name {
                 Some(name) => name.clone(),
                 None => name_from(&root)?,
@@ -1602,6 +1635,21 @@ fn workspace_command(
                 }
             })?;
             report_changes(&changes, path, lang);
+            if unseen {
+                let who = std::env::var("USER").unwrap_or_else(|_| "this account".into());
+                let root = root.display();
+                println!(
+                    "\n{}",
+                    lang.pick(
+                        format!(
+                            "注意：{who} 没有权限看 {root}（Permission denied），所以按你写的路径登记，没有核对它在不在、也没有解析符号链接。\n      真正用这个目录的执行账号在开会话时核对；`ccnm doctor {name}` 的「workspace 根目录」一行是它的回答。"
+                        ),
+                        format!(
+                            "note: {who} could not look at {root} (Permission denied), so it is registered as written: not checked to exist, symlinks not resolved.\n      the account that runs the tools checks it when a session opens; its answer is the `Workspace root` row of `ccnm doctor {name}`."
+                        ),
+                    )
+                );
+            }
             // Two labels padded to the same column, so the commands line
             // up. `pad` rather than hand-counted spaces, because the
             // Chinese labels are not the width their character count says.
@@ -1635,10 +1683,14 @@ fn workspace_command(
             // are the same number and `{name:width$}` is still right.
             let width = config.workspaces.keys().map(String::len).max().unwrap_or(0);
             for (name, workspace) in &config.workspaces {
-                let here = if workspace.root.is_dir() {
-                    ""
-                } else {
-                    lang.pick("   （不在这台机器上）", "   (not on this machine)")
+                let here = match paths::see_dir(&workspace.root) {
+                    paths::Seen::Dir => "",
+                    // Not a claim this account can make (F1).
+                    paths::Seen::Hidden => lang.pick(
+                        "   （这个账号没权限看）",
+                        "   (this account may not look at it)",
+                    ),
+                    _ => lang.pick("   （不在这台机器上）", "   (not on this machine)"),
                 };
                 println!("{name:width$}  {}{here}", workspace.root.display());
             }

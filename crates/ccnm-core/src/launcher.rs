@@ -7,6 +7,7 @@ use std::time::Duration;
 use crate::config::{Resolved, Topology};
 use crate::error::{Error, ErrorCode, Result};
 use crate::mcp;
+use crate::paths;
 use crate::process::{Cmd, ProcessRunner};
 use crate::protocol::PROTOCOL;
 use crate::protocol::mcp::{ProbeReport, ServePayload};
@@ -610,17 +611,27 @@ fn check_local_root(resolved: &Resolved<'_>) -> Result<()> {
         return Ok(());
     }
     let root = &resolved.workspace.root;
-    if !root.is_dir() {
-        return Err(Error::new(
+    let refuse = || {
+        Error::new(
             ErrorCode::WrongWorkspace,
             format!(
                 "workspace root {} is not a directory on this machine, which is the Runtime Node for '{}'",
                 root.display(),
                 resolved.name
             ),
-        ));
+        )
+    };
+    match paths::see_dir(root) {
+        paths::Seen::Dir => Ok(()),
+        // Not allowed to look is not "not there" (F1). This check runs as
+        // whoever typed the command; the project belongs to the account the
+        // tools run as, and that account answers for it when the session is
+        // opened -- the Agent's handshake asks it about this same path and
+        // refuses with WRONG_WORKSPACE if it is missing there.
+        paths::Seen::Hidden => Ok(()),
+        paths::Seen::NotDir | paths::Seen::Missing => Err(refuse()),
+        paths::Seen::Unreadable(e) => Err(refuse().with_source(e)),
     }
-    Ok(())
 }
 
 /// The ssh to the Agent Node, with the project checked here first.

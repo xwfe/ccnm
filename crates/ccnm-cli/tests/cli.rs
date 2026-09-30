@@ -1390,6 +1390,200 @@ fn run_checks_the_project_is_here_before_touching_the_network() {
     }
 }
 
+/// A directory this account is not allowed to look into, with a project
+/// inside it: what the Runtime Executor's home is to the Operator on Debian,
+/// where new home directories are 0700 (F1).
+///
+/// The permission is put back on drop, or nothing could delete the sandbox.
+struct Locked {
+    parent: PathBuf,
+}
+
+impl Locked {
+    /// `None` when the lock does not hold -- this process is root, and root
+    /// is never refused. There is nothing to test then.
+    fn new(sandbox: &Path) -> Option<(Locked, PathBuf)> {
+        use std::os::unix::fs::PermissionsExt;
+        let parent = sandbox.join("executor-home");
+        let project = parent.join("proj");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let locked = Locked { parent };
+        match std::fs::metadata(&project) {
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => Some((locked, project)),
+            _ => None,
+        }
+    }
+}
+
+impl Drop for Locked {
+    fn drop(&mut self) {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&self.parent, std::fs::Permissions::from_mode(0o700));
+    }
+}
+
+/// A runtime-side config whose one workspace lives at `root`.
+fn config_for_root(dir: &Path, root: &Path) -> PathBuf {
+    let config = dir.join("config.toml");
+    std::fs::write(
+        &config,
+        format!(
+            "version = 1\nthis = \"runtime\"\n[nodes.agent]\nssh = \"ccnm-test-nowhere.invalid\"\n[nodes.runtime]\n[workspaces.xshun]\nagent_node = \"agent\"\nroot = \"{}\"\nallow_unconfined_exec = true\n",
+            root.display()
+        ),
+    )
+    .unwrap();
+    config
+}
+
+/// F1. On the P62 machine the project sat in the Runtime Executor's home,
+/// as the manual says, and Debian had made that home 0700. The Operator's
+/// `ccnm run` stopped at exit 30 -- "workspace root … is not a directory on
+/// this machine" -- for a directory that was there all along. "I am not
+/// allowed to look" is not "it is not there": the account that will use the
+/// project is the one to say, and it is asked when the session is opened.
+#[test]
+fn a_project_root_the_operator_may_not_look_at_is_not_called_missing() {
+    let dir = std::env::temp_dir().join(format!("ccnm-cli-{}-hidden-root", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let _tidy = TestDir::adopt(dir.clone());
+    let Some((_locked, project)) = Locked::new(&dir) else {
+        eprintln!("skipped: this account is not refused by directory permissions");
+        return;
+    };
+    let config = config_for_root(&dir, &project);
+
+    for args in [
+        vec!["run", "xshun", "--print", "hi", "--config"],
+        vec!["stop", "xshun", "--config"],
+    ] {
+        let out = ccnm().args(&args).arg(&config).output().unwrap();
+        let err = stderr(&out);
+        assert_ne!(out.status.code(), Some(30), "{args:?}: {err}");
+        assert!(!err.contains("is not a directory"), "{args:?}: {err}");
+        // It went on to the next thing, which here is an Agent that is not
+        // there -- not a verdict about the project.
+        assert!(
+            err.contains("ccnm-test-nowhere.invalid") || err.contains("CCNM_E_"),
+            "{args:?}: {err}"
+        );
+    }
+
+    // A root that really is not there is still refused before the network,
+    // and so is one that is a file.
+    let missing = config_for_root(&dir, &dir.join("no-such-project"));
+    let out = ccnm()
+        .args(["run", "xshun", "--print", "hi", "--config"])
+        .arg(&missing)
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(30), "{}", stderr(&out));
+    std::fs::write(dir.join("a-file"), b"x").unwrap();
+    let file = config_for_root(&dir, &dir.join("a-file"));
+    let out = ccnm()
+        .args(["run", "xshun", "--print", "hi", "--config"])
+        .arg(&file)
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(30), "{}", stderr(&out));
+}
+
+/// The same directory in doctor: the row about this machine's view of the
+/// project says it could not look, instead of failing with `cannot stat`.
+/// It is a SKIP, not an OK -- nothing was verified -- and it names the row
+/// where the account that can look gives its answer.
+#[test]
+fn doctor_says_it_could_not_look_instead_of_failing_the_project_row() {
+    let dir = std::env::temp_dir().join(format!("ccnm-cli-{}-hidden-doctor", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let _tidy = TestDir::adopt(dir.clone());
+    let Some((_locked, project)) = Locked::new(&dir) else {
+        eprintln!("skipped: this account is not refused by directory permissions");
+        return;
+    };
+    let config = config_for_root(&dir, &project);
+    let out = ccnm()
+        .args(["doctor", "xshun", "--config"])
+        .arg(&config)
+        .output()
+        .unwrap();
+    let text = stdout(&out);
+    let row = text
+        .lines()
+        .find(|line| line.starts_with("Runtime workspace"))
+        .unwrap_or_else(|| panic!("no Runtime workspace row in\n{text}"));
+    assert!(row.contains("SKIP"), "{row}");
+    assert!(!text.contains("cannot stat"), "{text}");
+    assert!(text.contains("is not allowed to look"), "{text}");
+    assert!(text.contains("Workspace root"), "{text}");
+}
+
+/// And in `workspace add`, which is how the project gets registered in the
+/// first place: registering a project that lives in the Runtime Executor's
+/// home is the Operator's job, and it used to fail with "is not a directory
+/// on this machine / caused by: Permission denied".
+#[test]
+fn workspace_add_registers_a_root_it_may_not_look_at_and_says_so() {
+    let dir = std::env::temp_dir().join(format!("ccnm-cli-{}-hidden-add", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let _tidy = TestDir::adopt(dir.clone());
+    let Some((_locked, project)) = Locked::new(&dir) else {
+        eprintln!("skipped: this account is not refused by directory permissions");
+        return;
+    };
+    std::fs::create_dir_all(dir.join("root")).unwrap();
+    let config = config_for_root(&dir, &dir.join("root"));
+    let out = ccnm()
+        .args(["workspace", "add", "hidden"])
+        .arg(&project)
+        .arg("--config")
+        .arg(&config)
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let said = format!("{}{}", stdout(&out), stderr(&out));
+    assert!(said.contains("could not look"), "{said}");
+    let written = std::fs::read_to_string(&config).unwrap();
+    assert!(
+        written.contains(&format!("root = \"{}\"", project.display())),
+        "{written}"
+    );
+
+    // Not a licence to register anything: a relative path that cannot be
+    // resolved is refused, because what it means depends on where it was
+    // typed and nobody could check.
+    let out = ccnm()
+        .args([
+            "workspace",
+            "add",
+            "loose",
+            "executor-home/proj",
+            "--config",
+        ])
+        .arg(&config)
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(30), "{}", stderr(&out));
+
+    // `workspace list` does not call it absent either.
+    let out = ccnm()
+        .args(["workspace", "list", "--config"])
+        .arg(&config)
+        .output()
+        .unwrap();
+    let listed = stdout(&out);
+    let line = listed
+        .lines()
+        .find(|line| line.starts_with("hidden"))
+        .unwrap_or_else(|| panic!("no `hidden` in\n{listed}"));
+    assert!(!line.contains("not on this machine"), "{line}");
+}
+
 /// `--print` is one prompt with no terminal and a positional prompt is the
 /// terminal's opening line; asking for both is a mistake worth catching
 /// before anything is started.

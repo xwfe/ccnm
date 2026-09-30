@@ -450,7 +450,10 @@ fn workspace_checks(r: &Resolved<'_>, agent: Option<&str>, env: &Env<'_>) -> Vec
     let mut checks = Vec::new();
     let mut instance_project_row = None;
     if r.topology() == Topology::FromRuntime {
-        checks.push(runtime_workspace(&ws.root));
+        checks.push(runtime_workspace(
+            &ws.root,
+            "its answer is the `Workspace root` row below",
+        ));
         if ws.agent.is_some() {
             instance_project_row = Some(checks.len());
             checks.push(Check::skip(
@@ -1226,7 +1229,10 @@ fn external_only_checks(r: &Resolved<'_>, env: &Env<'_>) -> Vec<Check> {
         ),
     )];
     if r.topology() == Topology::FromRuntime {
-        checks.push(runtime_workspace(&ws.root));
+        checks.push(runtime_workspace(
+            &ws.root,
+            "it answers when an external client opens the workspace through `ccnm mcp bridge`",
+        ));
         checks.push(runtime_ccnm(r, env));
     } else {
         let why = format!("the project is on {}, not on this machine", ws.runtime_node);
@@ -1300,6 +1306,19 @@ fn project_instructions(r: &Resolved<'_>) -> Check {
     const NAME: &str = "Project instructions";
     let root = &r.workspace.root;
     let file = context::PROJECT_FILE;
+    // The session reads this file as the account the tools run as. An
+    // account that may not even look at the project has nothing to report
+    // about it -- least of all "the session will run without it" (F1).
+    if matches!(paths::see_dir(root), paths::Seen::Hidden) {
+        return Check::skip(
+            NAME,
+            format!(
+                "not checked: {} is not allowed to look at {}, and the session reads {file} as the account that runs the tools",
+                whoami(),
+                root.display()
+            ),
+        );
+    }
     match context::find(root, context::budget(r.name, &context::named(root))) {
         Ok(None) => Check::ok(
             NAME,
@@ -1332,22 +1351,43 @@ fn project_instructions(r: &Resolved<'_>) -> Check {
     }
 }
 
-/// The project root must exist on this (home) machine.
-fn runtime_workspace(root: &Path) -> Check {
-    match std::fs::metadata(root) {
-        Ok(meta) if meta.is_dir() => Check::ok("Runtime workspace", root.display().to_string()),
-        Ok(_) => Check::fail_with(
-            "Runtime workspace",
+/// The account doctor runs as, for a row that has to say whose view it is.
+fn whoami() -> String {
+    std::env::var("USER").unwrap_or_else(|_| "this account".to_string())
+}
+
+/// The project root, as the account running doctor sees it.
+///
+/// That account is the Operator, and the project is the Runtime Executor's.
+/// When the Operator may not look -- the project is in the Executor's home
+/// and the home is 0700, which Debian has made the default -- this row used
+/// to FAIL with `cannot stat` for a project that was fine (F1). It is a
+/// SKIP: nothing was verified, and `answered_by` says where the account
+/// that can look gives its answer.
+fn runtime_workspace(root: &Path, answered_by: &str) -> Check {
+    const NAME: &str = "Runtime workspace";
+    match paths::see_dir(root) {
+        paths::Seen::Dir => Check::ok(NAME, root.display().to_string()),
+        paths::Seen::NotDir => Check::fail_with(
+            NAME,
             ErrorCode::WrongWorkspace,
             format!("{} is not a directory", root.display()),
         ),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Check::fail_with(
-            "Runtime workspace",
+        paths::Seen::Missing => Check::fail_with(
+            NAME,
             ErrorCode::WrongWorkspace,
             format!("{} does not exist on this machine", root.display()),
         ),
-        Err(e) => Check::fail(
-            "Runtime workspace",
+        paths::Seen::Hidden => Check::skip(
+            NAME,
+            format!(
+                "not checked: {} is not allowed to look at {} (Permission denied), so this account cannot say whether the project is there\nthe account that runs the tools can: {answered_by}",
+                whoami(),
+                root.display()
+            ),
+        ),
+        paths::Seen::Unreadable(e) => Check::fail(
+            NAME,
             &Error::internal(format!("cannot stat {}", root.display())).with_source(e),
         ),
     }

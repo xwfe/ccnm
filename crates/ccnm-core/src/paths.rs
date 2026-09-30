@@ -185,6 +185,43 @@ pub fn home_dir() -> Result<PathBuf> {
     })
 }
 
+/// What the account running this process can say about a directory it was
+/// pointed at.
+///
+/// Four answers, because collapsing them is how F1 happened: `is_dir()`
+/// says `false` both for a path that is not there and for one this account
+/// may not look at, and on a Runtime Node the second is the normal case --
+/// the project belongs to the Runtime Executor, the person typing is the
+/// Operator, and Debian gives new accounts a 0700 home. P62 had `ccnm run`
+/// refuse a project that was there, and doctor report `cannot stat`.
+#[derive(Debug)]
+pub enum Seen {
+    Dir,
+    /// Something is there and it is not a directory.
+    NotDir,
+    Missing,
+    /// Permission denied on the way there. Says nothing about whether the
+    /// directory exists: the account that owns it has to answer that.
+    Hidden,
+    /// Any other failure to look (an I/O error, a symlink loop).
+    Unreadable(std::io::Error),
+}
+
+pub fn see_dir(path: &Path) -> Seen {
+    use std::io::ErrorKind;
+    match std::fs::metadata(path) {
+        Ok(meta) if meta.is_dir() => Seen::Dir,
+        Ok(_) => Seen::NotDir,
+        Err(e) => match e.kind() {
+            ErrorKind::NotFound => Seen::Missing,
+            // A file where a parent directory should be.
+            ErrorKind::NotADirectory => Seen::NotDir,
+            ErrorKind::PermissionDenied => Seen::Hidden,
+            _ => Seen::Unreadable(e),
+        },
+    }
+}
+
 /// What the remote login shell would make of a `~/...` path, so doctor
 /// can look at the same file the other machine will invoke. Only a
 /// leading `~/` (or bare `~`) is expanded; `~user/...` is left alone.
@@ -211,6 +248,39 @@ mod tests {
             state_dir_in(home, None),
             PathBuf::from("/Users/me/.local/state/ccnm")
         );
+    }
+
+    /// The four answers stay four. `Hidden` is the one `is_dir()` used to
+    /// fold into "no": a directory behind a parent this account may not
+    /// enter, which is every project in a 0700 home that is not its own.
+    #[test]
+    fn a_directory_behind_a_closed_door_is_hidden_not_missing() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("ccnm-paths-{}-seen", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _tidy = ccnm_testdir::TestDir::adopt(dir.clone());
+        let home = dir.join("home");
+        std::fs::create_dir_all(home.join("proj")).unwrap();
+        std::fs::write(dir.join("file"), b"x").unwrap();
+
+        assert!(matches!(see_dir(&home.join("proj")), Seen::Dir));
+        assert!(matches!(see_dir(&dir.join("file")), Seen::NotDir));
+        assert!(matches!(see_dir(&dir.join("file/below")), Seen::NotDir));
+        assert!(matches!(see_dir(&dir.join("nope")), Seen::Missing));
+
+        std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let there = see_dir(&home.join("proj"));
+        let absent = see_dir(&home.join("never-made"));
+        std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o700)).unwrap();
+        // root is never refused, so there is no closed door to look at.
+        if matches!(there, Seen::Dir) {
+            eprintln!("skipped: this account is not refused by directory permissions");
+            return;
+        }
+        assert!(matches!(there, Seen::Hidden), "{there:?}");
+        // And it cannot tell a project that is there from one that is not:
+        // which is exactly why it must not answer.
+        assert!(matches!(absent, Seen::Hidden), "{absent:?}");
     }
 
     #[test]

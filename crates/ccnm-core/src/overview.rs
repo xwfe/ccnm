@@ -20,6 +20,7 @@ use base64::Engine as _;
 use crate::config::Config;
 use crate::lang::{Lang, pad};
 use crate::launcher::{self, Env};
+use crate::paths;
 use crate::process::{Cmd, ProcessRunner};
 use crate::protocol::run::{HistoryEntry, LiveSession, SessionState};
 
@@ -179,7 +180,12 @@ pub fn collect(config: &Config, env: &Env<'_>, state: &Path) -> Overview {
         workspaces.push(WorkspaceView {
             name: name.clone(),
             root: Some(resolved.workspace.root.clone()),
-            root_present: resolved.workspace.root.is_dir(),
+            // "Not on this machine" is a claim; an account that is not
+            // allowed to look has no grounds for it (F1).
+            root_present: matches!(
+                paths::see_dir(&resolved.workspace.root),
+                paths::Seen::Dir | paths::Seen::Hidden
+            ),
             agent: alias,
             sessions,
             servers: views,

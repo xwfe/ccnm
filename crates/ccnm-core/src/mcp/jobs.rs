@@ -831,8 +831,12 @@ mod tests {
             "{}",
             page.text
         );
+        // Waited for, not looked at: the run reading as ended is the waiter
+        // letting go of the run, and it leaves the registry only after that
+        // (see `exec::background`). Looking at once lost that race about
+        // one time in ten on a loaded machine.
         assert!(
-            s.jobs.lock().running.is_empty(),
+            s.jobs.wait_gone(&r.output_ref, Duration::from_secs(10)),
             "the waiter left the registry"
         );
     }

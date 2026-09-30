@@ -412,6 +412,13 @@ fn background(
                 }
             }
             output.finish(&run);
+            // The run first, the ticket after: a server that is ending
+            // waits for the registry to empty and then removes the runs
+            // nobody holds, so a run still held at that point would be
+            // left on disk. The other way round is therefore true for a
+            // moment -- the run reads as ended while it still has its place
+            // in the registry (measured: 3 to 35 µs, up to 25 ms on a
+            // loaded machine). `Jobs::wait_gone` is how to wait that out.
             drop(run);
             drop(ticket);
         });

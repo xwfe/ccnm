@@ -51,6 +51,8 @@ P63（2026-09-30）起，P62 真机查出的两处与契约不符的行为修正
 
 P64（2026-09-30）修了上面第一条带出来的一个缺陷：owner 进程先写结局再退出，而 `session.status` / `result` / `stop` 是先读记录、再查 owner 在不在——两步正好夹住它退出的那一刻时，一个正常结束的 session 会被回成 `unknown`（实测轮询时约 40 次 1 次）。现在查到 owner 不在了就把记录重读一遍，结局已经落盘的按结局回；重读后仍没有结局的才是 `unknown`。**P63 的构建上拿到 `unknown` 时再查一次 `session.status`**，结局已经写下的话第二次就是对的。详见 [P64 记录](../research/2026-09-30-p64-stop-outcome-same-number-builds.md)第 5.1 节。
 
+P65（2026-09-30）起 `session.result` 多一个可选字段 `failure`（[协议 5.5 节](machine-protocol-v1.md#55-sessionresult)）：会话不是以 Agent 进程自己结束收场时——没起来，或服务端说不清——给出原因。`code` 与 `ccnm_code` 用的是第 10 节错误码表的同一套，`detail` 给人看、家目录前缀写成 `~`、最长 2048 字节。此前这类会话到调用方手里只是一个 `exit_code`、`text` 都为 null 的 `failed`，原因要去 Operator 的记录文件里找（[P62 记录](../research/2026-09-30-p62-real-machine.md) F3）。按第 13 节这是加法；升级前已结束的会话只有 `detail`。第 9 节"任何字段里都不出现私有目录的绝对路径"目前只有 `failure.detail` 做了这一步，**被拒调用的 `error.message` 仍是 ccnm 给人看的原话，没有过这道处理**。
+
 P59（2026-09-29）起 `session.result` 的输出按[协议第 9 节](machine-protocol-v1.md#输出引用)实现：每个流保留最后 32 MiB，第一页是末尾、`cursor` 往前翻，`max_bytes` 生效，stderr 用 `output.stream` 单独取。完整内容在 Agent 上生成、在第一次读时整份拷到本机，之后翻页不再联系 Agent。Agent 还是 P59 之前的版本或这时联系不上，服务端给的是旧版本留下的那段尾部，并用 `unavailable_reason` 说明，不当成完整输出。游标只在发出它的 `ccnm rpc` 进程里有效。详见 [P59 记录](../research/2026-09-29-p59-output-snapshot.md)。
 
 P60（2026-09-29）起 `session.start` 在分配 session id 之前先问写入 guard：Operator 经 Agent 问到 Runtime 执行账号（内部协议 9），因为锁在执行账号自己的 state 目录里。有进程正持有回 `-32008`；没人持有却也交不出去（上一个会话故意留着、异常退出留下的、标记损坏或读不了）回 `-32007`，`data.reason` 说是哪一种，这种要人处理，重试不会好。同一个 `start_key` 的重发先按原记录回答，不经过这一步。Agent、Runtime 任何一端早于 P60 时问不到，启动照 P59 的样子进行。详见 [P60 记录](../research/2026-09-29-p60-write-guard-observation.md)。

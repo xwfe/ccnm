@@ -22,8 +22,8 @@ Runtime Node                              Agent Node
 | | |
 | --- | --- |
 | 最新发布 | [v0.9.0](https://github.com/xwfe/ccnm/releases)（2026-09-23） |
-| main 分支 | 比 v0.9.0 多了精确停止、完整结果分页、写锁预检、跨账号清理（P58–P61），Machine API 断开后任务照跑、停止标志不丢、ssh 连不上记 `failed`（P63），以及交互会话 stop 等通道退出再确认、`ccnm log` 把被停掉的会话记成"被停止"（P64）。**内部协议和 v0.9.0 不兼容，版本号却还是 0.9.0**——两台机器必须装同一个构建，别只看 `--version`；P64 起 main 这一端的 doctor 会指出来，v0.9.0 那一端不会 |
-| 真机验收 | P62（macOS Agent → Debian 13 Runtime）**受阻**：Claude 那一半全部跑通，Codex 那一半被账号额度挡住。它查出的 19 个问题里，Machine API 的三处已在 P63 离线修好（[P63 记录](docs/research/2026-09-30-p63-rpc-disconnect-stop.md)），交互 stop 与同版本号不同构建两处在 P64 离线修好（[P64 记录](docs/research/2026-09-30-p64-stop-outcome-same-number-builds.md)），真机复验等 P62 续跑。见 [P62 记录](docs/research/2026-09-30-p62-real-machine.md) |
+| main 分支 | 比 v0.9.0 多了精确停止、完整结果分页、写锁预检、跨账号清理（P58–P61），Machine API 断开后任务照跑、停止标志不丢、ssh 连不上记 `failed`（P63），以及交互会话 stop 等通道退出再确认、`ccnm log` 把被停掉的会话记成"被停止"（P64），以及 Operator 没权限看项目目录时不再误报"不存在"、Machine API 的 `session.result` 给出会话没起来的原因、doctor 写明 Codex 登录只看了本地（P65）。**内部协议和 v0.9.0 不兼容，版本号却还是 0.9.0**——两台机器必须装同一个构建，别只看 `--version`；P64 起 main 这一端的 doctor 会指出来，v0.9.0 那一端不会 |
+| 真机验收 | P62（macOS Agent → Debian 13 Runtime）**受阻**：Claude 那一半全部跑通，Codex 那一半被账号额度挡住。它查出的 19 个问题里，Machine API 的三处已在 P63 离线修好（[P63 记录](docs/research/2026-09-30-p63-rpc-disconnect-stop.md)），交互 stop 与同版本号不同构建两处在 P64 离线修好（[P64 记录](docs/research/2026-09-30-p64-stop-outcome-same-number-builds.md)），Debian 家目录、Machine API 失败原因、Codex 登录提示三处在 P65 离线修好（[P65 记录](docs/research/2026-09-30-p65-hidden-root-failure-reason-codex-login.md)），真机复验等 P62 续跑。见 [P62 记录](docs/research/2026-09-30-p62-real-machine.md) |
 
 每一项能力验到了哪一步、明确**没**验过什么，逐条在[支持矩阵](docs/support-matrix.md)里。
 
@@ -113,7 +113,7 @@ runtime_user = "ccrun"
 
 意思是"Agent 连进来之后，项目命令以 `ccrun` 的身份跑"，不是"你要用 `ccrun` 敲 ccnm"。做法见[生产安全](docs/production-safety.md)。
 
-- **Linux 上项目别放在执行账号的家目录里。** Debian 12 起家目录默认 0700，你（Operator）进不去，`ccnm run` 会误报"不是这台机器上的目录"（P62 实测，还没修）。放到 `/srv/...` 这类你能进入父目录的地方，项目目录本身仍归执行账号，做法见[排错手册](docs/troubleshooting.md#linux-上-ccnm-run-报-workspace-root--is-not-a-directory-on-this-machine目录明明在)。
+- **Linux 上项目可以放在执行账号的家目录里**，哪怕你（Operator）进不去（Debian 12 起家目录默认 0700）：登记时写绝对路径，`ccnm doctor` 的 `Runtime 上的项目` 一行会是"没查"，执行账号的回答在 `workspace 根目录` 那一行。v0.9.0 还会把它误报成"不是这台机器上的目录"，那一版上把项目放到 `/srv/...` 这类你能进入父目录的地方，见[排错手册](docs/troubleshooting.md#linux-上-ccnm-run-报-workspace-root--is-not-a-directory-on-this-machine目录明明在)。
 - **项目和 Claude 登录本来就在同一个账号下**时没有东西可隔离，ccnm 默认在 MCP 握手之前就拒绝，doctor 红在 `Claude 凭据` 那一行。两条出路见[快速开始](docs/getting-started.md#如果项目和-claude-登录在同一个账号下)。
 
 ## 会话里模型能用什么
@@ -143,7 +143,7 @@ view_image      read_notebook  stop_command   call_mcp_tool
 - **写互斥要求各入口用同一个 state 目录。** 同一棵树配两个 `XDG_STATE_HOME` 就是两把互不知晓的锁。
 - **离开进程组的后代够不着。** Runtime MCP server 派生的 `setsid` / 守护进程、以及 `mcp-serve` 被 `kill -9` 后留下的后台命令，ccnm 停不掉；写锁会因此保持 unknown，按[运维手册](docs/operations.md#写入-guard-残留)人工收。
 - **项目和 Agent 同机（colocated）没有真实验收**，明确拒绝，不静默降级。
-- P62 查出、还没修的问题（Debian 家目录 0700、Machine API 失败原因丢失、Codex 令牌失效 doctor 看不出等）列在 [P62 记录](docs/research/2026-09-30-p62-real-machine.md)第 5 节，现象和绕法在[排错手册](docs/troubleshooting.md)。
+- **doctor 验不了 Codex 的令牌还有没有效**，只能看到"登录过"（P65 起那一行自己会说）；令牌被吊销要到会话的第一条消息才知道。P62 查出、还没修的其余问题——八条低影响的（F6–F12、F18）和一条待复现的（F19）——列在 [P62 记录](docs/research/2026-09-30-p62-real-machine.md)第 5 节，现象和绕法在[排错手册](docs/troubleshooting.md)。
 
 阶段完成、Agent 退出成功和项目验收通过是三个不同的结论。
 

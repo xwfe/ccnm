@@ -172,19 +172,13 @@ fatal: detected dubious ownership in repository at '/path/to/worktree'
 
 以前 `ccnm doctor` 那一行照样是绿的（`Workspace root OK … is a directory for <user>`），因为它只查目录在不在。**现在它连属主和 git 一起查**：git 因属主拒绝时这一行是 FAIL 并直说原因，属主不对但 git 能用时是 WARN。绿灯这才等于"这个身份真的能用这个项目"。
 
-顺带一条：`ccnm workspace add` 用**当前进程的身份**校验路径。以别的账号去注册 Runtime 执行身份自己家目录下的项目，会得到
+**项目可以放在执行身份自己的家目录里，哪怕 Operator 进不去**（P65 起）。Debian 12 起新账号的家默认 0700（`/etc/login.defs` 的 `HOME_MODE`），Operator 看不了 `/home/ccrun/` 下的任何东西；macOS 的家目录默认别人能进入，所以只有 Linux 会遇到。ccnm 把"不在"和"这个账号没权限看"分开处理：
 
-```text
-CCNM_E_WRONG_WORKSPACE:
-/Users/<runtime-user>/<project> is not a directory on this machine
-caused by: Permission denied (os error 13)
-```
+- `ccnm workspace add <名字> /home/ccrun/<项目>` 照常登记，并提示它没能核对、也没解析符号链接。**写绝对路径**，和执行身份自己 `pwd -P` 看到的一致。
+- `ccnm run` 不拦；项目在不在由执行身份在开会话时回答。
+- `ccnm doctor` 的 `Runtime 上的项目` 一行是"没查"，执行身份的回答在 `workspace 根目录` 那一行。
 
-第一行读着像路径写错了，真正的原因在第二行。
-
-**这是个已知缺陷，不是设计。** 注册 workspace 是 Operator 的活儿，可它却拿当前进程的身份去 stat 那个目录，于是"项目放在执行身份自己家里"这种最该被支持的布局反而注册不了。眼下的绕法是临时用 Runtime Executor 的身份跑一次 `workspace add`。
-
-**同一个问题还在两处（P62 在 Debian 13 上实测）**：Runtime 侧发起的 `ccnm run` 在连 Agent 之前、以及 `ccnm doctor` 的 `Runtime 上的项目` 一行，都先用 Operator 自己的身份 stat 项目根。Debian 12 起新账号家目录默认 0700（`/etc/login.defs` 的 `HOME_MODE`），Operator 进不去执行账号的家，于是 `ccnm run` 退出 30、报 `workspace root … is not a directory on this machine`——这回连 `Permission denied` 那一行都没有。真正打开会话的那一步（Runtime 解析 workspace 和 root）和 doctor 的 `workspace 根目录` 一行是由执行身份回答的，不受影响。修好之前，**Linux 上把项目放在执行账号家目录之外**：父目录让 Operator 能进入，项目目录本身仍归执行账号，可以是 0700，Operator 只需要 stat 到它（做法见[排错手册](troubleshooting.md#linux-上-ccnm-run-报-workspace-root--is-not-a-directory-on-this-machine目录明明在)）。macOS 的家目录默认别人能进入，所以之前的真机轮没撞到。
+P65 之前这三处都拿 Operator 自己的身份去 stat，报 `is not a directory on this machine`（P62 在 Debian 13 上实测，研究记录 F1）；旧构建上的绕法见[排错手册](troubleshooting.md#linux-上-ccnm-run-报-workspace-root--is-not-a-directory-on-this-machine目录明明在)。
 
 **新建的执行身份没有 git 身份，第一次 commit 直接失败：**
 

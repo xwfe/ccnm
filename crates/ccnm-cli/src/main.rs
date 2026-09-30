@@ -420,6 +420,15 @@ enum InternalCommand {
         #[arg(long)]
         payload: String,
     },
+    /// Carry one accepted Machine API run to its end; started by `ccnm rpc`
+    ///
+    /// The session's owner (P63): a process of its own, so the run does
+    /// not end with the connection that accepted it. What to run is read
+    /// from the record the handle names.
+    RpcRun {
+        #[arg(long)]
+        handle: String,
+    },
     /// Be Claude's parent for one session; started by the controller
     Supervise {
         #[arg(long)]
@@ -1314,6 +1323,10 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
                     &req,
                     &agent_tools(config_path().ok().as_deref())?,
                 )?)
+            }
+            InternalCommand::RpcRun { handle } => {
+                ccnm_core::rpc::session::run_owned(&paths::state_dir()?, config_path()?, handle)?;
+                Ok(0)
             }
             InternalCommand::Controller => {
                 let socket = paths::controller_socket(&paths::state_dir()?);

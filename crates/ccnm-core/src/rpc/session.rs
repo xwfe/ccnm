@@ -6,9 +6,12 @@
 //! would freeze wording into an API and lose everything the wording rounds
 //! off.
 //!
-//! `session.start` answers as soon as it has a handle and hands the run to a
-//! background thread. That is what lets a client disconnect and come back:
-//! the record on disk, not the connection, is what a session belongs to.
+//! `session.start` answers as soon as it has a handle and hands the run to
+//! the session's own owner process (`ccnm internal rpc-run`, P63). That is
+//! what lets a client disconnect and come back: the record on disk, not the
+//! connection, is what a session belongs to. Before P63 the run rode on a
+//! thread of the `ccnm rpc` process and died when the client closed stdin
+//! (F16).
 //!
 //! **One handle, one Agent session, from the first moment** (P58). The
 //! record gets a ccnm session id before anything is sent, the Agent is told
@@ -43,6 +46,28 @@ pub struct RunAsk {
     /// The ccnm session id the Agent must run this under: already in the
     /// record, so a stop can name it before the run answers.
     pub session: String,
+}
+
+impl RunAsk {
+    /// What an accepted record says to run.
+    ///
+    /// Whoever carries the run -- a thread of the `ccnm rpc` that accepted
+    /// it, or the session's own owner process (P63) -- builds the ask from
+    /// the record on disk, so both send exactly what was accepted. The
+    /// instance is the one the record was bound to at acceptance, not
+    /// "the workspace default" looked up again later.
+    pub fn from_record(record: &Record) -> Option<RunAsk> {
+        Some(RunAsk {
+            workspace: record.launch.workspace.clone(),
+            instance: record.launch.agent.as_ref().map(|a| a.instance.clone()),
+            prompt: record.launch.prompt.clone(),
+            timeout: record
+                .timeout_ms
+                .map(Duration::from_millis)
+                .unwrap_or(DEFAULT_TIMEOUT),
+            session: record.managed_session.clone()?,
+        })
+    }
 }
 
 /// One session to stop, named the way the record names it.
@@ -92,6 +117,18 @@ pub trait Runs: Send + Sync + 'static {
     fn output(&self, ask: &OutputAsk) -> CcnmResult<crate::protocol::run::OutputReport>;
     /// The workspace's write guard, as its Runtime Executor sees it.
     fn guard(&self, ask: &GuardAsk) -> CcnmResult<crate::protocol::run::AgentGuardReport>;
+    /// Hand the run of `handle` to a process of its own and return its pid,
+    /// or `None` to carry it on a thread of this process.
+    ///
+    /// A thread is what the in-process test executors use. The real one
+    /// must not: the `ccnm rpc` process exits when its client closes stdin,
+    /// and a thread dies with it -- before P63 that meant a run accepted
+    /// but not yet sent was never sent, and one already sent stayed
+    /// `unknown` for good, the opposite of what protocol section 8.1
+    /// promises (F16).
+    fn detach(&self, _handle: &str) -> CcnmResult<Option<u32>> {
+        Ok(None)
+    }
 }
 
 /// How long a run may take when the caller does not say.
@@ -167,6 +204,68 @@ impl Runs for SystemRuns {
         let resolved = config.workspace(&ask.workspace)?;
         crate::launcher::observe_guard(&resolved, &Self::env()?, ask.instance.as_deref())
     }
+
+    /// `ccnm --config <this config> internal rpc-run --handle <handle>`, in
+    /// a process group of its own with nothing on its stdio.
+    ///
+    /// Its own group, so that whatever ends the `ccnm rpc` that accepted the
+    /// run -- the client closing it, killing it, a Ctrl-C in the terminal
+    /// that started both -- does not reach the run. Its environment is this
+    /// process's: the same state directory, the same PATH to ssh. What it
+    /// runs comes from the record, so nothing else needs to cross.
+    fn detach(&self, handle: &str) -> CcnmResult<Option<u32>> {
+        use std::os::unix::process::CommandExt as _;
+        use std::process::{Command, Stdio};
+
+        let exe = std::env::current_exe()?;
+        let mut child = Command::new(&exe)
+            .arg("--config")
+            .arg(&self.config_path)
+            .args(["internal", "rpc-run", "--handle", handle])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .process_group(0)
+            .spawn()
+            .map_err(|e| {
+                crate::Error::internal(format!("cannot start the owner of {handle}")).with_source(e)
+            })?;
+        let pid = child.id();
+        // Reaped here while this process lives; once it exits, whoever
+        // inherits the orphan does it.
+        std::thread::spawn(move || {
+            let _ = child.wait();
+        });
+        Ok(Some(pid))
+    }
+}
+
+/// The body of `ccnm internal rpc-run`: carry one accepted run to its end.
+///
+/// The session's owner (P63). Everything it needs is in the record under
+/// `state`; the record's own lock orders what it writes against a stop or
+/// another owner, exactly as it did when this ran on a thread.
+pub fn run_owned(
+    state: &std::path::Path,
+    config_path: std::path::PathBuf,
+    handle: &str,
+) -> CcnmResult<()> {
+    if !super::store::valid_handle(handle) {
+        return Err(crate::Error::invalid_args(
+            "handle is not one this server issues",
+        ));
+    }
+    let store = Store::open(state)?;
+    let record = store
+        .read(handle)?
+        .ok_or_else(|| crate::Error::invalid_args(format!("no session {handle}")))?;
+    let ask = RunAsk::from_record(&record).ok_or_else(|| {
+        crate::Error::invalid_args(format!(
+            "{handle} was accepted by a build before P58 and names no Agent-side session"
+        ))
+    })?;
+    run_to_end(&SystemRuns { config_path }, &store, handle, &ask);
+    Ok(())
 }
 
 const REBOUND: &str = "this workspace is bound to another Agent node than the one this session was started on; its stop is not sent to the new one";
@@ -300,21 +399,41 @@ pub fn start(ctx: &Context, params: &Map<String, Value>) -> Result<Value, RpcErr
         }
     }
 
-    spawn_run(
-        ctx.runs.clone(),
-        ctx.state.clone(),
-        record.session.clone(),
-        RunAsk {
-            workspace,
-            instance,
-            prompt,
-            timeout,
-            session: record
-                .managed_session
-                .clone()
-                .expect("a new record carries its managed session"),
-        },
-    );
+    let ask = RunAsk::from_record(&record).expect("a new record carries its managed session");
+    match ctx.runs.detach(&record.session) {
+        // The owner is on record before this call answers: a client that
+        // hangs up the moment it has the handle still finds someone
+        // carrying the run when it comes back.
+        Ok(Some(pid)) => {
+            let started =
+                super::store::process_started(ctx.runner.as_ref(), pid).unwrap_or_default();
+            store
+                .update(&record.session, |r| {
+                    r.owner_pid = pid;
+                    r.owner_started = started;
+                })
+                .map_err(|e| wire::from_ccnm(&e))?;
+        }
+        Ok(None) => spawn_run(
+            ctx.runs.clone(),
+            ctx.state.clone(),
+            record.session.clone(),
+            ask,
+        ),
+        Err(err) => {
+            // Nothing was sent, and nothing ever will be for this handle.
+            let _ = store.update(&record.session, |r| {
+                if !r.state.terminal() {
+                    r.state = State::Failed;
+                    r.finish = Some(Finish {
+                        error: Some(err.message().to_string()),
+                        ..Finish::default()
+                    });
+                }
+            });
+            return Err(wire::from_ccnm(&err).with_session(&record.session));
+        }
+    }
 
     Ok(serde_json::json!({
         "session": record.session,

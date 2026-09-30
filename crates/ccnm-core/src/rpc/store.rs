@@ -127,9 +127,12 @@ pub struct Record {
     pub stop_requested: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_ms: Option<u64>,
-    /// The `ccnm rpc` process that took responsibility for this run, and
-    /// when it started. Both are needed: a pid on its own gets recycled, and
-    /// a recycled pid would make a dead run look alive.
+    /// The process carrying this run to its end, and when it started. Since
+    /// P63 that is the session's own `ccnm internal rpc-run`, not the `ccnm
+    /// rpc` that accepted it (which is only the owner until the owner
+    /// process is on record, or for good with an in-process executor). Both
+    /// fields are needed: a pid on its own gets recycled, and a recycled pid
+    /// would make a dead run look alive.
     pub owner_pid: u32,
     pub owner_started: String,
     /// The ccnm session id this server chose for the run before sending it

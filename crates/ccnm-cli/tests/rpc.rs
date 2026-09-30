@@ -415,8 +415,23 @@ fn a_session_left_behind_by_a_killed_server_reads_as_unknown() {
     let path = home
         .join("state/ccnm/rpc/sessions")
         .join(format!("{session}.json"));
-    let mut record: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    // Since P63 the run has an owner process of its own that outlives the
+    // connection above and writes the real ending when it gets one. Inject
+    // only after that, or the owner overwrites the injected record and the
+    // test measures a race instead of a dead server.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let mut record: serde_json::Value = loop {
+        let now: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        if now.get("finish").is_some() {
+            break now;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the run's own owner never recorded an ending: {now}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
     record["state"] = Value::from("running");
     record["owner_pid"] = Value::from(999_999);
     record["owner_started"] = Value::from("Thu Jan  1 00:00:00 1970");

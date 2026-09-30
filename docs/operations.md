@@ -184,7 +184,7 @@ caused by: Permission denied (os error 13)
 
 **这是个已知缺陷，不是设计。** 注册 workspace 是 Operator 的活儿，可它却拿当前进程的身份去 stat 那个目录，于是"项目放在执行身份自己家里"这种最该被支持的布局反而注册不了。眼下的绕法是临时用 Runtime Executor 的身份跑一次 `workspace add`。
 
-（会话打开那条路已经修了：Runtime 自己解析 workspace 和 root，`doctor` 的项目可用性也由执行身份回答。`workspace add` 是**写配置**的命令，还留在 Operator 侧用当前身份校验，没跟着改。）
+**同一个问题还在两处（P62 在 Debian 13 上实测）**：Runtime 侧发起的 `ccnm run` 在连 Agent 之前、以及 `ccnm doctor` 的 `Runtime 上的项目` 一行，都先用 Operator 自己的身份 stat 项目根。Debian 12 起新账号家目录默认 0700（`/etc/login.defs` 的 `HOME_MODE`），Operator 进不去执行账号的家，于是 `ccnm run` 退出 30、报 `workspace root … is not a directory on this machine`——这回连 `Permission denied` 那一行都没有。真正打开会话的那一步（Runtime 解析 workspace 和 root）和 doctor 的 `workspace 根目录` 一行是由执行身份回答的，不受影响。修好之前，**Linux 上把项目放在执行账号家目录之外**：父目录让 Operator 能进入，项目目录本身仍归执行账号，可以是 0700，Operator 只需要 stat 到它（做法见[排错手册](troubleshooting.md#linux-上-ccnm-run-报-workspace-root--is-not-a-directory-on-this-machine目录明明在)）。macOS 的家目录默认别人能进入，所以之前的真机轮没撞到。
 
 **新建的执行身份没有 git 身份，第一次 commit 直接失败：**
 
@@ -297,7 +297,7 @@ ssh/                                 ControlPath socket
 **Runtime 上的 `output/` 例外，它自己清。**这是 `exec_command` 留下的完整输出，大小看命令打印了多少。规则（数字的出处和并发时的细节见[协议第 8 节](protocol/remote-workspace-mcp-v1.md#8-输出预算与保留)）：
 
 - 一个会话最多留 256 MiB 左右，满了从最旧的运行删。
-- 外部 MCP（`ccnm mcp bridge`）的会话，连接一断就删。
+- 外部 MCP（`ccnm mcp bridge`）的会话，连接一断就删。前提是 `mcp-serve` 自己正常退出：它被 `kill -9` 时后台命令会继续跑，输出留在 `sessions/bridge-<id>/output/`，`ccnm cleanup` 按设计不列 bridge 会话，只能等下面的 7 天过期或由执行账号手动删（P62 实测，先按[写入 guard 残留](#写入-guard-残留)收掉还在跑的命令）。
 - Managed 会话断开不删，`/mcp Reconnect` 回来还要读。它的输出在**最后一次运行过去 7 天、且这台机器上没有 `mcp-serve` 在服务它**之后删。
 - 过期检查在执行账号每次起 `mcp-serve` 时做（任何会话都算，包括 `ccnm doctor` 的握手），在后台跑，不拖慢连接。`ps` 跑不了时一个都不删。
 

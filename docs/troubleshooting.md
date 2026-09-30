@@ -182,7 +182,8 @@ Work SSH   FAIL   CCNM_E_VERSION: ~/.local/bin/ccnm on work is there but not exe
 
 **现在不会了**：stdout 为空时 ccnm 改看 stderr，shell 的抱怨和远程 ccnm 自己的
 `CCNM_E_*` 都能认出来。要是你还看到这句，那才是真的版本对不上——
-`ssh work '~/.local/bin/ccnm --version'` 跟本机比一下。
+两边比 `sha256sum`（macOS 用 `shasum -a 256`），**不要只比 `--version`**：P62 实测，
+未发版的构建和已装的旧构建都报 `0.9.0`，doctor 0 失败，起会话才撞上这句（内部协议不同）。
 
 顺带：这个特性也意味着**你自己在命令行上 `ssh work '任何会失败的命令'` 都会得到 `$? = 0`**，
 调试的时候别信那个退出码。
@@ -587,3 +588,81 @@ Tailscale 掉线时对面照样连不上。2026-09-16 真机上就是这样：�
 
 配置真写错的样子不一样：`ssh -G` 里 `hostname` 是个解析不了的名字，`ping` 直接报
 `cannot resolve`，而且**每次都失败**，不会自己好。
+
+### Linux 上 `ccnm run` 报 `workspace root … is not a directory on this machine`，目录明明在
+
+**症状**：在 Runtime Node 上用自己的账号（Operator）敲 `ccnm run <ws>`，退出码 30：
+
+```text
+CCNM_E_WRONG_WORKSPACE:
+workspace root /home/ccrun/proj is not a directory on this machine, which is the Runtime Node for 'proj'
+```
+
+`ccnm doctor <ws>` 的 `Runtime 上的项目`（`Runtime workspace`）那一行同时报 `cannot stat`。
+
+**原因**：这两处检查用的是**你自己**的身份，而 Debian 12 起新账号的家目录默认 0700（`/etc/login.defs` 的 `HOME_MODE`），你进不去执行账号的家，stat 得到 `Permission denied`，被说成了"不是目录"。项目本身没问题，执行账号那边的 `Workspace root` 行照样是绿的。P62 在 Debian 13 上撞到（研究记录 F1），还没修。
+
+**怎么办**：把项目放到执行账号家目录**之外**、而你能进入其父目录的地方，项目目录本身仍归执行账号（git 要求属主是它，见[运维手册](operations.md#项目目录属主要对git-身份要配)）：
+
+```bash
+sudo install -d -o root -g root -m 755 /srv/ccnm
+sudo install -d -o ccrun -g ccrun -m 700 /srv/ccnm/proj    # 你只需要能 stat 到它，读不到里面
+```
+
+别为了绕过去把执行账号的家目录改成 0755：那等于让机器上所有账号都能读它家里的东西。
+
+### Machine API 的会话 `failed`，`text`、`exit_code`、输出全是空的
+
+**症状**：`session.result` 回 `state: failed`，`outcome.exit_code` 是 `null`、`duration_ms` 是 0，stdout 和 stderr 都是 0 字节。
+
+**原因**：Agent 进程根本没起来——Agent 上的 CLI 没登录、两端构建不一致、Agent 连不上之类。协议 v1 没有给这种原因留字段（P62 研究记录 F3），原因只写在 Operator 自己的会话记录里。
+
+**怎么办**：在 Runtime Node 上用跑 `ccnm rpc` 的那个账号看记录里的 `finish.error`：
+
+```bash
+python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["finish"].get("error"))' \
+  ~/.local/state/ccnm/rpc/sessions/<句柄>.json
+```
+
+P62 实测见到的三种：`Claude is not authenticated on the Agent Node`（去 Agent 上 `claude auth login`）、`the Runtime Node runs ccnm 0.8.0, this one runs 0.9.0`（两端装同一个构建）、`message is not valid for protocol 1; ccnm versions probably differ`（版本号一样但构建不同，比 sha256）。
+
+### `ccnm stop --session` 报 `terminal ended but its Runtime MCP transport is still alive`，之后 `ccnm log` 说 `failed to start`
+
+**症状**：停交互会话，第一次退出码 3：
+
+```text
+CCNM_E_NOT_READY:
+… terminal ended but its Runtime MCP transport is still alive; state remains stopping
+```
+
+几秒后再 stop 一次说 `nothing to stop`，`ccnm log` 把这个会话列成 `failed to start`。
+
+**原因**：终端已经关了，通往 Runtime 的 ssh 通道要再过一小会儿才退出，而 stop 杀完终端**只看了一眼**就下结论；第二次 stop 走的是"本来就没在跑"那条路，把结局写成了"没有终端"（P62 研究记录 F4，真机 2/2 复现，还没修）。**会话其实已经正常停了**，不是启动失败。
+
+**怎么办**：等几秒，用 `ccnm status <ws>` 确认会话没了、写锁行是 `free`，就算停成功；`log` 里那条"failed to start"忽略即可。写锁不是 `free` 的，按[写入 guard 残留](operations.md#写入-guard-残留)查。
+
+### doctor 说 Codex 已登录，会话里第一条消息却报 `refresh token was revoked`
+
+**症状**：`ccnm doctor <ws> --agent <codex 实例>` 的 `Codex authentication` 是 OK（`logged in via ChatGPT`），会话一发消息，Codex 回：
+
+```text
+Your access token could not be refreshed because your refresh token was revoked. Please log out and sign in again.
+```
+
+**原因**：doctor 和 `codex login status` 都只看本地的登录文件在不在，不去服务器验证令牌（P62 研究记录 F5）。在别处登录同一个账号、或者长时间没用，都可能让这份令牌失效。
+
+**怎么办**：在 Agent Node 自己的终端，对 **ccnm 用的那份** Codex 目录重新登录（不是你日常的 `~/.codex`），用受管会话实际用的那个 Codex 0.154.0（路径换成你机器上的）：
+
+```bash
+CODEX_HOME=~/.config/ccnm/agents/codex /path/to/codex-0.154.0/codex login
+```
+
+用更新版本的 Codex 登录这个目录，它可能顺手升级目录里的状态文件，0.154.0 之后未必读得了。
+
+### Machine API：Agent 根本连不上，会话却是 `unknown`（Operator 在 Linux 上）
+
+**症状**：Agent 的 ssh 别名解析不了或拒绝连接，`session.status` 却是 `unknown` 而不是 `failed`。
+
+**原因**：ssh 失败一律被当成"可能已经派发出去、之后才断的"，为了不让你重放不明副作用而记 `unknown`（P58 的保守设计）。可 ssh 在认证完成之前就失败，其实一定什么都没发出去。macOS 上黑盒测试没暴露这一点，是因为临时目录太长、ControlPath 检查先失败了（P62 研究记录 F14，还没修）。
+
+**怎么办**：记录里的 `finish.error` 以 `ssh <别名>: ssh: Could not resolve hostname`、`Connection refused`、`No route to host` 开头的，可以按"没派发"处理，修好连接后换一个新的 `start_key` 重来；其他 `unknown` 仍按 `unknown` 对待：先看工作树和 Agent 上的会话，别直接重试。

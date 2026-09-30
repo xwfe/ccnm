@@ -109,6 +109,8 @@ ccnm run my-project --agent codex-main
 
 一个正在运行的 session 固定绑定 workspace、root 和完整 Agent identity。换 Provider 或 instance 不会复用/替换旧 session；先精确停止旧 session。
 
+**Codex 交互会话第一次起来会停在"是否信任这个目录"。** 问的是 Agent Node 上 ccnm 给这个 workspace 建的空占位目录（`~/.local/state/ccnm/workspaces/<名字>`），不是你的项目；选"信任"之后记住，同一个 workspace 下次不再问。`--detached` 起的会话要先 `ccnm attach` 答完这一句，工具才会连上——在那之前 `ccnm status` 显示 `TOOLS DOWN`（P62 实测）。
+
 ## Prompt
 
 单行开场白：
@@ -188,6 +190,8 @@ ccnm status my-project
 ccnm status my-project --all
 ccnm stop my-project
 ```
+
+**不带 `--agent` 时只看这个 workspace 默认实例的会话。** 用 `--agent codex-main` 起的会话，`ccnm status my-project` 会说没有会话在跑；加上同一个 `--agent`，或者用不带项目名的 `ccnm status`，才看得到（P62 实测）。
 
 精确寻址使用 ccnm session id：
 

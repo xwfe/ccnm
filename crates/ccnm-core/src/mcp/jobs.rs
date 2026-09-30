@@ -78,14 +78,32 @@ impl Stop {
     }
 
     /// The child is running. If a stop was asked for already, it is
-    /// stopped now.
+    /// stopped now -- without waiting here for it to end.
+    ///
+    /// On a thread of its own, because stopping lasts until the child is
+    /// finished and only whoever waits for the child says that it is
+    /// ([`Started::wait`](crate::process::Started::wait)). `exec_command`
+    /// attaches and then waits on the same thread, so stopping here had
+    /// nobody to end it: it sat out [`STOP_GIVE_UP`], ten seconds, over a
+    /// child that died at the first `TERM`. A cancelled call came back ten
+    /// seconds late, and a session that ended at that moment gave the
+    /// command up as one it could not stop, which keeps the write guard
+    /// from the next session.
     pub fn attach(&self, stopper: Stopper) {
         let asked = {
             let mut state = self.lock();
             state.stopper = Some(stopper.clone());
             state.reason.is_some()
         };
-        if asked {
+        if !asked {
+            return;
+        }
+        let late = stopper.clone();
+        let spawned = std::thread::Builder::new()
+            .name("ccnm-stop".into())
+            .spawn(move || late.stop(STOP_GRACE, STOP_GIVE_UP));
+        if spawned.is_err() {
+            // No thread to do it on. The slow way still stops it.
             stopper.stop(STOP_GRACE, STOP_GIVE_UP);
         }
     }
@@ -499,6 +517,49 @@ mod tests {
         // The first reason is the one kept.
         stop.stop(StopReason::SessionEnded);
         assert_eq!(stop.reason(), Some(StopReason::Cancelled));
+    }
+
+    /// `exec_command` attaches and then waits on the same thread. A stop
+    /// that arrived in between admitting the command and attaching it must
+    /// not be carried out before that thread can wait: stopping ends when
+    /// the child is finished, and only waiting for it says so.
+    #[test]
+    fn a_stop_just_before_attaching_does_not_hold_up_the_one_who_waits() {
+        let stop = Stop::default();
+        assert!(stop.stop(StopReason::Cancelled));
+        let started = sleeper();
+        let clock = Instant::now();
+        stop.attach(started.stopper());
+        let captured = started.wait().unwrap();
+        assert!(captured.stopped);
+        assert!(
+            clock.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            clock.elapsed()
+        );
+    }
+
+    /// The same moment at the end of a session. The command is stopped like
+    /// any other, so `stop_all` must not come back naming it as one it gave
+    /// up on: that keeps the write guard from the next session.
+    #[test]
+    fn a_session_ending_as_a_command_starts_stops_it_too() {
+        let jobs = Jobs::new();
+        let stop = Arc::new(Stop::default());
+        let ticket = jobs.admit(false, Arc::clone(&stop)).unwrap();
+        let ending = {
+            let jobs = Arc::clone(&jobs);
+            std::thread::spawn(move || jobs.stop_all())
+        };
+        wait_for(|| stop.reason().is_some());
+        // What exec_command goes on to do, on its one thread.
+        let started = sleeper();
+        stop.attach(started.stopper());
+        let captured = started.wait().unwrap();
+        drop(ticket);
+        assert!(captured.stopped);
+        assert_eq!(stop.reason(), Some(StopReason::SessionEnded));
+        assert_eq!(ending.join().unwrap(), Vec::<String>::new());
     }
 
     #[test]

@@ -912,7 +912,7 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
                     std::time::Duration::from_secs(*timeout),
                     agent.as_deref(),
                 )?;
-                return print_run_report(&rep, lang);
+                return print_run_report(&rep, resolved.agent_node(), lang);
             }
             let opening = opening_prompt(prompt.as_deref(), *prompt_stdin)?;
             let rep = launcher::start_interactive_with_agent(
@@ -1058,6 +1058,8 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
                 };
                 return print_result_report(
                     &work::result(&req, &agent_tools(config_path().ok().as_deref())?)?,
+                    // The report was read off this machine's own disk.
+                    config.this.as_deref().unwrap_or("this machine"),
                     lang,
                 );
             }
@@ -1068,7 +1070,7 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
                 session.as_deref(),
                 agent.as_deref(),
             )?;
-            print_result_report(&rep, lang)
+            print_result_report(&rep, resolved.agent_node(), lang)
         }
         Command::Stop {
             workspace,
@@ -2286,7 +2288,7 @@ fn restore_terminal(attach: &ccnm_core::process::Captured) {
 
 /// The summary, then Claude's answer, then whatever went wrong. Exit 0
 /// only when Claude ran to completion and did not report an error itself.
-fn print_run_report(rep: &RunReport, lang: Lang) -> Result<i32> {
+fn print_run_report(rep: &RunReport, agent_node: &str, lang: Lang) -> Result<i32> {
     println!("{}", rep.summary_in(lang));
     match &rep.result {
         Some(r) => {
@@ -2307,7 +2309,12 @@ fn print_run_report(rep: &RunReport, lang: Lang) -> Result<i32> {
     if !rep.stderr_tail.trim().is_empty() {
         eprintln!("\n--- stderr (tail) ---\n{}", rep.stderr_tail.trim_end());
     }
-    eprintln!("\nsession directory on work: {}", rep.session_dir.display());
+    // By the node's own name. It said "on work" for every node, which was a
+    // name from before nodes had names (F18).
+    eprintln!(
+        "\nsession directory on {agent_node}: {}",
+        rep.session_dir.display()
+    );
     let ok = rep.outcome.ok() && rep.result.as_ref().is_some_and(|r| !r.is_error());
     Ok(if ok { 0 } else { 1 })
 }
@@ -2322,7 +2329,11 @@ fn print_run_report(rep: &RunReport, lang: Lang) -> Result<i32> {
 /// Always exit 0: this reports on a session, it does not run one, and a
 /// non-zero exit here would say "the lookup failed" about a lookup that
 /// worked.
-fn print_result_report(rep: &ccnm_core::protocol::run::ResultReport, lang: Lang) -> Result<i32> {
+fn print_result_report(
+    rep: &ccnm_core::protocol::run::ResultReport,
+    agent_node: &str,
+    lang: Lang,
+) -> Result<i32> {
     println!("{}", rep.summary_in(lang));
     match &rep.result {
         Some(r) => {
@@ -2337,7 +2348,12 @@ fn print_result_report(rep: &ccnm_core::protocol::run::ResultReport, lang: Lang)
     if !rep.stderr_tail.trim().is_empty() {
         eprintln!("\n--- stderr (tail) ---\n{}", rep.stderr_tail.trim_end());
     }
-    eprintln!("\nsession directory on work: {}", rep.session_dir.display());
+    // By the node's own name. It said "on work" for every node, which was a
+    // name from before nodes had names (F18).
+    eprintln!(
+        "\nsession directory on {agent_node}: {}",
+        rep.session_dir.display()
+    );
     Ok(0)
 }
 

@@ -974,6 +974,51 @@ fn on_the_agent_node_result_is_read_off_this_disk() {
         !said.contains("no-such-host-for-tests") && !said.contains("not defined"),
         "it must not have gone looking for home: {said}"
     );
+    // The directory is on this machine, and this machine has a name: the
+    // fixture calls it `agent`. The line used to say "on work" whatever the
+    // node was called (F18).
+    assert!(said.contains("session directory on agent: "), "{said}");
+    assert!(!said.contains("on work"), "{said}");
+}
+
+/// The same line from the other side: `ccnm run <ws> --print` typed on the
+/// Runtime Node names the Agent Node the session directory is on. On the
+/// P62 machines that node was `fodelf`, and the line said `work`.
+#[test]
+fn a_print_run_says_which_node_holds_the_session_directory() {
+    let dir = std::env::temp_dir().join(format!("ccnm-cli-{}-print-node", std::process::id()));
+    let _cleanup = TestDir::adopt(&dir);
+    let _ = std::fs::remove_dir_all(&dir);
+    let root = dir.join("root");
+    std::fs::create_dir_all(&root).unwrap();
+    let config = dir.join("config.toml");
+    std::fs::write(
+        &config,
+        format!(
+            "version = 1\nthis = \"runtime\"\n[nodes.fodelf]\nssh = \"ccnm-test-nowhere.invalid\"\n[nodes.runtime]\n[workspaces.xshun]\nagent_node = \"fodelf\"\nroot = \"{}\"\nallow_unconfined_exec = true\n",
+            root.display()
+        ),
+    )
+    .unwrap();
+    let report = r#"{"protocol":1,"session":"7c1d9f60-0a11-4c22-9d33-8e44f5566a78","session_dir":"/agent/state/ccnm/sessions/7c1d","controller":{"hello":{"protocol":1,"ccnm_version":"x","user":"u","platform":"macos/aarch64","exe":null,"root":null},"pid":1,"manager":{"Ok":"Aqua"}},"pid":2,"outcome":{"exit_code":0,"timed_out":false,"duration_ms":7,"error":null},"result":null,"stdout_tail":"done","stderr_tail":""}"#;
+    let ssh = FakeSsh::install(
+        &dir,
+        &format!("  *'internal agent-run'*) printf '%s\\n' '{report}' ;;"),
+    );
+    let state = short_state("print-node");
+    let out = ccnm()
+        .env("PATH", ssh.path())
+        .env("XDG_STATE_HOME", &state)
+        .args(["run", "xshun", "--print", "hi", "--config"])
+        .arg(&config)
+        .output()
+        .unwrap();
+    let said = format!("{}{}", stdout(&out), stderr(&out));
+    assert!(
+        said.contains("session directory on fodelf: /agent/state/ccnm/sessions/7c1d"),
+        "{said}"
+    );
+    assert!(!said.contains("on work"), "{said}");
 }
 
 /// A stand-in for `ssh`, put first on PATH so every remote call the real

@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-09-30T01:04:56+09:00",
+  "last_updated": "2026-09-30T14:40:00+09:00",
   "current_task": "P62",
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
@@ -2924,19 +2924,74 @@
     {
       "id": "P62",
       "title": "双 Provider 真实闭环与候选包验收",
-      "status": "pending",
+      "status": "in_progress",
       "depends_on": [
         "P61"
       ],
-      "owner": null,
-      "started_at": null,
-      "last_updated": "2026-09-28T13:09:17+09:00",
-      "completed_criteria": [],
-      "evidence": [],
-      "blockers": []
+      "owner": "claude-opus-5-5 / 2026-09-30 桌面会话",
+      "started_at": "2026-09-30T11:27:00+09:00",
+      "last_updated": "2026-09-30T14:40:00+09:00",
+      "completed_criteria": [
+        "P62.1"
+      ],
+      "evidence": [
+        {
+          "kind": "real_nodes",
+          "criteria": [
+            "P62.1"
+          ],
+          "ref": "docs/research/2026-09-30-p62-real-machine.md",
+          "result": "2026-09-30 用户逐项批准部署、两把一次性密钥、每 Provider ≤8 次模型、只杀本轮进程的故障注入、收尾撤钥匙留候选构建。Agent=本机 xdwmbp（macOS 26.6.2 arm64，bing uid 501，候选构建并存于 ~/.local/opt/ccnm-p62-dabec34，隔离 Controller 与配置/state，Claude Code 2.1.281→2.1.284，Codex 0.154.0 官方 release）；Operator=hpsrv bing uid 1000；Runtime 执行账号=hpsrv ccrun uid 1002（0.8.0→候选，备份保留）。候选包：macOS universal 2c30c618…（二进制 9993b64e…，bash scripts/dist.sh）、Linux x86_64 244335fa…（二进制 fdd898df…，hpsrv 上 ccrun 原生 dist-linux.sh，glibc≥2.39），源码 dabec34。"
+        },
+        {
+          "kind": "real_nodes",
+          "criteria": [
+            "P62.3"
+          ],
+          "ref": "docs/research/2026-09-30-p62-real-machine.md",
+          "result": "零额度外部 MCP：p12_dogfood_check.py 经候选 bridge 打到 hpsrv/ccrun 全过（24.6 s）：coding 11 / read 7 工具、read 腿硬调四个写工具均 POLICY、身份审计、Runtime 上带毒构建 101 且指向文件、收回后 git 干净、writer busy、越权与未开放拒绝、协议 99 VERSION、远端被杀写锁不自动交权、Host 崩无孤儿、泄漏扫描干净。Machine API 失败分支（独立客户端在 hpsrv 上）：Claude 未登录 2.5 s failed 且无原因（F3）、Codex 令牌吊销 16.8 s failed 带原话、同键复用/异输入 -32010、非法句柄 -32602、未知 -32009、终态 stop 幂等。模型回合未跑。"
+        },
+        {
+          "kind": "real_nodes",
+          "criteria": [
+            "P62.4"
+          ],
+          "ref": "docs/research/2026-09-30-p62-real-machine.md",
+          "result": "交互会话占写锁时 session.start 回 -32008 live_holder、effect none；回退 ccrun 到 0.8.0 doctor 报 VERSION、start failed；旧 0.9.0 Agent 对候选 Runtime doctor 0 失败、start 被内部协议拒（F2）；P61 cleanup 首次跨 UID：Operator uid1000 4 项 + Agent uid501 2 项由各自账号删，result -32012 cleaned、同键不重跑；SIGKILL 远端 mcp-serve：后台命令存活、写锁 unknown 并如实说明、cleanup 看不到 bridge 残留（F11），按手册恢复后 free。交互 stop 第一次必 NOT_READY、log 显示 failed to start（F4，2/2）。运行中停止、RPC 断连未跑（需模型）。"
+        },
+        {
+          "kind": "offline",
+          "criteria": [
+            "P62.5"
+          ],
+          "ref": "docs/research/2026-09-30-p62-real-machine.md",
+          "result": "macOS：ci_gates 通过（Python 249/0 跳过）、fmt/clippy/cargo test 1020。Linux（hpsrv ccrun）：cargo test 先 829/832（F13，8ffe7a5 修测试写死 uid）后 1020/1020；ci_gates 未过：2 条 Python 黑盒因 F14（Linux 上 ssh 解析失败记 unknown）、1 条因 ccrun 本身合格而跳过。P58–P61 未推送，无线上 CI。"
+        }
+      ],
+      "blockers": [
+        {
+          "criteria": [
+            "P62.2",
+            "P62.3",
+            "P62.4"
+          ],
+          "reason": "本机 Claude CLI 未登录（claude auth status loggedIn false）；ccnm 专用 Codex profile（~/.config/ccnm/agents/codex）刷新令牌已被吊销，doctor 仍显示 OK（F5）",
+          "unblock": "用户在自己终端运行 `claude auth login` 与 `CODEX_HOME=~/.config/ccnm/agents/codex ~/.local/opt/codex-0.154.0/codex login`，之后按研究记录第 4 节跑模型回合",
+          "since": "2026-09-30T11:41:00+09:00"
+        },
+        {
+          "criteria": [
+            "P62.5"
+          ],
+          "reason": "Linux 上 ci_gates 两条 Python 黑盒用例失败（F14），推送后 ubuntu CI 预期变红",
+          "unblock": "修 F14（ssh 认证前失败记 failed）或另立阶段；修前不推送",
+          "since": "2026-09-30T14:10:00+09:00"
+        }
+      ]
     }
   ],
   "observed_gaps": [
+    "【P62 真机发现 / 未修】2026-09-30 hpsrv（Debian 13）+ 本机 Agent：F1 Operator 用自己身份 stat 项目根，Debian HOME_MODE 0700 下项目在执行账号家目录时 ccnm run 报 WRONG_WORKSPACE；F2 候选与旧构建同版本号，doctor 0 失败而会话被内部协议拒；F3 Machine API 在 Agent 进程没起来时只回无原因的 failed；F4 交互 stop 第一次必 NOT_READY、log 记 failed to start；F5 Codex 令牌吊销 doctor 仍 OK；F14 Linux 上 ssh 认证前失败也记 unknown。其余低影响见 docs/research/2026-09-30-p62-real-machine.md 第 5 节。",
     "【P61 已处理（离线）】2026-09-30：清理先预览、由各自账号删（内部协议 10，Operator → Agent → Runtime 执行账号）：Agent 会话记录、执行账号的 exec_command 输出、Operator 的 Machine API 拷贝；RPC 记录留墓碑，result 回 -32012 cleaned，start_key 不重跑；没结束/说不清/写锁标着/在用的保留；workspace remove --purge 同一服务，有剩余就保留配置。P57 的 E 在黑盒回归里对旧代码红、新代码绿。未处理：跨 UID 真实权限（P62）、自动过期、旧 --purge 留下的孤儿输出（只靠 7 天过期）、墓碑与 start_key 的遗忘政策。见 docs/research/2026-09-30-p61-cleanup.md。",
     "【P60 已处理（离线）】2026-09-29：写入 guard 可由 Runtime 执行账号只读回答（内部协议 9，Operator 经 Agent 转问）：free/held/abandoned/unknown＋固定原因，pid 只作诊断；ccnm status <ws> 显示。session.start 先按已占用的 start_key 回答，再问写锁：有进程持有回 -32008，残留/损坏/读不了回 -32007＋reason，问不到照旧启动。P57 的 A1/D1 在黑盒回归里对旧代码红、新代码绿。未处理：预检不是预留（看完到握手之间的竞态仍以接受后 failed 结束）、孤儿 mcp-serve 占锁仍回 busy、两个 state 域仍是两把锁（D3）、不自动清锁。见 docs/research/2026-09-29-p60-write-guard-observation.md。",
     "【P59 已处理（离线）】2026-09-29：session.result 的输出改为从 Agent 的冻结脱敏视图完整读回（每流最后 32 MiB，内部协议 8 的 agent-output），RPC 首次读时拷到本机后倒序分页；max_bytes 生效且不切字符、太小时报 max_bytes_too_small；stdout/stderr 分流；游标绑定进程、会话、流与视图版本；拿不到时降级为旧尾巴并写 unavailable_reason。P57 的 C0–C5 在黑盒回归里对旧代码红、新代码绿。未处理：两份拷贝无自动清理（P61）、text 无上限（计划要求保持语义）、Agent 解析结果文档仍整份读 stdout。见 docs/research/2026-09-29-p59-output-snapshot.md。",
@@ -2993,7 +3048,7 @@
     "【P41 记下不修】mcp-serve 被 SIGKILL（或别的不走正常退出的死法）时，它起的命令的进程组没人收：前台命令一直如此，P41 的后台命令没有期限，所以可能一直跑下去；它们的 run 在 read_output 里读作 exit status unknown。正常路径（客户端断开、stdin EOF、心跳发现对端不在）会先停掉所有命令再放写锁。要收干净得给子进程加会话标记、下次启动时按标记扫（封存的原生链 P26/P30 有类似做法），需另立阶段。依据 docs/research/p41-background-commands-2026-09-18.md 第 5 节。"
   ],
   "handoff": {
-    "next_action": "**2026-09-30 P61 完成（离线）：清理先预览，谁的东西谁删，删不干净就不忘掉 workspace。** 起点 main/a6c9efa。新命令 ccnm cleanup <ws>（默认只预览，--apply <令牌>，令牌绑定配置/三方 uid/每项版本、15 分钟有效，重收不符整份拒绝）；内部协议 10：Operator 清自己的 rpc/outputs 并把记录留成墓碑，经 agent-cleanup 请 Agent 清已结束会话记录，Agent 再经自己的链路 runtime-cleanup 请执行账号清 exec_command 输出（先 Runtime 后 Agent，没删掉的那半 Agent 记录留着）；没结束/说不清/写锁标着/在用/链接/别的账号的保留并给原因。workspace remove --purge 走同一服务，有剩余就保留配置、退出码 3；旧 agent-purge 按版本拒绝。清过的会话 result 回 -32012 cleaned，status 照常，同键不重跑。先红后绿：tests/test_cleanup.py 4 条对旧代码全红、新代码全绿；Rust 1020（64 线程）、Python 249 通过；顺带修了 P58 一条偶发用例（02b6a29）。记录 docs/research/2026-09-30-p61-cleanup.md。注意：三个账号是同一用户的三个目录，跨 UID 未验；两端须同一构建。下一步 P62（core-verification.md 第 2 节）：hpsrv/ccrun 真实双 Provider、两入口闭环与候选包核验——远端连接、真实模型、替换已装二进制都要逐项单独授权，没有授权前只能做离线准备。未 push、未部署；用户未跟踪 ccnm-mobile-handoff.md 未读、未动。\n\n之前的交接：\n**2026-09-29 P60 完成（离线）：写锁能被问清楚，session.start 可证实被占时回 busy。** 起点 main/d779854。Runtime 执行账号经 Agent 转问回答写入 guard（内部协议 9：agent-guard → runtime-guard），free/held/abandoned/unknown＋固定原因，只看不拿锁、不写 marker，pid 只作诊断；ccnm status <ws> 多一行写锁。session.start 先按已占用的 start_key 回答，再问写锁：held 回 -32008，残留/损坏/读不了回 -32007＋reason，都不建记录；问不到照 P59 启动（不是把沉默当空闲，握手处 guard 仍是唯一授权）。预检不是预留。acquire 遇 WouldBlock 再看 5×20 ms，免得观察窗口误拒。先红后绿：tests/test_rpc_write_guard.py 5 条对旧代码 4 红（保住的“问不到照旧启动”本来就绿）、新代码全绿；Rust 1008（64 线程）、Python 245 通过；中间提交各自可构建。记录 docs/research/2026-09-29-p60-write-guard-observation.md。注意：需要 Agent 与 Runtime 都是 P60 构建才有预检；Agent 不通时 start 最多多等一个 ssh 连接超时（10 秒）。下一步 P61（core-output-cleanup.md 第 2 节）：先把 P57 的 E（purge 只删调用者 state、协议 1 不带实例）改写成先红后绿回归，再做两端/跨身份的清理预览与确认，含 P59 留下的两份输出拷贝。未 push、未部署；用户未跟踪 ccnm-mobile-handoff.md 未读、未动。\n\n之前的交接：\n**2026-09-29 P59 完成（离线）：session.result 能把已结束会话的 stdout/stderr 完整读回。** 起点 main/6637954。Agent 在会话结束后首次被读时生成冻结的脱敏视图（每流最后 32 MiB），内部协议 8 的 agent-output 分块交给 RPC；RPC 首次读时拷到 rpc/outputs/<handle>/，之后倒序分页，max_bytes 生效、不切字符，游标绑定进程/会话/流/视图版本。拿不到完整内容时降级为旧尾巴并写 unavailable_reason。契约只做加法（schema/fixture/第 9 节先改）。两份参考客户端增 read_output 与 ExecutionBackend.output()。先红后绿：tests/test_rpc_output.py 11 条对旧代码 10 红、新代码全绿；Rust 990（64 线程）、Python 240 通过。记录 docs/research/2026-09-29-p59-output-snapshot.md。注意：Agent 是 P59 之前的版本时结果照常，只是 output 降级（agent_refused）；两份拷贝无自动清理。下一步 P60（core-session-control.md 第 2 节）：先把 P57 的 D1–D4 与 A1 的 busy 现状固化为回归，再做 Runtime 权威的 free/held/abandoned/unknown 观察并接入 status，最后才做可证实的 busy 提前拒绝。未 push、未部署；用户未跟踪 ccnm-mobile-handoff.md 未读、未动。\n\n之前的交接：\n**2026-09-28 P58 完成（离线）：Machine API 的 stop 现在只停它点名的那一个会话。** 起点 main/fc1faaf。RPC 派发前生成并落盘 Agent 会话 id，内部协议 7 把它带给 Agent；stop 点名这个 id，运行未到时 Agent 先占住 id、运行到达即拒绝，从不再按 workspace 查 tmux。记录在 rpc/store.lock 下读改写（stop 标志、终态不再被覆盖），start_key 按原串比较且旧布局只读，句柄先校验，改绑后旧句柄 stop 回 -32007，派发后连接中断记 unknown。先红后绿：tests/test_rpc_exact_control.py 10 条对旧代码全红、新代码全绿；Rust 973（64 线程）、Python 229 通过；旧版 0.9.0 对协议 7 以 CCNM_E_VERSION 拒绝。记录 docs/research/2026-09-28-p58-exact-session-control.md。注意：Runtime 与 Agent 必须同一 build，否则 session.start 以 failed + CCNM_E_VERSION 结束；P58 之前 rpc 接受的未完成会话不能再用 session.stop 停。下一步 P59（core-output-cleanup.md 第 1 节）：先把 P57 的 C0–C5 改写成先红后绿回归，再从 Agent 源头接通终态输出快照与 max_bytes/cursor 分页；样例 bigout 可直接当大输出输入。未 push、未部署；用户未跟踪 ccnm-mobile-handoff.md 未读、未动。",
+    "next_action": "**2026-09-30 P62 进行中（受阻于登录）：部署、零额度真机与两平台门禁已做完，模型回合一次都没跑成。** 起点 main/dabec34，另有 8ffe7a5（测试修复）。本机 xdwmbp 当 Agent（候选构建并存在 ~/.local/opt/ccnm-p62-dabec34，隔离 Controller：plist 手工加了 CCNM_CONFIG/XDG_STATE_HOME/PATH，Codex 0.154.0 在 ~/.local/opt/codex-0.154.0），hpsrv bing 当 Operator、ccrun 当执行账号（候选 fdd898df…，0.8.0 备份在 ~/.local/opt/ccnm-0.8.0）；测试树在 /srv/ccnm-p62/（F1：放执行账号家目录会被 Operator 拒）。零额度结果与 14 条发现见 docs/research/2026-09-30-p62-real-machine.md；高影响：F1 Debian 家目录 0700 下 Operator 的 run/doctor 误报不是目录，F2 候选与旧构建同为 0.9.0、doctor 分辨不出，F14 Linux 上 ssh 解析失败记 unknown 使两条 Python 黑盒在 Linux 失败（推送后 ubuntu CI 会红）。下一步：用户登录两个 CLI（claude auth login；CODEX_HOME=~/.config/ccnm/agents/codex ~/.local/opt/codex-0.154.0/codex login）后，按研究记录第 4 节跑模型回合（每 Provider ≤8 次，已用 Codex 3、Claude 1，均未产生模型用量），再按第 6 节收尾。钥匙和隔离 Controller 仍在，收尾前不要删。未 push、未发版。用户未跟踪 ccnm-mobile-handoff.md 未读、未动。\n\n之前的交接：\n**2026-09-30 P61 完成（离线）：清理先预览，谁的东西谁删，删不干净就不忘掉 workspace。** 起点 main/a6c9efa。新命令 ccnm cleanup <ws>（默认只预览，--apply <令牌>，令牌绑定配置/三方 uid/每项版本、15 分钟有效，重收不符整份拒绝）；内部协议 10：Operator 清自己的 rpc/outputs 并把记录留成墓碑，经 agent-cleanup 请 Agent 清已结束会话记录，Agent 再经自己的链路 runtime-cleanup 请执行账号清 exec_command 输出（先 Runtime 后 Agent，没删掉的那半 Agent 记录留着）；没结束/说不清/写锁标着/在用/链接/别的账号的保留并给原因。workspace remove --purge 走同一服务，有剩余就保留配置、退出码 3；旧 agent-purge 按版本拒绝。清过的会话 result 回 -32012 cleaned，status 照常，同键不重跑。先红后绿：tests/test_cleanup.py 4 条对旧代码全红、新代码全绿；Rust 1020（64 线程）、Python 249 通过；顺带修了 P58 一条偶发用例（02b6a29）。记录 docs/research/2026-09-30-p61-cleanup.md。注意：三个账号是同一用户的三个目录，跨 UID 未验；两端须同一构建。下一步 P62（core-verification.md 第 2 节）：hpsrv/ccrun 真实双 Provider、两入口闭环与候选包核验——远端连接、真实模型、替换已装二进制都要逐项单独授权，没有授权前只能做离线准备。未 push、未部署；用户未跟踪 ccnm-mobile-handoff.md 未读、未动。\n\n之前的交接：\n**2026-09-29 P60 完成（离线）：写锁能被问清楚，session.start 可证实被占时回 busy。** 起点 main/d779854。Runtime 执行账号经 Agent 转问回答写入 guard（内部协议 9：agent-guard → runtime-guard），free/held/abandoned/unknown＋固定原因，只看不拿锁、不写 marker，pid 只作诊断；ccnm status <ws> 多一行写锁。session.start 先按已占用的 start_key 回答，再问写锁：held 回 -32008，残留/损坏/读不了回 -32007＋reason，都不建记录；问不到照 P59 启动（不是把沉默当空闲，握手处 guard 仍是唯一授权）。预检不是预留。acquire 遇 WouldBlock 再看 5×20 ms，免得观察窗口误拒。先红后绿：tests/test_rpc_write_guard.py 5 条对旧代码 4 红（保住的“问不到照旧启动”本来就绿）、新代码全绿；Rust 1008（64 线程）、Python 245 通过；中间提交各自可构建。记录 docs/research/2026-09-29-p60-write-guard-observation.md。注意：需要 Agent 与 Runtime 都是 P60 构建才有预检；Agent 不通时 start 最多多等一个 ssh 连接超时（10 秒）。下一步 P61（core-output-cleanup.md 第 2 节）：先把 P57 的 E（purge 只删调用者 state、协议 1 不带实例）改写成先红后绿回归，再做两端/跨身份的清理预览与确认，含 P59 留下的两份输出拷贝。未 push、未部署；用户未跟踪 ccnm-mobile-handoff.md 未读、未动。\n\n之前的交接：\n**2026-09-29 P59 完成（离线）：session.result 能把已结束会话的 stdout/stderr 完整读回。** 起点 main/6637954。Agent 在会话结束后首次被读时生成冻结的脱敏视图（每流最后 32 MiB），内部协议 8 的 agent-output 分块交给 RPC；RPC 首次读时拷到 rpc/outputs/<handle>/，之后倒序分页，max_bytes 生效、不切字符，游标绑定进程/会话/流/视图版本。拿不到完整内容时降级为旧尾巴并写 unavailable_reason。契约只做加法（schema/fixture/第 9 节先改）。两份参考客户端增 read_output 与 ExecutionBackend.output()。先红后绿：tests/test_rpc_output.py 11 条对旧代码 10 红、新代码全绿；Rust 990（64 线程）、Python 240 通过。记录 docs/research/2026-09-29-p59-output-snapshot.md。注意：Agent 是 P59 之前的版本时结果照常，只是 output 降级（agent_refused）；两份拷贝无自动清理。下一步 P60（core-session-control.md 第 2 节）：先把 P57 的 D1–D4 与 A1 的 busy 现状固化为回归，再做 Runtime 权威的 free/held/abandoned/unknown 观察并接入 status，最后才做可证实的 busy 提前拒绝。未 push、未部署；用户未跟踪 ccnm-mobile-handoff.md 未读、未动。\n\n之前的交接：\n**2026-09-28 P58 完成（离线）：Machine API 的 stop 现在只停它点名的那一个会话。** 起点 main/fc1faaf。RPC 派发前生成并落盘 Agent 会话 id，内部协议 7 把它带给 Agent；stop 点名这个 id，运行未到时 Agent 先占住 id、运行到达即拒绝，从不再按 workspace 查 tmux。记录在 rpc/store.lock 下读改写（stop 标志、终态不再被覆盖），start_key 按原串比较且旧布局只读，句柄先校验，改绑后旧句柄 stop 回 -32007，派发后连接中断记 unknown。先红后绿：tests/test_rpc_exact_control.py 10 条对旧代码全红、新代码全绿；Rust 973（64 线程）、Python 229 通过；旧版 0.9.0 对协议 7 以 CCNM_E_VERSION 拒绝。记录 docs/research/2026-09-28-p58-exact-session-control.md。注意：Runtime 与 Agent 必须同一 build，否则 session.start 以 failed + CCNM_E_VERSION 结束；P58 之前 rpc 接受的未完成会话不能再用 session.stop 停。下一步 P59（core-output-cleanup.md 第 1 节）：先把 P57 的 C0–C5 改写成先红后绿回归，再从 Agent 源头接通终态输出快照与 max_bytes/cursor 分页；样例 bigout 可直接当大输出输入。未 push、未部署；用户未跟踪 ccnm-mobile-handoff.md 未读、未动。",
     "scope": "2026-09-30 用户要求按 core-output-cleanup.md 第 2 节实施 P61。改动：cleanup.rs 与 cleanup/tests.rs（新）；rpc/store.rs（cleaned_at、handles、outputs_of、clean）、rpc/session.rs（result 回 expired）、rpc/mod.rs（1 条用例）；launcher.rs（cleanup 取代 purge）、work.rs（agent-purge 拒绝、session_state/runtime_link crate 可见）、protocol/run.rs（删 PurgeReport）、runtime.rs（bound_root、current_uid）、session.rs（Control::try_lock）、retention.rs（any_in_progress）、overview.rs（table crate 可见）、lib.rs；ccnm-cli main.rs（cleanup 命令、internal agent-cleanup/runtime-cleanup、purge 改道）；测试 tests/test_cleanup.py、fake_agent_ssh.py 的 agent-cleanup/runtime-cleanup，test_rpc_exact_control.py 一条偶发用例修正；协议第 9 节、新 fixture、实现差距、运维、使用说明、生命周期、支持矩阵、交接、总纲同步。未连 hpsrv/fodelf、未跑真实模型或 Controller、未部署、未 push 或发版。用户已有未跟踪 ccnm-mobile-handoff.md 未读、未动。",
     "planning_validation": {
       "at": "2026-09-08T21:22:43+09:00",

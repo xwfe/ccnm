@@ -24,6 +24,7 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "tests"))
 sys.path.insert(0, str(ROOT / "clients/python"))
 
 from execution_backend import (  # noqa: E402
@@ -37,6 +38,7 @@ from execution_backend import (  # noqa: E402
     ExecutionRequest,
     FakeBackend,
 )
+from rpc_owners import wait_for_owners  # noqa: E402
 
 
 def ccnm_binary() -> Path | None:
@@ -213,6 +215,9 @@ class CcnmBackendTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory(prefix="ccnm-backend-", dir="/tmp")
         self.addCleanup(self.temp.cleanup)
         self.home = Path(self.temp.name)
+        # 清理按登记的反序跑：这一条排在删目录之前、各个 backend.close 之后。
+        # 为什么要等，见 tests/rpc_owners.py。
+        self.addCleanup(self.wait_for_owners)
         (self.home / "demo").mkdir()
         self.config = self.home / "config.toml"
         self.config.write_text(
@@ -223,6 +228,10 @@ class CcnmBackendTests(unittest.TestCase):
             "XDG_STATE_HOME": str(self.home / "state"),
             "XDG_CONFIG_HOME": str(self.home / "config"),
         }
+
+    def wait_for_owners(self) -> None:
+        left = wait_for_owners(self.home / "state")
+        self.assertFalse(left, f"owner 进程 {left} 一直没退出，不能删目录")
 
     def backend(self) -> CcnmBackend:
         backend = CcnmBackend.spawn(

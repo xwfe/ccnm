@@ -1742,7 +1742,13 @@ root = "/runtime/legacy"
         assert_ne!(managed_a, managed_b);
 
         let out = peer.call(&[&stop_line(&b)]);
-        assert_eq!(out[0]["result"]["state"], "stopping", "{out:?}");
+        // The fake lets the run end the moment it is asked to stop, so the
+        // run can be on record as over before the stop answers -- about one
+        // time in ten with 64 test threads. Both answers are the contract's;
+        // what must hold either way is that the request is on record.
+        let answered = out[0]["result"]["state"].as_str().unwrap();
+        assert!(["stopping", "failed"].contains(&answered), "{out:?}");
+        assert_eq!(out[0]["result"]["stop_requested"], true, "{out:?}");
         let stops = peer.runs.stops.lock().unwrap().clone();
         assert_eq!(stops.len(), 1);
         assert_eq!(stops[0].session, managed_b);

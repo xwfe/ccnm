@@ -142,12 +142,12 @@ thread 'mcp::jobs::tests::a_cancelled_call_stops_its_command' panicked at crates
 
 同一轮里没改过的构建 40 次红了 `grows` 1、`died` 1。只修了第 3、5 节那两处的构建另跑过 100 次（两路同时），`grows` 和 `died` 都是 0，`cancelled` 1 次——这是第 4 节被发现的那一次。
 
-**门禁**（都在三处改完之后跑）：
+**门禁**跑了两遍：三处改完之后一遍（起点 `204400f`），把已完成的 P65 合进来之后（`54a2118`）又一遍。下面是后一遍的数，前一遍括号里：
 
 - `cargo fmt --all --check`、`cargo clippy --workspace --all-targets -- -D warnings`：通过。
-- `cargo test --workspace`：1040 passed / 0 failed（22 个测试二进制）；`cargo test --workspace -- --test-threads=64`：同样 1040 / 0。比 P64 的 1033 多出来的是 P65 已提交的用例和这次的 3 条。
+- `cargo test --workspace`：1048 passed / 0 failed（22 个测试二进制）；`cargo test --workspace -- --test-threads=64`：同样 1048 / 0（合并前两遍都是 1040）。这次加的是 3 条。
 - `cargo +1.89 check --workspace --all-targets --locked`：通过（`try_lock_shared` 是 1.89 稳定的，仓库声明的最低版本就是 1.89）。
-- `python3 scripts/ci_gates.py`：计划检查、协议检查、Python 256 条 0 跳过 0 失败（其中有 `tests.test_remote_workspace_mcp`，用的是刚构建的二进制）。
+- `python3 scripts/ci_gates.py`：计划检查、协议检查、Python 262 条 0 跳过 0 失败（合并前 256 条；其中有 `tests.test_remote_workspace_mcp`，用的是刚构建的二进制）。
 - `git diff --check`：通过。
 - 门禁前后各列一次 `$TMPDIR` 和 `/tmp` 下的 `ccnm-*`，没有新增。复现时失败的用例留下的 10 个 `ccnm-jobs-<pid>-*` 目录已删；更早轮次留下的 12 个没动。
 
@@ -155,8 +155,7 @@ thread 'mcp::jobs::tests::a_cancelled_call_stops_its_command' panicked at crates
 
 ## 8. 为什么没另立阶段
 
-- `docs/plan/README.md` 规定同一时刻最多一个 `in_progress`，只有前一阶段 `blocked` 时才能并行认领。现在 main 上 P65 正在由另一个会话做，不是 blocked。
-- 这三处都是已完成的 P41/P42 承诺过的行为没做到位，没有新的验收范围。同类先例都是记在 `observed_gaps` 加一份研究记录：P3 的"64 线程下超时用例 30.5 秒"（根因在产品，已修）、P31 期间的两条并发用例。
-- 并行分支另起一个编号，合并时会和 P65 之后的编号撞。
+- 开工时（20:09）main 上 P65 正由另一个会话在做。`docs/plan/README.md` 规定同一时刻最多一个 `in_progress`，只有前一阶段 `blocked` 时才能并行认领，P65 那时不是 blocked。
+- 做完时 P65 已经完成、`current_task` 回到受阻的 P62，规则上可以认领下一阶段了。没有回头补立：阶段是先认领再做的，事后补一个等于倒填；而且这三处都是已完成的 P41/P42 承诺过的行为没做到位，没有新的验收范围。这类"查出来就修掉"的事，仓库里的先例是在 `observed_gaps` 里记一条加一份研究记录（P3 的"64 线程下超时用例 30.5 秒"，根因在产品；P31 期间的两条并发用例）。
 
-所以 `status.json` 只改了 `observed_gaps`：原来那条改成已查明，第 6 节两件各加一条。`current_task`、`handoff`、P65 的任务记录都没碰。
+所以 `status.json` 只改了 `observed_gaps`：原来那条改成已处理，第 6 节两件各加一条。`current_task`、`handoff` 和各阶段的记录都没碰。要给它补验收编号的话，第 1 节的表就是现成的三条。

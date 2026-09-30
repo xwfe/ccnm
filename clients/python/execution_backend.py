@@ -165,6 +165,29 @@ class ExecutionStatus:
 
 
 @dataclass(frozen=True)
+class ExecutionFailure:
+    """执行**没起来**、或者后端说不清它下落时的原因。
+
+    和"起来了、自己以非零退出"是两回事：那种看 `ExecutionResult.exit_code` 和输出，
+    没有这个对象。
+
+    - `detail`：给人看的一句话，措辞会变，别解析。
+    - `kind`：和 `BackendError.kind` 同一套五种，意思也一样——"协调层拿到它该做
+      什么"。`unavailable` 是等会儿可能行（Agent 连不上）；`rejected` 是原样再来没用，
+      得有人先处理（那台机器上的 CLI 没登录、两端装的不是同一个版本）。后端归不了
+      类时是 None。
+    - `code`：后端自己的原始码，只用来写日志和对账。
+
+    **它不改变 `state` 的含义**：`failed` 带着它仍然是"没执行过"；`unknown` 带着它
+    仍然是"可能已经改了东西，先去现场看"，它只是告诉你后端为什么说不清。
+    """
+
+    detail: str
+    kind: Optional[str] = None
+    code: Optional[int] = None
+
+
+@dataclass(frozen=True)
 class ExecutionResult:
     """一次执行的结果。
 
@@ -185,6 +208,9 @@ class ExecutionResult:
     usage: Dict[str, Any] = field(default_factory=dict)
     # 只有后端真的报了钱才有。**缺席不等于零。**
     cost_usd: Optional[float] = None
+    # 执行没起来或后端说不清时的原因，见 ExecutionFailure。**None 不代表成功**：
+    # 自己退出的执行（不管退出码）、被停掉的、超时的都是 None，旧后端也不会给。
+    failure: Optional[ExecutionFailure] = None
 
     @property
     def terminal(self) -> bool:
@@ -476,6 +502,16 @@ class CcnmBackend(ExecutionBackend):
         outcome = raw.get("outcome") or {}
         agent = raw.get("agent") or {}
         cost = raw.get("cost") or {}
+        why = raw.get("failure") or None
+        failure = None
+        if why and why.get("detail"):
+            code = why.get("code")
+            failure = ExecutionFailure(
+                detail=why["detail"],
+                # 没给码就是后端归不了类，不猜。
+                kind=_KIND_BY_CODE.get(code, KIND_REJECTED) if code is not None else None,
+                code=code,
+            )
         return ExecutionResult(
             id=raw["session"],
             state=raw["state"],
@@ -491,6 +527,7 @@ class CcnmBackend(ExecutionBackend):
             engine=agent.get("provider"),
             usage=raw.get("usage") or {},
             cost_usd=cost.get("total_usd"),
+            failure=failure,
         )
 
     def output(
@@ -562,13 +599,19 @@ class FakeBackend(ExecutionBackend):
         exit_code: int = 0,
         text: Optional[str] = None,
         timed_out: bool = False,
+        failure: Optional[ExecutionFailure] = None,
     ) -> None:
-        """指定某个 prompt 的结局。"""
+        """指定某个 prompt 的结局。
+
+        给了 `failure` 就是演"根本没起来"：结果里没有退出码、没有文本，只有原因；
+        `state` 自己配成 `failed` 或 `unknown`。
+        """
         self._script[prompt] = {
             "state": state,
             "exit_code": exit_code,
             "text": text,
             "timed_out": timed_out,
+            "failure": failure,
         }
 
     def crash_window(self, workspace: str, start_key: str) -> str:
@@ -637,6 +680,15 @@ class FakeBackend(ExecutionBackend):
             )
         script = self._script.get(record["prompt"], {})
         stopped = record["stop_requested"]
+        never_started = script.get("failure")
+        if never_started is not None and not stopped:
+            return ExecutionResult(
+                id=record["id"],
+                state=record["state"],
+                agent=record["agent"],
+                engine="fake",
+                failure=never_started,
+            )
         return ExecutionResult(
             id=record["id"],
             state=record["state"],

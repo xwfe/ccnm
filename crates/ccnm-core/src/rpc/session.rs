@@ -629,8 +629,35 @@ pub fn result(ctx: &Context, params: &Map<String, Value>) -> Result<Value, RpcEr
     if let Some(cost) = finish.total_cost_usd {
         out["cost"] = serde_json::json!({"total_usd": cost});
     }
+    if let Some(failure) = failure_value(finish) {
+        out["failure"] = failure;
+    }
     out["output"] = super::output::page(ctx, &record, finish, &asked)?;
     Ok(out)
+}
+
+/// Why a session did not end with the Agent's own exit, for the caller
+/// (contract section 5.5, F3).
+///
+/// Until P65 this stayed in the record. A caller whose session came back
+/// `failed` with a null exit code, null text and no output could not tell a
+/// logged-out CLI from two mismatched builds from a dead link -- P62 met all
+/// three on real machines -- and those call for different actions.
+///
+/// The code is the one a refused call would have carried, so the caller's
+/// existing branch on error codes reads this too. A reason with no code --
+/// a record from before P65, a stop that arrived before dispatch -- is a
+/// `detail` alone.
+fn failure_value(finish: &Finish) -> Option<Value> {
+    let detail = wire::public_detail(finish.error.as_deref()?);
+    let mut failure = serde_json::json!({
+        "detail": if detail.is_empty() { "no reason was recorded".to_string() } else { detail },
+    });
+    if let Some(code) = finish.error_code.as_deref().and_then(ErrorCode::from_name) {
+        failure["code"] = Value::from(wire::code_of(code));
+        failure["ccnm_code"] = Value::from(code.name());
+    }
+    Some(failure)
 }
 
 pub fn stop(ctx: &Context, params: &Map<String, Value>) -> Result<Value, RpcError> {
@@ -947,6 +974,9 @@ pub(super) fn run_to_end(runs: &dyn Runs, store: &Store, handle: &str, ask: &Run
             after_dispatch(&err),
             Finish {
                 error: Some(err.message().to_string()),
+                // Kept next to the message since P65 (F3): it is what
+                // `session.result` hands the caller to branch on.
+                error_code: Some(err.code().name().to_string()),
                 ..Finish::default()
             },
         ),
@@ -1017,8 +1047,24 @@ fn finish_from(report: &RunReport) -> (State, Finish) {
             output_total: stdout.len() as u64,
             stderr: tail(&report.stderr_tail, TAIL),
             error: outcome.error.clone(),
+            error_code: outcome.error.as_deref().and_then(code_in),
         },
     )
+}
+
+/// The `CCNM_E_*` name a supervisor's "could not start" opens with, if it
+/// does. Two spellings reach here: an [`Error`](crate::Error)'s own
+/// rendering, with the code on a line of its own, and `CODE: reason` on one
+/// line, which is what an instance session reports with its private details
+/// withheld.
+fn code_in(error: &str) -> Option<String> {
+    ErrorCode::from_first_line(error)
+        .or_else(|| {
+            error
+                .split_once(": ")
+                .and_then(|(code, _)| ErrorCode::from_name(code.trim()))
+        })
+        .map(|code| code.name().to_string())
 }
 
 /// The last `max` bytes, cut on a character boundary.
@@ -1127,6 +1173,36 @@ mod tests {
     /// Agent's shell cannot have started anything, so the run is `failed`
     /// -- a caller may retry it. Anything that may have happened after the
     /// remote command started stays `unknown`.
+    /// A supervisor that could not start the Agent reports a sentence, and
+    /// the code is its first word in one of two spellings. Anything else has
+    /// no code -- and a code mentioned further in is not the verdict.
+    #[test]
+    fn the_code_of_a_could_not_start_is_read_off_its_front() {
+        assert_eq!(
+            code_in(
+                "CCNM_E_CONFIG: bound Agent launch validation failed; private details withheld"
+            )
+            .as_deref(),
+            Some("CCNM_E_CONFIG")
+        );
+        assert_eq!(
+            code_in(
+                &crate::Error::new(ErrorCode::Dependency, "claude is not installed").to_string()
+            )
+            .as_deref(),
+            Some("CCNM_E_DEPENDENCY")
+        );
+        assert_eq!(
+            code_in("cannot spawn claude: No such file or directory"),
+            None
+        );
+        assert_eq!(
+            code_in("it said CCNM_E_AUTH: somewhere in the middle"),
+            None
+        );
+        assert_eq!(code_in("CCNM_E_FUTURE: not a code this build knows"), None);
+    }
+
     #[test]
     fn an_ssh_that_never_reached_the_agent_is_failed_not_unknown() {
         let unreachable = |why: &str| {

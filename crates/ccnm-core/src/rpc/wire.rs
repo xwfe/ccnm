@@ -156,7 +156,18 @@ impl RpcError {
 /// "this may have run" gets that from the session store, not from a
 /// translated error.
 pub fn from_ccnm(err: &Error) -> RpcError {
-    let code = match err.code() {
+    let mut rpc = RpcError::refused(code_of(err.code()), err.message().to_string());
+    rpc.data.ccnm_code = Some(err.code().name());
+    rpc
+}
+
+/// The protocol's number for one of ccnm's own codes (contract section 10).
+///
+/// One table for both places a caller meets it: the error a call is refused
+/// with, and the `failure` of a session that was accepted and then could
+/// not be started. A caller's branch on one works on the other.
+pub fn code_of(code: ErrorCode) -> i32 {
+    match code {
         ErrorCode::Internal => code::INTERNAL_ERROR,
         ErrorCode::NotReady => code::NOT_READY,
         ErrorCode::Config => code::CONFIG,
@@ -171,10 +182,61 @@ pub fn from_ccnm(err: &Error) -> RpcError {
         ErrorCode::Coherence | ErrorCode::Policy | ErrorCode::StaleEpoch => code::POLICY,
         ErrorCode::InvalidArgs => code::INVALID_PARAMS,
         ErrorCode::Dependency => code::NOT_READY,
-    };
-    let mut rpc = RpcError::refused(code, err.message().to_string());
-    rpc.data.ccnm_code = Some(err.code().name());
-    rpc
+    }
+}
+
+/// Most of a reason that goes out in `failure.detail`.
+const DETAIL_MAX: usize = 2048;
+
+/// A reason as it may leave this machine: no absolute path into anybody's
+/// home, and no longer than [`DETAIL_MAX`] bytes.
+///
+/// The text is somebody else's -- the Agent's refusal, ssh's stderr, the
+/// supervisor's complaint -- and those name profile, state and session
+/// directories, which the contract (section 9) keeps out of every field.
+/// All of them live under a home, so `/Users/<name>` and `/home/<name>`
+/// become `~` wherever a path starts; what is left still says which file,
+/// and no longer whose. Paths elsewhere (`/usr/bin/ssh`, a project under
+/// `/srv`) are not private directories and stay.
+pub fn public_detail(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = ["/Users/", "/home/"]
+        .iter()
+        .filter_map(|prefix| rest.find(prefix).map(|i| (i, prefix.len())))
+        .min()
+    {
+        let (start, prefix) = at;
+        // Only where a path begins: `x/home/y` is the middle of one.
+        let begins = rest[..start]
+            .chars()
+            .next_back()
+            .is_none_or(|c| !(c.is_alphanumeric() || matches!(c, '/' | '.' | '_' | '-' | '~')));
+        let name = &rest[start + prefix..];
+        let name_len = name
+            .find(|c: char| {
+                c == '/' || c.is_whitespace() || matches!(c, '"' | '\'' | ':' | ',' | ';' | ')')
+            })
+            .unwrap_or(name.len());
+        if begins && name_len > 0 {
+            out.push_str(&rest[..start]);
+            out.push('~');
+            rest = &name[name_len..];
+        } else {
+            out.push_str(&rest[..start + prefix]);
+            rest = name;
+        }
+    }
+    out.push_str(rest);
+    if out.len() > DETAIL_MAX {
+        let mut cut = DETAIL_MAX;
+        while !out.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        out.truncate(cut);
+        out.push('…');
+    }
+    out
 }
 
 /// A well-formed request, already checked down to the envelope.
@@ -316,6 +378,61 @@ fn line(value: Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What leaves in `failure.detail`: home directories lose the part that
+    /// says whose they are, and nothing else is touched.
+    #[test]
+    fn a_reason_loses_whose_home_it_names_and_nothing_else() {
+        for (text, public) in [
+            (
+                "/Users/me/.claude is not private",
+                "~/.claude is not private",
+            ),
+            ("cannot read /home/ccrun", "cannot read ~"),
+            (
+                "at (/home/ccrun/x), then '/Users/me/y'",
+                "at (~/x), then '~/y'",
+            ),
+            // Not homes, and not private directories.
+            ("/usr/bin/ssh exited 255", "/usr/bin/ssh exited 255"),
+            (
+                "project /srv/ccnm/proj is busy",
+                "project /srv/ccnm/proj is busy",
+            ),
+            // The middle of some other path, and a bare prefix.
+            (
+                "/srv/home/x and /mnt/Users/y",
+                "/srv/home/x and /mnt/Users/y",
+            ),
+            ("under /home/ itself", "under /home/ itself"),
+            ("no path at all", "no path at all"),
+        ] {
+            assert_eq!(public_detail(text), public, "{text}");
+        }
+    }
+
+    /// A long reason is cut, on a character boundary, and says it was.
+    #[test]
+    fn a_long_reason_is_cut_on_a_character_boundary() {
+        let long = "路".repeat(DETAIL_MAX);
+        let cut = public_detail(&long);
+        assert!(cut.len() <= DETAIL_MAX + '…'.len_utf8(), "{}", cut.len());
+        assert!(cut.ends_with('…'));
+        assert!(cut.trim_end_matches('…').chars().all(|c| c == '路'));
+        let short = "路".repeat(10);
+        assert_eq!(public_detail(&short), short);
+    }
+
+    /// Every one of ccnm's codes has a number in the public table, and the
+    /// error a call is refused with uses the same one.
+    #[test]
+    fn the_failure_code_is_the_one_a_refusal_would_carry() {
+        for code in ErrorCode::ALL {
+            let refused = from_ccnm(&Error::new(code, "x"));
+            assert_eq!(refused.code, code_of(code), "{code}");
+            assert_eq!(refused.data.ccnm_code, Some(code.name()));
+        }
+    }
 
     fn call(line: &str) -> Request {
         match parse(line) {

@@ -95,6 +95,11 @@ pub struct Finish {
     /// Why it could not be started or observed, when that is the answer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// The `CCNM_E_*` name that came with `error`, when one did (P65). The
+    /// message alone used to be kept, so a caller could be shown a sentence
+    /// but had nothing to branch on; a record from before has only that.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<String>,
 }
 
 /// Everything needed to decide whether a `session.start` is a repeat.

@@ -1108,6 +1108,109 @@ root = "/runtime/legacy"
         assert!(record.finish.unwrap().error.is_some());
     }
 
+    fn whole_result(session: &str) -> String {
+        format!(
+            "{{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"session.result\",\"params\":{{\"session\":\"{session}\"}}}}"
+        )
+    }
+
+    /// F3. On the P62 machines a session whose Agent never came up -- the
+    /// CLI there was logged out, or the two ends were different builds --
+    /// reached the caller as a bare `failed`: exit code null, text null, no
+    /// output. The reason existed, but only in the Operator's own record.
+    /// `failure` hands it over in the vocabulary the caller already
+    /// branches on: the error this start would have been refused with.
+    #[test]
+    fn a_session_that_never_started_says_why_in_its_result() {
+        for (refused, state, wire_code, name) in [
+            (crate::ErrorCode::Auth, "failed", code::AUTH, "CCNM_E_AUTH"),
+            (
+                crate::ErrorCode::Version,
+                "failed",
+                code::VERSION_MISMATCH,
+                "CCNM_E_VERSION",
+            ),
+            (
+                crate::ErrorCode::RuntimeUnreachable,
+                "failed",
+                code::RUNTIME_UNREACHABLE,
+                "CCNM_E_RUNTIME_UNREACHABLE",
+            ),
+            // Lost rather than refused: the reason is then why the server
+            // cannot tell, and the state stays `unknown`.
+            (
+                crate::ErrorCode::AgentUnreachable,
+                "unknown",
+                code::AGENT_UNREACHABLE,
+                "CCNM_E_AGENT_UNREACHABLE",
+            ),
+        ] {
+            let peer = Peer::new(&format!("why-{name}"), FakeRuns::failing(refused));
+            let session = handle_of(&peer.call(&[&start_call("")]));
+            peer.settle(&session);
+            let out = peer.call(&[&whole_result(&session)]);
+            let result = &out[0]["result"];
+            assert_eq!(result["state"], state, "{out:?}");
+            assert_eq!(result["failure"]["code"], wire_code, "{out:?}");
+            assert_eq!(result["failure"]["ccnm_code"], name, "{out:?}");
+            assert_eq!(result["failure"]["detail"], "no route", "{out:?}");
+            // The process-level outcome is still there and still says
+            // nothing ran to an exit.
+            assert_eq!(result["outcome"]["exit_code"], Value::Null, "{out:?}");
+        }
+    }
+
+    /// `failure` is for a session that did not end with the Agent's own
+    /// exit. One that did -- whatever the exit code -- has none, and neither
+    /// does one a stop ended: those are what `outcome` is for.
+    #[test]
+    fn a_session_that_ran_to_an_exit_has_no_failure() {
+        for exit_code in [0, 3] {
+            let peer = Peer::new(&format!("ran-{exit_code}"), FakeRuns::ok(exit_code, "x"));
+            let session = handle_of(&peer.call(&[&start_call("")]));
+            peer.settle(&session);
+            let out = peer.call(&[&whole_result(&session)]);
+            assert!(out[0]["result"].get("failure").is_none(), "{out:?}");
+            assert_eq!(out[0]["result"]["outcome"]["exit_code"], exit_code);
+        }
+    }
+
+    /// Two things about the reason's text. A record written before P65 kept
+    /// the message and not its code, so it has a `detail` and nothing to
+    /// branch on. And no field may carry an absolute path into somebody's
+    /// home (contract section 9): the message is the Agent's or ssh's own
+    /// words, and those name profile and state directories.
+    #[test]
+    fn an_older_record_gives_only_the_detail_and_home_paths_are_not_passed_on() {
+        let peer = Peer::new("why-legacy", FakeRuns::failing(crate::ErrorCode::Auth));
+        let session = handle_of(&peer.call(&[&start_call("")]));
+        peer.settle(&session);
+        let path = peer
+            .state
+            .join("rpc/sessions")
+            .join(format!("{session}.json"));
+        let mut record: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let finish = record["finish"].as_object_mut().unwrap();
+        finish.remove("error_code");
+        finish.insert(
+            "error".into(),
+            Value::from(
+                "profile /Users/someone/.config/ccnm/agents/codex is not private\nsee /home/ccrun/.local/state/ccnm/x and \"/Users/a b/c\"; /usr/bin/ssh is fine",
+            ),
+        );
+        std::fs::write(&path, serde_json::to_vec(&record).unwrap()).unwrap();
+
+        let out = peer.call(&[&whole_result(&session)]);
+        let failure = &out[0]["result"]["failure"];
+        assert!(failure.get("code").is_none(), "{out:?}");
+        assert!(failure.get("ccnm_code").is_none(), "{out:?}");
+        assert_eq!(
+            failure["detail"],
+            "profile ~/.config/ccnm/agents/codex is not private\nsee ~/.local/state/ccnm/x and \"~ b/c\"; /usr/bin/ssh is fine",
+            "{out:?}"
+        );
+    }
+
     // ---- P60：启动前问 Runtime 的写锁 ----
 
     /// Runtime 说另一个 writer 正持锁：-32008、什么都没起、没留记录、键也没占。
@@ -1825,6 +1928,18 @@ root = "/runtime/legacy"
         assert_eq!(ended.state, store::State::Failed);
         assert!(ended.stop_requested);
         assert!(!ended.dispatched);
+
+        // The caller is told why there is no exit code (F3). This reason is
+        // none of the protocol's error codes, so it is a sentence and
+        // nothing to branch on -- `stop_requested` is what says who did it.
+        let out = peer.call(&[&whole_result("s-ct02")]);
+        let result = &out[0]["result"];
+        assert_eq!(
+            result["failure"],
+            serde_json::json!({"detail": "stopped before it was sent to the Agent"}),
+            "{out:?}"
+        );
+        assert_eq!(result["outcome"]["stop_requested"], true);
     }
 
     /// CT-03: a stop recorded while the run is going survives the run's own

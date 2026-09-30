@@ -419,6 +419,20 @@
       },
       "additionalProperties": true
     },
+    "session_failure": {
+      "description": "这个 session 不是以 Agent 进程自己结束收场时的原因：没起来，或服务端说不清。缺席不代表成功。",
+      "type": "object",
+      "properties": {
+        "code": {
+          "description": "第 10 节错误码表里的同一套数；服务端归不了类时缺席。",
+          "type": "integer"
+        },
+        "ccnm_code": {"type": "string", "pattern": "^CCNM_E_[A-Z_]+$"},
+        "detail": {"type": "string", "minLength": 1}
+      },
+      "required": ["detail"],
+      "additionalProperties": true
+    },
     "session_result_result": {
       "type": "object",
       "properties": {
@@ -434,6 +448,7 @@
         },
         "usage": {"$ref": "#/$defs/usage"},
         "cost": {"$ref": "#/$defs/cost"},
+        "failure": {"$ref": "#/$defs/session_failure"},
         "output": {"$ref": "#/$defs/output_ref"},
         "expires_at": {
           "description": "null 或缺席表示保留期未定义，不等于永久保留。",

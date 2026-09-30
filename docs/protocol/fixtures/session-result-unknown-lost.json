@@ -1,0 +1,35 @@
+{
+  "$schema_ref": "#/$defs/session_result_response_ok",
+  "$note": "运行已经派发，通往 Agent 的连接在中途断了：服务端说不清它跑到了哪一步，终态 unknown。这里的 failure 说的是“为什么说不清”，不是“可以重试”。",
+  "message": {
+    "jsonrpc": "2.0",
+    "id": 15,
+    "result": {
+      "session": "s-2026093012-9d2e",
+      "state": "unknown",
+      "workspace": "ccnm",
+      "agent": {
+        "node": "work",
+        "instance": "claude-main"
+      },
+      "outcome": {
+        "exit_code": null,
+        "timed_out": false,
+        "duration_ms": 0,
+        "stop_requested": false
+      },
+      "text": null,
+      "failure": {
+        "code": -32004,
+        "ccnm_code": "CCNM_E_AGENT_UNREACHABLE",
+        "detail": "ssh work: Connection to work closed by remote host."
+      },
+      "output": {
+        "bytes_total": 0,
+        "truncated": false,
+        "cursor": null,
+        "tail": ""
+      }
+    }
+  }
+}

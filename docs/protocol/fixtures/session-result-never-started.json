@@ -1,0 +1,35 @@
+{
+  "$schema_ref": "#/$defs/session_result_response_ok",
+  "$note": "start 返回了句柄，Agent 进程却没起来：那台机器上的 CLI 没登录。failure 带的就是“如果当场被拒会回的那个错误”，调用方按 code 分支；outcome 仍在，exit_code 是 null。",
+  "message": {
+    "jsonrpc": "2.0",
+    "id": 14,
+    "result": {
+      "session": "s-2026093012-51c0",
+      "state": "failed",
+      "workspace": "ccnm",
+      "agent": {
+        "node": "work",
+        "instance": "claude-main"
+      },
+      "outcome": {
+        "exit_code": null,
+        "timed_out": false,
+        "duration_ms": 0,
+        "stop_requested": false
+      },
+      "text": null,
+      "failure": {
+        "code": -32003,
+        "ccnm_code": "CCNM_E_AUTH",
+        "detail": "Claude is not authenticated on the Agent Node"
+      },
+      "output": {
+        "bytes_total": 0,
+        "truncated": false,
+        "cursor": null,
+        "tail": ""
+      }
+    }
+  }
+}

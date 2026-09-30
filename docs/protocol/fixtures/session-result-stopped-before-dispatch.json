@@ -1,0 +1,33 @@
+{
+  "$schema_ref": "#/$defs/session_result_response_ok",
+  "$note": "还没派发就收到了 stop：这次运行从未发到 Agent。服务端把它归不到错误码表的任何一类，所以 failure 只有 detail，code 和 ccnm_code 都缺席。",
+  "message": {
+    "jsonrpc": "2.0",
+    "id": 16,
+    "result": {
+      "session": "s-2026093012-77aa",
+      "state": "failed",
+      "workspace": "ccnm",
+      "agent": {
+        "node": "work",
+        "instance": "claude-main"
+      },
+      "outcome": {
+        "exit_code": null,
+        "timed_out": false,
+        "duration_ms": 0,
+        "stop_requested": true
+      },
+      "text": null,
+      "failure": {
+        "detail": "stopped before it was sent to the Agent"
+      },
+      "output": {
+        "bytes_total": 0,
+        "truncated": false,
+        "cursor": null,
+        "tail": ""
+      }
+    }
+  }
+}

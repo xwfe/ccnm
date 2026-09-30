@@ -297,8 +297,38 @@ v1 只有六个方法，名字在本阶段定稿：
 - `text` 是 Agent 的最终文本，只有 provider 真的产出了结构化结果时才有。
 - `usage` / `cost` 可选，**只有 provider 报了才有**，缺席不代表零。具体到当前两个 provider：token 数两边都报；**`cost` 只有 Claude 有**，Codex 的结果文档里根本没有这个字段，所以那边永远不出现——不是零，是没有。另外，报回来全是零和什么都没报在这两个文档里长得一模一样，服务端把全零当作"没报"处理，宁可不给也不给一个没人测过的数。
 - `output` 是有界输出，见第 9 节。
+- `failure` 可选，**只有这个 session 不是以 Agent 进程自己结束收场时才有**，见下。
 
 对还没到终态的 session 调用 `session.result` **不是错误**：返回当前 `state` 和已有的部分内容，`outcome` 缺席。客户端不能把"没有 outcome"理解成失败。
+
+#### Agent 没起来，或者说不清：`failure`
+
+`session.start` 只要通过了本机的校验就会返回句柄，真正去连 Agent、起进程是之后的事。这一步出了问题，session 会以 `failed` 或 `unknown` 收场，而 `outcome.exit_code` 是 `null`、`text` 是 `null`、输出是空的——光看这些，分不出是"Agent 上的 CLI 没登录"还是"两台机器装的不是同一个构建"。`failure` 就是这个原因：
+
+```json
+{"jsonrpc":"2.0","id":5,"result":{
+  "session":"s-2026093012-51c0",
+  "state":"failed",
+  "workspace":"ccnm",
+  "agent":{"node":"work","instance":"claude-main"},
+  "outcome":{"exit_code":null,"timed_out":false,"duration_ms":0,"stop_requested":false},
+  "text":null,
+  "failure":{"code":-32003,"ccnm_code":"CCNM_E_AUTH","detail":"Claude is not authenticated on the Agent Node"},
+  "output":{"bytes_total":0,"truncated":false,"cursor":null,"tail":""}
+}}
+```
+
+| 字段 | 必有 | 说明 |
+| --- | --- | --- |
+| `detail` | 是 | 给人看的原因。措辞会变，受第 9 节约束（家目录的绝对路径会被写成 `~`） |
+| `code` | 否 | 第 10 节错误码表里的同一套数：**如果这次启动当场就被拒，会回给你的就是这个错误码** |
+| `ccnm_code` | 否 | 同一件事的 `CCNM_E_*` 名字，便于和 CLI 输出对照 |
+
+- **按 `code` 分支，别解析 `detail`。** 服务端归不了类的原因（比如"派发之前就收到了 stop"）只有 `detail`，`code` 和 `ccnm_code` 都缺席。
+- **什么时候有**：Agent 进程没能起来（CLI 没登录、两端版本或构建不符、Runtime 连不上、写锁被占、还没派发就被 stop），或者服务端跟丢了这次运行（`unknown`——这时它说的是"为什么说不清"，不是"任务失败了"）。
+- **什么时候没有**：Agent 起来了、自己退出的，不管退出码是几；被 stop 停掉的；超时被杀的。这些看 `outcome`。**没有 `failure` 不代表成功。**
+- **它不改变状态的含义**：`failed` 带着 `failure` 仍然是"没有执行过"，换一个 `start_key` 重来是安全的；`unknown` 带着 `failure` 仍然是"可能已经改了东西"，照第 7 节处理。
+- P65 之前的服务端没有这个字段；升级前已经结束的 session 只有 `detail`，没有 `code`。
 
 ### 5.6 `session.stop`
 
@@ -374,7 +404,7 @@ v1 只有六个方法，名字在本阶段定稿：
 
 `unknown` 表示服务端**证明不了**这个 session 的下落——进程记录丢了、supervisor 异常退出、Runtime 联系不上。它是终态：不会自己变成 `completed`。
 
-处理 `unknown` 的正确姿势是去现场看（工作树、Git 状态、Runtime 上的进程），不是重试。服务端也不会因为等得够久就把它改成别的状态。
+处理 `unknown` 的正确姿势是去现场看（工作树、Git 状态、Runtime 上的进程），不是重试。服务端知道自己为什么说不清时，`session.result` 的 `failure` 会写出来（比如通往 Agent 的连接在运行中途断了）；那是给人排查用的线索，不是可以重试的依据。服务端也不会因为等得够久就把它改成别的状态。
 
 ### 被停掉的 session 是 `failed`
 

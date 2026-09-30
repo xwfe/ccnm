@@ -515,6 +515,43 @@ pub fn parse_resolved(text: &str) -> Result<ResolvedSsh> {
     Ok(resolved)
 }
 
+/// Whether an ssh failure happened before the remote command could start.
+///
+/// `classify` puts every exit 255 and every timeout into one bucket, which
+/// is right for "could not talk to the other side" but not for "did the
+/// other side already act". Some of OpenSSH's own messages settle that: it
+/// could not resolve the name, could not open the TCP connection, was
+/// refused authentication, did not trust the host key, or could not even
+/// exchange identification. In each, no shell was ever started on the far
+/// side, so nothing the command would have done can have happened.
+///
+/// Anything else stays undecided -- a timeout, a connection closed or
+/// reset once the session was up, a message ssh has not been seen to print
+/// -- because ssh fails the same way after the remote command started.
+/// `Permission denied (` only counts with a list of authentication methods
+/// in the brackets: `Permission denied (os error 13)` is some program's
+/// own error, and it may have run.
+pub fn never_reached(message: &str) -> bool {
+    const BEFORE_THE_SHELL: [&str; 4] = [
+        "ssh: Could not resolve hostname ",
+        "ssh: connect to host ",
+        "Host key verification failed.",
+        "kex_exchange_identification:",
+    ];
+    if BEFORE_THE_SHELL.iter().any(|m| message.contains(m)) {
+        return true;
+    }
+    message.match_indices("Permission denied (").any(|(at, m)| {
+        let rest = &message[at + m.len()..];
+        rest.split_once(')').is_some_and(|(methods, _)| {
+            !methods.is_empty()
+                && methods
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c == ',' || c == '-')
+        })
+    })
+}
+
 /// ssh exits 255 for its own failures (connect, auth, host key) and passes
 /// the remote command's status through otherwise; 127 is the remote shell
 /// saying "command not found".

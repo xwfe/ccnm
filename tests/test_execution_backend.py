@@ -13,6 +13,7 @@
 # 就抛 TypeError，整个文件一个用例都跑不了。
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 import shutil
@@ -206,7 +207,10 @@ class CcnmBackendTests(unittest.TestCase):
     """adapter 只通过公开协议的字节流跟 ccnm 说话。"""
 
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory(prefix="ccnm-backend-")
+        # 放 /tmp：macOS 的 $TMPDIR 太长，拼上 ccnm/ssh 和 socket 名超过 ControlPath 的
+        # 103 字节上限，ccnm 在 ssh 之前就报配置错误——P62 发现"到不了 Agent 是 failed"
+        # 在 macOS 上一直是被这一步顶替的，Linux 上走到 ssh 反而是 unknown（F14）。
+        self.temp = tempfile.TemporaryDirectory(prefix="ccnm-backend-", dir="/tmp")
         self.addCleanup(self.temp.cleanup)
         self.home = Path(self.temp.name)
         (self.home / "demo").mkdir()
@@ -245,6 +249,11 @@ class CcnmBackendTests(unittest.TestCase):
         result = backend.wait(started.id, timeout=60)
         # 到不了 Agent，所以是 failed。要证明的是它**到了终态**、结果取得回来。
         self.assertEqual(result.state, "failed")
+        # 而且确实是 ssh 在认证之前失败的，不是别的检查抢先拦下（F14）。
+        record = json.loads(
+            (self.home / "state/ccnm/rpc/sessions" / f"{started.id}.json").read_text()
+        )
+        self.assertIn("Could not resolve hostname", record["finish"]["error"])
         self.assertEqual(result.id, started.id)
         self.assertTrue(result.terminal)
         self.assertEqual(backend.status(started.id).state, "failed")

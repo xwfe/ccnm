@@ -808,8 +808,15 @@ pub(super) fn run_to_end(runs: &dyn Runs, store: &Store, handle: &str, ask: &Run
 /// what was sent. Either may have left a run behind, so either is `unknown`:
 /// `failed` would invite a retry of work that may already have changed the
 /// tree.
+///
+/// Except when ssh itself says it never got that far (F14): a name that
+/// does not resolve, a refused connection, a refused login. Before P63 those
+/// were `unknown` too, which told a caller to go and inspect a run that
+/// could not exist; on macOS the black-box tests never noticed, because a
+/// longer temp directory tripped the ControlPath check first.
 fn after_dispatch(err: &crate::Error) -> State {
     match err.code() {
+        ErrorCode::AgentUnreachable if crate::ssh::never_reached(err.message()) => State::Failed,
         ErrorCode::AgentUnreachable | ErrorCode::Internal => State::Unknown,
         _ => State::Failed,
     }
@@ -949,6 +956,48 @@ mod tests {
         assert!(cut.len() <= 10);
         assert!(text.ends_with(&cut));
         assert_eq!(tail("short", 100), "short");
+    }
+
+    /// F14 (P62, found on Linux): ssh failing before it ever reached the
+    /// Agent's shell cannot have started anything, so the run is `failed`
+    /// -- a caller may retry it. Anything that may have happened after the
+    /// remote command started stays `unknown`.
+    #[test]
+    fn an_ssh_that_never_reached_the_agent_is_failed_not_unknown() {
+        let unreachable = |why: &str| {
+            crate::Error::new(ErrorCode::AgentUnreachable, format!("ssh worker: {why}"))
+        };
+        for why in [
+            // macOS and Linux (glibc) word a resolver failure differently.
+            "ssh: Could not resolve hostname worker.invalid: nodename nor servname provided, or not known",
+            "ssh: Could not resolve hostname worker.invalid: Name or service not known",
+            "ssh: connect to host 100.79.121.33 port 22: Connection refused",
+            "ssh: connect to host 100.79.121.33 port 22: Operation timed out",
+            "ssh: connect to host 10.0.0.1 port 22: No route to host",
+            "fodelf@100.79.121.33: Permission denied (publickey,keyboard-interactive).",
+            "Host key verification failed.",
+            "kex_exchange_identification: read: Connection reset by peer",
+        ] {
+            assert_eq!(after_dispatch(&unreachable(why)), State::Failed, "{why}");
+        }
+        for why in [
+            "timed out after 60s",
+            "Connection to 100.79.121.33 closed by remote host.",
+            "client_loop: send disconnect: Broken pipe",
+            "ssh exited 255 without a message",
+            // A remote program's own words, not ssh's: not an auth failure.
+            "caused by: Permission denied (os error 13)",
+        ] {
+            assert_eq!(after_dispatch(&unreachable(why)), State::Unknown, "{why}");
+        }
+        assert_eq!(
+            after_dispatch(&crate::Error::internal("answer did not match")),
+            State::Unknown
+        );
+        assert_eq!(
+            after_dispatch(&crate::Error::new(ErrorCode::Auth, "not logged in")),
+            State::Failed
+        );
     }
 
     #[test]

@@ -86,7 +86,10 @@ class BlackBoxTests(unittest.TestCase):
     """每个用例一套独立的配置和状态目录。"""
 
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory(prefix="ccnm-blackbox-")
+        # 放 /tmp：macOS 的 $TMPDIR 太长，拼上 ccnm/ssh 和 socket 名超过 ControlPath 的
+        # 103 字节上限，ccnm 在 ssh 之前就报配置错误——P62 发现"到不了 Agent 是 failed"
+        # 在 macOS 上一直是被这一步顶替的，Linux 上走到 ssh 反而是 unknown（F14）。
+        self.temp = tempfile.TemporaryDirectory(prefix="ccnm-blackbox-", dir="/tmp")
         self.addCleanup(self.temp.cleanup)
         self.home = Path(self.temp.name)
         self.state = self.home / "state"
@@ -149,6 +152,9 @@ class BlackBoxTests(unittest.TestCase):
         # 到不了 Agent，所以是 failed；关键是它**到了终态**并且能取到结果。
         self.assertEqual(result["state"], "failed")
         self.assertEqual(result["session"], session)
+        # 而且确实是 ssh 在认证之前失败的，不是别的检查抢先拦下（F14）。
+        record = json.loads((self.state / "ccnm/rpc/sessions" / f"{session}.json").read_text())
+        self.assertIn("Could not resolve hostname", record["finish"]["error"])
 
         status = client.session_status(session)
         self.assertEqual(status["state"], "failed")

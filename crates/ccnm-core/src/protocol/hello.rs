@@ -94,16 +94,20 @@ pub struct HelloReport {
 }
 
 impl HelloReport {
-    /// What the answering build said about its internal protocols, when
-    /// that is not what this build speaks; `None` when the two agree.
+    /// What the answering build said about its internal protocols, as a
+    /// clause for an error message, when that is not what this build
+    /// speaks; `None` when the two agree.
     ///
     /// Only worth asking once the version numbers already match: two
     /// different numbers are a plainer thing to report.
     pub fn other_wire(&self) -> Option<String> {
         match self.wire {
             Some(level) if level == WIRE_LEVEL => None,
-            Some(level) => Some(format!("up to {level}")),
-            None => Some("an older set (its hello does not say which)".to_string()),
+            Some(level) => Some(format!("it speaks internal protocols up to {level}")),
+            None => Some(
+                "it does not say how far its internal protocols go, so it is older than this build"
+                    .to_string(),
+            ),
         }
     }
 }
@@ -163,14 +167,14 @@ mod tests {
         )
         .unwrap();
         assert_eq!(old.wire, None);
-        assert!(old.other_wire().unwrap().contains("older"));
+        assert!(old.other_wire().unwrap().contains("does not say"));
         let behind = HelloReport {
             wire: Some(WIRE_LEVEL - 1),
             ..old
         };
         assert_eq!(
             behind.other_wire().unwrap(),
-            format!("up to {}", WIRE_LEVEL - 1)
+            format!("it speaks internal protocols up to {}", WIRE_LEVEL - 1)
         );
     }
 

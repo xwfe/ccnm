@@ -1131,7 +1131,7 @@ fn version_row(name: &'static str, hello: &HelloReport, side: &str) -> Check {
             name,
             ErrorCode::Version,
             format!(
-                "{side} reports ccnm {} like this machine, but it is not the same build: it speaks internal protocols {theirs}, this machine up to {}\ninstall the same build on both",
+                "{side} reports ccnm {} like this machine, but it is not the same build: {theirs}; this machine speaks up to {}\ninstall the same build on both",
                 hello.ccnm_version,
                 crate::protocol::payload::WIRE_LEVEL
             ),

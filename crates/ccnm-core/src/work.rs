@@ -608,7 +608,7 @@ fn greet(ssh: &Ssh, workspace: &str, root: &Path, tools: &Tools<'_>) -> Result<(
         return Err(Error::new(
             ErrorCode::Version,
             format!(
-                "the Runtime Node reports ccnm {} like this one, but it is not the same build: it speaks internal protocols {theirs}, this one up to {}\ninstall the same build on both before starting a session",
+                "the Runtime Node reports ccnm {} like this one, but it is not the same build: {theirs}; this one speaks up to {}\ninstall the same build on both before starting a session",
                 hello.ccnm_version,
                 crate::protocol::payload::WIRE_LEVEL
             ),

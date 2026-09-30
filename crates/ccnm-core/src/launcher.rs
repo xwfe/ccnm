@@ -802,6 +802,7 @@ mod tests {
                 exists: true,
                 is_dir: true,
             }),
+            wire: Some(crate::protocol::payload::WIRE_LEVEL),
         })
         .unwrap()
     }

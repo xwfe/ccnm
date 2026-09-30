@@ -178,6 +178,7 @@ fn public_default_and_explicit_instance_selection_use_v3_without_private_paths()
             platform: "macos/aarch64".into(),
             exe: None,
             root: None,
+            wire: None,
         },
         pid: 42,
         manager: Ok("Aqua".into()),

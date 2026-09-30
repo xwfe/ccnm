@@ -345,6 +345,8 @@ fn internal_hello_answers_with_this_build_and_the_root() {
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
     let rep: HelloReport = payload::decode_json(&out.stdout).unwrap();
     assert_eq!(rep.ccnm_version, env!("CARGO_PKG_VERSION"));
+    // What tells two builds with the same number apart (F2).
+    assert_eq!(rep.wire, Some(payload::WIRE_LEVEL));
     assert_eq!(rep.user, std::env::var("USER").unwrap());
     assert!(rep.root.unwrap().is_ok());
     assert_eq!(

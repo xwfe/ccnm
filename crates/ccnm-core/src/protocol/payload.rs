@@ -19,6 +19,23 @@ use crate::error::{Error, ErrorCode, Result};
 /// Bump when a request or response shape changes incompatibly.
 pub const PROTOCOL: u32 = 1;
 
+/// How far this build's internal protocols go: at least the highest
+/// `*_PROTOCOL` number anywhere in the crate. `hello` reports it next to the
+/// version number, and the two ends compare it (F2).
+///
+/// The version number alone cannot tell builds apart: it is the Cargo
+/// version, and everything built from main between two releases carries the
+/// last release's. On the P62 machines the 0.9.0 release (protocols up to 6)
+/// and a build from main (up to 10) both said `0.9.0`; doctor compared the
+/// two strings, passed, and the first session was refused with "message is
+/// not valid for protocol 1".
+///
+/// It is never a message's own `protocol` and nothing is dispatched on it.
+/// Raise it in the change that adds a protocol number -- a test reads the
+/// source and fails when a constant has passed it -- and in any change that
+/// makes two builds unable to work together without adding one.
+pub const WIRE_LEVEL: u32 = 10;
+
 /// Implemented by every message so the decoder can check its version.
 pub trait Protocol {
     fn protocol(&self) -> u32;

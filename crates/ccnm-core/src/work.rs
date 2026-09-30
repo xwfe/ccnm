@@ -601,6 +601,19 @@ fn greet(ssh: &Ssh, workspace: &str, root: &Path, tools: &Tools<'_>) -> Result<(
             ),
         ));
     }
+    // The same number from another build (F2): `VERSION` is the Cargo
+    // version, so everything built from main between two releases compares
+    // equal to the last release. What each side can speak does not.
+    if let Some(theirs) = hello.other_wire() {
+        return Err(Error::new(
+            ErrorCode::Version,
+            format!(
+                "the Runtime Node reports ccnm {} like this one, but it is not the same build: it speaks internal protocols {theirs}, this one up to {}\ninstall the same build on both before starting a session",
+                hello.ccnm_version,
+                crate::protocol::payload::WIRE_LEVEL
+            ),
+        ));
+    }
     match hello.root {
         Some(status) if status.is_ok() => Ok(()),
         Some(status) => Err(Error::new(
@@ -611,13 +624,10 @@ fn greet(ssh: &Ssh, workspace: &str, root: &Path, tools: &Tools<'_>) -> Result<(
                 status.describe()
             ),
         )),
-        // No answer at all, from something calling itself the same
-        // version. That is the case the version numbers cannot catch:
-        // `VERSION` is the Cargo version, so every build of 0.1.0 compares
-        // equal to every other, and during development different builds
-        // carrying the same number is the normal state rather than the
-        // exception. A missing field is the one piece of hard evidence
-        // available that the two are not the same binary.
+        // No answer about the root at all, from something that passed both
+        // checks above. No build ccnm ever shipped does that -- the ones
+        // without this field are older than the wire level and stopped
+        // there -- but an unchecked root is still not a checked one.
         None => Err(Error::new(
             ErrorCode::Version,
             format!(
@@ -2444,6 +2454,7 @@ mod tests {
                 exists: root_ok,
                 is_dir: root_ok,
             }),
+            wire: Some(crate::protocol::payload::WIRE_LEVEL),
         };
         serde_json::to_string(&rep).unwrap()
     }
@@ -2805,6 +2816,7 @@ mod tests {
                 exists: true,
                 is_dir: true,
             }),
+            wire: Some(crate::protocol::payload::WIRE_LEVEL),
         };
         other.ccnm_version = format!("{}-and-a-half", crate::VERSION);
         fake.push(Output::exited(0, serde_json::to_string(&other).unwrap()));
@@ -2826,6 +2838,37 @@ mod tests {
         // without knowing which two builds are in play.
         assert!(err.message().contains(&other.ccnm_version), "{err}");
         assert!(err.message().contains(crate::VERSION), "{err}");
+    }
+
+    /// F2: the number can match while the builds do not. The reply below is
+    /// what a Runtime built before P64 sends -- this version, the project
+    /// root checked, and no word on which internal protocols it speaks.
+    #[test]
+    fn a_session_is_not_started_against_the_same_number_from_another_build() {
+        let dir = temp("greet-wire");
+        let fake = FakeRunner::new();
+        fake.push(Output::exited(
+            0,
+            format!(
+                r#"{{"protocol":1,"ccnm_version":"{}","user":"ccrun","platform":"linux/x86_64","exe":null,"root":{{"exists":true,"is_dir":true}}}}"#,
+                crate::VERSION
+            ),
+        ));
+        let tools = Tools {
+            local: None,
+            config: agent_config(),
+            runner: &fake,
+            state: dir.to_path_buf(),
+            control_dir: control(&dir),
+            agents: crate::provider::AgentBinaries::with_claude(None),
+            tmux: None,
+            controller: dir.join("nope.sock"),
+        };
+        let ssh = Ssh::new("xdwmbp", &tools.control_dir).unwrap();
+        let err = greet(&ssh, "fixture", Path::new("/Users/bing/fixture"), &tools)
+            .expect_err("the same number from another build must not get a session");
+        assert_eq!(err.code(), ErrorCode::Version);
+        assert!(err.message().contains("not the same build"), "{err}");
     }
 
     /// P3 makes the binding immutable: a config change cannot silently stop

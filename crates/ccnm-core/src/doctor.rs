@@ -1110,16 +1110,13 @@ fn safety_row_name(check: &str) -> &'static str {
 
 /// OK when the other side runs this build, else CCNM_E_VERSION. Both
 /// machines must run the same binary (design doc section 7).
+///
+/// The same number is not the same build (F2): everything built from main
+/// between two releases carries the last release's number. So a matching
+/// number is followed by what each side says it can speak.
 fn version_row(name: &'static str, hello: &HelloReport, side: &str) -> Check {
-    if hello.ccnm_version == crate::VERSION {
-        let exe = hello
-            .exe
-            .as_ref()
-            .map(|p| format!(" at {}", p.display()))
-            .unwrap_or_default();
-        Check::ok(name, format!("{}{exe}", hello.ccnm_version))
-    } else {
-        Check::fail_with(
+    if hello.ccnm_version != crate::VERSION {
+        return Check::fail_with(
             name,
             ErrorCode::Version,
             format!(
@@ -1127,8 +1124,25 @@ fn version_row(name: &'static str, hello: &HelloReport, side: &str) -> Check {
                 hello.ccnm_version,
                 crate::VERSION
             ),
-        )
+        );
     }
+    if let Some(theirs) = hello.other_wire() {
+        return Check::fail_with(
+            name,
+            ErrorCode::Version,
+            format!(
+                "{side} reports ccnm {} like this machine, but it is not the same build: it speaks internal protocols {theirs}, this machine up to {}\ninstall the same build on both",
+                hello.ccnm_version,
+                crate::protocol::payload::WIRE_LEVEL
+            ),
+        );
+    }
+    let exe = hello
+        .exe
+        .as_ref()
+        .map(|p| format!(" at {}", p.display()))
+        .unwrap_or_default();
+    Check::ok(name, format!("{}{exe}", hello.ccnm_version))
 }
 
 /// The controller: is there one, and is it somewhere useful?
@@ -1631,6 +1645,7 @@ mod tests {
                 exists: ok,
                 is_dir: ok,
             }),
+            wire: Some(crate::protocol::payload::WIRE_LEVEL),
         }
     }
 
@@ -2593,6 +2608,50 @@ mod tests {
         );
         // First FAIL in table order decides.
         assert_eq!(report.exit_code(), 11);
+    }
+
+    /// F2. A build cut from main and the release it grew out of both call
+    /// themselves 0.9.0, so on the P62 machines doctor passed a pair whose
+    /// first session was then refused by the internal protocol. The number
+    /// alone cannot tell them apart; what each side says it can speak does.
+    #[test]
+    fn the_same_version_number_from_a_different_build_is_named_not_passed() {
+        let (dir, config) = setup("same-number", true, true);
+        let answer = |probe: serde_json::Value| {
+            let fake = FakeRunner::new();
+            fake.push(Output::exited(0, format!("ccnm {}\n", crate::VERSION)));
+            fake.push(Output::exited(0, "hostname workmac\n"));
+            fake.push(Output::exited(0, probe.to_string()));
+            run(&config, Some("xshun"), &env(&fake, &dir))
+        };
+
+        // What an Agent built before P64 answers: the right number, and
+        // nothing about which internal protocols it speaks.
+        let mut probe = serde_json::to_value(good_probe()).unwrap();
+        probe["hello"].as_object_mut().unwrap().remove("wire");
+        let report = answer(probe);
+        let agent = row(&report, "Agent ccnm");
+        assert_eq!(agent.status, Status::Fail(ErrorCode::Version));
+        assert!(
+            agent.detail.contains("not the same build"),
+            "{}",
+            agent.detail
+        );
+        assert_eq!(report.exit_code(), 11);
+
+        // The Runtime Node's answer is held to the same thing, and says
+        // which level it stopped at.
+        let mut probe = serde_json::to_value(good_probe()).unwrap();
+        probe["runtime_hello"]["Ok"]["wire"] = serde_json::json!(6);
+        let report = answer(probe);
+        assert_eq!(row(&report, "Agent ccnm").status, Status::Ok);
+        let reverse = row(&report, "Reverse SSH");
+        assert_eq!(reverse.status, Status::Fail(ErrorCode::Version));
+        assert!(
+            reverse.detail.contains("not the same build") && reverse.detail.contains("up to 6"),
+            "{}",
+            reverse.detail
+        );
     }
 
     /// No controller means nobody could ask Claude a question worth

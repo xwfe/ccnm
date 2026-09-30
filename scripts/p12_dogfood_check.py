@@ -726,7 +726,11 @@ def scan_for_leaks(seen: list) -> list[str]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--workspace", required=True, help='配成 external_mcp = "coding" 的真项目')
-    parser.add_argument("--read-only-workspace", help='同一棵树上配成 external_mcp = "read" 的那个')
+    parser.add_argument(
+        "--read-only-workspace",
+        help='配成 external_mcp = "read" 的另一个 workspace，指向另一份克隆：'
+        "root 与 --workspace 重叠时 Runtime 以 roots overlap 拒绝整份配置",
+    )
     parser.add_argument("--closed-workspace", help="根本没有 opt-in 的 workspace")
     parser.add_argument("--node", help="本机配置里到 Runtime 的 node")
     parser.add_argument("--ccnm", default="ccnm", help="要跑的 ccnm 二进制")

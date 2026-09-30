@@ -23,7 +23,7 @@ Runtime Node                              Agent Node
 | --- | --- |
 | 最新发布 | [v0.9.0](https://github.com/xwfe/ccnm/releases)（2026-09-23） |
 | main 分支 | 比 v0.9.0 多了精确停止、完整结果分页、写锁预检、跨账号清理（P58–P61）。**内部协议和 v0.9.0 不兼容，版本号却还是 0.9.0**——两台机器必须装同一个构建，核对 sha256，别只看 `--version` |
-| 真机验收 | P62（macOS Agent → Debian 13 Runtime）进行中：部署和不需要模型的部分已做完并查出 14 个问题，模型那几轮等登录。结果见 [P62 记录](docs/research/2026-09-30-p62-real-machine.md) |
+| 真机验收 | P62（macOS Agent → Debian 13 Runtime）**受阻**：Claude 那一半全部跑通，Codex 那一半被账号额度挡住；查出 19 个问题，其中 Machine API 的两处（start 后立即断开任务不派发、运行中 stop 回错误）要先修。见 [P62 记录](docs/research/2026-09-30-p62-real-machine.md) |
 
 每一项能力验到了哪一步、明确**没**验过什么，逐条在[支持矩阵](docs/support-matrix.md)里。
 
@@ -143,7 +143,7 @@ view_image      read_notebook  stop_command   call_mcp_tool
 - **写互斥要求各入口用同一个 state 目录。** 同一棵树配两个 `XDG_STATE_HOME` 就是两把互不知晓的锁。
 - **离开进程组的后代够不着。** Runtime MCP server 派生的 `setsid` / 守护进程、以及 `mcp-serve` 被 `kill -9` 后留下的后台命令，ccnm 停不掉；写锁会因此保持 unknown，按[运维手册](docs/operations.md#写入-guard-残留)人工收。
 - **项目和 Agent 同机（colocated）没有真实验收**，明确拒绝，不静默降级。
-- P62 查出、还没修的问题（Machine API 失败原因丢失、交互 stop 第一次必报 NOT_READY 等）列在 [P62 记录](docs/research/2026-09-30-p62-real-machine.md)第 5 节，现象和绕法在[排错手册](docs/troubleshooting.md)。
+- **Machine API 的调用方在 `session.start` 之后别马上断开**，至少等到 `running`：现在断得太早任务不会派发、却读成 `unknown`（P62 F16，还没修）。这一条和其他 P62 查出、还没修的问题列在 [P62 记录](docs/research/2026-09-30-p62-real-machine.md)第 5 节，现象和绕法在[排错手册](docs/troubleshooting.md)。
 
 阶段完成、Agent 退出成功和项目验收通过是三个不同的结论。
 

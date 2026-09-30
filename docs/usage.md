@@ -109,7 +109,12 @@ ccnm run my-project --agent codex-main
 
 一个正在运行的 session 固定绑定 workspace、root 和完整 Agent identity。换 Provider 或 instance 不会复用/替换旧 session；先精确停止旧 session。
 
-**Codex 交互会话第一次起来会停在"是否信任这个目录"。** 问的是 Agent Node 上 ccnm 给这个 workspace 建的空占位目录（`~/.local/state/ccnm/workspaces/<名字>`），不是你的项目；选"信任"之后记住，同一个 workspace 下次不再问。`--detached` 起的会话要先 `ccnm attach` 答完这一句，工具才会连上——在那之前 `ccnm status` 显示 `TOOLS DOWN`（P62 实测）。
+**交互会话第一次起来，官方 CLI 会先问几句**（P62 实测，Codex 0.154.0 与 Claude Code 2.1.285）：
+
+- **"是否信任这个目录"**：两家都会问。问的是 Agent Node 上 ccnm 给这个 workspace 建的空占位目录（`~/.local/state/ccnm/workspaces/<名字>`），不是你的项目，选"信任"即可；Claude 默认选中的是 "No, exit"，要先按一次下箭头。答过之后同一个 workspace 下次不再问。
+- **Claude Code："要不要把 auto mode 设成默认权限模式"**：选 "No"。选 "Yes" 改的是 Agent 账号上 Claude Code 的全局默认，你在那台机器上直接用 Claude 时也会跟着变；ccnm 起会话时自己用 `--permission-mode` 指定模式，用不着这个默认。
+
+`--detached` 起的会话要先 `ccnm attach` 答完这几句，工具才会连上——在那之前 `ccnm status` 显示 `TOOLS DOWN`。
 
 ## Prompt
 

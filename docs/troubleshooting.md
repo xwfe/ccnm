@@ -637,7 +637,7 @@ CCNM_E_NOT_READY:
 
 几秒后再 stop 一次说 `nothing to stop`，`ccnm log` 把这个会话列成 `failed to start`。
 
-**原因**：终端已经关了，通往 Runtime 的 ssh 通道要再过一小会儿才退出，而 stop 杀完终端**只看了一眼**就下结论；第二次 stop 走的是"本来就没在跑"那条路，把结局写成了"没有终端"（P62 研究记录 F4，真机 2/2 复现，还没修）。**会话其实已经正常停了**，不是启动失败。
+**原因**：终端已经关了，通往 Runtime 的 ssh 通道要再过一小会儿才退出，而 stop 杀完终端**只看了一眼**就下结论；第二次 stop 走的是"本来就没在跑"那条路，把结局写成了"没有终端"（P62 研究记录 F4，还没修）。P62 真机上 Codex 会话 3 次停止 3 次如此，Claude 会话那一次第一次就成功——但**只要是 stop 停掉的交互会话，`ccnm log` 都写成 `failed to start`、时长 `<1m`**，不管它跑了多久。**会话其实已经正常停了**，不是启动失败。
 
 **怎么办**：等几秒，用 `ccnm status <ws>` 确认会话没了、写锁行是 `free`，就算停成功；`log` 里那条"failed to start"忽略即可。写锁不是 `free` 的，按[写入 guard 残留](operations.md#写入-guard-残留)查。
 
@@ -666,3 +666,25 @@ CODEX_HOME=~/.config/ccnm/agents/codex /path/to/codex-0.154.0/codex login
 **原因**：ssh 失败一律被当成"可能已经派发出去、之后才断的"，为了不让你重放不明副作用而记 `unknown`（P58 的保守设计）。可 ssh 在认证完成之前就失败，其实一定什么都没发出去。macOS 上黑盒测试没暴露这一点，是因为临时目录太长、ControlPath 检查先失败了（P62 研究记录 F14，还没修）。
 
 **怎么办**：记录里的 `finish.error` 以 `ssh <别名>: ssh: Could not resolve hostname`、`Connection refused`、`No route to host` 开头的，可以按"没派发"处理，修好连接后换一个新的 `start_key` 重来；其他 `unknown` 仍按 `unknown` 对待：先看工作树和 Agent 上的会话，别直接重试。
+
+### Machine API：`session.start` 之后马上断开，会话一直是 `unknown`
+
+**症状**：程序调完 `session.start` 拿到句柄就关掉了 `ccnm rpc`（关 stdin 或退出），打算过会儿再来查。再连上查，`session.status` 是 `unknown`，Agent 上却没有任何运行。
+
+**原因**：`session.start` 返回时任务还没发出去——真机上派发前要先经 ssh 问一次 Runtime 的写锁，要好几秒——而 `ccnm rpc` 在 stdin 关闭后不等这一步就退出了。记录里写着"没派发"（`dispatched` 为空），状态却按"说不清"读成 `unknown`。这违反了协议 8.1 节"客户端断开，已接受的任务照跑"的承诺（P62 研究记录 F16，还没修）。
+
+**怎么办**：修好之前，**`session.start` 之后保持这条 `ccnm rpc` 连接，至少等到 `session.status` 变成 `running`** 再断开（参考客户端的 `wait()` 本来就是这样做的）。已经撞上的：Operator 记录里 `dispatched` 为空的 `unknown` 可以确定没有执行过，换一个新的 `start_key` 重来；`dispatched` 为真的仍按 `unknown` 对待。
+
+### Machine API：`session.stop` 回 `-32000 … Agent process group has not ended`
+
+**症状**：对一个正在跑的 print 会话调 `session.stop`，回的是错误而不是 `stopping`：
+
+```text
+-32000 ccnm internal agent-stop on <别名> failed (no exit status reported): Agent process group has not ended; state remains stopping
+```
+
+再调一次还是这样。一两秒后 `session.status` 已经是 `failed`，`outcome.exit_code` 是 143（被 SIGTERM 结束），但 `stop_requested` 是 `false`。
+
+**原因**：Agent 发出停止信号后立刻检查进程组、不等它退出（和交互会话 stop 的 F4 同一个模式），RPC 把这个"还没退完"原样当错误回给了你，停止标志也没记上（P62 研究记录 F17，还没修）。
+
+**怎么办**：把这个错误当成"停止已发出、还没确认"，隔一两秒查 `session.status`；到了终态就算停了。判断"是不是我停的"暂时别依赖 `stop_requested`。

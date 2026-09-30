@@ -618,9 +618,24 @@ workspace root /home/ccrun/proj is not a directory on this machine, which is the
 
 `ccnm doctor <ws>` 的 `Runtime 上的项目`（`Runtime workspace`）那一行同时报 `cannot stat`。
 
-**原因**：这两处检查用的是**你自己**的身份，而 Debian 12 起新账号的家目录默认 0700（`/etc/login.defs` 的 `HOME_MODE`），你进不去执行账号的家，stat 得到 `Permission denied`，被说成了"不是目录"。项目本身没问题，执行账号那边的 `Workspace root` 行照样是绿的。P62 在 Debian 13 上撞到（研究记录 F1），还没修。
+**原因**：这两处检查用的是**你自己**的身份，而 Debian 12 起新账号的家目录默认 0700（`/etc/login.defs` 的 `HOME_MODE`），你进不去执行账号的家，stat 得到 `Permission denied`，被说成了"不是目录"。项目本身没问题，执行账号那边的 `Workspace root` 行照样是绿的。P62 在 Debian 13 上撞到（研究记录 F1）。
 
-**怎么办**：把项目放到执行账号家目录**之外**、而你能进入其父目录的地方，项目目录本身仍归执行账号（git 要求属主是它，见[运维手册](operations.md#项目目录属主要对git-身份要配)）：
+**P65（2026-09-30）起已修**：ccnm 把"不在"和"这个账号没权限看"分开了。没权限看时：
+
+- `ccnm run` 和其他要连 Agent 的命令不再拦你。项目在不在由执行账号回答——开会话时 Agent 会拿同一个路径问它，真不在就报 `workspace <名字> says its root is …, and on that machine it is missing`。
+- doctor 那一行是"没查"（`SKIP`），并告诉你去看哪一行：
+
+  ```text
+  Runtime 上的项目        没查   not checked: bing is not allowed to look at /home/ccrun/proj (Permission denied), so this account cannot say whether the project is there
+                                 the account that runs the tools can: its answer is the `Workspace root` row below
+  ```
+
+- `ccnm workspace add <名字> /home/ccrun/proj` 能登记了，会提示"按你写的路径登记，没有核对、没有解析符号链接"。这时**必须写绝对路径**，而且要和执行账号自己看到的写法一致（别经过符号链接）；相对路径照旧拒绝。
+- `ccnm workspace list` 标的是"这个账号没权限看"，不再是"不在这台机器上"。
+
+还看到上面那句 `is not a directory on this machine`，要么路径真写错了（或者那里是个文件），要么 Runtime Node 上装的是 P65 之前的构建。
+
+**旧构建上怎么办**：把项目放到执行账号家目录**之外**、而你能进入其父目录的地方，项目目录本身仍归执行账号（git 要求属主是它，见[运维手册](operations.md#项目目录属主要对git-身份要配)）：
 
 ```bash
 sudo install -d -o root -g root -m 755 /srv/ccnm
@@ -633,9 +648,25 @@ sudo install -d -o ccrun -g ccrun -m 700 /srv/ccnm/proj    # 你只需要能 sta
 
 **症状**：`session.result` 回 `state: failed`，`outcome.exit_code` 是 `null`、`duration_ms` 是 0，stdout 和 stderr 都是 0 字节。
 
-**原因**：Agent 进程根本没起来——Agent 上的 CLI 没登录、两端构建不一致、Agent 连不上之类。协议 v1 没有给这种原因留字段（P62 研究记录 F3），原因只写在 Operator 自己的会话记录里。
+**原因**：Agent 进程根本没起来——Agent 上的 CLI 没登录、两端构建不一致、Agent 连不上之类。
 
-**怎么办**：在 Runtime Node 上用跑 `ccnm rpc` 的那个账号看记录里的 `finish.error`：
+**P65（2026-09-30）起，原因就在同一个回答里**（P62 研究记录 F3）。看 `failure`：
+
+```json
+"failure": {"code": -32003, "ccnm_code": "CCNM_E_AUTH", "detail": "Claude is not authenticated on the Agent Node"}
+```
+
+| `failure.code` | 意思 | 怎么办 |
+| --- | --- | --- |
+| `-32003` | Agent 上的官方 CLI 没登录 | 去 Agent Node 自己的终端登录（`claude auth login` / `codex login`） |
+| `-32002` | 两台机器的 ccnm 版本或构建不同（`detail` 里是 `runs ccnm 0.8.0, this one runs 0.9.0` 或 `message is not valid for protocol 1`） | 两端装同一个构建，先跑 `ccnm doctor` |
+| `-32004` / `-32005` | 连不上 Agent / Agent 连不回 Runtime | 查 ssh，见上面几节 |
+| `-32007` | 被策略拒绝，比如写锁交不出来 | 看 `detail`，多半要人处理 |
+| 没有 `code` | 服务端归不了类（比如还没派发就被 stop） | 看 `detail` |
+
+程序里**按 `code` 分支**，`detail` 只给人看。状态是 `unknown` 时也可能有 `failure`——它说的是服务端为什么说不清，不是"可以重试"。Agent 起来了、自己退出的会话没有 `failure`，那种看 `outcome.exit_code` 和输出。字段定义见[协议 5.5 节](protocol/machine-protocol-v1.md#55-sessionresult)。
+
+**没有 `failure` 这个键**：Runtime Node 上跑 `ccnm rpc` 的是 P65 之前的构建。那时协议 v1 没有这个字段，原因只写在 Operator 自己的会话记录里，得在 Runtime Node 上用跑 `ccnm rpc` 的那个账号去看：
 
 ```bash
 python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["finish"].get("error"))' \
@@ -676,7 +707,16 @@ CCNM_E_NOT_READY:
 Your access token could not be refreshed because your refresh token was revoked. Please log out and sign in again.
 ```
 
-**原因**：doctor 和 `codex login status` 都只看本地的登录文件在不在，不去服务器验证令牌（P62 研究记录 F5）。在别处登录同一个账号、或者长时间没用，都可能让这份令牌失效。
+**原因**：doctor 和 `codex login status` 都只看本地的登录状态，不去服务器验证令牌（P62 研究记录 F5）。在别处登录同一个账号、或者长时间没用，都可能让这份令牌失效。
+
+**P65（2026-09-30）起 doctor 自己会说这一点**，那一行仍是 OK，但多一句：
+
+```text
+Codex authentication    OK     logged in via ChatGPT
+                               local login state only, not checked with the server: a revoked or expired token still reads as logged in, and the first message of a session is what shows it
+```
+
+它没有变成真的校验。ccnm 不读登录文件的内容，而官方 CLI 里唯一问登录状态的命令不联网；`codex doctor` 也许能验，但它会不会顺手刷新（也就是改写）令牌没有量过，见 [P65 记录](research/2026-09-30-p65-hidden-root-failure-reason-codex-login.md)第 2.3 节。所以**这一行绿只说明"登录过"，不说明"现在还能用"**。
 
 **怎么办**：在 Agent Node 自己的终端，对 **ccnm 用的那份** Codex 目录重新登录（不是你日常的 `~/.codex`），用受管会话实际用的那个 Codex 0.154.0（路径换成你机器上的）：
 

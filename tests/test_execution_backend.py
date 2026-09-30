@@ -13,7 +13,6 @@
 # 就抛 TypeError，整个文件一个用例都跑不了。
 from __future__ import annotations
 
-import json
 import os
 from pathlib import Path
 import shutil
@@ -30,11 +29,13 @@ sys.path.insert(0, str(ROOT / "clients/python"))
 from execution_backend import (  # noqa: E402
     KIND_CONFLICT,
     KIND_NOT_FOUND,
+    KIND_REJECTED,
     KIND_UNAVAILABLE,
     KIND_UNCERTAIN,
     TERMINAL_STATES,
     BackendError,
     CcnmBackend,
+    ExecutionFailure,
     ExecutionRequest,
     FakeBackend,
 )
@@ -183,6 +184,27 @@ class FakeBackendTests(unittest.TestCase):
         self.assertEqual((result.state, result.exit_code), ("failed", 2))
         self.assertTrue(result.terminal)
 
+    def test_an_execution_that_never_started_says_why(self):
+        # "没起来"和"起来了、自己失败"是两件事：前者没有退出码，有原因；后者反过来。
+        # 协调层按 failure.kind 决定是等一等再试、还是叫人来（比如去那台机器上登录）。
+        backend = FakeBackend()
+        backend.on(
+            "go",
+            state="failed",
+            failure=ExecutionFailure("the agent CLI is not logged in", kind=KIND_REJECTED),
+        )
+        started = backend.start(ExecutionRequest(workspace="demo", prompt="go"))
+        result = backend.wait(started.id, timeout=1, poll=0)
+        self.assertEqual(result.state, "failed")
+        self.assertIsNone(result.exit_code)
+        self.assertIsNone(result.text)
+        self.assertEqual(result.failure.kind, KIND_REJECTED)
+        self.assertIn("not logged in", result.failure.detail)
+        # 自己退出的执行没有 failure，哪怕退出码不是 0。
+        backend.on("other", state="failed", exit_code=2)
+        ran = backend.start(ExecutionRequest(workspace="demo", prompt="other"))
+        self.assertIsNone(backend.wait(ran.id, timeout=1, poll=0).failure)
+
     def test_an_unknown_id_is_not_found(self):
         with self.assertRaises(BackendError) as caught:
             FakeBackend().status("x-404")
@@ -258,11 +280,13 @@ class CcnmBackendTests(unittest.TestCase):
         result = backend.wait(started.id, timeout=60)
         # 到不了 Agent，所以是 failed。要证明的是它**到了终态**、结果取得回来。
         self.assertEqual(result.state, "failed")
-        # 而且确实是 ssh 在认证之前失败的，不是别的检查抢先拦下（F14）。
-        record = json.loads(
-            (self.home / "state/ccnm/rpc/sessions" / f"{started.id}.json").read_text()
-        )
-        self.assertIn("Could not resolve hostname", record["finish"]["error"])
+        # 为什么没起来，结果里带着（F3），协调层不用去读 ccnm 的记录文件。确实是 ssh
+        # 在认证之前失败的，不是别的检查抢先拦下（F14）。
+        self.assertIsNotNone(result.failure)
+        self.assertEqual(result.failure.kind, KIND_UNAVAILABLE)
+        self.assertEqual(result.failure.code, -32004)
+        self.assertIn("Could not resolve hostname", result.failure.detail)
+        self.assertIsNone(result.exit_code)
         self.assertEqual(result.id, started.id)
         self.assertTrue(result.terminal)
         self.assertEqual(backend.status(started.id).state, "failed")

@@ -82,6 +82,8 @@ Orchestrator                                   ccnm
 
 同理，`unknown` 是终态，不会自己变好，遇到它去看现场而不是重试；被停掉的执行终态是 `failed`，没有单独的 `stopped`。这些语义由[协议第 7、8 节](protocol/machine-protocol-v1.md)冻结。
 
+`failed` 里还有一种要单独认出来：**Agent 根本没起来**（那台机器上的 CLI 没登录、两端装的不是同一个构建、连不上）。这种执行没有退出码、没有文本、没有输出，重试多少次都一样，直到有人去处理。P65 起结果里带着原因：`ExecutionResult.failure`（协议里是 `session.result` 的 `failure`），`kind` 和 `BackendError.kind` 是同一套——`unavailable` 可以等一等再来，`rejected` 要叫人。没有 `failure` 的 `failed` 才是"跑了，没跑成"。
+
 ## 5. 最小执行接口
 
 [clients/python/execution_backend.py](../clients/python/execution_backend.py) 是可以直接抄走的示例实现，三块：

@@ -76,6 +76,11 @@ E_INTERNAL = -32603
 E_NOT_READY = -32000
 E_CONFIG = -32001
 E_VERSION_MISMATCH = -32002
+# 下面三个除了出现在被拒的调用里，还会出现在 `session.result` 的 `failure.code` 里
+# （P65 起）：start 已经返回了句柄，Agent 却没起来，原因用的是同一套码。
+E_AUTH = -32003
+E_AGENT_UNREACHABLE = -32004
+E_RUNTIME_UNREACHABLE = -32005
 # 启动那一刻 Runtime 看到有人正持有写锁（P60 起）。只是一次观察、不是预留：
 # 看完之后被别人抢先的，仍表现为会话起来了然后 failed。别把退避重试只挂在这个码上。
 # 没人持有却交不出去（异常退出留下的等）回的是 -32007 policy，那种重试不会好。
@@ -264,6 +269,11 @@ class MachineClient:
 
         第一页（`cursor` 为 None）是**末尾**那一段；它的 `output.cursor` 指向更早的
         部分。`stream` 可选 `"stdout"`（默认）或 `"stderr"`。
+
+        终态是 `failed` / `unknown` 而 `outcome.exit_code` 是 None 时，看返回值里的
+        `failure`：`{"code": ..., "ccnm_code": ..., "detail": ...}` 说的是 Agent 为什么
+        没起来（或服务端为什么说不清）。`code` 是上面那张表里的数，按它分支；`detail`
+        给人看。旧服务端没有这个键，Agent 自己退出的 session 也没有——用 `.get()`。
         """
         params: dict[str, Any] = {"session": session}
         output: dict[str, Any] = {}

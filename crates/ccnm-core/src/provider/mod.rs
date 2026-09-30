@@ -317,6 +317,28 @@ impl AgentProvider {
         }
     }
 
+    /// What a "logged in" answer from this provider's CLI does **not**
+    /// establish, when that has been measured.
+    ///
+    /// Codex: `codex login status` reads the local login and never asks the
+    /// server. On the P62 machine (Codex 0.154.0) a profile whose refresh
+    /// token had been revoked still said "Logged in using ChatGPT", doctor
+    /// reported OK, and the first message of the session was where it
+    /// surfaced (F5). ccnm has nothing better to ask: it does not read login
+    /// files, and no official command has been measured to verify a token
+    /// without also changing it.
+    ///
+    /// Claude has no entry because nobody has measured it either way, and a
+    /// caveat made up here would be one more unverified claim.
+    pub const fn login_caveat(self) -> Option<&'static str> {
+        match self {
+            Self::Claude => None,
+            Self::Codex => Some(
+                "local login state only, not checked with the server: a revoked or expired token still reads as logged in, and the first message of a session is what shows it",
+            ),
+        }
+    }
+
     pub fn auth_hint(self, config_dir: Option<&Path>) -> String {
         match self {
             Self::Claude => claude::auth_hint(config_dir),

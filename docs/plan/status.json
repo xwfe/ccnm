@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-09-30T19:05:00+09:00",
-  "current_task": "P65",
+  "last_updated": "2026-09-30T20:50:00+09:00",
+  "current_task": "P62",
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
     "source": "docs/research/codex-internal-wiring-2026-09-07.md",
@@ -3017,8 +3017,8 @@
             "P62.4",
             "P62.5"
           ],
-          "reason": "真机查出须先修的缺陷 F14/F16/F17（ssh 认证前失败记 unknown、start 后立即断开任务不派发、运行中 stop 丢标志）已在 P63 离线修好，但尚无真机复验与 Linux 复跑；P64 离线修好的 F4（交互 stop 等通道退出、被停止是独立结局）、F2（同版本号不同构建）与 P64 顺带修的 status 假 unknown 同样没有真机复验",
-          "unblock": "续跑 P62 时在同一拓扑复验 Machine API 的断开、停止与连不上，以及交互会话 stop（两个 Provider 各停几次，看是否一次确认、log 是否为被停止与真实时长）和旧构建配新构建时 doctor 的 not the same build，并在 hpsrv 或推送后的 CI ubuntu job 上复跑 Rust 与 ci_gates；需要新一轮授权",
+          "reason": "真机查出须先修的缺陷 F14/F16/F17（ssh 认证前失败记 unknown、start 后立即断开任务不派发、运行中 stop 丢标志）已在 P63 离线修好，但尚无真机复验与 Linux 复跑；P64 离线修好的 F4（交互 stop 等通道退出、被停止是独立结局）、F2（同版本号不同构建）与 P64 顺带修的 status 假 unknown 同样没有真机复验；P65 离线修好的 F1（Operator 没权限看项目根）、F3（session.result 的 failure）与 F5 的前一半（doctor 写明 Codex 登录只看本地）同样没有真机复验",
+          "unblock": "续跑 P62 时在同一拓扑复验 Machine API 的断开、停止与连不上，以及交互会话 stop（两个 Provider 各停几次，看是否一次确认、log 是否为被停止与真实时长）和旧构建配新构建时 doctor 的 not the same build，并在 hpsrv 或推送后的 CI ubuntu job 上复跑 Rust 与 ci_gates；需要新一轮授权；同一轮把项目放回 ccrun 家目录复验 F1（workspace add、run、doctor 三处），用 Machine API 复验 Claude 未登录与两端构建不符时的 failure；若用户授权动 Codex 凭据，按 P65 记录 2.3 量 codex doctor 是否可作只读令牌校验",
           "since": "2026-09-30T15:40:00+09:00"
         },
         {
@@ -3144,20 +3144,62 @@
     {
       "id": "P65",
       "title": "Operator 看不进项目目录、Machine API 的失败原因、Codex 登录只看本地（P62 真机修复）",
-      "status": "in_progress",
+      "status": "completed",
       "depends_on": [
         "P64"
       ],
-      "owner": "claude-opus-5-5 / 2026-09-30 桌面会话",
-      "started_at": "2026-09-30T19:05:00+09:00",
-      "last_updated": "2026-09-30T19:05:00+09:00",
-      "completed_criteria": [],
-      "evidence": [],
+      "owner": null,
+      "started_at": "2026-09-30T20:15:00+09:00",
+      "last_updated": "2026-09-30T20:50:00+09:00",
+      "completed_criteria": [
+        "P65.1",
+        "P65.2",
+        "P65.3",
+        "P65.4"
+      ],
+      "evidence": [
+        {
+          "kind": "offline",
+          "criteria": [
+            "P65.1"
+          ],
+          "ref": "docs/research/2026-09-30-p65-hidden-root-failure-reason-codex-login.md",
+          "commit": "8756bd4",
+          "result": "F1：paths::see_dir 把“不在”和“这个账号没权限看”分开。没权限看时：连 Agent 之前的本地检查放行（由执行账号在握手时回答）；doctor 的 Runtime workspace 行与旧式 workspace 的 Project instructions 行记 SKIP 并写明谁的回答在哪；workspace add 按写下的绝对路径登记并说明没核对、没解析符号链接，相对路径仍拒；workspace list/status 不再标“不在这台机器上”。确实不在或不是目录的行为不变。三条真实二进制回归（0000 父目录里放项目）对旧代码是退出 30 的 is not a directory on this machine、FAIL CCNM_E_INTERNAL: cannot stat、退出 30 的 caused by: Permission denied，新代码全绿；root 身份下打印 skipped。"
+        },
+        {
+          "kind": "offline",
+          "criteria": [
+            "P65.2"
+          ],
+          "ref": "docs/research/2026-09-30-p65-hidden-root-failure-reason-codex-login.md",
+          "commit": "4cd596f",
+          "result": "F3：契约先行（204400f：协议 5.5 节、schema 的 session_failure、三个 fixture），再实现。session.result 在会话不是以 Agent 进程自己结束收场时带可选的 failure：detail 必有，code/ccnm_code 用第 10 节同一套码（wire::code_of，被拒调用与 failure 共用）；Finish 增 error_code；detail 里 /Users/<名>、/home/<名> 换成 ~，限 2048 字节；旧记录只有 detail。两份参考客户端同步（E_AUTH 等三个码、ExecutionResult.failure、FakeBackend 能演没起来）。Rust 两条回归旧实现 failure 为 Null；tests/test_rpc_failure.py（真实 ccnm rpc + 假 Agent，P62 见过的三种原话、路径、跟丢、正常退出、被 stop）在旧实现上 6 处 KeyError: 'failure'；两条原先读 Operator 记录文件的黑盒用例改为从协议结果取原因。"
+        },
+        {
+          "kind": "offline",
+          "criteria": [
+            "P65.3"
+          ],
+          "ref": "docs/research/2026-09-30-p65-hidden-root-failure-reason-codex-login.md",
+          "commit": "8590d01",
+          "result": "F5：doctor 的 Codex authentication 行仍为 OK，detail 多一行 local login state only, not checked with the server…；Claude 行不加。未加联网探测：fixture（0.154.0）显示 codex login 只有 status 子命令；codex doctor 在 0.158.0 的空目录里 --json 可见 auth.credentials 与两项联网可达性检查、无凭据时退出 1，但有凭据时是否刷新（改写）令牌未量，0.154.0 本机已无；接入前要量的五件事写在记录 2.3。回归 the_codex_login_row_says_it_only_saw_the_local_login 旧代码 detail 只有 logged in via ChatGPT。没有读取任何登录文件内容，没有用真实凭据跑任何命令。"
+        },
+        {
+          "kind": "offline",
+          "criteria": [
+            "P65.4"
+          ],
+          "ref": "docs/research/2026-09-30-p65-hidden-root-failure-reason-codex-login.md",
+          "result": "本机 macOS 26.6.2 arm64、rustc 1.98.0：cargo fmt/clippy 通过；cargo test --workspace 在 64 线程与默认线程各 1045 通过（P64 为 1033）；python3 -B scripts/ci_gates.py 通过（计划、协议 46+29 fixture、Python 262 条 0 跳过）；test_check_plan/test_check_protocol/test_ci_gates 48 条通过。协议实现说明、运维与排错手册、支持矩阵、README、交接文档、P62 发现表同步（3c923a3）。高负载下两次无关偶发：mcp::jobs 一条（已知）、test_remote_workspace_mcp 一条 error（报错原文未保住，之后单跑 6 次、整套 4 次未复现）。未连远端、未跑模型、未推送、未升版本号。"
+        }
+      ],
       "blockers": []
     }
   ],
   "observed_gaps": [
-    "【P62 真机发现 / F14、F16、F17 已由 P63 离线修好，F4 与 F2（新的一端）已由 P64 离线修好，其余未修】2026-09-30 hpsrv（Debian 13）+ fodelf/本机 Agent：F16 start 后立即断开任务不派发、读成 unknown（违反协议 8.1）、F17 运行中 stop 回 -32000 且 stop_requested 丢失、F14 Linux 上 ssh 认证前失败记 unknown——P63 已修；F4 交互 stop 在 Codex 上先 NOT_READY、log 一律记 failed to start，F2 候选与旧构建同版本号、doctor 0 失败而会话被内部协议拒——P64 已修，其中 F2 只有新的一端看得出，旧的一端要等发版升号；都待真机复验。未修：F1 Operator 用自己身份 stat 项目根，Debian HOME_MODE 0700 下 ccnm run 报 WRONG_WORKSPACE；F3 Agent 进程没起来时 Machine API 只回无原因的 failed；F5 Codex 令牌吊销 doctor 仍 OK。其余见 docs/research/2026-09-30-p62-real-machine.md 第 5 节。",
+    "【P62 真机发现 / F14、F16、F17 由 P63，F4 与 F2（新的一端）由 P64，F1、F3 与 F5（只到“写明没验”）由 P65 离线修好，都待真机复验】2026-09-30 hpsrv（Debian 13）+ fodelf/本机 Agent。仍未解决：F2 在已发布的那一端分不出同号不同构建，要等发版升号；F5 doctor 仍验不了 Codex 令牌是否有效，接 codex doctor 前要先在授权下量它是否改写凭据（P65 记录 2.3）；F6–F12、F18 八条低影响项与待复现的 F19。其余见 docs/research/2026-09-30-p62-real-machine.md 第 5 节。",
+    "【P65 跑门禁时看到 / 未查原因、未修】负载 36–50 时 ci_gates 有一次在 test_remote_workspace_mcp.RemoteWorkspaceMcpTests.test_a_child_left_in_the_servers_process_group_ends_before_the_next_writer 上报 error，报错原文没有保住；随后单跑 6 次、整套 4 次（负载 48–70）未复现。属 Runtime MCP 写锁交接的测试，与 P65 无关。另：协议第 9 节“任何字段不出现私有目录绝对路径”目前只有 failure.detail 做了家目录前缀替换，被拒调用的 error.message 仍是原话。依据 docs/research/2026-09-30-p65-hidden-root-failure-reason-codex-login.md 第 4、5 节。",
     "【P64 跑门禁时看到 / 2026-09-30 已查明并处理（离线）】mcp::jobs 的用例在 64 线程加高负载下偶发，一共三条（交接时记了两条，复现时又见一条）；没另立阶段，三处都是已完成的 P41/P42 的行为。① a_server_that_died_leaves_an_unknown_ending（r-… is running in another server of this session）——**产品缺陷，已修 6f66675**：retention::in_progress 用排他锁探测、靠关文件放锁，探测的那一瞬间另一次探测拿不到锁，别的线程恰好 fork 时子进程攥着描述符副本、锁活到 exec；server 死掉的 run（running 文件还在）因此被 read_output 报成 still running、被 stop_command 报成在另一个 server 里跑、被 cleanup 算成在用，都是一瞬间、再问就对。改成共享锁（run 自己持排他锁，判断不变）。② a_cancelled_call_stops_its_command（10.035 s，没改过的构建两路同时压 80 次里 1 次）——**产品缺陷，已修 67ed1f1**：停止请求落在登记命令与 Stop::attach 之间时，attach 当场去停并等子进程结束，而等子进程的正是卡在 attach 里的这条线程，于是对着已经死掉的进程等满 STOP_GIVE_UP 10 秒；取消的调用晚 10 秒返回，会话恰好这时结束则 stop_all 把它当成停不掉、写入 guard 留成 abandoned（窗口本机量到单线程 1.1–31 ms、64 线程 6.5–124 ms）。改成另起线程去停。③ a_background_command_returns_at_once_and_is_read_as_it_grows（the waiter left the registry）——**测试赌时序，改测试 cdd83ee**：waiter 先放 run 再交 ticket 是故意的（反过来 server 收尾会把 run 留在盘上），两步之间空闲时 3–35 µs、压测下到过 25 ms；代码只承诺离开 registry 时结局已写好，用例断言的是反方向。改成用 wait_gone 等。①② 各有确定性回归（旧代码分别读出 (false, Some(true), true)、10.005 s 与 stop_all 返回 [\"run #1\"]）。修后两路同时 40 次加单路 40 次整库 64 线程，mcp::jobs 0 次红（同轮没改过的构建红 grows 1、died 1）；fmt、clippy、Rust 1040（默认与 64 线程）、cargo +1.89 check、ci_gates（Python 256 条 0 跳过）通过。Linux 没跑、真机没验。**记下不修**：后台命令正好开满 8 个、其中一个刚结束而 ticket 还没交出去的那几十微秒里起第 9 个会被拒，消息里把刚结束的那个列为在跑；重试即过，经 ssh 的调用方和模型都赶不上这个窗口。依据 docs/research/2026-09-30-jobs-tests-under-load.md。",
     "【2026-09-30 查 mcp::jobs 偶发时看到 / 已验证、未修】apply_patch 的日志探测 patch::probe_journal 在 P34 之后是排他锁加显式放锁，fork 带走锁的那种堵上了，两次探测撞在一起的那种还在：探测持锁的那一瞬间，另一次探测（共用状态目录的另一个 mcp-serve）把一份被打断的提交记录读成还在提交，放行这次 patch（只会漏拦，不会误报）。临时用例在探测的钩子里再调一次 still_running，读出 (false, Some(true))，没提交。修法应与 retention::in_progress 相同（探测改共享锁，6f66675）；它是 apply_patch 的拦截路径，没在那次的范围里。依据 docs/research/2026-09-30-jobs-tests-under-load.md 第 6 节。",
     "【2026-09-30 查 mcp::jobs 偶发时看到 / 未修，封存链】native::serve::tests::a_large_message_the_client_is_still_taking_is_not_silence 在机器很忙时偶发（tests.rs:478 的 total > SIZE，值是 62）：两路 64 线程同时压每 30–40 次里 3–8 次，单路 40 次里 1 次（负载 21–44），与这次的修改无关（没改过的构建同样红）。原因只从输出推断、没做实验确认：62 正好是一条探活请求加换行的字节数，用例的 reader 把第一个换行当成大消息的结尾，假执行端超过 100 ms（这套用例的探活间隔）才出字节时先到的是探活。原生链 2026-09-17 起封存，所以只记；它会让 --test-threads=64 的门禁在高负载下偶尔红。依据 docs/research/2026-09-30-jobs-tests-under-load.md 第 6 节。",
@@ -3217,8 +3259,8 @@
     "【P41 记下不修】mcp-serve 被 SIGKILL（或别的不走正常退出的死法）时，它起的命令的进程组没人收：前台命令一直如此，P41 的后台命令没有期限，所以可能一直跑下去；它们的 run 在 read_output 里读作 exit status unknown。正常路径（客户端断开、stdin EOF、心跳发现对端不在）会先停掉所有命令再放写锁。要收干净得给子进程加会话标记、下次启动时按标记扫（封存的原生链 P26/P30 有类似做法），需另立阶段。依据 docs/research/p41-background-commands-2026-09-18.md 第 5 节。"
   ],
   "handoff": {
-    "next_action": "**2026-09-30 P65 进行中：修 P62 真机查出的 F1、F3、F5。** 起点 main/a933463。顺序 F1（Operator 没权限看项目根时不再报不存在：run 放行、doctor 记没查、workspace add 按写下的路径登记）→ F3（session.result 加可选的 failure，契约只做加法，schema/fixture/两份客户端同步）→ F5（doctor 写明 Codex 登录只看了本地；不加联网探测，把候选命令与要先量的事记下）。F1、F3 先红后绿。不新增内部协议号、不升版本号。P62 保持 blocked（Codex 额度到 10-04），修完回去续跑。\n\n之前的交接：\n**2026-09-30 P64 完成（离线）：F4 修好、F2 修了新的一端，current_task 回到受阻的 P62。** 起点 main/56c8c18。F4 226bcda：交互 stop 杀完终端每 100 ms 看一次 MCP 通道、最多 5 秒再确认；被停止是 Outcome 的独立结局（stopped），时长算到停止请求落盘，ccnm log 显示“被停止”。F2 30f4549 + 106316e：hello 回报 WIRE_LEVEL（内部协议最高号，当前 10），doctor 两行与起会话前握手在版本号相同时再比它，报 not the same build；**没升版本号**，所以已发布的 v0.9.0 那一端仍分不出，要等发版升号（什么时候发、升到几由用户定）。跑门禁时另修了 P63 留下的一处产品竞态 a1de669（会话结束瞬间 session.status 约 40 次 1 次回 unknown，现在查到 owner 不在就重读记录），以及三处测试问题（6d58ac4/c54b7a3/7d00840 收尾与 owner 进程抢目录、2da7eb9 CT-01 断言）；mcp::jobs 两条用例高负载下偶发，没查没改，记在 observed_gaps。先红后绿与门禁见 docs/research/2026-09-30-p64-stop-outcome-same-number-builds.md；Rust 1033（64 线程与默认线程）、ci_gates 全过。只有离线证据：Linux 未跑、真机未复验。下一步由用户定：(a) 2026-10-04 13:21 Codex 额度恢复后重新授权续跑 P62（补 Codex 各腿、三项未跑的失败矩阵，并真机复验 F14/F16/F17/F4/F2 与 Linux 门禁）；(b) 先另立阶段修 F1（Debian 家目录 0700）、F3（Machine API 失败原因）、F5（Codex 令牌探测）；(c) 发版并升版本号。未 push、未部署；$TMPDIR 下 12 个更早轮次留下的 ccnm-* 目录没动；ccnm-mobile-handoff.md 未读、未动。\n\n之前的交接：\n**2026-09-30 P63 完成（离线）：F14/F16/F17 修好，current_task 回到受阻的 P62。** 起点 main/2b89576；计划规则 fd06253 允许受阻阶段之后接续下一阶段。F14 39c23d1（ssh 认证前失败记 failed、stop 的 effect none；两条黑盒改放 /tmp 后 macOS 也真正走到 ssh）；F16 f866fc2 + 7e719d1（每个会话由独立进程组的 ccnm internal rpc-run owner 跑完，断开照跑）；F17 ebbe258（停止标志先落盘、Agent SIGTERM 后最多等 5 秒、NotReady 回 stopping）。先红后绿与门禁见 docs/research/2026-09-30-p63-rpc-disconnect-stop.md；Rust 1022（64 线程）、ci_gates 全过。只有离线证据：Linux 未复跑、真机未复验。下一步二选一，由用户定：(a) 2026-10-04 13:21 Codex 额度恢复后重新授权续跑 P62（补 Codex 各腿、三项未跑的失败矩阵，并在真机复验 F14/F16/F17 与 Linux 门禁）；(b) 先另立阶段修 F1–F5（交互 stop 的 F4、Debian 家目录 F1、同版本号 F2、失败原因 F3、Codex 令牌探测 F5）。未 push、未部署；ccnm-mobile-handoff.md 未读、未动。\n\n之前的交接：\n**2026-09-30 P62 受阻：Claude 那一半真机通过，Codex 被 ChatGPT 额度挡到 2026-10-04 13:21，另查出须先修的 F14/F16/F17。** 起点 main/dabec34。拓扑：Operator=hpsrv bing、执行账号=hpsrv ccrun、Claude Agent=fodelf（用户指出 Claude 只在那里登录，候选并存、另起 dev.ccnm.controller.p62）、Codex Agent=本机。已验：受管 Claude 闭环（审批中/运行中 detach-reattach、先红后绿、精确停止）、外部 Claude Code 经 bridge、Machine API（Claude）完成/分页/同键/busy/断连、人类 CLI 对照、P61 清理三个真实 UID、外部 MCP 零额度全流程、回退升级、两平台门禁（Linux Python 2 红=F14）。19 条发现见 docs/research/2026-09-30-p62-real-machine.md 第 5 节；须先修：F16（start 后立即 EOF 任务不派发、读成 unknown，违反协议 8.1）、F17（运行中 stop 回错误、stop_requested 丢）、F14；高影响有绕法：F1（Debian 家目录 0700）、F2（同版本号不同构建，发版前必须升版本号）。下一步建议：另立修复阶段先红后绿修 F14/F16/F17（及 F3/F4/F5），之后在 2026-10-04 13:21 以后重新申请授权补跑 Codex 各腿与未跑的三项失败矩阵。三台机器已按清单收尾，只保留 hpsrv ccrun 上的候选构建 fdd898df 与 0.8.0 备份；未 push、未发版。用户未跟踪 ccnm-mobile-handoff.md 未读、未动。",
-    "scope": "2026-09-30 用户要求“继续修 F4、F2，开 P64”。范围：立 P64、离线修 F4 与 F2、同步文档与状态；不连远端、不跑模型、不部署、不推送、不升版本号。改动：crates/ccnm-core/src（session.rs、work.rs、overview.rs、doctor.rs、protocol/hello.rs、protocol/payload.rs、rpc/session.rs、rpc/mod.rs、launcher.rs 的测试夹具）；crates/ccnm-core/tests/session_identity.rs、crates/ccnm-cli/tests（cli.rs、rpc.rs、instance_execution.rs）；tests/（rpc_owners.py 新增、test_blackbox_client.py、test_execution_backend.py）；docs（ROADMAP、core-hardening、研究记录 P64、P62 发现表、排错、支持矩阵、协议实现说明、README、status）。超出 F4/F2 的有：P63 留下的 status 假 unknown 竞态（产品修复）和四个测试提交——它们挡住门禁或往 $TMPDIR 留目录，根因查清后才改。用户未跟踪 ccnm-mobile-handoff.md 未读、未动。\n\n之前的范围：\n2026-09-30 用户要求按 core-verification.md 第 2 节在 hpsrv 上做 P62 真实验收，逐项批准：三台机器部署候选构建（并存，hpsrv ccrun 替换 0.8.0 并备份）、三把一次性密钥、每 Provider ≤8 次模型、只杀本轮进程的故障注入、收尾撤钥匙留 ccrun 候选构建；中途用户指出 Claude 只在 fodelf 登录，追加批准 fodelf 的并存部署。改动：crates/ccnm-core/src/cleanup/tests.rs（测试写死 uid，8ffe7a5）；scripts/p12_dogfood_check.py 帮助文字；docs：研究记录 2026-09-30-p62-real-machine.md、运维、排错、使用说明、支持矩阵、README、status。未改产品代码；未 push、tag、release。用户未跟踪 ccnm-mobile-handoff.md 未读、未动。",
+    "next_action": "**2026-09-30 P65 完成（离线）：F1、F3 修好，F5 只做到“写明没验”，current_task 回到受阻的 P62。** 起点 main/a933463。F1 8756bd4：paths::see_dir 把“不在”和“没权限看”分开，Operator 看不进执行账号家目录时 run 放行、doctor 记没查、workspace add 按绝对路径登记。F3 204400f（契约：协议 5.5、schema、三个 fixture）+ 4cd596f（实现）：session.result 带可选的 failure（第 10 节同一套 code/ccnm_code + detail，家目录前缀写成 ~），两份参考客户端同步，新增 tests/test_rpc_failure.py。F5 8590d01：doctor 的 Codex authentication 行写明只看了本地、没向服务器核对；**没加联网探测**——codex doctor 是候选，但它有凭据时会不会刷新（改写）令牌没量过，0.154.0 本机已没有，要先在授权下量（记录 2.3 列了五件事）。先红后绿与门禁见 docs/research/2026-09-30-p65-hidden-root-failure-reason-codex-login.md；Rust 1045（64 线程与默认线程）、ci_gates 全过（Python 262、fixture 46+29）。只有离线证据：Linux 未跑、真机未复验。P62 发现表里 F1–F5、F14、F16、F17 都已处理，剩 F6–F12、F18 八条低影响项和待复现的 F19。下一步由用户定：(a) 2026-10-04 13:21 Codex 额度恢复后重新授权续跑 P62（补 Codex 各腿、三项未跑的失败矩阵，真机复验 P63–P65 修的各条与 Linux 门禁）；(b) 发版并升版本号（F2 要靠它才能让旧的一端分得清）；(c) 另立阶段收 F6–F12、F18。另有一个独立会话（分支 claude/intelligent-wozniak-edc663）在查 mcp::jobs 两条高负载偶发用例，它的结果要另行合并。未 push、未部署；ccnm-mobile-handoff.md 与 .claude/ 未读、未动。\n\n之前的交接：\n**2026-09-30 P64 完成（离线）：F4 修好、F2 修了新的一端，current_task 回到受阻的 P62。** 起点 main/56c8c18。F4 226bcda：交互 stop 杀完终端每 100 ms 看一次 MCP 通道、最多 5 秒再确认；被停止是 Outcome 的独立结局（stopped），时长算到停止请求落盘，ccnm log 显示“被停止”。F2 30f4549 + 106316e：hello 回报 WIRE_LEVEL（内部协议最高号，当前 10），doctor 两行与起会话前握手在版本号相同时再比它，报 not the same build；**没升版本号**，所以已发布的 v0.9.0 那一端仍分不出，要等发版升号（什么时候发、升到几由用户定）。跑门禁时另修了 P63 留下的一处产品竞态 a1de669（会话结束瞬间 session.status 约 40 次 1 次回 unknown，现在查到 owner 不在就重读记录），以及三处测试问题（6d58ac4/c54b7a3/7d00840 收尾与 owner 进程抢目录、2da7eb9 CT-01 断言）；mcp::jobs 两条用例高负载下偶发，没查没改，记在 observed_gaps。先红后绿与门禁见 docs/research/2026-09-30-p64-stop-outcome-same-number-builds.md；Rust 1033（64 线程与默认线程）、ci_gates 全过。只有离线证据：Linux 未跑、真机未复验。下一步由用户定：(a) 2026-10-04 13:21 Codex 额度恢复后重新授权续跑 P62（补 Codex 各腿、三项未跑的失败矩阵，并真机复验 F14/F16/F17/F4/F2 与 Linux 门禁）；(b) 先另立阶段修 F1（Debian 家目录 0700）、F3（Machine API 失败原因）、F5（Codex 令牌探测）；(c) 发版并升版本号。未 push、未部署；$TMPDIR 下 12 个更早轮次留下的 ccnm-* 目录没动；ccnm-mobile-handoff.md 未读、未动。\n\n之前的交接：\n**2026-09-30 P63 完成（离线）：F14/F16/F17 修好，current_task 回到受阻的 P62。** 起点 main/2b89576；计划规则 fd06253 允许受阻阶段之后接续下一阶段。F14 39c23d1（ssh 认证前失败记 failed、stop 的 effect none；两条黑盒改放 /tmp 后 macOS 也真正走到 ssh）；F16 f866fc2 + 7e719d1（每个会话由独立进程组的 ccnm internal rpc-run owner 跑完，断开照跑）；F17 ebbe258（停止标志先落盘、Agent SIGTERM 后最多等 5 秒、NotReady 回 stopping）。先红后绿与门禁见 docs/research/2026-09-30-p63-rpc-disconnect-stop.md；Rust 1022（64 线程）、ci_gates 全过。只有离线证据：Linux 未复跑、真机未复验。下一步二选一，由用户定：(a) 2026-10-04 13:21 Codex 额度恢复后重新授权续跑 P62（补 Codex 各腿、三项未跑的失败矩阵，并在真机复验 F14/F16/F17 与 Linux 门禁）；(b) 先另立阶段修 F1–F5（交互 stop 的 F4、Debian 家目录 F1、同版本号 F2、失败原因 F3、Codex 令牌探测 F5）。未 push、未部署；ccnm-mobile-handoff.md 未读、未动。\n\n之前的交接：\n**2026-09-30 P62 受阻：Claude 那一半真机通过，Codex 被 ChatGPT 额度挡到 2026-10-04 13:21，另查出须先修的 F14/F16/F17。** 起点 main/dabec34。拓扑：Operator=hpsrv bing、执行账号=hpsrv ccrun、Claude Agent=fodelf（用户指出 Claude 只在那里登录，候选并存、另起 dev.ccnm.controller.p62）、Codex Agent=本机。已验：受管 Claude 闭环（审批中/运行中 detach-reattach、先红后绿、精确停止）、外部 Claude Code 经 bridge、Machine API（Claude）完成/分页/同键/busy/断连、人类 CLI 对照、P61 清理三个真实 UID、外部 MCP 零额度全流程、回退升级、两平台门禁（Linux Python 2 红=F14）。19 条发现见 docs/research/2026-09-30-p62-real-machine.md 第 5 节；须先修：F16（start 后立即 EOF 任务不派发、读成 unknown，违反协议 8.1）、F17（运行中 stop 回错误、stop_requested 丢）、F14；高影响有绕法：F1（Debian 家目录 0700）、F2（同版本号不同构建，发版前必须升版本号）。下一步建议：另立修复阶段先红后绿修 F14/F16/F17（及 F3/F4/F5），之后在 2026-10-04 13:21 以后重新申请授权补跑 Codex 各腿与未跑的三项失败矩阵。三台机器已按清单收尾，只保留 hpsrv ccrun 上的候选构建 fdd898df 与 0.8.0 备份；未 push、未发版。用户未跟踪 ccnm-mobile-handoff.md 未读、未动。",
+    "scope": "2026-09-30 用户要求“继续修 F1、F3、F5，开 P65”。范围：立 P65、离线修 F1 与 F3、F5 先查清官方 CLI 能做什么再定；同步文档与状态；不连远端、不跑模型、不部署、不推送、不升版本号、不碰任何登录文件。改动：crates/ccnm-core/src（paths.rs、launcher.rs、overview.rs、doctor.rs、provider/mod.rs、rpc/session.rs、rpc/store.rs、rpc/wire.rs、rpc/mod.rs）；crates/ccnm-cli（src/main.rs、tests/cli.rs）；clients/python 两个文件；tests/（test_rpc_failure.py 新增、fixtures/fake_agent_ssh.py、test_blackbox_client.py、test_execution_backend.py）；docs（协议文档、schema、三个 fixture、协议实现说明、运维、排错、支持矩阵、README、交接文档、P62 发现表、研究记录 P65、ROADMAP、core-hardening、status）。唯一用到外部程序的地方：在空的临时目录里跑了一次 codex 0.158.0 的 doctor --json（没有凭据），只为看报告形状。用户未跟踪的 ccnm-mobile-handoff.md 与 .claude/（另一个会话的工作树）未读、未动。\n\n之前的范围：\n2026-09-30 用户要求“继续修 F4、F2，开 P64”。范围：立 P64、离线修 F4 与 F2、同步文档与状态；不连远端、不跑模型、不部署、不推送、不升版本号。改动：crates/ccnm-core/src（session.rs、work.rs、overview.rs、doctor.rs、protocol/hello.rs、protocol/payload.rs、rpc/session.rs、rpc/mod.rs、launcher.rs 的测试夹具）；crates/ccnm-core/tests/session_identity.rs、crates/ccnm-cli/tests（cli.rs、rpc.rs、instance_execution.rs）；tests/（rpc_owners.py 新增、test_blackbox_client.py、test_execution_backend.py）；docs（ROADMAP、core-hardening、研究记录 P64、P62 发现表、排错、支持矩阵、协议实现说明、README、status）。超出 F4/F2 的有：P63 留下的 status 假 unknown 竞态（产品修复）和四个测试提交——它们挡住门禁或往 $TMPDIR 留目录，根因查清后才改。用户未跟踪 ccnm-mobile-handoff.md 未读、未动。",
     "planning_validation": {
       "at": "2026-09-08T21:22:43+09:00",
       "commands": [
@@ -3230,17 +3272,17 @@
       "limits": "本轮离线门禁；fodelf SSH 建连失败，没有新增远端资源或运行真实模型，不替代 P3.5。"
     },
     "planning_validation_latest": {
-      "at": "2026-09-30T18:50:00+09:00",
+      "at": "2026-09-30T20:50:00+09:00",
       "commands": [
         "cargo fmt --all --check：通过；cargo clippy --workspace --all-targets -- -D warnings：通过",
-        "cargo test --workspace -- --test-threads=64：1033 passed / 0 failed；cargo test --workspace（默认线程）：1033 passed / 0 failed",
-        "python3 -B scripts/ci_gates.py：通过；check_plan、check_protocol（43 + 29 fixture），Python 256 ran / 0 skipped / 0 failed；tests.test_check_plan + test_check_protocol + test_ci_gates 48 passed",
-        "F4：session_identity 四条脚本化回归旧代码全红、新代码全绿；真实 tmux 那条 1.72 秒通过，等待改 0 秒时红",
-        "F2：doctor 与握手各一条回归旧代码红、新代码绿；已装 0.9.0（300dbd1d）的 internal hello 实测不带 wire",
-        "status 假 unknown：确定性回归旧代码 unknown≠completed；原偶发 Python 用例 40 次 1 次 → 150 次 0 次",
+        "cargo test --workspace -- --test-threads=64：1045 passed / 0 failed；cargo test --workspace（默认线程）：1045 passed / 0 failed",
+        "python3 -B scripts/ci_gates.py：通过；check_plan、check_protocol（46 + 29 fixture），Python 262 ran / 0 skipped / 0 failed；tests.test_check_plan + test_check_protocol + test_ci_gates 48 passed",
+        "F1：三条真实二进制回归旧代码红（退出 30 / cannot stat / Permission denied）、新代码绿",
+        "F3：Rust 两条旧实现 failure 为 Null；tests.test_rpc_failure 在旧实现上 6 处 KeyError: 'failure'，新实现 5 条全过",
+        "F5：doctor 回归旧代码 detail 只有 logged in via ChatGPT",
         "python3 scripts/check_plan.py：通过；git diff --check：通过"
       ],
-      "limits": "全部在本机 macOS 26.6.2 arm64 离线完成：没有连 hpsrv/fodelf、没有真实 Agent 的 ssh 通道、没有真实模型、没有 Linux。真实 tmux 那条用的是替身进程，不是 Claude/Codex 的 ssh。mcp::jobs 两条用例高负载下偶发，未查。P62 未动。"
+      "limits": "全部在本机 macOS 26.6.2 arm64 离线完成：没有连 hpsrv/fodelf、没有真实模型、没有 Linux。F1 的权限情形用 chmod 000 的父目录模拟，不是真实的两个账号；F3 对面的 Agent 是假的；F5 没有用任何真实凭据。机器负载很高时有两次无关偶发失败，见研究记录第 4 节。P62 未动。"
     },
     "inherited_changes": ["ccnm-mobile-handoff.md"],
     "authorization": "P24 真机轮（2026-09-16）：用户同意授权清单 A0–A9（docs/plan/p24-native-real-machine-session.md 第四节），明确 root 步骤由本会话执行、完成后清理并同步文档。实际执行：A0 查登录；A1 本机一次性密钥 + hpsrv root 追加公钥（已撤）；A2 hpsrv 装 bubblewrap（保留，清单 /var/lib/ccnm-p24-20260916）；A3/A4 ccrun 名下 Codex 0.154.0 与 ccnm 7ae2d4b（保留）；A5 ccrun 配置与测试项目（已删）；A6/A7 本机 P24 构建、Agent 配置、临时 Controller（已删/已卸）；A8 模型 3 次（上限 5）；A9 nftables 单连接黑洞 5 次（每次 60 秒自动删除，已核无残留）。授权不含：fodelf 任何变更、本机已装 ccnm/config.toml/LaunchAgent/sshd、hpsrv sshd 与持久防火墙、tag/release。\n\n之前的授权记录：\nP12 真机轮已由用户授权并执行完毕（2026-09-11），三问三答：hpsrv 上按计划全做（建专用账号 ccrun、系统级装 gcc/libc6-dev/make/ripgrep、以 ccrun 身份装 rustup 与 Node）；花订阅额度做真实 Claude Code 那一腿；轮后**保留账号与工具链**、删一次性资源。特权命令由本会话经 root ssh 执行（该机 root 登录用的是用户自己的 key），没有要用户输密码。授权明确不含：改 ACL/防火墙/Tailscale 策略、动 bing 或 git 账号的任何东西、push/tag/release。保留物的撤销脚本仍在：scripts/p12-provision-linux-runtime.sh --revert（账号 + 按清单 purge 的 36 个包）、scripts/p12-runtime-toolchain.sh --revert（rustup/Node/PATH 块）；root 清单 /var/lib/ccnm-p12-20260911 为此保留。历史授权记录（P3/P7/P11 各轮）见 Git 历史；P11 那两条 macOS 的 sudo 授予（ccrun 的本轮公钥、临时进 com.apple.access_ssh）**仍未撤销**，要用户 sudo 跑对应的 --revert。 【2026-09-11 发布前收口复核】P11 那两条 macOS 临时授予**已经不在了**，只读证据：`dsmemberutil checkmembership -U ccrun -G com.apple.access_ssh` 和 `dseditgroup -o checkmember` 都说不是成员，该组 GroupMembership 键不存在（没有直接成员）；p11 那把公钥的清单目录 /var/db/ccnm-p11-local-20260911 不存在，而 --revert 的最后一步就是 rmdir 它。还留着的 /var/db/ccnm-p7-local-20260910 是更早 P7 轮的清单目录（root 0700），不是这两条要撤的东西，里面还有什么只有 sudo 看得到。要逐条确认，由用户在自己的终端跑两条只读命令：`sudo scripts/p11-authorize-local-runtime.sh --check` 和 `sudo scripts/p7-grant-local-ssh-access.sh --check`（两个脚本都要求 SUDO_USER 是 bing，--check 只读）。本会话没有也不会执行 sudo。",

@@ -1185,7 +1185,15 @@ fn auth_row(r: &Subject<'_>, rep: &ProbeReport) -> Check {
     let name = rep.provider.authentication_check();
     let from_login_session = matches!(&rep.controller, Some(Ok(ctx)) if ctx.login_session());
     match &rep.agent.auth {
-        Ok(a) if a.logged_in => Check::ok(name, a.describe()),
+        // OK is about what was checked, so the row says what that was when
+        // it is less than "this login works" (F5).
+        Ok(a) if a.logged_in => Check::ok(
+            name,
+            match rep.provider.login_caveat() {
+                Some(caveat) => format!("{}\n{caveat}", a.describe()),
+                None => a.describe(),
+            },
+        ),
         Ok(_) if !from_login_session => Check::skip(
             name,
             "a controller answered, but not from a login session, so \"not logged in\" here means nothing\nfix the Controller row first",
@@ -2094,6 +2102,43 @@ mod tests {
             exec_server: result,
             ..good_probe()
         }
+    }
+
+    /// F5. On the P62 machine the refresh token of ccnm's Codex profile had
+    /// been revoked; `codex login status` said "Logged in using ChatGPT",
+    /// doctor passed that on as OK, and the session's first message was
+    /// where it came out. doctor cannot verify a token -- it may not read
+    /// the login file, and the one official command it has does not ask the
+    /// server -- so the row has to say what it did look at.
+    #[test]
+    fn the_codex_login_row_says_it_only_saw_the_local_login() {
+        let (dir, config) = setup("codex-auth-local", true, true);
+        let authority = authority(&dir.join("root"), false);
+        let mut probe = codex_probe(None);
+        probe.agent.auth = Ok(crate::provider::AuthStatus {
+            logged_in: true,
+            auth_method: Some("ChatGPT".into()),
+            email: None,
+            subscription_type: None,
+        });
+        let report = from_agent(&config, "xshun", Ok((&authority, &probe)));
+        let auth = row(&report, "Codex authentication");
+        // Still OK: what it checks did pass. The claim is what changes.
+        assert_eq!(auth.status, Status::Ok, "{auth:?}");
+        assert!(auth.detail.starts_with("logged in via ChatGPT"), "{auth:?}");
+        assert!(
+            auth.detail.contains("local login state only")
+                && auth.detail.contains("not checked with the server"),
+            "{auth:?}"
+        );
+
+        // Claude's row is not given a caveat nobody measured.
+        let report = from_agent(&config, "xshun", Ok((&authority, &good_probe())));
+        let claude = row(&report, "Claude authentication");
+        assert!(
+            !claude.detail.contains("local login state only"),
+            "{claude:?}"
+        );
     }
 
     /// P27: which way the exec-server row goes. It is there for every

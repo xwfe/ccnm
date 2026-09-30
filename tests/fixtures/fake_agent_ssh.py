@@ -14,7 +14,10 @@ ccnm 以 `ssh <选项> -T <alias> <ccnm> internal <sub> --payload X` 调 Agent�
     release/<key>        放行某个 prompt 的运行（key 见 key_of）
     release/ALL          放行全部
     reply-<key>.json     这次运行回什么：exit_code、stdout_tail、stderr_tail、
-                         result，或 {"transport_error": true} 表示连接断在半路
+                         result，或 {"transport_error": true} 表示连接断在半路，
+                         或 {"refuse": {"ccnm_code", "exit", "message"}}：Agent 上的
+                         ccnm 在起任何东西之前拒绝（没登录、版本不符），照真实 ccnm
+                         的样子把 `CODE:\n原因` 写到 stderr、以那个码对应的退出码退出
     stop-mode.json       {"kind": "ack"}（默认）、{"kind": "unreachable"}、
                          {"kind": "not-ended"}（信号送到了、进程组还没退完，回 NOT_READY）、
                          {"kind": "release-and-wait-final", "prompt": ..., "record": ...}
@@ -88,6 +91,10 @@ def run(request: dict, fake: Path) -> int:
     if reply.get("transport_error"):
         print("Connection to worker closed by remote host.", file=sys.stderr)
         return 255
+    if reply.get("refuse"):
+        refuse = reply["refuse"]
+        print(f"{refuse['ccnm_code']}:\n{refuse['message']}", file=sys.stderr)
+        return refuse["exit"]
     if stopped.exists():
         outcome = {"exit_code": None, "timed_out": False, "duration_ms": 5, "error": None}
     else:

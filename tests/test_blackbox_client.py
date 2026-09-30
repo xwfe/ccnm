@@ -29,6 +29,7 @@ sys.path.insert(0, str(ROOT / "tests"))
 sys.path.insert(0, str(ROOT / "clients/python"))
 
 from ccnm_machine_client import (  # noqa: E402
+    E_AGENT_UNREACHABLE,
     E_CONFIG,
     E_CONFLICT,
     E_HANDSHAKE_REQUIRED,
@@ -161,9 +162,15 @@ class BlackBoxTests(unittest.TestCase):
         # 到不了 Agent，所以是 failed；关键是它**到了终态**并且能取到结果。
         self.assertEqual(result["state"], "failed")
         self.assertEqual(result["session"], session)
-        # 而且确实是 ssh 在认证之前失败的，不是别的检查抢先拦下（F14）。
-        record = json.loads((self.state / "ccnm/rpc/sessions" / f"{session}.json").read_text())
-        self.assertIn("Could not resolve hostname", record["finish"]["error"])
+        # 为什么没起来，结果里自己会说（F3）——P65 之前这只写在 Operator 的记录文件里，
+        # 这条用例得去磁盘上翻。原因确实是 ssh 在认证之前失败，不是别的检查抢先拦下（F14）。
+        failure = result["failure"]
+        self.assertEqual(failure["code"], E_AGENT_UNREACHABLE)
+        self.assertEqual(failure["ccnm_code"], "CCNM_E_AGENT_UNREACHABLE")
+        self.assertIn("Could not resolve hostname", failure["detail"])
+        # 进程层面的结果照旧在，说的是"没有进程跑到退出"。
+        self.assertIsNone(result["outcome"]["exit_code"])
+        self.assertIsNone(result["text"])
 
         status = client.session_status(session)
         self.assertEqual(status["state"], "failed")

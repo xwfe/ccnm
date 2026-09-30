@@ -31,6 +31,10 @@
 //! that a run finished and let go was still "locked" when the next line
 //! looked. The file is gone before the lock is let go, so that copy no
 //! longer matters.
+//!
+//! Looking takes the lock too, for a moment, and the same copy can outlive
+//! the look. So a look takes it shared, which only a run's own exclusive
+//! lock refuses: whoever looks next is not turned away by the look before.
 
 use std::fs::{File, TryLockError};
 use std::io::Write;
@@ -353,13 +357,32 @@ fn runs_in(output: &Path) -> Vec<Retained> {
 /// running, because removing what cannot be judged is the one mistake here
 /// that loses data.
 pub(crate) fn in_progress(run: &Path) -> bool {
+    probe(run, |_| {})
+}
+
+/// [`in_progress`], with a hook for tests: `while_held` runs while the
+/// probe holds its lock, which is how a test looks at the same moment as
+/// another probe would, and hands a copy of the descriptor to a child the
+/// way a fork on another thread would.
+fn probe(run: &Path, while_held: impl FnOnce(&File)) -> bool {
     let file = match File::open(run.join(RUNNING)) {
         Ok(file) => file,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return false,
         Err(_) => return true,
     };
-    match file.try_lock() {
-        Ok(()) => false,
+    // Shared, not exclusive: a run holds its marker exclusively, so this
+    // still fails for as long as the run lasts, but two probes no longer
+    // fail each other. With an exclusive lock a probe was itself a holder
+    // to whoever looked next -- another thread or server at that moment,
+    // or anyone at all while a child forked during the probe still had its
+    // copy of the descriptor (closing the file lets go only once every copy
+    // is closed). That matters for the one run whose `running` file stays:
+    // a dead server's, which then read as running in another server.
+    match file.try_lock_shared() {
+        Ok(()) => {
+            while_held(&file);
+            false
+        }
         Err(TryLockError::WouldBlock) => true,
         Err(TryLockError::Error(_)) => true,
     }
@@ -648,6 +671,47 @@ mod tests {
         let _ = finished(&output, 5);
         assert!(!dir.exists(), "one run allowed: the finished one goes");
         drop(copy);
+    }
+
+    /// A run whose server died keeps its `running` file, so the lock is all
+    /// there is to go by -- and a probe must not be what holds it. Two ways
+    /// it was (2026-09-30): a second probe looking while the first had the
+    /// file open, and a probe's lock living on in a child forked at that
+    /// moment, where the next probe found it. Either one turned "its server
+    /// died" into "running in another server of this session".
+    #[test]
+    fn a_probe_is_not_what_holds_a_run_whose_server_died() {
+        let state = state("probe");
+        let output = Output::new(&state, "s-probe");
+        let dir = finished(&output, 5);
+        File::create(dir.join(RUNNING)).unwrap();
+
+        let mut during = None;
+        let mut child = None;
+        let first = probe(&dir, |file| {
+            during = Some(in_progress(&dir));
+            // What a fork on another thread holds until it execs: the same
+            // open file description, and with it the lock. `sleep` keeps it
+            // for as long as the test needs.
+            child = Some(
+                std::process::Command::new("sleep")
+                    .arg("60")
+                    .stdin(std::process::Stdio::from(file.try_clone().unwrap()))
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn()
+                    .unwrap(),
+            );
+        });
+        let after = in_progress(&dir);
+        let mut child = child.expect("the probe got its lock");
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert_eq!(
+            (first, during, after),
+            (false, Some(false), false),
+            "(the probe, one looking at the same moment, one after a child kept a copy): none may read as in progress"
+        );
     }
 
     /// The end of an external session removes what that process started

@@ -149,6 +149,8 @@ P63 时 Rust 是 1022 条；新增 11 条：F4 6 条、F2 4 条、第 5.1 节 1 
 
 `mcp::jobs::tests::a_background_command_returns_at_once_and_is_read_as_it_grows`（`the waiter left the registry`）和 `a_server_that_died_leaves_an_unknown_ending`（`r-… is running in another server of this session`）。本轮全量 64 线程一共跑了 10 次，有 1 次红了前一条；那之后 `cargo test -p ccnm-core --lib -- --test-threads=64` 连跑 6 次，2 次各红一条。这两段都紧跟在我几十轮连续压测之后，随后量到的负载是 22–30（平时这台机器是多少没有量）；最后 4 次全量 64 线程在负载 24–37 下都是全过，所以它是低概率的，不是必现。它们属于 P41/P42 的后台命令，和本阶段无关，两条的失败原因也没有查，所以没改，记在 `status.json` 的 `observed_gaps` 里。
 
+**后续**：同一天查明并处理了，一条是产品缺陷、一条是测试赌时序，见[单独的记录](2026-09-30-jobs-tests-under-load.md)。
+
 ## 6. 没覆盖的
 
 - **真机没有复验。** 5 秒这个上限沿用 P63，依据是 P62 两台 Mac 上"几秒后就干净了"的观察，没有精确量过 Codex 的 ssh 通道到底拖多久；真实时序留给 P62 续跑。更慢的会得到 NotReady，再 stop 一次即可，结局仍是"被停止"。

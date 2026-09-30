@@ -309,6 +309,39 @@ agent = { node = "worker", instance = "claude-main" }
         ["starting", "running", "failed", "unknown"].contains(&state.as_str()),
         "unexpected state {state}"
     );
+    // Let the owner finish before the sandbox goes away under it.
+    ending("failed-start", session);
+}
+
+/// The session's record once its owner has written how it ended.
+///
+/// Since P63 a run has an owner process of its own that outlives the
+/// connection that started it. A test that returns while that process is
+/// still starting up deletes the sandbox under it, and the owner then
+/// recreates part of it: every run of this file used to leave a
+/// `ccnm-rpc-it-<pid>-failed-start/state/ccnm/rpc/store.lock` behind in
+/// `$TMPDIR`. Nothing is written after the ending.
+fn ending(test: &str, session: &str) -> Value {
+    let path = sandbox_path(test)
+        .join("state/ccnm/rpc/sessions")
+        .join(format!("{session}.json"));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        // The record is replaced by rename, so a read never sees half of
+        // one; a read that fails outright is the file not being there yet.
+        let now: Value = std::fs::read(&path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or(Value::Null);
+        if now.get("finish").is_some() {
+            return now;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the run's own owner never recorded an ending: {now}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
 }
 
 /// A config whose workspace root does not exist, so `session.start` is
@@ -387,6 +420,8 @@ fn a_start_key_stays_idempotent_across_a_server_restart() {
     );
     assert_eq!(lines(&third)[1]["error"]["code"], -32010);
     assert_eq!(lines(&third)[1]["error"]["data"]["session"], session);
+    // Let the owner finish before the sandbox goes away under it.
+    ending("restart", &session);
 }
 
 #[test]
@@ -415,23 +450,10 @@ fn a_session_left_behind_by_a_killed_server_reads_as_unknown() {
     let path = home
         .join("state/ccnm/rpc/sessions")
         .join(format!("{session}.json"));
-    // Since P63 the run has an owner process of its own that outlives the
-    // connection above and writes the real ending when it gets one. Inject
-    // only after that, or the owner overwrites the injected record and the
-    // test measures a race instead of a dead server.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    let mut record: serde_json::Value = loop {
-        let now: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        if now.get("finish").is_some() {
-            break now;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the run's own owner never recorded an ending: {now}"
-        );
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    };
+    // Inject only after the run's own owner has written the real ending, or
+    // it overwrites the injected record and the test measures a race
+    // instead of a dead server.
+    let mut record = ending("killed", &session);
     record["state"] = Value::from("running");
     record["owner_pid"] = Value::from(999_999);
     record["owner_started"] = Value::from("Thu Jan  1 00:00:00 1970");

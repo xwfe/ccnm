@@ -110,7 +110,10 @@ def validate(state: Any, roadmap: str, root: Path) -> list:
         expected_deps = [] if index == 0 else [phase_ids[index - 1]]
         require(deps == expected_deps, tid + " 不符合路线图的顺序依赖")
         if status in ("in_progress", "blocked", "completed"):
-            require(all(by_id.get(d, {}).get("status") == "completed" for d in deps), tid + " 前置阶段未完成")
+            # 前一阶段受阻（等外部条件，且写明了阻塞原因）时允许接着做下一阶段：
+            # 例如真机验收等额度，而它查出的缺陷要在下一阶段修。只是还没做完的不行。
+            require(all(by_id.get(d, {}).get("status") in ("completed", "blocked") for d in deps),
+                    tid + " 前置阶段未完成")
         if status in ("in_progress", "blocked"):
             require(timestamp(task.get("started_at")), tid + " 开始后必须记录 started_at")
         if status == "in_progress":
@@ -162,8 +165,11 @@ def validate(state: Any, roadmap: str, root: Path) -> list:
                     tid + " pending 不应有已执行内容")
 
     incomplete = [t["id"] for t in tasks if t.get("status") != "completed"]
-    expected_current = incomplete[0] if incomplete else None
-    require(state.get("current_task") == expected_current, "current_task 必须指向首个未完成阶段，全部完成时为 null")
+    actionable = [tid for tid in incomplete if by_id[tid].get("status") != "blocked"]
+    # 受阻的阶段让位给后面能推进的；剩下的全都受阻时才指向第一个受阻的。
+    expected_current = (actionable or incomplete or [None])[0]
+    require(state.get("current_task") == expected_current,
+            "current_task 必须指向首个未完成且未受阻的阶段（全部受阻时指向第一个受阻的），全部完成时为 null")
     require(len(active) <= 1, "同时存在多个 in_progress")
     require(not active or active == [expected_current], "in_progress 必须与 current_task 一致")
     handoff = state.get("handoff")

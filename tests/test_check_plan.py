@@ -83,7 +83,26 @@ class PlanTests(unittest.TestCase):
         task["blockers"] = [{"criteria": ["P1.1"], "reason": "缺少授权"}]
         self.assertTrue(any("解锁动作" in e for e in self.errors()))
         task["blockers"][0]["unblock"] = "由用户授权专用测试环境"
+        # 受阻的阶段让位：游标移到后面能推进的那一个（P63 起的规则）。
+        self.state["current_task"] = "P2"
         self.assertEqual(self.errors(), [])
+
+    def test_a_blocked_stage_lets_the_next_one_start(self):
+        # P62 那种：真机验收在等外部条件（额度），而它查出来的缺陷要在下一阶段修。
+        now = self.state["last_updated"]
+        blocked, nxt = self.state["tasks"][1], self.state["tasks"][2]
+        blocked.update(status="blocked", started_at=now,
+                       blockers=[{"criteria": ["P1.1"], "reason": "等外部额度", "unblock": "额度恢复后续跑"}])
+        self.state["current_task"] = "P2"
+        self.assertEqual(self.errors(), [], "下一阶段还没开始时，current_task 指向它")
+        nxt.update(status="in_progress", started_at=now, owner="test")
+        self.assertEqual(self.errors(), [])
+        self.state["current_task"] = "P1"
+        self.assertTrue(any("current_task" in e for e in self.errors()), "不能指着受阻的阶段干活")
+        # 只是还没做完（不是受阻）的前一阶段仍然挡住后面的。
+        self.state["current_task"] = "P2"
+        blocked.update(status="pending", started_at=None, blockers=[])
+        self.assertTrue(any("前置阶段未完成" in e for e in self.errors()))
 
     def test_only_one_active_task_and_correct_cursor(self):
         for task in self.state["tasks"][1:]:

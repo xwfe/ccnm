@@ -547,6 +547,16 @@ fn workspace_checks(r: &Resolved<'_>, agent: Option<&str>, env: &Env<'_>) -> Vec
                 (Some(reference), Some(identity)) => identity.reference() == *reference,
                 _ => false,
             };
+            if rep.rejected.is_some() {
+                // The Agent Node refused the selection and said why. The
+                // report carries no identity in that case, so comparing
+                // identities would only restate the refusal as a mismatch
+                // and drop the reason (F10). `probe_rows` reports it.
+                checks.push(Check::ok("Agent SSH", resolved.target()));
+                checks.extend(probe_rows(&Subject::of(r), &rep));
+                checks.extend(not_yet_implemented());
+                return checks;
+            }
             if !identity_matches {
                 checks.push(Check::fail_with(
                     "Agent selection",
@@ -636,6 +646,40 @@ impl<'a> Subject<'a> {
 
 fn probe_rows(r: &Subject<'_>, rep: &ProbeReport) -> Vec<Check> {
     let mut checks = vec![version_row("Agent ccnm", &rep.hello, "work")];
+
+    // Refused before anything was probed: one row with the Agent's reason,
+    // and every row it would have filled says it was not checked. Not the
+    // rows below, which would read the empty fields as facts -- an absent
+    // reverse link as "same machine", above all (F10).
+    if let Some(why) = &rep.rejected {
+        checks.push(Check::fail_with(
+            "Agent selection",
+            why.code(),
+            format!(
+                "the Agent Node refused this Agent before probing anything: {}",
+                why.message
+            ),
+        ));
+        const REASON: &str = "not checked: the Agent Node refused the selected Agent";
+        checks.push(Check::skip("Controller", REASON));
+        checks.push(Check::skip(rep.provider.display_name(), REASON));
+        checks.push(Check::skip(rep.provider.authentication_check(), REASON));
+        checks.extend(
+            [
+                "Reverse SSH",
+                "Runtime safety",
+                "exec_command",
+                "Remote MCP handshake",
+                "Codex exec-server",
+                "Workspace root",
+            ]
+            .into_iter()
+            .map(|name| Check::skip(name, REASON)),
+        );
+        // This one the refused probe did measure.
+        checks.push(terminal_row(r, rep));
+        return checks;
+    }
 
     checks.push(controller_row(rep));
 
@@ -1737,6 +1781,7 @@ mod tests {
                     subscription_type: Some("max".into()),
                 }),
             },
+            rejected: None,
             runtime_ssh: Some(Ok(crate::ssh::ResolvedSsh {
                 hostname: "runtime.t.ts.net".into(),
                 user: "ccrun".into(),
@@ -2114,6 +2159,85 @@ mod tests {
             exec_server: result,
             ..good_probe()
         }
+    }
+
+    /// What an Agent Node answers when it refuses the instance it was asked
+    /// to probe -- here because the profile directory is not private -- as
+    /// JSON, the way it arrives.
+    fn refused_probe(why: &str) -> serde_json::Value {
+        let refusal = serde_json::to_value(ErrorReport::new(ErrorCode::Policy, why)).unwrap();
+        let mut probe = serde_json::to_value(good_probe()).unwrap();
+        let fields = probe.as_object_mut().unwrap();
+        fields.remove("agent_identity");
+        fields.insert("rejected".into(), refusal.clone());
+        fields.insert("controller".into(), serde_json::json!({"Err": refusal}));
+        fields.insert(
+            "claude".into(),
+            serde_json::json!({"path": null, "version": {"Err": refusal}, "auth": {"Err": refusal}}),
+        );
+        for nothing in ["runtime_ssh", "runtime_hello", "runtime_audit", "mcp"] {
+            fields.insert(nothing.into(), serde_json::Value::Null);
+        }
+        probe
+    }
+
+    /// F10, from the Runtime Node. On the P62 machine the Agent refused the
+    /// selected instance (its `~/.claude` had the wrong mode) and the
+    /// Operator's doctor said only "Agent probe identity differs from the
+    /// Runtime selection": the refused probe carries no identity, and the
+    /// comparison stopped there. The reason had made the trip; it was
+    /// dropped on arrival.
+    #[test]
+    fn a_selection_the_agent_refused_is_reported_with_the_agents_reason() {
+        const WHY: &str = "the profile directory for claude-main must be private (mode 700)";
+        let (dir, _) = setup("refused-selection", true, true);
+        let config = dir.join("instance.toml");
+        std::fs::write(
+            &config,
+            format!(
+                "version = 1\nthis = \"runtime\"\n[nodes.agent]\nssh = \"work\"\n[nodes.runtime]\n[workspaces.xshun]\nroot = \"{}\"\nagent = {{ node = \"agent\", instance = \"claude-main\" }}\n",
+                dir.join("root").display()
+            ),
+        )
+        .unwrap();
+        let fake = FakeRunner::new();
+        fake.push(Output::exited(0, format!("ccnm {}\n", crate::VERSION)));
+        fake.push(Output::exited(0, "hostname workmac\n"));
+        fake.push(Output::exited(0, refused_probe(WHY).to_string()));
+        let report = run(&config, Some("xshun"), &env(&fake, &dir));
+        let text = report.render();
+
+        let selection = row(&report, "Agent selection");
+        assert_eq!(selection.status, Status::Fail(ErrorCode::Policy), "{text}");
+        assert!(selection.detail.contains(WHY), "{text}");
+        assert!(!text.contains("identity differs"), "{text}");
+        // The link itself worked, and says so; what was not probed says
+        // why, rather than reading as the reverse link being absent.
+        assert_eq!(row(&report, "Agent SSH").status, Status::Ok, "{text}");
+        let reverse = row(&report, "Reverse SSH");
+        assert_eq!(reverse.status, Status::Skip, "{text}");
+        assert!(reverse.detail.contains("refused"), "{text}");
+        assert!(!text.contains("are both on"), "{text}");
+        assert_eq!(report.exit_code(), ErrorCode::Policy.exit_code());
+    }
+
+    /// F10, from the Agent Node. The same refused probe used to read
+    /// "agent and project are both on agent, so nothing dials back" there:
+    /// a probe that never looked at the reverse link leaves it `None`, and
+    /// `None` also meant "same machine".
+    #[test]
+    fn a_probe_that_never_looked_is_not_mistaken_for_a_colocated_workspace() {
+        const WHY: &str = "the profile directory for claude-main must be private (mode 700)";
+        let (dir, config) = setup("refused-agent-side", true, true);
+        let authority = authority(&dir.join("root"), false);
+        let probe: ProbeReport = serde_json::from_value(refused_probe(WHY)).unwrap();
+        let report = from_agent(&config, "xshun", Ok((&authority, &probe)));
+        let text = report.render();
+        assert!(!text.contains("are both on"), "{text}");
+        assert!(text.contains(WHY), "{text}");
+        let reverse = row(&report, "Reverse SSH");
+        assert_eq!(reverse.status, Status::Skip, "{text}");
+        assert!(reverse.detail.contains("refused"), "{text}");
     }
 
     /// F5. On the P62 machine the refresh token of ccnm's Codex profile had

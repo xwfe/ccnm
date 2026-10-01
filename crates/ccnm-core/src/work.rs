@@ -2104,6 +2104,7 @@ pub fn probe(req: &ProbeRequest, tools: &Tools<'_>) -> ProbeReport {
         )),
         controller: Some(controller),
         agent,
+        rejected: None,
         runtime_ssh,
         runtime_hello,
         runtime_audit,
@@ -2131,6 +2132,7 @@ fn rejected_probe(req: &ProbeRequest, tools: &Tools<'_>, error: Error) -> ProbeR
         provider: req.provider,
         protocol: PROTOCOL,
         hello: hello::answer(&HelloRequest::new(None)),
+        rejected: Some(report.clone()),
         controller: Some(Err(report.clone())),
         agent: AgentReport {
             path: None,
@@ -2730,6 +2732,45 @@ mod tests {
         assert_eq!(rep.agent.path, None);
         assert_eq!(rep.agent.version.unwrap_err().code(), ErrorCode::Version);
         assert_eq!(fake.calls().len(), 2, "no claude calls without a binary");
+        assert_eq!(rep.rejected, None);
+    }
+
+    /// F10: a selection the Agent Node cannot honour comes back with the
+    /// reason in `rejected`, not only as empty fields that each mean
+    /// something else on the reading side.
+    #[test]
+    fn probe_names_the_refusal_when_the_selection_is_refused() {
+        let dir = temp("probe-refused");
+        let fake = FakeRunner::new();
+        let tools = Tools {
+            local: None,
+            config: agent_config(),
+            runner: &fake,
+            state: dir.to_path_buf(),
+            control_dir: control(&dir),
+            agents: crate::provider::AgentBinaries::with_claude(None),
+            tmux: None,
+            controller: absent_socket("probe-refused"),
+        };
+        let rep = probe(
+            &ProbeRequest {
+                agent: Some(crate::instance::InstanceRef {
+                    node: "agent".into(),
+                    instance: "claude-main".into(),
+                }),
+                provider_config_dir: None,
+                ..request()
+            },
+            &tools,
+        );
+        let why = rep.rejected.as_ref().expect("the refusal is named");
+        assert_eq!(why.code(), ErrorCode::Config);
+        assert!(why.message.contains("profile registry"), "{}", why.message);
+        assert!(fake.calls().is_empty(), "a refused probe dials nothing");
+
+        let json = serde_json::to_vec(&rep).unwrap();
+        let back: ProbeReport = crate::protocol::payload::decode_json(&json).unwrap();
+        assert_eq!(back, rep);
     }
 
     #[test]

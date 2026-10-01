@@ -120,6 +120,17 @@ pub struct ProbeReport {
     /// session" row. `None` from a ccnm build that predates it.
     #[serde(default)]
     pub terminal: Option<super::run::StatusReport>,
+    /// Set when the Agent Node refused the selected Agent before probing
+    /// anything, with its reason (F10).
+    ///
+    /// Such a report has no identity and no reverse-link fields, and each
+    /// of those absences already means something else: no identity is a
+    /// legacy workspace, no reverse link is a colocated one. Read without
+    /// this, a refusal became "identity differs" on the Runtime Node and
+    /// "agent and project are both on this machine" on the Agent Node --
+    /// two wrong diagnoses for one reason that had been sent along.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rejected: Option<crate::error::ErrorReport>,
 }
 
 impl Protocol for ProbeReport {

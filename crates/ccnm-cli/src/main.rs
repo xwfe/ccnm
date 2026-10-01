@@ -2,7 +2,7 @@
 //! controller, home MCP runtime) is decided by the subcommand; all logic
 //! lives in ccnm-core.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
@@ -1260,7 +1260,7 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
                 ccnm_core::ErrorCode::Internal.exit_code()
             })
         }
-        Command::Controller { command } => controller_command(command),
+        Command::Controller { command } => controller_command(command, cli.config.as_deref()),
         Command::Internal { command } => match command {
             InternalCommand::Hello { payload } => {
                 let req: HelloRequest = payload::decode(payload)?;
@@ -2363,7 +2363,11 @@ fn print_result_report(
 /// `CCNM_E_NOT_READY` rather than 0: it answers, so nothing is broken, but
 /// it cannot do the one job it exists for, and a green exit code there
 /// would be the same lie this whole component was built to stop telling.
-fn controller_command(command: &ControllerCommand) -> Result<i32> {
+///
+/// `config` is `--config` / `CCNM_CONFIG`: the controller reads no config
+/// of its own at install time, but the one launchd starts must read this
+/// one, so it goes into the plist with the XDG locations (F8).
+fn controller_command(command: &ControllerCommand, config: Option<&Path>) -> Result<i32> {
     let state = paths::state_dir()?;
     let socket = paths::controller_socket(&state);
     let plan = || -> Result<launchagent::Plan> {
@@ -2371,6 +2375,7 @@ fn controller_command(command: &ControllerCommand) -> Result<i32> {
             &paths::home_dir()?,
             &state,
             &std::env::current_exe()?,
+            paths::location_overrides(config)?,
             &SystemRunner,
         )
     };

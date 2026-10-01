@@ -627,6 +627,62 @@ fn ccnm_config_env_var_selects_the_config() {
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
 }
 
+/// F8, through the real command line but only as far as `--dry-run`, which
+/// installs nothing. The controller launchd starts sees none of the
+/// installer's environment, so the locations it was given travel in the
+/// plist: the config made absolute (launchd starts it in `/`), an absolute
+/// XDG value as is, and a relative one -- which ccnm ignores -- not at all.
+#[test]
+fn controller_install_carries_moved_locations_into_the_plist() {
+    let dir = HOME.with(|home| home.to_path_buf());
+    let state = dir.join("p62-state");
+    let out = ccnm()
+        .args(["controller", "install", "--dry-run"])
+        .current_dir(&dir)
+        .env("CCNM_CONFIG", "p62/config.toml")
+        .env("XDG_STATE_HOME", &state)
+        .env("XDG_CONFIG_HOME", "relative-config")
+        .output()
+        .unwrap();
+    let text = stdout(&out);
+    assert_eq!(out.status.code(), Some(0), "{text}{}", stderr(&out));
+    let config = dir.join("p62/config.toml");
+    assert!(
+        text.contains(&format!(
+            "        <key>CCNM_CONFIG</key>\n        <string>{}</string>\n        <key>XDG_STATE_HOME</key>\n        <string>{}</string>\n    </dict>",
+            config.display(),
+            state.display()
+        )),
+        "{text}"
+    );
+    assert!(!text.contains("XDG_CONFIG_HOME"), "{text}");
+    assert!(
+        text.contains(&format!("  with  CCNM_CONFIG={}\n", config.display())),
+        "{text}"
+    );
+    assert!(
+        text.contains(&format!(
+            "expect  a controller listening on {}",
+            state.join("ccnm/controller.sock").display()
+        )),
+        "{text}"
+    );
+
+    // Nothing moved: the plist sets CCNM_LOG and nothing else.
+    let out = ccnm()
+        .args(["controller", "install", "--dry-run"])
+        .env_remove("XDG_CONFIG_HOME")
+        .output()
+        .unwrap();
+    let text = stdout(&out);
+    assert_eq!(out.status.code(), Some(0), "{text}{}", stderr(&out));
+    assert!(
+        text.contains("        <key>CCNM_LOG</key>\n        <string>info</string>\n    </dict>"),
+        "{text}"
+    );
+    assert!(!text.contains("  with  "), "{text}");
+}
+
 #[test]
 fn verbose_logs_go_to_stderr_not_stdout() {
     let out = ccnm()

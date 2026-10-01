@@ -165,6 +165,28 @@ pub(crate) fn state_dir_in(home: &Path, xdg_state_home: Option<&Path>) -> PathBu
     xdg_or(xdg_state_home, home, ".local/state").join("ccnm")
 }
 
+/// The variables that moved this process's config or state off the
+/// defaults, with the values it is honouring, for a process that will not
+/// inherit them: the controller launchd starts (F8). Empty when every
+/// location is the default.
+///
+/// `config` is the file this invocation was given (`--config`, which is
+/// also how `CCNM_CONFIG` arrives), made absolute because launchd starts
+/// the controller in `/`. An XDG value ccnm ignores is left out, so the
+/// controller ignores the same thing this process did.
+pub fn location_overrides(config: Option<&Path>) -> Result<Vec<(&'static str, PathBuf)>> {
+    let mut vars = Vec::new();
+    if let Some(config) = config {
+        vars.push(("CCNM_CONFIG", std::path::absolute(config)?));
+    }
+    for name in ["XDG_CONFIG_HOME", "XDG_STATE_HOME"] {
+        if let Some(dir) = env_path(name).filter(|dir| dir.is_absolute()) {
+            vars.push((name, dir));
+        }
+    }
+    Ok(vars)
+}
+
 /// XDG says a variable that is unset, empty, or relative must be ignored.
 fn xdg_or(xdg: Option<&Path>, home: &Path, fallback: &str) -> PathBuf {
     match xdg {

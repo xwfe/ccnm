@@ -61,7 +61,21 @@ pub fn plist_path(home: &Path) -> PathBuf {
 /// - No `PATH`: launchd's own environment is what Claude will be started
 ///   with later, so `claude::locate` resolving against it here is the
 ///   honest answer rather than a shell's.
-pub fn plist(exe: &Path, log: &Path) -> String {
+/// - `env`: the [`crate::paths::location_overrides`] of the install. The
+///   controller starts with launchd's environment, not the installer's, so
+///   without these it reads the default config and listens on the default
+///   socket while the installer waits on another one (F8). With none, the
+///   plist is the one earlier builds wrote, byte for byte.
+pub fn plist(exe: &Path, log: &Path, env: &[(&str, PathBuf)]) -> String {
+    let env: String = env
+        .iter()
+        .map(|(name, value)| {
+            format!(
+                "        <key>{name}</key>\n        <string>{}</string>\n",
+                xml(&value.to_string_lossy())
+            )
+        })
+        .collect();
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -85,7 +99,7 @@ pub fn plist(exe: &Path, log: &Path) -> String {
     <dict>
         <key>CCNM_LOG</key>
         <string>info</string>
-    </dict>
+{env}    </dict>
     <key>StandardErrorPath</key>
     <string>{log}</string>
 </dict>
@@ -120,19 +134,28 @@ pub struct Plan {
     pub socket: PathBuf,
     pub log: PathBuf,
     pub exe: PathBuf,
+    /// What the plist sets beyond `CCNM_LOG`; see [`plist`].
+    pub env: Vec<(&'static str, PathBuf)>,
 }
 
 impl Plan {
     /// Resolve the paths and ask the OS for the uid.
-    pub fn new(home: &Path, state: &Path, exe: &Path, runner: &dyn ProcessRunner) -> Result<Plan> {
+    pub fn new(
+        home: &Path,
+        state: &Path,
+        exe: &Path,
+        env: Vec<(&'static str, PathBuf)>,
+        runner: &dyn ProcessRunner,
+    ) -> Result<Plan> {
         let log = state.join("controller.log");
         Ok(Plan {
             plist_path: plist_path(home),
-            plist: plist(exe, &log),
+            plist: plist(exe, &log, &env),
             domain: format!("gui/{}", uid(runner)?),
             socket: crate::paths::controller_socket(state),
             log,
             exe: exe.to_path_buf(),
+            env,
         })
     }
 
@@ -160,8 +183,13 @@ impl Plan {
 
     /// What a person would type to do this by hand.
     pub fn describe(&self) -> String {
+        let env: String = self
+            .env
+            .iter()
+            .map(|(name, value)| format!("  with  {name}={}\n", value.display()))
+            .collect();
         format!(
-            "write   {}\nrun     {}\nrun     {}\nexpect  a controller listening on {}",
+            "write   {}\n{env}run     {}\nrun     {}\nexpect  a controller listening on {}",
             self.plist_path.display(),
             self.bootout_cmd().display(),
             self.bootstrap_cmd().display(),
@@ -289,6 +317,7 @@ mod tests {
             Path::new("/Users/bing"),
             Path::new("/Users/bing/.local/state/ccnm"),
             Path::new("/Users/bing/.local/bin/ccnm"),
+            Vec::new(),
             runner,
         )
         .unwrap()
@@ -332,6 +361,7 @@ mod tests {
             Path::new("/Users/a&b"),
             Path::new("/tmp/s"),
             Path::new("/Users/a&b/<ccnm>"),
+            vec![("CCNM_CONFIG", PathBuf::from("/Users/a&b/<cfg>.toml"))],
             &fake,
         )
         .unwrap();
@@ -340,14 +370,103 @@ mod tests {
             "{}",
             plan.plist
         );
+        assert!(
+            plan.plist.contains("/Users/a&amp;b/&lt;cfg&gt;.toml"),
+            "{}",
+            plan.plist
+        );
         assert!(!plan.plist.contains("<ccnm>"));
+        assert!(!plan.plist.contains("<cfg>"));
+    }
+
+    /// F8's other half: an install with every location at its default
+    /// writes exactly the plist earlier builds wrote, so upgrading and
+    /// reinstalling changes nothing on a machine that never moved them.
+    #[test]
+    fn with_nothing_moved_the_plist_is_the_one_earlier_builds_wrote() {
+        let fake = with_uid();
+        assert_eq!(
+            plan(&fake).plist,
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>dev.ccnm.controller</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/bing/.local/bin/ccnm</string>
+        <string>internal</string>
+        <string>controller</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ProcessType</key>
+    <string>Interactive</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>CCNM_LOG</key>
+        <string>info</string>
+    </dict>
+    <key>StandardErrorPath</key>
+    <string>/Users/bing/.local/state/ccnm/controller.log</string>
+</dict>
+</plist>
+"#
+        );
+    }
+
+    /// F8: on P62 the install ran with `CCNM_CONFIG` and `XDG_STATE_HOME`
+    /// set, the controller launchd started had neither, listened on the
+    /// default socket, and the install gave up after 10 s waiting on the
+    /// other one. The variables now go into the plist, and the plan says so.
+    #[test]
+    fn moved_locations_go_into_the_plist_and_the_plan() {
+        let fake = with_uid();
+        let plan = Plan::new(
+            Path::new("/Users/bing"),
+            Path::new("/Users/bing/p62/state/ccnm"),
+            Path::new("/Users/bing/p62/bin/ccnm"),
+            vec![
+                ("CCNM_CONFIG", PathBuf::from("/Users/bing/p62/config.toml")),
+                ("XDG_STATE_HOME", PathBuf::from("/Users/bing/p62/state")),
+            ],
+            &fake,
+        )
+        .unwrap();
+        assert!(
+            plan.plist.contains(
+                "        <key>CCNM_LOG</key>\n        <string>info</string>\n        <key>CCNM_CONFIG</key>\n        <string>/Users/bing/p62/config.toml</string>\n        <key>XDG_STATE_HOME</key>\n        <string>/Users/bing/p62/state</string>\n    </dict>\n"
+            ),
+            "{}",
+            plan.plist
+        );
+        // The socket install waits on is the one that controller will open.
+        assert_eq!(
+            plan.socket,
+            PathBuf::from("/Users/bing/p62/state/ccnm/controller.sock")
+        );
+        let text = plan.describe();
+        assert!(
+            text.contains("  with  CCNM_CONFIG=/Users/bing/p62/config.toml\n  with  XDG_STATE_HOME=/Users/bing/p62/state\nrun     /bin/launchctl bootout"),
+            "{text}"
+        );
     }
 
     #[test]
     fn a_uid_that_is_not_a_number_is_an_error_not_a_domain() {
         let fake = FakeRunner::new();
         fake.push(Output::exited(1, "id: no such user\n"));
-        let err = Plan::new(Path::new("/h"), Path::new("/s"), Path::new("/x"), &fake).unwrap_err();
+        let err = Plan::new(
+            Path::new("/h"),
+            Path::new("/s"),
+            Path::new("/x"),
+            Vec::new(),
+            &fake,
+        )
+        .unwrap_err();
         assert!(err.message().contains("not a uid"), "{err}");
     }
 
@@ -448,6 +567,10 @@ mod tests {
     fn describe_names_every_step_and_the_socket() {
         let fake = with_uid();
         let text = plan(&fake).describe();
+        assert!(
+            !text.contains("with"),
+            "nothing moved, nothing listed: {text}"
+        );
         assert!(text.contains("Library/LaunchAgents/dev.ccnm.controller.plist"));
         assert!(text.contains("launchctl bootout gui/501/dev.ccnm.controller"));
         assert!(text.contains("launchctl bootstrap gui/501"));

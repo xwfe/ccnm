@@ -1078,10 +1078,10 @@ fn stage_one(planned: Planned) -> Result<Staged> {
 /// Is the process that wrote this journal still committing?
 ///
 /// Asked of the lock, not of the clock. `Journal::open` takes an advisory
-/// lock and holds it for the whole commit; the kernel releases it when
-/// that process ends, however it ends. So taking the lock means the
-/// writer is gone, and being refused means a commit is genuinely in
-/// progress.
+/// lock, exclusively, and holds it for the whole commit; the kernel
+/// releases it when that process ends, however it ends. So being given a
+/// shared lock means the writer is gone, and being refused means a commit
+/// is genuinely in progress.
 ///
 /// This used to be a timeout -- a journal older than a minute was assumed
 /// abandoned -- and the timeout was wrong in both directions. It left a
@@ -1101,25 +1101,47 @@ fn still_running(path: &Path) -> bool {
 }
 
 /// [`still_running`], with a hook for tests: `while_held` runs while the
-/// probe holds the lock, which is how a test hands a copy of the
-/// descriptor to a child the way a fork on another thread would.
+/// probe holds the lock, which is how a test looks at the same moment as
+/// another probe would, and hands a copy of the descriptor to a child the
+/// way a fork on another thread would.
 fn probe_journal(path: &Path, while_held: impl FnOnce(&std::fs::File)) -> bool {
     let Ok(file) = std::fs::File::open(path) else {
         return true;
     };
-    match file.try_lock() {
+    // Shared, not exclusive. A commit holds its journal exclusively
+    // (`Journal::open`), so this is still refused for as long as the
+    // commit lasts, but two probes no longer refuse each other. With an
+    // exclusive lock a probe was itself a holder to whoever looked at the
+    // same moment -- another thread, or another mcp-serve sharing the
+    // state directory -- and that one read an interrupted commit as "in
+    // progress" and let its patch go ahead over it.
+    match file.try_lock_shared() {
         Ok(()) => {
             while_held(&file);
             // Let go explicitly rather than by closing. A close releases
             // the lock only once every copy of the descriptor is closed,
             // and a thread that forks at this moment (`exec_command`,
-            // `list_files`, on this or another mcp-serve sharing the
-            // state directory) hands its child a copy until the child
-            // execs. Left to the close, the lock outlives this probe by
-            // that window, and the next probe finds it held and calls an
-            // interrupted commit "in progress" -- which lets a patch go
-            // ahead over it. LOCK_UN acts on the open file description,
-            // so every copy lets go at once.
+            // `list_files`) hands its child a copy until the child execs.
+            // LOCK_UN acts on the open file description, so every copy
+            // lets go at once.
+            //
+            // Now that the lock is shared, a copy left in a child no
+            // longer misleads the next probe, which is what this was
+            // first for. It would still refuse an exclusive lock, and
+            // one is taken on a file a probe can reach: `Journal::open`
+            // locks its journal after the file is already in this
+            // directory under its `.tmp` name, and `check_abandoned`
+            // probes those. (`retention`'s probe leaves its lock to the
+            // close because a run locks its marker before anybody can
+            // see it; a journal is not in that position.)
+            //
+            // A probe that gets to a `.tmp` first costs that commit its
+            // journal whatever happens here: it is taken for unfinished
+            // and removed. That is a fault of its own, and while it
+            // stands, dropping this unlock would change next to nothing.
+            // It stays so that a probe holds nothing once it has
+            // answered, and whatever closes that fault does not find a
+            // lock left in a child in its way.
             if let Err(e) = file.unlock() {
                 tracing::warn!(
                     journal = %path.display(),
@@ -3358,12 +3380,74 @@ mod tests {
         let running = probe_journal(&path, |file| child = Some(child_holding_a_copy(file)));
         let mut child = child.unwrap();
         let running_after = still_running(&path);
+        // The next probe asks for a shared lock, which a shared lock left
+        // in the child would not refuse; a writer asks for an exclusive
+        // one, which it would. So this is the question that still tells
+        // an explicit unlock from a close.
+        let refuses_a_writer = locked_by_someone(&path);
         child.kill().unwrap();
         child.wait().unwrap();
         assert!(!running, "nobody holds the journal");
         assert!(
             !running_after,
             "the probe must let go of the lock explicitly: the child's copy kept it, and the next probe called an interrupted commit in progress"
+        );
+        assert!(
+            !refuses_a_writer,
+            "the probe must let go of the lock explicitly: the child's copy kept it, and it would refuse the exclusive lock a commit takes"
+        );
+    }
+
+    /// A probe is not a commit in progress to whoever looks at the same
+    /// moment: another thread of this server, or another mcp-serve sharing
+    /// the state directory. The hook runs while the first probe holds its
+    /// lock, which is exactly that moment, so nothing here is left to
+    /// timing. What the second look decides is whether a patch goes ahead
+    /// over an interrupted commit, so that is what is asked of it.
+    #[test]
+    fn a_probe_is_not_what_holds_an_interrupted_journal() {
+        let root = workspace("journal-two-probes");
+        let journals = journals("journal-two-probes");
+        let path = journals.join("99-two-probes.json");
+        fs::write(
+            &path,
+            serde_json::to_vec(&serde_json::json!({
+                "pid": 99, "root": root.to_path_buf(), "files": [],
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let mut during = None;
+        let mut patched = None;
+        let running = probe_journal(&path, |_| {
+            during = Some(still_running(&path));
+            patched = Some(apply_patch(
+                &root,
+                Some(&journals),
+                &ApplyPatchArgs {
+                    files: vec![update(
+                        "src/main.rs",
+                        &version(&root, "src/main.rs"),
+                        "let x = 1;",
+                        "let x = 9;",
+                    )],
+                    dry_run: None,
+                },
+            ));
+        });
+        assert_eq!(
+            (running, during),
+            (false, Some(false)),
+            "(the probe, one looking at the same moment): neither may read an interrupted commit as in progress"
+        );
+        let err = patched
+            .unwrap()
+            .expect_err("a patch must not go ahead over an interrupted commit because somebody else is looking at it");
+        assert!(err.message().contains("interrupted"), "{err}");
+        assert_eq!(
+            text(&root, "src/main.rs"),
+            "fn main() {\n    let x = 1;\n}\n"
         );
     }
 

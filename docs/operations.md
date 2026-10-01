@@ -477,6 +477,10 @@ ccnm controller install     # 重装并重启；已有会话不受影响
 
 `managername` 必须是 `Aqua`。如果是 `Background`，说明它不在图形登录会话里，那样它启动的 Agent 读不到 Keychain，会以认证失败告终——`ccnm run` 会在创建会话前就拒绝，报 `CCNM_E_NOT_READY`。
 
+**配置或状态目录不在默认位置时**（用了 `--config` / `CCNM_CONFIG`、`XDG_CONFIG_HOME` 或 `XDG_STATE_HOME`），先 `ccnm controller install --dry-run` 看一眼：P66 起这几个变量会写进 plist，安装计划里每个一行 `with 变量=值`，`--config` 给的相对路径会换成绝对路径（launchd 在 `/` 下启动 Controller）。更早的构建不写，Controller 读默认配置、在默认目录监听，install 在另一个 socket 上等满 10 秒报 `nothing is listening`——看着像 Controller 起不来，其实它在别处听着（P62 实测）；那种构建只能手工往 plist 的 `EnvironmentVariables` 里补。
+
+一个账号只有一个 Controller：Label 固定是 `dev.ccnm.controller`，换个位置再装一次就把原来那个换掉。要在同一个账号上和日用的并存跑另一份，只能手工另写一个 Label 的 plist，收尾也得手工——`ccnm controller uninstall` 只认固定的那个。
+
 ### 会话状态是 unknown
 
 **unknown 是终态，不会自己变好。** 它表示 ccnm 证明不了这个会话的下落，不表示失败。

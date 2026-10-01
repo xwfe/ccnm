@@ -116,6 +116,8 @@ ccnm run my-project --agent codex-main
 
 `--detached` 起的会话要先 `ccnm attach` 答完这几句，工具才会连上——在那之前 `ccnm status` 显示 `TOOLS DOWN`。
 
+ccnm 不替你提前答：官方 CLI 把"信任过这个目录"记在 Agent 账号上它自己的配置里，ccnm 不改官方 CLI 的配置文件；Codex 能用命令行参数临时覆盖这一项，但在 ccnm 适配的 Codex 版本上没实测过，不按猜的参数去传（P66 定的，原因见 [P66 记录](research/2026-10-01-p66-low-impact-findings.md)）。
+
 ## Prompt
 
 单行开场白：
@@ -196,7 +198,14 @@ ccnm status my-project --all
 ccnm stop my-project
 ```
 
-**不带 `--agent` 时只看这个 workspace 默认实例的会话。** 用 `--agent codex-main` 起的会话，`ccnm status my-project` 会说没有会话在跑；加上同一个 `--agent`，或者用不带项目名的 `ccnm status`，才看得到（P62 实测）。
+**不带 `--agent` 时只列这个 workspace 默认实例的会话。** 项目的终端要是被别的实例占着（比如用 `--agent codex-main` 起的），会多一行指给你看（P66 起；更早的构建只说"没有在跑的会话"，P62 真机上就这么误导过）：
+
+```text
+实例 claude-main 没有在跑的会话（--print 的运行不算在内）
+这个项目的终端现在是实例 codex-main 的会话：加 --agent codex-main 看它
+```
+
+照它说的加上 `--agent codex-main`，或者用不带项目名的 `ccnm status`，就能看到那个会话的详情。
 
 精确寻址使用 ccnm session id：
 

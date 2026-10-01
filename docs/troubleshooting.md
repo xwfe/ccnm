@@ -206,6 +206,21 @@ Agent 的 ccnm           失败   CCNM_E_VERSION: work reports ccnm 0.9.0 like t
 
 **这一行只在新的那一端看得出来。** 旧构建的 doctor 只比版本号，它看新构建仍然是"同一个 0.9.0"；所以在旧的那台上跑 doctor 全绿不算数，到新的那台上再跑一次。
 
+### doctor 报 `the Agent Node refused this Agent before probing anything`
+
+**症状**：`选哪个 Agent`（`Agent selection`）那一行失败，冒号后面是 Agent Node 自己给的原因；下面 Controller、Claude/Codex、反向 SSH 这些行全是"没查"：
+
+```text
+选哪个 Agent            失败   CCNM_E_AUTH: the Agent Node refused this Agent before probing anything: dedicated Agent home must be private, owned by the execution identity and free of symlinks; …
+反向 SSH                没查   not checked: the Agent Node refused the selected Agent
+```
+
+**原因**：Agent Node 拒绝了这个 workspace 选的实例，什么都没往下探。冒号后面那句就是要修的东西，P62 真机上是 Agent 账号的 `~/.claude` 权限是 0755（要 0700）。
+
+**怎么办**：照冒号后面那句修，修完再跑一次 doctor。
+
+P66 之前的构建把原因弄丢了，同一件事在两边说成两个不相干的错：Runtime Node 上只说 `Agent probe identity differs from the Runtime selection`，Agent Node 上反向 SSH 那一行说 `agent and project are both on <agent>`（把"没探"当成了"在同一台机器上"）。看到这两句，到 Agent Node 上跑一次 doctor，那边的 Controller 那几行带着真正的原因。
+
 ### 会话里工具全废，报 "xxx is not installed"、`workspace_info` 却一切正常
 
 **项目被挪走了，而会话还绑在老路径上。** 一个会话的 root 在启动的那一刻就定死在它的 MCP

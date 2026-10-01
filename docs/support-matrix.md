@@ -59,7 +59,7 @@
 
 平台要分两件事说，因为 P12 之后它们不再是同一个答案。
 
-**Agent 那一侧只有 macOS。** Controller 是 launchd LaunchAgent，会话上下文检查直接问 `launchctl` 和 `security`；Linux Controller、Windows 和其他官方 CLI 版本均未验收。CI 有一个 Linux job，但它是 **Runtime 门禁**：绿的意思是代码在 Linux 上编得过、测试过得去，不是说 Agent 那一半在那儿能跑。
+**Agent 那一侧只有 macOS。** Controller 是 launchd LaunchAgent，会话上下文检查直接问 `launchctl` 和 `security`；Linux Controller、Windows 和其他官方 CLI 版本均未验收。P66 起 `ccnm controller install` 把非默认的配置与状态位置（`--config`/`CCNM_CONFIG`、`XDG_CONFIG_HOME`、`XDG_STATE_HOME`）写进 plist，只有单元测试与 `--dry-run` 的证据，没在真机上装过；一个账号仍只能有一个 Controller（Label 固定）。CI 有一个 Linux job，但它是 **Runtime 门禁**：绿的意思是代码在 Linux 上编得过、测试过得去，不是说 Agent 那一半在那儿能跑。
 
 **Runtime 那一侧（`internal mcp-serve` 与七工具）在 Debian 13 / x86_64 上验过一次**，作为 Remote Workspace MCP 的 dogfood（[记录](research/p12-real-project-2026-09-11.md)）：`cargo fmt`、严格 clippy 与全套测试在那台机器上 676 passed / 0 failed，与 macOS 同数。**那一次是从两个红开始的**，两个都真修了：`SystemRunner::run` 的超时只杀 leader（macOS 因为 bash 会 exec 而一直看不见），以及一个测试助手用了 BSD 语义的 `date -r`。Linux 上的 Managed 入口（Controller/session）仍未验收，Runtime 侧也只验过这一种发行版和架构。
 

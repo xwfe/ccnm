@@ -442,6 +442,12 @@ fn large_line_executor(size: usize) -> Child {
 /// A client reading a large answer slowly sends nothing for longer than the
 /// silence limit and is still there. Once the line is through and it still
 /// says nothing, the count runs from the last chunk it took.
+///
+/// Until the line begins the client answers liveness requests, as Codex
+/// does: the fake executor has to start `sh`, `head` and `tr` first, which
+/// can take seconds on a loaded machine, and a client silent through that
+/// is rightly given up on before the line exists. The silence under test
+/// starts at the line's first byte; so do the rate and the clock.
 #[test]
 fn a_large_message_the_client_is_still_taking_is_not_silence() {
     const SIZE: usize = 1_500_000;
@@ -449,37 +455,61 @@ fn a_large_message_the_client_is_still_taking_is_not_silence() {
     let mut child = large_line_executor(SIZE);
     let (client, peer) = client_pair();
     let reader = std::thread::spawn(move || {
-        let started = Instant::now();
-        let mut total = 0usize;
-        let mut buf = vec![0u8; 64 * 1024];
-        let mut stream = &peer;
+        let mut input = BufReader::with_capacity(64 * 1024, &peer);
+        // A request starts with `{`, the line with `a`, and no request can
+        // land inside the line: the relay holds the output lock from its
+        // first byte to its last. Taking the first newline as the line's end
+        // read a ping as the whole message (62 bytes) whenever the executor
+        // was slower than one.
         loop {
-            let n = stream.read(&mut buf).unwrap();
-            assert!(n > 0, "connection closed before the line was through");
-            total += n;
-            if buf[..n].contains(&b'\n') {
-                return (Instant::now(), total, peer);
+            let head = input.fill_buf().unwrap();
+            assert!(!head.is_empty(), "connection closed before the line began");
+            if head[0] == b'a' {
+                break;
             }
-            let due = Duration::from_secs_f64(total as f64 / RATE);
-            if let Some(wait) = due.checked_sub(started.elapsed()) {
+            let mut request = String::new();
+            input.read_line(&mut request).unwrap();
+            let request: Value = serde_json::from_str(&request).unwrap();
+            assert_eq!(request["method"], "ccnm/liveness", "{request}");
+            let answer = serde_json::json!({"id": request["id"], "error": {"code": -32601, "message": "exec-server client does not implement `ccnm/liveness` yet"}});
+            (&peer).write_all(&line_of(&answer)).unwrap();
+        }
+        let began = Instant::now();
+        let mut taken = 0usize;
+        loop {
+            let chunk = input.fill_buf().unwrap();
+            assert!(
+                !chunk.is_empty(),
+                "connection closed before the line was through"
+            );
+            let (n, through) = match chunk.iter().position(|b| *b == b'\n') {
+                Some(end) => (end + 1, true),
+                None => (chunk.len(), false),
+            };
+            taken += n;
+            input.consume(n);
+            if through {
+                return (began, Instant::now(), taken, peer);
+            }
+            let due = Duration::from_secs_f64(taken as f64 / RATE);
+            if let Some(wait) = due.checked_sub(began.elapsed()) {
                 std::thread::sleep(wait);
             }
         }
     });
     let (ended, end) = mpsc::channel();
-    let started = Instant::now();
     let root = std::env::temp_dir();
     let relay_thread = std::thread::spawn(move || {
         let _ = ended.send(relay(&mut child, Policy::new(root, MARKER), client, FAST));
         child
     });
 
-    let (through, total, _peer) = reader.join().unwrap();
-    assert!(total > SIZE, "{total}");
+    let (began, through, taken, _peer) = reader.join().unwrap();
+    assert_eq!(taken, SIZE + 1, "the line did not arrive whole");
     assert!(
-        through.duration_since(started) > FAST.give_up_after * 2,
+        through.duration_since(began) > FAST.give_up_after * 2,
         "the line went through too fast to prove anything: {:?}",
-        through.duration_since(started)
+        through.duration_since(began)
     );
     if let Ok(early) = end.try_recv() {
         panic!("the relay ended while the line was still going through: {early:?}");

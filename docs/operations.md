@@ -58,13 +58,13 @@ bash scripts/deploy.sh <另一台的 ssh 别名> [workspace]
 
 ### 升级完一定要核对 controller 的进程启动时间
 
-**`ccnm controller install` 不会替换一个已经在监听的 controller。** 它看到有人在听就报告那一个，输出长这样：
+`ccnm controller install` 先 `launchctl bootout` 再 `bootstrap`，标签 `dev.ccnm.controller` 管着的那个 Controller 会被换掉（2026-10-04 fodelf 从 0.9.0 换到 P68 构建：pid 1075 → 29110，新进程的启动时间晚于二进制的修改时间，见 [P68 记录](research/2026-10-04-p68-supervisor-gone-lost-output.md)第 6 节）。**但它最后报告的是"此刻在 socket 上应答的那一个"**：同一个 socket 上要是还有一个不归这个标签管的 Controller——更老的构建里子命令叫 `internal work-controller` 时留下的，或者手工起的——`bootout` 碰不到它，install 报出来的就是它，输出长这样：
 
 ```text
 listening: ccnm 0.2.0 as fodelf, pid 1716, Aqua
 ```
 
-读起来像刚重启过，实际那个 pid 可能是好几天前起的，跑的还是旧二进制。`ccnm doctor` 也抓不到——它显示的 `0.2.0` 是版本字符串，同一个版本号的新旧构建长得一模一样。
+读起来像刚重启过，实际那个 pid 可能是好几天前起的，跑的还是旧二进制（2026-09-10 真撞过：一个五天前的 Controller 接着替新二进制应答）。`ccnm doctor` 也抓不到——它显示的 `0.2.0` 是版本字符串，同一个版本号的新旧构建长得一模一样。
 
 症状出现在别的地方，而且不指向 controller：
 

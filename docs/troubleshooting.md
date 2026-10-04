@@ -779,14 +779,18 @@ CODEX_HOME=~/.config/ccnm/agents/codex /path/to/codex-0.154.0/codex login
 
 **症状**：`session.status` 一直是 `running`（发过 stop 就是 `stopping`），十几分钟后才变成 `unknown`，`failure` 说 `no exit record after 930s … the supervisor did not finish`；`output.unavailable_reason` 是 `agent_refused`。Agent Node 上 `ccnm log` 那一行是 `no end record`。
 
-**其实是**：Agent 上管这次运行的监督进程（`ccnm internal supervise`）没了——被杀、机器重启、Controller 被强行卸掉。`agent-run` 只等结局文件，不看监督进程还在不在，于是要等满这次运行的超时（默认 900 秒）加 30 秒才放弃（2026-10-04 真机，[F22](research/2026-10-04-p62-resume-release.md#61-agent-上的监督进程丢了结果不对f22)，还没修）。`unknown` 是对的：被留下的 Claude/Codex 进程可能还在跑。`agent_refused` 那个标签不对，别据此去查认证。
+**其实是**：Agent 上管这次运行的监督进程（`ccnm internal supervise`）没了——被杀、机器重启、Controller 被强行卸掉。P68 之前 `agent-run` 只等结局文件，不看监督进程还在不在，于是要等满这次运行的超时（默认 900 秒）加 30 秒才放弃（2026-10-04 真机，[F22](research/2026-10-04-p62-resume-release.md#61-agent-上的监督进程丢了结果不对f22)）。
 
-**怎么办**：在 Agent Node 上看 `ps` 里还有没有这次会话的 `claude`/`codex`（命令行里有会话 id），有就按进程组结束它；Runtime 上写锁由执行账号保管，命令都收掉了它自己会放。别重发同一个任务——那次运行可能已经改过东西。
+**P68（2026-10-04）起**：Agent 每 2 秒核一次监督进程，没了就收尾，几秒内变成 `unknown`，`failure` 说 `the supervisor is gone and left no exit record … the Agent it started (pid N) may still be running`。要 Agent Node 装的是新构建；还是十几分钟才变，就是 Agent 那端还旧。`unknown` 是对的：被留下的 Claude/Codex 进程可能还在跑，ccnm 不替它写结局、也不去杀它。`agent_refused` 也是对的：Agent 答复了"这次运行没有结局"，它的输出以后也拿不到（监督进程是 Agent 输出的转存者，它死后的输出没人接），别据此去查认证。
+
+**怎么办**：在 Agent Node 上看 `ps` 里还有没有这次会话的 `claude`/`codex`（`failure` 里有它的 pid，命令行里有会话 id），有就按进程组结束它；Runtime 上写锁由执行账号保管，命令都收掉了它自己会放。别重发同一个任务——那次运行可能已经改过东西。
 
 ### Machine API：`session.result` 说输出是空的，`text` 里却明明有内容
 
 **症状**：`output.bytes_total` 为 0、`complete: true`、没有 `unavailable_reason`，可 `text` 有内容，或者你知道它打印过东西。
 
-**其实是**：Runtime 第一次读结果之前，Agent 上那次会话的原始输出已经没了（被手动删、被清理）。ccnm 把"文件不在"当成了"输出是空的"（2026-10-04 真机，[F23](research/2026-10-04-p62-resume-release.md#62-分页的源头丢了结果不对f23)，还没修）。`text` 是会话结束时就解析好的，不受影响；完整输出已经找不回来。
+**其实是**：Runtime 第一次读结果之前，Agent 上那次会话的原始输出已经没了（被手动删、被清理）。P68 之前 ccnm 把"文件不在"当成了"输出是空的"（2026-10-04 真机，[F23](research/2026-10-04-p62-resume-release.md#62-分页的源头丢了结果不对f23)）。`text` 是会话结束时就解析好的，不受影响；完整输出已经找不回来。
+
+**P68（2026-10-04）起**：跑过的会话缺原始输出，Agent 拒绝交出，`session.result` 给的是旧尾部并带 `unavailable_reason: agent_refused`，不会再说"完整"。要 Agent Node 装的是新构建。从没启动的会话（没登录、被提前停掉）本来就没有输出，照旧是 `bytes_total` 0、完整。
 
 **怎么避免**：要完整输出，就在会话结束后尽快读一次 `session.result`——第一次读的时候 Runtime 会把整份拷到自己这边，之后 Agent 上删不删都不影响。

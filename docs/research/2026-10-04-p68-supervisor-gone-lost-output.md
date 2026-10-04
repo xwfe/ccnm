@@ -1,6 +1,6 @@
 # P68 监督进程丢了不再等满超时、原始输出丢了不再当成空（2026-10-04）
 
-接 [P62 续跑记录](2026-10-04-p62-resume-release.md)第 6.1、6.2 节查出的 F22、F23，它们是 P62.4 剩下的阻塞。**修复只有离线证据**：本机 macOS 26.6.2 arm64、rustc 1.98.0（clippy 另用 1.99.0 跑一遍，CI 的 stable 就是它）；没有跑模型、没有推送，F22/F23 没有在真机上复验。第 6 节是验收之外的事：按用户要求把日用的本机和 fodelf 换成了这个构建。`ccnm.machine/1` 的线格式、内部协议号都没变。两处修的都是 Agent 那一端，要 Agent Node 装的是新构建才生效。
+接 [P62 续跑记录](2026-10-04-p62-resume-release.md)第 6.1、6.2 节查出的 F22、F23，它们是 P62.4 剩下的阻塞。**修复只有离线证据**：本机 macOS 26.6.2 arm64、rustc 1.98.0（clippy 另用 1.99.0 跑一遍，CI 的 stable 就是它）；没有跑模型、没有推送。**同日晚在 P62 的真机拓扑上复验通过**，见 [P62.4 复验记录](2026-10-04-p62-4-recheck.md)。第 6 节是验收之外的事：按用户要求把日用的本机和 fodelf 换成了这个构建。`ccnm.machine/1` 的线格式、内部协议号都没变。两处修的都是 Agent 那一端，要 Agent Node 装的是新构建才生效。
 
 ## 1. 结论
 
@@ -114,7 +114,7 @@ fodelf 上同一条，再跑 `~/.local/bin/ccnm controller install`。
 
 ## 7. 没覆盖的
 
-- **真机没复验**。P62.4 要在授权下重跑续跑记录 6.1、6.2 的两项（只杀本轮的监督进程、只挪本轮会话的 `stdout`），Agent 那端装新构建。
-- Linux 只有 CI 会跑；Agent 目前只在 macOS 上跑（Controller 是 launchd），Linux 上的 `ps` 输出格式只由单元测试的字符串覆盖。
-- 续跑记录 6.1 的余波没动：监督进程丢了的那次运行，Runtime 那边的输出目录只有 `stdout`/`stderr`、没有 `status`，`ccnm cleanup` 会一直把它列成"没结束"而保留，只能等 7 天过期。
+- 真机：2026-10-04 晚在 P62 拓扑上复验通过（监督进程被杀 1.2 秒后 `unknown`；挪走 `stdout` 后给旧尾部加 `agent_refused`），见 [P62.4 复验记录](2026-10-04-p62-4-recheck.md)。
+- Linux：hpsrv 上 1072/1072（同上记录第 3 节）。Agent 目前只在 macOS 上跑（Controller 是 launchd），Linux 上的 `ps` 输出格式只由单元测试的字符串覆盖。
+- 续跑记录 6.1 的余波没动：监督进程丢了的那次运行，`ccnm cleanup` 在三处都把它列成"说不清结束没有/没结束"而保留，只能等 7 天过期或手工删。（原先写的原因"Runtime 那边没有 `status` 文件"不对：正常结束的会话同样没有这个文件、照常可删，决定保留的是那次会话在 Agent 上没有结局，见 [P62.4 复验记录](2026-10-04-p62-4-recheck.md)第 6 节。）
 - F20（doctor 对旧 Agent 先比身份）、F21（受管 Codex 会话 doctor 的 Command approval 行说错）、F24（`workspace add` 写死默认节点名）不在本阶段。

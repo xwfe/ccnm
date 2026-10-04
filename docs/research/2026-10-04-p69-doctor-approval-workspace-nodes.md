@@ -2,7 +2,7 @@
 
 接 [P62 续跑记录](2026-10-04-p62-resume-release.md)第 7 节的 F20、F21、F24。同一天另一个会话在做 P68（F22、F23，[记录](2026-10-04-p68-supervisor-gone-lost-output.md)）；这三条按用户的分工由本会话做，代码先在分支 `claude/musing-antonelli-565039` 上写，P68 完成后再立 P69、补计划与状态、合进 main，所以这个分支上计划提交排在代码之后。
 
-**只有离线证据**：本机 macOS 26.6.2 arm64、rustc 1.98.0；没有跑模型、没有推送、没有部署，三条都没有在真机上复验。`ccnm.machine/1` 的线格式、内部协议号、版本号都没变。
+**只有离线证据**：本机 macOS 26.6.2 arm64、rustc 1.98.0；没有跑模型、没有推送、没有部署，三条都没有在真机上复验。（后注：同日晚 F20、F24 在 P62 的真机上零额度复看通过，F21 没看，见 [P62.4 复验记录](2026-10-04-p62-4-recheck.md)第 6 节。）`ccnm.machine/1` 的线格式、内部协议号、版本号都没变。
 
 ## 1. 结论
 
@@ -98,7 +98,7 @@ Command approval        WARN   Codex sessions run every exec_command without ask
 
 ## 6. 没覆盖的
 
-- **真机**：三条都没有在 P62 的机器上复验。F20 要一台旧构建的 Agent；F21 看一眼 Codex workspace 的 doctor 即可；F24 在节点另起名字的 Runtime 配置上跑一次 `workspace add`。都不花模型额度，可以并进 P62 续跑 F22/F23 复验的那一轮。
+- **真机**：三条都没有在 P62 的机器上复验（后注：F20、F24 已于同日晚复看通过；F21 仍没看）。F20 要一台旧构建的 Agent；F21 看一眼 Codex workspace 的 doctor 即可；F24 在节点另起名字的 Runtime 配置上跑一次 `workspace add`。都不花模型额度，可以并进 P62 续跑 F22/F23 复验的那一轮。
 - **Linux**：没有在 Linux 上跑；改动不涉及平台相关的代码路径。
 - **`--agent-node` 写了 `this` 自己**：会写出一个 Agent 与项目同机（colocated）的 workspace，配置校验放行，`ccnm run` 时按原来的规则拒绝（colocated 没有真实验收）。没有为它另加拒绝。
 - **Codex 会话的审批本身**：见第 3 节，不在本阶段。

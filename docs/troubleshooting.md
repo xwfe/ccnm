@@ -234,7 +234,7 @@ Agent 的 ccnm           失败   CCNM_E_VERSION: work runs ccnm 0.9.0, this mac
 选哪个 Agent            没查   not compared: the Agent Node runs another ccnm build, which may not have read the selection
 ```
 
-修在跑 doctor 的这一端，对面是旧版本也照样看得出来。还看到 `identity differs`，要么跑 doctor 的这台还是 P69 之前的构建，要么两台确实是同一个构建、Agent 回答的是另一个实例——后一种按上一节去 Agent Node 上看原因。
+修在跑 doctor 的这一端，对面是旧版本也照样看得出来。同一张表里 `Reverse SSH` 一行可能说 Runtime "reports ccnm … like this machine, but it is not the same build"——Runtime 其实没问题，是旧 Agent 转述 Runtime 的回答时丢了它不认识的字段（2026-10-04 真机，[F25](research/2026-10-04-p62-4-recheck.md#6-零额度复看与新发现)，没修）；先按 `Agent ccnm` 那行把 Agent 装成同一个构建。还看到 `identity differs`，要么跑 doctor 的这台还是 P69 之前的构建，要么两台确实是同一个构建、Agent 回答的是另一个实例——后一种按上一节去 Agent Node 上看原因。
 
 **怎么办**：两台装同一个版本（各跑一次 `ccnm --version` 核对）。
 

@@ -11,7 +11,7 @@
 | P62.1 授权、身份、版本与候选构建 | 完成（第一轮） | 本记录第 3 节为续跑的部署 |
 | P62.2 两 Provider 受管闭环 | **完成**：Codex 先红后绿、精确停止一次确认（5.1）；Claude 第一轮已过，这次复验停止（5.7） | 5.1、5.7 |
 | P62.3 外部 MCP 与 Machine API 真实组合 | **完成**：外部 Codex Host（5.6）、Machine API（Codex，5.2）与人类 CLI 对照（5.3）；Claude 的这几条第一轮已过 | 4.4、5.2、5.3、5.6 |
-| P62.4 失败、写权、断线、清理 | **未完成**：F16、F17 复验通过；没跑的三项里，清理部分失败通过，监督进程丢失（F22）和分页源头丢失（F23）结果不对 | 5.4、5.5、第 6 节 |
+| P62.4 失败、写权、断线、清理 | **未完成**（本轮）；**2026-10-04 晚复验后完成**：F22、F23 由 P68 修好、真机复验通过，见 [P62.4 复验记录](2026-10-04-p62-4-recheck.md) | 5.4、5.5、第 6 节 |
 | P62.5 候选包、安装、升级回退 | **完成**：v0.10.1 从 release 下载、按 sha256 校验后装到三台；升级与回退都对；Linux 门禁在 hpsrv 与线上 CI 都过 | 第 2 节、4.6、4.7 |
 | P62.6 文档、状态、资源 | 完成 | 第 8 节 |
 
@@ -144,8 +144,8 @@ Machine API 起一个跑 `sleep 60` 的 Claude 任务，等命令出现后，在
 - `claude` 被 launchd 收养后继续跑；它的 stdout 是通往已死监督进程的管道，后来退出时一个字节都没留下。Runtime 上命令照常跑完，`mcp-serve` 退出，写锁 `released`——这一侧没问题。
 - `agent-run` 一直在等：它每 250 ms 看一次有没有结局文件，直到"超时 + 30 秒"，从不检查监督进程还在不在。Agent 自己的 `ccnm log` 写 `no end record`。
 - **调用方看到的**：`running` 一直到我发 `session.stop`，之后 `stopping`；**15 分半之后**（900 秒超时加 30 秒）才变成 `unknown`，`failure` 是 `-32603 … no exit record after 930s … the supervisor did not finish`，`output.unavailable_reason` 写成了 `agent_refused`（Agent 实际说的是"还没结束"）。
-- `unknown` 本身是对的终态（被收养的 `claude` 可能还在跑，证明不了结束），错在两处：一个已经死了的监督进程，要等满超时才被发现，这期间调用方被告知 `running`；以及原因标签不对。（后注：P68 核对后，标签这一条不成立——Agent 确实答复了，这份输出以后也拿不到，正是 `agent_refused` 的定义；等满超时那一条已修。见 [P68 记录](2026-10-04-p68-supervisor-gone-lost-output.md)第 3 节。）
-- 余波：Runtime 那边这次运行的输出目录只有 `stdout`/`stderr`、没有 `status`，`ccnm cleanup` 因此一直列成"没结束"而保留，只能等 7 天过期。
+- `unknown` 本身是对的终态（被收养的 `claude` 可能还在跑，证明不了结束），错在两处：一个已经死了的监督进程，要等满超时才被发现，这期间调用方被告知 `running`；以及原因标签不对。（后注：P68 核对后，标签这一条不成立——Agent 确实答复了，这份输出以后也拿不到，正是 `agent_refused` 的定义；等满超时那一条已修，同日晚真机复验通过。见 [P68 记录](2026-10-04-p68-supervisor-gone-lost-output.md)第 3 节、[P62.4 复验记录](2026-10-04-p62-4-recheck.md)。）
+- 余波：Runtime 那边这次运行的输出目录只有 `stdout`/`stderr`、没有 `status`，`ccnm cleanup` 因此一直列成"没结束"而保留，只能等 7 天过期。（后注：保留是对的，原因说错了——正常结束的会话也没有 `status` 文件，决定保留的是这次会话没有结局，见 [P62.4 复验记录](2026-10-04-p62-4-recheck.md)第 6 节。）
 
 ### 6.2 分页的源头丢了：结果不对（F23）
 
@@ -166,11 +166,11 @@ P59 的约定是拿不到完整内容时如实降级、写明 `unavailable_reaso
 
 | 编号 | 影响 | 现象（真机） | 原因 | 建议 |
 | --- | --- | --- | --- | --- |
-| F20 | 低；**P69 已修（离线）** | 新 Operator 对着版本号不同的旧 Agent，doctor 唯一的失败行是 `Agent probe identity differs from the Runtime selection`（码是 VERSION），`Agent ccnm` 的版本行根本不出现 | instance workspace 先比身份、再出版本行；旧 Agent 不认这次的请求，回来的报告没有身份 | 先比版本：Agent 报的版本号或内部协议与本机不同，就以版本行为主要失败，不再比身份 |
+| F20 | 低；**P69 已修，2026-10-04 晚真机复验通过** | 新 Operator 对着版本号不同的旧 Agent，doctor 唯一的失败行是 `Agent probe identity differs from the Runtime selection`（码是 VERSION），`Agent ccnm` 的版本行根本不出现 | instance workspace 先比身份、再出版本行；旧 Agent 不认这次的请求，回来的报告没有身份 | 先比版本：Agent 报的版本号或内部协议与本机不同，就以版本行为主要失败，不再比身份 |
 | F21 | 中；doctor 那一行 **P69 已修（离线）**，Codex 仍不审批 | 受管 Codex 交互会话里 `exec_command` 不经审批就执行；doctor 对 Codex workspace 仍显示 `Command approval OK: interactive sessions ask before each exec_command, in every permission mode`，使用说明和配置说明也这么写 | "每次都问"靠的是 Claude Code 才认的 `anthropic/requiresUserInteraction`；Codex 一侧 ccnm 设了 `default_tools_approval_mode="approve"`（不设的话 `approval_policy="never"` 下调用全被拒，见 [Codex 探针记录](codex-provider-probe-2026-09-07.md)） | doctor 这一行按 Provider 说实话；文档写明 Codex 会话不问（已改，见第 8 节）；要不要给 Codex 补一道审批另行决定 |
-| F22 | 中；**P68 已修（离线）**，标签核对后不改，见 P68 记录第 3 节 | Agent 上的监督进程被杀后，Machine API 报 `running`/`stopping` 15 分半，才变成 `unknown`；`unavailable_reason` 写成 `agent_refused` | `agent-run` 只等结局文件，不看监督进程是否还活着 | 等结局时同时看监督进程：没了又没有结局，立刻按 `unknown` 收尾；原因标签按 Agent 的回答映射 |
-| F23 | 中；**P68 已修（离线）** | Agent 上的原始输出丢了之后，`session.result` 回"空且完整"的输出，`unavailable_reason` 为空 | 建视图时 `NotFound` 当成 0 字节 | 结束了的会话缺原始输出时报"拿不到"，让 RPC 降级并写明原因 |
-| F24 | 低；**P69 已修（离线）**，加了 `--agent-node` | `ccnm workspace add` 在节点不叫 `agent`/`runtime` 的配置里写不进去（被拒，什么都没写） | 生成的条目固定写默认节点名，命令没有选节点的参数 | Runtime 上 `runtime_node` 默认取 `this`；需要时加 `--agent` 之类的参数 |
+| F22 | 中；**P68 已修，2026-10-04 晚真机复验通过**，标签核对后不改，见 P68 记录第 3 节 | Agent 上的监督进程被杀后，Machine API 报 `running`/`stopping` 15 分半，才变成 `unknown`；`unavailable_reason` 写成 `agent_refused` | `agent-run` 只等结局文件，不看监督进程是否还活着 | 等结局时同时看监督进程：没了又没有结局，立刻按 `unknown` 收尾；原因标签按 Agent 的回答映射 |
+| F23 | 中；**P68 已修，2026-10-04 晚真机复验通过** | Agent 上的原始输出丢了之后，`session.result` 回"空且完整"的输出，`unavailable_reason` 为空 | 建视图时 `NotFound` 当成 0 字节 | 结束了的会话缺原始输出时报"拿不到"，让 RPC 降级并写明原因 |
+| F24 | 低；**P69 已修，2026-10-04 晚真机复验通过**，加了 `--agent-node` | `ccnm workspace add` 在节点不叫 `agent`/`runtime` 的配置里写不进去（被拒，什么都没写） | 生成的条目固定写默认节点名，命令没有选节点的参数 | Runtime 上 `runtime_node` 默认取 `this`；需要时加 `--agent` 之类的参数 |
 
 另记：Machine API 的终态早于 Runtime 上命令收完约 6 秒（5.4），期间写锁一直持有，这是设计如此，不是缺陷；Claude Code 这次升到 2.1.289，首启没再问 auto mode；fodelf 的 Claude 登录提示"3 天后过期"。
 

@@ -199,7 +199,7 @@ root = "/absolute/project/root"
 claude_permission_mode = "acceptEdits"
 allow_unconfined_exec = false
 allow_unisolated_credentials = false   # 默认值；开它之前先读下面那一节
-allow_unattended_exec = false          # 默认值：每条命令执行前问你一次
+allow_unattended_exec = false          # 默认值：Claude 的交互会话每条命令执行前问你一次（Codex 不问，见下）
 external_mcp = "disabled"    # 默认值，可省略
 agent_tools = ["web_search", "mcp_servers"] # 默认值，可省略：受管会话能用 Agent 那边的哪些功能
 ```
@@ -287,6 +287,8 @@ allow_unattended_exec = true
 **默认是会问的，而且任何权限模式都关不掉。** ccnm 给 `exec_command` 挂了 `anthropic/requiresUserInteraction`，Claude Code 在每一种权限模式下都认它——`bypassPermissions` 也一样。理由很直接：一个调用方能关掉的闸门不叫闸门。这个开关是**承担风险的那台机器**把它关掉的唯一入口。
 
 只有 `exec_command` 会问。另外六个工具被路径策略框在 workspace 根目录里，这一个是别人机器上的一个 shell。
+
+**受管 Codex 会话不问，这个开关对它没有作用。** 上面那个键只有 Claude Code 认；Codex 那边 ccnm 必须把 MCP 工具设成自动批准（`default_tools_approval_mode="approve"`），不设的话每次调用都被 Codex 自己拒掉（[实测](research/codex-provider-probe-2026-09-07.md)）。所以 Codex 会话里模型调 `exec_command` 就直接执行，2026-10-04 真机上看到的就是这样。管住它的只剩 `exec_gate` 和 Runtime 执行身份。`ccnm doctor` 的 `Command approval` 行目前对 Codex workspace 也说"会问"，那句不对（[P62 续跑记录](research/2026-10-04-p62-resume-release.md) F21）。
 
 **它跟前两个开关不是一类东西：它不授权任何事。** 命令能做什么由 `exec_gate` 和 Runtime 执行身份决定，这个开关一点都动不了；它只决定中间还有没有人。所以：
 

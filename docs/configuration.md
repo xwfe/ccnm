@@ -288,7 +288,7 @@ allow_unattended_exec = true
 
 只有 `exec_command` 会问。另外六个工具被路径策略框在 workspace 根目录里，这一个是别人机器上的一个 shell。
 
-**受管 Codex 会话不问，这个开关对它没有作用。** 上面那个键只有 Claude Code 认；Codex 那边 ccnm 必须把 MCP 工具设成自动批准（`default_tools_approval_mode="approve"`），不设的话每次调用都被 Codex 自己拒掉（[实测](research/codex-provider-probe-2026-09-07.md)）。所以 Codex 会话里模型调 `exec_command` 就直接执行，2026-10-04 真机上看到的就是这样。管住它的只剩 `exec_gate` 和 Runtime 执行身份。`ccnm doctor` 的 `Command approval` 行目前对 Codex workspace 也说"会问"，那句不对（[P62 续跑记录](research/2026-10-04-p62-resume-release.md) F21）。
+**受管 Codex 会话不问，这个开关对它没有作用。** 上面那个键只有 Claude Code 认；Codex 那边 ccnm 必须把 MCP 工具设成自动批准（`default_tools_approval_mode="approve"`），不设的话每次调用都被 Codex 自己拒掉（[实测](research/codex-provider-probe-2026-09-07.md)）。所以 Codex 会话里模型调 `exec_command` 就直接执行，2026-10-04 真机上看到的就是这样。管住它的只剩 `exec_gate` 和 Runtime 执行身份。`ccnm doctor` 的 `Command approval` 行对 Codex workspace 是 WARN，写的就是这件事；P69 之前的构建在这里说"会问"，那句不对（[P62 续跑记录](research/2026-10-04-p62-resume-release.md) F21）。
 
 **它跟前两个开关不是一类东西：它不授权任何事。** 命令能做什么由 `exec_gate` 和 Runtime 执行身份决定，这个开关一点都动不了；它只决定中间还有没有人。所以：
 
@@ -531,11 +531,13 @@ ccnm init --agent <alias>       # 在项目所在的机器上
 ccnm init --runtime <alias>     # 在跑 Claude 的机器上
 
 ccnm workspace list
-ccnm workspace add <name> [path]
+ccnm workspace add <name> [path] [--agent-node <node>]
 ccnm workspace remove <name>
 ```
 
 `ws` 是 `workspace` 的别名。
+
+`workspace add` 在项目所在的机器上跑，写的节点从这份配置里来（P69 起）：`runtime_node` 是 `this`（`this` 就叫 `runtime` 时不写，用默认值）；`agent_node` 是叫 `agent` 的那个节点，没有就是 `this` 以外唯一的那个，有好几个时必须用 `--agent-node` 指定，否则报错、什么都不写。P69 之前它总写 `agent`/`runtime`，节点另起名字的配置会被拒（[F24](research/2026-10-04-p62-resume-release.md#7-新发现)）。
 
 ccnm 用 `toml_edit` 增量修改这个文件，你写的注释不会被吃掉。写之前会整份 parse 一遍，不合法就一个字节都不写。
 

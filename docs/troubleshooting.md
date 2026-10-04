@@ -225,7 +225,18 @@ P66 之前的构建把原因弄丢了，同一件事在两边说成两个不相�
 
 **症状**：`Agent selection` 一行失败，码是 `CCNM_E_VERSION`，下面没有 `Agent ccnm` 那几行。
 
-**多半是两台的 ccnm 版本不一样**：对面是旧版本（比如 v0.9.0）时，它看不懂这次的请求，回来的报告没有身份，doctor 先比身份就停在这一行，版本那行根本没轮到（2026-10-04 真机，[F20](research/2026-10-04-p62-resume-release.md#7-新发现)，还没修）。先在两台上各跑一次 `ccnm --version`，不一样就装同一个版本；版本一样还报这一句，再按上一节去 Agent Node 上看原因。
+**多半是两台的 ccnm 版本不一样**：对面是旧版本（比如 v0.9.0）时，它看不懂这次的请求，回来的报告没有身份，doctor 先比身份就停在这一行，版本那行根本没轮到（2026-10-04 真机，[F20](research/2026-10-04-p62-resume-release.md#7-新发现)）。
+
+**P69（2026-10-04）起已修**：身份对不上时先比版本，失败的是这一行，`Agent selection` 记成没比较：
+
+```text
+Agent 的 ccnm           失败   CCNM_E_VERSION: work runs ccnm 0.9.0, this machine runs 0.10.1; install the same build on both
+选哪个 Agent            没查   not compared: the Agent Node runs another ccnm build, which may not have read the selection
+```
+
+修在跑 doctor 的这一端，对面是旧版本也照样看得出来。还看到 `identity differs`，要么跑 doctor 的这台还是 P69 之前的构建，要么两台确实是同一个构建、Agent 回答的是另一个实例——后一种按上一节去 Agent Node 上看原因。
+
+**怎么办**：两台装同一个版本（各跑一次 `ccnm --version` 核对）。
 
 ### 会话里工具全废，报 "xxx is not installed"、`workspace_info` 却一切正常
 
@@ -664,6 +675,25 @@ sudo install -d -o ccrun -g ccrun -m 700 /srv/ccnm/proj    # 你只需要能 sta
 ```
 
 别为了绕过去把执行账号的家目录改成 0755：那等于让机器上所有账号都能读它家里的东西。
+
+### `ccnm workspace add` 报 `agent_node = "agent" does not match any [nodes.*] entry`
+
+**症状**：配置里的节点不叫 `agent`、`runtime`（比如按主机名叫 `hpsrv`、`fodelf`），`workspace add` 退出码 10，什么都没写：
+
+```text
+CCNM_E_CONFIG:
+that change would leave …/config.toml unusable, so nothing was written: workspaces.proj.agent_node = "agent" does not match any [nodes.*] entry
+workspaces.proj.runtime_node = "runtime" does not match any [nodes.*] entry
+```
+
+**原因**：P69 之前它不看配置，总写 `agent_node = "agent"`，`runtime_node` 留默认的 `runtime`（2026-10-04 真机，[F24](research/2026-10-04-p62-resume-release.md#7-新发现)）。
+
+**P69（2026-10-04）起已修**：
+
+- `runtime_node` 取配置里的 `this`——`workspace add` 本来就在项目所在的机器上跑。`this` 就叫 `runtime` 时不写这一行，和以前一样。
+- Agent 节点：有叫 `agent` 的就用它；没有的话，`this` 以外只有一个节点就用那一个；不止一个时报错列出候选，要你用 `--agent-node <节点名>` 指定，什么都不写。不替你猜，猜错了这个 workspace 的会话会被派到别的机器上。
+
+**旧构建上怎么办**：手工在 `[workspaces.<名字>]` 里写 `agent_node = "<节点名>"`、`runtime_node = "<this 的值>"`，再跑 `ccnm doctor <名字>`。
 
 ### Machine API 的会话 `failed`，`text`、`exit_code`、输出全是空的
 

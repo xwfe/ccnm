@@ -790,4 +790,3 @@ CODEX_HOME=~/.config/ccnm/agents/codex /path/to/codex-0.154.0/codex login
 **其实是**：Runtime 第一次读结果之前，Agent 上那次会话的原始输出已经没了（被手动删、被清理）。ccnm 把"文件不在"当成了"输出是空的"（2026-10-04 真机，[F23](research/2026-10-04-p62-resume-release.md#62-分页的源头丢了结果不对f23)，还没修）。`text` 是会话结束时就解析好的，不受影响；完整输出已经找不回来。
 
 **怎么避免**：要完整输出，就在会话结束后尽快读一次 `session.result`——第一次读的时候 Runtime 会把整份拷到自己这边，之后 Agent 上删不删都不影响。
-

@@ -984,17 +984,22 @@ fn sweep_stale_temps(plan: &[Planned], journal_dir: Option<&Path>) {
             if !name.to_string_lossy().starts_with(TEMP_PREFIX) {
                 continue;
             }
-            let stale = entry
-                .metadata()
-                .and_then(|m| m.modified())
-                .map(|t| t.elapsed().is_ok_and(|age| age > STALE_TEMP))
-                .unwrap_or(false);
-            if stale && !spoken_for.contains(&entry.path()) {
+            if is_stale(&entry.path()) && !spoken_for.contains(&entry.path()) {
                 tracing::warn!(path = %entry.path().display(), "removing a leftover patch temp file");
                 let _ = std::fs::remove_file(entry.path());
             }
         }
     }
+}
+
+/// Last written more than [`STALE_TEMP`] ago. A file whose age cannot be
+/// read is not stale: leaving a leftover is the cheap mistake. The entry
+/// itself is aged, not what a symlink points at, because the entry is what
+/// gets removed.
+fn is_stale(path: &Path) -> bool {
+    std::fs::symlink_metadata(path)
+        .and_then(|m| m.modified())
+        .is_ok_and(|t| t.elapsed().is_ok_and(|age| age > STALE_TEMP))
 }
 
 /// Every backup path any journal on this machine is still promising.
@@ -1135,13 +1140,11 @@ fn probe_journal(path: &Path, while_held: impl FnOnce(&std::fs::File)) -> bool {
             // close because a run locks its marker before anybody can
             // see it; a journal is not in that position.)
             //
-            // A probe that gets to a `.tmp` first costs that commit its
-            // journal whatever happens here: it is taken for unfinished
-            // and removed. That is a fault of its own, and while it
-            // stands, dropping this unlock would change next to nothing.
-            // It stays so that a probe holds nothing once it has
-            // answered, and whatever closes that fault does not find a
-            // lock left in a child in its way.
+            // `check_abandoned` now probes a `.tmp` only once it is
+            // older than any commit takes to lock it, so no probe should
+            // meet a writer on its way to that lock. This stays so that a
+            // probe holds nothing once it has answered, and the guarantee
+            // does not rest on that timing.
             if let Err(e) = file.unlock() {
                 tracing::warn!(
                     journal = %path.display(),
@@ -1311,8 +1314,18 @@ impl Journal {
             // A journal whose rename never happened. The commit it would
             // have described never started, so there is nothing to report
             // and nothing to keep.
+            //
+            // Unless it is young: then it is most likely another patch, in
+            // any workspace of this account, between creating its journal
+            // and locking it. Removed there, that patch failed to place
+            // its journal; probed there, it was refused its own lock. So a
+            // `.tmp` is not even probed until it is older than
+            // `STALE_TEMP`. The clock is safe to ask here, unlike for a
+            // `.json` (`still_running`): all it decides is when a few
+            // hundred bytes of garbage go, and a commit that never started
+            // has changed nothing either way.
             if path.extension().is_some_and(|ext| ext == "tmp") {
-                if !still_running(&path) {
+                if is_stale(&path) && !still_running(&path) {
                     tracing::warn!(journal = %path.display(), "removing a patch journal that was never finished");
                     let _ = std::fs::remove_file(&path);
                 }
@@ -3571,6 +3584,49 @@ mod tests {
             "fn main() {\n    let x = 3;\n}\n"
         );
         assert!(!partial.exists(), "and it is tidied away");
+    }
+
+    /// A young `.json.tmp` is somebody else's patch between creating its
+    /// journal and locking it -- about 5 ms on macOS, where `sync_all` is
+    /// an `F_FULLFSYNC` -- not a write that never finished. `patches/` is
+    /// shared by every workspace of the account, so the other patch can be
+    /// in any project. Taken for unfinished, it was removed, and that
+    /// patch failed with "cannot place the patch journal"; probed at the
+    /// wrong moment, its own lock was refused instead.
+    #[test]
+    fn a_journal_still_being_written_by_another_patch_is_left_alone() {
+        let root = workspace("journal-young");
+        let journals = journals("journal-young");
+        // Where `Journal::open` is after `File::create` and before
+        // `try_lock`: on disk, unlocked, and just made.
+        let (partial, done) = journal_names(&journals, 4321, "abcdef123456");
+        fs::write(
+            &partial,
+            b"{\"pid\": 4321, \"root\": \"/elsewhere\", \"files\": []}",
+        )
+        .unwrap();
+
+        apply_patch(
+            &root,
+            Some(&journals),
+            &ApplyPatchArgs {
+                files: vec![update(
+                    "src/main.rs",
+                    &version(&root, "src/main.rs"),
+                    "let x = 1;",
+                    "let x = 3;",
+                )],
+                dry_run: None,
+            },
+        )
+        .expect("another patch's journal in the making blocks nothing");
+        assert!(partial.exists(), "it is not this patch's to remove");
+
+        // And the other patch carries on as if nobody had looked.
+        let file = fs::File::options().write(true).open(&partial).unwrap();
+        file.try_lock()
+            .expect("the writer still gets its exclusive lock");
+        fs::rename(&partial, &done).expect("and still places its journal");
     }
 
     /// A `.json` got its name from a rename, so it was written whole, so

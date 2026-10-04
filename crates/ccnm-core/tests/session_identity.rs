@@ -610,13 +610,24 @@ fn exact_stop_against_a_real_terminal_waits_out_a_transport_that_lingers() {
     // The pane runs a script rather than the lingering command itself: the
     // tmux server keeps the command line of the client that started it, and
     // a payload there would look like a transport that never exits.
+    //
+    // It says when it is ready, after it has stopped listening to SIGHUP.
+    // Showing up in `ps` is not that: the command line is there from the
+    // exec, before Python has run a line, and a stop that lands in between
+    // kills it with the very SIGHUP it is meant to outlive. On a loaded
+    // macOS runner that took the release gate down once (525 ms).
     let linger = own.dir.join("linger.py");
+    let ready = own.dir.join("ready");
     std::fs::write(
         &linger,
-        "import signal, sys, time\n\
-         signal.signal(signal.SIGHUP, signal.SIG_IGN)\n\
-         try:\n    sys.stdin.buffer.read()\nexcept OSError:\n    pass\n\
-         time.sleep(1.5)\n",
+        format!(
+            "import signal, sys, time\n\
+             signal.signal(signal.SIGHUP, signal.SIG_IGN)\n\
+             open('{}', 'w').close()\n\
+             try:\n    sys.stdin.buffer.read()\nexcept OSError:\n    pass\n\
+             time.sleep(1.5)\n",
+            ready.display()
+        ),
     )
     .unwrap();
     let pane = own.dir.join("pane.sh");
@@ -647,10 +658,10 @@ fn exact_stop_against_a_real_terminal_waits_out_a_transport_that_lingers() {
         String::from_utf8_lossy(&out.stdout).contains(&payload)
     };
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while !listed() {
+    while !(ready.exists() && listed()) {
         assert!(
             std::time::Instant::now() < deadline,
-            "the stand-in transport never appeared in ps"
+            "the stand-in transport never got ready"
         );
         std::thread::sleep(std::time::Duration::from_millis(50));
     }

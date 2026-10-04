@@ -21,8 +21,8 @@ Runtime Node                              Agent Node
 
 | | |
 | --- | --- |
-| 最新发布 | [v0.10.0](https://github.com/xwfe/ccnm/releases)（2026-10-04） |
-| v0.10.0 比 v0.9.0 多了什么 | 精确停止、完整结果分页、写锁预检、跨账号清理（P58–P61）；Machine API 断开后任务照跑、停止标志不丢、ssh 连不上记 `failed`（P63）；交互会话 stop 等通道退出再确认、`ccnm log` 把被停掉的会话记成"被停止"、doctor 能认出版本号相同的不同构建（P64）；Operator 没权限看项目目录时不再误报"不存在"、Machine API 的 `session.result` 给出会话没起来的原因、doctor 写明 Codex 登录只看了本地（P65）；`ccnm status` 指出项目终端在别的实例手里、doctor 带回 Agent 拒绝所选实例的原因、`ccnm controller install` 带上非默认的配置和状态位置、中文帮助补全（P66）；`apply_patch` 两处并发误判（P67 与同期修复）。**内部协议和 v0.9.0 不兼容**：两台机器要一起升，混装时起会话报 `CCNM_E_VERSION` |
+| 最新发布 | [v0.10.1](https://github.com/xwfe/ccnm/releases)（2026-10-04）。`v0.10.0` 的 tag 打了，但发布流程在 macOS 门禁上被一条测试的时序问题挡住、没有产出，修好测试后直接发了 v0.10.1，两者只差那条测试和版本号 |
+| v0.10.1 比 v0.9.0 多了什么 | 精确停止、完整结果分页、写锁预检、跨账号清理（P58–P61）；Machine API 断开后任务照跑、停止标志不丢、ssh 连不上记 `failed`（P63）；交互会话 stop 等通道退出再确认、`ccnm log` 把被停掉的会话记成"被停止"、doctor 能认出版本号相同的不同构建（P64）；Operator 没权限看项目目录时不再误报"不存在"、Machine API 的 `session.result` 给出会话没起来的原因、doctor 写明 Codex 登录只看了本地（P65）；`ccnm status` 指出项目终端在别的实例手里、doctor 带回 Agent 拒绝所选实例的原因、`ccnm controller install` 带上非默认的配置和状态位置、中文帮助补全（P66）；`apply_patch` 两处并发误判（P67 与同期修复）。**内部协议和 v0.9.0 不兼容**：两台机器要一起升，混装时起会话报 `CCNM_E_VERSION` |
 | 真机验收 | P62（macOS Agent → Debian 13 Runtime）**受阻**：Claude 那一半全部跑通，Codex 那一半被账号额度挡住。它查出的 19 个问题里，Machine API 的三处已在 P63 离线修好（[P63 记录](docs/research/2026-09-30-p63-rpc-disconnect-stop.md)），交互 stop 与同版本号不同构建两处在 P64 离线修好（[P64 记录](docs/research/2026-09-30-p64-stop-outcome-same-number-builds.md)），Debian 家目录、Machine API 失败原因、Codex 登录提示三处在 P65 离线修好（[P65 记录](docs/research/2026-09-30-p65-hidden-root-failure-reason-codex-login.md)），八条低影响的在 P66 修好或补进文档（[P66 记录](docs/research/2026-10-01-p66-low-impact-findings.md)），真机复验等 P62 续跑。见 [P62 记录](docs/research/2026-09-30-p62-real-machine.md) |
 
 每一项能力验到了哪一步、明确**没**验过什么，逐条在[支持矩阵](docs/support-matrix.md)里。
@@ -57,7 +57,7 @@ mv ccnm ~/.local/bin/ccnm.new && mv ~/.local/bin/ccnm.new ~/.local/bin/ccnm
 
 - **别用 `cp` 覆盖跑过的 ccnm。** Apple Silicon 上写进已执行过的 Mach-O 会让代码签名失效，之后每次执行都 `Killed: 9`，而老进程还在用老代码跑。上面"新文件 + 改名"就是为了避开它。
 - **浏览器下载的包带隔离属性**，macOS 拒绝执行：`xattr -d com.apple.quarantine ccnm`。用 `curl` 下载不会带。
-- **版本号一样不代表是同一个构建。** 两次发版之间从 main 编的构建都叫上一个发布的号（比如 v0.10.0 之后自己编的也叫 0.10.0）。v0.10.0 起 doctor 在版本号相同时再比内部协议最高号，对不上就报 `not the same build`——但只有新的那一端会说，旧构建的 doctor 照样全绿，起会话时才报 `message is not valid for protocol 1`。所以两台都跑一遍 doctor，以新的那台为准。
+- **版本号一样不代表是同一个构建。** 两次发版之间从 main 编的构建都叫上一个发布的号（比如 v0.10.1 之后自己编的也叫 0.10.1）。v0.10.0 起 doctor 在版本号相同时再比内部协议最高号，对不上就报 `not the same build`——但只有新的那一端会说，旧构建的 doctor 照样全绿，起会话时才报 `message is not valid for protocol 1`。所以两台都跑一遍 doctor，以新的那台为准。
 
 ## 快速开始
 

@@ -490,7 +490,7 @@ Agent 的输出可能很大，协议不会把它整个塞进一条响应：
 - `stream`：这一页属于哪个流。`output.stream` 可选 `"stdout"`（默认）或 `"stderr"`，服务端在 `hello` 的 `capabilities.output_streams` 里声明它支持哪些。两个流分开保留、分开翻页，**不按时间混在一起**——谁先谁后本来就无法证明。
 - `source_bytes`：Agent 进程往这个流实际写了多少字节。
 - `source_truncated`：`true` 表示保留下来的少于写出的，**缺的那部分永久没了**（每个流只保留最后 32 MiB）。它和 `truncated` 不是一回事：`truncated` 只是说这一页没覆盖全部保留内容，接着翻就能取到。
-- `unavailable_reason`：拿不到完整保留内容时出现，这时 `tail` 只是旧版本留下的那段尾部。`legacy_tail`：升级前接受的 session，本来就只留了尾部；`agent_unreachable`：这次联系不上 Agent，稍后再取可能拿得到；`agent_refused`：Agent 答复了拒绝（例如它还是旧版本，或者会话目录已经被清理）。
+- `unavailable_reason`：拿不到完整保留内容时出现，这时 `tail` 只是旧版本留下的那段尾部。`legacy_tail`：升级前接受的 session，本来就只留了尾部；`agent_unreachable`：这次联系不上 Agent，稍后再取可能拿得到；`agent_refused`：Agent 答复了，但交不出完整内容，等一会儿再取也不会变好（例如它还是旧版本、会话目录已经被清理、这次运行在 Agent 上没有留下结局，或者原始输出在第一次被读之前就不在了）。
 
 `bytes_total` 数的是保留视图的 UTF-8 字节。视图在会话结束后第一次被读时生成，之后不再变化：Agent 的私有目录路径在视图生成时就被替换掉，不是每页各替换一次，所以一段路径跨两页也不会漏出一半；不是合法 UTF-8 的字节换成 U+FFFD（3 个字节）。分页从不切开一个字符。
 

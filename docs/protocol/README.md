@@ -53,6 +53,11 @@ P64（2026-09-30）修了上面第一条带出来的一个缺陷：owner 进程�
 
 P65（2026-09-30）起 `session.result` 多一个可选字段 `failure`（[协议 5.5 节](machine-protocol-v1.md#55-sessionresult)）：会话不是以 Agent 进程自己结束收场时——没起来，或服务端说不清——给出原因。`code` 与 `ccnm_code` 用的是第 10 节错误码表的同一套，`detail` 给人看、家目录前缀写成 `~`、最长 2048 字节。此前这类会话到调用方手里只是一个 `exit_code`、`text` 都为 null 的 `failed`，原因要去 Operator 的记录文件里找（[P62 记录](../research/2026-09-30-p62-real-machine.md) F3）。按第 13 节这是加法；升级前已结束的会话只有 `detail`。第 9 节"任何字段里都不出现私有目录的绝对路径"目前只有 `failure.detail` 做了这一步，**被拒调用的 `error.message` 仍是 ccnm 给人看的原话，没有过这道处理**。
 
+P68（2026-10-04）修了 P62 续跑真机查出的两处（[P62 续跑记录](../research/2026-10-04-p62-resume-release.md) F22、F23，修法见 [P68 记录](../research/2026-10-04-p68-supervisor-gone-lost-output.md)）。两处都在 Agent 那一端，要 Agent Node 装的是新构建：
+
+- **Agent 上管这次运行的监督进程没了，几秒内就是 `unknown`**，`failure` 是 `-32603`，说明监督进程没留下结局、它起的 Agent 进程可能还在跑。此前要等满这次运行的超时加 30 秒（默认 15 分半），这期间一直回 `running`。
+- **跑过的会话，原始输出在第一次被读之前就不在了，`output` 给旧尾部并带 `unavailable_reason: agent_refused`**，不再回"空且完整"。从没启动的会话本来就没有输出，照旧是空的、完整的。
+
 P59（2026-09-29）起 `session.result` 的输出按[协议第 9 节](machine-protocol-v1.md#输出引用)实现：每个流保留最后 32 MiB，第一页是末尾、`cursor` 往前翻，`max_bytes` 生效，stderr 用 `output.stream` 单独取。完整内容在 Agent 上生成、在第一次读时整份拷到本机，之后翻页不再联系 Agent。Agent 还是 P59 之前的版本或这时联系不上，服务端给的是旧版本留下的那段尾部，并用 `unavailable_reason` 说明，不当成完整输出。游标只在发出它的 `ccnm rpc` 进程里有效。详见 [P59 记录](../research/2026-09-29-p59-output-snapshot.md)。
 
 P60（2026-09-29）起 `session.start` 在分配 session id 之前先问写入 guard：Operator 经 Agent 问到 Runtime 执行账号（内部协议 9），因为锁在执行账号自己的 state 目录里。有进程正持有回 `-32008`；没人持有却也交不出去（上一个会话故意留着、异常退出留下的、标记损坏或读不了）回 `-32007`，`data.reason` 说是哪一种，这种要人处理，重试不会好。同一个 `start_key` 的重发先按原记录回答，不经过这一步。Agent、Runtime 任何一端早于 P60 时问不到，启动照 P59 的样子进行。详见 [P60 记录](../research/2026-09-29-p60-write-guard-observation.md)。

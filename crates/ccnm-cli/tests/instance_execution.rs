@@ -432,13 +432,24 @@ fn legacy_mcp_payloads_cannot_bypass_an_instance_selected_workspace() {
     }
 }
 
-#[test]
-fn actual_agent_work_path_resolves_profile_controller_binding_and_runtime_mcp() {
+/// What [`bound_print_run`] leaves for a test to look at.
+struct BoundRun {
+    out: std::process::Output,
+    took: std::time::Duration,
+    claude_home: PathBuf,
+    runtime_state: PathBuf,
+}
+
+/// The real `internal agent-run` for a bound Claude instance, against a
+/// Runtime reached through a fake `ssh` that runs the real binary, and a
+/// controller on a socket that starts `supervisor` -- a shell body that
+/// reads `{sessions}` as the sessions directory -- in place of
+/// `ccnm internal supervise`.
+fn bound_print_run(f: &Fixture, supervisor: &str, timeout_secs: u64) -> BoundRun {
     use ccnm_core::instance::{AgentLocal, AgentProfiles};
     use ccnm_core::process::{FakeRunner, Output};
-    use ccnm_core::protocol::run::{RunReport, RunRequest};
+    use ccnm_core::protocol::run::RunRequest;
     use ccnm_core::provider::AgentBinaries;
-    let f = Fixture::new();
     let agent_home = f.0.join("agent-home");
     let claude_home = agent_home.join(".claude");
     std::fs::create_dir_all(&claude_home).unwrap();
@@ -480,16 +491,16 @@ fn actual_agent_work_path_resolves_profile_controller_binding_and_runtime_mcp() 
     std::fs::set_permissions(&fake_ssh, std::fs::Permissions::from_mode(0o700)).unwrap();
 
     let sessions = f.short_state().join("ccnm/sessions");
-    let supervisor = f.0.join("supervisor");
+    let script = f.0.join("supervisor");
     std::fs::write(
-        &supervisor,
+        &script,
         format!(
-            "#!/bin/sh\nfor s in '{sessions}'/*/; do printf '%s' '{{\"is_error\":false,\"result\":\"bound instance completed\",\"session_id\":\"provider-thread-separate\",\"num_turns\":1}}' > \"$s/stdout\"; : > \"$s/stderr\"; printf '%s' '{{\"exit_code\":0,\"timed_out\":false,\"duration_ms\":9}}' > \"$s/exit.tmp\"; mv \"$s/exit.tmp\" \"$s/exit\"; done\n",
-            sessions = sessions.display(),
+            "#!/bin/sh\n{}\n",
+            supervisor.replace("{sessions}", &sessions.display().to_string())
         ),
     )
     .unwrap();
-    std::fs::set_permissions(&supervisor, std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
 
     let socket = f.short_state().join("ccnm/controller.sock");
     std::fs::create_dir_all(socket.parent().unwrap()).unwrap();
@@ -514,7 +525,7 @@ fn actual_agent_work_path_resolves_profile_controller_binding_and_runtime_mcp() 
             local: Some(AgentLocal::new(AgentProfiles::default(), local_home, None).unwrap()),
             config_path: Some(config_path),
             tmux: None,
-            exe: supervisor,
+            exe: script,
         };
         for _ in 0..3 {
             listener.serve_one(&tools).unwrap();
@@ -534,11 +545,12 @@ fn actual_agent_work_path_resolves_profile_controller_binding_and_runtime_mcp() 
         provider_config_dir: None,
         permission_mode: Default::default(),
         prompt: "fixture".into(),
-        timeout_secs: 30,
+        timeout_secs,
         codex_exec_server: false,
         agent_tools: Default::default(),
         session: None,
     };
+    let began = std::time::Instant::now();
     let out = f
         .command()
         .env("HOME", &agent_home)
@@ -551,7 +563,28 @@ fn actual_agent_work_path_resolves_profile_controller_binding_and_runtime_mcp() 
         ])
         .output()
         .unwrap();
+    let took = began.elapsed();
     served.join().unwrap();
+    BoundRun {
+        out,
+        took,
+        claude_home,
+        runtime_state,
+    }
+}
+
+#[test]
+fn actual_agent_work_path_resolves_profile_controller_binding_and_runtime_mcp() {
+    use ccnm_core::protocol::run::RunReport;
+    let f = Fixture::new();
+    // Ends every session it finds the way the real supervisor would, by
+    // writing `exit` last.
+    let run = bound_print_run(
+        &f,
+        "for s in '{sessions}'/*/; do printf '%s' '{\"is_error\":false,\"result\":\"bound instance completed\",\"session_id\":\"provider-thread-separate\",\"num_turns\":1}' > \"$s/stdout\"; : > \"$s/stderr\"; printf '%s' '{\"exit_code\":0,\"timed_out\":false,\"duration_ms\":9}' > \"$s/exit.tmp\"; mv \"$s/exit.tmp\" \"$s/exit\"; done",
+        30,
+    );
+    let out = &run.out;
     assert!(
         out.status.success(),
         "{}",
@@ -569,11 +602,11 @@ fn actual_agent_work_path_resolves_profile_controller_binding_and_runtime_mcp() 
     );
     assert_ne!(report.session, "provider-thread-separate");
     let text = String::from_utf8_lossy(&out.stdout);
-    assert!(!text.contains(claude_home.to_str().unwrap()));
+    assert!(!text.contains(run.claude_home.to_str().unwrap()));
     let spec = ccnm_core::session::load(&Dir::at(report.session_dir)).unwrap();
     assert_eq!(spec.agent_identity, report.agent_identity);
     assert_eq!(spec.runtime_node.as_deref(), Some("runtime"));
-    let guards = runtime_state.join("ccnm/write-guards");
+    let guards = run.runtime_state.join("ccnm/write-guards");
     let states: Vec<_> = std::fs::read_dir(guards)
         .unwrap()
         .flatten()
@@ -583,6 +616,47 @@ fn actual_agent_work_path_resolves_profile_controller_binding_and_runtime_mcp() 
         states,
         vec!["released\n"],
         "preflight released Runtime authority cleanly"
+    );
+}
+
+/// F22 (P62, 2026-10-04): the supervisor is killed and never writes `exit`.
+/// `agent-run` used to wait out the session's timeout plus 30 seconds --
+/// 15½ minutes on the real machine, with the caller told `running` -- for
+/// a file nobody was left to write. It looks at the supervisor while it
+/// waits and says so within seconds, as an error the Operator reads as
+/// `unknown`. It writes no outcome of its own: the Agent the supervisor
+/// started may still be running, and that is not an ending.
+#[test]
+fn a_supervisor_that_dies_without_an_outcome_is_noticed_in_seconds() {
+    let f = Fixture::new();
+    // Gets as far as the real one does before it starts the Agent, then
+    // dies the way SIGKILL makes it die: no exit file.
+    let run = bound_print_run(
+        &f,
+        "for s in '{sessions}'/*/; do : > \"$s/stdout\"; : > \"$s/stderr\"; done\nkill -KILL $$",
+        1,
+    );
+    let err = String::from_utf8_lossy(&run.out.stderr);
+    assert_eq!(
+        run.out.status.code(),
+        Some(ccnm_core::ErrorCode::Internal.exit_code()),
+        "{err}"
+    );
+    assert!(err.starts_with("CCNM_E_INTERNAL"), "{err}");
+    assert!(err.contains("left no exit record"), "{err}");
+    assert!(
+        run.took < std::time::Duration::from_secs(20),
+        "waited {:?}, as if the supervisor could still write its outcome: {err}",
+        run.took
+    );
+    let sessions: Vec<_> = std::fs::read_dir(f.short_state().join("ccnm/sessions"))
+        .unwrap()
+        .flatten()
+        .collect();
+    assert_eq!(sessions.len(), 1);
+    assert!(
+        !Dir::at(sessions[0].path()).exit().exists(),
+        "an ending nobody saw is not written down"
     );
 }
 

@@ -257,6 +257,46 @@ impl Tools<'_> {
 /// supervisor itself is gone.
 const EXIT_GRACE: Duration = Duration::from_secs(30);
 
+/// Is the supervisor recorded at `pid` for this session gone (F22)?
+///
+/// Gone: no such process, a zombie, or a process at that pid that is not
+/// this session's `ccnm internal supervise` -- the pid was reused, so the
+/// supervisor itself is not there. `ps` failing to answer is not gone; the
+/// caller still has its deadline.
+fn supervisor_gone(pid: u32, dir: &session::Dir, tools: &Tools<'_>) -> bool {
+    let asked = tools
+        .runner
+        .run(&crate::process::Cmd::new("/bin/ps").args([
+            "-ww",
+            "-p",
+            &pid.to_string(),
+            "-o",
+            "stat=",
+            "-o",
+            "command=",
+        ]))
+        .and_then(|out| known_process(out, "recorded supervisor"));
+    match asked {
+        Ok(None) => true,
+        Ok(Some(line)) => !runs_supervisor_of(&line, dir),
+        Err(_) => false,
+    }
+}
+
+/// Does this `ps -o stat= -o command=` line show a live supervisor for the
+/// session in `dir`? Matched the way an exact stop matches it before it
+/// signals: the last four words are `internal supervise --payload <wire>`,
+/// and the wire names this session directory.
+fn runs_supervisor_of(line: &str, dir: &session::Dir) -> bool {
+    let fields: Vec<_> = line.split_whitespace().collect();
+    let n = fields.len();
+    n >= 5
+        && !fields[0].starts_with('Z')
+        && fields[n - 4..n - 1] == ["internal", "supervise", "--payload"]
+        && payload::decode::<session::SuperviseRequest>(fields[n - 1])
+            .is_ok_and(|request| request.session_dir == dir.path())
+}
+
 /// Start a print-mode session and wait for its result.
 ///
 /// Refuses without a controller in a login session — the same rule doctor
@@ -411,7 +451,11 @@ pub fn run(req: &RunRequest, tools: &Tools<'_>) -> Result<RunReport> {
     let outcome = redact_outcome(
         spec.provider(),
         selected.profile_dir.as_deref(),
-        session::wait_for_outcome(&dir, Duration::from_secs(req.timeout_secs) + EXIT_GRACE)?,
+        session::wait_for_outcome(
+            &dir,
+            Duration::from_secs(req.timeout_secs) + EXIT_GRACE,
+            || supervisor_gone(pid, &dir, tools),
+        )?,
     );
 
     let stdout = std::fs::read(dir.stdout()).unwrap_or_default();
@@ -4114,6 +4158,57 @@ mod tests {
                     .unwrap()
                     .next()
                     .is_none()
+        );
+    }
+
+    /// F22: the recorded supervisor is there only while `ps` shows this
+    /// session's own `internal supervise`, alive. Not being able to ask is
+    /// not "gone".
+    #[test]
+    fn a_supervisor_counts_as_there_only_while_ps_shows_this_sessions_one() {
+        let session_dir = session::Dir::at("/state/ccnm/sessions/abc");
+        let line = |stat: &str, exe: &str, dir: &str| {
+            let wire = payload::encode(&session::SuperviseRequest::new(
+                PathBuf::from(dir),
+                PathBuf::from("/opt/claude"),
+            ))
+            .unwrap();
+            format!("{stat}    {exe} internal supervise --payload {wire}\n")
+        };
+        let ours = line("S", "/Users/me/.local/bin/ccnm", "/state/ccnm/sessions/abc");
+        assert!(runs_supervisor_of(&ours, &session_dir));
+        // A space in the program's path does not move the last four words.
+        let spaced = line("Ss", "/Users/me/my bin/ccnm", "/state/ccnm/sessions/abc");
+        assert!(runs_supervisor_of(&spaced, &session_dir));
+        // Its corpse, another session's supervisor, anything else at the pid.
+        let zombie = line("Z", "/Users/me/.local/bin/ccnm", "/state/ccnm/sessions/abc");
+        let other = line("S", "/Users/me/.local/bin/ccnm", "/state/ccnm/sessions/xyz");
+        for line in [
+            zombie.as_str(),
+            other.as_str(),
+            "Z <defunct>",
+            "S /usr/bin/vim notes.txt",
+            "S /bin/ccnm internal supervise --payload not-a-wire",
+        ] {
+            assert!(!runs_supervisor_of(line, &session_dir), "{line}");
+        }
+
+        let dir = temp("supervisor-gone");
+        let fake = FakeRunner::new();
+        let tools = instance_tools(&fake, &dir, "supervisor-gone");
+        fake.push(Output::exited(1, "")); // no such process
+        fake.push(Output::exited(0, other.clone()));
+        fake.push(Output::exited(0, ours.clone()));
+        fake.push(Output::exited(2, "")); // ps itself failed
+        assert!(supervisor_gone(4242, &session_dir, &tools));
+        assert!(supervisor_gone(4242, &session_dir, &tools));
+        assert!(!supervisor_gone(4242, &session_dir, &tools));
+        assert!(!supervisor_gone(4242, &session_dir, &tools));
+        // Nothing scripted: the runner errors, which is not an answer either.
+        assert!(!supervisor_gone(4242, &session_dir, &tools));
+        assert_eq!(
+            fake.calls()[0].display(),
+            "/bin/ps -ww -p 4242 -o stat= -o command="
         );
     }
 }

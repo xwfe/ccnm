@@ -938,16 +938,53 @@ pub fn supervise(req: &SuperviseRequest) -> Result<Outcome> {
     Ok(outcome)
 }
 
+/// How often [`wait_for_outcome`] asks whether the supervisor is still
+/// there. Each ask is one `ps`; a gone supervisor is noticed within this.
+pub const SUPERVISOR_CHECK: Duration = Duration::from_secs(2);
+
 /// Wait for the supervisor's `exit` file. `timeout` should be the
 /// session's own timeout plus a margin; the supervisor kills Claude at the
 /// session timeout, so an `exit` that still has not appeared by then means
 /// the supervisor itself is gone.
-pub fn wait_for_outcome(dir: &Dir, timeout: Duration) -> Result<Outcome> {
+///
+/// `supervisor_gone` is asked every [`SUPERVISOR_CHECK`] (F22): a killed
+/// supervisor never writes `exit`, and waiting for the deadline told the
+/// caller `running` for the whole timeout -- 15½ minutes on the real
+/// machine. It should say `false` whenever it cannot tell; the deadline is
+/// still there for that.
+///
+/// Neither ending writes an outcome. The Agent the supervisor started may
+/// still be running, adopted by launchd, and nobody here saw it end.
+pub fn wait_for_outcome(
+    dir: &Dir,
+    timeout: Duration,
+    mut supervisor_gone: impl FnMut() -> bool,
+) -> Result<Outcome> {
     const POLL: Duration = Duration::from_millis(250);
-    let deadline = std::time::Instant::now() + timeout;
+    let start = std::time::Instant::now();
+    let deadline = start + timeout;
+    let mut next_check = start + SUPERVISOR_CHECK;
     loop {
         if let Some(outcome) = read_outcome(dir)? {
             return Ok(outcome);
+        }
+        if std::time::Instant::now() >= next_check {
+            if supervisor_gone() {
+                // It writes `exit` before it exits: an outcome written
+                // between the read above and the ask is there now.
+                if let Some(outcome) = read_outcome(dir)? {
+                    return Ok(outcome);
+                }
+                let agent = read_agent_pid(dir)
+                    .map(|pid| format!(" (pid {pid})"))
+                    .unwrap_or_default();
+                return Err(Error::internal(format!(
+                    "the supervisor is gone and left no exit record at {}; how the Agent ended is unknown, and the Agent it started{agent} may still be running -- see {}",
+                    dir.exit().display(),
+                    dir.supervisor_log().display()
+                )));
+            }
+            next_check = std::time::Instant::now() + SUPERVISOR_CHECK;
         }
         if std::time::Instant::now() >= deadline {
             return Err(Error::internal(format!(
@@ -1356,9 +1393,11 @@ mod tests {
         );
         assert_eq!(read_outcome(&dir).unwrap(), Some(outcome));
         assert_eq!(
-            wait_for_outcome(&dir, Duration::from_secs(1))
-                .unwrap()
-                .duration_ms,
+            wait_for_outcome(&dir, Duration::from_secs(1), || unreachable!(
+                "an outcome on disk needs no supervisor"
+            ))
+            .unwrap()
+            .duration_ms,
             7900
         );
     }
@@ -1368,8 +1407,73 @@ mod tests {
         let state = temp("wait");
         let dir = Dir::at(state.join("s"));
         fs::create_dir_all(dir.path()).unwrap();
-        let err = wait_for_outcome(&dir, Duration::from_millis(300)).unwrap_err();
+        let err = wait_for_outcome(&dir, Duration::from_millis(300), || false).unwrap_err();
         assert!(err.message().contains("supervisor.log"), "{err}");
+    }
+
+    /// F22: a supervisor that is gone ends the wait at the next check, not
+    /// at the deadline, and nothing is written in its name.
+    #[test]
+    fn a_gone_supervisor_ends_the_wait_at_the_next_check() {
+        let state = temp("gone");
+        let dir = Dir::at(state.join("s"));
+        fs::create_dir_all(dir.path()).unwrap();
+        write_agent_pid(&dir, 4242).unwrap();
+        let began = std::time::Instant::now();
+        let err = wait_for_outcome(&dir, Duration::from_secs(60), || true).unwrap_err();
+        assert!(
+            began.elapsed() < SUPERVISOR_CHECK + Duration::from_secs(1),
+            "{:?}",
+            began.elapsed()
+        );
+        assert_eq!(err.code(), crate::error::ErrorCode::Internal);
+        assert!(err.message().contains("left no exit record"), "{err}");
+        assert!(
+            err.message().contains("(pid 4242) may still be running"),
+            "{err}"
+        );
+        assert!(err.message().contains("supervisor.log"), "{err}");
+        assert!(read_outcome(&dir).unwrap().is_none());
+    }
+
+    /// The supervisor writes `exit` and then exits. One that does both
+    /// between the read and the ask is gone with its outcome on disk, and
+    /// that outcome is the answer.
+    #[test]
+    fn an_outcome_written_just_before_the_supervisor_went_is_still_read() {
+        let state = temp("race");
+        let dir = Dir::at(state.join("s"));
+        fs::create_dir_all(dir.path()).unwrap();
+        let outcome = Outcome {
+            exit_code: Some(0),
+            timed_out: false,
+            duration_ms: 12,
+            error: None,
+            stopped: false,
+        };
+        let got = wait_for_outcome(&dir, Duration::from_secs(60), || {
+            write_outcome(&dir, &outcome).unwrap();
+            true
+        })
+        .unwrap();
+        assert_eq!(got, outcome);
+    }
+
+    /// Not being able to tell is not "gone": the wait goes on to its
+    /// deadline, asking again on the way.
+    #[test]
+    fn a_supervisor_nobody_can_see_is_waited_for_to_the_deadline() {
+        let state = temp("blind");
+        let dir = Dir::at(state.join("s"));
+        fs::create_dir_all(dir.path()).unwrap();
+        let mut asked = 0;
+        let err = wait_for_outcome(&dir, SUPERVISOR_CHECK + Duration::from_millis(600), || {
+            asked += 1;
+            false
+        })
+        .unwrap_err();
+        assert_eq!(asked, 1);
+        assert!(err.message().starts_with("no exit record after"), "{err}");
     }
 
     #[test]

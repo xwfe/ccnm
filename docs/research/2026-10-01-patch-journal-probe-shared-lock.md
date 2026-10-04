@@ -7,7 +7,7 @@
 | 事 | 性质 | 处理 | 提交 |
 | --- | --- | --- | --- |
 | 两次探测撞在一起，后一次把被打断的提交读成"还在提交"，patch 被放行 | 产品缺陷，只会漏拦 | 探测改用共享锁；确定性回归先红后绿 | `415aa0b` |
-| 一次 patch 的 `check_abandoned` 把另一次 patch 正在写的日志当成"没写完"删掉，那次 patch 失败 | 产品缺陷，顺带验证出来，**没修** | 记进 `observed_gaps`，见第 4 节 | — |
+| 一次 patch 的 `check_abandoned` 把另一次 patch 正在写的日志当成"没写完"删掉，那次 patch 失败 | 产品缺陷，顺带验证出来，当时**没修** | 记进 `observed_gaps`，见第 4 节；2026-10-04 在 [P67](2026-10-04-p67-young-patch-journal.md) 修好 | `e786a19` |
 
 ## 2. 缺陷
 
@@ -50,6 +50,8 @@ P34 的两条确定性用例（上面这条和 `an_abandoned_journal_reads_as_ab
 **新旧版本混跑时**：旧构建的探测仍是排他锁，它和新构建的探测撞在一起时还是会互相读成"在提交"。升级二进制之后，之前起的 `mcp-serve` 还跑着旧代码，要等它们重启这处修复才完全生效。
 
 ## 4. 顺带验证出来的另一个缺陷：别人正在写的日志被当成没写完删掉（没修）
+
+> 2026-10-04 [P67](2026-10-04-p67-young-patch-journal.md) 已修：`check_abandoned` 对没老过一小时的 `.tmp` 不探也不删。下面是当时的记录。
 
 判断第 3 节"`unlock` 留不留"时看到的。`check_abandoned` 对 `.tmp` 的处理是：锁拿得到，就当成"改名之前进程就死了"，直接删掉。可是 `Journal::open` 从建出 `.tmp` 到锁上它，中间隔着写内容和 `sync_all`。另一次 patch 的 `check_abandoned` 落在这段时间里，就会删掉一份正在写的日志；写的那一方随后改名时找不到文件，这次 `apply_patch` 报 `cannot place the patch journal`（也可能先在拿锁时报 `cannot lock the patch journal`）。失败发生在改任何工作区文件之前，暂存文件会被清掉，重试即过。
 

@@ -1,6 +1,6 @@
 # P68 监督进程丢了不再等满超时、原始输出丢了不再当成空（2026-10-04）
 
-接 [P62 续跑记录](2026-10-04-p62-resume-release.md)第 6.1、6.2 节查出的 F22、F23，它们是 P62.4 剩下的阻塞。**只有离线证据**：本机 macOS 26.6.2 arm64、rustc 1.98.0（clippy 另用 1.99.0 跑一遍，CI 的 stable 就是它）；没有连远端、没有跑模型、没有推送。`ccnm.machine/1` 的线格式、内部协议号都没变。两处修的都是 Agent 那一端，要 Agent Node 装的是新构建才生效。
+接 [P62 续跑记录](2026-10-04-p62-resume-release.md)第 6.1、6.2 节查出的 F22、F23，它们是 P62.4 剩下的阻塞。**修复只有离线证据**：本机 macOS 26.6.2 arm64、rustc 1.98.0（clippy 另用 1.99.0 跑一遍，CI 的 stable 就是它）；没有跑模型、没有推送，F22/F23 没有在真机上复验。第 6 节是验收之外的事：按用户要求把日用的本机和 fodelf 换成了这个构建。`ccnm.machine/1` 的线格式、内部协议号都没变。两处修的都是 Agent 那一端，要 Agent Node 装的是新构建才生效。
 
 ## 1. 结论
 
@@ -91,7 +91,28 @@ Operator 那边不用改：`after_dispatch` 本来就把派发之后的 `Interna
 
 两次在旧代码上跑红的用例都靠各自的守卫收掉了测试目录，这一轮没有留下残留。
 
-## 6. 没覆盖的
+## 6. 日用两台换装（不属于 P68 的验收）
+
+用户要求"升级本机工具"。本机日用的 ccnm 是 Runtime / Operator（`this = "runtime"`，四个 workspace），Agent 是 fodelf；P62 实测过新 Operator 对旧 Agent 会报 `CCNM_E_VERSION`，而 F22/F23 修的又都在 Agent 那端，所以问过用户后两台一起换成 P68 的构建。**这不是发版**：版本号仍是 0.10.1，和发布版 v0.10.1（hpsrv ccrun 上那份）不是同一个构建；P68 没有新增内部协议号，两种 0.10.1 混装时 doctor 分不出来。
+
+| | 本机 xdwmbp | fodelf |
+| --- | --- | --- |
+| 换装前 | 0.9.0，`300dbd1d…`，没有 Controller | 0.9.0，`300dbd1d…`，Controller pid 1075，没有在跑的会话 |
+| 装上的 | `cargo build --release --locked -p ccnm-cli`（`bebc539`，arm64，ad-hoc 签名），`90c93c0fc33b70a9c86adff6f0f29f072e186740307db72215d4f00baf7601d6` | 同一个文件，`scp -p` 过去 |
+| 方式 | 新文件 `install` 到 `ccnm.new` 再 `mv` 盖上（不 `cp` 覆盖） | 同左；`controller install`（plist 与原来逐字相同），pid 1075 → 29110 |
+| 备份 | `~/.local/opt/ccnm-0.9.0/ccnm`（核对 `300dbd1d…`） | `~/.local/opt/ccnm-0.9.0/ccnm` 与 `dev.ccnm.controller.plist` |
+
+**核对**：本机对四个 workspace（`ccnm`、`xdo`、`xshun`、`gld`）跑 `ccnm doctor` 都是 0 项失败、3 项没查（Codex 原生链没开、本机工具策略、网络隔离，都是设计上不查的）；两端都报 `0.10.1`，反向 SSH、MCP 握手正常。零额度冒烟：`ccnm run ccnm --detached` 由新 Controller（pid 29110）起会话，Claude Code 2.1.289 直接停在输入框（没有信任提示），本机起了新二进制的 `mcp-serve`；不发消息，`ccnm stop ccnm --session <id>` 0.4 秒一次停下，`mcp-serve` 退出，fodelf 的 `ccnm log` 记"被停止"，本机四个写锁标记都是 `released`。没有调用模型。
+
+**回退**（两台都要退，只退一边 doctor 会报版本不符）：
+
+```bash
+install -m 755 ~/.local/opt/ccnm-0.9.0/ccnm ~/.local/bin/ccnm.new && mv ~/.local/bin/ccnm.new ~/.local/bin/ccnm
+```
+
+fodelf 上同一条，再跑 `~/.local/bin/ccnm controller install`。
+
+## 7. 没覆盖的
 
 - **真机没复验**。P62.4 要在授权下重跑续跑记录 6.1、6.2 的两项（只杀本轮的监督进程、只挪本轮会话的 `stdout`），Agent 那端装新构建。
 - Linux 只有 CI 会跑；Agent 目前只在 macOS 上跑（Controller 是 launchd），Linux 上的 `ps` 输出格式只由单元测试的字符串覆盖。

@@ -935,3 +935,13 @@ ccnm 这一轮只定权威语义、补自己这边的证据。租约展示与状
 - **P66.6** Rust、Python、协议与计划门禁通过；使用说明、排错手册、支持矩阵、README、P62 发现表、研究记录与状态同步；真机复验留给 P62 续跑。
 
 停止点：不改 `ccnm.machine/1`；内部消息只加可选字段、不新增协议号；不写官方 CLI 自己的配置文件；不在本机安装或改动 LaunchAgent（只用 `--dry-run` 和单元测试）；F19 需要真机采样，不在本阶段；不升版本号、不部署、不推送、不调用真实模型。
+
+### P67 — `apply_patch` 不删别的 patch 正在写的日志
+
+**依赖 P66（P62 仍受阻于 Codex 额度，按受阻规则接续）。** 缺陷是修 P34 那把日志锁时顺带验证出来的，见 [日志探测改共享锁的记录](../research/2026-10-01-patch-journal-probe-shared-lock.md)第 4 节：`Journal::open` 从建出 `<pid>-<id>.json.tmp` 到锁上它要写内容和 `sync_all`（macOS 上约 5 ms），这段时间里另一次 patch 的 `check_abandoned` 会把它当成"改名前进程就死了"删掉，或者探测时挡住它的锁；`patches/` 是同一账号所有 workspace 共用的，写的那一方报 `cannot place the patch journal` / `cannot lock the patch journal`。
+
+- **P67.1** 先写一条在旧代码上失败的确定性回归：一份刚建、没上锁的 `.tmp` 在另一个 workspace 的 patch 之后仍在，写的一方随后照样拿到排他锁、改名成功。
+- **P67.2** 修：`check_abandoned` 不再删、也不再探年轻的 `.tmp`；被打断的 `.json` 的判断（只问锁、不问时钟）不变，工作区临时文件的清理规则不变。用一条不提交的压测对照修前修后。
+- **P67.3** Rust、Python、协议与计划门禁通过；研究记录、`observed_gaps` 与状态同步。
+
+停止点：不改日志的文件名、格式与报错文字；不动 `.json` 的中断判断；不连远端、不跑模型、不推送、不升版本号。

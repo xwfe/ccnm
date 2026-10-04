@@ -1808,7 +1808,7 @@ pub fn output(req: &OutputRequest, tools: &Tools<'_>) -> Result<OutputReport> {
             "an interactive session's output went to its terminal; there is nothing retained to read",
         ));
     }
-    if session::read_outcome(&dir)?.is_none() {
+    let Some(outcome) = session::read_outcome(&dir)? else {
         return Err(Error::new(
             ErrorCode::NotReady,
             format!(
@@ -1816,10 +1816,14 @@ pub fn output(req: &OutputRequest, tools: &Tools<'_>) -> Result<OutputReport> {
                 req.session
             ),
         ));
-    }
+    };
     let profile = profile_for_spec(&spec, tools)?;
     let redaction = spec.provider().output_redaction(profile.as_deref());
-    let meta = session::view::ensure(&dir, req.stream, &redaction)?;
+    // No `error`: the supervisor got as far as starting the Agent, and it
+    // creates both streams before that. So does a stop's own outcome -- an
+    // exact stop needs the Agent's pid before it records one.
+    let ran = outcome.error.is_none();
+    let meta = session::view::ensure(&dir, req.stream, &redaction, ran)?;
     let data = session::view::read(
         &dir,
         req.stream,

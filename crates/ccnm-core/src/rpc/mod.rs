@@ -2302,6 +2302,26 @@ agent = { node = "worker2", instance = "claude-main" }
         );
     }
 
+    /// F23: the Agent refuses a view because the session's raw stream is
+    /// gone. Before P68 the Agent served it as 0 bytes and this side passed
+    /// on "empty and complete"; a refusal has to come out as the old tail,
+    /// named as such, every time it is asked.
+    #[test]
+    fn out_a_stream_the_agent_lost_is_never_reported_complete() {
+        let (peer, s) = finished_with("out-lost", b"", b"");
+        *peer.runs.output_fails.lock().unwrap() = Some((crate::ErrorCode::Internal, 0));
+        for _ in 0..2 {
+            let out = &peer.call(&[&result_line(&s, "{}")])[0]["result"]["output"];
+            assert_eq!(out["unavailable_reason"], "agent_refused", "{out}");
+            assert_eq!(out["tail"], "old tail");
+            assert!(out.get("source_bytes").is_none(), "{out}");
+        }
+        let kept: Vec<_> = std::fs::read_dir(peer.state.join("rpc/outputs").join(&s))
+            .unwrap()
+            .collect();
+        assert!(kept.is_empty(), "no snapshot is kept for a refused copy");
+    }
+
     /// OUT-06: a copy that breaks half way, or whose view changes under it,
     /// leaves nothing behind that could later pass for complete.
     #[test]

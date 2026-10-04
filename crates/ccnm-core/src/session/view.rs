@@ -81,14 +81,21 @@ fn read_meta(dir: &Dir, stream: Stream) -> Option<Meta> {
 }
 
 /// The view of `stream`, built now if it does not exist yet.
-pub fn ensure(dir: &Dir, stream: Stream, redaction: &Redaction) -> Result<Meta> {
-    ensure_with_cap(dir, stream, redaction, RAW_CAP)
+///
+/// `ran`: the Agent was started. The supervisor creates both streams before
+/// it starts the Agent, so for such a session a stream that is not there was
+/// lost, and building a view of it is refused (F23): read as 0 bytes, it
+/// reached the caller as "empty and complete". A session that never started
+/// never had one; its view is empty, because that is what it printed.
+pub fn ensure(dir: &Dir, stream: Stream, redaction: &Redaction, ran: bool) -> Result<Meta> {
+    ensure_with_cap(dir, stream, redaction, ran, RAW_CAP)
 }
 
 pub(crate) fn ensure_with_cap(
     dir: &Dir,
     stream: Stream,
     redaction: &Redaction,
+    ran: bool,
     cap: u64,
 ) -> Result<Meta> {
     if let Some(meta) = read_meta(dir, stream) {
@@ -106,6 +113,13 @@ pub(crate) fn ensure_with_cap(
     };
     let mut raw = match fs::File::open(&raw_path) {
         Ok(file) => Some(file),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound && ran => {
+            return Err(Error::internal(format!(
+                "the session's {} is gone: it was created when the Agent started and is no longer at {}, so there is no complete output to serve",
+                stream.name(),
+                raw_path.display()
+            )));
+        }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
         Err(e) => return Err(e.into()),
     };
@@ -497,14 +511,14 @@ mod tests {
         let root = session_dir("frozen");
         let dir = Dir::at(root.to_path_buf());
         fs::write(dir.stdout(), "first\n").unwrap();
-        let meta = ensure(&dir, Stream::Stdout, &Redaction::Keep).unwrap();
+        let meta = ensure(&dir, Stream::Stdout, &Redaction::Keep, true).unwrap();
         fs::OpenOptions::new()
             .append(true)
             .open(dir.stdout())
             .unwrap()
             .write_all(b"late\n")
             .unwrap();
-        let again = ensure(&dir, Stream::Stdout, &Redaction::Keep).unwrap();
+        let again = ensure(&dir, Stream::Stdout, &Redaction::Keep, true).unwrap();
         assert_eq!(meta, again);
         assert_eq!(
             read(&dir, Stream::Stdout, &meta, 0, 100).unwrap(),
@@ -514,10 +528,36 @@ mod tests {
         assert_eq!(read(&dir, Stream::Stdout, &meta, 2, 2).unwrap(), b"rs");
         assert!(read(&dir, Stream::Stdout, &meta, 7, 1).is_err());
 
-        // A stream the process never wrote is an empty view, not an error.
-        let err = ensure(&dir, Stream::Stderr, &Redaction::Keep).unwrap();
+        // Built once, it no longer needs the raw file.
+        fs::remove_file(dir.stdout()).unwrap();
         assert_eq!(
-            (err.view_bytes, err.source_bytes, err.source_truncated),
+            ensure(&dir, Stream::Stdout, &Redaction::Keep, true).unwrap(),
+            meta
+        );
+    }
+
+    /// A stream with no file: lost if the Agent ran (F23), nothing at all
+    /// if it never started. Only the second is an empty view.
+    #[test]
+    fn a_missing_stream_is_empty_only_for_a_session_that_never_ran() {
+        let root = session_dir("missing");
+        let dir = Dir::at(root.to_path_buf());
+        let err = ensure(&dir, Stream::Stderr, &Redaction::Keep, true).unwrap_err();
+        assert!(err.message().contains("stderr is gone"), "{err}");
+        assert!(read_meta(&dir, Stream::Stderr).is_none());
+        assert!(!view_path(&dir, Stream::Stderr).exists());
+
+        let never = ensure(&dir, Stream::Stderr, &Redaction::Keep, false).unwrap();
+        assert_eq!(
+            (never.view_bytes, never.source_bytes, never.source_truncated),
+            (0, 0, false)
+        );
+
+        // An empty file is a stream the Agent wrote nothing to: empty, whole.
+        fs::write(dir.stdout(), "").unwrap();
+        let empty = ensure(&dir, Stream::Stdout, &Redaction::Keep, true).unwrap();
+        assert_eq!(
+            (empty.view_bytes, empty.source_bytes, empty.source_truncated),
             (0, 0, false)
         );
     }
@@ -527,7 +567,7 @@ mod tests {
         let root = session_dir("cap");
         let dir = Dir::at(root.to_path_buf());
         fs::write(dir.stderr(), "0123456789").unwrap();
-        let meta = ensure_with_cap(&dir, Stream::Stderr, &Redaction::Keep, 4).unwrap();
+        let meta = ensure_with_cap(&dir, Stream::Stderr, &Redaction::Keep, true, 4).unwrap();
         assert_eq!(
             (meta.view_bytes, meta.source_bytes, meta.source_truncated),
             (4, 10, true)

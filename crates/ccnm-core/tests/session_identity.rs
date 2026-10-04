@@ -1282,6 +1282,85 @@ fn agent_output_is_a_redacted_frozen_view_of_a_finished_session() {
     assert!(runner.calls().is_empty(), "reading output runs nothing");
 }
 
+/// F23 (P62 resume, 2026-10-04): a session ran and ended, and its raw stdout
+/// went away before anyone asked for the view. The supervisor creates both
+/// streams before it starts the Agent, so a missing one was lost, not left
+/// empty. Read as 0 bytes, it reached the caller as "empty and complete",
+/// with no `unavailable_reason`. The Agent refuses instead, and the Operator
+/// falls back to its old tail and says so.
+#[test]
+fn agent_output_refuses_a_lost_stream_of_a_session_that_ran() {
+    let f = Fixture::new();
+    let runner = FakeRunner::new();
+    let id = session::new_id();
+    let dir = f.record(
+        &id,
+        "demo",
+        Some(f.identity("claude-main", AgentProvider::Claude)),
+        Mode::Print {
+            prompt: "go".into(),
+        },
+    );
+    std::fs::write(dir.stderr(), "warn\n").unwrap();
+    // Ended by itself: an outcome without "could not start".
+    std::fs::write(
+        dir.exit(),
+        r#"{"exit_code":0,"timed_out":false,"duration_ms":5}"#,
+    )
+    .unwrap();
+
+    let err = work::output(
+        &output_request(&id, "demo", session::view::Stream::Stdout, 0, 100),
+        &f.tools(&runner),
+    )
+    .unwrap_err();
+    assert!(err.message().contains("stdout"), "{err}");
+    assert!(err.message().contains("is gone"), "{err}");
+    assert!(
+        !dir.path().join("stdout.view.json").exists(),
+        "nothing is left that a later read could take for the whole output"
+    );
+
+    // The stream that is there is served, and once its view is built the
+    // raw file is no longer needed.
+    let (stderr, _) = read_view(&f, &runner, &id, session::view::Stream::Stderr, 100);
+    assert_eq!(stderr, b"warn\n");
+    std::fs::remove_file(dir.stderr()).unwrap();
+    let (again, _) = read_view(&f, &runner, &id, session::view::Stream::Stderr, 100);
+    assert_eq!(again, b"warn\n");
+}
+
+/// The other side of F23: a session that never started never had raw
+/// output. Its view is empty and complete, because that is the truth.
+#[test]
+fn agent_output_of_a_session_that_never_started_is_empty_and_complete() {
+    let f = Fixture::new();
+    let runner = FakeRunner::new();
+    let id = session::new_id();
+    let dir = f.record(
+        &id,
+        "demo",
+        Some(f.identity("claude-main", AgentProvider::Claude)),
+        Mode::Print {
+            prompt: "go".into(),
+        },
+    );
+    session::record_terminal_failure(&dir, session::STOPPED_BEFORE_START.trim_end()).unwrap();
+    for stream in [session::view::Stream::Stdout, session::view::Stream::Stderr] {
+        let (data, report) = read_view(&f, &runner, &id, stream, 100);
+        assert!(data.is_empty(), "{stream:?}");
+        assert_eq!(
+            (
+                report.view_bytes,
+                report.source_bytes,
+                report.source_truncated
+            ),
+            (0, 0, false),
+            "{stream:?}"
+        );
+    }
+}
+
 #[test]
 fn agent_output_never_crosses_workspace_instance_or_mode() {
     let f = Fixture::new();

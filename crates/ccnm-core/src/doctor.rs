@@ -771,7 +771,7 @@ fn probe_rows(r: &Subject<'_>, rep: &ProbeReport) -> Vec<Check> {
 fn executor_rows(r: &Subject<'_>, rep: &ProbeReport) -> Vec<Check> {
     match &rep.runtime_audit {
         Some(Ok(report)) => {
-            let mut rows = runtime_safety_rows(report);
+            let mut rows = runtime_safety_rows(report, rep.provider);
             rows.push(executor_root_row(r, &report.root, &report.audit.user));
             rows
         }
@@ -1023,7 +1023,10 @@ fn exec_server_row(r: &Subject<'_>, rep: &ProbeReport) -> Check {
 ///
 /// A failure is a FAIL row, not a SKIP: nothing is unknown here. The
 /// property was checked and it does not hold.
-fn runtime_safety_rows(report: &crate::runtime::AuditReport) -> Vec<Check> {
+fn runtime_safety_rows(
+    report: &crate::runtime::AuditReport,
+    provider: AgentProvider,
+) -> Vec<Check> {
     let audit = &report.audit;
     // A workspace that has accepted an unconfined runtime gets warnings,
     // not failures. The runtime will run its commands either way, and a
@@ -1091,7 +1094,22 @@ fn runtime_safety_rows(report: &crate::runtime::AuditReport) -> Vec<Check> {
     // Whether a session stops and asks. Shown both ways because "will this
     // interrupt me?" is a question with two useful answers, and because a
     // warning nobody ever sees the other half of reads like noise.
-    rows.push(if accepted.unattended_exec {
+    //
+    // Codex is never asked (F21): the per-call prompt is
+    // `anthropic/requiresUserInteraction`, a key only Claude Code reads, and
+    // a Codex session gets ccnm's tools pre-approved because Codex refuses
+    // every call otherwise (docs/research/codex-provider-probe-2026-09-07.md).
+    // So the workspace setting changes nothing there, and saying "asks" would
+    // be the one row a Codex user reads about approval being wrong.
+    rows.push(if provider == AgentProvider::Codex {
+        let mut why = String::from(
+            "Codex sessions run every exec_command without asking: the per-call prompt is a key only Claude Code reads, and Codex refuses ccnm's tools unless they are approved up front\nthe runtime account's own permissions and the workspace root are what bound them",
+        );
+        if accepted.unattended_exec {
+            why.push_str("\nallow_unattended_exec is set as well; for Codex it changes nothing");
+        }
+        Check::warn("Command approval", why)
+    } else if accepted.unattended_exec {
         Check::warn(
             "Command approval",
             "this workspace sets allow_unattended_exec: interactive sessions run every command without asking\nthe runtime account's own permissions and the workspace root are what still bound them",
@@ -1653,7 +1671,7 @@ mod tests {
     /// is the only place the decision is still visible.
     #[test]
     fn the_approval_row_says_which_way_this_workspace_set_it() {
-        let asking = runtime_safety_rows(&confined_report());
+        let asking = runtime_safety_rows(&confined_report(), AgentProvider::Claude);
         let row = asking
             .iter()
             .find(|r| r.name == "Command approval")
@@ -1664,10 +1682,13 @@ mod tests {
             "{row:?}"
         );
 
-        let unattended = runtime_safety_rows(&crate::runtime::AuditReport {
-            allow_unattended_exec: true,
-            ..confined_report()
-        });
+        let unattended = runtime_safety_rows(
+            &crate::runtime::AuditReport {
+                allow_unattended_exec: true,
+                ..confined_report()
+            },
+            AgentProvider::Claude,
+        );
         let row = unattended
             .iter()
             .find(|r| r.name == "Command approval")
@@ -1687,6 +1708,33 @@ mod tests {
                 .clone()
         };
         assert_eq!(exec(&asking), exec(&unattended));
+    }
+
+    /// F21. A managed Codex session runs `exec_command` without asking
+    /// anyone -- the per-call prompt is a key only Claude Code reads, and
+    /// ccnm has to approve its tools up front or Codex refuses every call --
+    /// and on the P62 machines doctor still told a Codex workspace that
+    /// interactive sessions ask before each one.
+    #[test]
+    fn the_approval_row_says_codex_sessions_do_not_ask() {
+        let (dir, config) = setup("approval-codex", true, true);
+        let authority = authority(&dir.join("root"), false);
+        let report = from_agent(&config, "xshun", Ok((&authority, &codex_probe(None))));
+        let text = report.render();
+        let approval = row(&report, "Command approval");
+        assert_eq!(approval.status, Status::Warn, "{text}");
+        assert!(
+            approval
+                .detail
+                .contains("Codex sessions run every exec_command without asking"),
+            "{text}"
+        );
+        assert!(!approval.detail.contains("ask before each"), "{text}");
+
+        let claude = from_agent(&config, "xshun", Ok((&authority, &good_probe())));
+        let approval = row(&claude, "Command approval");
+        assert_eq!(approval.status, Status::Ok);
+        assert!(approval.detail.contains("ask before each exec_command"));
     }
 
     /// An accepted risk is a WARN, never an OK.
@@ -1712,7 +1760,7 @@ mod tests {
             allow_unisolated_credentials: true,
             ..confined_report()
         };
-        let rows = runtime_safety_rows(&report);
+        let rows = runtime_safety_rows(&report, AgentProvider::Claude);
         let row = rows
             .iter()
             .find(|r| r.name == "No Claude credential")
@@ -1732,7 +1780,7 @@ mod tests {
             allow_unisolated_credentials: false,
             ..report
         };
-        let rows = runtime_safety_rows(&refused);
+        let rows = runtime_safety_rows(&refused, AgentProvider::Claude);
         let row = rows
             .iter()
             .find(|r| r.name == "No Claude credential")

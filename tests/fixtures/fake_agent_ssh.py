@@ -19,7 +19,8 @@ ccnm 以 `ssh <选项> -T <alias> <ccnm> internal <sub> --payload X` 调 Agent�
                          ccnm 在起任何东西之前拒绝（没登录、版本不符），照真实 ccnm
                          的样子把 `CODE:\n原因` 写到 stderr、以那个码对应的退出码退出
     stop-mode.json       {"kind": "ack"}（默认）、{"kind": "unreachable"}、
-                         {"kind": "not-ended"}（信号送到了、进程组还没退完，回 NOT_READY）、
+                         {"kind": "not-ended"}（信号送到了、进程组还没退完，回 NOT_READY；
+                         那次运行等放行之后才以"被停止"结束）、
                          {"kind": "release-and-wait-final", "prompt": ..., "record": ...}
     view-<key>-<stream>  agent-output 要交回的保留视图（字节原样），按 prompt 找
     output-mode.json     {"kind": "serve"}（默认）、{"kind": "unreachable"}、
@@ -80,6 +81,7 @@ def run(request: dict, fake: Path) -> int:
     (fake / "sessions" / session).write_text(key_of(prompt))
     released = fake / "release" / key_of(prompt)
     stopped = fake / "stopped" / session
+    stop_pending = fake / "stop-pending" / session
 
     def done() -> bool:
         return released.exists() or stopped.exists() or (fake / "release/ALL").exists() or not fake.exists()
@@ -95,7 +97,7 @@ def run(request: dict, fake: Path) -> int:
         refuse = reply["refuse"]
         print(f"{refuse['ccnm_code']}:\n{refuse['message']}", file=sys.stderr)
         return refuse["exit"]
-    if stopped.exists():
+    if stopped.exists() or stop_pending.exists():
         outcome = {"exit_code": None, "timed_out": False, "duration_ms": 5, "error": None}
     else:
         outcome = {"exit_code": reply.get("exit_code", 0), "timed_out": False, "duration_ms": 7, "error": None}
@@ -128,9 +130,12 @@ def stop(request: dict, fake: Path) -> int:
     if mode["kind"] == "not-ended":
         # 真 Agent 在 SIGTERM 之后进程组还没退完时就这样答（P62 F17）：
         # 信号已经送到，那次运行随后以"被停止"结束，只是这一刻确认不了。
+        # 记成"待停"而不是"已停"：运行要等测试放行才结束。直接写 stopped 的
+        # 话，运行可能抢在这个回答之前结束，stop 照契约回的就是终态 failed
+        # 而不是 stopping——CI 的 Linux runner 上真这样红过一次。
         if request.get("session"):
-            (fake / "stopped").mkdir(exist_ok=True)
-            (fake / "stopped" / request["session"]).write_text("stopped\n")
+            (fake / "stop-pending").mkdir(exist_ok=True)
+            (fake / "stop-pending" / request["session"]).write_text("stopped\n")
         print("CCNM_E_NOT_READY:\nAgent process group has not ended; state remains stopping", file=sys.stderr)
         return 3
     if mode["kind"] == "release-and-wait-final":

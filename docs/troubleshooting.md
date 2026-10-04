@@ -221,6 +221,12 @@ Agent 的 ccnm           失败   CCNM_E_VERSION: work reports ccnm 0.9.0 like t
 
 P66 之前的构建把原因弄丢了，同一件事在两边说成两个不相干的错：Runtime Node 上只说 `Agent probe identity differs from the Runtime selection`，Agent Node 上反向 SSH 那一行说 `agent and project are both on <agent>`（把"没探"当成了"在同一台机器上"）。看到这两句，到 Agent Node 上跑一次 doctor，那边的 Controller 那几行带着真正的原因。
 
+### doctor 只说 `Agent probe identity differs from the Runtime selection`，Agent 的版本行没出现
+
+**症状**：`Agent selection` 一行失败，码是 `CCNM_E_VERSION`，下面没有 `Agent ccnm` 那几行。
+
+**多半是两台的 ccnm 版本不一样**：对面是旧版本（比如 v0.9.0）时，它看不懂这次的请求，回来的报告没有身份，doctor 先比身份就停在这一行，版本那行根本没轮到（2026-10-04 真机，[F20](research/2026-10-04-p62-resume-release.md#7-新发现)，还没修）。先在两台上各跑一次 `ccnm --version`，不一样就装同一个版本；版本一样还报这一句，再按上一节去 Agent Node 上看原因。
+
 ### 会话里工具全废，报 "xxx is not installed"、`workspace_info` 却一切正常
 
 **项目被挪走了，而会话还绑在老路径上。** 一个会话的 root 在启动的那一刻就定死在它的 MCP
@@ -768,3 +774,20 @@ CODEX_HOME=~/.config/ccnm/agents/codex /path/to/codex-0.154.0/codex login
 **P63（2026-09-30）起已修**：停止标志在联系 Agent 之前就记下；Agent 发完 SIGTERM 最多等 5 秒进程组退出，正常情况下直接确认；还确认不了时回 `stopping`（契约第 5.6 节），不再回错误（P62 研究记录 F17）。
 
 **升级之后**：`stopping` 表示停止已经发出、还没看到结束——继续查 `session.status`，到终态才算停了；一直不结束（进程不理 SIGTERM）就再发一次 stop，或者按[运维手册](operations.md#写入-guard-残留)去 Agent 上找那个进程组。Agent 连不上时 stop 仍然回错误，`effect` 告诉你它有没有可能已经送到。
+
+### Machine API：会话一直是 `running`，Agent 上其实早就没在跑了
+
+**症状**：`session.status` 一直是 `running`（发过 stop 就是 `stopping`），十几分钟后才变成 `unknown`，`failure` 说 `no exit record after 930s … the supervisor did not finish`；`output.unavailable_reason` 是 `agent_refused`。Agent Node 上 `ccnm log` 那一行是 `no end record`。
+
+**其实是**：Agent 上管这次运行的监督进程（`ccnm internal supervise`）没了——被杀、机器重启、Controller 被强行卸掉。`agent-run` 只等结局文件，不看监督进程还在不在，于是要等满这次运行的超时（默认 900 秒）加 30 秒才放弃（2026-10-04 真机，[F22](research/2026-10-04-p62-resume-release.md#61-agent-上的监督进程丢了结果不对f22)，还没修）。`unknown` 是对的：被留下的 Claude/Codex 进程可能还在跑。`agent_refused` 那个标签不对，别据此去查认证。
+
+**怎么办**：在 Agent Node 上看 `ps` 里还有没有这次会话的 `claude`/`codex`（命令行里有会话 id），有就按进程组结束它；Runtime 上写锁由执行账号保管，命令都收掉了它自己会放。别重发同一个任务——那次运行可能已经改过东西。
+
+### Machine API：`session.result` 说输出是空的，`text` 里却明明有内容
+
+**症状**：`output.bytes_total` 为 0、`complete: true`、没有 `unavailable_reason`，可 `text` 有内容，或者你知道它打印过东西。
+
+**其实是**：Runtime 第一次读结果之前，Agent 上那次会话的原始输出已经没了（被手动删、被清理）。ccnm 把"文件不在"当成了"输出是空的"（2026-10-04 真机，[F23](research/2026-10-04-p62-resume-release.md#62-分页的源头丢了结果不对f23)，还没修）。`text` 是会话结束时就解析好的，不受影响；完整输出已经找不回来。
+
+**怎么避免**：要完整输出，就在会话结束后尽快读一次 `session.result`——第一次读的时候 Runtime 会把整份拷到自己这边，之后 Agent 上删不删都不影响。
+

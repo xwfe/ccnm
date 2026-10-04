@@ -23,7 +23,7 @@ Runtime Node                              Agent Node
 | --- | --- |
 | 最新发布 | [v0.10.1](https://github.com/xwfe/ccnm/releases)（2026-10-04）。`v0.10.0` 的 tag 打了，但发布流程在 macOS 门禁上被一条测试的时序问题挡住、没有产出，修好测试后直接发了 v0.10.1，两者只差那条测试和版本号 |
 | v0.10.1 比 v0.9.0 多了什么 | 精确停止、完整结果分页、写锁预检、跨账号清理（P58–P61）；Machine API 断开后任务照跑、停止标志不丢、ssh 连不上记 `failed`（P63）；交互会话 stop 等通道退出再确认、`ccnm log` 把被停掉的会话记成"被停止"、doctor 能认出版本号相同的不同构建（P64）；Operator 没权限看项目目录时不再误报"不存在"、Machine API 的 `session.result` 给出会话没起来的原因、doctor 写明 Codex 登录只看了本地（P65）；`ccnm status` 指出项目终端在别的实例手里、doctor 带回 Agent 拒绝所选实例的原因、`ccnm controller install` 带上非默认的配置和状态位置、中文帮助补全（P66）；`apply_patch` 两处并发误判（P67 与同期修复）。**内部协议和 v0.9.0 不兼容**：两台机器要一起升，混装时起会话报 `CCNM_E_VERSION` |
-| 真机验收 | P62（macOS Agent → Debian 13 Runtime）**受阻**：Claude 那一半全部跑通，Codex 那一半被账号额度挡住。它查出的 19 个问题里，Machine API 的三处已在 P63 离线修好（[P63 记录](docs/research/2026-09-30-p63-rpc-disconnect-stop.md)），交互 stop 与同版本号不同构建两处在 P64 离线修好（[P64 记录](docs/research/2026-09-30-p64-stop-outcome-same-number-builds.md)），Debian 家目录、Machine API 失败原因、Codex 登录提示三处在 P65 离线修好（[P65 记录](docs/research/2026-09-30-p65-hidden-root-failure-reason-codex-login.md)），八条低影响的在 P66 修好或补进文档（[P66 记录](docs/research/2026-10-01-p66-low-impact-findings.md)），真机复验等 P62 续跑。见 [P62 记录](docs/research/2026-09-30-p62-real-machine.md) |
+| 真机验收 | P62（macOS Agent → Debian 13 Runtime）分两轮：2026-09-30 Claude 那一半跑通、Codex 被账号额度挡住（[第一轮](docs/research/2026-09-30-p62-real-machine.md)）；2026-10-04 用 v0.10.1 续跑，Codex 那一半全部跑通，P63–P67 修的各条在真机上复验通过（[续跑记录](docs/research/2026-10-04-p62-resume-release.md)）。**阶段还没完成**：失败矩阵里"Agent 上的监督进程丢了"和"Agent 上的原始输出丢了"两项结果不对（F22、F23），另查出 F20、F21、F24，都还没修 |
 
 每一项能力验到了哪一步、明确**没**验过什么，逐条在[支持矩阵](docs/support-matrix.md)里。
 
@@ -143,7 +143,8 @@ view_image      read_notebook  stop_command   call_mcp_tool
 - **写互斥要求各入口用同一个 state 目录。** 同一棵树配两个 `XDG_STATE_HOME` 就是两把互不知晓的锁。
 - **离开进程组的后代够不着。** Runtime MCP server 派生的 `setsid` / 守护进程、以及 `mcp-serve` 被 `kill -9` 后留下的后台命令，ccnm 停不掉；写锁会因此保持 unknown，按[运维手册](docs/operations.md#写入-guard-残留)人工收。
 - **项目和 Agent 同机（colocated）没有真实验收**，明确拒绝，不静默降级。
-- **doctor 验不了 Codex 的令牌还有没有效**，只能看到"登录过"（P65 起那一行自己会说）；令牌被吊销要到会话的第一条消息才知道。P62 查出的其余问题里，还没修的只剩一条待复现的（F19），列在 [P62 记录](docs/research/2026-09-30-p62-real-machine.md)第 5 节，现象和绕法在[排错手册](docs/troubleshooting.md)。
+- **受管 Codex 会话执行命令前不问你。** Claude 会话每条 `exec_command` 都会停下来问，Codex 不会：那道闸靠的是只有 Claude Code 认的键（[配置说明](docs/configuration.md#allow_unattended_exec)）。doctor 的 `Command approval` 行目前对 Codex 也说"会问"，那句不对。
+- **doctor 验不了 Codex 的令牌还有没有效**，只能看到"登录过"（P65 起那一行自己会说）；令牌被吊销要到会话的第一条消息才知道。P62 续跑查出的 F20–F24 列在[续跑记录](docs/research/2026-10-04-p62-resume-release.md)第 7 节，现象和绕法在[排错手册](docs/troubleshooting.md)。
 
 阶段完成、Agent 退出成功和项目验收通过是三个不同的结论。
 

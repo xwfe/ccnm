@@ -2397,7 +2397,7 @@ fn redact_agent_report(selected: &SelectedAgent, mut report: AgentReport) -> Age
             .redact_output_at(error.message, selected.profile_dir.as_deref());
         error
     };
-    report.version = report.version.map_err(&redact);
+    report.version = report.version.map_err(redact);
     report.auth = report.auth.map_err(redact);
     report
 }

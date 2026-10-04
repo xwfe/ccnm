@@ -557,6 +557,21 @@ fn workspace_checks(r: &Resolved<'_>, agent: Option<&str>, env: &Env<'_>) -> Vec
                 checks.extend(not_yet_implemented());
                 return checks;
             }
+            // Versions before identities (F20). An Agent on another ccnm may
+            // not read this request the way it was meant -- a 0.9.0 one
+            // answered a 0.10.1 probe with no identity at all -- so the
+            // identity comparison below would report the symptom and return
+            // before the version row could name the cause.
+            let version = version_row("Agent ccnm", &rep.hello, "work");
+            if !identity_matches && version.status != Status::Ok {
+                checks.push(Check::ok("Agent SSH", resolved.target()));
+                checks.push(version);
+                checks.push(Check::skip(
+                    "Agent selection",
+                    "not compared: the Agent Node runs another ccnm build, which may not have read the selection",
+                ));
+                return checks;
+            }
             if !identity_matches {
                 checks.push(Check::fail_with(
                     "Agent selection",
@@ -2219,6 +2234,88 @@ mod tests {
         assert!(reverse.detail.contains("refused"), "{text}");
         assert!(!text.contains("are both on"), "{text}");
         assert_eq!(report.exit_code(), ErrorCode::Policy.exit_code());
+    }
+
+    /// An instance workspace on the Runtime Node whose Agent answers the
+    /// probe with `probe`.
+    fn doctor_with_probe(test: &str, probe: serde_json::Value) -> Report {
+        let (dir, _) = setup(test, true, true);
+        let config = dir.join("instance.toml");
+        std::fs::write(
+            &config,
+            format!(
+                "version = 1\nthis = \"runtime\"\n[nodes.agent]\nssh = \"work\"\n[nodes.runtime]\n[workspaces.xshun]\nroot = \"{}\"\nagent = {{ node = \"agent\", instance = \"claude-main\" }}\n",
+                dir.join("root").display()
+            ),
+        )
+        .unwrap();
+        let fake = FakeRunner::new();
+        fake.push(Output::exited(0, format!("ccnm {}\n", crate::VERSION)));
+        fake.push(Output::exited(0, "hostname workmac\n"));
+        fake.push(Output::exited(0, probe.to_string()));
+        run(&config, Some("xshun"), &env(&fake, &dir))
+    }
+
+    /// F20. On the P62 machines a 0.10.1 Operator asked fodelf's 0.9.0
+    /// Agent and got one failing row, `Agent probe identity differs from the
+    /// Runtime selection`: the old Agent did not take the request the way
+    /// this build meant it, its report came back without an identity, and
+    /// that comparison ran first and returned. The rows that would have said
+    /// "the two machines run different ccnm" were never reached.
+    #[test]
+    fn an_agent_on_another_version_is_named_before_any_identity_is_compared() {
+        let mut probe = serde_json::to_value(good_probe()).unwrap();
+        probe["hello"]["ccnm_version"] = "0.9.0".into();
+        // 0.9.0 predates the field (P64).
+        probe["hello"].as_object_mut().unwrap().remove("wire");
+        let report = doctor_with_probe("old-agent", probe);
+        let text = report.render();
+
+        let version = row(&report, "Agent ccnm");
+        assert_eq!(version.status, Status::Fail(ErrorCode::Version), "{text}");
+        assert!(version.detail.contains("runs ccnm 0.9.0"), "{text}");
+        assert!(!text.contains("identity differs"), "{text}");
+        // Not a second verdict next to the real one: an Agent on another
+        // build may not have read the selection at all.
+        assert_eq!(
+            row(&report, "Agent selection").status,
+            Status::Skip,
+            "{text}"
+        );
+        assert_eq!(row(&report, "Agent SSH").status, Status::Ok, "{text}");
+        assert_eq!(report.exit_code(), ErrorCode::Version.exit_code());
+
+        // The same number from another build is the same kind of answer.
+        let mut probe = serde_json::to_value(good_probe()).unwrap();
+        probe["hello"].as_object_mut().unwrap().remove("wire");
+        let report = doctor_with_probe("old-build", probe);
+        let text = report.render();
+        assert_eq!(
+            row(&report, "Agent ccnm").status,
+            Status::Fail(ErrorCode::Version),
+            "{text}"
+        );
+        assert!(!text.contains("identity differs"), "{text}");
+    }
+
+    /// The comparison F20 moved behind the version stays where it was for
+    /// the case it is for: the same build answering for another instance.
+    #[test]
+    fn the_same_build_answering_for_another_instance_is_still_refused() {
+        let mut probe = good_probe();
+        // A report that carries an identity speaks the instance protocol.
+        probe.protocol = 3;
+        probe.agent_identity = Some(crate::instance::AgentIdentity {
+            node: "agent".into(),
+            instance: "codex-main".into(),
+            provider: AgentProvider::Codex,
+            profile_ref: "default".into(),
+        });
+        let report = doctor_with_probe("other-instance", serde_json::to_value(probe).unwrap());
+        let text = report.render();
+        let selection = row(&report, "Agent selection");
+        assert_eq!(selection.status, Status::Fail(ErrorCode::Version), "{text}");
+        assert!(selection.detail.contains("identity differs"), "{text}");
     }
 
     /// F10, from the Agent Node. The same refused probe used to read

@@ -322,6 +322,22 @@ impl Edit {
         }
     }
 
+    /// Set `workspaces.<name>.runtime_node` on a workspace
+    /// [`set_workspace`](Self::set_workspace) wrote. Only for a Runtime Node
+    /// not called `runtime` (F24): a file with the default names keeps the
+    /// key implicit, as it always has.
+    pub fn set_workspace_runtime_node(&mut self, name: &str, node: &str, changes: &mut Changes) {
+        let Some(ws) = self
+            .doc
+            .get_mut("workspaces")
+            .and_then(|w| w.get_mut(name))
+            .and_then(Item::as_table_mut)
+        else {
+            return;
+        };
+        set_str(ws, "runtime_node", node, name, changes);
+    }
+
     /// Remove `workspaces.<name>`. Removing one that is not there is not
     /// an error: the file already says what was asked.
     pub fn remove_workspace(&mut self, name: &str, changes: &mut Changes) -> bool {

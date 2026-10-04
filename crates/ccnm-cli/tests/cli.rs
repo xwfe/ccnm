@@ -861,6 +861,83 @@ fn adding_a_workspace_before_init_says_to_init() {
     assert!(stderr(&out).contains("ccnm init"), "{}", stderr(&out));
 }
 
+/// F24. On the P62 Runtime the nodes were called hpsrv, fodelf and xdwmbp,
+/// and `workspace add` was refused there with nothing written: it always
+/// wrote `agent_node = "agent"` and left `runtime_node` at its default,
+/// `runtime`, and neither node exists in that file. The Runtime is the
+/// machine this runs on, so its node is `this`; the Agent is the one other
+/// node when there is one, and has to be named when there are several.
+#[test]
+fn workspace_add_takes_its_nodes_from_the_config_it_writes_into() {
+    let dir = std::env::temp_dir().join(format!("ccnm-cli-add-nodes-{}", std::process::id()));
+    let _cleanup = TestDir::adopt(&dir);
+    let _ = std::fs::remove_dir_all(&dir);
+    let project = dir.join("proj");
+    std::fs::create_dir_all(&project).unwrap();
+    let config = dir.join("config.toml");
+    let add = |extra: &[&str]| {
+        ccnm()
+            .args(["workspace", "add", "proj"])
+            .arg(&project)
+            .args(extra)
+            .arg("--config")
+            .arg(&config)
+            .output()
+            .unwrap()
+    };
+    let workspace_lines = |written: &str| -> Vec<String> {
+        written
+            .lines()
+            .skip_while(|line| line.trim() != "[workspaces.proj]")
+            .skip(1)
+            .take_while(|line| !line.trim_start().starts_with('['))
+            .map(str::to_string)
+            .collect()
+    };
+
+    // One Agent Node: it is the one.
+    let one = "this = \"hpsrv\"\n[nodes.hpsrv]\n[nodes.fodelf]\nssh = \"fodelf\"\n";
+    std::fs::write(&config, one).unwrap();
+    let out = add(&[]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let written = std::fs::read_to_string(&config).unwrap();
+    let ws = workspace_lines(&written);
+    assert!(ws.contains(&"agent_node = \"fodelf\"".into()), "{written}");
+    assert!(ws.contains(&"runtime_node = \"hpsrv\"".into()), "{written}");
+
+    // Two: which one is the person's to say, and nothing is written
+    // until they do.
+    let two = format!("{one}[nodes.xdwmbp]\nssh = \"xdwmbp\"\n");
+    std::fs::write(&config, &two).unwrap();
+    let out = add(&[]);
+    assert_ne!(out.status.code(), Some(0), "{}", stdout(&out));
+    let err = stderr(&out);
+    assert!(err.contains("fodelf") && err.contains("xdwmbp"), "{err}");
+    assert!(err.contains("--agent-node"), "{err}");
+    assert_eq!(std::fs::read_to_string(&config).unwrap(), two);
+
+    let out = add(&["--agent-node", "xdwmbp"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let written = std::fs::read_to_string(&config).unwrap();
+    let ws = workspace_lines(&written);
+    assert!(ws.contains(&"agent_node = \"xdwmbp\"".into()), "{written}");
+    assert!(ws.contains(&"runtime_node = \"hpsrv\"".into()), "{written}");
+
+    // A config with the default names gets exactly what it always got:
+    // `runtime_node` stays implicit.
+    std::fs::write(
+        &config,
+        "this = \"runtime\"\n[nodes.runtime]\n[nodes.agent]\nssh = \"w\"\n",
+    )
+    .unwrap();
+    let out = add(&[]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let written = std::fs::read_to_string(&config).unwrap();
+    let ws = workspace_lines(&written);
+    assert!(ws.contains(&"agent_node = \"agent\"".into()), "{written}");
+    assert!(!written.contains("runtime_node"), "{written}");
+}
+
 /// `ccnm <workspace>` is `ccnm run <workspace>`: the thing people do all
 /// day should not need the word.
 /// Sitting at the Agent Node, the same command works: the config there

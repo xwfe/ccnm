@@ -227,6 +227,10 @@ enum WorkspaceCommand {
         /// What Claude may do without asking
         #[arg(long, value_name = "MODE")]
         permission_mode: Option<String>,
+        /// The node that runs this workspace's Agent. Needed only when the
+        /// config has more than one candidate and none is called `agent`
+        #[arg(long, value_name = "NODE")]
+        agent_node: Option<String>,
     },
     /// Every workspace in the config, and whether its directory is here
     #[command(visible_alias = "ls")]
@@ -621,6 +625,9 @@ fn zh_help(command: clap::Command) -> clap::Command {
                             a.help("允许 exec_command 在没有受限 runtime 账号的情况下跑（见 docs/production-safety.md）")
                         })
                         .mut_arg("permission_mode", |a| a.help("Claude 不用问就能做的事"))
+                        .mut_arg("agent_node", |a| {
+                            a.help("哪个节点跑这个 workspace 的 Agent。配置里有不止一个候选、又没有叫 agent 的时候才需要给")
+                        })
                 })
                 .mut_subcommand("list", |c| {
                     c.about("配置里有哪些 workspace，以及它们的目录在不在这台机器上")
@@ -1609,6 +1616,7 @@ fn workspace_command(
             replace,
             allow_unconfined_exec,
             permission_mode,
+            agent_node,
         } => {
             let root = match root {
                 Some(path) => path.clone(),
@@ -1657,16 +1665,20 @@ fn workspace_command(
                 .as_deref()
                 .map(parse_permission_mode)
                 .transpose()?;
+            let (agent_node, runtime_node) = workspace_nodes(path, agent_node.as_deref())?;
             let mut edit = configedit::Edit::open(path)?;
             let mut changes = configedit::Changes::default();
             edit.set_workspace(
                 &name,
                 &root,
-                "agent",
+                &agent_node,
                 mode,
                 allow_unconfined_exec.then_some(true),
                 &mut changes,
             );
+            if let Some(node) = &runtime_node {
+                edit.set_workspace_runtime_node(&name, node, &mut changes);
+            }
             edit.save(&changes).map_err(|e| {
                 if edit.existed() {
                     e
@@ -1855,6 +1867,56 @@ fn name_from(root: &std::path::Path) -> Result<String> {
 /// **The same directory, another name.** Two names for one project means
 /// two tmux sessions and two Claudes editing the same files, each unaware
 /// of the other. Nobody wants that; they want the name they already have.
+/// The nodes a new workspace names: the Agent's, and the Runtime's when it
+/// is not the default `runtime` (F24).
+///
+/// `workspace add` runs where the project is, so the Runtime is `this`. It
+/// used to write `agent_node = "agent"` and leave `runtime_node` at
+/// `runtime` whatever the file called its nodes, and a config with other
+/// names -- the P62 one had hpsrv, fodelf and xdwmbp -- refused the change.
+/// The Agent is still `agent` when there is one, so a config from
+/// `ccnm init` gets what it always got; otherwise it is the one other node,
+/// and with several it is the person's to name. Guessing there would
+/// quietly send the workspace's sessions to the wrong machine.
+fn workspace_nodes(
+    config_path: &std::path::Path,
+    asked: Option<&str>,
+) -> Result<(String, Option<String>)> {
+    // No config yet, or one that will not load: the old defaults, and
+    // `save` says what is wrong, as it always has.
+    let Ok(config) = Config::load(config_path) else {
+        return Ok((asked.unwrap_or("agent").to_string(), None));
+    };
+    let this = config.this.as_deref();
+    let runtime = this
+        .filter(|node| *node != ccnm_core::config::DEFAULT_RUNTIME_NODE)
+        .map(str::to_string);
+    if let Some(node) = asked {
+        return Ok((node.to_string(), runtime));
+    }
+    if config.nodes.contains_key("agent") {
+        return Ok(("agent".to_string(), runtime));
+    }
+    let others: Vec<&str> = config
+        .nodes
+        .keys()
+        .map(String::as_str)
+        .filter(|node| Some(*node) != this)
+        .collect();
+    match others.as_slice() {
+        [only] => Ok((only.to_string(), runtime)),
+        [] => Err(ccnm_core::Error::config(format!(
+            "{} has no node besides this one to run the Agent\nadd one first: ccnm init --agent <alias>",
+            config_path.display()
+        ))),
+        several => Err(ccnm_core::Error::invalid_args(format!(
+            "{} has more than one node that could run this workspace's Agent: {}\nsay which: --agent-node <node>",
+            config_path.display(),
+            several.join(", ")
+        ))),
+    }
+}
+
 fn check_collisions(
     config_path: &std::path::Path,
     name: &str,

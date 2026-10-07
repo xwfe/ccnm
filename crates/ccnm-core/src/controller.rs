@@ -1681,7 +1681,13 @@ mod tests {
         let err = context(&path).unwrap_err();
         assert_eq!(err.code(), ErrorCode::NotReady);
         assert!(err.message().contains("nothing is listening"), "{err}");
-        assert!(err.message().contains("kickstart"), "{err}");
+        // What to type differs by platform (P74); the advice is always one.
+        let restart = if cfg!(target_os = "linux") {
+            "systemctl --user restart dev.ccnm.controller.service"
+        } else {
+            "launchctl kickstart -k"
+        };
+        assert!(err.message().contains(restart), "{err}");
         let _ = std::fs::remove_file(&path);
     }
 

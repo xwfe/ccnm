@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-10-07T22:45:00+09:00",
+  "last_updated": "2026-10-07T22:50:00+09:00",
   "current_task": null,
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
@@ -3897,7 +3897,7 @@
       ],
       "owner": null,
       "started_at": "2026-10-07T21:57:59+09:00",
-      "last_updated": "2026-10-07T22:45:00+09:00",
+      "last_updated": "2026-10-07T22:50:00+09:00",
       "completed_criteria": [
         "P79.1",
         "P79.2",
@@ -3951,6 +3951,15 @@
           "ref": "docs/research/2026-10-07-p79-skill-frontmatter.md",
           "commit": "40e3188",
           "result": "复查补修：PreToolUse 钩子跑着时客户端取消调用，原来钩子跑完后工具照样执行（取消了的 apply_patch 仍写文件）；改成等钩子时同时看取消、取消了不调工具、回 CCNM_E_INVALID_ARGS，钩子本身跑到结束或超时。中立客户端用例 test_a_call_cancelled_while_its_hooks_run_is_not_run 在修之前的二进制上红、修之后绿。之后 fmt、clippy -D warnings 通过，cargo test --workspace 默认 1119/0；ci_gates 结果另记在本阶段 P79.5 的最新证据里。"
+        },
+        {
+          "kind": "offline",
+          "criteria": [
+            "P79.5"
+          ],
+          "ref": "docs/research/2026-10-07-p79-skill-frontmatter.md",
+          "commit": "9cc6e39",
+          "result": "补修 40e3188 与日期更正 9cc6e39 之后：cargo fmt --check、clippy --workspace --all-targets -D warnings 通过；cargo test --workspace --no-fail-fast 1119/0，64 线程 1119/0（补修前的提交上跑）；python3 -B scripts/ci_gates.py 通过（计划、协议 46+31 个 fixture、Python 265 条 0 跳过）。没在 Linux 跑、没跑模型、没推送。"
         }
       ],
       "blockers": []

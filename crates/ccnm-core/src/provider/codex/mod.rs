@@ -373,6 +373,18 @@ pub(crate) fn build_launch_cmd(
         "-c",
         "agents.enabled=false",
     ]);
+    // Who answers an approval, pinned like the two above (F27). An
+    // interactive session reads the profile's config.toml (print passes
+    // --ignore-user-config), and Codex writes `/permissions` -> "Approve for
+    // me" there as `approvals_reviewer = "auto_review"`: measured on 0.154.0,
+    // one choice in one session then sent every later session's approvals to
+    // Codex's own reviewer, which let `rm -f` through without asking anyone.
+    // On argv it wins over that file; the person can still switch within a
+    // session, and the next one asks again
+    // (docs/research/2026-10-07-p71-real-machine-recheck.md, section 5).
+    if spec.mode.is_interactive() {
+        cmd = cmd.args(["-c", "approvals_reviewer=\"user\""]);
+    }
     if code_mode(model) {
         cmd = cmd.args([
             "--enable",

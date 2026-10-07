@@ -261,6 +261,50 @@ fn the_tools_the_runtime_marks_ask_in_an_interactive_session_only() {
     assert!(prompts(&launch(Mode::Interactive { prompt: None }, &[])).is_empty());
 }
 
+/// F27: "Approve for me" in `/permissions` is written into the profile's
+/// `config.toml` as `approvals_reviewer = "auto_review"`, and an interactive
+/// session reads that file -- so one choice made in one session used to hand
+/// every later session's approvals to Codex. The sandbox and the approval
+/// policy were already pinned on argv; who answers is pinned with them.
+#[test]
+fn an_interactive_session_does_not_let_the_profile_choose_who_approves() {
+    let launch = |mode: Mode, ask: &[&str]| -> Vec<String> {
+        let mut spec = spec(mode);
+        spec.ask_before = ask.iter().map(|t| t.to_string()).collect();
+        strings(
+            &build_launch_cmd(
+                Path::new("/agent/codex"),
+                &spec,
+                &Dir::at("/agent/session"),
+                Path::new("/agent/private-codex"),
+                Path::new("/agent/ccnm"),
+                None,
+            )
+            .unwrap(),
+        )
+    };
+    let reviewer = |args: &[String]| -> Vec<(String, String)> {
+        args.windows(2)
+            .filter(|w| w[1].starts_with("approvals_reviewer"))
+            .map(|w| (w[0].clone(), w[1].clone()))
+            .collect()
+    };
+    let pinned = vec![("-c".to_string(), "approvals_reviewer=\"user\"".to_string())];
+    for ask in [&["exec_command"][..], &[]] {
+        let interactive = launch(Mode::Interactive { prompt: None }, ask);
+        assert_eq!(reviewer(&interactive), pinned, "{interactive:?}");
+    }
+    // `codex exec` runs with --ignore-user-config, so the profile cannot
+    // reach it, and with approval_policy="never" nobody is asked anyway.
+    let print = launch(
+        Mode::Print {
+            prompt: "fix it".into(),
+        },
+        &["exec_command"],
+    );
+    assert!(reviewer(&print).is_empty(), "{print:?}");
+}
+
 /// The instance can name a model; without one the CLI keeps its own
 /// default, which is what every measured fixture was captured with.
 ///

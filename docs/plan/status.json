@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-10-07T17:42:00+09:00",
+  "last_updated": "2026-10-07T17:57:00+09:00",
   "current_task": "P74",
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
@@ -3646,16 +3646,71 @@
     {
       "id": "P74",
       "title": "Linux 当 Agent Node",
-      "status": "in_progress",
+      "status": "blocked",
       "depends_on": [
         "P73"
       ],
-      "owner": "claude-code/opus-5.5",
+      "owner": null,
       "started_at": "2026-10-07T17:42:00+09:00",
-      "last_updated": "2026-10-07T17:42:00+09:00",
-      "completed_criteria": [],
-      "evidence": [],
-      "blockers": []
+      "last_updated": "2026-10-07T17:57:00+09:00",
+      "completed_criteria": [
+        "P74.1",
+        "P74.2",
+        "P74.5"
+      ],
+      "evidence": [
+        {
+          "kind": "review",
+          "criteria": [
+            "P74.1"
+          ],
+          "ref": "docs/research/2026-10-07-p74-linux-agent.md",
+          "result": "设计写进记录第 1 节：Linux 上 Controller 由 systemd 用户服务托管（$XDG_CONFIG_HOME/systemd/user/dev.ccnm.controller.service，只带 CCNM_CONFIG/XDG_*、不写 PATH，KillMode=process 让重启不连带会话）；Controller 在会话信息里自报平台，macOS 仍要 Aqua，Linux 回话即可、登录由 auth status 证明，没有 platform 的旧 Controller 按 macOS 判；linger 不替人开，install/status/doctor 说后果与命令；其他系统明确说没做。依据：hpsrv 上 v0.11.2 的 controller install --dry-run 打算写 ~/Library/LaunchAgents、调 /bin/launchctl；ccnm 凭据路径表里 Claude 为 .credentials.json、Codex 为 auth.json。"
+        },
+        {
+          "kind": "offline",
+          "criteria": [
+            "P74.2"
+          ],
+          "ref": "docs/research/2026-10-07-p74-linux-agent.md",
+          "commit": "daa9f27",
+          "result": "systemd.rs（新）、controller.rs（Host、Context::on、platform/linger 字段、按平台的 login_session、Tools.host、共用的 wait_until_listening、按平台的提示）、session.rs、doctor.rs（linger 关时 Controller 行注意）、CLI 的 controller 三个子命令与中英文帮助、paths::config_home。a_linux_controller_can_start_agents_without_a_gui_session 写成旧代码也能编译的样子，先在旧代码上跑红（Linux Controller 的会话信息被判读不到登录），修后绿；另加 Linux 自测、旧 Context 按 macOS 读、其他系统、linger 解析、systemd 七条、doctor linger 一条。"
+        },
+        {
+          "kind": "offline",
+          "criteria": [
+            "P74.3"
+          ],
+          "ref": "docs/research/2026-10-07-p74-linux-agent.md",
+          "commit": "daa9f27",
+          "result": "本机 macOS 26.6.2 arm64、rustc 1.98.0，负载 22–39：fmt、clippy（1.98 与 +1.99.0）、cargo +1.89 check --locked 通过；cargo test --workspace 默认与 64 线程各 1092/0（P73 后 1079，新增 13 条；原有给假 launchctl 喂输出的 14 处显式指定 macOS）；ci_gates 通过（Python 262 条 0 跳过）。线上 Linux CI 待推送后补，所以 P74.3 还不算完成。"
+        },
+        {
+          "kind": "offline",
+          "criteria": [
+            "P74.5"
+          ],
+          "ref": "docs/research/2026-10-07-p74-linux-agent.md",
+          "commit": "d6728b0",
+          "result": "快速开始（Linux 上 Controller 是 systemd 用户服务、要用 ssh 登录进来装、linger）、运维（状态与日志、重启不连带会话）、排错（Failed to connect to bus；退出登录后会话没了）、README 与支持矩阵（Linux 已实现、真机未验、未发版）、P74 记录。"
+        }
+      ],
+      "blockers": [
+        {
+          "criteria": [
+            "P74.3"
+          ],
+          "reason": "线上 Linux CI（ubuntu-24.04 的 linux-runtime job）要推送后才跑；推送需要用户批准。",
+          "unblock": "用户批准推送 99ea101 起的提交后，看 CI 的 linux-runtime 与 test job。"
+        },
+        {
+          "criteria": [
+            "P74.4"
+          ],
+          "reason": "hpsrv 上没有能当 Linux Agent 的账号：没装 tmux，bing 没开 linger、没有活着的 systemd 用户实例、名下没有 Claude/Codex。装 tmux、开 linger（或临时起用户实例）、部署候选构建都要另行授权；真实模型还要用户自己在那个 Linux 账号上登录 Claude 或 Codex（ccnm 不复制凭据）。",
+          "unblock": "用户授权在 hpsrv 上：apt 装 tmux、给选定账号开 linger 或临时起 user@UID、以 ccrun 现编或本机交叉编译候选构建并装给该账号；零额度先验 Controller、doctor、起停会话和假模型工具调用；用户登录后再用真实模型。"
+        }
+      ]
     }
   ],
   "observed_gaps": [
@@ -3721,7 +3776,7 @@
     "【P41 记下不修】mcp-serve 被 SIGKILL（或别的不走正常退出的死法）时，它起的命令的进程组没人收：前台命令一直如此，P41 的后台命令没有期限，所以可能一直跑下去；它们的 run 在 read_output 里读作 exit status unknown。正常路径（客户端断开、stdin EOF、心跳发现对端不在）会先停掉所有命令再放写锁。要收干净得给子进程加会话标记、下次启动时按标记扫（封存的原生链 P26/P30 有类似做法），需另立阶段。依据 docs/research/p41-background-commands-2026-09-18.md 第 5 节。"
   ],
   "handoff": {
-    "next_action": "**2026-10-07 P74 进行中（owner claude-code/opus-5.5）：Linux 当 Agent Node。** 用户定：做，目标三端都支持，Windows 另立设计。现状：Controller 只有 launchd 版、起会话要求 Aqua，Linux 上装不上、起会话被拒。hpsrv 的 bing 没开 linger、没装 tmux 和 AI CLI，真机那一步要另行授权与用户登录。下一步：systemd 用户服务版 Controller 与按平台的会话判断，先红后绿。\n\n之前的交接：\n**2026-10-07 P72 真机复验通过（真实模型 1 次），current_task 为 null。** 用户授权用真实模型在真机上复验 F27 的修复。v0.11.2 两端（本机 Codex Agent → hpsrv ccrun）：会话 A 里切 Approve for me，Codex 照样把 approvals_reviewer=\"auto_review\" 写进 profile；会话 B 新起时 /status 仍是 Ask for approval，两次 exec_command 都问人，放行的执行、取消的没执行，会话里再切走后第三次不问、执行；会话 C 又回到 Ask for approval。两台已收尾。记录 docs/research/2026-10-07-p72-real-machine-recheck.md（e6781ee），未推送。路线上没有排定的下一阶段。ccnm-mobile-handoff.md 未读、未动。\n\n之前的交接：\n**2026-10-07 发 v0.11.2、三台换装；current_task 为 null。** 推送 8e8fc5d..2edb7f7（P73 四个提交加版本号 2edb7f7），CI run 37585535192 全绿后打带说明的 tag v0.11.2，release run 37586263986 全过，四个文件齐全、正文取自 tag。换装（新文件 + 改名，换前都没有会话）：本机 fb0a27c8 → 67ebe312，fodelf 同一个包、Controller pid 21418 → 62225（plist 未变），hpsrv ccrun d8422cbf → 713909c5；三台的回退目标都在 ~/.local/opt/ccnm-0.11.1/。四个日用 workspace doctor 都是“可以用了（3 项不查）”、退出 0（v0.11.1 同一份配置是还不能用、退出 3）；零额度起停一次交互会话、写锁全 released。见 docs/research/2026-10-07-release-0.11.2.md。没跑真实模型。路线上没有排定的下一阶段。ccnm-mobile-handoff.md 未读、未动。\n\n之前的交接：\n**2026-10-07 P73 完成（离线 + 只读真机）：doctor 的结论不再被设计上不查的行挡住，current_task 为 null。** 计划 b8b159d；代码 2ddafbd（Status::Note，中文“不查”、英文 NOTE，不挡结论；网络隔离、本机工具策略、不适用的 Codex 原生链、无 Agent workspace 的 Agent 行、同表有 Workspace root 时看不进家目录的 Runtime workspace 改用它；其余 SKIP 照旧挡；结论行注明不查的数目），文档 d149e89（排错手册新增“doctor 的表怎么读”）。新构建对日用配置只读跑 doctor：可以用了（3 项不查）、退出 0，已装 v0.11.1 同时是还不能用、退出 3。门禁 Rust 1079/0（默认与 64 线程）、1.89 check、clippy 1.98/1.99、ci_gates 全过。没推送、没发版。下一步由用户定：推送 b8b159d 起的提交；是否随下个版本发出。ccnm-mobile-handoff.md 未读、未动。",
+    "next_action": "**2026-10-07 P74 blocked（实现与离线完成，等推送与真机授权）：Linux 当 Agent Node。** 计划 99ea101；代码 daa9f27（systemd 用户服务版 Controller，Controller 自报平台，Linux 不要求 Aqua，linger 提示）；文档 d6728b0。本机门禁 1092/0（默认与 64 线程）、clippy 1.98/1.99、1.89、ci_gates 通过。还差：P74.3 线上 Linux CI（要推送）；P74.4 真机（hpsrv 要装 tmux、给账号开 linger、部署候选构建，都要授权；真实模型要用户在该 Linux 账号上登录）。没发版。ccnm-mobile-handoff.md 未读、未动。\n\n之前的交接：\n**2026-10-07 P72 真机复验通过（真实模型 1 次），current_task 为 null。** 用户授权用真实模型在真机上复验 F27 的修复。v0.11.2 两端（本机 Codex Agent → hpsrv ccrun）：会话 A 里切 Approve for me，Codex 照样把 approvals_reviewer=\"auto_review\" 写进 profile；会话 B 新起时 /status 仍是 Ask for approval，两次 exec_command 都问人，放行的执行、取消的没执行，会话里再切走后第三次不问、执行；会话 C 又回到 Ask for approval。两台已收尾。记录 docs/research/2026-10-07-p72-real-machine-recheck.md（e6781ee），未推送。路线上没有排定的下一阶段。ccnm-mobile-handoff.md 未读、未动。\n\n之前的交接：\n**2026-10-07 发 v0.11.2、三台换装；current_task 为 null。** 推送 8e8fc5d..2edb7f7（P73 四个提交加版本号 2edb7f7），CI run 37585535192 全绿后打带说明的 tag v0.11.2，release run 37586263986 全过，四个文件齐全、正文取自 tag。换装（新文件 + 改名，换前都没有会话）：本机 fb0a27c8 → 67ebe312，fodelf 同一个包、Controller pid 21418 → 62225（plist 未变），hpsrv ccrun d8422cbf → 713909c5；三台的回退目标都在 ~/.local/opt/ccnm-0.11.1/。四个日用 workspace doctor 都是“可以用了（3 项不查）”、退出 0（v0.11.1 同一份配置是还不能用、退出 3）；零额度起停一次交互会话、写锁全 released。见 docs/research/2026-10-07-release-0.11.2.md。没跑真实模型。路线上没有排定的下一阶段。ccnm-mobile-handoff.md 未读、未动。\n\n之前的交接：\n**2026-10-07 P73 完成（离线 + 只读真机）：doctor 的结论不再被设计上不查的行挡住，current_task 为 null。** 计划 b8b159d；代码 2ddafbd（Status::Note，中文“不查”、英文 NOTE，不挡结论；网络隔离、本机工具策略、不适用的 Codex 原生链、无 Agent workspace 的 Agent 行、同表有 Workspace root 时看不进家目录的 Runtime workspace 改用它；其余 SKIP 照旧挡；结论行注明不查的数目），文档 d149e89（排错手册新增“doctor 的表怎么读”）。新构建对日用配置只读跑 doctor：可以用了（3 项不查）、退出 0，已装 v0.11.1 同时是还不能用、退出 3。门禁 Rust 1079/0（默认与 64 线程）、1.89 check、clippy 1.98/1.99、ci_gates 全过。没推送、没发版。下一步由用户定：推送 b8b159d 起的提交；是否随下个版本发出。ccnm-mobile-handoff.md 未读、未动。",
     "scope": "2026-10-07 用户要求把 P62 完成后列的四件事“依次实施”：P70 修 F25/F26（完成）、P71 给受管 Codex 补命令审批（完成）、发版、日用两台换成发布版。P71 下载了 Codex 0.154.0 到会话临时目录做零额度实测（不装进系统），tmux socket 临时放 /tmp/ccnm-p71（已删）。改动：crates/ccnm-core（doctor、work、session、mcp/probe、mcp/server、protocol/mcp、provider/codex）与测试，docs（计划、研究记录、配置、使用、排错、支持矩阵、README）。用户未跟踪的 ccnm-mobile-handoff.md 与 .claude/ 未读、未动；桌面端重建的 P69 worktree 没动。\n\n之前的范围：\n2026-10-04 晚 用户要求“合并并清理分支；授权真机复验 P62.4，然后推送”。范围：删已合并的 worktree 分支；按 core-verification 2.2 写清的分项在 hpsrv（ccrun 临时换候选、bing 新装）与 fodelf（并存部署、第二个 Controller、一次性密钥）上重跑续跑记录 6.1、6.2，Claude 模型上限 4 次（用 3 次），故障注入只对本轮会话；零额度复看 F20、F24；收尾删除本轮全部资源；推送 main，不打 tag、不发版。改动：docs（P62.4 复验记录、P62 续跑/P68/P69 记录后注、支持矩阵、排错、status）。本机没有改动日用配置；用户未跟踪的 ccnm-mobile-handoff.md 未读、未动。",
     "planning_validation": {
       "at": "2026-09-08T21:22:43+09:00",

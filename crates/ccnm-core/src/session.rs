@@ -141,6 +141,14 @@ pub struct Spec {
     /// binary, and then it gets what every new session gets.
     #[serde(default, skip_serializing_if = "crate::config::AgentTools::is_default")]
     pub agent_tools: crate::config::AgentTools,
+    /// The ccnm tools a person approves before every call (P71), as the
+    /// Runtime answered when this session was preflighted. Only a Codex
+    /// session needs it written down: Claude Code reads the Runtime's
+    /// marker off the tool list itself, Codex has to be launched with
+    /// `approval_mode = "prompt"` for each. Empty in every print session --
+    /// nobody is there to answer -- and in every record from before P71.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ask_before: Vec<String>,
 }
 
 impl Spec {
@@ -1093,6 +1101,7 @@ mod tests {
             cwd: PathBuf::from("/Users/fodelf/.local/state/ccnm/workspaces/fixture"),
             codex_exec_server: false,
             agent_tools: Default::default(),
+            ask_before: Vec::new(),
         }
     }
 

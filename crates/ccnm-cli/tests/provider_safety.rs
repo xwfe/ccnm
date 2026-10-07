@@ -68,6 +68,7 @@ fn claude_mcp_launch_plan_and_shared_exec_environment_boundary() {
         cwd: root.clone(),
         codex_exec_server: false,
         agent_tools: Default::default(),
+        ask_before: Vec::new(),
     };
     std::fs::write(dir.meta(), serde_json::to_vec(&spec).unwrap()).unwrap();
     let launcher =

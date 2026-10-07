@@ -1046,6 +1046,7 @@ mod tests {
             cwd: dir.join("cwd"),
             codex_exec_server: false,
             agent_tools: Default::default(),
+            ask_before: Vec::new(),
         };
         std::fs::write(
             session::Dir::at(&dir).meta(),

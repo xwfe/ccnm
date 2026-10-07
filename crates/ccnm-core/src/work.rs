@@ -372,7 +372,14 @@ pub fn run(req: &RunRequest, tools: &Tools<'_>) -> Result<RunReport> {
                 "selected Agent topology requires the measured remote SSH MCP path",
             )
         })?;
-        provider_runtime_preflight(&selected, &req.workspace, &req.root, &req.runtime_node, ssh)?;
+        provider_runtime_preflight(
+            &selected,
+            &req.workspace,
+            &req.root,
+            &req.runtime_node,
+            ssh,
+            false,
+        )?;
     }
 
     let runtime = tools.runtime_link(&req.runtime_node)?;
@@ -410,6 +417,7 @@ pub fn run(req: &RunRequest, tools: &Tools<'_>) -> Result<RunReport> {
         cwd,
         codex_exec_server: false,
         agent_tools: req.agent_tools.clone(),
+        ask_before: Vec::new(),
     };
     let dir = session::create(
         &tools.state,
@@ -574,8 +582,8 @@ pub fn start(req: &StartRequest, tools: &Tools<'_>) -> Result<StartReport> {
         });
     }
 
-    let (ctx, ssh) = preflight(req, &selected, tools)?;
-    start_fresh(req, &selected, tools, &tmux, name, ctx, ssh)
+    let (ctx, ssh, ask_before) = preflight(req, &selected, tools)?;
+    start_fresh(req, &selected, tools, name, ctx, ssh, ask_before)
 }
 
 fn require_remote_topology(
@@ -696,7 +704,7 @@ fn preflight(
     req: &StartRequest,
     selected: &SelectedAgent,
     tools: &Tools<'_>,
-) -> Result<(controller::Context, Option<Ssh>)> {
+) -> Result<(controller::Context, Option<Ssh>, Vec<String>)> {
     let ctx = controller::context(&tools.controller)?;
     if !ctx.login_session() {
         return Err(Error::new(
@@ -721,6 +729,7 @@ fn preflight(
         &req.root,
         selected.provider,
     )?;
+    let mut ask_before = Vec::new();
     if selected.identity.is_some() || selected.provider == AgentProvider::Codex {
         let ssh = ssh.as_ref().ok_or_else(|| {
             Error::new(
@@ -728,7 +737,14 @@ fn preflight(
                 "selected Agent topology requires the measured remote SSH MCP path",
             )
         })?;
-        provider_runtime_preflight(selected, &req.workspace, &req.root, &req.runtime_node, ssh)?;
+        ask_before = provider_runtime_preflight(
+            selected,
+            &req.workspace,
+            &req.root,
+            &req.runtime_node,
+            ssh,
+            true,
+        )?;
         if req.codex_exec_server && selected.provider == AgentProvider::Codex {
             native_runtime_preflight(
                 selected,
@@ -741,7 +757,7 @@ fn preflight(
         }
     }
 
-    Ok((ctx, ssh))
+    Ok((ctx, ssh, ask_before))
 }
 
 /// Create the session and have the controller start it.
@@ -749,10 +765,10 @@ fn start_fresh(
     req: &StartRequest,
     selected: &SelectedAgent,
     tools: &Tools<'_>,
-    _tmux: &tmux::Tmux,
     name: String,
     ctx: controller::Context,
     ssh: Option<Ssh>,
+    ask_before: Vec<String>,
 ) -> Result<StartReport> {
     let runtime = tools.runtime_link(&req.runtime_node)?;
     let cwd = if runtime.is_none() {
@@ -792,6 +808,13 @@ fn start_fresh(
         // session on the same workspace keeps its MCP tools.
         codex_exec_server: req.codex_exec_server && selected.provider == AgentProvider::Codex,
         agent_tools: req.agent_tools.clone(),
+        // Only an MCP Codex session reads it (P71): Claude takes the marker
+        // off the tool list, and the exec-server chain has no ccnm tools.
+        ask_before: if selected.provider == AgentProvider::Codex && !req.codex_exec_server {
+            ask_before
+        } else {
+            Vec::new()
+        },
     };
     let dir = session::create(
         &tools.state,
@@ -2349,32 +2372,39 @@ fn validate_provider_request(
     }
     Ok(())
 }
+/// Open the workspace on the Runtime the way the session will, and return
+/// the tools the Runtime says need a person's approval before every call.
+///
+/// `interactive` is the session's: the Runtime marks those tools only when
+/// somebody is at a terminal (and the workspace has no
+/// `allow_unattended_exec`), so a print preflight gets an empty list.
 fn provider_runtime_preflight(
     selected: &SelectedAgent,
     workspace: &str,
     root: &Path,
     runtime_node: &str,
     ssh: &Ssh,
-) -> Result<()> {
+    interactive: bool,
+) -> Result<Vec<String>> {
     let wire = match selected.binding(workspace, root, runtime_node)? {
-        Some(binding) => crate::protocol::payload::encode(&crate::runtime::OpenPayload::new(
-            workspace,
-            binding.agent,
-            "provider-preflight",
-        ))?,
+        Some(binding) => crate::protocol::payload::encode(
+            &crate::runtime::OpenPayload::new(workspace, binding.agent, "provider-preflight")
+                .with_interactive(interactive),
+        )?,
         None => crate::protocol::payload::encode(
             &ServePayload::new(workspace, root.to_path_buf(), "provider-preflight")
-                .with_provider(selected.provider),
+                .with_provider(selected.provider)
+                .with_interactive(interactive),
         )?,
     };
     let cmd = ssh.mcp_transport_cmd(&wire)?;
-    mcp::probe::probe(
+    let report = mcp::probe::probe(
         &cmd,
         1,
         Duration::from_secs(30),
         ErrorCode::RuntimeUnreachable,
     )?;
-    Ok(())
+    Ok(report.asks_user)
 }
 
 /// The exec-server chain's own preflight (P23), after the MCP one has
@@ -2996,6 +3026,7 @@ mod tests {
             cwd: dir.to_path_buf(),
             codex_exec_server: false,
             agent_tools: Default::default(),
+            ask_before: Vec::new(),
         };
         std::fs::write(sdir.meta(), serde_json::to_string(&spec).unwrap()).unwrap();
 
@@ -3188,6 +3219,7 @@ mod tests {
             cwd: dir.to_path_buf(),
             codex_exec_server: false,
             agent_tools: Default::default(),
+            ask_before: Vec::new(),
         };
         std::fs::write(sdir.meta(), serde_json::to_string(&spec).unwrap()).unwrap();
 
@@ -3421,6 +3453,7 @@ mod tests {
                 cwd: dir.to_path_buf(),
                 codex_exec_server: false,
                 agent_tools: Default::default(),
+                ask_before: Vec::new(),
             };
             std::fs::write(sdir.meta(), serde_json::to_string(&spec).unwrap()).unwrap();
             if let Some(text) = stdout {

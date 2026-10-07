@@ -25,6 +25,7 @@ fn spec(mode: Mode) -> Spec {
         cwd: "/agent/state/workspace".into(),
         codex_exec_server: false,
         agent_tools: Default::default(),
+        ask_before: Vec::new(),
     }
 }
 
@@ -199,6 +200,65 @@ fn the_session_home_links_the_login_and_names_this_ccnm_as_the_transport() {
         "synthetic-non-credential"
     );
     std::fs::remove_dir_all(root).unwrap();
+}
+
+/// F21 (P71): the tools the Runtime marked for approval are launched with
+/// `approval_mode = "prompt"`, one key each, in an interactive session only
+/// -- under `codex exec` the same key refuses every call (measured on
+/// 0.154.0). Everything else stays `approve`, and a name that is not one of
+/// ccnm's tools never becomes part of a config key.
+#[test]
+fn the_tools_the_runtime_marks_ask_in_an_interactive_session_only() {
+    let launch = |mode: Mode, ask: &[&str]| -> Vec<String> {
+        let mut spec = spec(mode);
+        spec.ask_before = ask.iter().map(|t| t.to_string()).collect();
+        strings(
+            &build_launch_cmd(
+                Path::new("/agent/codex"),
+                &spec,
+                &Dir::at("/agent/session"),
+                Path::new("/agent/private-codex"),
+                Path::new("/agent/ccnm"),
+                None,
+            )
+            .unwrap(),
+        )
+    };
+    let prompts = |args: &[String]| -> Vec<String> {
+        args.iter()
+            .filter(|a| a.starts_with("mcp_servers.ccnm.tools."))
+            .cloned()
+            .collect()
+    };
+    let interactive = launch(
+        Mode::Interactive { prompt: None },
+        &["exec_command", "call_mcp_tool", "x\"=1,y", "exec_command"],
+    );
+    assert_eq!(
+        prompts(&interactive),
+        [
+            "mcp_servers.ccnm.tools.exec_command.approval_mode=\"prompt\"",
+            "mcp_servers.ccnm.tools.call_mcp_tool.approval_mode=\"prompt\"",
+        ],
+        "{interactive:?}"
+    );
+    assert!(
+        interactive.contains(&"mcp_servers.ccnm.default_tools_approval_mode=\"approve\"".into())
+    );
+    assert!(interactive.contains(&"approval_policy=\"on-request\"".into()));
+
+    let print = launch(
+        Mode::Print {
+            prompt: "fix it".into(),
+        },
+        &["exec_command"],
+    );
+    assert!(prompts(&print).is_empty(), "{print:?}");
+    assert!(print.contains(&"approval_policy=\"never\"".into()));
+
+    // A record from before P71, or a workspace with allow_unattended_exec:
+    // the launch is what it always was.
+    assert!(prompts(&launch(Mode::Interactive { prompt: None }, &[])).is_empty());
 }
 
 /// The instance can name a model; without one the CLI keeps its own

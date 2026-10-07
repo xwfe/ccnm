@@ -86,6 +86,7 @@ fn spec(id: &str, on_chain: bool) -> Spec {
         cwd: "/tmp".into(),
         codex_exec_server: on_chain,
         agent_tools: Default::default(),
+        ask_before: Vec::new(),
     }
 }
 

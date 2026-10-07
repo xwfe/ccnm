@@ -410,6 +410,23 @@ pub(crate) fn build_launch_cmd(
             "mcp_servers.ccnm.enabled_tools={}",
             serde_json::json!(crate::session::MCP_TOOLS)
         ));
+    // The tools the Runtime marked for a person's approval (P71). Codex
+    // does not read that marker, so each gets its own `approval_mode`.
+    // Measured on 0.154.0 (docs/research/probes/p71-codex-approval.py):
+    // `prompt` asks before every call, in Code Mode and with the tools at the
+    // top level alike, offers no "for the session", and a refusal never
+    // reaches the server; under `approval_policy="never"` the same setting
+    // refuses every call, which is why a print session never gets it. A
+    // name that is not one of ccnm's tools is not written into a config key.
+    if spec.mode.is_interactive() {
+        for tool in crate::session::MCP_TOOLS {
+            if spec.ask_before.iter().any(|asked| asked == tool) {
+                cmd = cmd.arg("-c").arg(format!(
+                    "mcp_servers.ccnm.tools.{tool}.approval_mode=\"prompt\""
+                ));
+            }
+        }
+    }
     // Codex lists the skills it finds on this machine and leaves opening
     // them to its shell, which ccnm turns off: measured on 0.154.0, the list
     // is there and nothing can read what it names (P48). So it goes, and

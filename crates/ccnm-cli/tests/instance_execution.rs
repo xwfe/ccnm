@@ -340,6 +340,7 @@ fn identity_mismatched_supervisor_transport_and_controller_requests_fail_before_
         cwd: f.0.clone(),
         codex_exec_server: false,
         agent_tools: Default::default(),
+        ask_before: Vec::new(),
     };
     std::fs::write(dir.meta(), serde_json::to_vec(&spec).unwrap()).unwrap();
     let supervise = SuperviseRequest::new(dir.path().to_path_buf(), fake_agent.clone());
@@ -660,6 +661,73 @@ fn a_supervisor_that_dies_without_an_outcome_is_noticed_in_seconds() {
     );
 }
 
+/// P71: what an Agent reads off the Runtime's tool list before it launches
+/// a Codex session. The real binary's `mcp-serve`, probed the way the
+/// preflight probes it: an interactive open is told `exec_command` asks a
+/// person; a non-interactive one, and one on a workspace with
+/// `allow_unattended_exec`, are told nothing asks. The Runtime decides; the
+/// Agent only carries the answer to Codex.
+#[test]
+fn an_interactive_preflight_learns_which_tools_ask_from_the_runtime() {
+    let f = Fixture::new();
+    let project = f.0.join("runtime-project");
+    let runtime_home = f.0.join("runtime-home");
+    let runtime_state = f.0.join("runtime-state");
+    std::fs::create_dir(&project).unwrap();
+    std::fs::create_dir(&runtime_home).unwrap();
+    let identity = ccnm_core::instance::AgentIdentity {
+        node: "worker".into(),
+        instance: "claude-main".into(),
+        provider: AgentProvider::Claude,
+        profile_ref: "default".into(),
+    };
+    for (unattended, interactive, expected) in [
+        (false, true, vec!["exec_command"]),
+        (false, false, vec![]),
+        (true, true, vec![]),
+    ] {
+        let config = f.0.join(format!("runtime-{unattended}-{interactive}.toml"));
+        let extra = if unattended {
+            "allow_unconfined_exec=true\nallow_unattended_exec=true\nroot ="
+        } else {
+            "allow_unconfined_exec=true\nroot ="
+        };
+        std::fs::write(
+            &config,
+            include_str!("../../../tests/fixtures/agent-instance/runtime.toml")
+                .replace("/runtime/project", project.to_str().unwrap())
+                .replace("root =", extra),
+        )
+        .unwrap();
+        let open = ccnm_core::runtime::OpenPayload::new("demo", identity.clone(), "preflight")
+            .with_interactive(interactive);
+        let transport = ccnm_core::process::Cmd::new("/usr/bin/env").args([
+            "-i".to_string(),
+            "PATH=/usr/bin:/bin".to_string(),
+            format!("HOME={}", runtime_home.display()),
+            format!("XDG_STATE_HOME={}", runtime_state.display()),
+            format!("CCNM_CONFIG={}", config.display()),
+            env!("CARGO_BIN_EXE_ccnm").to_string(),
+            "internal".to_string(),
+            "mcp-serve".to_string(),
+            "--payload".to_string(),
+            payload::encode(&open).unwrap(),
+        ]);
+        let report = ccnm_core::mcp::probe::probe(
+            &transport,
+            1,
+            std::time::Duration::from_secs(30),
+            ccnm_core::ErrorCode::RuntimeUnreachable,
+        )
+        .unwrap();
+        assert!(report.tools.contains(&"exec_command".to_string()));
+        assert_eq!(
+            report.asks_user, expected,
+            "unattended {unattended}, interactive {interactive}"
+        );
+    }
+}
+
 /// A Runtime whose write guard another session holds, reached from the
 /// Agent Node through a fake `ssh` that runs the real binary under the
 /// Runtime's own config and state. The holder is a real `mcp-serve` that
@@ -953,6 +1021,7 @@ fn supervisor_re_resolves_named_profile_without_storing_it_in_public_identity() 
         cwd,
         codex_exec_server: false,
         agent_tools: Default::default(),
+        ask_before: Vec::new(),
     };
     let stored = serde_json::to_string(&spec).unwrap();
     assert!(!stored.contains(profile.to_str().unwrap()));

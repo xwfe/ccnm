@@ -133,6 +133,12 @@ async fn run(transport: &Cmd, calls: u32, unreachable: ErrorCode) -> Result<Prob
         .map_err(|e| Error::internal("cannot serialize tools/list").with_source(e))?
         .len();
     let tools: Vec<String> = list.tools.iter().map(|t| t.name.to_string()).collect();
+    let asks_user: Vec<String> = list
+        .tools
+        .iter()
+        .filter(|t| crate::mcp::server::asks_the_user(t))
+        .map(|t| t.name.to_string())
+        .collect();
 
     let mut samples: Vec<u64> = Vec::with_capacity(calls as usize);
     let mut server_pid = 0u32;
@@ -185,6 +191,7 @@ async fn run(transport: &Cmd, calls: u32, unreachable: ErrorCode) -> Result<Prob
         instructions_bytes,
         project_instructions,
         tools,
+        asks_user,
         tools_list_bytes,
         calls,
         call_p50_us: percentile(&samples, 0.50),

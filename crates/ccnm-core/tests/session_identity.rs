@@ -73,6 +73,7 @@ impl Fixture {
             cwd: self.root.join("cwd"),
             codex_exec_server: false,
             agent_tools: Default::default(),
+            ask_before: Vec::new(),
         };
         std::fs::write(dir.meta(), serde_json::to_vec(&spec).unwrap()).unwrap();
         dir

@@ -1877,6 +1877,7 @@ mod tests {
                 instructions_bytes: 180,
                 project_instructions: Some("no CLAUDE.md at the workspace root".into()),
                 tools: vec!["workspace_info".into()],
+                asks_user: vec![],
                 tools_list_bytes: 412,
                 calls: 1,
                 call_p50_us: 22_000,

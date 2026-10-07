@@ -158,6 +158,16 @@ pub struct ProbeReport {
     #[serde(default)]
     pub project_instructions: Option<String>,
     pub tools: Vec<String>,
+    /// The tools the server marked as needing a person's approval before
+    /// every call (`anthropic/requiresUserInteraction`). The server decides:
+    /// only in an interactive session, never to an external client, and not
+    /// on a workspace with `allow_unattended_exec`. Claude Code reads the
+    /// marker itself; Codex does not, so a Codex session is launched with
+    /// `approval_mode = "prompt"` for exactly these (P71). Empty from a build
+    /// that does not report it, which is also what a non-interactive probe
+    /// gets.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub asks_user: Vec<String>,
     /// `tools/list` result serialized as JSON, in bytes: the schema budget
     /// of design doc section 27.
     pub tools_list_bytes: usize,
@@ -219,6 +229,7 @@ mod tests {
             instructions_bytes: 120,
             project_instructions: Some("CLAUDE.md, 2731 bytes".into()),
             tools: vec!["workspace_info".into()],
+            asks_user: vec![],
             tools_list_bytes: 380,
             calls: 100,
             call_p50_us: 21_000,

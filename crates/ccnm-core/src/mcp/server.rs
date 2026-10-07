@@ -1160,6 +1160,18 @@ fn annotations_for(tool: &str) -> rmcp::model::ToolAnnotations {
 }
 const REQUIRES_INTERACTION: &str = "anthropic/requiresUserInteraction";
 
+/// Whether a listed tool carries [`REQUIRES_INTERACTION`]. How the Agent
+/// Node learns from the Runtime's own `tools/list` which tools a Codex
+/// session has to ask about (P71): Codex does not read the key, and the
+/// decision behind it -- interactive, not external, no
+/// `allow_unattended_exec` -- is this server's to make, not the Agent's.
+pub(crate) fn asks_the_user(tool: &rmcp::model::Tool) -> bool {
+    tool.meta
+        .as_ref()
+        .and_then(|meta| meta.0.get(REQUIRES_INTERACTION))
+        == Some(&serde_json::Value::Bool(true))
+}
+
 /// The tools whose one result can pass about 50 000 characters: a
 /// `read_file` or `load_skill` page is up to 64 KiB, a `call_mcp_tool`
 /// tool list up to 64 KiB plus the server's instructions.
@@ -1812,6 +1824,14 @@ mod tests {
                 asks_the_user(tool),
                 tool.name == "exec_command",
                 "{} has the wrong interaction requirement",
+                tool.name
+            );
+            // What the Agent reads off this list for a Codex session (P71)
+            // is the same verdict as the serialized key.
+            assert_eq!(
+                super::asks_the_user(tool),
+                asks_the_user(tool),
+                "{}",
                 tool.name
             );
         }

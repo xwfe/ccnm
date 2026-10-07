@@ -143,7 +143,7 @@ view_image      read_notebook  stop_command   call_mcp_tool
 - **写互斥要求各入口用同一个 state 目录。** 同一棵树配两个 `XDG_STATE_HOME` 就是两把互不知晓的锁。
 - **离开进程组的后代够不着。** Runtime MCP server 派生的 `setsid` / 守护进程、以及 `mcp-serve` 被 `kill -9` 后留下的后台命令，ccnm 停不掉；写锁会因此保持 unknown，按[运维手册](docs/operations.md#写入-guard-残留)人工收。
 - **项目和 Agent 同机（colocated）没有真实验收**，明确拒绝，不静默降级。
-- **受管 Codex 会话的命令审批，会话里的人能自己关掉。** P71 起 Codex 会话和 Claude 一样，每条 `exec_command` 前都问你；但在 Codex 里用 `/permissions` 切到 Full Access 就不再问，Claude 那边任何权限模式都关不掉。P71 之前的构建对 Codex 一律不问（[配置说明](docs/configuration.md#allow_unattended_exec)）。选过一次 Approve for me 会被 Codex 记进 profile，之后的受管会话都不再问（F27，没修；[怎么去掉](docs/troubleshooting.md#受管-codex-会话exec_command-每次都弹或者一次都不弹)）。
+- **受管 Codex 会话的命令审批，会话里的人能自己关掉。** P71 起 Codex 会话和 Claude 一样，每条 `exec_command` 前都问你；但在 Codex 里用 `/permissions` 切到 Full Access 就不再问，Claude 那边任何权限模式都关不掉。P71 之前的构建对 Codex 一律不问（[配置说明](docs/configuration.md#allow_unattended_exec)）。v0.11.0 及之前的 Agent 上，选过一次 Approve for me 会被 Codex 记进 profile，之后的受管会话都不再问（F27，P72 已修、未发版；[怎么去掉](docs/troubleshooting.md#受管-codex-会话exec_command-每次都弹或者一次都不弹)）。
 - **doctor 验不了 Codex 的令牌还有没有效**，只能看到"登录过"（P65 起那一行自己会说）；令牌被吊销要到会话的第一条消息才知道。P62 续跑查出的 F20–F24 列在[续跑记录](docs/research/2026-10-04-p62-resume-release.md)第 7 节，现象和绕法在[排错手册](docs/troubleshooting.md)。
 
 阶段完成、Agent 退出成功和项目验收通过是三个不同的结论。

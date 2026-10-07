@@ -135,11 +135,16 @@ pub struct Spec {
     /// what those sessions were.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub codex_exec_server: bool,
-    /// Which native Agent features a remote session keeps (P46). A record
-    /// written before the field existed reads as the default, web search
-    /// on; that only matters if such a record is launched by a newer
-    /// binary, and then it gets what every new session gets.
-    #[serde(default, skip_serializing_if = "crate::config::AgentTools::is_default")]
+    /// Which native Agent features a remote session keeps (P46). Left out
+    /// of the record when it is
+    /// [`AgentTools::omitted`](crate::config::AgentTools::omitted), and
+    /// read back that way, so a record keeps meaning what the build that
+    /// wrote it meant -- a record from P50 to P76 that has no field was
+    /// web search and the MCP servers, never the P77 default.
+    #[serde(
+        default = "crate::config::AgentTools::omitted",
+        skip_serializing_if = "crate::config::AgentTools::is_omitted"
+    )]
     pub agent_tools: crate::config::AgentTools,
     /// The ccnm tools a person approves before every call (P71), as the
     /// Runtime answered when this session was preflighted. Only a Codex
@@ -1122,6 +1127,28 @@ mod tests {
             agent_tools: Default::default(),
             ask_before: Vec::new(),
         }
+    }
+
+    /// A session record keeps meaning what the build that wrote it meant
+    /// (P77): no `agent_tools` was the P50 default, and still reads as that
+    /// rather than as the new default of all five. The new default is
+    /// written out, so a record from this build reads back the same.
+    #[test]
+    fn a_record_without_agent_tools_reads_as_the_p50_default() {
+        use crate::config::{AgentTool, AgentTools};
+        let mut record = serde_json::to_value(spec()).unwrap();
+        assert_eq!(record["agent_tools"].as_array().map(Vec::len), Some(5));
+        assert_eq!(
+            serde_json::from_value::<Spec>(record.clone())
+                .unwrap()
+                .agent_tools,
+            AgentTools::of(&AgentTool::ALL)
+        );
+        record.as_object_mut().unwrap().remove("agent_tools");
+        assert_eq!(
+            serde_json::from_value::<Spec>(record).unwrap().agent_tools,
+            AgentTools::omitted()
+        );
     }
 
     fn ssh() -> Ssh {

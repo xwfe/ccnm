@@ -520,11 +520,16 @@ pub struct ResolveReport {
     /// Runtime that does not know the field means too.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub codex_exec_server: bool,
-    /// The workspace's own `agent_tools` (P46). Sent only when it is not
-    /// the default, so a default workspace still reads on an older
-    /// Agent; a non-default one is refused there as an unknown field,
-    /// rather than quietly launched with a different tool set.
-    #[serde(default, skip_serializing_if = "crate::config::AgentTools::is_default")]
+    /// The workspace's own `agent_tools` (P46). Left out only when it is
+    /// [`AgentTools::omitted`](crate::config::AgentTools::omitted), the
+    /// P50 default, so such a workspace still reads on an older Agent;
+    /// anything else -- the P77 default included -- is spelled out, and an
+    /// Agent too old to read it refuses the request by name rather than
+    /// quietly launching with a different tool set.
+    #[serde(
+        default = "crate::config::AgentTools::omitted",
+        skip_serializing_if = "crate::config::AgentTools::is_omitted"
+    )]
     pub agent_tools: crate::config::AgentTools,
 }
 
@@ -1442,10 +1447,13 @@ codex_exec_server = {opted_in}
     }
 
     /// `agent_tools` is the Runtime's decision and reaches the Agent only
-    /// through this report. The default is absent on the wire, so an
-    /// older Agent reads a default workspace as it always has; anything
-    /// else is written out, and an older Agent refuses it as an unknown
-    /// field instead of launching with a tool set nobody chose.
+    /// through this report. Only the P50 default is absent on the wire, so
+    /// an older Agent reads such a workspace as it always has; anything
+    /// else -- the P77 default of all five included -- is written out, and
+    /// an older Agent refuses it as an unknown field or name instead of
+    /// launching with a tool set nobody chose. Absent reads back as the P50
+    /// default, never as the new one: a report from an older Runtime must
+    /// not turn on what that Runtime never agreed to.
     #[test]
     fn a_resolve_carries_the_workspace_agent_tools() {
         use crate::config::{AgentTool, AgentTools};
@@ -1456,7 +1464,25 @@ codex_exec_server = {opted_in}
         let default = resolve(&config, &request).unwrap();
         assert!(default.agent_tools.is_default());
         let json = serde_json::to_value(&default).unwrap();
+        assert_eq!(
+            json["agent_tools"],
+            serde_json::json!([
+                "web_search",
+                "web_fetch",
+                "subagents",
+                "tasks",
+                "mcp_servers"
+            ]),
+            "{json}"
+        );
+
+        config.workspaces.get_mut("demo").unwrap().agent_tools = AgentTools::omitted();
+        let mut json = serde_json::to_value(resolve(&config, &request).unwrap()).unwrap();
         assert!(json.get("agent_tools").is_none(), "{json}");
+        // And what an older Runtime sends for its default reads as that.
+        json.as_object_mut().unwrap().remove("agent_tools");
+        let back: ResolveReport = serde_json::from_value(json).unwrap();
+        assert_eq!(back.agent_tools, AgentTools::omitted());
 
         config.workspaces.get_mut("demo").unwrap().agent_tools =
             AgentTools::of(&[AgentTool::WebFetch]);

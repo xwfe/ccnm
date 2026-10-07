@@ -450,9 +450,9 @@ pub struct Workspace {
     ///
     /// A Runtime field, like the switches above, because the risk lands
     /// here: `web_fetch` can carry anything the model has read out of this
-    /// project to any URL. Absent means [`AgentTools::default`], web search
-    /// only. It says nothing to a colocated session, which has the whole
-    /// native tool set anyway, nor to an external MCP client.
+    /// project to any URL. Absent means [`AgentTools::default`], all of
+    /// them (P77). It says nothing to a colocated session, which has the
+    /// whole native tool set anyway, nor to an external MCP client.
     #[serde(default, skip_serializing_if = "AgentTools::is_default")]
     pub agent_tools: AgentTools,
     /// Hybrid only: where the restricted runner may write. Must not overlap
@@ -587,7 +587,8 @@ pub enum MountMode {
 pub enum AgentTool {
     /// Search the web. The query leaves through the Agent's own account.
     WebSearch,
-    /// Fetch any URL. Off by default: a URL is also a way *out*.
+    /// Fetch any URL. A URL is also a way *out*; on by default since P77
+    /// all the same, the user's call.
     WebFetch,
     /// Delegate to a sub-agent. Measured to get exactly the parent's tools.
     Subagents,
@@ -634,12 +635,10 @@ impl AgentTool {
 pub struct AgentTools(std::collections::BTreeSet<AgentTool>);
 
 impl Default for AgentTools {
-    /// Web search, and the Agent's installed MCP servers (P50): the user's
-    /// calls (2026-09-22). Search is the one native feature a coding
-    /// session actually misses; the servers are what the user asked to
-    /// reach from these sessions, on by default.
+    /// All of them, since P77: the user's call (2026-10-07). Before that it
+    /// was [`AgentTools::omitted`].
     fn default() -> Self {
-        AgentTools::of(&[AgentTool::WebSearch, AgentTool::McpServers])
+        AgentTools::of(&AgentTool::ALL)
     }
 }
 
@@ -654,6 +653,26 @@ impl AgentTools {
 
     pub fn is_default(&self) -> bool {
         *self == AgentTools::default()
+    }
+
+    /// What a message between the two machines, or a session record, means
+    /// when it leaves the field out: the default from P50 to P77, web
+    /// search and the Agent's MCP servers.
+    ///
+    /// Not [`AgentTools::default`], and kept apart from it on purpose. Those
+    /// messages leave the field out when it equals this, as every build
+    /// from P50 to P76 did; were "absent" to follow the config
+    /// default, an Agent from P77 on reading an older Runtime would turn on
+    /// URL fetching and sub-agents that Runtime never agreed to. So a
+    /// Runtime with the new default spells all five out, and an older Agent
+    /// that cannot read one of them refuses the request by name instead of
+    /// launching with a different set.
+    pub fn omitted() -> Self {
+        AgentTools::of(&[AgentTool::WebSearch, AgentTool::McpServers])
+    }
+
+    pub fn is_omitted(&self) -> bool {
+        *self == AgentTools::omitted()
     }
 
     pub fn contains(&self, tool: AgentTool) -> bool {
@@ -1225,21 +1244,24 @@ mod tests {
     /// listed elsewhere, and the one alias it dials them by.
     const AGENT_SIDE: &str = "this = \"agent\"\nruntime_node = \"runtime\"\n[nodes.agent]\n[nodes.runtime]\nssh = \"xdwmbp\"\n";
 
-    /// `agent_tools` absent is web search only; `[]` is nothing; a name
+    /// `agent_tools` absent is all of them (P77); `[]` is nothing; a name
     /// twice is one; a name ccnm does not know is refused, like any other
-    /// typo in this file. The default is never written back.
+    /// typo in this file. The default is never written back, and the P50
+    /// default is, now that it is no longer what absent means.
     #[test]
-    fn agent_tools_default_to_web_search_and_mcp_servers_and_refuse_unknown_names() {
+    fn agent_tools_default_to_all_and_refuse_unknown_names() {
         let base = "this = \"runtime\"\n[nodes.agent]\nssh = \"a\"\n[nodes.runtime]\n\
                     [workspaces.x]\nagent_node = \"agent\"\nroot = \"/p\"\n";
         let tools = |extra: &str| {
             Config::parse(&format!("{base}{extra}")).map(|c| c.workspaces["x"].agent_tools.clone())
         };
-        assert_eq!(
-            tools("").unwrap(),
-            AgentTools::of(&[AgentTool::WebSearch, AgentTool::McpServers])
-        );
+        assert_eq!(tools("").unwrap(), AgentTools::of(&AgentTool::ALL));
         assert_eq!(tools("agent_tools = []\n").unwrap(), AgentTools::none());
+        // The P50 default, written out, still means exactly that.
+        assert_eq!(
+            tools("agent_tools = [\"web_search\", \"mcp_servers\"]\n").unwrap(),
+            AgentTools::omitted()
+        );
         // What a workspace wrote before P50 still means what it meant then:
         // search, and no MCP servers.
         assert_eq!(
@@ -1261,11 +1283,16 @@ mod tests {
         assert!(!written(AgentTools::default()).contains("agent_tools"));
         assert!(written(AgentTools::none()).contains("agent_tools = []"));
         assert!(
+            written(AgentTools::omitted())
+                .contains("agent_tools = [\"web_search\", \"mcp_servers\"]")
+        );
+        assert!(
             written(AgentTools::of(&[AgentTool::WebSearch]))
                 .contains("agent_tools = [\"web_search\"]")
         );
-        let text = written(AgentTools::of(&AgentTool::ALL));
-        for tool in AgentTool::ALL {
+        // Every name but one is not the default, and is written out whole.
+        let text = written(AgentTools::of(&AgentTool::ALL[..4]));
+        for tool in &AgentTool::ALL[..4] {
             assert!(text.contains(&format!("\"{}\"", tool.as_str())), "{text}");
         }
     }

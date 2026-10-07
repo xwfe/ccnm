@@ -233,6 +233,44 @@ fn claude_behavior_matches_snapshot_except_documented_safety_and_colocated_fixes
             .map(Value::from),
         );
     }
+    // P77 turns every agent tool on by default: `--tools` names all of
+    // them, settings.json allows them and no longer denies any. Every
+    // spec, colocated ones included, now carries the field, because only
+    // the P50 default (`omitted`) is left out of a record -- reading
+    // "absent" as everything would widen what an older record meant.
+    for launch in expected["launches"].as_array_mut().unwrap() {
+        launch["spec"]["agent_tools"] = json!([
+            "web_search",
+            "web_fetch",
+            "subagents",
+            "tasks",
+            "mcp_servers"
+        ]);
+        if launch.pointer("/spec/runtime").is_none_or(Value::is_null) {
+            continue;
+        }
+        const OPENED: [&str; 7] = [
+            "WebFetch",
+            "Agent",
+            "TaskStop",
+            "TaskCreate",
+            "TaskGet",
+            "TaskList",
+            "TaskUpdate",
+        ];
+        let args = launch["command"]["args"].as_array_mut().unwrap();
+        let at = args.iter().position(|a| a == "--tools").unwrap();
+        args[at + 1] = Value::from(format!("WebSearch,{}", OPENED.join(",")));
+        let permissions = &mut launch["settings"]["permissions"];
+        permissions["allow"]
+            .as_array_mut()
+            .unwrap()
+            .extend(OPENED.map(Value::from));
+        permissions["deny"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|name| !OPENED.iter().any(|opened| name == opened));
+    }
     assert_eq!(actual, expected);
 }
 

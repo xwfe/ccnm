@@ -490,15 +490,20 @@ mod tests {
     /// session gets no `--tools` at all.
     #[test]
     fn a_remote_session_keeps_only_the_workspace_agent_tools() {
-        assert_eq!(tools_arg(&spec()).as_deref(), Some("WebSearch"), "default");
+        const ALL: &str =
+            "WebSearch,WebFetch,Agent,TaskStop,TaskCreate,TaskGet,TaskList,TaskUpdate";
+        // Every one of them by default since P77; search alone before it.
+        assert_eq!(tools_arg(&spec()).as_deref(), Some(ALL), "default");
+        let search = Spec {
+            agent_tools: AgentTools::omitted(),
+            ..spec()
+        };
+        assert_eq!(tools_arg(&search).as_deref(), Some("WebSearch"));
         let all = Spec {
             agent_tools: AgentTools::of(&AgentTool::ALL),
             ..spec()
         };
-        assert_eq!(
-            tools_arg(&all).as_deref(),
-            Some("WebSearch,WebFetch,Agent,TaskStop,TaskCreate,TaskGet,TaskList,TaskUpdate")
-        );
+        assert_eq!(tools_arg(&all).as_deref(), Some(ALL));
         // Listed, it would move every ccnm tool into the deferred pool.
         assert!(!tools_arg(&all).unwrap().contains("ToolSearch"));
         let colocated = Spec {

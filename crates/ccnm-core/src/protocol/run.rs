@@ -54,9 +54,14 @@ pub struct RunRequest {
     /// that predates the field still reads every other request.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub codex_exec_server: bool,
-    /// The workspace's `agent_tools` (P46), sent only when not the default
-    /// for the same reason as `codex_exec_server`.
-    #[serde(default, skip_serializing_if = "crate::config::AgentTools::is_default")]
+    /// The workspace's `agent_tools` (P46), left out when it is
+    /// [`AgentTools::omitted`](crate::config::AgentTools::omitted) for the
+    /// same reason as `codex_exec_server` -- not when it is the config
+    /// default, which since P77 an older Agent would read as fewer tools.
+    #[serde(
+        default = "crate::config::AgentTools::omitted",
+        skip_serializing_if = "crate::config::AgentTools::is_omitted"
+    )]
     pub agent_tools: crate::config::AgentTools,
     /// The ccnm session id the Runtime already chose and recorded (P58), so
     /// it can stop exactly this run before the run reports back. `None` for
@@ -187,7 +192,10 @@ pub struct StartRequest {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub codex_exec_server: bool,
     /// The workspace's `agent_tools` (P46); see [`RunRequest::agent_tools`].
-    #[serde(default, skip_serializing_if = "crate::config::AgentTools::is_default")]
+    #[serde(
+        default = "crate::config::AgentTools::omitted",
+        skip_serializing_if = "crate::config::AgentTools::is_omitted"
+    )]
     pub agent_tools: crate::config::AgentTools,
 }
 

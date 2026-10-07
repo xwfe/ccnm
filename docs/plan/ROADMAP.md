@@ -977,3 +977,14 @@ ccnm 这一轮只定权威语义、补自己这边的证据。租约展示与状
 - **P70.3** Rust、Python、协议与计划门禁通过；排错手册、P62.4 复验记录、研究记录与状态同步。
 
 停止点：不改 `ccnm.machine/1` 与内部协议号，只改 Operator 本机的判定与措辞；不连远端、不跑模型。
+
+### P71 — 受管 Codex 交互会话执行命令前问人（F21）
+
+**依赖 P70。** 现象见 [P62 续跑记录](../research/2026-10-04-p62-resume-release.md)第 5.1 节与第 7 节的 F21：受管 Codex 交互会话里 `exec_command` 不经审批就执行；P69 只把 doctor 的说法改成照实说（WARN），要不要补审批当时另行决定。用户 2026-10-07 定：补。Codex 的参数只认实测：先在 Codex 0.154.0 上零额度测清楚，再改。
+
+- **P71.1** 实测（零额度：Codex 0.154.0 连本机假模型，交互界面跑在 tmux 里，扮 ccnm 的探针 MCP server 记下真正收到的调用）：给单个 MCP 工具设 `approval_mode="prompt"`，在 Code Mode 与顶层工具两种工具面上是否每次调用前都问、拒绝的是否不执行、模型拿到什么；print 模式（`approval_policy="never"`）下同样设置的结果；会话里改权限后是否还问。夹具入库。
+- **P71.2** 实现：交互的 Codex 会话启动前，Agent 以交互身份做 Runtime 预检，读 Runtime 在 `tools/list` 里标了"要人确认"的工具（与 Claude 会话用的是同一个标记，`allow_unattended_exec` 仍由 Runtime 决定），记进会话记录，启动 Codex 时只给这些工具设 `approval_mode="prompt"`；其余工具、print 会话、exec-server 链不变。
+- **P71.3** doctor 的 `Command approval` 对 Codex 按新行为说实话（交互会话会问、会话里切到 Full Access 就不问、设了 `allow_unattended_exec` 时不问）；使用说明、配置说明、排错手册、支持矩阵与 P62、P69 记录同步。
+- **P71.4** Rust、Python、协议与计划门禁通过；研究记录与状态同步。
+
+停止点：不改 `ccnm.machine/1`；内部消息只加可选字段；不碰已封存的 exec-server 链；不跑真实模型，真机复验另行授权。

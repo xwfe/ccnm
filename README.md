@@ -118,6 +118,8 @@ mv ccnm ~/.local/bin/ccnm.new && mv ~/.local/bin/ccnm.new ~/.local/bin/ccnm
 
 用浏览器下载的包，Mac 会拦着不让运行，先执行 `xattr -d com.apple.quarantine ccnm`；用 `curl` 下载的不会。
 
+升级时三件事别漏：先停掉所有会话；每台都换成同一个版本，放项目那台的执行账号（`ccrun`）名下那份也要换；跑 AI 的那台换完再敲一次 `ccnm controller install`，不然后台还是旧进程。完整步骤和回退见[运维：用发布包升级](docs/operations.md#用发布包升级一般就用这个)。
+
 ## 该做的和别做的
 
 **该做**

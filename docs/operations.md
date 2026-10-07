@@ -2,8 +2,6 @@
 
 装上去之后要做的事。每条都是能照着敲的命令，不是原则说明。角色和 topology 见[架构说明](architecture.md)，能力边界见[支持矩阵](support-matrix.md)。
 
-**先说清楚一件事：这个项目还没发布。** 仓库里有 CI 和 release 配置，那不等于有过一次正式发布。下面的安装办法是给自己两台机器用的。
-
 ## 安装与升级
 
 两台机器要装**同一个 build**。`ccnm doctor` 会比对两端版本，不一致就是 FAIL：
@@ -18,11 +16,79 @@
 
 **Machine API 的输出占多少盘、在哪**（P59）：Agent 在会话目录里为读过的流各存一份只读视图（`sessions/<id>/stdout.view` 等，每个流最多约 32 MiB，全是非法 UTF-8 的极端情况最多约 96 MiB）；Runtime 这边第一次 `session.result` 时整份拷到 `${XDG_STATE_HOME:-~/.local/state}/ccnm/rpc/outputs/<session>/`。两边都不会自动删；要腾地方用 [`ccnm cleanup`](#想立刻腾地方ccnm-cleanup)，它先预览，由各自的账号删，Machine API 的记录留作墓碑。
 
+### 用发布包升级（一般就用这个）
+
+**要换的是每一份会被执行的 ccnm**，不只是你敲命令的那份。以 0.11.2 升 0.12.0 为例，漏了哪份 doctor 怎么报：
+
+| 哪台 | 哪个账号 | 漏了会怎样 |
+| --- | --- | --- |
+| 放项目的机器（Runtime） | 你敲 `ccnm` 的账号 | `Agent ccnm` 行 FAIL：`the Agent Node <名字> runs ccnm 0.12.0, this machine runs 0.11.2; install the same build on both` |
+| 放项目的机器（Runtime） | 执行账号（配置里的 `runtime_user`，比如 `ccrun`）。AI 那台经 ssh 调起的是它名下 `ccnm_bin` 指的那份，默认 `~/.local/bin/ccnm` | `Reverse SSH` 行 FAIL：`the Runtime Node runs ccnm 0.11.2, this machine runs 0.12.0; …`；起会话也被拒，报同一句外加 `before starting a session` |
+| 跑 AI 的机器（Agent） | 跑 Controller 的账号 | `Agent ccnm` 行 FAIL：`the Agent Node <名字> runs ccnm 0.11.2, this machine runs 0.12.0; …`。换了文件没重启 Controller，见第 5 步 |
+
+一台机器同时当两个角色、或执行账号就是你自己，就少换几份。顺序：
+
+**1. 停掉所有会话。** 在放项目的机器上：
+
+```bash
+ccnm status                                  # 不带项目名：所有项目，连同本机的 mcp-serve 进程
+ccnm stop <workspace>                        # 上面列出来在跑的，每个都停
+ps aux | grep '[c]cnm internal mcp-serve'    # 应该什么都不打
+```
+
+为什么不能跳，见下一节。
+
+**2. 每台下载自己系统的包，核 sha256。** Mac 用 `macos-universal`，Linux 用 `linux-x86_64`：
+
+```bash
+v=0.12.0; p=macos-universal                  # Linux 上 p=linux-x86_64
+base=https://github.com/xwfe/ccnm/releases/download/v$v
+curl -fLO $base/ccnm-$v-$p.tar.gz && curl -fLO $base/ccnm-$v-$p.tar.gz.sha256
+shasum -a 256 -c ccnm-$v-$p.tar.gz.sha256    # Linux 上用 sha256sum -c；要看到 OK
+```
+
+**3. 留一份旧的，回退就靠它：**
+
+```bash
+old=$(~/.local/bin/ccnm --version | awk '{print $2}')
+mkdir -p ~/.local/opt/ccnm-$old && cp -p ~/.local/bin/ccnm ~/.local/opt/ccnm-$old/ccnm
+```
+
+**4. 新文件 + 改名放进去**，别 `cp` 盖（[原因](#千万不要-cp-覆盖正在用的二进制)）：
+
+```bash
+tar -xzf ccnm-$v-$p.tar.gz                   # 包里只有一个 ccnm
+install -m 755 ccnm ~/.local/bin/ccnm.new && mv ~/.local/bin/ccnm.new ~/.local/bin/ccnm
+~/.local/bin/ccnm --version                  # 要打出新版本号
+```
+
+执行账号（`ccrun`）通常不能从你的账号直接 ssh 进去：用有权限的账号把包放过去、`chown` 给它，再 `su - ccrun` 在它名下做第 3、4 步。
+
+**5. 跑 AI 的机器上重启 Controller：**
+
+```bash
+ccnm controller install
+```
+
+不重启的话，Controller 还是那个用旧文件起的进程。Mac 上它会换掉 launchd 里的那个；Linux 上是 `systemctl --user` 的 daemon-reload、enable、restart，**要在这个账号用 ssh 登录进来的会话里跑**（`su` 进来的先 `export XDG_RUNTIME_DIR=/run/user/$(id -u)`，否则报 `Failed to connect to bus`）。重启 Controller 不会断已有的会话，但第 1 步已经都停了。最后一行 `listening: ccnm 0.12.0 as <账号>, pid …` 的版本号要是新的；还是旧的，按[下面](#升级完一定要核对-controller-的进程启动时间)核对。
+
+**6. 在放项目的机器上跑 doctor：**
+
+```bash
+ccnm doctor <workspace>
+```
+
+最后一行是"可以用了"就是换好了。`Controller` 行写的是正在应答的那个进程的版本，它不跟别的比——这一行还是旧版本号，就是第 5 步没生效。
+
+出问题就[回退](#回退)：每台把第 3 步留的那份按第 4 步的办法装回去，Agent 那台再 `ccnm controller install`。
+
+### 从源码部署（开发用）
+
 ```bash
 bash scripts/deploy.sh <另一台的 ssh 别名> [workspace]
 ```
 
-在有 Rust toolchain 的那台上跑。它编译、装两边、重启 controller、最后跑一次 `ccnm doctor`。
+在有 Rust toolchain 的那台上跑。它编译、装两边、重启 controller、最后跑一次 `ccnm doctor`。它只装两台各自登录账号的那份，执行账号的那份要自己按上面第 3、4 步换。Agent 是 Linux 时它也会去重启 systemd 里的 Controller，但这条路还没在真机上跑过。
 
 ### 升级前先把会话停掉
 
@@ -77,6 +143,7 @@ Claude authentication   FAIL   CCNM_E_VERSION: remote ccnm speaks protocol 3, th
 
 ```bash
 ssh <agent> 'stat -f "%N %Sm" -t "%Y-%m-%d %H:%M" ~/.local/bin/ccnm; ccnm controller status'
+ssh <agent> 'stat -c "%n %y" ~/.local/bin/ccnm; ccnm controller status'     # Agent 是 Linux 时用这条
 ssh <agent> 'ps -o pid=,lstart=,command= -p <上面那个 pid>'
 ```
 
@@ -90,7 +157,7 @@ ssh <agent> 'ccnm controller uninstall && ccnm controller install'
 
 ### 千万不要 `cp` 覆盖正在用的二进制
 
-这是这个脚本存在的主要理由。在 Apple Silicon 上，往一个已经执行过的 Mach-O 里写东西会让它的代码签名失效，之后每一次 exec 都直接 SIGKILL（退出码 137），而**已经在跑的那个进程照常用旧代码继续**。
+上面第 4 步和 `deploy.sh` 都用"新文件 + 改名"，原因就在这里。在 Apple Silicon 上，往一个已经执行过的 Mach-O 里写东西会让它的代码签名失效，之后每一次 exec 都直接 SIGKILL（退出码 137），而**已经在跑的那个进程照常用旧代码继续**。
 
 症状极具迷惑性：`ccnm --version` 显示 `Killed: 9`，`doctor` 报空回复，而 `launchctl` 坚称 controller 一切正常。
 
@@ -105,14 +172,21 @@ mv ~/.local/bin/ccnm.new ~/.local/bin/ccnm
 
 ### 回退
 
-回退就是把旧版本按同样的方式装回去，没有单独的回退命令：
+回退就是把旧版本按同样的方式装回去，没有单独的回退命令。用发布包升级的，每台（每个换过的账号）把[升级第 3 步](#用发布包升级一般就用这个)留的那份装回去，跑 AI 的那台再重启 Controller：
+
+```bash
+install -m 755 ~/.local/opt/ccnm-<旧版本>/ccnm ~/.local/bin/ccnm.new && mv ~/.local/bin/ccnm.new ~/.local/bin/ccnm
+ccnm controller install                      # 只在跑 AI 的机器上
+```
+
+从源码部署的：
 
 ```bash
 git checkout <旧的 tag 或 commit>
 bash scripts/deploy.sh <另一台的 ssh 别名>
 ```
 
-两边必须一起退。只退一边的话，下一次 `ccnm doctor` 会把它标成 FAIL——但那是 doctor 在看，没有任何东西会在运行时拦住你，所以别指望它兜底。退完重启 controller（`deploy.sh` 会做），已有会话不受影响。
+两边必须一起退。只退一边的话，下一次 `ccnm doctor` 会把它标成 FAIL，起会话也会被拒（`CCNM_E_VERSION`）。退完一定重启 controller（`deploy.sh` 会做），已有会话不受影响。
 
 **状态文件不随回退变化。** 会话记录里带着写它时的协议号：协议号没变，旧版本会忽略不认识的字段照常读；协议号变了则明确拒绝，而不是当成半懂的记录接着用。
 

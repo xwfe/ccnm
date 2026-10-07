@@ -93,6 +93,8 @@ Operator 那边不用改：`after_dispatch` 本来就把派发之后的 `Interna
 
 ## 6. 日用两台换装（不属于 P68 的验收）
 
+（后注：2026-10-07 两台又换成了发布版 v0.11.0，这一节的构建是那次的回退目标，见 [发版记录](2026-10-07-release-0.11.0.md)。）
+
 用户要求"升级本机工具"。本机日用的 ccnm 是 Runtime / Operator（`this = "runtime"`，四个 workspace），Agent 是 fodelf；P62 实测过新 Operator 对旧 Agent 会报 `CCNM_E_VERSION`，而 F22/F23 修的又都在 Agent 那端，所以问过用户后两台一起换成 P68 的构建。**这不是发版**：版本号仍是 0.10.1，和发布版 v0.10.1（hpsrv ccrun 上那份）不是同一个构建；P68 没有新增内部协议号，两种 0.10.1 混装时 doctor 分不出来。
 
 | | 本机 xdwmbp | fodelf |

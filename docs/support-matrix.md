@@ -2,14 +2,14 @@
 
 本页区分当前支持结论与分阶段证据。`docs/plan/status.json` 是阶段进度的唯一事实来源；历史真机记录不能替代当前 build 的重新验收。
 
-## 当前能力与证据汇总（2026-10-07 文档同步，版本基线 v0.11.2）
+## 当前能力与证据汇总（2026-10-07 文档同步，版本基线 v0.12.0）
 
 本表是当前判断入口。下方详细记录保留阶段初验与后来补验，不把“阶段完成”换算成所有环境通过。P51、P52、P53 的测试仍分别属于其带日期证据；2026-09-28 只整理文档与计划，没有新增远端、真实模型或手机兼容性验收。
 
 | 能力 | 当前结论 | 尚不能宣称 |
 | --- | --- | --- |
 | Managed Claude / Codex | 两 Provider 有历史双机证据；Codex 受管 adapter 仍 pin `0.154.0`。**P62（2026-09-30）**：Claude 在 macOS Agent（fodelf）→ Debian 13 Runtime（`ccrun`）上用 main 的候选构建跑通交互闭环，含审批中与命令运行中的 detach/reattach 和精确停止（[记录](research/2026-09-30-p62-real-machine.md) 4.1）。**P62 续跑（2026-10-04，v0.10.1）**：Codex 在本机 Agent → 同一台 Runtime 上先红后绿、ccrun 独立核对、精确停止第一次就确认且 `ccnm log` 记成被停止；Claude 的精确停止同样一次确认（[P62 续跑记录](research/2026-10-04-p62-resume-release.md) 5.1、5.7） | 零额度测过 `0.155.1` 不代表受管支持；不是全部新工具都已验完整 SSH 链；P62 查出的交互 stop 先报 NOT_READY、`ccnm log` 把被停止的会话写成 `failed to start`（F4）P64 修好，续跑在两个 Provider 上真机复验通过；**受管 Codex 会话执行 `exec_command` 前原来不问人**（F21："每次都问"靠的是只有 Claude Code 认的键）；P71（2026-10-07）起会问——Agent 按 Runtime 标的工具给 Codex 设 `approval_mode="prompt"`，会话里切到 Full Access 就不再问，doctor 的 `Command approval` 行照此说明（Codex 0.154.0 零额度实测加离线证据；2026-10-07 真机复验用真实模型跑过，问、放行、取消都对，[记录](research/2026-10-07-p71-real-machine-recheck.md)）；会话里选过一次 Approve for me 会被 Codex 记进 profile，v0.11.0 及之前的 Agent 上之后的受管会话都不再问（F27），v0.11.1（P72）起启动参数盖过它（离线测试、零额度实测，2026-10-07 在 v0.11.2 上用真实模型真机复验：profile 里写着 `auto_review` 时新会话照样问人，会话里切走只管当前会话，[记录](research/2026-10-07-p72-real-machine-recheck.md)）；doctor 的 `Codex authentication` 只看本地登录状态，令牌被吊销时仍是 OK（F5），P65 起这一行自己写明这一点，没有变成真的校验 |
-| 平台与拓扑 | Agent：macOS 有证据；Linux P74 起已实现（systemd 用户服务），Debian 13 上零额度真机与一次真实 Codex 会话通过（经代理，那台出口地区不受 OpenAI 支持）。Runtime 的 macOS、Debian 13 x86_64 有证据 | Linux Agent、Windows、colocated；Linux curl/容器探针不等于扩展了完整支持平台 |
+| 平台与拓扑 | Agent：macOS 有证据；Linux v0.12.0（P74）起已实现（systemd 用户服务），Debian 13 上零额度真机与一次真实 Codex 会话通过（经代理，那台出口地区不受 OpenAI 支持）。Runtime 的 macOS、Debian 13 x86_64 有证据 | Linux Agent、Windows、colocated；Linux curl/容器探针不等于扩展了完整支持平台 |
 | PocketShell 等第三方终端 | 复用公共 CLI/SSH/PTY；[接入条件](usage.md#通过第三方终端使用)，不内建移动/Web 入口，不绑定手机 Tailscale | 特定客户端/手机版本已通过，或所有终端行为完全一致 |
 | Runtime 工具表 | 共 12 个工具定义；read 模式 7 个，coding 通常 11 个，有可转接服务才出现第 12 个 | 固定“七/八/十二工具”适用于所有连接；以实际 `tools/list` 为准 |
 | shell、搜索、图片与项目 skills | 已实现，有各自的离线测试和部分真实模型记录 | 每个入口/平台/Provider 都有同等级证据；不能再统一标为“只有离线证据” |
@@ -59,7 +59,7 @@
 
 平台要分两件事说，因为 P12 之后它们不再是同一个答案。
 
-**Agent 那一侧：macOS 有真机证据，Linux 是 P74 起实现的，Debian 13 上零额度真机通过（假模型，含重启 Controller 不断会话），并用真实 Codex 跑过一次交互会话（问、放行、取消都对）；Claude Code 当 Linux Agent 没用真实模型跑过。** macOS 上 Controller 是 launchd LaunchAgent，起会话前要求 `launchctl managername` 是 `Aqua`（为登录钥匙串设的）；Linux 上它是 systemd 用户服务，不要求图形会话——官方 CLI 的登录在文件里，由 CLI 自己的 `auth status` 证明——Controller 在会话信息里自报平台，所以在 macOS 的 Runtime 上读 Linux Agent 也按 Linux 判（[P74 记录](research/2026-10-07-p74-linux-agent.md)）。v0.11.2 及之前 Linux 上 `controller install` 装不上、起会话被拒；Linux Controller、Windows 和其他官方 CLI 版本均未验收。P66 起 `ccnm controller install` 把非默认的配置与状态位置（`--config`/`CCNM_CONFIG`、`XDG_CONFIG_HOME`、`XDG_STATE_HOME`）写进 plist，2026-10-04 在真的 launchd 下装过一次（[P62 续跑记录](research/2026-10-04-p62-resume-release.md) 4.1）；一个账号仍只能有一个 Controller（Label 固定）。CI 有一个 Linux job，但它是 **Runtime 门禁**：绿的意思是代码在 Linux 上编得过、测试过得去，不是说 Agent 那一半在那儿能跑。
+**Agent 那一侧：macOS 有真机证据，Linux 是 v0.12.0（P74）起实现的，Debian 13 上零额度真机通过（假模型，含重启 Controller 不断会话），并用真实 Codex 跑过一次交互会话（问、放行、取消都对）；Claude Code 当 Linux Agent 没用真实模型跑过。** macOS 上 Controller 是 launchd LaunchAgent，起会话前要求 `launchctl managername` 是 `Aqua`（为登录钥匙串设的）；Linux 上它是 systemd 用户服务，不要求图形会话——官方 CLI 的登录在文件里，由 CLI 自己的 `auth status` 证明——Controller 在会话信息里自报平台，所以在 macOS 的 Runtime 上读 Linux Agent 也按 Linux 判（[P74 记录](research/2026-10-07-p74-linux-agent.md)）。v0.11.2 及之前 Linux 上 `controller install` 装不上、起会话被拒；Linux Controller、Windows 和其他官方 CLI 版本均未验收。P66 起 `ccnm controller install` 把非默认的配置与状态位置（`--config`/`CCNM_CONFIG`、`XDG_CONFIG_HOME`、`XDG_STATE_HOME`）写进 plist，2026-10-04 在真的 launchd 下装过一次（[P62 续跑记录](research/2026-10-04-p62-resume-release.md) 4.1）；一个账号仍只能有一个 Controller（Label 固定）。CI 有一个 Linux job，但它是 **Runtime 门禁**：绿的意思是代码在 Linux 上编得过、测试过得去，不是说 Agent 那一半在那儿能跑。
 
 **Runtime 那一侧（`internal mcp-serve` 与七工具）在 Debian 13 / x86_64 上验过一次**，作为 Remote Workspace MCP 的 dogfood（[记录](research/p12-real-project-2026-09-11.md)）：`cargo fmt`、严格 clippy 与全套测试在那台机器上 676 passed / 0 failed，与 macOS 同数。**那一次是从两个红开始的**，两个都真修了：`SystemRunner::run` 的超时只杀 leader（macOS 因为 bash 会 exec 而一直看不见），以及一个测试助手用了 BSD 语义的 `date -r`。Linux 上的 Managed 入口（Controller/session）仍未验收，Runtime 侧也只验过这一种发行版和架构。
 
@@ -70,7 +70,7 @@
 | 下载 | 装在哪 | 是什么 |
 | --- | --- | --- |
 | `ccnm-<版本>-macos-universal.tar.gz` | Agent Node 或 Runtime Node | arm64 + x86_64 通用二进制，两个角色都能跑 |
-| `ccnm-<版本>-linux-x86_64.tar.gz` | Runtime Node；P74 之后的构建也能当 Agent Node | Runtime 那一半有真机证据；Agent 那一半（systemd 用户服务）P74 起实现，Debian 13 上零额度真机与一次真实 Codex 会话通过，v0.11.2 及之前的包在 Linux 上会拒绝起会话 |
+| `ccnm-<版本>-linux-x86_64.tar.gz` | Runtime Node；v0.12.0 起也能当 Agent Node | Runtime 那一半有真机证据；Agent 那一半（systemd 用户服务）v0.12.0（P74）起实现，Debian 13 上零额度真机与一次真实 Codex 会话通过，v0.11.2 及之前的包在 Linux 上会拒绝起会话 |
 
 Linux 那个在 `ubuntu-24.04` 上本机构建，**glibc 下限是从二进制里量出来的**（`objdump -T` 里最高的 `GLIBC_x.y`），写在 release notes 里；Debian 13 的 glibc 是 2.41。**arm64 Linux 没有发布物**，因为没有证据。Linux 侧的 CI 门禁（clippy + 全套测试 + 构建发布物）和 macOS 一样每次 push 都跑，但那个 job 绿只说明代码在 Linux 上编得过、测试过得去，**不说明 Agent 那一半支持 Linux**。见[开发与发布](development.md)。
 

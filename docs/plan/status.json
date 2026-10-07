@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-10-07T12:55:00+09:00",
+  "last_updated": "2026-10-07T13:25:00+09:00",
   "current_task": null,
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
@@ -3487,7 +3487,7 @@
       ],
       "owner": null,
       "started_at": "2026-10-07T12:45:00+09:00",
-      "last_updated": "2026-10-07T12:35:00+09:00",
+      "last_updated": "2026-10-07T13:25:00+09:00",
       "completed_criteria": [
         "P71.1",
         "P71.2",
@@ -3530,13 +3530,23 @@
           "ref": "docs/research/2026-10-07-p71-codex-asks-before-exec.md",
           "commit": "8377d35",
           "result": "本机 macOS 26.6.2 arm64、rustc 1.98.0，负载 17–35：fmt、clippy（1.98 与 +1.99.0）通过；cargo test --workspace 默认与 64 线程各 1075/0（P70 后 1073，新增 2 条）；cargo +1.89 check --locked 通过；ci_gates 通过（计划、协议 46+29、Python 262 条 0 跳过）；改文档后 check_plan、check_protocol 重跑通过。没有调用真实模型，真机未复验。"
+        },
+        {
+          "kind": "real_nodes",
+          "criteria": [
+            "P71.1",
+            "P71.2",
+            "P71.3"
+          ],
+          "ref": "docs/research/2026-10-07-p71-real-machine-recheck.md",
+          "result": "2026-10-07 用户授权真机复验 P71 并把 hpsrv 升 v0.11.0。hpsrv ccrun 换成 v0.11.0 发布版（c837a445…，保留；v0.10.1 留在 ~/.local/opt/ccnm-0.10.1/）。Agent 是本机（日用的 v0.11.0 发布版二进制，配置与 state 另放，临时 Controller 加 PATH 指向按 digest 核过的 Codex 0.154.0），Operator 就在 Agent 上（Agent-only 配置先向 Runtime 取 workspace），Runtime 是 hpsrv ccrun，测试仓库只有 README。doctor 0 失败、Command approval 是 P71 的说法。真机上预检 → 会话记录 → 启动参数一段打通：session.json 有 ask_before [exec_command]，Codex 参数带 mcp_servers.ccnm.tools.exec_command.approval_mode=\"prompt\"。真实模型 2 次（上限 3）：每次 exec_command 前问、放行后下一次照样问；放行的 printf 由 ccrun 执行、文件内容属主都对；取消的合法命令模型收到 user cancelled MCP tool call，Runtime 上没有文件、没有输出记录；stop 0.13 秒、写锁 released。Approve for me 下自动审查放行了 printf 与 rm -f、没问人。新发现 F27（中，未修）：这一档被 Codex 写进 profile 的 config.toml（approvals_reviewer=\"auto_review\"），之后起的受管会话 /status 都是 Approve for me；只删这一行即恢复；Full Access 不延续；命令行 -c approvals_reviewer=\"user\" 能盖过配置（均零额度）。--print 真机回归没做（要往本机加入站密钥，不在范围）。两台已收尾，ssh 配置与 profile config.toml 从备份恢复。"
         }
       ],
       "blockers": []
     }
   ],
   "observed_gaps": [
-    "【P62 真机发现 / 2026-10-04 P62.4 复验后】F1–F4、F8、F10、F14、F16–F18 在 v0.10.1 上真机复验通过（F2 靠升号补上旧的一端），F19 采样无“命令还在、写锁已放”的窗口；F20、F24（P69）与 F22、F23（P68）2026-10-04 晚在 P62 拓扑上真机复验通过（docs/research/2026-10-04-p62-4-recheck.md）。仍未解决：F5 doctor 验不了 Codex 令牌是否有效（接 codex doctor 前要先在授权下量它是否改写凭据，P65 记录 2.3）；F7 不预写信任条目（P66 记录 2.5）；F21（受管 Codex 会话 exec_command 不经审批）P71（2026-10-07）起会问——Agent 按 Runtime 标的工具给 Codex 设 approval_mode=\"prompt\"，会话里 /permissions 切到 Full Access 就不问；只有 Codex 0.154.0 零额度实测与离线证据，真实模型与真机没跑；P62.4 复验新查出 F25（Agent 是旧构建时 doctor 的 Reverse SSH 行误说 Runtime 不是同一构建——v0.9.0 的 HelloReport 没有 wire，转述时丢了）、F26（版本行把节点写死成 work），P70（2026-10-07）已离线修好。依据 docs/research/2026-09-30-p62-real-machine.md 第 5 节、docs/research/2026-10-04-p62-resume-release.md 第 7 节与 docs/research/2026-10-04-p62-4-recheck.md 第 6 节。",
+    "【P62 真机发现 / 2026-10-07 P71 真机复验后】F1–F4、F8、F10、F14、F16–F18 在 v0.10.1 上真机复验通过（F2 靠升号补上旧的一端），F19 采样无“命令还在、写锁已放”的窗口；F20、F24（P69）与 F22、F23（P68）2026-10-04 晚在 P62 拓扑上真机复验通过（docs/research/2026-10-04-p62-4-recheck.md）。仍未解决：F5 doctor 验不了 Codex 令牌是否有效（接 codex doctor 前要先在授权下量它是否改写凭据，P65 记录 2.3）；F7 不预写信任条目（P66 记录 2.5）；F21（受管 Codex 会话 exec_command 不经审批）P71（2026-10-07）起会问——Agent 按 Runtime 标的工具给 Codex 设 approval_mode=\"prompt\"，会话里 /permissions 切到 Full Access 就不问；2026-10-07 真机复验（本机 Codex Agent → hpsrv ccrun，两端 v0.11.0，真实模型 2 次）问、放行、取消都对；复验新查出 F27（中，未修）：会话里选过一次 Approve for me，Codex 把 approvals_reviewer=\"auto_review\" 写进 profile 的 config.toml，之后用这个 profile 起的受管会话都由 Codex 自动审查放行、不问人（真机上连 rm -f 都放行），doctor 仍是 OK 且看不到；建议交互启动加 -c approvals_reviewer=\"user\"（零额度实测命令行能盖过配置），文档已写明怎么看出来、怎么去掉；P62.4 复验新查出 F25（Agent 是旧构建时 doctor 的 Reverse SSH 行误说 Runtime 不是同一构建——v0.9.0 的 HelloReport 没有 wire，转述时丢了）、F26（版本行把节点写死成 work），P70（2026-10-07）已离线修好。依据 docs/research/2026-09-30-p62-real-machine.md 第 5 节、docs/research/2026-10-04-p62-resume-release.md 第 7 节、docs/research/2026-10-04-p62-4-recheck.md 第 6 节与 docs/research/2026-10-07-p71-real-machine-recheck.md 第 5 节。",
     "【P65 跑门禁时看到 / 未查原因、未修】负载 36–50 时 ci_gates 有一次在 test_remote_workspace_mcp.RemoteWorkspaceMcpTests.test_a_child_left_in_the_servers_process_group_ends_before_the_next_writer 上报 error，报错原文没有保住；随后单跑 6 次、整套 4 次（负载 48–70）未复现。属 Runtime MCP 写锁交接的测试，与 P65 无关。另：协议第 9 节“任何字段不出现私有目录绝对路径”目前只有 failure.detail 做了家目录前缀替换，被拒调用的 error.message 仍是原话。依据 docs/research/2026-09-30-p65-hidden-root-failure-reason-codex-login.md 第 4、5 节。",
     "【P64 跑门禁时看到 / 2026-09-30 已查明并处理（离线）】mcp::jobs 的用例在 64 线程加高负载下偶发，一共三条（交接时记了两条，复现时又见一条）；没另立阶段（开工时 P65 在进行、不能并行认领；三处都是已完成的 P41/P42 的行为，没有新的验收范围）。① a_server_that_died_leaves_an_unknown_ending（r-… is running in another server of this session）——**产品缺陷，已修 6f66675**：retention::in_progress 用排他锁探测、靠关文件放锁，探测的那一瞬间另一次探测拿不到锁，别的线程恰好 fork 时子进程攥着描述符副本、锁活到 exec；server 死掉的 run（running 文件还在）因此被 read_output 报成 still running、被 stop_command 报成在另一个 server 里跑、被 cleanup 算成在用，都是一瞬间、再问就对。改成共享锁（run 自己持排他锁，判断不变）。② a_cancelled_call_stops_its_command（10.035 s，没改过的构建两路同时压 80 次里 1 次）——**产品缺陷，已修 67ed1f1**：停止请求落在登记命令与 Stop::attach 之间时，attach 当场去停并等子进程结束，而等子进程的正是卡在 attach 里的这条线程，于是对着已经死掉的进程等满 STOP_GIVE_UP 10 秒；取消的调用晚 10 秒返回，会话恰好这时结束则 stop_all 把它当成停不掉、写入 guard 留成 abandoned（窗口本机量到单线程 1.1–31 ms、64 线程 6.5–124 ms）。改成另起线程去停。③ a_background_command_returns_at_once_and_is_read_as_it_grows（the waiter left the registry）——**测试赌时序，改测试 cdd83ee**：waiter 先放 run 再交 ticket 是故意的（反过来 server 收尾会把 run 留在盘上），两步之间空闲时 3–35 µs、压测下到过 25 ms；代码只承诺离开 registry 时结局已写好，用例断言的是反方向。改成用 wait_gone 等。①② 各有确定性回归（旧代码分别读出 (false, Some(true), true)、10.005 s 与 stop_all 返回 [\"run #1\"]）。修后两路同时 40 次加单路 40 次整库 64 线程，mcp::jobs 0 次红（同轮没改过的构建红 grows 1、died 1）；合进 P65 之后重跑：fmt、clippy、Rust 1048（默认与 64 线程各一遍）、cargo +1.89 check、ci_gates（Python 262 条 0 跳过）通过。Linux 没跑、真机没验。**记下不修**：后台命令正好开满 8 个、其中一个刚结束而 ticket 还没交出去的那几十微秒里起第 9 个会被拒，消息里把刚结束的那个列为在跑；重试即过，经 ssh 的调用方和模型都赶不上这个窗口。依据 docs/research/2026-09-30-jobs-tests-under-load.md。",
     "【2026-09-30 查 mcp::jobs 偶发时看到 / 2026-10-01 已处理（离线），415aa0b】apply_patch 的日志探测 patch::probe_journal 在 P34 之后是排他锁加显式放锁，两次探测撞在一起时（同进程别的线程，或共用状态目录的另一个 mcp-serve），后一次把被打断的提交读成还在提交，check_abandoned 放行这次 patch（只会漏拦，不会误报）。改成共享锁：提交持排他锁，判断不变，探测之间不再互相挡。显式 unlock 保留：Journal::open 对已经以 .tmp 名字出现在 patches/ 里、check_abandoned 会去探的文件拿排他锁，留在子进程里的共享锁会挡住它（今天去掉它几乎不改变结果，因为探测先拿到 .tmp 的锁时会把它删掉，见下一条）。确定性回归 a_probe_is_not_what_holds_an_interrupted_journal：旧代码读出 (false, Some(true))，patch 被放行、文件被改；P34 那条用例补问写的人拿不拿得到排他锁（换成共享锁后原来那一问在去掉 unlock 时也绿，临时去掉 unlock 验过红的是补的这一问）。没另立阶段：P66 在进行、不是 blocked。门禁：fmt、clippy、Rust 1051（默认与 64 线程各一遍）、cargo +1.89 check、ci_gates（Python 262 条 0 跳过）、git diff --check 通过。Linux 没跑、真机没验；旧构建的 mcp-serve 重启之前，它的探测仍是排他锁。依据 docs/research/2026-10-01-patch-journal-probe-shared-lock.md。",

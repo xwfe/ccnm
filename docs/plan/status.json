@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-10-04T18:40:00+09:00",
-  "current_task": null,
+  "last_updated": "2026-10-07T10:00:00+09:00",
+  "current_task": "P70",
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
     "source": "docs/research/codex-internal-wiring-2026-09-07.md",
@@ -3438,6 +3438,20 @@
           "result": "本机 macOS 26.6.2 arm64、rustc 1.98.0，负载 25–37：cargo fmt --check、clippy -D warnings（1.98 与 +1.99.0）通过；cargo +1.89 check --locked 通过；cargo test --workspace 64 线程与默认线程各 1072/0（P68 后 1068，新增 4 条）；python3 -B scripts/ci_gates.py 通过（计划、协议 46+29 fixture、Python 262 条 0 跳过 0 失败；第一趟跑到计划检查时 ROADMAP 已有 P69、status 还没有，check_plan 退出 1，补齐后不动文件重跑全过）；check_plan、git diff --check 通过；红跑时失败用例留下的 4 个测试目录已删。文档：排错手册（F20 一节改写、新增 workspace add 节点名一节）、配置说明、支持矩阵、README、P62 续跑发现表、研究记录。只有离线证据：真机与 Linux 未跑。代码与 P68 并行写在分支 claude/musing-antonelli-565039，计划提交 e672a41 排在代码之后。"
         }
       ],
+      "blockers": []
+    },
+    {
+      "id": "P70",
+      "title": "doctor 不把旧 Agent 转述丢的字段算到 Runtime 头上、版本行写实际节点名（P62.4 真机发现）",
+      "status": "in_progress",
+      "depends_on": [
+        "P69"
+      ],
+      "owner": "claude-opus-5-5 / Claude Code 桌面会话 2026-10-07",
+      "started_at": "2026-10-07T10:00:00+09:00",
+      "last_updated": "2026-10-07T10:00:00+09:00",
+      "completed_criteria": [],
+      "evidence": [],
       "blockers": []
     }
   ],

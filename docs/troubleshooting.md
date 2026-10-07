@@ -812,9 +812,21 @@ CCNM_E_NOT_READY:
 
 **升级之后仍然报这一句**：通道过了 5 秒还没退。等几秒再 stop 一次——这一次会把会话记成"被停止"，时长仍算到第一次敲 stop 为止。再用 `ccnm status <ws>` 确认写锁行是 `free`；不是的，按[写入 guard 残留](operations.md#写入-guard-残留)查。
 
+**没带 `--session`、按项目名停时报这一句**（P75 起，旧写法的 workspace 也会等通道）：报错第二行是 `to record the stop once it has ended: ccnm stop <ws> --session <完整 id>`。再停一次要照抄这一行——不带 `--session` 的话，终端已经没了，ccnm 找不回这条记录，它会一直停在"正在停"。
+
 **旧构建上怎么办**：等几秒，用 `ccnm status <ws>` 确认会话没了、写锁行是 `free`，就算停成功；`log` 里那条 `failed to start` 忽略即可——会话其实是正常停的。
 
 **`log` 里仍是 `failed to start` 的另一种情况**：终端不是 stop 停的，而是自己没了（tmux server 被杀、机器重启），之后才有人对它 stop。ccnm 不知道它什么时候结束的，仍然记成"没有终端"。
+
+### `ccnm stop <项目>` 停完，`ccnm log` 里那条是"启动中"、过一会儿变"没有结束记录"
+
+**症状**：没绑 Agent 实例的 workspace（配置里写 `agent_node` 的旧写法）按项目名停，`stop` 退出 0，`ccnm ls` 也说没在跑，但 `ccnm log` 里这条 10 分钟内显示"启动中"（`starting`），之后显示"没有结束记录"（`no end record`），不是"被停止"。同一个 workspace 用 `ccnm stop <ws> --session <id>` 停的，记的是"被停止"。
+
+**原因**：不带 `--session`、也没绑实例时，stop 只按名字杀掉终端，不问它是哪个会话，所以会话记录里既没有停止标志也没有结局。交互会话没有结局时先算"启动中"，满 10 分钟改算"没有结束记录"。会话其实是正常停掉的。
+
+**P75 起已修**（记结局的是 Agent 那一端，要 Agent 是新构建）：按项目名停时也问终端它是哪个会话；是这个 workspace 自己的旧写法会话，就跟 `--session` 一样，杀之前写停止标志，确认终端和通道都没了再记"被停止"。代价是按项目名停也会等通道最多 5 秒，确认不了报 `CCNM_E_NOT_READY`，怎么办见上一节。终端说不出自己是哪个会话（更老的构建起的），或者会话绑了实例的，照旧只停不记。
+
+**旧构建上怎么办**：用 `ccnm ls` 确认这个项目是"没在跑"，那一条记录忽略即可。别为了补记再用 `--session` 停它：终端已经没了，旧构建会把它记成"没有终端"（`failed to start`），更不对。
 
 ### doctor 说 Codex 已登录，会话里第一条消息却报 `refresh token was revoked`
 

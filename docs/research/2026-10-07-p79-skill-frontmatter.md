@@ -1,6 +1,6 @@
-# P79：skill 的 `hooks`、`` !`命令` ``、`allowed-tools`、`model` 在远端会话里生效（2026-10-08）
+# P79：skill 的 `hooks`、`` !`命令` ``、`allowed-tools`、`model` 在远端会话里生效（2026-10-07）
 
-设计与依据见[设计记录](2026-10-07-skill-frontmatter-design.md)；用户 2026-10-08 定第 7 节四件事全按建议。本文记做了什么、和设计的出入、怎么验的。
+设计与依据见[设计记录](2026-10-07-skill-frontmatter-design.md)；用户 2026-10-07 定第 7 节四件事全按建议。本文记做了什么、和设计的出入、怎么验的。
 
 ## 结论
 
@@ -29,6 +29,7 @@
 - 钩子用的是一次性跑完的 `SystemRunner`（进程组、超时杀整组），不是 `exec_command` 的后台作业表：钩子是短命令，也不该出现在 `read_output` 里。代价：`stop_all` 管不到它，会话结束时等它跑完或超时。
 - `permissionDecision: "ask"` 当成拦下：这些会话按定义没人可问。
 - 同一个 skill 加载两次不重复登记（设计没写）。
+- **客户端在 `PreToolUse` 钩子跑着时取消这次调用**：钩子自己跑完或到超时（它是一次阻塞运行，没东西能停它），但它守着的工具不再执行，调用以 `CCNM_E_INVALID_ARGS`（"was not run: the call was cancelled while its PreToolUse hooks ran"）结束。第一版没做这一条——复查时发现取消了的 `apply_patch` 会在钩子跑完后照样写文件，补了，中立客户端用例 `test_a_call_cancelled_while_its_hooks_run_is_not_run` 在修之前红、修之后绿。
 
 ## 用例
 
@@ -42,7 +43,7 @@
 
 ## 门禁
 
-本机 macOS 26.6.2 arm64、rustc 1.98.0：`cargo fmt --check`、`cargo clippy --workspace --all-targets -D warnings`、`cargo +1.89 check --locked` 通过；`cargo test --workspace --no-fail-fast` 1120 passed / 0 failed（P78 时 1101）；`python3 -B scripts/ci_gates.py` 的结果见状态里的 P79 证据。
+本机 macOS 26.6.2 arm64、rustc 1.98.0：`cargo fmt --check`、`cargo clippy --workspace --all-targets -D warnings`、`cargo +1.89 check --locked` 通过；`cargo test --workspace --no-fail-fast` 1119 passed / 0 failed（P78 时 1101；当时记成 1120，是 server 测试里一处重复的 `#[test]` 让同一条用例算了两次，clippy 查出后已去掉），64 线程 1119/0；`python3 -B scripts/ci_gates.py` 的结果见状态里的 P79 证据。
 
 ## 没做的
 

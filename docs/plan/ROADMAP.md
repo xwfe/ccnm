@@ -1061,7 +1061,7 @@ ccnm 这一轮只定权威语义、补自己这边的证据。租约展示与状
 
 ### P79 — skill 文件头的 `hooks`、`allowed-tools`、`model` 在远端会话里生效
 
-**依赖 P78。** 现状：`load_skill` 把 `allowed-tools`、`hooks`、`model`（连同 `effort`、`context`、`agent` 等）一律列为"在这里不起作用"（P36 停止点）。用户 2026-10-07 问怎么设计才能生效。设计与依据见[设计记录](../research/2026-10-07-skill-frontmatter-design.md)；该记录第 7 节的四个决定用户 2026-10-08 定为全按建议，下面就是按建议写的。
+**依赖 P78。** 现状：`load_skill` 把 `allowed-tools`、`hooks`、`model`（连同 `effort`、`context`、`agent` 等）一律列为"在这里不起作用"（P36 停止点）。用户 2026-10-07 问怎么设计才能生效。设计与依据见[设计记录](../research/2026-10-07-skill-frontmatter-design.md)；该记录第 7 节的四个决定用户 2026-10-07 定为全按建议，下面就是按建议写的。
 
 - **P79.1** `hooks`：Runtime 的 `mcp-serve` 在模型加载带 `hooks` 的 skill 后，于本进程余下的时间里，在它自己服务的工具调用前后执行 `PreToolUse` / `PostToolUse`：`matcher` 同时比 ccnm 的 MCP 名与它顶替的原生名，`tool_input` 按设计记录第 2 节的表转换；以执行账号、在 workspace 根下、走 `exec_command` 同一套进程组、超时、输出上限与 `exec_sandbox`；退出码 2 与 `permissionDecision: "deny"` / `"ask"` 拦下调用，`PostToolUse` 的 stderr 与 `additionalContext` 附给模型，`once` 照原生；其余事件、`updatedInput`、`updatedMCPToolOutput` 写明不认。**只在命令本来就不问人的会话里登记**（`exec_command` 过得了 `exec_gate`，且没有"要人确认"的标记）；其余会话与 Agent 机器上的 skill 不登记，返回开头写明原因。先有在旧代码上红的用例。
 - **P79.2** `allowed-tools` 不逐条放行：`load_skill` 返回开头按会话情况写明"已经不用问"或"没生效、要不问去开 `allow_unattended_exec`"，列了 Agent 侧工具的写明它们在这个 workspace 开没开。`context: fork` 且会话是 Claude、开着子代理时，返回开头指示模型用 `Agent` 派子代理（带 `agent` 与 `model`）；其余情况写明 `model`、`effort`、`context`、`agent` 没生效。

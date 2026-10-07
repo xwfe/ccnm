@@ -635,7 +635,7 @@ fn ccnm_config_env_var_selects_the_config() {
 /// plist: the config made absolute (launchd starts it in `/`), an absolute
 /// XDG value as is, and a relative one -- which ccnm ignores -- not at all.
 #[test]
-fn controller_install_carries_moved_locations_into_the_plist() {
+fn controller_install_carries_moved_locations_into_the_service_file() {
     let dir = HOME.with(|home| home.to_path_buf());
     let state = dir.join("p62-state");
     let out = ccnm()
@@ -649,14 +649,22 @@ fn controller_install_carries_moved_locations_into_the_plist() {
     let text = stdout(&out);
     assert_eq!(out.status.code(), Some(0), "{text}{}", stderr(&out));
     let config = dir.join("p62/config.toml");
-    assert!(
-        text.contains(&format!(
+    // The plist on macOS, the systemd unit on Linux (P74): the same two
+    // variables, in the same order, whichever file carries them.
+    let carried = if cfg!(target_os = "linux") {
+        format!(
+            "Environment=\"CCNM_CONFIG={}\"\nEnvironment=\"XDG_STATE_HOME={}\"\n",
+            config.display(),
+            state.display()
+        )
+    } else {
+        format!(
             "        <key>CCNM_CONFIG</key>\n        <string>{}</string>\n        <key>XDG_STATE_HOME</key>\n        <string>{}</string>\n    </dict>",
             config.display(),
             state.display()
-        )),
-        "{text}"
-    );
+        )
+    };
+    assert!(text.contains(&carried), "{text}");
     assert!(!text.contains("XDG_CONFIG_HOME"), "{text}");
     assert!(
         text.contains(&format!("  with  CCNM_CONFIG={}\n", config.display())),
@@ -670,7 +678,7 @@ fn controller_install_carries_moved_locations_into_the_plist() {
         "{text}"
     );
 
-    // Nothing moved: the plist sets CCNM_LOG and nothing else.
+    // Nothing moved: the service sets CCNM_LOG and nothing else.
     let out = ccnm()
         .args(["controller", "install", "--dry-run"])
         .env_remove("XDG_CONFIG_HOME")
@@ -678,10 +686,12 @@ fn controller_install_carries_moved_locations_into_the_plist() {
         .unwrap();
     let text = stdout(&out);
     assert_eq!(out.status.code(), Some(0), "{text}{}", stderr(&out));
-    assert!(
-        text.contains("        <key>CCNM_LOG</key>\n        <string>info</string>\n    </dict>"),
-        "{text}"
-    );
+    let only_log = if cfg!(target_os = "linux") {
+        "Environment=\"CCNM_LOG=info\"\nRestart=always\n"
+    } else {
+        "        <key>CCNM_LOG</key>\n        <string>info</string>\n    </dict>"
+    };
+    assert!(text.contains(only_log), "{text}");
     assert!(!text.contains("  with  "), "{text}");
 }
 

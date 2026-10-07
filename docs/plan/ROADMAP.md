@@ -988,3 +988,13 @@ ccnm 这一轮只定权威语义、补自己这边的证据。租约展示与状
 - **P71.4** Rust、Python、协议与计划门禁通过；研究记录与状态同步。
 
 停止点：不改 `ccnm.machine/1`；内部消息只加可选字段；不碰已封存的 exec-server 链；不跑真实模型，真机复验另行授权。
+
+### P72 — 会话里选过 Approve for me 不再延续到之后的受管 Codex 会话（F27）
+
+**依赖 P71。** 现象见 [P71 真机复验记录](../research/2026-10-07-p71-real-machine-recheck.md)第 5 节的 F27：受管 Codex 交互会话里有人选过一次 `/permissions` → Approve for me，Codex 把 `approvals_reviewer = "auto_review"` 写进 profile 的 `config.toml`，之后用这个 profile 起的受管会话都由 Codex 自动审查放行、不问人，doctor 看不到。用户 2026-10-07 定：修。修法依据同一节的零额度实测：命令行 `-c approvals_reviewer="user"` 盖得过配置。
+
+- **P72.1** 实现：走 MCP 的受管 Codex 交互会话，启动参数钉住 `approvals_reviewer="user"`，和沙箱、审批策略一样不让 profile 配置改它；print 会话（本来就 `--ignore-user-config`）、exec-server 链（用 ccnm 自己生成的 `CODEX_HOME`）不变。先有在旧代码上红的用例；用 P71 夹具零额度测：profile 里写着 `auto_review` 时，带上这个参数的会话在 `exec_command` 前问人。
+- **P72.2** doctor 的 `Command approval` 对 Codex 写明会话里切走只管那一个会话；排错手册、配置说明、使用说明、README、支持矩阵与 P71 两份记录同步，写清 v0.11.0 及之前的 Agent 仍会延续、怎么去掉。
+- **P72.3** Rust、Python、协议与计划门禁通过；研究记录与状态同步。
+
+停止点：不改协议与内部消息；不碰已封存的 exec-server 链；不跑真实模型；发版与换装另行授权。

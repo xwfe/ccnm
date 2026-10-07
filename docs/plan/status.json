@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-10-07T13:25:00+09:00",
-  "current_task": null,
+  "last_updated": "2026-10-07T13:45:00+09:00",
+  "current_task": "P72",
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
     "source": "docs/research/codex-internal-wiring-2026-09-07.md",
@@ -3543,6 +3543,20 @@
         }
       ],
       "blockers": []
+    },
+    {
+      "id": "P72",
+      "title": "会话里选过 Approve for me 不再延续到之后的受管 Codex 会话（F27）",
+      "status": "in_progress",
+      "depends_on": [
+        "P71"
+      ],
+      "owner": "claude-code/opus-5.5",
+      "started_at": "2026-10-07T13:45:00+09:00",
+      "last_updated": "2026-10-07T13:45:00+09:00",
+      "completed_criteria": [],
+      "evidence": [],
+      "blockers": []
     }
   ],
   "observed_gaps": [
@@ -3608,7 +3622,7 @@
     "【P41 记下不修】mcp-serve 被 SIGKILL（或别的不走正常退出的死法）时，它起的命令的进程组没人收：前台命令一直如此，P41 的后台命令没有期限，所以可能一直跑下去；它们的 run 在 read_output 里读作 exit status unknown。正常路径（客户端断开、stdin EOF、心跳发现对端不在）会先停掉所有命令再放写锁。要收干净得给子进程加会话标记、下次启动时按标记扫（封存的原生链 P26/P30 有类似做法），需另立阶段。依据 docs/research/p41-background-commands-2026-09-18.md 第 5 节。"
   ],
   "handoff": {
-    "next_action": "**2026-10-07 四件事做完：P70、P71、发版 v0.11.0、日用两台换装；current_task 为 null。** P70（F25/F26）与 P71（受管 Codex 交互会话执行命令前问人）见各自记录。发版：版本号定 0.11.0（P71 改了 Codex 会话的行为、P69 新增 workspace add --agent-node，升次版本号），ae10eb2；本机门禁全过后推 main，CI run 37566983871 全绿，再打带说明的 tag v0.11.0，release run 37567533532 全过，四个文件齐全、正文取自 tag。日用两台（本机 Runtime/Operator、fodelf Agent）由 P68 构建 90c93c0f 换成 release 的 macOS 包（e62c697b，digest 与 .sha256 两头核过），旧的备份在两台 ~/.local/opt/ccnm-0.10.1-bebc539/；fodelf Controller pid 29110 → 86933；四个 workspace doctor 0 失败；零额度起停一次交互会话、写锁全 released。见 docs/research/2026-10-07-release-0.11.0.md。hpsrv 的 ccrun 仍是 v0.10.1。没跑真实模型。下一步由用户定：(a) 用一次 Codex 额度真机复验 P71（受管 Codex 会话里让模型调一次 exec_command，看提示、选取消）；(b) hpsrv ccrun 要不要也升 v0.11.0。ccnm-mobile-handoff.md 未读、未动。\n\n之前的交接：\n**2026-10-07 P71 完成（零额度实测 + 离线）：受管 Codex 交互会话执行命令前问人，current_task 为 null；接着发版、日用两台换装。** 计划 83f40af。实测（夹具 docs/research/probes/p71-codex-approval.py，Codex 0.154.0 + 假模型 + tmux 里的交互界面）：按工具 approval_mode=\"prompt\" 在 Code Mode 与顶层工具都每次问、取消的不执行；codex exec 下会拒掉调用（print 必须保持 approve）；会话里切 Full Access 后不问。实现 40d40c4：交互预检读回 Runtime 标了 requiresUserInteraction 的工具（ProbeReport.asks_user），写进 Spec.ask_before，Codex 启动时逐个设 prompt；allow_unattended_exec 仍由 Runtime 决定、两边都生效。doctor ba26866；文档与记录 8377d35（docs/research/2026-10-07-p71-codex-asks-before-exec.md）。门禁 Rust 1075/0（默认与 64 线程）、1.89 check、clippy 1.98/1.99、ci_gates 全过。没跑真实模型、真机没复验（要一次 Codex 额度，需另行授权）。ccnm-mobile-handoff.md 未读、未动。\n\n之前的交接：\n**2026-10-07 P70 完成（离线）：F25、F26 修好，current_task 为 null；继续依次做 F21（受管 Codex 补命令审批）、发版、日用两台换装。** 用户要求把 P62 完成后列的四件事“依次实施”。起点 main/0910d10（已推送、CI 全绿）。计划 7e89ae3；修复 704cb9d：Agent 是别的构建时 Reverse SSH 只信转述来的版本号，同号记没比较；版本行写实际节点名。排错手册 5e8f320，记录 docs/research/2026-10-07-p70-relayed-hello-node-name.md。门禁 Rust 1073/0（默认与 64 线程）、1.89 check、clippy 1.98/1.99、ci_gates 全过。注意：桌面端为 P69 会话重建了 worktree（分支 claude/musing-antonelli-565039-xiiahk，停在 0910d10、无新提交），本轮没动。ccnm-mobile-handoff.md 未读、未动。\n\n之前的交接：\n**2026-10-04 晚 P62 完成：P62.4 真机复验通过，路线上排定的阶段全部完成，current_task 为 null。** 用户要求“合并并清理分支；授权真机复验 P62.4，然后推送”。分支：P69 的 claude/musing-antonelli-565039 已 fast-forward 在 main（c4d692b），那个会话已空闲、worktree 无改动，git worktree remove 后删分支，只剩 main。复验（docs/research/2026-10-04-p62-4-recheck.md）：候选 c4d692b，fodelf 并存、hpsrv 临时替换；6.1 SIGKILL 本轮的 internal supervise 后 1.2 秒 unknown，6.2 挪走 stdout 后 agent_refused、放回后完整；零额度 F20、F24 通过，F21 没看；Linux 门禁 hpsrv 1072/1072；模型 Claude 3/4。新发现 F25、F26（doctor 措辞，低）。三台已收尾：ccrun 换回发布版 v0.10.1，fodelf ssh 文件从备份恢复，日用两台仍是 P68 构建 bebc539（90c93c0f，不含 P69）。推送：main 33f9193..69e81f7（20 个提交，含 P68、P69 与本轮）已推到 origin，CI run 37192877419 的 msrv、linux-runtime、test 全绿；没打 tag、没发版。下一步由用户定：(a) 修 F25、F26（低）；(b) 受管 Codex 会话要不要补命令审批（F21）；(c) 发版另定版本号（日用两台与 hpsrv 上是同号不同构建）；(d) 日用两台要不要换成含 P69 的构建。ccnm-mobile-handoff.md 未读、未动。",
+    "next_action": "**2026-10-07 P72 进行中（owner claude-code/opus-5.5）：修 F27。** 之前同日：用户授权真机复验 P71 并把 hpsrv 升 v0.11.0——hpsrv ccrun 已是 v0.11.0（c837a445…，v0.10.1 留在 ~/.local/opt/ccnm-0.10.1/）；本机 Codex Agent → hpsrv ccrun，真实模型 2 次，问、放行、取消都对；查出 F27（会话里选过一次 Approve for me，Codex 把 approvals_reviewer=\"auto_review\" 写进 profile 的 config.toml，之后的受管会话都不问人），记录 docs/research/2026-10-07-p71-real-machine-recheck.md，9abe9dc、1060fc8 已推送。用户随后定：修 F27（P72）、按用户角度重写 README。P72 下一步：交互启动钉 approvals_reviewer=\"user\"（先红后绿），P71 夹具零额度测，doctor 与文档同步，门禁。\n\n之前的交接：\n**2026-10-07 四件事做完：P70、P71、发版 v0.11.0、日用两台换装；current_task 为 null。** P70（F25/F26）与 P71（受管 Codex 交互会话执行命令前问人）见各自记录。发版：版本号定 0.11.0（P71 改了 Codex 会话的行为、P69 新增 workspace add --agent-node，升次版本号），ae10eb2；本机门禁全过后推 main，CI run 37566983871 全绿，再打带说明的 tag v0.11.0，release run 37567533532 全过，四个文件齐全、正文取自 tag。日用两台（本机 Runtime/Operator、fodelf Agent）由 P68 构建 90c93c0f 换成 release 的 macOS 包（e62c697b，digest 与 .sha256 两头核过），旧的备份在两台 ~/.local/opt/ccnm-0.10.1-bebc539/；fodelf Controller pid 29110 → 86933；四个 workspace doctor 0 失败；零额度起停一次交互会话、写锁全 released。见 docs/research/2026-10-07-release-0.11.0.md。hpsrv 的 ccrun 仍是 v0.10.1。没跑真实模型。下一步由用户定：(a) 用一次 Codex 额度真机复验 P71（受管 Codex 会话里让模型调一次 exec_command，看提示、选取消）；(b) hpsrv ccrun 要不要也升 v0.11.0。ccnm-mobile-handoff.md 未读、未动。\n\n之前的交接：\n**2026-10-07 P71 完成（零额度实测 + 离线）：受管 Codex 交互会话执行命令前问人，current_task 为 null；接着发版、日用两台换装。** 计划 83f40af。实测（夹具 docs/research/probes/p71-codex-approval.py，Codex 0.154.0 + 假模型 + tmux 里的交互界面）：按工具 approval_mode=\"prompt\" 在 Code Mode 与顶层工具都每次问、取消的不执行；codex exec 下会拒掉调用（print 必须保持 approve）；会话里切 Full Access 后不问。实现 40d40c4：交互预检读回 Runtime 标了 requiresUserInteraction 的工具（ProbeReport.asks_user），写进 Spec.ask_before，Codex 启动时逐个设 prompt；allow_unattended_exec 仍由 Runtime 决定、两边都生效。doctor ba26866；文档与记录 8377d35（docs/research/2026-10-07-p71-codex-asks-before-exec.md）。门禁 Rust 1075/0（默认与 64 线程）、1.89 check、clippy 1.98/1.99、ci_gates 全过。没跑真实模型、真机没复验（要一次 Codex 额度，需另行授权）。ccnm-mobile-handoff.md 未读、未动。\n\n之前的交接：\n**2026-10-07 P70 完成（离线）：F25、F26 修好，current_task 为 null；继续依次做 F21（受管 Codex 补命令审批）、发版、日用两台换装。** 用户要求把 P62 完成后列的四件事“依次实施”。起点 main/0910d10（已推送、CI 全绿）。计划 7e89ae3；修复 704cb9d：Agent 是别的构建时 Reverse SSH 只信转述来的版本号，同号记没比较；版本行写实际节点名。排错手册 5e8f320，记录 docs/research/2026-10-07-p70-relayed-hello-node-name.md。门禁 Rust 1073/0（默认与 64 线程）、1.89 check、clippy 1.98/1.99、ci_gates 全过。注意：桌面端为 P69 会话重建了 worktree（分支 claude/musing-antonelli-565039-xiiahk，停在 0910d10、无新提交），本轮没动。ccnm-mobile-handoff.md 未读、未动。",
     "scope": "2026-10-07 用户要求把 P62 完成后列的四件事“依次实施”：P70 修 F25/F26（完成）、P71 给受管 Codex 补命令审批（完成）、发版、日用两台换成发布版。P71 下载了 Codex 0.154.0 到会话临时目录做零额度实测（不装进系统），tmux socket 临时放 /tmp/ccnm-p71（已删）。改动：crates/ccnm-core（doctor、work、session、mcp/probe、mcp/server、protocol/mcp、provider/codex）与测试，docs（计划、研究记录、配置、使用、排错、支持矩阵、README）。用户未跟踪的 ccnm-mobile-handoff.md 与 .claude/ 未读、未动；桌面端重建的 P69 worktree 没动。\n\n之前的范围：\n2026-10-04 晚 用户要求“合并并清理分支；授权真机复验 P62.4，然后推送”。范围：删已合并的 worktree 分支；按 core-verification 2.2 写清的分项在 hpsrv（ccrun 临时换候选、bing 新装）与 fodelf（并存部署、第二个 Controller、一次性密钥）上重跑续跑记录 6.1、6.2，Claude 模型上限 4 次（用 3 次），故障注入只对本轮会话；零额度复看 F20、F24；收尾删除本轮全部资源；推送 main，不打 tag、不发版。改动：docs（P62.4 复验记录、P62 续跑/P68/P69 记录后注、支持矩阵、排错、status）。本机没有改动日用配置；用户未跟踪的 ccnm-mobile-handoff.md 未读、未动。",
     "planning_validation": {
       "at": "2026-09-08T21:22:43+09:00",

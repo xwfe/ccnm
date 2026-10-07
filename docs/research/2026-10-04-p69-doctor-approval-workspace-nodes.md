@@ -49,7 +49,7 @@ Command approval        WARN   Codex sessions run every exec_command without ask
 
 **为什么是 WARN 不是 OK**：这一行回答"会不会停下来问我"。Claude 设了 `allow_unattended_exec` 时同样是"没人问"，那里是 WARN，配置说明写的是"永远不会是 OK"；同一个事实不该因为 Provider 不同就换成绿色。WARN 不阻塞 doctor 的结论。
 
-**不在这一阶段**：要不要给 Codex 补一道审批（续跑记录 F21 的"另行决定"）。那要改 Codex 的工具配置或 ccnm 自己在服务端拦，都会改变受管 Codex 会话的行为，不是 doctor 的措辞问题。
+**不在这一阶段**：要不要给 Codex 补一道审批（续跑记录 F21 的"另行决定"）。（后注：用户 2026-10-07 定补，P71 实现，这一行对 Codex 改成 OK 并说明会话里可以切到 Full Access，见 [P71 记录](2026-10-07-p71-codex-asks-before-exec.md)。）那要改 Codex 的工具配置或 ccnm 自己在服务端拦，都会改变受管 Codex 会话的行为，不是 doctor 的措辞问题。
 
 **回归**：`the_approval_row_says_codex_sessions_do_not_ask`（`doctor::tests`），在 Agent 侧 doctor 上用 Codex 的探测报告渲染整张表。
 

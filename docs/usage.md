@@ -258,7 +258,7 @@ Agent Instance 建议同时带 `--agent <instance-id>`；不带 session 的“�
 
 ### 不想被打断：先想想 `--print`
 
-Claude 的交互式会话每次执行命令都会停下来问你一次，而且**任何权限模式都关不掉**（[为什么](troubleshooting.md#开了-bypasspermissionsexec_command-还是每次都问)）。Codex 会话不问，直接执行（[原因](configuration.md#allow_unattended_exec)）。被问烦了有两条路，先想想哪条更合适：
+Claude 的交互式会话每次执行命令都会停下来问你一次，而且**任何权限模式都关不掉**（[为什么](troubleshooting.md#开了-bypasspermissionsexec_command-还是每次都问)）。Codex 会话 P71 起同样每次都问，但你在会话里用 `/permissions` 切到 Full Access 或 Approve for me 之后就不再问你（[原因](configuration.md#allow_unattended_exec)）。被问烦了有两条路，先想想哪条更合适：
 
 | | `--print` | `allow_unattended_exec = true` |
 | --- | --- | --- |

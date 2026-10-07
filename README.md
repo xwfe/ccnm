@@ -143,7 +143,7 @@ view_image      read_notebook  stop_command   call_mcp_tool
 - **写互斥要求各入口用同一个 state 目录。** 同一棵树配两个 `XDG_STATE_HOME` 就是两把互不知晓的锁。
 - **离开进程组的后代够不着。** Runtime MCP server 派生的 `setsid` / 守护进程、以及 `mcp-serve` 被 `kill -9` 后留下的后台命令，ccnm 停不掉；写锁会因此保持 unknown，按[运维手册](docs/operations.md#写入-guard-残留)人工收。
 - **项目和 Agent 同机（colocated）没有真实验收**，明确拒绝，不静默降级。
-- **受管 Codex 会话执行命令前不问你。** Claude 会话每条 `exec_command` 都会停下来问，Codex 不会：那道闸靠的是只有 Claude Code 认的键（[配置说明](docs/configuration.md#allow_unattended_exec)）。doctor 的 `Command approval` 行对 Codex 是 WARN，写明不问（P69 起；之前的构建说"会问"，那句不对）。
+- **受管 Codex 会话的命令审批，会话里的人能自己关掉。** P71 起 Codex 会话和 Claude 一样，每条 `exec_command` 前都问你；但在 Codex 里用 `/permissions` 切到 Full Access 就不再问，Claude 那边任何权限模式都关不掉。P71 之前的构建对 Codex 一律不问（[配置说明](docs/configuration.md#allow_unattended_exec)）。
 - **doctor 验不了 Codex 的令牌还有没有效**，只能看到"登录过"（P65 起那一行自己会说）；令牌被吊销要到会话的第一条消息才知道。P62 续跑查出的 F20–F24 列在[续跑记录](docs/research/2026-10-04-p62-resume-release.md)第 7 节，现象和绕法在[排错手册](docs/troubleshooting.md)。
 
 阶段完成、Agent 退出成功和项目验收通过是三个不同的结论。

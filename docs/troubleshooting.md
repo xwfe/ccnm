@@ -451,6 +451,28 @@ mv ~/.config/ccnm/config.toml.bak ~/config.toml.bak
 
 **开之前想一下**：如果这个 workspace 已经写了 `allow_unconfined_exec`、`allow_unisolated_credentials`，权限模式又是 `bypassPermissions`，那这个弹窗就是**最后一个还有人在场的环节**了。
 
+### 受管 Codex 会话：`exec_command` 每次都弹，或者一次都不弹
+
+**每次都弹是 P71（2026-10-07）起的正常行为**，样子是：
+
+```text
+• Calling ccnm.exec_command({"cmd":"cargo test --offline"})
+  Allow the ccnm MCP server to run tool "exec_command"?
+  cmd: cargo test --offline
+  › 1. Allow   Run the tool and continue.
+    2. Cancel  Cancel this tool call
+```
+
+只有"允许 / 取消"，没有"本会话都允许"，下一次照样问；取消（或按 Esc）的那次调用根本到不了 Runtime，模型收到的是 `user cancelled MCP tool call`。其余工具不问。不想被问，和 Claude 一样两条路：`--print`，或在 Runtime 侧的 workspace 写 `allow_unattended_exec = true`（见上一节）。
+
+**一次都不弹**，按顺序查：
+
+1. **Agent Node 上的 ccnm 是 P71 之前的构建。** 那时 Codex 会话一律不问（2026-10-04 真机，F21）。两台装同一个构建，`ccnm doctor <workspace>` 的版本行会指出来。
+2. **会话里切过权限。** 在 Codex 里用 `/permissions` 选了 Full Access 就不再问（实测）；选 Approve for me 是交给 Codex 自己的自动审查。这是终端前那个人的选择，ccnm 拦不住；回到 "Ask for approval" 就又会问。Claude 会话没有这个口子。
+3. **workspace 开了 `allow_unattended_exec`。** 这时 `ccnm doctor` 的 `Command approval` 是 WARN，写着这个开关。
+
+细节与实测见 [P71 记录](research/2026-10-07-p71-codex-asks-before-exec.md)。
+
 ### 自己的 settings.json 里写了 `bypassPermissions`，ccnm 会话里还是一个个问
 
 **症状**：Agent Node 的 `~/.claude/settings.json` 里明明有

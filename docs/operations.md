@@ -471,11 +471,13 @@ set allow_unisolated_credentials = true on it in config.toml.
 ### controller 不响应
 
 ```bash
-ccnm controller status      # 在监听吗？在哪个安全会话里？
+ccnm controller status      # 在监听吗？是怎么跑起来的？
 ccnm controller install     # 重装并重启；已有会话不受影响
 ```
 
-`managername` 必须是 `Aqua`。如果是 `Background`，说明它不在图形登录会话里，那样它启动的 Agent 读不到 Keychain，会以认证失败告终——`ccnm run` 会在创建会话前就拒绝，报 `CCNM_E_NOT_READY`。
+**Linux 上**它是 systemd 用户服务 `dev.ccnm.controller.service`：`systemctl --user status dev.ccnm.controller.service` 看状态，日志在 `~/.local/state/ccnm/controller.log`（和 macOS 同一个文件）。`controller install` 就是重写单元文件再 `systemctl --user restart`；单元里写了 `KillMode=process`，重启只换 Controller 本身，它起的 tmux 和会话照常跑。`status` 那一行写 `systemd user service` 才是被 systemd 管着的；写 `started by hand` 说明它是手工起的，退出登录、重启机器都不会自己回来。linger 关着时 `status` 会提示，原因与开法见[快速开始](getting-started.md#3-初始化-agent-node)。
+
+**macOS 上**，`managername` 必须是 `Aqua`。如果是 `Background`，说明它不在图形登录会话里，那样它启动的 Agent 读不到 Keychain，会以认证失败告终——`ccnm run` 会在创建会话前就拒绝，报 `CCNM_E_NOT_READY`。
 
 **配置或状态目录不在默认位置时**（用了 `--config` / `CCNM_CONFIG`、`XDG_CONFIG_HOME` 或 `XDG_STATE_HOME`），先 `ccnm controller install --dry-run` 看一眼：P66 起这几个变量会写进 plist，安装计划里每个一行 `with 变量=值`，`--config` 给的相对路径会换成绝对路径（launchd 在 `/` 下启动 Controller）。更早的构建不写，Controller 读默认配置、在默认目录监听，install 在另一个 socket 上等满 10 秒报 `nothing is listening`——看着像 Controller 起不来，其实它在别处听着（P62 实测）；那种构建只能手工往 plist 的 `EnvironmentVariables` 里补。
 

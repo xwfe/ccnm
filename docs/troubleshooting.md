@@ -126,6 +126,25 @@ Codex exec-server       FAIL   CCNM_E_POLICY: ccnm internal exec-serve on runtim
 
 实测哪些能跑、哪些被挡，见 [P33 记录](research/p33-exec-sandbox-2026-09-17.md)。
 
+### Linux 上 `ccnm controller install` 报 `Failed to connect to bus`
+
+**症状**：
+
+```text
+CCNM_E_INTERNAL: systemctl --user daemon-reload failed (exit Some(1)): Failed to connect to bus: No medium found
+this account has no systemd user manager running: log in to it over ssh (not `su` or `sudo -u`), or keep one running with: sudo loginctl enable-linger $(id -un)
+```
+
+**原因**：Linux 上 Controller 是 systemd 用户服务，`systemctl --user` 要跟这个账号自己的 systemd 实例说话。这个实例是账号**登录**时才起来的；用 `su - 账号` 或 `sudo -u 账号` 切过来不算登录，没有它。
+
+**怎么办**：直接 `ssh 账号@机器` 登录进来再装；或者开 linger（`sudo loginctl enable-linger <账号>`），实例就一直在。v0.11.2 及之前的构建在 Linux 上根本装不了，会打算往 `~/Library/LaunchAgents` 写 plist、调 `/bin/launchctl`——那是 P74 之前 Linux 当 Agent 没实现的表现。
+
+### Linux 上退出登录之后，Controller 和会话都没了
+
+**原因**：没开 linger。systemd 默认在账号最后一次登录退出时停掉它的用户实例，连同 Controller 和 Controller 起的 tmux、会话。`ccnm controller status` 和 doctor 的 Controller 行（`注意`）会写 `linger is off for <账号>`。
+
+**怎么办**：`sudo loginctl enable-linger <账号>`，之后 `ccnm controller install` 一次。这是改机器对这个账号的处理方式、要管理员权限，所以 ccnm 不替你开。
+
 ### `Killed: 9` / exit 137 —— 升级完二进制就全炸
 
 **症状**：`ccnm --version` 直接被杀，doctor 走 ssh 拿到空回复报 `CCNM_E_VERSION`，

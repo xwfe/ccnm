@@ -6,7 +6,7 @@
 
 ### Agent Node
 
-- macOS（Linux 原理上可以，还差一个 Linux 版的后台服务没做，见 [README](../README.md#两台机器各干什么)）
+- macOS，或带 systemd 的 Linux（P74 起；Linux 这一半还没在真机上验过，见[支持矩阵](support-matrix.md)）
 - ccnm
 - 官方 Claude Code，且已经登录
 - 交互式会话需要 `tmux`
@@ -90,6 +90,11 @@ ssh = "runtime-ssh-alias"
 Controller 在 macOS 上通过 LaunchAgent 跑在 GUI 登录会话里。这样即使请求最初来自 SSH，官方 Claude Code 进程仍然能使用正常登录会话中的 Keychain / OAuth 上下文。
 
 Agent Node 必须至少有人在本机 GUI 登录过一次。锁屏没关系，但只有 SSH 登录而没有 GUI 登录会话时，Controller 无法提供正确的 Claude 登录上下文。
+
+**Linux 上**（P74 起）Controller 装成 systemd 用户服务（`~/.config/systemd/user/dev.ccnm.controller.service`），不需要图形登录：Claude 和 Codex 在 Linux 上把登录存在文件里，任何会话都读得到。两件事要知道：
+
+- **`ccnm controller install` 要在这个账号用 ssh 登录进来的会话里跑。** `su` 或 `sudo -u` 进来的会话没有 systemd 用户实例，会报 `Failed to connect to bus`。
+- **默认这个账号最后一次登录退出时，systemd 会停掉 Controller 和它起的所有会话。** 要它常驻，开 linger（说白了就是"没人登录也保留这个账号的用户服务"）：`sudo loginctl enable-linger <账号>`。没开时 `controller install`、`controller status` 和 doctor 的 Controller 行都会提示。
 
 ## 4. 运行 doctor
 

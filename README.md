@@ -1,10 +1,10 @@
 # ccnm
 
-**在你的 Mac 上用 Claude Code / Codex 写代码，看文件、改代码、跑测试却都发生在另一台机器上。**
+**在你自己的电脑上用 Claude Code / Codex 写代码，看文件、改代码、跑测试却都发生在另一台机器上。**
 
-项目放在服务器上、AI 登录在 Mac 上的人用得上它：代码不用搬，AI 登录也不用往服务器上放。
+项目放在服务器上、AI 登录在自己电脑（比如 Mac）上的人用得上它：代码不用搬，AI 登录也不用往服务器上放。
 
-*ccnm lets you use Claude Code or Codex on your Mac while every file read, edit and command happens on another machine that holds the project, run there by a dedicated low-privilege account over SSH. The AI side is macOS for now (Linux needs one missing piece, see below); the project side can be macOS or Linux x86\_64. Docs are in Chinese.*
+*ccnm lets you use Claude Code or Codex on your Mac while every file read, edit and command happens on another machine that holds the project, run there by a dedicated low-privilege account over SSH. The AI side runs on macOS, and on Linux since P74 (not yet released or verified on a real machine); the project side can be macOS or Linux x86\_64. Docs are in Chinese.*
 
 ## 它解决什么问题
 
@@ -29,9 +29,9 @@ AI 登录只在这里       ◀──────────── 结果 ─�
 | --- | --- | --- |
 | 文档里叫 | Agent Node | Runtime Node |
 | 上面有什么 | Claude Code / Codex 和它的登录；一个常驻后台（Controller），负责拉起 AI | 项目代码、Git、编译测试工具；一个专门替 AI 跑命令的低权限账号（建议叫 `ccrun`，文档里叫执行账号） |
-| 支持的系统 | 目前是 macOS | macOS；Linux x86_64（实测 Debian 13，要 glibc 2.39 以上，比如 Ubuntu 24.04） |
+| 支持的系统 | macOS；Linux（带 systemd，新加的，见下） | macOS；Linux x86_64（实测 Debian 13，要 glibc 2.39 以上，比如 Ubuntu 24.04） |
 
-**Linux 能当跑 AI 的机器吗？** 原理上能，现在还差一块没做。拉起 AI 的那个后台服务目前只有 Mac 版（靠 macOS 自带的 launchd），而且 ccnm 起会话前会检查它是不是跑在 Mac 的图形登录里——Mac 上 Claude 的登录存在钥匙串里，只有图形登录读得到。Linux 上 AI 的登录存在普通文件里，用不着这一层，补一个 Linux 版的后台服务（比如 systemd 用户服务）就行。在补上之前，Linux 上起会话会被拒绝。Windows 两边都还没做。
+**Linux 当跑 AI 的机器**是刚加上的（P74）：那个拉起 AI 的后台服务在 Mac 上靠 launchd，在 Linux 上装成 systemd 用户服务；Linux 上 AI 的登录存在普通文件里，不需要 Mac 那种图形登录。代码和测试都过了，**还没在真机上用真实模型验过，也还没发版**——v0.11.2 及之前的包在 Linux 上会拒绝起会话。Linux 上有一件事要知道：默认你退出登录，systemd 会把后台服务和会话一起停掉，要常驻得开 linger（`sudo loginctl enable-linger <账号>`，详见[快速开始](docs/getting-started.md#3-初始化-agent-node)）。Windows 两边都还没做，要先单独设计。
 
 还有两个词会经常看到：
 

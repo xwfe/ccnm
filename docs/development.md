@@ -288,9 +288,9 @@ bash scripts/dist.sh
 bash scripts/dist-linux.sh
 ```
 
-产出 `dist/ccnm-<version>-linux-x86_64.tar.gz`（+ `.sha256`）。**这一个只是 Runtime 那一半**
-（`internal mcp-serve` 和按权限/配置提供的 Runtime 工具）。Agent 那一半是 launchd LaunchAgent，在 Linux 上根本不跑；
-发这个包不等于说它跑。
+产出 `dist/ccnm-<version>-linux-x86_64.tar.gz`（+ `.sha256`）。Linux 上两半都用这一个二进制：
+Runtime 那一半（`internal mcp-serve` 和按权限/配置提供的 Runtime 工具），以及 v0.12.0（P74）起的
+Agent 那一半——Controller 装成 systemd 用户服务。各自验到哪一步见[支持矩阵](support-matrix.md)。
 
 它是**本机构建，不交叉编译**：链接别人家的 glibc 要别人家的工具链，而一个本机跑不起来的
 二进制就是没人验过的二进制——release 里那一步 `ccnm --version` 正是在验它。

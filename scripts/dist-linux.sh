@@ -4,11 +4,10 @@
 #
 #   scripts/dist-linux.sh      -> dist/ccnm-<version>-linux-x86_64.tar.gz
 #
-# This artifact is for the **Runtime** half of ccnm -- `internal mcp-serve`
-# and the seven tools, which is what a Linux machine actually runs. The
-# Agent half (Controller, sessions) is a launchd LaunchAgent and does not
-# run here at all; shipping a Linux binary is not a claim that it does.
-# See docs/support-matrix.md.
+# The same binary carries both halves of ccnm on Linux: the Runtime half
+# (`internal mcp-serve` and the seven tools) and, since P74 (v0.12.0), the
+# Agent half, whose Controller installs as a systemd user service. How far
+# each half has been proven is docs/support-matrix.md.
 #
 # Native build, no cross-compiling. Linking against another host's glibc
 # needs that host's toolchain, and a binary nobody on this machine can run

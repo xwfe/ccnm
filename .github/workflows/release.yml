@@ -10,12 +10,12 @@
 # same step, before anything is built for upload -- tests/test_ci_gates.py
 # fails if either stops being true.
 #
-# Why two, and what the Linux one is NOT: ccnm has two halves. The Agent
-# half (Controller, sessions) is a launchd LaunchAgent and is macOS only.
-# The Runtime half (`internal mcp-serve` and the seven tools) runs on
-# Linux too, and P12 proved it on a real Debian 13 / x86_64 machine. So
-# the Linux download is a **Runtime** binary. Publishing it is not a claim
-# that the Agent half runs there -- see docs/support-matrix.md.
+# Why two: one per OS, and each carries both halves of ccnm. The Runtime
+# half (`internal mcp-serve` and the seven tools) has run on Linux since
+# P12 proved it on a real Debian 13 / x86_64 machine. The Agent half's
+# Controller is a launchd LaunchAgent on macOS and, since P74 (v0.12.0),
+# a systemd user service on Linux. How far each half has been proven on
+# each OS is docs/support-matrix.md, not the release notes.
 #
 # The tag has to match the version in the binary. A `v0.1.1` tag on a tree
 # that still says 0.1.0 would produce a download whose name lies about its
@@ -118,7 +118,7 @@ jobs:
           cargo test --workspace
           python3 scripts/ci_gates.py
 
-      - name: Build the Linux Runtime binary
+      - name: Build the Linux binary
         id: build
         run: |
           bash scripts/dist-linux.sh
@@ -170,13 +170,13 @@ jobs:
           # printf rather than a heredoc: a heredoc terminator indented to
           # match the YAML never terminates, and the failure is baffling.
           printf '%s\n' \
-            'Two downloads, for the two halves of ccnm.' \
+            'Two downloads, one per OS; each binary carries both halves of ccnm.' \
             '' \
-            '* `macos-universal` — arm64 + x86_64. This is the one an **Agent Node**' \
-            '  needs, and it also works as a Runtime.' \
-            "* \`linux-x86_64\` — the **Runtime** half only (\`internal mcp-serve\` and its" \
-            '  tools). The Agent half is a launchd LaunchAgent and does not run on' \
-            "  Linux. Needs glibc >= $GLIBC; Debian 13 has 2.41." \
+            '* `macos-universal` — arm64 + x86_64. Works as an **Agent Node** (the' \
+            '  Controller is a launchd LaunchAgent) and as a **Runtime Node**.' \
+            "* \`linux-x86_64\` — works as a **Runtime Node**, and from v0.12.0 on also" \
+            '  as an **Agent Node** (the Controller is a systemd user service; needs' \
+            "  systemd and tmux). Needs glibc >= $GLIBC; Debian 13 has 2.41." \
             '' \
             'Both machines need the same ccnm version.' \
             '' \

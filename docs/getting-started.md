@@ -6,7 +6,7 @@
 
 ### Agent Node
 
-- macOS，或带 systemd 的 Linux（P74 起；Linux 这一半还没在真机上验过，见[支持矩阵](support-matrix.md)）
+- macOS，或带 systemd 的 Linux（v0.12.0 起；验到哪一步见[支持矩阵](support-matrix.md)）
 - ccnm
 - 官方 Claude Code，且已经登录
 - 交互式会话需要 `tmux`
@@ -91,7 +91,7 @@ Controller 在 macOS 上通过 LaunchAgent 跑在 GUI 登录会话里。这样�
 
 Agent Node 必须至少有人在本机 GUI 登录过一次。锁屏没关系，但只有 SSH 登录而没有 GUI 登录会话时，Controller 无法提供正确的 Claude 登录上下文。
 
-**Linux 上**（P74 起）Controller 装成 systemd 用户服务（`~/.config/systemd/user/dev.ccnm.controller.service`），不需要图形登录：Claude 和 Codex 在 Linux 上把登录存在文件里，任何会话都读得到。两件事要知道：
+**Linux 上**（v0.12.0 起）Controller 装成 systemd 用户服务（`~/.config/systemd/user/dev.ccnm.controller.service`），不需要图形登录：Claude 和 Codex 在 Linux 上把登录存在文件里，任何会话都读得到。两件事要知道：
 
 - **`ccnm controller install` 要在这个账号用 ssh 登录进来的会话里跑。** `su` 或 `sudo -u` 进来的会话没有 systemd 用户实例，会报 `Failed to connect to bus`。
 - **这台机器要能访问 AI 服务。** 出口在 OpenAI / Anthropic 不支持的地区（比如中国大陆）时，登录会报 403、会话里模型连不上，要先配代理，见[排错手册](troubleshooting.md#登录-codex-报-device-code-request-failed-with-status-403-forbidden或会话里模型一直连不上)。

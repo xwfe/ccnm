@@ -11,7 +11,7 @@ run     /bin/launchctl bootstrap gui/1002 /home/ccrun/Library/LaunchAgents/dev.c
 
 用户定：做，目标是三端（macOS、Linux、Windows）都支持；Windows 另立设计，不在本阶段。
 
-**证据范围**：离线测试与本机门禁。**真机还没验**（第 5 节），没有发版。
+**证据范围**：离线测试、本机与 Debian 13 上的全量测试，以及 hpsrv 上的零额度真机（第 5 节：systemd 起 Controller、doctor、交互会话、到 Runtime 的工具调用、重启 Controller 不断会话、精确停止）。**没有用真实模型**，没有发版。
 
 ## 1. 设计
 
@@ -60,10 +60,32 @@ run     /bin/launchctl bootstrap gui/1002 /home/ccrun/Library/LaunchAgents/dev.c
 
 ## 4. 门禁
 
-本机 macOS 26.6.2 arm64、rustc 1.98.0，负载 22–39：fmt、clippy（1.98 与 `+1.99.0`）、`cargo +1.89 check --locked` 通过；`cargo test --workspace` 默认与 64 线程各 1092/0（P73 后 1079，新增 13 条）；`ci_gates.py` 通过（计划、协议、Python 262 条 0 跳过）。线上 Linux CI 等推送后看。
+本机 macOS 26.6.2 arm64、rustc 1.98.0，负载 22–39：fmt、clippy（1.98 与 `+1.99.0`）、`cargo +1.89 check --locked` 通过；`cargo test --workspace` 默认与 64 线程各 1092/0（P73 后 1079，新增 13 条）；`ci_gates.py` 通过（计划、协议、Python 262 条 0 跳过）。
 
-## 5. 还没做的
+**Linux 上漏改的两条旧断言**：推送后线上 Linux CI（run 37601989595）红在 `cli.rs` 的 `controller_install_carries_moved_locations_into_the_plist`——它跑真二进制的 `controller install --dry-run`、只认 plist，P74 之后 Linux 上打印的是 systemd 单元；随后在 hpsrv（Debian 13，rustc 1.98.1，以 ccrun 用同一份源码 `--offline`）跑全量时又红一条 `a_dead_controller_and_a_missing_one_get_different_advice`（只认 `kickstart`）。两条都是旧断言没按平台改、产品行为是对的，按平台断言后（`1632ead`、`49e7c70`）Debian 13 上 `cargo test --workspace --no-fail-fast` 1092/0。本机是 macOS，这两条在本机看不见——以后改按平台分支的代码，要在 Linux 上跑一遍再推。
 
-- **真机**：hpsrv 的 `bing` 现在当不了 Linux Agent——没开 linger、没有活着的用户实例，机器上也没装 tmux，`bing` 名下没有 Claude / Codex。要验得先另行授权：装 tmux、给一个账号开 linger（或临时起它的用户实例）。零额度能走到"Controller 由 systemd 起来、doctor 正常、起会话并精确停止、用假模型跑一次到 Runtime 的工具调用"；**用真实模型要用户自己在那个 Linux 账号上登录 Claude 或 Codex**（ccnm 不复制凭据）。
+## 5. 真机（零额度）
+
+用户授权：hpsrv 装 tmux（3.5a）、给 `bing` 开 linger、在 hpsrv 上以 ccrun 现编候选并临时装给 bing（验完删掉）。
+
+**拓扑**：Agent 是 hpsrv 的 `bing`（Linux，候选构建 `d7d24095…`，后换 `39616d7b…`），Operator 就在 Agent 上，Runtime 是同一台机器的 `ccrun`（v0.11.2 发布版，版本号与内部协议号和候选相同），bing 用一次性密钥经 `127.0.0.1` 连 ccrun（`authorized_keys` 加 `from="127.0.0.1,::1"`，主机指纹与 `/etc/ssh/ssh_host_ed25519_key.pub` 核对一致）。
+
+**AI 用假的，不花额度**：Codex 0.154.0（Linux musl 版；GitHub release 包按 digest `d7e18b25…` 核过，包里二进制与 ccrun 已有那份 sha256 相同 `3188814c…`）放 bing 的 `~/.local/bin`；ccnm 专用 Codex profile 里用 `codex login --with-api-key` 登记一个明显是假的 key，`config.toml` 把模型服务指向本机 fake 模型（P71 夹具复制一份，调用改成数组）；实例写 `model = "gpt-5.1-codex"`，ccnm 不开 Code Mode，工具在顶层。fake 模型用 `systemd-run --user` 起，不和 ssh 绑在一起。
+
+| 步骤 | 结果 |
+| --- | --- |
+| 从 `su` 进来、不带 `XDG_RUNTIME_DIR` 装 | 报 `Failed to connect to user scope bus … $XDG_RUNTIME_DIR not defined`，并给出办法。**真机查出两处措辞问题**：原提示说"没有用户实例，去开 linger"，而 linger 已开、实例在跑，照做解决不了（`90c82f7` 改成两种原因都写）；新措辞每行末尾拖着空格（`bfa42cc` 修，用例补"每行不以空格结尾"）。两处都只在离线证明了改后的样子 |
+| 带上 `XDG_RUNTIME_DIR` 装 | 退出 0：`listening: ccnm 0.11.2 as bing, pid 2088514, systemd user service`；单元 enabled，`KillMode=process`、`Restart=always`、active；linger 开着，没有提示 |
+| `ccnm doctor p74codex`（bing） | `可以用了（3 项不查……）`、退出 0；Controller `systemd user service`；Codex 0.154.0 是从 `~/.local/bin` 找到的（服务的 PATH 里没有）；`logged in via API key`；终端会话 tmux 3.5a；远端 MCP 握手 11 个工具 |
+| `ccnm run p74codex --detached` | 会话信息写 `codex 在 systemd user service`；信任提示选 Yes 后，fake 模型的 `read_file README.md` 从 Runtime 读回内容；第一条 `exec_command` 弹出 Allow / Cancel（P71/P72 的审批在 Linux Agent 上一样），放行后 ccrun 写出 `p74-a.txt`（`P74-A-073ae3`） |
+| 第二条提示还开着时 `ccnm controller install`（即升级时的重启） | Controller pid 2088514 → 2089448；tmux（2088968）、会话监督进程（2088969）、Codex（2088979）、Runtime 上 ccrun 的 `mcp-serve`（2089188）都还是原来的进程，`ccnm ls` 显示在跑、工具通 |
+| 之后选 Cancel | 模型收到 `user cancelled MCP tool call` 并收尾；`p74-b.txt` 不存在，Runtime 上只有一条输出记录——会话在 Controller 重启后照常工作 |
+| `ccnm stop p74codex --session …` | 退出 0；tmux 没了，没有会话进程残留，写锁 `released`，`ccnm log` 记"被停止" |
+
+**收尾**：Controller 用 `ccnm controller uninstall` 卸掉（停用、删单元、`daemon-reload`），fake 模型服务停掉；bing 名下本轮建的（`~/.config`、`~/.local/bin`、`~/.local/state`、`~/p74`、Codex 自建的 `~/.codex`、`~/.ssh` 下的 config / 一次性密钥 / known_hosts）全删，家目录与开始前逐项一致；ccrun 的 `authorized_keys` 回到 0 字节，临时配置、测试仓库、构建目录、`codex --version` 时 Codex 自建的 `~/.codex` 删掉；`/tmp` 下两个 tmux 目录删掉。**保留** tmux 和 bing 的 linger（用户授权装的，真实模型那一步还要用）。
+
+## 6. 还没做的
+
+- **真实模型**：要用户自己在 hpsrv 的 bing（或别的 Linux 账号）上登录 Claude 或 Codex（ccnm 不复制凭据），再按第 5 节的拓扑跑一次。
 - **没发版**：v0.11.2 及之前的 Linux 包不能当 Agent。
 - **Windows**：两边都没做，要先另立设计。

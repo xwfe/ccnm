@@ -232,7 +232,7 @@ fn systemctl_failed(cmd: &Cmd, out: &crate::process::Output) -> Error {
         || stderr.contains("$DBUS_SESSION_BUS_ADDRESS")
         || stderr.contains("XDG_RUNTIME_DIR")
     {
-        "\nthis shell cannot reach the account's systemd user manager         \nif one is running (linger on, or the account is logged in elsewhere), a `su` or `sudo -u` shell only lacks its address: export XDG_RUNTIME_DIR=/run/user/$(id -u) and run this again         \nif none is running: log in to this account over ssh, or keep one running with: sudo loginctl enable-linger $(id -un)"
+        "\nthis shell cannot reach the account's systemd user manager\nif one is running (linger on, or the account is logged in elsewhere), a `su` or `sudo -u` shell only lacks its address: export XDG_RUNTIME_DIR=/run/user/$(id -u) and run this again\nif none is running: log in to this account over ssh, or keep one running with: sudo loginctl enable-linger $(id -un)"
     } else {
         ""
     };
@@ -417,6 +417,11 @@ mod tests {
         let err = install(&plan, &fake).unwrap_err();
         let _ = std::fs::remove_dir_all(&dir);
         assert!(err.message().contains("export XDG_RUNTIME_DIR"), "{err}");
+        assert!(
+            err.message().lines().all(|line| !line.ends_with(' ')),
+            "{:?}",
+            err.message()
+        );
         assert_eq!(fake.calls().len(), 1, "stops at the first failure");
     }
 

@@ -1484,9 +1484,26 @@ impl ServerHandler for Server {
             return self.tool_router.call(call).await;
         }
         let args = request.arguments.clone().unwrap_or_default();
-        let before = self.hooks_for(Event::PreToolUse, &tool, &args, None).await;
+        // A client that cancels while the hooks run wants the call gone. The
+        // hook itself runs on to its end or its timeout -- it is a blocking
+        // run with nothing to stop it -- but the tool it was guarding must
+        // not run after it: a cancelled `apply_patch` would still write.
+        let cancelled = context.ct.clone();
+        let not_run = || -> std::result::Result<rmcp::model::CallToolResponse, ErrorData> {
+            Ok(tool_error(&Error::invalid_args(format!(
+                "{tool} was not run: the call was cancelled while its PreToolUse hooks ran"
+            )))
+            .into())
+        };
+        let before = tokio::select! {
+            round = self.hooks_for(Event::PreToolUse, &tool, &args, None) => round,
+            () = cancelled.cancelled() => return not_run(),
+        };
         if let Some(blocked) = before.blocked {
             return Ok(tool_error(&Error::policy(blocked)).into());
+        }
+        if cancelled.is_cancelled() {
+            return not_run();
         }
         let call = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
         let response = self.tool_router.call(call).await?;

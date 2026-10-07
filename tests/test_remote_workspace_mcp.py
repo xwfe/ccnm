@@ -270,6 +270,26 @@ agent_node = "agent"
         fine = client.call_tool("exec_command", {"cmd": ["true"]})
         self.assertFalse(is_error(fine), fine)
 
+    def test_a_call_cancelled_while_its_hooks_run_is_not_run(self):
+        # P79：PreToolUse 钩子跑着的时候客户端取消了这次调用，钩子自己跑完，
+        # 但它守着的工具不能再执行——不然取消了的 apply_patch 照样写文件。
+        self.add_skill("slow", "---\ndescription: Slow.\nhooks:\n  PreToolUse:\n"
+                       "    - matcher: Write\n      hooks:\n        - type: command\n"
+                       "          command: \"sleep 2\"\n---\nSlow.\n")
+        self.write_config("coding", dedicated=False)
+        client = self.client("demo", "coding", "neutral-skill-hook-cancel")
+        client.call_tool("load_skill", {"name": "slow"})
+        request = client.send("tools/call", {
+            "name": "apply_patch",
+            "arguments": {"files": [{"op": "add", "path": "cancelled.txt", "content": "x\n"}]},
+        })
+        time.sleep(0.5)
+        client.notify("notifications/cancelled", {"requestId": request, "reason": "user pressed esc"})
+        time.sleep(3)
+        self.assertFalse((self.root / "cancelled.txt").exists())
+        # 连接还在，钩子照样守着下一次调用。
+        self.assertIn("workspace demo", result_text(client.call_tool("workspace_info", {})))
+
     def test_without_a_name_the_whole_list_comes_back(self):
         self.add_skill()
         # 引号不闭合：原生客户端和这里都读不了。P45 之前这里用的是

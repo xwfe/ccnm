@@ -94,6 +94,7 @@ Agent Node 必须至少有人在本机 GUI 登录过一次。锁屏没关系，�
 **Linux 上**（P74 起）Controller 装成 systemd 用户服务（`~/.config/systemd/user/dev.ccnm.controller.service`），不需要图形登录：Claude 和 Codex 在 Linux 上把登录存在文件里，任何会话都读得到。两件事要知道：
 
 - **`ccnm controller install` 要在这个账号用 ssh 登录进来的会话里跑。** `su` 或 `sudo -u` 进来的会话没有 systemd 用户实例，会报 `Failed to connect to bus`。
+- **这台机器要能访问 AI 服务。** 出口在 OpenAI / Anthropic 不支持的地区（比如中国大陆）时，登录会报 403、会话里模型连不上，要先配代理，见[排错手册](troubleshooting.md#登录-codex-报-device-code-request-failed-with-status-403-forbidden或会话里模型一直连不上)。
 - **默认这个账号最后一次登录退出时，systemd 会停掉 Controller 和它起的所有会话。** 要它常驻，开 linger（说白了就是"没人登录也保留这个账号的用户服务"）：`sudo loginctl enable-linger <账号>`。没开时 `controller install`、`controller status` 和 doctor 的 Controller 行都会提示。
 
 ## 4. 运行 doctor

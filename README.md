@@ -31,7 +31,7 @@ AI 登录只在这里       ◀──────────── 结果 ─�
 | 上面有什么 | Claude Code / Codex 和它的登录；一个常驻后台（Controller），负责拉起 AI | 项目代码、Git、编译测试工具；一个专门替 AI 跑命令的低权限账号（建议叫 `ccrun`，文档里叫执行账号） |
 | 支持的系统 | macOS；Linux（带 systemd，新加的，见下） | macOS；Linux x86_64（实测 Debian 13，要 glibc 2.39 以上，比如 Ubuntu 24.04） |
 
-**Linux 当跑 AI 的机器**是刚加上的（P74）：那个拉起 AI 的后台服务在 Mac 上靠 launchd，在 Linux 上装成 systemd 用户服务；Linux 上 AI 的登录存在普通文件里，不需要 Mac 那种图形登录。代码和测试都过了，也在一台 Debian 13 上用假模型从头到尾跑通过，**还没用真实模型验过，也还没发版**——v0.11.2 及之前的包在 Linux 上会拒绝起会话。Linux 上有一件事要知道：默认你退出登录，systemd 会把后台服务和会话一起停掉，要常驻得开 linger（`sudo loginctl enable-linger <账号>`，详见[快速开始](docs/getting-started.md#3-初始化-agent-node)）。Windows 两边都还没做，要先单独设计。
+**Linux 当跑 AI 的机器**是刚加上的（P74）：那个拉起 AI 的后台服务在 Mac 上靠 launchd，在 Linux 上装成 systemd 用户服务；Linux 上 AI 的登录存在普通文件里，不需要 Mac 那种图形登录。在一台 Debian 13 上从安装到用真实 Codex 改代码都跑通过，**但还没发版**——v0.11.2 及之前的包在 Linux 上会拒绝起会话。另外，跑 AI 的机器要能访问 OpenAI / Anthropic，在不支持的地区（比如中国大陆）要先配代理（[怎么配](docs/troubleshooting.md#登录-codex-报-device-code-request-failed-with-status-403-forbidden或会话里模型一直连不上)）。Linux 上有一件事要知道：默认你退出登录，systemd 会把后台服务和会话一起停掉，要常驻得开 linger（`sudo loginctl enable-linger <账号>`，详见[快速开始](docs/getting-started.md#3-初始化-agent-node)）。Windows 两边都还没做，要先单独设计。
 
 还有两个词会经常看到：
 

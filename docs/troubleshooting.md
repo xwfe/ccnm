@@ -145,6 +145,24 @@ this account has no systemd user manager running: log in to it over ssh (not `su
 
 **怎么办**：`sudo loginctl enable-linger <账号>`，之后 `ccnm controller install` 一次。这是改机器对这个账号的处理方式、要管理员权限，所以 ccnm 不替你开。
 
+### 登录 Codex 报 `device code request failed with status 403 Forbidden`，或会话里模型一直连不上
+
+**原因**：跑 AI 的这台机器出口所在的地区，OpenAI 不提供服务（Anthropic 也一样）。2026-10-07 在 hpsrv（出口在中国大陆）上撞到：登录接口回 `{"error":{"code":"unsupported_country_region_territory",...}}`，`api.openai.com` 和 `chatgpt.com` 直接连不上。这不是 ccnm 的问题，但跑 AI 的机器必须能访问 AI 服务，模型的每一次调用都是从这台机器发出去的。
+
+**先确认是不是这个**（不带任何凭据，只看回什么）：
+
+```bash
+curl -sS -m 15 -o /dev/null -w "%{http_code}\n" https://api.openai.com/v1/models
+```
+
+回 `401` 是通的（只是没带凭据）；回 `403` 并带 `unsupported_country_region_territory`，或者超时，就是这个问题。
+
+**怎么办**：给这台机器配一个能出去的代理，登录和 Controller 都要用上。
+
+- 登录时在命令前加上代理：`HTTPS_PROXY=http://<代理> CODEX_HOME=~/.config/ccnm/agents/codex codex login --device-auth`。
+- **Linux 上让 Controller 带上代理**：ccnm 不会去掉 `HTTPS_PROXY` 这类变量，Controller 的环境里有，它起的 Codex 就有。临时的做法（实测过）：`systemctl --user set-environment HTTPS_PROXY=http://<代理> NO_PROXY=127.0.0.1,localhost`，再 `ccnm controller install` 重启一次；用户实例重启后就没了。要长期生效，按 systemd 的常规做法写一个附加配置 `~/.config/systemd/user/dev.ccnm.controller.service.d/proxy.conf`（`[Service]` 下写 `Environment="HTTPS_PROXY=..."`），`controller install` 只重写主单元文件、不碰这个目录——这种写法这次没实测。
+- macOS 上通常用系统级代理，Controller 不用另配。
+
 ### `Killed: 9` / exit 137 —— 升级完二进制就全炸
 
 **症状**：`ccnm --version` 直接被杀，doctor 走 ssh 拿到空回复报 `CCNM_E_VERSION`，

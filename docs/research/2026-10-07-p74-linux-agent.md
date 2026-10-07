@@ -11,7 +11,7 @@ run     /bin/launchctl bootstrap gui/1002 /home/ccrun/Library/LaunchAgents/dev.c
 
 用户定：做，目标是三端（macOS、Linux、Windows）都支持；Windows 另立设计，不在本阶段。
 
-**证据范围**：离线测试、本机与 Debian 13 上的全量测试，以及 hpsrv 上的零额度真机（第 5 节：systemd 起 Controller、doctor、交互会话、到 Runtime 的工具调用、重启 Controller 不断会话、精确停止）。**没有用真实模型**，没有发版。
+**证据范围**：离线测试、本机与 Debian 13 上的全量测试、hpsrv 上的零额度真机（第 5 节：systemd 起 Controller、doctor、交互会话、到 Runtime 的工具调用、重启 Controller 不断会话、精确停止），以及同一拓扑上一次真实模型（第 6 节，Codex，经代理）。没有发版。
 
 ## 1. 设计
 
@@ -84,8 +84,32 @@ run     /bin/launchctl bootstrap gui/1002 /home/ccrun/Library/LaunchAgents/dev.c
 
 **收尾**：Controller 用 `ccnm controller uninstall` 卸掉（停用、删单元、`daemon-reload`），fake 模型服务停掉；bing 名下本轮建的（`~/.config`、`~/.local/bin`、`~/.local/state`、`~/p74`、Codex 自建的 `~/.codex`、`~/.ssh` 下的 config / 一次性密钥 / known_hosts）全删，家目录与开始前逐项一致；ccrun 的 `authorized_keys` 回到 0 字节，临时配置、测试仓库、构建目录、`codex --version` 时 Codex 自建的 `~/.codex` 删掉；`/tmp` 下两个 tmux 目录删掉。**保留** tmux 和 bing 的 linger（用户授权装的，真实模型那一步还要用）。
 
-## 6. 还没做的
+## 6. 真实模型
 
-- **真实模型**：要用户自己在 hpsrv 的 bing（或别的 Linux 账号）上登录 Claude 或 Codex（ccnm 不复制凭据），再按第 5 节的拓扑跑一次。
+**第一次登录没成**，原因有两层，都不是 ccnm 的问题，但都值得写下来：
+
+1. 用户第一次说"已登录"时，hpsrv 的 bing 名下既没有 `codex`，也没有任何 Codex 登录（全盘找不到 Codex 的 `auth.json`），登录发生在别处。ccnm 只读专用目录 `~/.config/ccnm/agents/codex`，所以给了一条带 `CODEX_HOME=` 的登录命令（Codex 0.154.0 有 `--device-auth`，不需要图形界面）。
+2. 照这条命令登录，报 `device code request failed with status 403 Forbidden`。从 hpsrv 探测：OpenAI 登录接口回 `{"error":{"code":"unsupported_country_region_territory",...}}`，`api.openai.com`、`chatgpt.com` 连不上，出口国家是 CN。**跑 AI 的机器必须能访问 AI 服务**，模型的每一次调用都从这台机器发出去。
+
+**怎么让 hpsrv 出去**（用户选的）：本机开一条 `ssh -R 127.0.0.1:17890:127.0.0.1:7890 hpsrv`，把本机代理借给 hpsrv，只绑回环地址，验完即断；经它访问 `api.openai.com` 回 401（通）。只给 bing 的 systemd 用户实例 `set-environment HTTPS_PROXY / HTTP_PROXY / NO_PROXY`，`ccnm controller install` 重启后，Controller 进程的环境里有这三项——ccnm 只去掉像凭据的变量（`*_TOKEN`、`*_API_KEY` 等），代理变量会一路传给它起的 Codex。用户带 `HTTPS_PROXY` 登录后，Codex 报 `Logged in using ChatGPT`，doctor 是 `可以用了（3 项不查……）`。探测时我多发了一次空的设备码请求，没绑定账号，15 分钟后自动过期。
+
+**这一次**（候选构建 `31a7b26c…`，即 `242389d`；Codex 0.154.0 加按 digest `a68df7cc…` 核过的 `codex-code-mode-host`；实例不指定模型）：
+
+| 步骤 | 结果 |
+| --- | --- |
+| `ccnm run p74codex --detached` | 会话信息写 `codex 在 systemd user service`；信任提示选 Yes；默认模型 `gpt-6-astra`，界面显示了账号的用量信息（经代理连到了 OpenAI） |
+| 发消息：逐次跑 `["sh","-c","uname -s; printf P74-A-755429 > p74-a.txt"]` 和 `…P74-B… > p74-b.txt` | 约 10 秒后第一条弹出 Allow / Cancel，此时 Runtime 上只有 README |
+| Allow | ccrun 执行：stdout `Linux`，`p74-a.txt` 内容 `P74-A-755429`；第二条照样弹出提示 |
+| Cancel | 模型收到 `user cancelled MCP tool call`，如实回报两条结果；`p74-b.txt` 不存在，Runtime 上只有一条输出记录 |
+| `ccnm stop … --session c9176b19…` | 退出 0；没有会话进程残留，写锁 `released`，`ccnm log` 记"被停止" |
+
+额度：Codex 1 次（上限 2）。
+
+**收尾**：隧道断开（hpsrv 上 17890 不再监听），bing 的代理环境变量撤掉，Controller 卸载，候选构建、`codex`、`codex-code-mode-host`、ccnm 配置、一次性密钥、`~/.ssh` 下本轮的文件、Codex 自建的 `~/.codex` 全删；ccrun 回到开始前。**保留**：tmux、bing 的 linger，以及用户的 Codex 登录（`~/.config/ccnm/agents/codex`，删不删由用户定）。
+
+## 7. 还没做的
+
 - **没发版**：v0.11.2 及之前的 Linux 包不能当 Agent。
+- Claude Code 当 Linux Agent 没用真实模型跑过（逻辑相同：登录在 `~/.claude/.credentials.json`，Controller 回话即可）。
+- 长期配代理的 systemd 附加配置（`dev.ccnm.controller.service.d/`）没实测，这次用的是 `set-environment`。
 - **Windows**：两边都没做，要先另立设计。

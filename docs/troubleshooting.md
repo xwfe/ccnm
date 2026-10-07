@@ -194,7 +194,7 @@ Work SSH   FAIL   CCNM_E_VERSION: ~/.local/bin/ccnm on work is there but not exe
 **症状**：两台机器 `ccnm --version` 一样，doctor 的 `Agent 的 ccnm`（`Agent ccnm`）或 `反向 SSH`（`Reverse SSH`）那一行却失败：
 
 ```text
-Agent 的 ccnm           失败   CCNM_E_VERSION: work reports ccnm 0.9.0 like this machine, but it is not the same build: it does not say how far its internal protocols go, so it is older than this build; this machine speaks up to 10
+Agent 的 ccnm           失败   CCNM_E_VERSION: the Agent Node fodelf reports ccnm 0.9.0 like this machine, but it is not the same build: it does not say how far its internal protocols go, so it is older than this build; this machine speaks up to 10
                                install the same build on both
 ```
 
@@ -203,6 +203,8 @@ Agent 的 ccnm           失败   CCNM_E_VERSION: work reports ccnm 0.9.0 like t
 **原因**：版本号取自 Cargo.toml，两次发版之间从 main 编出来的每个构建都叫上一个发布的号。号一样，能说的内部协议（两台机器上的 ccnm 互相说话用的那套请求格式）可以不一样。P64（2026-09-30）起，每个构建在握手时多报一个数——它认得的内部协议最高号，两边版本号相同时再比这个数。`it does not say how far its internal protocols go` 说的是对方是 P64 之前的构建，根本没报；`it speaks internal protocols up to 6` 这种是报了，但和这边不是同一个数。
 
 **怎么办**：两台装同一个构建——同一个 release 的两个平台包，或者同一个提交编出来的两份。哪一边旧，看各自二进制的修改时间，或者拿 release 页上的 sha256 对本平台那一份（**两个平台的 sha256 本来就不同，别拿两台机器互相比**）。
+
+`反向 SSH` 那一行的结论是经 Agent 转述的：Agent 自己是别的构建时，P70 起它记成没比较，不再把 Runtime 判成旧的，先把 Agent 那行修好。
 
 **这一行只在新的那一端看得出来。** 旧构建的 doctor 只比版本号，它看新构建仍然是"同一个 0.9.0"；所以在旧的那台上跑 doctor 全绿不算数，到新的那台上再跑一次。
 
@@ -230,11 +232,11 @@ P66 之前的构建把原因弄丢了，同一件事在两边说成两个不相�
 **P69（2026-10-04）起已修**：身份对不上时先比版本，失败的是这一行，`Agent selection` 记成没比较：
 
 ```text
-Agent 的 ccnm           失败   CCNM_E_VERSION: work runs ccnm 0.9.0, this machine runs 0.10.1; install the same build on both
+Agent 的 ccnm           失败   CCNM_E_VERSION: the Agent Node fodelf runs ccnm 0.9.0, this machine runs 0.10.1; install the same build on both
 选哪个 Agent            没查   not compared: the Agent Node runs another ccnm build, which may not have read the selection
 ```
 
-修在跑 doctor 的这一端，对面是旧版本也照样看得出来。同一张表里 `Reverse SSH` 一行可能说 Runtime "reports ccnm … like this machine, but it is not the same build"——Runtime 其实没问题，是旧 Agent 转述 Runtime 的回答时丢了它不认识的字段（2026-10-04 真机，[F25](research/2026-10-04-p62-4-recheck.md#6-零额度复看与新发现)，没修）；先按 `Agent ccnm` 那行把 Agent 装成同一个构建。还看到 `identity differs`，要么跑 doctor 的这台还是 P69 之前的构建，要么两台确实是同一个构建、Agent 回答的是另一个实例——后一种按上一节去 Agent Node 上看原因。
+修在跑 doctor 的这一端，对面是旧版本也照样看得出来。Agent 是旧构建、但身份对得上时（比如它读的配置节点名正好一样），表会接着往下走；P70 之前 `Reverse SSH` 一行这时会说 Runtime "reports ccnm … like this machine, but it is not the same build"——Runtime 其实没问题，是旧 Agent 转述 Runtime 的回答时丢了它不认识的字段（2026-10-04 真机，[F25](research/2026-10-04-p62-4-recheck.md#6-零额度复看与新发现)）。**P70（2026-10-07）起**这种情况记成没查：`build not compared: the Agent Node that relayed this runs another ccnm build …`；版本号本身不同仍是失败。先按 `Agent ccnm` 那行把 Agent 装成同一个构建，再看这一行。还看到 `identity differs`，要么跑 doctor 的这台还是 P69 之前的构建，要么两台确实是同一个构建、Agent 回答的是另一个实例——后一种按上一节去 Agent Node 上看原因。
 
 **怎么办**：两台装同一个版本（各跑一次 `ccnm --version` 核对）。
 

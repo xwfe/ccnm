@@ -414,15 +414,25 @@ call_mcp_tool
 - **人怎么手动启动一个**（只有 Claude Code）：敲 `/mcp__ccnm__<名字> 参数`。Codex 不支持这种方式。
 - **skill 里的脚本在哪跑**：Runtime Node 上，由模型用 `exec_command` 跑，和别的命令一样以执行账号的身份、受同样的限制。
 
-三处和官方 CLI 不一样，都是故意的：
+**skill 要求替它跑的命令，看会话里跑命令问不问人**（P79）。SKILL.md 里的 `` !`命令` ``（官方 CLI 会在加载 skill 时先执行它、把输出填进正文）和 frontmatter 里的 `hooks`，都是没人一条条批准就要跑的命令，所以只在**命令本来就不问人**的会话里跑：开了 [`allow_unattended_exec`](configuration.md#allow_unattended_exec) 的交互会话、`--print`、`ccnm mcp bridge` 的 coding 模式。其余会话（默认的交互会话、只读的外部会话）照旧不跑，模型加载时会看到一份清单和原因，需要就自己用 `exec_command` 跑。
 
-- SKILL.md 里的 `` !`命令` ``（官方 CLI 会在加载 skill 时先执行它、把输出填进正文）**不自动执行**。模型会看到一份清单，需要就自己用 `exec_command` 跑。一次"读 skill"不该变成一次"执行仓库指定的命令"。
-- frontmatter 里的 `allowed-tools`、`hooks`、`model` 等**不起作用**，模型加载时会被告知。
+| frontmatter | 在 ccnm 里 |
+| --- | --- |
+| `` !`命令` `` | 命令不问人的会话：加载时在项目那台机器上跑，输出填进正文，跑失败这次加载就报错（和原生一样）。其余会话：不跑，列出来 |
+| `hooks` | 命令不问人的会话：加载后登记，本会话剩下的时间里，在项目那台机器上围着 ccnm 自己的工具跑。`PreToolUse` 退出码 2 或 `permissionDecision: "deny"` 会拦下这次调用，`PostToolUse` 的 stderr 或 `additionalContext` 附在结果后面。`matcher` 写原生工具名也行：`Bash` 对应 `exec_command`，`Read` 对应 `read_file`，`Edit`/`Write` 对应 `apply_patch`（每个文件一次），`Grep`、`Glob` 对应 `search_text`、`list_files`；钩子从 stdin 读到的是原生的格式（`tool_input.command`、`tool_input.file_path`），给本地 Claude Code 写的脚本照样能用。`Stop` 这类发生在客户端里的事件、`http` 等非 command 类型不跑，会写明。其余会话：不登记 |
+| `allowed-tools` | 不逐条放行：命令不问人的会话里本来就不用放行；会问的会话里一个 skill 关不掉那一问（要关去开 `allow_unattended_exec`）。列了 `WebFetch` 这类 Agent 自带工具时，会告诉模型它们在这个 workspace 开没开（[`agent_tools`](configuration.md#agent_tools) 定） |
+| `context: fork`（连同 `agent`、`model`） | Claude 会话、开着子代理（默认开）时，告诉模型用 `Agent` 工具派一个子代理去跑，带上 `agent` 和 `model`。这是给模型的指示，ccnm 看不到它照没照做。没有子代理（Codex、关了 `subagents`）时写明没生效 |
+| 只写了 `model` | 不起作用：经 MCP 交出去的 skill 换不了会话的模型 |
+| `effort`、`shell`、`disallowed-tools` | 不起作用，加载时写明 |
+
+还有两处和官方 CLI 不一样：
+
+- Agent 机器上装的 skill（下一条），`` !`命令` `` 和 `hooks` 一律不跑：那台机器上有 AI 的登录，而且项目的工具调用不经过它。
 - 两台机器上**装好的** skills（`~/.claude/skills`、`~/.agents/skills` 这些）也会交给模型（P48，默认全开）：Runtime 执行账号装的并进 `load_skill`，排在项目的后面；Agent 上你自己装的由一个叫 `mcp__ccnm_agent__load_skill` 的工具交出去。附件用 `load_skill` 的 `file` 读。怎么关、怎么按名字藏、同名谁赢，见[配置说明](configuration.md#machine_skills)。
 
 **写了 skill 但模型没用上，先这样查**：让模型（或你自己接一个 MCP 客户端）不带名字调一次 `load_skill`。返回的列表末尾有一段 `Not offered`，写着每个没被收进来的文件和原因——最常见的是 frontmatter 写错了（会说第几行）、没有 `description`、两个文件重名（包括被机器上装好的同名 skill 盖掉，会写明被谁盖掉），以及 skills 目录是一个指到项目外面的 symlink（读路径出不了项目根，这条和 `read_file` 是同一个规矩）。另外，目录是会话开始时定下来的：会话中途新加的 skill 可以按名字加载，但要到下一个会话才出现在工具说明里。
 
-完整规则见[协议文档第 5.1 节](protocol/remote-workspace-mcp-v1.md#51-load_skill-与-prompts项目自带的-skillsp36-新增)。**验到哪一步**：发现、加载、参数替换、目录长度、prompts 都有离线测试和一个不依赖 ccnm 代码的中立 MCP 客户端测试；"真实模型会不会主动去用 skill"**没有验**，见[支持矩阵](support-matrix.md)。
+完整规则见[协议文档第 5.1 节](protocol/remote-workspace-mcp-v1.md#51-load_skill-与-prompts项目自带的-skillsp36-新增)。**验到哪一步**：发现、加载、参数替换、目录长度、prompts，以及 P79 的加载时命令和 hooks，都有离线测试和一个不依赖 ccnm 代码的中立 MCP 客户端测试；"真实模型会不会主动去用 skill"、"会不会照提示派子代理"**没有验**，见[支持矩阵](support-matrix.md)。
 
 ## 项目那台机器上的 MCP server
 

@@ -19,6 +19,7 @@
 > 2026-09-22（P48）**`load_skill` 也交出 Runtime 执行账号装好的 skills**（`~/.claude/skills`、`~/.agents/skills`、`~/.codex/skills`、`~/.claude/commands`），排在项目的后面；同名时装好的赢（照原生）。新增两个可选参数 `file`、`line`：读 skill 目录里的其他文件，长文件分段。不带新参数、执行账号 HOME 里又没装 skill 的调用和以前一样，只有工具的固定说明文字换了。Runtime 配置 `[machine_skills]` 可以整段关掉或按名字藏。见第 5.1 节。
 > 2026-09-22（P45）**skill 的 frontmatter 改成照 Claude Code 2.1.278 的读法读**（共享库 `toexec-skill` 0.2.0），工具、参数、错误码都没变，变的是同一个 SKILL.md 读出来的结果：以 `` ` `` `@` `*` 开头的描述不再让 skill 被跳过，`argument-hint: [filename] [format]` 和 `[issue-number]` 的提示不再丢；`disable-model-invocation: yes` / `on` / `1` 现在生效；写了 `user-invocable` 却不是 true（空值、认不出的字）现在不登记成 prompt；同一个键写两遍后写的赢。宿主会整段丢弃的 frontmatter、重复的键，`load_skill` 的返回开头各多一行说明。见第 5.1 节。
 > 2026-10-07（P78）**协议没变，Runtime 安全门禁的默认判法变了**：Runtime 节点没写 `runtime_user` 时，执行账号按共用账号判——sudo、admin、私钥、Agent 登录这些检查只显示、不拒绝，所以同一个没写 `runtime_user` 的 Runtime，以前在 initialize 前或 `exec_command` 时报 `CCNM_E_POLICY`，现在照常服务。写了 `runtime_user` 的判法、身份未知与继承认证环境的拒绝、错误码和工具都没变。第 4.5 节措辞随之改。
+> 2026-10-08（P79）**skill 要求替它跑的命令，在命令不问人的会话里会跑了**：`load_skill`（和 `prompts/get`）加载一个带 `` !`命令` `` 的 skill 时，在 Runtime 上执行这些命令、把输出填进正文；带 `hooks` 的 skill 加载后，它的 `PreToolUse` / `PostToolUse` 钩子在本会话余下的时间里围着这个 server 的工具跑，`PreToolUse` 可以拦下一次调用（`isError`，`CCNM_E_POLICY`），钩子说的话附在结果末尾的一个文本块里。只在命令本来就不问人的会话里这样：受管会话开了 `allow_unattended_exec` 或是 `--print`，以及 bridge 的 coding 模式；`read` 模式和要问人的交互会话里跟以前一样不跑。`allowed-tools`、`model`、`context: fork` 不再笼统地说"不起作用"，改成各自一行写明怎样。工具、参数、错误码都没变。见第 5.1 节。
 
 面向的读者是**已经在本机跑着 Claude Code / Codex / 别的 MCP Host，但项目在另一台机器上的人**。它给你的不是一条裸 SSH 通道，而是一个绑定了 workspace 的远程项目工具集。
 
@@ -273,7 +274,7 @@ transport 的认证边界是 **OpenSSH identity + 它落到的那个 Runtime OS 
 | `name`（可选 `arguments`，一个字符串） | 这个 skill 的正文，见下 |
 | `name` + `file`（可选 `line`，从 1 数） | skill 目录里的一个文件（P48）：一次最多 64 KiB，在行边界截断，末尾写明下一段用 `line` 从第几行接着读。`file=SKILL.md` 读 skill 本身 |
 
-返回的正文前面有几行方括号，是 server 加的：skill 在哪个文件、`${CLAUDE_SKILL_DIR}` 是哪个目录、哪些命令**没有被执行**、哪些 frontmatter 在这里不起作用。样例见 [`call-load-skill-ok.json`](fixtures-mcp/call-load-skill-ok.json)。正文本身：
+返回的正文前面有几行方括号，是 server 加的：skill 在哪个文件、`${CLAUDE_SKILL_DIR}` 是哪个目录、加载时的命令跑没跑（没跑的列出来并说明原因）、登记了哪些钩子、`allowed-tools` / `context: fork` / `model` 在这个会话里怎样、哪些 frontmatter 在这里不起作用。样例见 [`call-load-skill-ok.json`](fixtures-mcp/call-load-skill-ok.json)（要问人的会话）和 [`call-load-skill-ran.json`](fixtures-mcp/call-load-skill-ran.json)（命令不问人的会话）。正文本身：
 
 - frontmatter 去掉；`$ARGUMENTS`、`$ARGUMENTS[N]`、`$N`、声明过的 `$name` 按 Claude Code 2.1.273 的实际规则替换（没给到的 `$N` 原样留着——正文里的 `awk '{print $1}'` 因此不会被抹掉）；
 - `${CLAUDE_SKILL_DIR}` 换成 skill 目录的 **workspace 相对路径**（装好的换成它在 Runtime 上的**绝对路径**），`${CLAUDE_PROJECT_DIR}` 换成 `.`。项目 skill 的脚本和参考文件就是 workspace 里的普通文件：模型用 `read_file` 读、用 `exec_command` 跑，所以它们在 Runtime 上、以执行身份、受同一套写入互斥和 `exec_sandbox` 约束执行。装好的在 workspace 外面，`read_file` 读不到，用 `file` 读；脚本同样由 `exec_command` 按那个绝对路径跑；
@@ -284,11 +285,14 @@ transport 的认证边界是 **OpenSSH identity + 它落到的那个 Runtime OS 
 
 **目录放在哪**：`load_skill` 自己的 `description` 里。它的前半段是固定文本，后半段是这个 workspace 的 skill 目录（名字、参数提示、折成一行并截到 200 字符的描述），整段不超过 2048 个 UTF-16 码元——Claude Code 2.1.273 对每个工具的 description 只留这么多（实测；Codex 0.154.0 不截）。放不下的 skill 只列名字。**这是七个老工具没有的性质：`description` 随 workspace 变。** 没有 skill 时它是固定文本，[`tools-list-*.json`](fixtures-mcp/tools-list-read.json) 逐字节比对的就是那一版。目录在会话开始时定下来（Host 整个连接期间都留着 `tools/list` 的结果）；调用时重新扫描，所以会话中途新写的 skill 能加载，只是要到下一个会话才出现在目录里。
 
-**三条和官方 CLI 不一样的地方，都是故意的：**
+**和官方 CLI 不一样的地方，都是故意的：**
 
-1. **`` !`命令` `` 注入不执行。** 官方 CLI 在加载 skill 时先跑这些命令、把输出填进正文。这里原样保留，并在开头列出行号和命令，模型需要就自己用 `exec_command` 跑。理由：一次"读"调用不该触发仓库指定的命令——那会绕过 `exec_command` 上的人工确认（`allow_unattended_exec` 管的那一层），`read` 模式下更是直接变成了执行。
-2. **`allowed-tools`、`disallowed-tools`、`hooks`、`model`、`effort`、`context`、`agent`、`shell` 不起作用**，出现时在返回文本里点名。ccnm 改不了 Host 的权限和模型，也不在 Agent 那台机器上执行任何来自仓库的东西。Claude Code 自己对经 MCP 来的 skill 也不认 `hooks` 和 `allowed-tools`。
-3. **装好的 skill 的文件用 `file` 读**，而不是像原生那样给一个路径让模型自己去读：`read_file` 只读 workspace（P48 之前这里写的是"执行账号 HOME 下的用户级 skills 不读"）。
+1. **`` !`命令` `` 只在命令不问人的会话里执行**（P79 起；之前一律不执行）。"命令不问人"指这个会话的 `exec_command` 不带 `anthropic/requiresUserInteraction`、而且执行门放行：`--print` 与开了 `allow_unattended_exec` 的受管会话，以及 bridge 的 coding 模式。这时照原生：参数填好之后，在 Runtime 上以执行账号、在 workspace 根下用 `bash -c` 依次执行（和 `exec_command` 同一套环境清理、凭据复查和 `exec_sandbox`，单条 120 秒、输出最多 16 KiB），输出替换掉占位；**有一条失败，整次加载就是 `CCNM_E_INVALID_ARGS`**，写明哪一行、退出码和 stderr。其余会话原样保留，开头列出行号、命令和没执行的原因，模型需要就自己用 `exec_command` 跑。理由：这是一条没人批准的命令；在要问人的会话里自动执行，等于绕过 `exec_command` 上那一问，`read` 模式下更是凭空多出了执行。
+2. **`hooks` 由这个 server 在 Runtime 上跑**（P79），门和第 1 条相同。加载后登记到这个 server 进程结束（断线重连就没了，再加载一次）；同一个 skill 加载两次不重复登记。只认 `PreToolUse`、`PostToolUse` 和 `type: command`，其余写明不跑。`matcher` 是名字、`|` 和 `.*` / `*` 通配，整名匹配，同时比 ccnm 的工具名（`mcp__ccnm__exec_command`，或不带前缀）和它顶替的原生工具名：`exec_command`→`Bash`，`read_file`/`view_image`/`read_notebook`→`Read`，`apply_patch`→每个改到的文件一次 `Edit`（update）/`Write`（add、write）/`NotebookEdit`，`search_text`→`Grep`，`list_files`→`Glob`，`load_skill`→`Skill`。按原生名匹配到时，钩子 stdin 上的 `tool_input` 是原生的形状（`command`、`file_path`，路径是 Runtime 上的绝对路径），否则是 ccnm 收到的原始参数；另有 `session_id`、`cwd`、`hook_event_name`、`tool_name`，`PostToolUse` 多一个 `tool_response`（结果的文本）。执行方式同第 1 条，超时取钩子的 `timeout`（秒），默认和最多都是 600 秒；同一事件的多个钩子依次跑。结果照原生读：`PreToolUse` 退出 2，或 stdout 的 JSON 里 `permissionDecision` 是 `deny` / `ask`（没人可问），这次调用**不执行**，返回 `isError`、`CCNM_E_POLICY`，正文写明哪个 skill 的钩子、它说的话（[`call-blocked-by-hook.json`](fixtures-mcp/call-blocked-by-hook.json)）；`PostToolUse` 只在调用没出错时跑，退出 2 的 stderr、`additionalContext`、`decision: "block"` 的 `reason` 附在结果末尾**另一个文本块**里；其他非零退出或超时算钩子失败，附一行说明、调用照常。`updatedInput`、`updatedMCPToolOutput` 不照做，附一行说明。`once: true` 退出 0 一次就撤。
+3. **`allowed-tools` 不逐条放行。** 要问人的会话里，问不问是 Host 按工具的静态标记定的，server 改不了"这一轮"或"这一条"；另做一个不问的工具、按 skill 里的规则放行，规则又写在模型自己能改的文件里。所以只写明：命令不问人的会话里"没什么可放行"，要问人的会话里"一个 skill 关不掉那一问"；列了 Agent 自带的工具（`WebFetch` 等）时写明它们在这个 workspace 的 `agent_tools` 里开没开。
+4. **`context: fork` 借子代理生效，`model` 只在 fork 时随它生效。** 受管 Claude 会话、`agent_tools` 开着 `subagents` 时，返回开头告诉模型用 `Agent` 工具派一个 `subagent_type` 为 `agent` 字段（默认 `general-purpose`）、`model` 为 `model` 字段的子代理，把正文当它的提示——这是给模型的指示，server 看不到它照没照做。没有子代理（Codex、关了 `subagents`）时写明没生效；外部客户端写"如果你的客户端能派子代理"。不带 fork 的 `model` 不起作用：经 MCP 来的 skill 换不了 Host 的模型。`effort`、`shell`、`disallowed-tools` 不起作用，出现时点名。
+5. **Agent 机器上装的 skill（`ccnm_agent` 的 `load_skill`）什么都不跑**：那台机器上有 AI 的登录，项目的工具调用也不经过它。
+6. **装好的 skill 的文件用 `file` 读**，而不是像原生那样给一个路径让模型自己去读：`read_file` 只读 workspace（P48 之前这里写的是"执行账号 HOME 下的用户级 skills 不读"）。
 
 `disable-model-invocation: true` 的 skill 不进目录，`load_skill` 拒绝它（`CCNM_E_POLICY`）；`user-invocable: false` 的不登记成 prompt。
 

@@ -114,7 +114,8 @@ ccnm 不会假装“禁止 `curl` / `wget` / 某几个程序名”就等于 sand
 | 能力 | 使用什么身份 | 不能被误读成什么 |
 | --- | --- | --- |
 | Runtime 项目工具与 stdio MCP relay | Runtime Executor | 第三方程序不自动受结构化文件工具的逐路径校验；项目 `.mcp.json` 是可执行配置 |
-| Agent 安装的 skills | Agent Identity，按 skill 目录提供读取 | 只读 skill 不等于整个 `ccnm_agent` 服务只读，也不意味着内容可信 |
+| Runtime 上的 skills 要求替它跑的命令（`` !`命令` ``、`hooks`，P79） | Runtime Executor，和 `exec_command` 同一套环境清理、凭据复查与 `exec_sandbox` | 只在命令本来不问人的会话里跑（`allow_unattended_exec`、`--print`、bridge coding）；那时它们和模型自己跑的命令一样没人看，skill 文件也可能是模型刚写的 |
+| Agent 安装的 skills | Agent Identity，按 skill 目录提供读取 | 只读 skill 不等于整个 `ccnm_agent` 服务只读，也不意味着内容可信；它们的 `` !`命令` `` 和 `hooks` 一律不跑 |
 | Agent 远端 HTTP MCP | 从 Agent 发起，携带服务配置的认证信息 | `mcp_servers` 默认开启，不是外发审批；`web_fetch` 也默认开启（P77），只关它仍可能经 MCP server 外发项目内容 |
 | Agent `[agent_mcp] local` 点名的本机服务 | Agent Identity | Runtime `exec_sandbox` 不覆盖它；它可能读写本机、接触账号可访问的凭据和服务 |
 

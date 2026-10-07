@@ -1,0 +1,17 @@
+{
+  "$schema_ref": "#/$defs/call_tool_result_error",
+  "$note": "P79：一个已加载 skill 的 PreToolUse 钩子（退出码 2，或输出 permissionDecision: \"deny\" / \"ask\"）拦下了这次调用：工具没有执行，模型拿到 isError 结果，第一行 CCNM_E_POLICY，后面是哪个 skill 的钩子、它在 stderr 或 permissionDecisionReason 里说的话。",
+  "message": {
+    "jsonrpc": "2.0",
+    "id": 9,
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "CCNM_E_POLICY: exec_command was not run: a PreToolUse hook of skill guard stopped it: use git rm, not rm"
+        }
+      ],
+      "isError": true
+    }
+  }
+}

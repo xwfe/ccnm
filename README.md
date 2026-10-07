@@ -143,7 +143,7 @@ mv ccnm ~/.local/bin/ccnm.new && mv ~/.local/bin/ccnm.new ~/.local/bin/ccnm
 | --- | --- |
 | 最新版本 | [v0.12.0](https://github.com/xwfe/ccnm/releases)（2026-10-07），每个版本改了什么写在 Releases 页 |
 | 真机验过什么 | Mac 跑 AI → Debian 13 放项目（替 AI 跑命令的是专门的 `ccrun` 账号）：Claude 和 Codex 都用真实模型跑过——交互会话、一问一答、别的 AI 工具接入、脚本调用、安装升级回退。哪些**没验过**逐条写在[支持矩阵](docs/support-matrix.md) |
-| 还没发版的 | 本页按 main 写。v0.12.0 之后改的两件事还没进发布包：不写 `runtime_user` 也能跑命令（v0.12.0 仍要求专用账号，或者在 workspace 上写 `allow_unconfined_exec` 和 `allow_unisolated_credentials`）；`agent_tools` 默认全开。两件都只有离线测试，没在真机上跑过 |
+| 还没发版的 | 本页按 main 写。v0.12.0 之后改的三件事还没进发布包：不写 `runtime_user` 也能跑命令（v0.12.0 仍要求专用账号，或者在 workspace 上写 `allow_unconfined_exec` 和 `allow_unisolated_credentials`）；`agent_tools` 默认全开；命令不问人的会话里，skill 的 `hooks` 和加载时的 `` !`命令` `` 会在项目机器上跑（[说明](docs/usage.md#项目自带的-skills)）。三件都只有离线测试，没在真机上跑过 |
 
 已知限制：
 

@@ -1,0 +1,16 @@
+{
+  "$schema_ref": "#/$defs/call_tool_result_ok",
+  "$note": "P79：同一类 skill 在命令不问人的会话里（--print、ccnm mcp bridge 的 coding 模式、开了 allow_unattended_exec 的交互会话）。!`命令` 在加载时于 Runtime 上执行，输出填进正文；hooks 登记到本会话结束，开头写明登记了哪些、哪些在这里不跑。allowed-tools 写明没什么可放行。",
+  "message": {
+    "jsonrpc": "2.0",
+    "id": 8,
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "[skill guard -- .claude/skills/guard/SKILL.md, 389 bytes; ${CLAUDE_SKILL_DIR} is .claude/skills/guard]\n[1 command(s) this skill runs as it loads were run on this machine; what they printed is in place below]\n[hooks: 2 registered for the rest of this session; they run on this machine around this server's tools: PreToolUse Bash, PostToolUse Edit|Write]\n[hooks not run here: Stop (it happens inside the client, which this server never sees)]\n[allowed-tools: nothing to grant here, commands in this session already run without asking]\n\nOn branch main. Before anything that deletes files, read RELEASE.md.\n"
+        }
+      ]
+    }
+  }
+}

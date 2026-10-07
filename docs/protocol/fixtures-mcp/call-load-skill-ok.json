@@ -1,6 +1,6 @@
 {
   "$schema_ref": "#/$defs/call_tool_result_ok",
-  "$note": "load_skill 带名字调用：头几行方括号是 server 加的（skill 在哪、${CLAUDE_SKILL_DIR} 是什么、哪些 !`命令` 没有被执行、哪些 frontmatter 在这里不起作用），空一行之后是 SKILL.md 的正文，参数已经填好。",
+  "$note": "load_skill 带名字调用，一个交互式受管会话里（执行命令前要问人）：头几行方括号是 server 加的（skill 在哪、${CLAUDE_SKILL_DIR} 是什么、哪些 !`命令` 没有执行以及为什么、allowed-tools 为什么不起作用），空一行之后是 SKILL.md 的正文，参数已经填好。命令不问人的会话里同一个 skill 见 call-load-skill-ran.json（P79）。",
   "message": {
     "jsonrpc": "2.0",
     "id": 7,
@@ -8,7 +8,7 @@
       "content": [
         {
           "type": "text",
-          "text": "[skill deploy -- .claude/skills/deploy/SKILL.md, 412 bytes; ${CLAUDE_SKILL_DIR} is .claude/skills/deploy]\n[1 command(s) this skill wants run as it loads were NOT run. Their output is not below; where you need it, run the command with exec_command:\n  line 12: git status --short\n]\n[frontmatter with no effect here: allowed-tools]\n\n# Deploy\n\nTarget: staging. Status first: !`git status --short`\nRun .claude/skills/deploy/scripts/go.sh staging\n"
+          "text": "[skill deploy -- .claude/skills/deploy/SKILL.md, 412 bytes; ${CLAUDE_SKILL_DIR} is .claude/skills/deploy]\n[1 command(s) this skill wants run as it loads were NOT run (commands in this session wait for a person to approve them, and a skill does not get around that; allow_unattended_exec on the Runtime lets them run without one). Their output is not below; where you need it, run the command with exec_command:\n  line 12: git status --short\n]\n[allowed-tools has no effect: commands in this session wait for a person to approve them, and a skill does not get around that; allow_unattended_exec on the Runtime lets them run without one]\n\n# Deploy\n\nTarget: staging. Status first: !`git status --short`\nRun .claude/skills/deploy/scripts/go.sh staging\n"
         }
       ]
     }

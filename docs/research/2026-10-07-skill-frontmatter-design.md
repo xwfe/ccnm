@@ -1,6 +1,6 @@
 # skill 文件头的 `allowed-tools`、`hooks`、`model` 在远端会话里怎么生效（设计，2026-10-07）
 
-用户 2026-10-07 问：skill 文件头里的 `allowed-tools`、`hooks`、`model` 怎么设计才能生效。本文是设计，**还没实现**；实现阶段的验收见 [ROADMAP P79](../plan/ROADMAP.md)，等用户确认第 7 节的四个决定再开工。
+用户 2026-10-07 问：skill 文件头里的 `allowed-tools`、`hooks`、`model` 怎么设计才能生效。本文是设计；用户 2026-10-08 定第 7 节四件事全按建议，P79 已按它实现，做了什么、和本文的出入、怎么验的见 [P79 记录](2026-10-08-p79-skill-frontmatter.md)。
 
 ## 结论
 

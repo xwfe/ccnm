@@ -220,15 +220,19 @@ pub fn install(plan: &Plan, runner: &dyn ProcessRunner) -> Result<Context> {
     controller::wait_until_listening(&plan.socket, &plan.log, "systemd")
 }
 
-/// The failure everyone hits once: no user manager to talk to. `su` and
-/// `sudo -u` do not start one; an ssh login does, and so does linger.
+/// The failure everyone hits once: this shell cannot reach the account's
+/// user manager. Two different causes read the same here (measured on
+/// Debian 13, P74): a `su` / `sudo -u` shell has no `XDG_RUNTIME_DIR` even
+/// when the manager is running (linger on), and without linger or a login
+/// there is no manager at all. Both fixes are named; telling someone with
+/// linger already on to turn it on sends them round in circles.
 fn systemctl_failed(cmd: &Cmd, out: &crate::process::Output) -> Error {
     let stderr = out.stderr_lossy().trim().to_string();
-    let hint = if stderr.contains("Failed to connect to bus")
+    let hint = if stderr.contains("Failed to connect to")
         || stderr.contains("$DBUS_SESSION_BUS_ADDRESS")
         || stderr.contains("XDG_RUNTIME_DIR")
     {
-        "\nthis account has no systemd user manager running: log in to it over ssh (not `su` or `sudo -u`), or keep one running with: sudo loginctl enable-linger $(id -un)"
+        "\nthis shell cannot reach the account's systemd user manager         \nif one is running (linger on, or the account is logged in elsewhere), a `su` or `sudo -u` shell only lacks its address: export XDG_RUNTIME_DIR=/run/user/$(id -u) and run this again         \nif none is running: log in to this account over ssh, or keep one running with: sudo loginctl enable-linger $(id -un)"
     } else {
         ""
     };
@@ -393,14 +397,26 @@ mod tests {
         down.stderr = b"Failed to connect to bus: No medium found\n".to_vec();
         fake.push(down);
         let err = install(&plan, &fake).unwrap_err();
-        let _ = std::fs::remove_dir_all(&dir);
         assert!(
             err.message()
                 .contains("systemctl --user daemon-reload failed"),
             "{err}"
         );
         assert!(err.message().contains("loginctl enable-linger"), "{err}");
-        assert!(err.message().contains("not `su`"), "{err}");
+        assert!(
+            err.message()
+                .contains("export XDG_RUNTIME_DIR=/run/user/$(id -u)"),
+            "{err}"
+        );
+
+        // What a `su` shell says on Debian 13 with linger on (P74 真机).
+        let fake = FakeRunner::new();
+        let mut su = Output::exited(1, "");
+        su.stderr = b"Failed to connect to user scope bus via local transport: $DBUS_SESSION_BUS_ADDRESS and $XDG_RUNTIME_DIR not defined (consider using --machine=<user>@.host --user to connect to bus of other user)\n".to_vec();
+        fake.push(su);
+        let err = install(&plan, &fake).unwrap_err();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(err.message().contains("export XDG_RUNTIME_DIR"), "{err}");
         assert_eq!(fake.calls().len(), 1, "stops at the first failure");
     }
 

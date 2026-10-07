@@ -55,11 +55,15 @@ ssh "$OTHER" "mkdir -p \$(dirname ~/$REMOTE_BIN) && chmod +x ~/$REMOTE_BIN.new &
 
 # The controller lives on the work machine. Whichever of the two this is,
 # restart the one that exists rather than making the caller say which.
+# Two places to look since P74: a launchd plist on macOS, a systemd user
+# unit on Linux. Looking only for the plist made a Linux Agent read as
+# "no controller" and keep running the old binary.
 PLIST="$HOME/Library/LaunchAgents/dev.ccnm.controller.plist"
-if [ -f "$PLIST" ]; then
+UNIT="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/dev.ccnm.controller.service"
+if [ -f "$PLIST" ] || [ -f "$UNIT" ]; then
   echo "==> restarting the controller here"
   "$BIN" controller install | tail -2
-elif ssh "$OTHER" "test -f ~/Library/LaunchAgents/dev.ccnm.controller.plist"; then
+elif ssh "$OTHER" 'test -f ~/Library/LaunchAgents/dev.ccnm.controller.plist || test -f "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/dev.ccnm.controller.service"'; then
   echo "==> restarting the controller on $OTHER"
   ssh "$OTHER" "~/$REMOTE_BIN controller install" | tail -2
 else

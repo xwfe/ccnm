@@ -220,8 +220,9 @@ enum WorkspaceCommand {
         /// Point an existing name at this directory instead of refusing
         #[arg(long)]
         replace: bool,
-        /// Let exec_command run without a confined runtime account (see
-        /// docs/production-safety.md)
+        /// With runtime_user set, let exec_command run even though that
+        /// account fails the isolation checks (see docs/production-safety.md);
+        /// without runtime_user only running as root still needs it
         #[arg(long)]
         allow_unconfined_exec: bool,
         /// What Claude may do without asking
@@ -623,7 +624,7 @@ fn zh_help(command: clap::Command) -> clap::Command {
                             a.help("名字已经存在时，改指到这个目录，而不是报错")
                         })
                         .mut_arg("allow_unconfined_exec", |a| {
-                            a.help("允许 exec_command 在没有受限 runtime 账号的情况下跑（见 docs/production-safety.md）")
+                            a.help("写了 runtime_user 时，那个账号没通过隔离检查也让 exec_command 跑（见 docs/production-safety.md）；没写 runtime_user 时只有以 root 运行才需要它")
                         })
                         .mut_arg("permission_mode", |a| a.help("Claude 不用问就能做的事"))
                         .mut_arg("agent_node", |a| {

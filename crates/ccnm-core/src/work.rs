@@ -1043,12 +1043,36 @@ pub fn stop(req: &StopRequest, tools: &Tools<'_>) -> Result<StopReport> {
             "a terminal is running for this workspace but carries no verifiable ccnm session identity; refusing to stop it",
         ));
     }
+    // A whole-workspace stop of a legacy workspace selected nothing, so
+    // nothing above asked the terminal which session it is (P75). It names
+    // one all the same, and when that is this workspace's own instance-less
+    // record the stop ends it the way `--session` would: marked before the
+    // kill, recorded once the end is confirmed. Without this `ccnm log`
+    // showed a session somebody had stopped as starting, then as having no
+    // end record. Anything it cannot tie to such a record is killed as
+    // before and not recorded, and the report names no identity either: the
+    // Runtime selected none and refuses an answer that names one.
+    let unselected = if req.agent.is_none() && req.session.is_none() {
+        unselected_legacy_session(&tmux, tools, &name, &req.workspace)
+    } else {
+        None
+    };
     let tracked_dir = live_id
         .as_ref()
+        .or(unselected.as_ref())
         .map(|id| session::Dir::at(paths::session_dir(&tools.state, id)));
-    if (identity.is_some() || req.session.is_some())
-        && let Some(dir) = tracked_dir.as_ref()
-    {
+    let confirm = identity.is_some() || req.session.is_some() || unselected.is_some();
+    // Unconfirmed, a named stop is simply asked again. An unnamed one cannot
+    // be: the terminal that named the record is gone, so the next stop
+    // without `--session` would kill nothing and record nothing.
+    let unconfirmed = |what: &str| match unselected.as_deref() {
+        Some(id) => format!(
+            "{what}\nto record the stop once it has ended: ccnm stop {} --session {id}",
+            req.workspace
+        ),
+        None => what.to_string(),
+    };
+    if confirm && let Some(dir) = tracked_dir.as_ref() {
         std::fs::write(dir.stopping(), b"requested\n")?;
     }
     let out = tools.runner.run(&tmux.kill_cmd(&name))?;
@@ -1060,7 +1084,7 @@ pub fn stop(req: &StopRequest, tools: &Tools<'_>) -> Result<StopReport> {
             stderr.trim()
         )));
     }
-    if out.success() && (identity.is_some() || req.session.is_some()) {
+    if out.success() && confirm {
         if tools.runner.run(&tmux.has_session_cmd(&name))?.success() {
             return Err(Error::internal(
                 "tmux accepted stop but the selected session is still running",
@@ -1072,13 +1096,17 @@ pub fn stop(req: &StopRequest, tools: &Tools<'_>) -> Result<StopReport> {
                 Some(false) => {
                     return Err(Error::new(
                         ErrorCode::NotReady,
-                        "terminal ended but its Runtime MCP transport is still alive; state remains stopping",
+                        unconfirmed(
+                            "terminal ended but its Runtime MCP transport is still alive; state remains stopping",
+                        ),
                     ));
                 }
                 None => {
                     return Err(Error::new(
                         ErrorCode::NotReady,
-                        "terminal ended but Runtime MCP process state is unknown; stop is not confirmed",
+                        unconfirmed(
+                            "terminal ended but Runtime MCP process state is unknown; stop is not confirmed",
+                        ),
                     ));
                 }
             }
@@ -2031,6 +2059,26 @@ fn live_session_id(tmux: &tmux::Tmux, tools: &Tools<'_>, name: &str) -> Option<S
     out.success()
         .then(|| tmux::parse_session_id(&out.stdout_lossy()))
         .flatten()
+}
+
+/// The record a whole-workspace stop is about to end, when the terminal
+/// names one that is this workspace's own interactive session with no
+/// Agent instance (P75). `None` for a terminal from before sessions had ids,
+/// and for anything that is not that record.
+fn unselected_legacy_session(
+    tmux: &tmux::Tmux,
+    tools: &Tools<'_>,
+    name: &str,
+    workspace: &str,
+) -> Option<String> {
+    let id = live_session_id(tmux, tools, name)?;
+    // Read out of the terminal's environment and about to become a path.
+    if paths::safe_name(&id, "") != id {
+        return None;
+    }
+    let spec = session::load(&session::Dir::at(paths::session_dir(&tools.state, &id))).ok()?;
+    (spec.workspace == workspace && spec.agent_identity.is_none() && spec.mode.is_interactive())
+        .then_some(id)
 }
 
 fn server_pid(tmux: &tmux::Tmux, tools: &Tools<'_>) -> Result<u32> {
@@ -3331,11 +3379,15 @@ mod tests {
     fn stopping_what_is_not_running_is_not_an_error() {
         let dir = temp("stop-none");
         let fake = FakeRunner::new();
-        // Exactly what tmux 3.7c says, on stderr, with exit 1.
-        fake.push(Output {
-            stderr: b"can't find session: ccnm-xshun\n".to_vec(),
-            ..Output::exited(1, "")
-        });
+        // Exactly what tmux 3.7c says, on stderr, with exit 1 -- once to
+        // the question which session the terminal is (P75), once to the
+        // kill.
+        for _ in 0..2 {
+            fake.push(Output {
+                stderr: b"can't find session: ccnm-xshun\n".to_vec(),
+                ..Output::exited(1, "")
+            });
+        }
         let rep = stop(
             &StopRequest {
                 agent: None,

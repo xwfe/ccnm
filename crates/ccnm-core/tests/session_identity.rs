@@ -524,6 +524,116 @@ fn exact_stop_waits_for_the_runtime_transport_instead_of_looking_once() {
     assert!(session::read_outcome(&dir).unwrap().is_some());
 }
 
+/// `ccnm stop <ws>` on a workspace with no Agent instance: what the Runtime
+/// sends for every legacy (`agent_node`) workspace.
+fn workspace_stop() -> StopRequest {
+    StopRequest {
+        protocol: 1,
+        workspace: "demo".into(),
+        agent: None,
+        session: None,
+        assigned: false,
+    }
+}
+
+/// P75 (v0.12.0 smoke on the real pair). A whole-workspace stop of a legacy
+/// workspace selects nothing, and it used to look at nothing either: it
+/// killed the terminal by name and returned. The session's record never got
+/// its outcome, so `ccnm log` showed a session somebody had stopped as
+/// starting, and ten minutes later as having no end record -- while the same
+/// session stopped with `--session` showed as stopped. The terminal names
+/// its session all along; the stop now asks, and ends it the same way.
+#[test]
+fn a_workspace_stop_records_the_legacy_session_its_terminal_names() {
+    let f = Fixture::new();
+    let id = "00000000-0000-4000-8000-000000000751";
+    let dir = f.record(id, "demo", None, Mode::Interactive { prompt: None });
+    let runner = FakeRunner::new();
+    runner.push(Output::exited(0, format!("CCNM_SESSION={id}\n")));
+    runner.push(Output::exited(0, "")); // tmux kill-session
+    runner.push(Output::exited(1, "")); // tmux has-session: gone
+    runner.push(Output::exited(0, "/sbin/launchd\n")); // ps: transport gone
+    let report = work::stop(&workspace_stop(), &f.tools(&runner)).unwrap();
+    assert!(report.killed);
+    assert!(
+        report.agent_identity.is_none(),
+        "the Runtime selected no instance and refuses an answer naming one"
+    );
+    assert!(dir.stopping().exists(), "marked before anything was killed");
+    let outcome = session::read_outcome(&dir).unwrap().unwrap();
+    assert!(outcome.stopped);
+    assert_eq!(outcome.error, None);
+    assert!(log_line(&f).contains("stopped"), "{}", log_line(&f));
+}
+
+/// The terminal ended but its transport could not be confirmed gone. Same
+/// answer as a named stop -- except that without a name the next stop
+/// cannot find this record again (the terminal that named it is gone), so
+/// the answer says which `--session` finishes the job, and that one does.
+#[test]
+fn an_unconfirmed_workspace_stop_names_the_session_that_finishes_it() {
+    let f = Fixture::new();
+    let id = "00000000-0000-4000-8000-000000000752";
+    let dir = f.record(id, "demo", None, Mode::Interactive { prompt: None });
+    let runner = FakeRunner::new();
+    runner.push(Output::exited(0, format!("CCNM_SESSION={id}\n")));
+    runner.push(Output::exited(0, "")); // tmux kill-session
+    runner.push(Output::exited(1, "")); // tmux has-session: gone
+    runner.push(Output::exited(1, "")); // ps unreadable: cannot tell
+    let error = work::stop(&workspace_stop(), &f.tools(&runner)).unwrap_err();
+    assert_eq!(error.code(), ErrorCode::NotReady);
+    assert!(
+        error.message().contains(&format!("--session {id}")),
+        "{error}"
+    );
+    assert!(dir.stopping().exists());
+    assert!(session::read_outcome(&dir).unwrap().is_none());
+
+    let again = FakeRunner::new();
+    again.push(Output::exited(1, "")); // tmux has-session: nothing there
+    let report = work::stop(
+        &StopRequest {
+            session: Some(id.into()),
+            ..workspace_stop()
+        },
+        &f.tools(&again),
+    )
+    .unwrap();
+    assert!(!report.killed);
+    assert!(session::read_outcome(&dir).unwrap().unwrap().stopped);
+}
+
+/// What a whole-workspace stop still does not touch: a terminal that names
+/// no session (started by a build before sessions had ids) and a session
+/// bound to an Agent instance, which a request that selected no instance
+/// has no business recording -- and whose identity it must not hand back.
+/// Both are killed as before, and nothing is written.
+#[test]
+fn a_workspace_stop_records_nothing_it_cannot_tie_to_a_legacy_session() {
+    let f = Fixture::new();
+    let bound = "00000000-0000-4000-8000-000000000753";
+    let dir = f.record(
+        bound,
+        "demo",
+        Some(f.identity("claude-main", AgentProvider::Claude)),
+        Mode::Interactive { prompt: None },
+    );
+    for named in [
+        String::from("-CCNM_SESSION\n"),
+        format!("CCNM_SESSION={bound}\n"),
+    ] {
+        let runner = FakeRunner::new();
+        runner.push(Output::exited(0, named));
+        runner.push(Output::exited(0, "")); // tmux kill-session
+        let report = work::stop(&workspace_stop(), &f.tools(&runner)).unwrap();
+        assert!(report.killed);
+        assert!(report.agent_identity.is_none());
+        assert_eq!(runner.calls().len(), 2, "{:?}", runner.calls());
+    }
+    assert!(!dir.stopping().exists());
+    assert!(session::read_outcome(&dir).unwrap().is_none());
+}
+
 /// A tmux server of this test's own, and something to take it down again.
 ///
 /// ccnm always talks to `tmux -L ccnm`, which on a developer's machine is

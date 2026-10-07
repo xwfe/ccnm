@@ -797,6 +797,49 @@ fn exact_stop_against_a_real_terminal_waits_out_a_transport_that_lingers() {
     );
 }
 
+/// P75 with nothing faked: the scripted tests assume tmux really answers
+/// `show-environment` with the id the session was started with; a real
+/// server, a real `ps`, and a whole-workspace stop show that it does, and
+/// that the record ends as stopped.
+#[test]
+fn a_workspace_stop_against_a_real_terminal_records_the_legacy_session() {
+    let Some(real) = ccnm_core::tmux::locate_from_env() else {
+        assert!(
+            std::env::var_os("CI").is_none(),
+            "tmux is not installed on this runner"
+        );
+        eprintln!("skipped: no tmux on this machine");
+        return;
+    };
+    let own = OwnTmux::new(&real);
+    let f = Fixture::new();
+    let id = "00000000-0000-4000-8000-000000000754";
+    let dir = f.record(id, "demo", None, Mode::Interactive { prompt: None });
+    let started = own.run(&[
+        "new-session",
+        "-d",
+        "-s",
+        "ccnm-demo",
+        "-e",
+        &format!("CCNM_SESSION={id}"),
+        "sleep",
+        "60",
+    ]);
+    assert!(started.status.success(), "{started:?}");
+
+    let mut tools = f.tools(&ccnm_core::process::SystemRunner);
+    tools.tmux = Some(own.wrapper.clone());
+    let report = work::stop(&workspace_stop(), &tools).unwrap();
+    assert!(report.killed);
+    assert!(report.agent_identity.is_none());
+    assert!(
+        !own.run(&["has-session", "-t", "ccnm-demo"])
+            .status
+            .success()
+    );
+    assert!(session::read_outcome(&dir).unwrap().unwrap().stopped);
+}
+
 /// The wait is bounded, and what it cannot confirm it still does not claim:
 /// a transport that outlives the whole grace is `CCNM_E_NOT_READY`, the
 /// session stays `stopping`, and no outcome is written. A `ps` that cannot be

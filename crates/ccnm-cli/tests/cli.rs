@@ -486,7 +486,7 @@ fn doctor_against_an_unreachable_agent_exits_agent_unreachable() {
     );
     assert!(
         text.contains(
-            "Native tool policy      SKIP   not checked: only a live selected Agent session"
+            "Native tool policy      NOTE   not checked: only a live selected Agent session"
         ),
         "{text}"
     );
@@ -506,8 +506,10 @@ fn doctor_against_an_unreachable_agent_exits_agent_unreachable() {
         text.contains("exec_command            SKIP   not checked: Agent SSH failed"),
         "{text}"
     );
+    // 11, not 13: Native tool policy and Network isolation are NOTE since
+    // P73; everything behind the failed ssh is still an unknown.
     assert!(
-        text.contains("NOT READY (1 failed, 13 not checked)"),
+        text.contains("NOT READY (1 failed, 11 not checked)"),
         "{text}"
     );
     // Read-only: nothing appeared in the root.
@@ -1728,8 +1730,9 @@ fn a_project_root_the_operator_may_not_look_at_is_not_called_missing() {
 
 /// The same directory in doctor: the row about this machine's view of the
 /// project says it could not look, instead of failing with `cannot stat`.
-/// It is a SKIP, not an OK -- nothing was verified -- and it names the row
-/// where the account that can look gives its answer.
+/// Not an OK -- nothing was verified here -- and it names the row where the
+/// account that can look gives its answer. That row is in the same report,
+/// so since P73 this one is a NOTE and the verdict is that row's.
 #[test]
 fn doctor_says_it_could_not_look_instead_of_failing_the_project_row() {
     let dir = std::env::temp_dir().join(format!("ccnm-cli-{}-hidden-doctor", std::process::id()));
@@ -1751,7 +1754,7 @@ fn doctor_says_it_could_not_look_instead_of_failing_the_project_row() {
         .lines()
         .find(|line| line.starts_with("Runtime workspace"))
         .unwrap_or_else(|| panic!("no Runtime workspace row in\n{text}"));
-    assert!(row.contains("SKIP"), "{row}");
+    assert!(row.contains("NOTE"), "{row}");
     assert!(!text.contains("cannot stat"), "{text}");
     assert!(text.contains("is not allowed to look"), "{text}");
     assert!(text.contains("Workspace root"), "{text}");

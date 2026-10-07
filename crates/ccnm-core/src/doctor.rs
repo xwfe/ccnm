@@ -1,18 +1,28 @@
 //! `ccnm doctor [WORKSPACE]`: is this machine and workspace ready to use?
 //!
-//! Every check is one row: name, status, a line of detail. Four statuses:
+//! Every check is one row: name, status, a line of detail. Five statuses:
 //!
 //! ```text
 //! OK     verified
 //! WARN   verified, with something worth reading; does not block READY
-//! SKIP   not verified (prerequisite failed, or not implemented yet); blocks
+//! NOTE   not checked by design; does not block READY
+//! SKIP   should have been checked and was not; blocks
 //! FAIL   verified broken, with a CCNM_E_* code and a fix hint; blocks
 //! ```
+//!
+//! NOTE and SKIP both mean "not checked", and the difference is whether
+//! the answer could have been different. A NOTE row reads the same whatever
+//! state the machines are in: the check does not apply to this
+//! configuration, is outside what a read-only probe can prove, or is
+//! answered by another row of the same report. A SKIP row is an unknown:
+//! the other side did not answer, an older build did not report it, or a
+//! step before it failed. Until P73 both were SKIP, so every real
+//! configuration ended NOT READY with nothing left to fix.
 //!
 //! The exit code is the error code of the first FAIL row. With no FAIL but
 //! at least one SKIP it is `CCNM_E_NOT_READY` (3): nothing is known to be
 //! broken, but the workspace is not proven usable either, and `ccnm run`
-//! must be able to tell those two apart. Only OK/WARN rows exit 0.
+//! must be able to tell those two apart. Only OK/WARN/NOTE rows exit 0.
 //!
 //! The Runtime Node checks what it can see on its own (config, the project
 //! root, the ccnm binary the Agent Node will invoke back here, how the
@@ -20,7 +30,7 @@
 //! Agent Node and renders a row per fact it brings back: its ccnm,
 //! the selected Agent and its login, and the reverse ssh's hello from this
 //! machine. Checks ccnm cannot prove without a live session or external OS
-//! policy stay SKIP, and a SKIP still blocks READY.
+//! policy are NOTE rows that say where the answer is instead.
 //!
 //! # Invariant: doctor is read-only
 //!
@@ -64,9 +74,16 @@ pub struct Env<'a> {
 pub enum Status {
     Ok,
     Warn,
-    /// Not performed: a prerequisite failed or the check is not implemented
-    /// yet. Blocks READY, but has no error code of its own; the report
-    /// maps "only SKIPs" to [`ErrorCode::NotReady`].
+    /// Not checked, by design: the row does not apply to this
+    /// configuration, is outside what this read-only probe can prove, or is
+    /// answered by another row of the same report. It would read the same
+    /// whatever state the machines are in, so it does not block READY; the
+    /// detail says why, and where the answer is.
+    Note,
+    /// Not performed, and the answer is unknown: a prerequisite failed, the
+    /// other side did not answer, or its build does not report it. Blocks
+    /// READY, but has no error code of its own; the report maps "only
+    /// SKIPs" to [`ErrorCode::NotReady`].
     Skip,
     Fail(ErrorCode),
 }
@@ -76,6 +93,9 @@ impl Status {
         match self {
             Status::Ok => lang.pick("正常", "OK"),
             Status::Warn => lang.pick("注意", "WARN"),
+            // 不 and 没 is the whole distinction: "doesn't check" against
+            // "didn't get to check".
+            Status::Note => lang.pick("不查", "NOTE"),
             Status::Skip => lang.pick("没查", "SKIP"),
             // "失败" and not "不行": the names next to it are nouns, and
             // `sudo 权限 不行` reads as a sentence about sudo rather than
@@ -109,6 +129,14 @@ impl Check {
         Check {
             name,
             status: Status::Warn,
+            detail: detail.into(),
+        }
+    }
+
+    fn note(name: &'static str, detail: impl Into<String>) -> Self {
+        Check {
+            name,
+            status: Status::Note,
             detail: detail.into(),
         }
     }
@@ -153,9 +181,9 @@ impl Report {
     /// The code the process should exit with.
     ///
     /// ```text
-    /// any FAIL            -> the first FAIL's code
-    /// no FAIL, any SKIP   -> CCNM_E_NOT_READY
-    /// only OK / WARN      -> none (exit 0)
+    /// any FAIL               -> the first FAIL's code
+    /// no FAIL, any SKIP      -> CCNM_E_NOT_READY
+    /// only OK / WARN / NOTE  -> none (exit 0)
     /// ```
     ///
     /// FAIL wins over SKIP regardless of row order: a real failure is more
@@ -224,9 +252,21 @@ impl Report {
 
         let failed = self.count(|s| matches!(s, Status::Fail(_)));
         let skipped = self.count(|s| matches!(s, Status::Skip));
+        let noted = self.count(|s| matches!(s, Status::Note));
         out.push('\n');
-        if self.ready() {
+        if self.ready() && noted == 0 {
             out.push_str(lang.pick("可以用了\n", "READY\n"));
+        } else if self.ready() {
+            // Counted so that READY never hides that some rows were not
+            // looked at; each of them says why.
+            let _ = if lang == Lang::Zh {
+                writeln!(out, "可以用了（{noted} 项不查，原因写在标“不查”的行里）")
+            } else {
+                writeln!(
+                    out,
+                    "READY ({noted} not checked by design; each NOTE row says why)"
+                )
+            };
         } else if lang == Lang::Zh {
             let _ = writeln!(out, "还不能用（{failed} 项失败，{skipped} 项没查）");
         } else {
@@ -453,6 +493,7 @@ fn workspace_checks(r: &Resolved<'_>, agent: Option<&str>, env: &Env<'_>) -> Vec
         checks.push(runtime_workspace(
             &ws.root,
             "its answer is the `Workspace root` row below",
+            true,
         ));
         if ws.agent.is_some() {
             instance_project_row = Some(checks.len());
@@ -991,13 +1032,13 @@ fn mcp_row(rep: &ProbeReport) -> Check {
 fn exec_server_row(r: &Subject<'_>, rep: &ProbeReport) -> Check {
     const NAME: &str = "Codex exec-server";
     if !r.codex_exec_server {
-        return Check::skip(
+        return Check::note(
             NAME,
             "not checked: this workspace does not set codex_exec_server; its sessions use the MCP tools",
         );
     }
     if rep.provider != AgentProvider::Codex {
-        return Check::skip(
+        return Check::note(
             NAME,
             format!(
                 "not checked: the selected Agent is {}, and codex_exec_server only changes Codex sessions; this one uses the MCP tools",
@@ -1343,6 +1384,7 @@ fn external_only_checks(r: &Resolved<'_>, env: &Env<'_>) -> Vec<Check> {
         checks.push(runtime_workspace(
             &ws.root,
             "it answers when an external client opens the workspace through `ccnm mcp bridge`",
+            false,
         ));
         checks.push(runtime_ccnm(r, env));
     } else {
@@ -1367,7 +1409,7 @@ fn external_only_checks(r: &Resolved<'_>, env: &Env<'_>) -> Vec<Check> {
             "Project instructions",
         ]
         .into_iter()
-        .map(|name| Check::skip(name, NO_AGENT)),
+        .map(|name| Check::note(name, NO_AGENT)),
     );
     checks.extend(
         ["Runtime safety", "exec_command"]
@@ -1475,7 +1517,11 @@ fn whoami() -> String {
 /// to FAIL with `cannot stat` for a project that was fine (F1). It is a
 /// SKIP: nothing was verified, and `answered_by` says where the account
 /// that can look gives its answer.
-fn runtime_workspace(root: &Path, answered_by: &str) -> Check {
+/// `in_this_report`: whether the Runtime Executor's answer is a row of the
+/// same report (the `Workspace root` row a probe brings back). Only then
+/// is "this account may not look" a NOTE; without that row nobody here
+/// answered whether the project is there, and that is a SKIP.
+fn runtime_workspace(root: &Path, answered_by: &str, in_this_report: bool) -> Check {
     const NAME: &str = "Runtime workspace";
     match paths::see_dir(root) {
         paths::Seen::Dir => Check::ok(NAME, root.display().to_string()),
@@ -1489,14 +1535,18 @@ fn runtime_workspace(root: &Path, answered_by: &str) -> Check {
             ErrorCode::WrongWorkspace,
             format!("{} does not exist on this machine", root.display()),
         ),
-        paths::Seen::Hidden => Check::skip(
-            NAME,
-            format!(
+        paths::Seen::Hidden => {
+            let detail = format!(
                 "not checked: {} is not allowed to look at {} (Permission denied), so this account cannot say whether the project is there\nthe account that runs the tools can: {answered_by}",
                 whoami(),
                 root.display()
-            ),
-        ),
+            );
+            if in_this_report {
+                Check::note(NAME, detail)
+            } else {
+                Check::skip(NAME, detail)
+            }
+        }
         paths::Seen::Unreadable(e) => Check::fail(
             NAME,
             &Error::internal(format!("cannot stat {}", root.display())).with_source(e),
@@ -1572,7 +1622,8 @@ fn runtime_ccnm(r: &Resolved<'_>, env: &Env<'_>) -> Check {
     Check::ok(NAME, format!("{version} at {}", path.display()))
 }
 
-/// Boundaries this read-only probe cannot prove by itself.
+/// Boundaries this read-only probe cannot prove by itself. NOTE, not SKIP:
+/// no state of either machine would turn them into a verdict here.
 fn not_yet_implemented() -> Vec<Check> {
     [
         (
@@ -1585,7 +1636,7 @@ fn not_yet_implemented() -> Vec<Check> {
         ),
     ]
     .into_iter()
-    .map(|(name, reason)| Check::skip(name, reason))
+    .map(|(name, reason)| Check::note(name, reason))
     .collect()
 }
 
@@ -2010,9 +2061,14 @@ mod tests {
         // The rows this machine can prove are answered, not skipped.
         assert_eq!(row(&report, "Runtime workspace").status, Status::Ok);
         assert_eq!(row(&report, "Runtime ccnm").status, Status::Ok);
-        // The Agent half is skipped, and the safety verdict stays unknown
-        // rather than being answered with an audit of whoever typed this.
+        // The Agent half does not apply (NOTE since P73: no Agent, nothing
+        // to diagnose), and the safety verdict stays unknown rather than
+        // being answered with an audit of whoever typed this -- that is the
+        // SKIP that keeps this report NOT READY.
         for name in ["Agent SSH", "Controller", "Remote MCP handshake"] {
+            assert_eq!(row(&report, name).status, Status::Note, "{name}: {text}");
+        }
+        for name in ["Runtime safety", "exec_command"] {
             assert_eq!(row(&report, name).status, Status::Skip, "{name}: {text}");
         }
         assert!(
@@ -2549,9 +2605,10 @@ mod tests {
             row(&report, NAME).clone()
         };
 
-        // Not on the chain: nothing to check, whatever the Agent is.
+        // Not on the chain: nothing to check, whatever the Agent is. A NOTE
+        // since P73: it reads the same however healthy the machines are.
         let off = verdict(&off_chain, &codex_probe(None));
-        assert_eq!(off.status, Status::Skip);
+        assert_eq!(off.status, Status::Note);
         assert!(
             off.detail.contains("does not set codex_exec_server"),
             "{off:?}"
@@ -2559,7 +2616,7 @@ mod tests {
 
         // On the chain, but a Claude Agent keeps its MCP tools.
         let claude = verdict(&on_chain, &good_probe());
-        assert_eq!(claude.status, Status::Skip);
+        assert_eq!(claude.status, Status::Note);
         assert!(
             claude.detail.contains("selected Agent is Claude Code"),
             "{claude:?}"
@@ -2758,7 +2815,7 @@ mod tests {
         );
         assert!(
             off.render_in(Lang::Zh)
-                .contains("Codex 原生链            没查   not checked: this workspace does not set codex_exec_server"),
+                .contains("Codex 原生链            不查   not checked: this workspace does not set codex_exec_server"),
             "{}",
             off.render_in(Lang::Zh)
         );
@@ -2867,7 +2924,7 @@ mod tests {
     }
 
     #[test]
-    fn everything_good_blocks_only_on_external_or_live_session_checks() {
+    fn everything_good_is_ready_and_notes_what_doctor_does_not_check() {
         let (dir, config) = setup("good", true, true);
         let fake = FakeRunner::new();
         fake.push(Output::exited(0, format!("ccnm {}\n", crate::VERSION)));
@@ -2930,9 +2987,12 @@ mod tests {
             "tmux 3.7c, ccnm-xshun  xshun  detached  tools connected  (Background, keychain reachable)"
         );
         // The two rows no probe can prove, and the exec-server row of a
-        // workspace that does not use that chain.
+        // workspace that does not use that chain: they read the same however
+        // healthy the machines are, so they are noted and do not block (P73).
+        // Before P73 this report was NOT READY (0 failed, 3 not checked) and
+        // exited 3, which is what every real configuration printed.
         assert!(
-            text.ends_with("NOT READY (0 failed, 3 not checked)\n"),
+            text.ends_with("READY (3 not checked by design; each NOTE row says why)\n"),
             "{text}"
         );
         assert!(
@@ -2941,8 +3001,19 @@ mod tests {
                 .contains("does not set codex_exec_server"),
             "{text}"
         );
-        assert_eq!(report.blocking_code(), Some(ErrorCode::NotReady));
-        assert_eq!(report.exit_code(), 3);
+        assert_eq!(report.blocking_code(), None);
+        assert_eq!(report.exit_code(), 0);
+        for name in [
+            "Native tool policy",
+            "Network isolation",
+            "Codex exec-server",
+        ] {
+            assert_eq!(row(&report, name).status, Status::Note, "{name}: {text}");
+        }
+        assert!(
+            !report.checks.iter().any(|c| c.status == Status::Skip),
+            "{text}"
+        );
 
         // Read-only: no control dir, nothing new in root.
         assert!(!control(&dir).exists());
@@ -3028,8 +3099,10 @@ mod tests {
         assert_eq!(row(&report, "Claude Code").status, Status::Skip);
         assert_eq!(row(&report, "Workspace root").status, Status::Skip);
         let text = report.render();
+        // 11, not 13: the two rows no probe can prove are NOTE since P73;
+        // everything behind the failed ssh is still an unknown.
         assert!(
-            text.ends_with("NOT READY (1 failed, 13 not checked)\n"),
+            text.ends_with("NOT READY (1 failed, 11 not checked)\n"),
             "{text}"
         );
     }
@@ -3420,6 +3493,80 @@ mod tests {
         assert_eq!(report.exit_code(), 0);
         assert!(report.ready());
         assert!(report.render().ends_with("\nREADY\n"));
+    }
+
+    /// P73: a NOTE is "not checked, and could not have been" -- it does not
+    /// block, but READY says how many there are so it never hides them.
+    #[test]
+    fn verdict_notes_are_ready_0_and_counted() {
+        let report = report_of(&[Status::Ok, Status::Note, Status::Warn, Status::Note]);
+        assert_eq!(report.blocking_code(), None);
+        assert_eq!(report.exit_code(), 0);
+        assert!(report.ready());
+        assert!(
+            report
+                .render()
+                .ends_with("\nREADY (2 not checked by design; each NOTE row says why)\n"),
+            "{}",
+            report.render()
+        );
+        let zh = report.render_in(Lang::Zh);
+        assert!(
+            zh.ends_with("\n可以用了（2 项不查，原因写在标“不查”的行里）\n"),
+            "{zh}"
+        );
+        assert!(zh.contains("不查"), "{zh}");
+    }
+
+    /// A NOTE never covers for an unknown: one SKIP is still NOT READY, and
+    /// the count is of SKIPs only.
+    #[test]
+    fn verdict_a_note_does_not_hide_a_skip() {
+        let report = report_of(&[Status::Note, Status::Skip, Status::Note]);
+        assert_eq!(report.blocking_code(), Some(ErrorCode::NotReady));
+        assert_eq!(report.exit_code(), 3);
+        assert!(
+            report
+                .render()
+                .ends_with("NOT READY (0 failed, 1 not checked)\n")
+        );
+        assert!(
+            report
+                .render_in(Lang::Zh)
+                .ends_with("还不能用（0 项失败，1 项没查）\n")
+        );
+    }
+
+    /// The project in a home the Operator may not enter (F1): a NOTE when
+    /// the Runtime Executor's answer is a row of the same report, a SKIP
+    /// when nothing in the report answers it.
+    #[test]
+    fn a_root_this_account_may_not_look_at_is_noted_only_when_answered_elsewhere() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir =
+            std::env::temp_dir().join(format!("ccnm-doctor-{}-hidden-root", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let parent = dir.join("executor-home");
+        let root = parent.join("proj");
+        std::fs::create_dir_all(&root).unwrap();
+        let tidy = TestDir::adopt(dir.clone());
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let hidden = matches!(paths::see_dir(&root), paths::Seen::Hidden);
+        let answered =
+            runtime_workspace(&root, "its answer is the `Workspace root` row below", true);
+        let unanswered = runtime_workspace(&root, "it answers through `ccnm mcp bridge`", false);
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o700)).unwrap();
+        drop(tidy);
+        if !hidden {
+            eprintln!("skipped: this account is not refused by directory permissions");
+            return;
+        }
+        assert_eq!(answered.status, Status::Note, "{answered:?}");
+        assert!(
+            answered.detail.contains("is not allowed to look"),
+            "{answered:?}"
+        );
+        assert_eq!(unanswered.status, Status::Skip, "{unanswered:?}");
     }
 
     #[test]

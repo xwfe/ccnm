@@ -3823,6 +3823,20 @@
       "completed_criteria": [],
       "evidence": [],
       "blockers": []
+    },
+    {
+      "id": "P79",
+      "title": "skill 文件头的 hooks、allowed-tools、model 在远端会话里生效",
+      "status": "pending",
+      "depends_on": [
+        "P78"
+      ],
+      "owner": null,
+      "started_at": null,
+      "last_updated": "2026-10-07T22:40:00+09:00",
+      "completed_criteria": [],
+      "evidence": [],
+      "blockers": []
     }
   ],
   "observed_gaps": [

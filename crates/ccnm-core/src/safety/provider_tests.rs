@@ -162,6 +162,7 @@ fn both_providers_default_managed_and_local_override_paths_are_audited() {
     let audit = Audit {
         user: "fixture".into(),
         findings: report.clone(),
+        shared_account: false,
     };
     assert!(!audit.agent_boundary_clear(Accepted::unconfined(true)));
     assert!(audit.agent_boundary_clear(Accepted {
@@ -186,6 +187,7 @@ fn invalid_local_references_and_unknown_access_are_not_waived_by_unconfined_exec
         let report = Audit {
             user: "fixture".into(),
             findings,
+            shared_account: false,
         };
         assert!(!report.exec_allowed(Accepted::unconfined(true)));
     }
@@ -203,6 +205,7 @@ fn invalid_local_references_and_unknown_access_are_not_waived_by_unconfined_exec
     let report = Audit {
         user: "fixture".into(),
         findings: findings_with(&f.0, &[], &FakeRunner::new()),
+        shared_account: false,
     };
     assert!(!report.exec_allowed(Accepted::unconfined(true)));
     assert!(
@@ -239,6 +242,7 @@ fn ordinary_unconfined_acceptance_does_not_authorize_agent_credentials() {
     let report = Audit {
         user: "fixture".into(),
         findings: vec![Finding::fail("Runtime user", "not configured", "configure")],
+        shared_account: false,
     };
     assert!(report.exec_allowed(Accepted::unconfined(true)));
     let mut report = report;
@@ -264,11 +268,11 @@ fn the_gate_before_spawn_honours_the_same_admission_the_handshake_did() {
     let runner = FakeRunner::new();
 
     assert!(
-        credentials_refuse(&absent, Accepted::NOTHING, &runner),
-        "default posture still refuses"
+        credentials_refuse(&absent, Accepted::NOTHING, false, &runner),
+        "a dedicated account with nothing waived still refuses"
     );
     assert!(
-        credentials_refuse(&absent, Accepted::unconfined(true), &runner),
+        credentials_refuse(&absent, Accepted::unconfined(true), false, &runner),
         "the confinement switch says nothing about credentials"
     );
     assert!(
@@ -279,9 +283,16 @@ fn the_gate_before_spawn_honours_the_same_admission_the_handshake_did() {
                 unisolated_credentials: true,
                 unattended_exec: false,
             },
+            false,
             &runner
         ),
         "accepted at the handshake means accepted here too, or exec is refused forever"
+    );
+    // P78: a shared account (no runtime_user) passed the handshake with
+    // the same finding as a warning, so it must pass here too.
+    assert!(
+        !credentials_refuse(&absent, Accepted::NOTHING, true, &runner),
+        "a shared account is not refused over a reachable login"
     );
 }
 
@@ -297,6 +308,7 @@ fn accepting_unattended_exec_authorizes_nothing() {
             "reachable",
             "use a separate identity",
         )],
+        shared_account: false,
     };
     let unattended_only = Accepted {
         unconfined_exec: false,

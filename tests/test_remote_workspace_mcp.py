@@ -118,14 +118,19 @@ class RemoteWorkspaceMcpTests(unittest.TestCase):
         self.config = self.dir / "config.toml"
         self.write_config("read")
 
-    def write_config(self, access: str, unconfined: bool = False) -> None:
-        # unconfined：这台测试机不是隔离的执行身份，不写它 exec_command 一律
-        # 被执行门拒绝，参数根本到不了检查那一步。
+    def write_config(self, access: str, unconfined: bool = False, dedicated: bool = True) -> None:
+        # dedicated：Runtime 声明执行账号是专用的（runtime_user），名字故意是
+        # 测试不会用的账号，所以在任何机器上都不算隔离——包括真用 ccrun 跑测试
+        # 的那台。不写 runtime_user 是 P78 起的共用账号，命令照跑。
+        # unconfined：专用账号模式下不写它 exec_command 一律被执行门拒绝，参数
+        # 根本到不了检查那一步。
+        runtime_user = 'runtime_user = "ccnm-test-not-this-account"' if dedicated else ""
         self.config.write_text(
             f"""
 this = "runtime"
 
 [nodes.runtime]
+{runtime_user}
 
 [nodes.agent]
 ssh = "agent-node.invalid"
@@ -482,6 +487,19 @@ agent_node = "agent"
         refused = client.call_tool("call_mcp_tool", {"server": "fake"})
         self.assertTrue(result_text(refused).startswith("CCNM_E_POLICY:"), result_text(refused))
         self.assertIn("like exec_command", result_text(refused))
+
+    def test_a_runtime_without_runtime_user_is_a_shared_account_that_runs_commands(self):
+        # P78：不写 runtime_user 就是共用账号，没写 allow_unconfined_exec 也照跑，
+        # 结果里没有"未隔离"那一行（什么都没豁免）。P78 之前同样的配置被执行门拒绝。
+        self.declare_server()
+        self.write_config("coding", dedicated=False)
+        client = self.client("demo", "coding", "neutral-shared-account")
+        ran = client.call_tool("exec_command", {"cmd": ["touch", "made-here"]})
+        self.assertFalse(is_error(ran), result_text(ran))
+        self.assertTrue((self.root / "made-here").exists())
+        self.assertNotIn("NOT confined", result_text(ran))
+        relayed = client.call_tool("call_mcp_tool", {"server": "fake", "tool": "echo", "arguments": {"text": "hi"}})
+        self.assertFalse(is_error(relayed), result_text(relayed))
 
     def test_the_machine_decides_whether_mcp_servers_are_relayed(self):
         self.declare_server()

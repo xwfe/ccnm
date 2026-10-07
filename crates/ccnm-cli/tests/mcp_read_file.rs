@@ -233,17 +233,37 @@ fn workspace(name: &str) -> TestDir {
     TestDir::adopt(std::fs::canonicalize(&root).unwrap()).also(dir)
 }
 
-/// A config declaring this workspace. `unconfined` is what the round of
-/// production-safety work is about: without it a runtime that is not a
-/// dedicated confined account refuses to run commands at all.
+/// A config declaring this workspace with a **dedicated** Runtime account
+/// (`runtime_user`), which is what the round of production-safety work is
+/// about: without `unconfined` a runtime that is not that account, or not
+/// confined, refuses to run commands at all.
+///
+/// `runtime_user` names an account this test never runs as, so the account
+/// is never confined, on any machine -- also one where the tests run as a
+/// genuinely confined `ccrun`. Before P78 leaving it out did that job; since
+/// P78 leaving it out means a shared account, which runs commands
+/// ([`shared_config_for`]).
 fn config_for(root: &Path, unconfined: bool) -> PathBuf {
+    write_config(
+        root,
+        "runtime_user = \"ccnm-test-not-this-account\"\n",
+        unconfined,
+    )
+}
+
+/// The same workspace with no `runtime_user`: a shared account (P78).
+fn shared_config_for(root: &Path) -> PathBuf {
+    write_config(root, "", false)
+}
+
+fn write_config(root: &Path, runtime_node: &str, unconfined: bool) -> PathBuf {
     let path = root.parent().unwrap().join("ccnm.toml");
     std::fs::write(
         &path,
         format!(
             "version = 1\n\
              this = \"runtime\"\n[nodes.agent]\nssh = \"ccnm-test-nowhere.invalid\"\n\
-             [nodes.runtime]\n\
+             [nodes.runtime]\n{runtime_node}\
              [workspaces.t]\nagent_node = \"agent\"\nroot = \"{}\"\n\
              allow_unconfined_exec = {unconfined}\n",
             root.display()
@@ -650,10 +670,33 @@ fn a_fifo_cannot_wedge_the_session() {
     s.shutdown();
 }
 
-/// The hard gate of design doc section 18. A runtime that is not a
-/// dedicated confined account refuses to run commands, and says exactly
-/// what is wrong and where to read about it. Every other tool still
-/// works: the gate is on the shell, not on the session.
+/// P78: with no `runtime_user` the account is shared with the developer,
+/// and commands run -- with no "NOT confined" line on every result, since
+/// nothing was waived -- even when the account can read an Agent login.
+/// Before P78 the same config refused `exec_command` (and, with the login,
+/// the whole session).
+#[test]
+fn a_runtime_without_runtime_user_runs_commands_as_a_shared_account() {
+    let root = workspace("shared");
+    let config = shared_config_for(&root);
+    let home = root.parent().unwrap().join("runtime-home");
+    std::fs::create_dir_all(home.join(".codex")).unwrap();
+    std::fs::write(home.join(".codex/auth.json"), "SYNTHETIC_MUST_NOT_READ").unwrap();
+    let mut s = Session::start_with(&root, Some(&config));
+
+    let ran = s.call("exec_command", json!({"cmd": ["touch", "made-here"]}));
+    assert!(!is_error(&ran), "{}", text(&ran));
+    assert!(root.join("made-here").exists());
+    assert!(!text(&ran).contains("NOT confined"), "{}", text(&ran));
+    assert!(!text(&ran).contains("SYNTHETIC_MUST_NOT_READ"));
+    s.shutdown();
+}
+
+/// The hard gate of design doc section 18. A runtime that is meant to be
+/// a dedicated confined account (`runtime_user`) and is not refuses to
+/// run commands, and says exactly what is wrong and where to read about
+/// it. Every other tool still works: the gate is on the shell, not on the
+/// session.
 #[test]
 fn exec_command_is_refused_until_the_runtime_is_confined() {
     let root = workspace("gate");

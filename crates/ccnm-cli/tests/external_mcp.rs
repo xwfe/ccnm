@@ -41,21 +41,29 @@ impl Fixture {
         Fixture::build(test, access, "generic", true)
     }
 
-    /// A read-mode workspace whose Runtime home holds a Claude login: the
-    /// two things ccnm exists to keep apart are the same account. `waived`
-    /// writes the one switch that accepts that.
-    fn shared_home(test: &str, waived: bool) -> Fixture {
+    /// A read-mode workspace whose Runtime home holds a Claude login, on a
+    /// Runtime that says its account is a dedicated one (`runtime_user`):
+    /// the two things ccnm exists to keep apart are the same account.
+    /// `waived` writes the one switch that accepts that.
+    ///
+    /// The `runtime_user` is an account the test never runs as. Without it
+    /// the account is shared (P78) and the login refuses nothing.
+    fn login_in_home(test: &str, waived: bool) -> Fixture {
         let fixture = Fixture::build(test, "read", "generic", false);
         let claude = fixture.dir.join("home/.claude");
         std::fs::create_dir_all(&claude).unwrap();
         std::fs::write(claude.join(".credentials.json"), "{}\n").unwrap();
+        let mut config = std::fs::read_to_string(&fixture.config).unwrap().replace(
+            "[nodes.runtime]\n",
+            "[nodes.runtime]\nruntime_user = \"ccnm-test-not-this-account\"\n",
+        );
         if waived {
-            let config = std::fs::read_to_string(&fixture.config).unwrap().replace(
+            config = config.replace(
                 "external_mcp = \"read\"",
                 "external_mcp = \"read\"\nallow_unisolated_credentials = true",
             );
-            std::fs::write(&fixture.config, config).unwrap();
         }
+        std::fs::write(&fixture.config, config).unwrap();
         fixture
     }
 
@@ -1271,7 +1279,7 @@ fn agent_credentials_stop_the_external_entry_too() {
 /// worked: that switch waives nothing this gate reads.
 #[test]
 fn a_refused_read_session_names_only_the_switch_that_opens_it() {
-    let fixture = Fixture::shared_home("creds-read-message", false);
+    let fixture = Fixture::login_in_home("creds-read-message", false);
     let out = fixture.refused("demo", ExternalMode::Read);
     assert!(!out.status.success());
     assert!(out.stdout.is_empty(), "no handshake may happen");
@@ -1289,12 +1297,29 @@ fn a_refused_read_session_names_only_the_switch_that_opens_it() {
     }
 }
 
+/// P78: the same home on a Runtime with no `runtime_user` is a shared
+/// account, and the login in it refuses nothing -- as it refuses nothing
+/// when Claude Code runs on that machine directly. Before P78 this session
+/// was refused like the one above.
+#[test]
+fn a_login_in_a_shared_accounts_home_does_not_refuse_the_session() {
+    let fixture = Fixture::login_in_home("creds-read-shared", false);
+    let config = std::fs::read_to_string(&fixture.config)
+        .unwrap()
+        .replace("runtime_user = \"ccnm-test-not-this-account\"\n", "");
+    std::fs::write(&fixture.config, config).unwrap();
+    let mut session = fixture.open("demo", ExternalMode::Read, "bridge-shared");
+    let read = session.call("read_file", json!({"path": "hello.txt"}));
+    assert!(!is_error(&read), "{}", text(&read));
+    session.shutdown();
+}
+
 /// And the switch the refusal names is the whole fix: one line, matching
 /// the one admission actually being made. Nothing here needs
 /// `allow_unconfined_exec`, because nothing here runs a command.
 #[test]
 fn the_credential_switch_alone_opens_a_read_session() {
-    let fixture = Fixture::shared_home("creds-read-waived", true);
+    let fixture = Fixture::login_in_home("creds-read-waived", true);
     let mut session = fixture.open("demo", ExternalMode::Read, "bridge-waived");
 
     let mut tools = session.tools();

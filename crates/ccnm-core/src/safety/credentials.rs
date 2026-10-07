@@ -121,14 +121,18 @@ pub fn findings_with(
 ///
 /// It has to be passed in rather than read here, for the same reason the
 /// handshake gate takes it: the value comes from the Runtime's own
-/// config, never from the request.
+/// config, never from the request. So does `shared_account`
+/// ([`super::Audit::shared_account`], no `runtime_user`): a shared account
+/// is not refused over a reachable login (P78), here any more than at the
+/// handshake, and the environment check still applies to it.
 pub fn runtime_gate(
     home: &Path,
     accepted: super::Accepted,
+    shared_account: bool,
     runner: &dyn ProcessRunner,
 ) -> Result<()> {
     super::environment::validate_runtime_names(std::env::vars_os().map(|(k, _)| k))?;
-    if credentials_refuse(home, accepted, runner) {
+    if credentials_refuse(home, accepted, shared_account, runner) {
         return Err(Error::policy(
             "Runtime Agent credential access is present or unknown; exec refused before spawn (private paths and values withheld)",
         ));
@@ -145,11 +149,13 @@ pub fn runtime_gate(
 pub(super) fn credentials_refuse(
     home: &Path,
     accepted: super::Accepted,
+    shared_account: bool,
     runner: &dyn ProcessRunner,
 ) -> bool {
-    findings(home, runner)
-        .iter()
-        .any(|f| f.severity == Severity::Fail && !f.waived_by(accepted))
+    !shared_account
+        && findings(home, runner)
+            .iter()
+            .any(|f| f.severity == Severity::Fail && !f.waived_by(accepted))
 }
 
 pub fn effective_uid(runner: &dyn ProcessRunner) -> Result<u32> {

@@ -773,9 +773,10 @@ impl Server {
         // refused by the second check after passing the first.
         // Keep diagnostic/file work off the async IO thread.
         let accepted = self.inner.exec_gate.accepted;
+        let shared = self.inner.exec_gate.audit.shared_account;
         let checked = tokio::task::spawn_blocking(move || {
             let home = crate::paths::home_dir()?;
-            crate::safety::credentials::runtime_gate(&home, accepted, &SystemRunner)
+            crate::safety::credentials::runtime_gate(&home, accepted, shared, &SystemRunner)
         })
         .await
         .map_err(|_| ErrorData::internal_error("Runtime credential check failed", None))?;
@@ -1039,9 +1040,10 @@ impl Server {
                 ))));
             }
             let accepted = self.inner.exec_gate.accepted;
+            let shared = self.inner.exec_gate.audit.shared_account;
             let checked = tokio::task::spawn_blocking(move || {
                 let home = crate::paths::home_dir()?;
-                crate::safety::credentials::runtime_gate(&home, accepted, &SystemRunner)
+                crate::safety::credentials::runtime_gate(&home, accepted, shared, &SystemRunner)
             })
             .await
             .map_err(|_| ErrorData::internal_error("Runtime credential check failed", None))?;
@@ -1634,6 +1636,7 @@ mod tests {
                 audit: crate::safety::Audit {
                     user: "fixture".into(),
                     findings: vec![],
+                    shared_account: false,
                 },
                 accepted,
                 config: None,

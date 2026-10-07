@@ -2604,6 +2604,7 @@ mod tests {
             audit: crate::safety::Audit {
                 user: "ccrun".into(),
                 findings: vec![],
+                shared_account: false,
             },
             root: crate::runtime::RootStatus {
                 present: true,

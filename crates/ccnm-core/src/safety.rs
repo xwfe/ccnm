@@ -15,6 +15,15 @@
 //!          has explicitly said it accepts an unconfined runtime
 //! ```
 //!
+//! **Two modes, chosen by `runtime_user`** (P78). With it set, the
+//! account is meant to be a dedicated one and everything below is
+//! enforced. Without it -- the default since P78 -- the account is taken
+//! to be shared with the developer, as it is when Claude Code or Codex
+//! runs on that machine directly: every property is still measured and
+//! shown, but only root, an unknown identity and inherited authentication
+//! refuse anything. Isolation is opt-in hardening, described in
+//! docs/production-safety.md, not a precondition.
+//!
 //! There are two such switches, and they are deliberately not one:
 //! `allow_unconfined_exec` accepts an account with more OS access than it
 //! should have, and `allow_unisolated_credentials` accepts one that
@@ -363,6 +372,13 @@ pub struct Audit {
     /// Who this process is running as.
     pub user: String,
     pub findings: Vec<Finding>,
+    /// No `runtime_user` is configured, so this account is taken to be
+    /// shared with the developer (P78): the isolation findings were
+    /// measured but report as warnings, not failures. Absent from an
+    /// older Runtime's report, which judged every account as dedicated --
+    /// so absent reads as `false`, what that Runtime actually did.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub shared_account: bool,
 }
 
 impl Audit {
@@ -376,6 +392,11 @@ impl Audit {
         self.agent_boundary_clear(accepted) && (self.confined() || accepted.unconfined_exec)
     }
     /// Is there anything that should stop a real project being run here?
+    ///
+    /// In a shared account (no `runtime_user`) only root and the two
+    /// non-waivable findings can say yes: the rest were downgraded when
+    /// they were measured. So `true` there means "nothing refuses", not
+    /// "this account is isolated" -- [`Audit::shared_account`] says which.
     pub fn confined(&self) -> bool {
         !self.findings.iter().any(|f| f.severity == Severity::Fail)
     }
@@ -481,6 +502,7 @@ fn audit_with_environment(
     names: &[std::ffi::OsString],
 ) -> Audit {
     let identity = Identity::read(runner);
+    let shared_account = expected_user.is_none();
     let mut findings = Vec::new();
 
     if identity.uid.is_none() {
@@ -516,30 +538,53 @@ fn audit_with_environment(
             ),
         ),
         (Some(_), Some(want)) => Finding::ok("Runtime user", want.to_string()),
-        (Some(_), None) => Finding::fail(
+        // The default since P78. A warning, because the property this row
+        // is about -- a dedicated account -- does not hold; not a failure,
+        // because nobody asked for one.
+        (Some(_), None) => Finding::warn(
             "Runtime user",
             format!(
-                "no runtime_user is configured, so ccnm cannot tell whether {} is the dedicated account or the developer's own",
+                "no runtime_user is configured, so {0} is used as a shared account: commands run with everything {0} can reach, and the rows below are shown but refuse nothing
+to isolate them, create a dedicated account and set runtime_user on the Runtime Node; see docs/production-safety.md",
                 identity.user
             ),
-            "set runtime_user on the Runtime Node in config.toml to the dedicated account",
         ),
     });
 
-    findings.push(sudo_finding(runner));
-    findings.push(group_finding(&identity));
-    findings.push(ssh_key_finding(home, runner));
-    findings.extend(credentials::findings_with(home, references, runner));
+    // What a dedicated account must not have, measured either way. In a
+    // shared account the developer's own login usually has some of it --
+    // an SSH key, the admin group, a Claude login -- and so does every
+    // command they run in Claude Code directly; refusing over it would
+    // make the default setup refuse itself.
+    let isolation = |finding: Finding| {
+        if shared_account && finding.severity == Severity::Fail {
+            Finding {
+                severity: Severity::Warn,
+                ..finding
+            }
+        } else {
+            finding
+        }
+    };
+    findings.push(isolation(sudo_finding(runner)));
+    findings.push(isolation(group_finding(&identity)));
+    findings.push(isolation(ssh_key_finding(home, runner)));
+    findings.extend(
+        credentials::findings_with(home, references, runner)
+            .into_iter()
+            .map(isolation),
+    );
     findings.push(if environment::validate_runtime_names(names.iter().cloned()).is_ok() {
         Finding::ok("No authentication environment", "no unapproved authentication-shaped environment names observed")
     } else {
         Finding::fail("No authentication environment", "authentication environment has no Runtime project authorization (names and values withheld)", "remove inherited authentication from the Runtime service environment; do not copy Agent credentials")
     });
-    findings.push(docker_finding(&identity));
+    findings.push(isolation(docker_finding(&identity)));
 
     Audit {
         user: identity.user,
         findings,
+        shared_account,
     }
 }
 
@@ -914,23 +959,109 @@ mod tests {
         assert!(finding.fix.is_some());
     }
 
+    /// P78: no `runtime_user` is the default, and it means the account is
+    /// shared with the developer. Everything a dedicated account must not
+    /// have is still measured and named -- here an admin group, passwordless
+    /// sudo, a private key and a Claude login, all of them on a developer's
+    /// own Mac -- but as warnings, so nothing is refused over them. Before
+    /// P78 the first row alone was a failure and exec_command refused.
     #[test]
-    fn no_configured_runtime_user_is_itself_a_failure() {
-        // Without it, ccnm has nothing to compare against and cannot tell
-        // the dedicated account from the developer's own. Saying "looks
-        // fine" there would be the worst answer available.
+    fn no_configured_runtime_user_is_a_shared_account_that_is_shown_not_refused() {
         let home = empty_home("unset");
+        std::fs::write(home.join(".ssh/id_ed25519"), "SYNTHETIC").unwrap();
+        std::fs::create_dir_all(home.join(".claude")).unwrap();
+        std::fs::write(home.join(".claude/.credentials.json"), "{}").unwrap();
+        // `id` four times, `sudo -n true`, then `test -r` on the key and on
+        // the login: every one of them answers yes.
+        let script = |runner: &FakeRunner| {
+            identity(runner, "fodelf", "501", "20 80", "staff admin");
+            for _ in 0..3 {
+                runner.push(Output::exited(0, ""));
+            }
+        };
+        let runner = FakeRunner::new();
+        script(&runner);
+        let shared = audit(None, &home, &runner);
+        assert!(shared.shared_account);
+        let runtime_user = find(&shared, "Runtime user");
+        assert_eq!(runtime_user.severity, Severity::Warn);
+        assert!(
+            runtime_user
+                .detail
+                .contains("no runtime_user is configured")
+                && runtime_user.detail.contains("shared account")
+                && runtime_user.detail.contains("docs/production-safety.md"),
+            "{runtime_user:?}"
+        );
+        for check in [
+            "No sudo",
+            "Not an admin",
+            "No SSH keys",
+            "No Claude credential",
+        ] {
+            assert_eq!(find(&shared, check).severity, Severity::Warn, "{check}");
+        }
+        assert!(shared.confined(), "{:?}", shared.findings);
+        assert!(shared.agent_boundary_clear(Accepted::NOTHING));
+        assert!(shared.exec_allowed(Accepted::NOTHING));
+
+        // The same account with runtime_user naming it: every one of those
+        // is a failure again, and nothing runs.
+        let runner = FakeRunner::new();
+        script(&runner);
+        let dedicated = audit(Some("fodelf"), &home, &runner);
+        assert!(!dedicated.shared_account);
+        for check in [
+            "No sudo",
+            "Not an admin",
+            "No SSH keys",
+            "No Claude credential",
+        ] {
+            assert_eq!(find(&dedicated, check).severity, Severity::Fail, "{check}");
+        }
+        assert!(!dedicated.agent_boundary_clear(Accepted::NOTHING));
+    }
+
+    /// What a shared account does not change: root, an unknown identity and
+    /// inherited authentication refuse exactly as they always did.
+    #[test]
+    fn a_shared_account_still_refuses_root_an_unknown_identity_and_inherited_auth() {
+        let home = empty_home("unset-root");
+        let runner = FakeRunner::new();
+        identity(&runner, "root", "0", "0", "wheel");
+        runner.push(Output::exited(0, ""));
+        let root = audit(None, &home, &runner);
+        assert_eq!(find(&root, "Runs as root").severity, Severity::Fail);
+        assert!(!root.exec_allowed(Accepted::NOTHING));
+
+        let runner = FakeRunner::new();
+        runner.push(Output::exited(1, ""));
+        runner.push(Output::exited(1, ""));
+        runner.push(Output::exited(1, ""));
+        runner.push(Output::exited(1, ""));
+        runner.push(Output::exited(1, ""));
+        let unknown = audit(None, &home, &runner);
+        assert_eq!(
+            find(&unknown, "Runtime identity known").severity,
+            Severity::Fail
+        );
+        assert!(!unknown.agent_boundary_clear(Accepted::NOTHING));
+
         let runner = FakeRunner::new();
         identity(&runner, "fodelf", "501", "20", "staff");
         runner.push(Output::exited(1, ""));
-        let audit = audit(None, &home, &runner);
-        assert!(!audit.confined());
-        let finding = find(&audit, "Runtime user");
-        assert_eq!(finding.severity, Severity::Fail);
-        assert!(
-            finding.detail.contains("no runtime_user is configured"),
-            "{finding:?}"
+        let inherited = audit_with_environment(
+            None,
+            &home,
+            &runner,
+            &[],
+            &[std::ffi::OsString::from("ANTHROPIC_API_KEY")],
         );
+        assert_eq!(
+            find(&inherited, "No authentication environment").severity,
+            Severity::Fail
+        );
+        assert!(!inherited.agent_boundary_clear(Accepted::NOTHING));
     }
 
     #[test]
@@ -1215,11 +1346,12 @@ mod tests {
         std::fs::create_dir_all(home.join(".claude")).unwrap();
         std::fs::write(home.join(".claude/.credentials.json"), "{}\n").unwrap();
         let runner = FakeRunner::new();
-        // In admin and with no runtime_user: two Fail rows that are real,
-        // and that this gate does not read.
+        // A dedicated account by config (runtime_user names it) that is in
+        // admin: a Fail row that is real, and that this gate does not read.
+        // Before P78 this used no runtime_user, which was a Fail row too.
         identity(&runner, "bing", "501", "20 80", "staff admin");
         runner.push(Output::exited(1, ""));
-        let audit = audit(None, &home, &runner);
+        let audit = audit(Some("bing"), &home, &runner);
         assert!(!audit.agent_boundary_clear(Accepted::NOTHING));
 
         let text = audit.refusal(Accepted::NOTHING, Refused::Session);
@@ -1308,7 +1440,9 @@ mod tests {
         let runner = FakeRunner::new();
         identity(&runner, "root", "0", "0", "wheel");
         runner.push(Output::exited(0, ""));
-        let audit = audit(None, &home, &runner);
+        // Dedicated by config: in a shared account (no runtime_user, P78)
+        // sudo and wheel are warnings and only root would be listed.
+        let audit = audit(Some("root"), &home, &runner);
         let text = audit.refusal(Accepted::unconfined(true), Refused::ExecCommand);
         for expected in [
             "Runs as root",

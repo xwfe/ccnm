@@ -1129,7 +1129,18 @@ fn runtime_safety_rows(
         .collect();
     // The verdict the runtime's own gate uses, so this table and the
     // session cannot disagree about whether commands will run.
-    rows.push(if audit.confined() {
+    rows.push(if audit.confined() && audit.shared_account {
+        // P78: allowed, and not because the account is isolated -- the
+        // `Runtime user` row above says so, and this one must not read as
+        // the opposite.
+        Check::ok(
+            "exec_command",
+            format!(
+                "allowed: commands run as {}, a shared account (no runtime_user), with everything it can reach",
+                audit.user
+            ),
+        )
+    } else if audit.confined() {
         Check::ok("exec_command", "the runtime account is confined")
     } else if audit.exec_allowed(accepted) {
         let mut why = String::from(
@@ -1738,7 +1749,53 @@ mod tests {
                 detail: "ccrun".into(),
                 fix: None,
             }],
+            shared_account: false,
         }
+    }
+
+    /// P78: a Runtime with no runtime_user reports a shared account. Its
+    /// isolation rows arrive as warnings, so the table is READY, and the
+    /// exec_command row says commands run -- as whom, and that it is not
+    /// because the account is isolated. Before P78 the same machine was a
+    /// FAIL on `Runtime user` and on `exec_command`.
+    #[test]
+    fn a_shared_account_is_ready_and_says_it_is_not_isolated() {
+        let warn = |check: &str, detail: &str| safety::Finding {
+            check: check.into(),
+            severity: safety::Severity::Warn,
+            detail: detail.into(),
+            fix: None,
+        };
+        let report = crate::runtime::AuditReport {
+            audit: safety::Audit {
+                user: "bing".into(),
+                findings: vec![
+                    warn(
+                        "Runtime user",
+                        "no runtime_user is configured, so bing is used as a shared account",
+                    ),
+                    warn(
+                        "Not an admin",
+                        "this account is in admin, which is a route to root",
+                    ),
+                    warn(
+                        "No Claude credential",
+                        "the Runtime identity can access a known Agent credential file",
+                    ),
+                ],
+                shared_account: true,
+            },
+            ..confined_report()
+        };
+        let rows = runtime_safety_rows(&report, AgentProvider::Claude);
+        for row in &rows {
+            assert!(!matches!(row.status, Status::Fail(_)), "{row:?}");
+        }
+        let exec = rows.iter().find(|r| r.name == "exec_command").unwrap();
+        assert_eq!(exec.status, Status::Ok, "{exec:?}");
+        assert!(exec.detail.contains("shared account"), "{exec:?}");
+        assert!(exec.detail.contains("bing"), "{exec:?}");
+        assert!(!exec.detail.contains("confined"), "{exec:?}");
     }
 
     /// The approval row answers "will this stop and ask me?", and it has to
@@ -1855,6 +1912,7 @@ mod tests {
             audit: safety::Audit {
                 user: "bing".into(),
                 findings: vec![credential.clone()],
+                shared_account: false,
             },
             allow_unconfined_exec: true,
             allow_unisolated_credentials: true,
@@ -1897,6 +1955,7 @@ mod tests {
                 detail: "this account has passwordless sudo".into(),
                 fix: Some("remove it from the sudoers file".into()),
             }],
+            shared_account: false,
         }
     }
 

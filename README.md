@@ -23,7 +23,7 @@ Runtime Node                              Agent Node
 | --- | --- |
 | 最新发布 | [v0.11.0](https://github.com/xwfe/ccnm/releases)（2026-10-07） |
 | v0.11.0 比 v0.10.1 多了什么 | **受管 Codex 交互会话执行命令前问你**，和 Claude 一样每条 `exec_command` 都问；不同的是会话里的人能用 `/permissions` 切到 Full Access 关掉它（P71）。Agent 上管运行的监督进程丢了，几秒内就是 `unknown`，不再等满超时；原始输出在第一次读之前丢了，如实标 `agent_refused`，不再说"空且完整"（P68）。doctor 对旧 Agent 先报版本不一致，转述丢的字段不再算到 Runtime 头上，版本行写实际节点名；`Command approval` 一行按 Provider 说实话（P69、P70）。`ccnm workspace add` 按配置里的节点名写，好几个候选时用新参数 `--agent-node` 指定（P69）。内部协议号没变（仍是 10），但两端版本号不同照样互相拒绝：**两台机器要一起升** |
-| 真机验收 | P62（macOS Agent → Debian 13 Runtime）**2026-10-04 完成**：两个 Provider 的受管闭环、外部 MCP、Machine API、候选包安装升级回退都在真机上过了（[第一轮](docs/research/2026-09-30-p62-real-machine.md)、[续跑](docs/research/2026-10-04-p62-resume-release.md)），续跑查出的"监督进程丢了""原始输出丢了"两项由 P68 修好后真机复验通过（[P62.4 复验](docs/research/2026-10-04-p62-4-recheck.md)）。之后的 P69–P71 只有离线测试与零额度实测；Codex 会话的命令审批没用真实模型跑过 |
+| 真机验收 | P62（macOS Agent → Debian 13 Runtime）**2026-10-04 完成**：两个 Provider 的受管闭环、外部 MCP、Machine API、候选包安装升级回退都在真机上过了（[第一轮](docs/research/2026-09-30-p62-real-machine.md)、[续跑](docs/research/2026-10-04-p62-resume-release.md)），续跑查出的"监督进程丢了""原始输出丢了"两项由 P68 修好后真机复验通过（[P62.4 复验](docs/research/2026-10-04-p62-4-recheck.md)）。P69、P70 只有离线测试与零额度实测；P71（Codex 会话的命令审批）2026-10-07 在 macOS Agent → Debian 13 Runtime（`ccrun`）上用真实模型复验：问、放行、取消都对，另查出 F27（[P71 真机复验](docs/research/2026-10-07-p71-real-machine-recheck.md)） |
 
 每一项能力验到了哪一步、明确**没**验过什么，逐条在[支持矩阵](docs/support-matrix.md)里。
 
@@ -143,7 +143,7 @@ view_image      read_notebook  stop_command   call_mcp_tool
 - **写互斥要求各入口用同一个 state 目录。** 同一棵树配两个 `XDG_STATE_HOME` 就是两把互不知晓的锁。
 - **离开进程组的后代够不着。** Runtime MCP server 派生的 `setsid` / 守护进程、以及 `mcp-serve` 被 `kill -9` 后留下的后台命令，ccnm 停不掉；写锁会因此保持 unknown，按[运维手册](docs/operations.md#写入-guard-残留)人工收。
 - **项目和 Agent 同机（colocated）没有真实验收**，明确拒绝，不静默降级。
-- **受管 Codex 会话的命令审批，会话里的人能自己关掉。** P71 起 Codex 会话和 Claude 一样，每条 `exec_command` 前都问你；但在 Codex 里用 `/permissions` 切到 Full Access 就不再问，Claude 那边任何权限模式都关不掉。P71 之前的构建对 Codex 一律不问（[配置说明](docs/configuration.md#allow_unattended_exec)）。
+- **受管 Codex 会话的命令审批，会话里的人能自己关掉。** P71 起 Codex 会话和 Claude 一样，每条 `exec_command` 前都问你；但在 Codex 里用 `/permissions` 切到 Full Access 就不再问，Claude 那边任何权限模式都关不掉。P71 之前的构建对 Codex 一律不问（[配置说明](docs/configuration.md#allow_unattended_exec)）。选过一次 Approve for me 会被 Codex 记进 profile，之后的受管会话都不再问（F27，没修；[怎么去掉](docs/troubleshooting.md#受管-codex-会话exec_command-每次都弹或者一次都不弹)）。
 - **doctor 验不了 Codex 的令牌还有没有效**，只能看到"登录过"（P65 起那一行自己会说）；令牌被吊销要到会话的第一条消息才知道。P62 续跑查出的 F20–F24 列在[续跑记录](docs/research/2026-10-04-p62-resume-release.md)第 7 节，现象和绕法在[排错手册](docs/troubleshooting.md)。
 
 阶段完成、Agent 退出成功和项目验收通过是三个不同的结论。

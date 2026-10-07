@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-10-07T21:20:00+09:00",
-  "current_task": null,
+  "last_updated": "2026-10-07T21:40:00+09:00",
+  "current_task": "P76",
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
     "source": "docs/research/codex-internal-wiring-2026-09-07.md",
@@ -3759,6 +3759,48 @@
         }
       ],
       "blockers": []
+    },
+    {
+      "id": "P76",
+      "title": "文档提醒开 allow_unattended_exec",
+      "status": "in_progress",
+      "depends_on": [
+        "P75"
+      ],
+      "owner": "Claude Code（claude-opus-5-5，桌面会话）",
+      "started_at": "2026-10-07T21:40:00+09:00",
+      "last_updated": "2026-10-07T21:40:00+09:00",
+      "completed_criteria": [],
+      "evidence": [],
+      "blockers": []
+    },
+    {
+      "id": "P77",
+      "title": "agent_tools 默认全开",
+      "status": "pending",
+      "depends_on": [
+        "P76"
+      ],
+      "owner": null,
+      "started_at": null,
+      "last_updated": "2026-10-07T21:40:00+09:00",
+      "completed_criteria": [],
+      "evidence": [],
+      "blockers": []
+    },
+    {
+      "id": "P78",
+      "title": "不要求专用执行账号：没写 runtime_user 就按共用账号跑",
+      "status": "pending",
+      "depends_on": [
+        "P77"
+      ],
+      "owner": null,
+      "started_at": null,
+      "last_updated": "2026-10-07T21:40:00+09:00",
+      "completed_criteria": [],
+      "evidence": [],
+      "blockers": []
     }
   ],
   "observed_gaps": [
@@ -3824,7 +3866,7 @@
     "【P41 记下不修】mcp-serve 被 SIGKILL（或别的不走正常退出的死法）时，它起的命令的进程组没人收：前台命令一直如此，P41 的后台命令没有期限，所以可能一直跑下去；它们的 run 在 read_output 里读作 exit status unknown。正常路径（客户端断开、stdin EOF、心跳发现对端不在）会先停掉所有命令再放写锁。要收干净得给子进程加会话标记、下次启动时按标记扫（封存的原生链 P26/P30 有类似做法），需另立阶段。依据 docs/research/p41-background-commands-2026-09-18.md 第 5 节。"
   ],
   "handoff": {
-    "next_action": "**2026-10-07 P75 完成（离线）：按项目名停没绑实例的 workspace 也记下“被停止”，current_task 为 null。** 计划 8831829，代码 1f01186，真 tmux 用例 d778370，文档与状态随本提交。门禁：默认 1096/0、64 线程 1095/0、clippy 1.98/1.99、1.89 check、ci_gates 全过。行为变化：旧写法 workspace 按项目名停一个认得出的会话，也会等通道最多 5 秒，确认不了从退出 0 变成 NOT_READY（报错给出 --session <id>）。没在 Linux 跑、没推送、没在真机换候选（修法要 Agent 端是新构建才生效）。同日早些时候发了 v0.12.0 并换装三台（docs/research/2026-10-07-release-0.12.0.md），用户定 dogfood 期间不留回退备份。本机 main 上 21177c4（Windows 当 Runtime 的 OpenSSH 调研记录）是别的会话提交的，同样未推送。下一步由用户定：推送；是否随下个版本发出。ccnm-mobile-handoff.md 未读、未动。\n\n之前的交接：\n**2026-10-07 P74 完成：Linux 当 Agent Node，current_task 为 null。** 代码 daa9f27、90c82f7、bfa42cc，用例 1632ead、49e7c70，文档 d6728b0、3984365、50d3a7a；线上 CI 与 Debian 13 全量 1092/0。hpsrv 上零额度真机（假模型）与一次真实 Codex 会话都通过（bing 当 Agent、同机 ccrun 当 Runtime）。hpsrv 出口在大陆，OpenAI 回 unsupported_country_region_territory，真实模型那次借本机代理（ssh -R，验完即断）；文档已写明跑 AI 的机器要能访问 AI 服务、怎么给 Linux Controller 配代理。保留在 hpsrv 上的：tmux 3.5a、bing 的 linger、用户的 Codex 登录（~/.config/ccnm/agents/codex）。没发版：下一步由用户定是否发 v0.12.0 并换装。Windows 另立设计。ccnm-mobile-handoff.md 未读、未动。\n\n之前的交接：\n**2026-10-07 P72 真机复验通过（真实模型 1 次），current_task 为 null。** 用户授权用真实模型在真机上复验 F27 的修复。v0.11.2 两端（本机 Codex Agent → hpsrv ccrun）：会话 A 里切 Approve for me，Codex 照样把 approvals_reviewer=\"auto_review\" 写进 profile；会话 B 新起时 /status 仍是 Ask for approval，两次 exec_command 都问人，放行的执行、取消的没执行，会话里再切走后第三次不问、执行；会话 C 又回到 Ask for approval。两台已收尾。记录 docs/research/2026-10-07-p72-real-machine-recheck.md（e6781ee），未推送。路线上没有排定的下一阶段。ccnm-mobile-handoff.md 未读、未动。\n\n之前的交接：\n**2026-10-07 发 v0.11.2、三台换装；current_task 为 null。** 推送 8e8fc5d..2edb7f7（P73 四个提交加版本号 2edb7f7），CI run 37585535192 全绿后打带说明的 tag v0.11.2，release run 37586263986 全过，四个文件齐全、正文取自 tag。换装（新文件 + 改名，换前都没有会话）：本机 fb0a27c8 → 67ebe312，fodelf 同一个包、Controller pid 21418 → 62225（plist 未变），hpsrv ccrun d8422cbf → 713909c5；三台的回退目标都在 ~/.local/opt/ccnm-0.11.1/。四个日用 workspace doctor 都是“可以用了（3 项不查）”、退出 0（v0.11.1 同一份配置是还不能用、退出 3）；零额度起停一次交互会话、写锁全 released。见 docs/research/2026-10-07-release-0.11.2.md。没跑真实模型。路线上没有排定的下一阶段。ccnm-mobile-handoff.md 未读、未动。",
+    "next_action": "**2026-10-07 P76 进行中（已认领）：文档提醒开 allow_unattended_exec。** 用户同日给了四件事：① allow_unattended_exec 文档提醒用户开、免得一次次确认；② agent_tools 默认全开；③ skill 文件头的 allowed-tools、hooks、model 怎么设计才生效；④ 默认不要求 ccrun，只在安全章节介绍。①②④ 排成 P76、P77、P78（范围与停止点见 ROADMAP），③ 先出设计、等用户确认再立实现阶段。ccnm-mobile-handoff.md 未读、未动。\n\n之前的交接：\n**2026-10-07 P75 完成（离线）：按项目名停没绑实例的 workspace 也记下“被停止”，current_task 为 null。** 计划 8831829，代码 1f01186，真 tmux 用例 d778370，文档与状态随本提交。门禁：默认 1096/0、64 线程 1095/0、clippy 1.98/1.99、1.89 check、ci_gates 全过。行为变化：旧写法 workspace 按项目名停一个认得出的会话，也会等通道最多 5 秒，确认不了从退出 0 变成 NOT_READY（报错给出 --session <id>）。没在 Linux 跑、没推送、没在真机换候选（修法要 Agent 端是新构建才生效）。同日早些时候发了 v0.12.0 并换装三台（docs/research/2026-10-07-release-0.12.0.md），用户定 dogfood 期间不留回退备份。本机 main 上 21177c4（Windows 当 Runtime 的 OpenSSH 调研记录）是别的会话提交的，同样未推送。下一步由用户定：推送；是否随下个版本发出。ccnm-mobile-handoff.md 未读、未动。\n\n之前的交接：\n**2026-10-07 P74 完成：Linux 当 Agent Node，current_task 为 null。** 代码 daa9f27、90c82f7、bfa42cc，用例 1632ead、49e7c70，文档 d6728b0、3984365、50d3a7a；线上 CI 与 Debian 13 全量 1092/0。hpsrv 上零额度真机（假模型）与一次真实 Codex 会话都通过（bing 当 Agent、同机 ccrun 当 Runtime）。hpsrv 出口在大陆，OpenAI 回 unsupported_country_region_territory，真实模型那次借本机代理（ssh -R，验完即断）；文档已写明跑 AI 的机器要能访问 AI 服务、怎么给 Linux Controller 配代理。保留在 hpsrv 上的：tmux 3.5a、bing 的 linger、用户的 Codex 登录（~/.config/ccnm/agents/codex）。没发版：下一步由用户定是否发 v0.12.0 并换装。Windows 另立设计。ccnm-mobile-handoff.md 未读、未动。\n\n之前的交接：\n**2026-10-07 P72 真机复验通过（真实模型 1 次），current_task 为 null。** 用户授权用真实模型在真机上复验 F27 的修复。v0.11.2 两端（本机 Codex Agent → hpsrv ccrun）：会话 A 里切 Approve for me，Codex 照样把 approvals_reviewer=\"auto_review\" 写进 profile；会话 B 新起时 /status 仍是 Ask for approval，两次 exec_command 都问人，放行的执行、取消的没执行，会话里再切走后第三次不问、执行；会话 C 又回到 Ask for approval。两台已收尾。记录 docs/research/2026-10-07-p72-real-machine-recheck.md（e6781ee），未推送。路线上没有排定的下一阶段。ccnm-mobile-handoff.md 未读、未动。",
     "scope": "2026-10-07 用户要求把 P62 完成后列的四件事“依次实施”：P70 修 F25/F26（完成）、P71 给受管 Codex 补命令审批（完成）、发版、日用两台换成发布版。P71 下载了 Codex 0.154.0 到会话临时目录做零额度实测（不装进系统），tmux socket 临时放 /tmp/ccnm-p71（已删）。改动：crates/ccnm-core（doctor、work、session、mcp/probe、mcp/server、protocol/mcp、provider/codex）与测试，docs（计划、研究记录、配置、使用、排错、支持矩阵、README）。用户未跟踪的 ccnm-mobile-handoff.md 与 .claude/ 未读、未动；桌面端重建的 P69 worktree 没动。\n\n之前的范围：\n2026-10-04 晚 用户要求“合并并清理分支；授权真机复验 P62.4，然后推送”。范围：删已合并的 worktree 分支；按 core-verification 2.2 写清的分项在 hpsrv（ccrun 临时换候选、bing 新装）与 fodelf（并存部署、第二个 Controller、一次性密钥）上重跑续跑记录 6.1、6.2，Claude 模型上限 4 次（用 3 次），故障注入只对本轮会话；零额度复看 F20、F24；收尾删除本轮全部资源；推送 main，不打 tag、不发版。改动：docs（P62.4 复验记录、P62 续跑/P68/P69 记录后注、支持矩阵、排错、status）。本机没有改动日用配置；用户未跟踪的 ccnm-mobile-handoff.md 未读、未动。",
     "planning_validation": {
       "at": "2026-09-08T21:22:43+09:00",

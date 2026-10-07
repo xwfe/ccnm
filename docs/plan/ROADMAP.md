@@ -1029,3 +1029,32 @@ ccnm 这一轮只定权威语义、补自己这边的证据。租约展示与状
 - **P75.2** Rust、Python、协议与计划门禁通过；排错手册同步；研究记录与状态同步。
 
 停止点：不改点名停止和 Machine API 的停止；不改协议；不在真机上换候选构建（另行授权）；不发版（另行授权）。
+
+### P76 — 文档提醒开 `allow_unattended_exec`
+
+**依赖 P75。** 现状：README 写"别为了省事打开 `allow_unattended_exec`"，配置说明和使用说明都先劝用 `--print`，于是交互会话里每条 `exec_command` 都要人点一次。用户 2026-10-07 定：文档改成提醒用户开，免得一次次确认。
+
+- **P76.1** README、快速开始、配置说明、使用说明改成：交互会话常用的 workspace，建议在 Runtime 配置里写 `allow_unattended_exec = true`；同时写清开了之后少了什么（命令执行前没人再看一眼）、还剩什么挡着（执行账号自己的权限、工具出不了 workspace 根目录）、怎么收回、doctor 那一行为什么一直是"注意"。风险的完整说明只留在配置说明一处，别处链接过去。
+- **P76.2** 计划与链接检查、`git diff --check` 通过；状态同步。
+
+停止点：只改文档。默认值不变（不写仍是每条都问）；doctor 的"注意"、第一次起会话时讲一次风险都不变。
+
+### P77 — `agent_tools` 默认全开
+
+**依赖 P76。** 现状：Runtime 上不写 `agent_tools` 等于 `web_search` + `mcp_servers`，抓网页、子代理、待办清单要自己加。用户 2026-10-07 定：默认全开。
+
+- **P77.1** 实现：Runtime 配置不写 `agent_tools` 等于五项全开（`web_search`、`web_fetch`、`subagents`、`tasks`、`mcp_servers`）；写了的照写的来，`[]` 仍是全关。Runtime 发给 Agent 的启动消息里"不带这个字段"仍按 P50 的意思读（`web_search` + `mcp_servers`），新 Runtime 的默认因此会把五项写明——否则新 Agent 碰上旧 Runtime，会多开旧 Runtime 没同意过的抓网页和子代理。先有在旧代码上红的用例。
+- **P77.2** 配置说明、使用说明、支持矩阵、README 同步：新的默认值、`web_fetch` 默认开的代价和怎么关、子代理要花额度、想要旧行为怎么写。
+- **P77.3** Rust、Python、协议与计划门禁通过；研究记录与状态同步。
+
+停止点：Codex 的映射不变（`web_fetch`、`subagents`、`tasks` 在 Codex 上仍不起作用）；不改公开协议；不跑模型；不发版。
+
+### P78 — 不要求专用执行账号：没写 `runtime_user` 就按共用账号跑
+
+**依赖 P77。** 现状：Runtime 没写 `runtime_user` 时 `Runtime user` 一行判失败，`exec_command` 被拒；执行账号读得到 Agent 登录（比如项目机器上你自己也登录过 Claude）时整个会话不开。拿自己的账号当 Runtime，要写 `allow_unconfined_exec`、`allow_unisolated_credentials` 两个开关，第一次起会话听一遍风险，doctor 一直"注意"。README 和快速开始都把建 `ccrun` 当成必经步骤。用户 2026-10-07 定：默认不要求 `ccrun`，专用账号只在文档的安全章节介绍。
+
+- **P78.1** 实现：Runtime 节点没写 `runtime_user` 就是"共用账号"：sudo、admin 组、SSH 私钥、Docker、Agent 登录这几项照查，结果从失败降为"注意"——不挡会话、不挡 `exec_command`，命令结果也不再带"未隔离"那一行；以 root 运行、执行身份不明、继承来的认证环境照旧失败。写了 `runtime_user` 就是专用账号模式，判法和现在一样。执行命令前那次凭据复查按同一模式。doctor 的 `Runtime user`、`exec_command` 两行说清是哪种模式、要隔离去哪看。Runtime 交给 doctor 的体检结果加一个可选字段表示模式，旧 Runtime 不带就按专用账号读。先有在旧代码上红的用例。
+- **P78.2** 文档：README、快速开始不再要求建 `ccrun`；生产安全加"要不要建专用账号"一节，作为讲 `ccrun` 的唯一位置；配置说明里 `runtime_user`、`allow_unconfined_exec`、`allow_unisolated_credentials` 按两种模式改写；支持矩阵、运维、排错与协议说明的措辞同步；AGENTS.md 和本文"不可漂移的原则"里关于执行身份的条目改成"默认可以是同一个账号，代码里仍按不同角色对待，要隔离就配 `runtime_user`"。
+- **P78.3** Rust、Python、协议与计划门禁通过；研究记录与状态同步。
+
+停止点：两个 `allow_*` 开关在专用账号模式下含义不变；不改公开协议的工具和字段；不动任何机器上已装的 ccnm 和配置；不发版。

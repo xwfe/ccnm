@@ -157,14 +157,13 @@ view_image      read_notebook  stop_command   call_mcp_tool
 
 | | |
 | --- | --- |
-| 最新发布 | [v0.11.0](https://github.com/xwfe/ccnm/releases)（2026-10-07），每个版本改了什么写在 Releases 页 |
+| 最新发布 | [v0.11.1](https://github.com/xwfe/ccnm/releases)（2026-10-07），每个版本改了什么写在 Releases 页 |
 | 真机上验到哪 | macOS Agent → Debian 13 Runtime（执行账号 `ccrun`）上：Claude 与 Codex 的受管会话、`--print`、外部 MCP、程序接口、安装升级与回退。逐项范围和**没验过的**见[支持矩阵](docs/support-matrix.md) |
-| 主线上还没发版的 | 受管 Codex 会话里切 Approve for me 只管当前会话（v0.11.0 上它会延续到之后所有会话，见下） |
 
 已知限制：
 
 - **不声明任何网络出口边界。** 模型的命令能连到哪里没有逐项验证。
-- **v0.11.0 的受管 Codex 会话**：有人选过一次 Approve for me，之后所有会话都不再问。会话里 `/status` 写着 `(Approve for me)` 就是它，去掉的办法见[排错手册](docs/troubleshooting.md#受管-codex-会话exec_command-每次都弹或者一次都不弹)；主线已修，下个版本带上。
+- **还在用 v0.11.0 的 Agent**：受管 Codex 会话里有人选过一次 Approve for me，之后所有会话都不再问。升到 v0.11.1 就好；不升的话，会话里 `/status` 写着 `(Approve for me)` 就是它，去掉的办法见[排错手册](docs/troubleshooting.md#受管-codex-会话exec_command-每次都弹或者一次都不弹)。
 - **doctor 只看得出 Codex "登录过"**，令牌失效要到会话的第一条消息才知道。
 - **脱离进程组的守护进程 ccnm 停不掉**（比如命令里 `setsid` 出去的），写锁会停在"说不清"（unknown），按[运维手册](docs/operations.md#写入-guard-残留)人工收。
 - Codex 只认实测过的 **0.154.0**；Claude Code 用 Agent 上装的那个。

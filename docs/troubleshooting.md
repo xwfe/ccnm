@@ -469,7 +469,7 @@ mv ~/.config/ccnm/config.toml.bak ~/config.toml.bak
 
 1. **Agent Node 上的 ccnm 是 P71 之前的构建。** 那时 Codex 会话一律不问（2026-10-04 真机，F21）。两台装同一个构建，`ccnm doctor <workspace>` 的版本行会指出来。
 2. **这个会话里切过权限。** 在 Codex 里用 `/permissions` 选了 Full Access 就不再问（实测）；选 Approve for me 是交给 Codex 自己的自动审查，真机上它连 `rm -f` 都直接放行、不问人。这是终端前那个人的选择，ccnm 拦不住，但只管这一个会话，下一个会话照样问。Claude 会话没有这个口子。
-3. **Agent 上是 v0.11.0 或更早的构建，而且以前哪个会话选过 Approve for me。** Codex 把这一档写进 profile 的 `config.toml`（`approvals_reviewer = "auto_review"`），那些构建没盖住它，之后用这个 profile 起的受管会话一开始就是它，一次都不弹，doctor 也看不出来（F27，2026-10-07 真机）。会话里 `/status` 的 Permissions 行写着 `(Approve for me)` 就是它。去掉：删掉 Agent 上 Codex profile 的 `config.toml`（默认 `~/.config/ccnm/agents/codex/config.toml`）里那一行，下一个会话回到 `(Ask for approval)`（实测）。P72 起启动参数盖过这一行，不用删。
+3. **Agent 上是 v0.11.0 或更早的构建，而且以前哪个会话选过 Approve for me。** Codex 把这一档写进 profile 的 `config.toml`（`approvals_reviewer = "auto_review"`），那些构建没盖住它，之后用这个 profile 起的受管会话一开始就是它，一次都不弹，doctor 也看不出来（F27，2026-10-07 真机）。会话里 `/status` 的 Permissions 行写着 `(Approve for me)` 就是它。去掉：删掉 Agent 上 Codex profile 的 `config.toml`（默认 `~/.config/ccnm/agents/codex/config.toml`）里那一行，下一个会话回到 `(Ask for approval)`（实测）。v0.11.1（P72）起启动参数盖过这一行，不用删。
 4. **workspace 开了 `allow_unattended_exec`。** 这时 `ccnm doctor` 的 `Command approval` 是 WARN，写着这个开关。
 
 细节与实测见 [P71 记录](research/2026-10-07-p71-codex-asks-before-exec.md)，真实模型与 F27 见 [P71 真机复验](research/2026-10-07-p71-real-machine-recheck.md)，F27 的修法见 [P72 记录](research/2026-10-07-p72-approve-for-me-one-session.md)。

@@ -2,13 +2,13 @@
 
 本页区分当前支持结论与分阶段证据。`docs/plan/status.json` 是阶段进度的唯一事实来源；历史真机记录不能替代当前 build 的重新验收。
 
-## 当前能力与证据汇总（2026-10-07 文档同步，版本基线 v0.11.0）
+## 当前能力与证据汇总（2026-10-07 文档同步，版本基线 v0.11.1）
 
 本表是当前判断入口。下方详细记录保留阶段初验与后来补验，不把“阶段完成”换算成所有环境通过。P51、P52、P53 的测试仍分别属于其带日期证据；2026-09-28 只整理文档与计划，没有新增远端、真实模型或手机兼容性验收。
 
 | 能力 | 当前结论 | 尚不能宣称 |
 | --- | --- | --- |
-| Managed Claude / Codex | 两 Provider 有历史双机证据；Codex 受管 adapter 仍 pin `0.154.0`。**P62（2026-09-30）**：Claude 在 macOS Agent（fodelf）→ Debian 13 Runtime（`ccrun`）上用 main 的候选构建跑通交互闭环，含审批中与命令运行中的 detach/reattach 和精确停止（[记录](research/2026-09-30-p62-real-machine.md) 4.1）。**P62 续跑（2026-10-04，v0.10.1）**：Codex 在本机 Agent → 同一台 Runtime 上先红后绿、ccrun 独立核对、精确停止第一次就确认且 `ccnm log` 记成被停止；Claude 的精确停止同样一次确认（[P62 续跑记录](research/2026-10-04-p62-resume-release.md) 5.1、5.7） | 零额度测过 `0.155.1` 不代表受管支持；不是全部新工具都已验完整 SSH 链；P62 查出的交互 stop 先报 NOT_READY、`ccnm log` 把被停止的会话写成 `failed to start`（F4）P64 修好，续跑在两个 Provider 上真机复验通过；**受管 Codex 会话执行 `exec_command` 前原来不问人**（F21："每次都问"靠的是只有 Claude Code 认的键）；P71（2026-10-07）起会问——Agent 按 Runtime 标的工具给 Codex 设 `approval_mode="prompt"`，会话里切到 Full Access 就不再问，doctor 的 `Command approval` 行照此说明（Codex 0.154.0 零额度实测加离线证据；2026-10-07 真机复验用真实模型跑过，问、放行、取消都对，[记录](research/2026-10-07-p71-real-machine-recheck.md)）；会话里选过一次 Approve for me 会被 Codex 记进 profile，v0.11.0 及之前的 Agent 上之后的受管会话都不再问（F27），P72 起启动参数盖过它（离线测试加零额度实测，[记录](research/2026-10-07-p72-approve-for-me-one-session.md)，未发版）；doctor 的 `Codex authentication` 只看本地登录状态，令牌被吊销时仍是 OK（F5），P65 起这一行自己写明这一点，没有变成真的校验 |
+| Managed Claude / Codex | 两 Provider 有历史双机证据；Codex 受管 adapter 仍 pin `0.154.0`。**P62（2026-09-30）**：Claude 在 macOS Agent（fodelf）→ Debian 13 Runtime（`ccrun`）上用 main 的候选构建跑通交互闭环，含审批中与命令运行中的 detach/reattach 和精确停止（[记录](research/2026-09-30-p62-real-machine.md) 4.1）。**P62 续跑（2026-10-04，v0.10.1）**：Codex 在本机 Agent → 同一台 Runtime 上先红后绿、ccrun 独立核对、精确停止第一次就确认且 `ccnm log` 记成被停止；Claude 的精确停止同样一次确认（[P62 续跑记录](research/2026-10-04-p62-resume-release.md) 5.1、5.7） | 零额度测过 `0.155.1` 不代表受管支持；不是全部新工具都已验完整 SSH 链；P62 查出的交互 stop 先报 NOT_READY、`ccnm log` 把被停止的会话写成 `failed to start`（F4）P64 修好，续跑在两个 Provider 上真机复验通过；**受管 Codex 会话执行 `exec_command` 前原来不问人**（F21："每次都问"靠的是只有 Claude Code 认的键）；P71（2026-10-07）起会问——Agent 按 Runtime 标的工具给 Codex 设 `approval_mode="prompt"`，会话里切到 Full Access 就不再问，doctor 的 `Command approval` 行照此说明（Codex 0.154.0 零额度实测加离线证据；2026-10-07 真机复验用真实模型跑过，问、放行、取消都对，[记录](research/2026-10-07-p71-real-machine-recheck.md)）；会话里选过一次 Approve for me 会被 Codex 记进 profile，v0.11.0 及之前的 Agent 上之后的受管会话都不再问（F27），v0.11.1（P72）起启动参数盖过它（离线测试加零额度实测，[记录](research/2026-10-07-p72-approve-for-me-one-session.md)）；doctor 的 `Codex authentication` 只看本地登录状态，令牌被吊销时仍是 OK（F5），P65 起这一行自己写明这一点，没有变成真的校验 |
 | 平台与拓扑 | Agent 仅 macOS；Runtime 的 macOS、Debian 13 x86_64 有证据 | Linux Agent、Windows、colocated；Linux curl/容器探针不等于扩展了完整支持平台 |
 | PocketShell 等第三方终端 | 复用公共 CLI/SSH/PTY；[接入条件](usage.md#通过第三方终端使用)，不内建移动/Web 入口，不绑定手机 Tailscale | 特定客户端/手机版本已通过，或所有终端行为完全一致 |
 | Runtime 工具表 | 共 12 个工具定义；read 模式 7 个，coding 通常 11 个，有可转接服务才出现第 12 个 | 固定“七/八/十二工具”适用于所有连接；以实际 `tools/list` 为准 |

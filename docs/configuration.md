@@ -290,7 +290,7 @@ allow_unattended_exec = true
 
 **受管 Codex 会话 P71 起也会问，但会话里的人可以自己关掉。** 上面那个键只有 Claude Code 认。Codex 那边，Agent 启动前先问 Runtime 哪些工具要人确认（就是挂了那个键的工具，所以这个开关照样由 Runtime 决定、对 Codex 一样生效），启动 Codex 时只给它们设 `approval_mode="prompt"`，其余工具仍是自动批准——全设成要确认不行，`--print` 那条路上 Codex 会把每次调用都拒掉（[实测](research/codex-provider-probe-2026-09-07.md)）。效果（Codex 0.154.0 零额度实测，[P71 记录](research/2026-10-07-p71-codex-asks-before-exec.md)）：每次 `exec_command` 前弹出 `Allow the ccnm MCP server to run tool "exec_command"?`，只有"允许 / 取消"，没有"本会话都允许"；取消的调用根本到不了 Runtime，模型收到 `user cancelled MCP tool call`。
 
-**和 Claude 不同的一点**：Codex 会话里的人用 `/permissions` 切到 Full Access 就不再问（实测），切到 Approve for me 就交给 Codex 自己的自动审查（真机上连 `rm -f` 都直接放行）。这是坐在终端前那个人的决定，ccnm 拦不住；Claude 那边任何权限模式都关不掉。切换只管当前会话：Codex 会把 Approve for me 记进 profile 的 `config.toml`，P72 起 ccnm 启动时用命令行盖过它；**v0.11.0 及之前的 Agent 盖不住，之后的受管会话都不再问**（F27），怎么看出来、怎么去掉见[排错手册](troubleshooting.md#受管-codex-会话exec_command-每次都弹或者一次都不弹)。P71 之前的构建对 Codex 一律不问（2026-10-04 真机，[P62 续跑记录](research/2026-10-04-p62-resume-release.md) F21），所以 **Agent 那端要装 P71 或之后的构建**才生效。
+**和 Claude 不同的一点**：Codex 会话里的人用 `/permissions` 切到 Full Access 就不再问（实测），切到 Approve for me 就交给 Codex 自己的自动审查（真机上连 `rm -f` 都直接放行）。这是坐在终端前那个人的决定，ccnm 拦不住；Claude 那边任何权限模式都关不掉。切换只管当前会话：Codex 会把 Approve for me 记进 profile 的 `config.toml`，v0.11.1（P72）起 ccnm 启动时用命令行盖过它；**v0.11.0 及之前的 Agent 盖不住，之后的受管会话都不再问**（F27），怎么看出来、怎么去掉见[排错手册](troubleshooting.md#受管-codex-会话exec_command-每次都弹或者一次都不弹)。P71 之前的构建对 Codex 一律不问（2026-10-04 真机，[P62 续跑记录](research/2026-10-04-p62-resume-release.md) F21），所以 **Agent 那端要装 P71 或之后的构建**才生效。
 
 **它跟前两个开关不是一类东西：它不授权任何事。** 命令能做什么由 `exec_gate` 和 Runtime 执行身份决定，这个开关一点都动不了；它只决定中间还有没有人。所以：
 

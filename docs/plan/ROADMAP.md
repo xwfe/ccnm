@@ -1008,3 +1008,15 @@ ccnm 这一轮只定权威语义、补自己这边的证据。租约展示与状
 - **P73.3** Rust、Python、协议与计划门禁通过；研究记录与状态同步。
 
 停止点：不改别的行怎么判；不改协议；不发版（另行授权）。
+
+### P74 — Linux 当 Agent Node
+
+**依赖 P73。** 现状：拉起 AI 的 Controller 只有 launchd 版，起会话前还要求 `launchctl managername` 是 `Aqua`（为 Mac 登录钥匙串设的），所以 Linux 上 `ccnm controller install` 装不上（`--dry-run` 打算写 `~/Library/LaunchAgents`、调 `/bin/launchctl`），起会话被拒。Linux 上官方 CLI 的登录在文件里（Claude `.credentials.json`、Codex `auth.json`），不需要图形登录会话。用户 2026-10-07 定：做，目标是三端（macOS、Linux、Windows）都支持；Windows 另立设计，不在本阶段。
+
+- **P74.1** 设计（写进研究记录）：Linux 上 Controller 由 systemd 用户服务托管（单元文件在 `$XDG_CONFIG_HOME/systemd/user/`，和 launchd 版一样只带 `CCNM_CONFIG` / `XDG_*`、不写 `PATH`；停或重启 Controller 不连带杀掉它起的会话）；"这个 Controller 起的 AI 读不读得到登录"按平台判断：macOS 仍要 `Aqua`，Linux 不要图形会话，由 `auth status` 本身证明；linger 关着时说清后果和命令；其他系统明确说"没做"。
+- **P74.2** 实现：`controller install / status / uninstall` 在 Linux 走 systemd 用户服务；Controller 与会话上下文在 Linux 报托管方式；提到 launchctl、Keychain、LaunchAgent 的报错、帮助与 doctor 文案按平台说。先有在旧代码上红的用例。
+- **P74.3** 两个平台的安装计划在任何主机上都能单测；Rust、Python、协议、计划门禁与线上 Linux CI 通过。
+- **P74.4** 真机（零额度，动 hpsrv 前另行授权：装 tmux、给 Agent 账号开 linger 或临时起用户实例）：Controller 由 systemd 用户服务起来，doctor 的 Controller 行正常，起交互会话并精确停止，用假模型跑通一次到 Runtime 的工具调用。真实模型要用户在该 Linux 账号上登录 Claude 或 Codex，另行授权；没有就记 blocked。
+- **P74.5** README、快速开始、支持矩阵、运维、排错同步；研究记录与状态同步。
+
+停止点：不做 Windows；不改协议；不发版（另行授权）。

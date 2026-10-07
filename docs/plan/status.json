@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-10-07T16:57:00+09:00",
-  "current_task": null,
+  "last_updated": "2026-10-07T17:42:00+09:00",
+  "current_task": "P74",
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
     "source": "docs/research/codex-internal-wiring-2026-09-07.md",
@@ -3642,6 +3642,20 @@
         }
       ],
       "blockers": []
+    },
+    {
+      "id": "P74",
+      "title": "Linux 当 Agent Node",
+      "status": "in_progress",
+      "depends_on": [
+        "P73"
+      ],
+      "owner": "claude-code/opus-5.5",
+      "started_at": "2026-10-07T17:42:00+09:00",
+      "last_updated": "2026-10-07T17:42:00+09:00",
+      "completed_criteria": [],
+      "evidence": [],
+      "blockers": []
     }
   ],
   "observed_gaps": [
@@ -3707,7 +3721,7 @@
     "【P41 记下不修】mcp-serve 被 SIGKILL（或别的不走正常退出的死法）时，它起的命令的进程组没人收：前台命令一直如此，P41 的后台命令没有期限，所以可能一直跑下去；它们的 run 在 read_output 里读作 exit status unknown。正常路径（客户端断开、stdin EOF、心跳发现对端不在）会先停掉所有命令再放写锁。要收干净得给子进程加会话标记、下次启动时按标记扫（封存的原生链 P26/P30 有类似做法），需另立阶段。依据 docs/research/p41-background-commands-2026-09-18.md 第 5 节。"
   ],
   "handoff": {
-    "next_action": "**2026-10-07 P72 真机复验通过（真实模型 1 次），current_task 为 null。** 用户授权用真实模型在真机上复验 F27 的修复。v0.11.2 两端（本机 Codex Agent → hpsrv ccrun）：会话 A 里切 Approve for me，Codex 照样把 approvals_reviewer=\"auto_review\" 写进 profile；会话 B 新起时 /status 仍是 Ask for approval，两次 exec_command 都问人，放行的执行、取消的没执行，会话里再切走后第三次不问、执行；会话 C 又回到 Ask for approval。两台已收尾。记录 docs/research/2026-10-07-p72-real-machine-recheck.md（e6781ee），未推送。路线上没有排定的下一阶段。ccnm-mobile-handoff.md 未读、未动。\n\n之前的交接：\n**2026-10-07 发 v0.11.2、三台换装；current_task 为 null。** 推送 8e8fc5d..2edb7f7（P73 四个提交加版本号 2edb7f7），CI run 37585535192 全绿后打带说明的 tag v0.11.2，release run 37586263986 全过，四个文件齐全、正文取自 tag。换装（新文件 + 改名，换前都没有会话）：本机 fb0a27c8 → 67ebe312，fodelf 同一个包、Controller pid 21418 → 62225（plist 未变），hpsrv ccrun d8422cbf → 713909c5；三台的回退目标都在 ~/.local/opt/ccnm-0.11.1/。四个日用 workspace doctor 都是“可以用了（3 项不查）”、退出 0（v0.11.1 同一份配置是还不能用、退出 3）；零额度起停一次交互会话、写锁全 released。见 docs/research/2026-10-07-release-0.11.2.md。没跑真实模型。路线上没有排定的下一阶段。ccnm-mobile-handoff.md 未读、未动。\n\n之前的交接：\n**2026-10-07 P73 完成（离线 + 只读真机）：doctor 的结论不再被设计上不查的行挡住，current_task 为 null。** 计划 b8b159d；代码 2ddafbd（Status::Note，中文“不查”、英文 NOTE，不挡结论；网络隔离、本机工具策略、不适用的 Codex 原生链、无 Agent workspace 的 Agent 行、同表有 Workspace root 时看不进家目录的 Runtime workspace 改用它；其余 SKIP 照旧挡；结论行注明不查的数目），文档 d149e89（排错手册新增“doctor 的表怎么读”）。新构建对日用配置只读跑 doctor：可以用了（3 项不查）、退出 0，已装 v0.11.1 同时是还不能用、退出 3。门禁 Rust 1079/0（默认与 64 线程）、1.89 check、clippy 1.98/1.99、ci_gates 全过。没推送、没发版。下一步由用户定：推送 b8b159d 起的提交；是否随下个版本发出。ccnm-mobile-handoff.md 未读、未动。\n\n之前的交接：\n**2026-10-07 发 v0.11.1、三台换装；current_task 为 null。** 推送 1060fc8..daf2683（P72 六个提交加版本号 daf2683），CI run 37578335077 全绿后打带说明的 tag v0.11.1，release run 37578940663 全过，四个文件齐全、正文取自 tag。换装（新文件 + 改名，换前都没有会话）：本机 e62c697b → fb0a27c8，fodelf 同一个包、Controller pid 86933 → 21418（plist 未变），hpsrv ccrun c837a445 → d8422cbf；三台的回退目标都在 ~/.local/opt/ccnm-0.11.0/。本机四个 workspace doctor 0 失败，零额度起停一次交互会话、写锁全 released。见 docs/research/2026-10-07-release-0.11.1.md（0fb6c8d）。没跑真实模型；F27 的修法没在真机上用 Codex 复验（日用 workspace 都是 Claude）。可选的下一步由用户定：doctor 有几行设计上永远“没查”，真实配置 0 失败时结论也是“还不能用”，新用户会困惑，可另立小阶段让有意不查的行不影响结论。ccnm-mobile-handoff.md 未读、未动。",
+    "next_action": "**2026-10-07 P74 进行中（owner claude-code/opus-5.5）：Linux 当 Agent Node。** 用户定：做，目标三端都支持，Windows 另立设计。现状：Controller 只有 launchd 版、起会话要求 Aqua，Linux 上装不上、起会话被拒。hpsrv 的 bing 没开 linger、没装 tmux 和 AI CLI，真机那一步要另行授权与用户登录。下一步：systemd 用户服务版 Controller 与按平台的会话判断，先红后绿。\n\n之前的交接：\n**2026-10-07 P72 真机复验通过（真实模型 1 次），current_task 为 null。** 用户授权用真实模型在真机上复验 F27 的修复。v0.11.2 两端（本机 Codex Agent → hpsrv ccrun）：会话 A 里切 Approve for me，Codex 照样把 approvals_reviewer=\"auto_review\" 写进 profile；会话 B 新起时 /status 仍是 Ask for approval，两次 exec_command 都问人，放行的执行、取消的没执行，会话里再切走后第三次不问、执行；会话 C 又回到 Ask for approval。两台已收尾。记录 docs/research/2026-10-07-p72-real-machine-recheck.md（e6781ee），未推送。路线上没有排定的下一阶段。ccnm-mobile-handoff.md 未读、未动。\n\n之前的交接：\n**2026-10-07 发 v0.11.2、三台换装；current_task 为 null。** 推送 8e8fc5d..2edb7f7（P73 四个提交加版本号 2edb7f7），CI run 37585535192 全绿后打带说明的 tag v0.11.2，release run 37586263986 全过，四个文件齐全、正文取自 tag。换装（新文件 + 改名，换前都没有会话）：本机 fb0a27c8 → 67ebe312，fodelf 同一个包、Controller pid 21418 → 62225（plist 未变），hpsrv ccrun d8422cbf → 713909c5；三台的回退目标都在 ~/.local/opt/ccnm-0.11.1/。四个日用 workspace doctor 都是“可以用了（3 项不查）”、退出 0（v0.11.1 同一份配置是还不能用、退出 3）；零额度起停一次交互会话、写锁全 released。见 docs/research/2026-10-07-release-0.11.2.md。没跑真实模型。路线上没有排定的下一阶段。ccnm-mobile-handoff.md 未读、未动。\n\n之前的交接：\n**2026-10-07 P73 完成（离线 + 只读真机）：doctor 的结论不再被设计上不查的行挡住，current_task 为 null。** 计划 b8b159d；代码 2ddafbd（Status::Note，中文“不查”、英文 NOTE，不挡结论；网络隔离、本机工具策略、不适用的 Codex 原生链、无 Agent workspace 的 Agent 行、同表有 Workspace root 时看不进家目录的 Runtime workspace 改用它；其余 SKIP 照旧挡；结论行注明不查的数目），文档 d149e89（排错手册新增“doctor 的表怎么读”）。新构建对日用配置只读跑 doctor：可以用了（3 项不查）、退出 0，已装 v0.11.1 同时是还不能用、退出 3。门禁 Rust 1079/0（默认与 64 线程）、1.89 check、clippy 1.98/1.99、ci_gates 全过。没推送、没发版。下一步由用户定：推送 b8b159d 起的提交；是否随下个版本发出。ccnm-mobile-handoff.md 未读、未动。",
     "scope": "2026-10-07 用户要求把 P62 完成后列的四件事“依次实施”：P70 修 F25/F26（完成）、P71 给受管 Codex 补命令审批（完成）、发版、日用两台换成发布版。P71 下载了 Codex 0.154.0 到会话临时目录做零额度实测（不装进系统），tmux socket 临时放 /tmp/ccnm-p71（已删）。改动：crates/ccnm-core（doctor、work、session、mcp/probe、mcp/server、protocol/mcp、provider/codex）与测试，docs（计划、研究记录、配置、使用、排错、支持矩阵、README）。用户未跟踪的 ccnm-mobile-handoff.md 与 .claude/ 未读、未动；桌面端重建的 P69 worktree 没动。\n\n之前的范围：\n2026-10-04 晚 用户要求“合并并清理分支；授权真机复验 P62.4，然后推送”。范围：删已合并的 worktree 分支；按 core-verification 2.2 写清的分项在 hpsrv（ccrun 临时换候选、bing 新装）与 fodelf（并存部署、第二个 Controller、一次性密钥）上重跑续跑记录 6.1、6.2，Claude 模型上限 4 次（用 3 次），故障注入只对本轮会话；零额度复看 F20、F24；收尾删除本轮全部资源；推送 main，不打 tag、不发版。改动：docs（P62.4 复验记录、P62 续跑/P68/P69 记录后注、支持矩阵、排错、status）。本机没有改动日用配置；用户未跟踪的 ccnm-mobile-handoff.md 未读、未动。",
     "planning_validation": {
       "at": "2026-09-08T21:22:43+09:00",

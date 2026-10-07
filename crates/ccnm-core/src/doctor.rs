@@ -1111,24 +1111,21 @@ fn runtime_safety_rows(
     // interrupt me?" is a question with two useful answers, and because a
     // warning nobody ever sees the other half of reads like noise.
     //
-    // Codex is never asked (F21): the per-call prompt is
-    // `anthropic/requiresUserInteraction`, a key only Claude Code reads, and
-    // a Codex session gets ccnm's tools pre-approved because Codex refuses
-    // every call otherwise (docs/research/codex-provider-probe-2026-09-07.md).
-    // So the workspace setting changes nothing there, and saying "asks" would
-    // be the one row a Codex user reads about approval being wrong.
-    rows.push(if provider == AgentProvider::Codex {
-        let mut why = String::from(
-            "Codex sessions run every exec_command without asking: the per-call prompt is a key only Claude Code reads, and Codex refuses ccnm's tools unless they are approved up front\nthe runtime account's own permissions and the workspace root are what bound them",
-        );
-        if accepted.unattended_exec {
-            why.push_str("\nallow_unattended_exec is set as well; for Codex it changes nothing");
-        }
-        Check::warn("Command approval", why)
-    } else if accepted.unattended_exec {
+    // Codex asks too since P71 (F21), but not the way Claude does: the Agent
+    // launches it with `approval_mode = "prompt"` for the tools this Runtime
+    // marks, and the person at the terminal can hand that back to Codex in
+    // `/permissions` -- Full Access stops asking, Approve for me lets Codex's
+    // own review decide (measured on 0.154.0, docs/research/probes/
+    // p71-codex-approval.py). Claude's key holds in every permission mode.
+    rows.push(if accepted.unattended_exec {
         Check::warn(
             "Command approval",
             "this workspace sets allow_unattended_exec: interactive sessions run every command without asking\nthe runtime account's own permissions and the workspace root are what still bound them",
+        )
+    } else if provider == AgentProvider::Codex {
+        Check::ok(
+            "Command approval",
+            "interactive sessions ask before each exec_command, until the person at the terminal switches the session to Full Access or Approve for me in /permissions\n--print and ccnm mcp bridge never ask: nobody is waiting at either",
         )
     } else {
         Check::ok(
@@ -1726,31 +1723,50 @@ mod tests {
         assert_eq!(exec(&asking), exec(&unattended));
     }
 
-    /// F21. A managed Codex session runs `exec_command` without asking
-    /// anyone -- the per-call prompt is a key only Claude Code reads, and
-    /// ccnm has to approve its tools up front or Codex refuses every call --
-    /// and on the P62 machines doctor still told a Codex workspace that
-    /// interactive sessions ask before each one.
+    /// F21. On the P62 machines a managed Codex session ran `exec_command`
+    /// without asking while this row said it would ask; P69 made the row say
+    /// "does not ask". Since P71 it asks -- with the one difference from
+    /// Claude the row has to name: the person can hand the decision back to
+    /// Codex in `/permissions`. With `allow_unattended_exec` both say WARN.
     #[test]
-    fn the_approval_row_says_codex_sessions_do_not_ask() {
+    fn the_approval_row_says_how_codex_sessions_ask() {
         let (dir, config) = setup("approval-codex", true, true);
         let authority = authority(&dir.join("root"), false);
         let report = from_agent(&config, "xshun", Ok((&authority, &codex_probe(None))));
         let text = report.render();
         let approval = row(&report, "Command approval");
-        assert_eq!(approval.status, Status::Warn, "{text}");
+        assert_eq!(approval.status, Status::Ok, "{text}");
         assert!(
-            approval
-                .detail
-                .contains("Codex sessions run every exec_command without asking"),
+            approval.detail.contains("ask before each exec_command"),
             "{text}"
         );
-        assert!(!approval.detail.contains("ask before each"), "{text}");
+        assert!(approval.detail.contains("/permissions"), "{text}");
+        assert!(
+            !approval.detail.contains("in every permission mode"),
+            "{text}"
+        );
 
         let claude = from_agent(&config, "xshun", Ok((&authority, &good_probe())));
         let approval = row(&claude, "Command approval");
         assert_eq!(approval.status, Status::Ok);
-        assert!(approval.detail.contains("ask before each exec_command"));
+        assert!(approval.detail.contains("in every permission mode"));
+
+        let unattended = runtime_safety_rows(
+            &crate::runtime::AuditReport {
+                allow_unattended_exec: true,
+                ..confined_report()
+            },
+            AgentProvider::Codex,
+        );
+        let approval = unattended
+            .iter()
+            .find(|r| r.name == "Command approval")
+            .unwrap();
+        assert_eq!(approval.status, Status::Warn, "{approval:?}");
+        assert!(
+            approval.detail.contains("allow_unattended_exec"),
+            "{approval:?}"
+        );
     }
 
     /// An accepted risk is a WARN, never an OK.

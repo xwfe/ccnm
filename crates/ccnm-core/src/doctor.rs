@@ -1117,6 +1117,8 @@ fn runtime_safety_rows(
     // `/permissions` -- Full Access stops asking, Approve for me lets Codex's
     // own review decide (measured on 0.154.0, docs/research/probes/
     // p71-codex-approval.py). Claude's key holds in every permission mode.
+    // That switch lasts one session since P72 (F27): Codex stores Approve for
+    // me in the profile, and the launch now pins who answers over it.
     rows.push(if accepted.unattended_exec {
         Check::warn(
             "Command approval",
@@ -1125,7 +1127,7 @@ fn runtime_safety_rows(
     } else if provider == AgentProvider::Codex {
         Check::ok(
             "Command approval",
-            "interactive sessions ask before each exec_command, until the person at the terminal switches the session to Full Access or Approve for me in /permissions\n--print and ccnm mcp bridge never ask: nobody is waiting at either",
+            "interactive sessions ask before each exec_command; the person at the terminal can stop that for one session with Full Access or Approve for me in /permissions, and the next session asks again\n--print and ccnm mcp bridge never ask: nobody is waiting at either",
         )
     } else {
         Check::ok(
@@ -1743,6 +1745,11 @@ mod tests {
         assert!(approval.detail.contains("/permissions"), "{text}");
         assert!(
             !approval.detail.contains("in every permission mode"),
+            "{text}"
+        );
+        // P72 (F27): the switch is no longer remembered across sessions.
+        assert!(
+            approval.detail.contains("the next session asks again"),
             "{text}"
         );
 

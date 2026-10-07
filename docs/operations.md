@@ -24,7 +24,7 @@
 | --- | --- | --- |
 | 放项目的机器（Runtime） | 你敲 `ccnm` 的账号 | `Agent ccnm` 行 FAIL：`the Agent Node <名字> runs ccnm 0.12.0, this machine runs 0.11.2; install the same build on both` |
 | 放项目的机器（Runtime） | 执行账号（配置里的 `runtime_user`，比如 `ccrun`）。AI 那台经 ssh 调起的是它名下 `ccnm_bin` 指的那份，默认 `~/.local/bin/ccnm` | `Reverse SSH` 行 FAIL：`the Runtime Node runs ccnm 0.11.2, this machine runs 0.12.0; …`；起会话也被拒，报同一句外加 `before starting a session` |
-| 跑 AI 的机器（Agent） | 跑 Controller 的账号 | `Agent ccnm` 行 FAIL：`the Agent Node <名字> runs ccnm 0.11.2, this machine runs 0.12.0; …`。换了文件没重启 Controller，见第 5 步 |
+| 跑 AI 的机器（Agent） | 跑 Controller 的账号 | `Agent ccnm` 行 FAIL：`the Agent Node <名字> runs ccnm 0.11.2, this machine runs 0.12.0; …`。换了文件没重启 Controller，见第 4 步 |
 
 一台机器同时当两个角色、或执行账号就是你自己，就少换几份。顺序：
 
@@ -47,14 +47,7 @@ curl -fLO $base/ccnm-$v-$p.tar.gz && curl -fLO $base/ccnm-$v-$p.tar.gz.sha256
 shasum -a 256 -c ccnm-$v-$p.tar.gz.sha256    # Linux 上用 sha256sum -c；要看到 OK
 ```
 
-**3. 留一份旧的，回退就靠它：**
-
-```bash
-old=$(~/.local/bin/ccnm --version | awk '{print $2}')
-mkdir -p ~/.local/opt/ccnm-$old && cp -p ~/.local/bin/ccnm ~/.local/opt/ccnm-$old/ccnm
-```
-
-**4. 新文件 + 改名放进去**，别 `cp` 盖（[原因](#千万不要-cp-覆盖正在用的二进制)）：
+**3. 新文件 + 改名放进去**，别 `cp` 盖（[原因](#千万不要-cp-覆盖正在用的二进制)）：
 
 ```bash
 tar -xzf ccnm-$v-$p.tar.gz                   # 包里只有一个 ccnm
@@ -62,9 +55,9 @@ install -m 755 ccnm ~/.local/bin/ccnm.new && mv ~/.local/bin/ccnm.new ~/.local/b
 ~/.local/bin/ccnm --version                  # 要打出新版本号
 ```
 
-执行账号（`ccrun`）通常不能从你的账号直接 ssh 进去：用有权限的账号把包放过去、`chown` 给它，再 `su - ccrun` 在它名下做第 3、4 步。
+执行账号（`ccrun`）通常不能从你的账号直接 ssh 进去：用有权限的账号把包放过去、`chown` 给它，再 `su - ccrun` 在它名下做第 2、3 步。
 
-**5. 跑 AI 的机器上重启 Controller：**
+**4. 跑 AI 的机器上重启 Controller：**
 
 ```bash
 ccnm controller install
@@ -72,15 +65,15 @@ ccnm controller install
 
 不重启的话，Controller 还是那个用旧文件起的进程。Mac 上它会换掉 launchd 里的那个；Linux 上是 `systemctl --user` 的 daemon-reload、enable、restart，**要在这个账号用 ssh 登录进来的会话里跑**（`su` 进来的先 `export XDG_RUNTIME_DIR=/run/user/$(id -u)`，否则报 `Failed to connect to bus`）。重启 Controller 不会断已有的会话，但第 1 步已经都停了。最后一行 `listening: ccnm 0.12.0 as <账号>, pid …` 的版本号要是新的；还是旧的，按[下面](#升级完一定要核对-controller-的进程启动时间)核对。
 
-**6. 在放项目的机器上跑 doctor：**
+**5. 在放项目的机器上跑 doctor：**
 
 ```bash
 ccnm doctor <workspace>
 ```
 
-最后一行是"可以用了"就是换好了。`Controller` 行写的是正在应答的那个进程的版本，它不跟别的比——这一行还是旧版本号，就是第 5 步没生效。
+最后一行是"可以用了"就是换好了。`Controller` 行写的是正在应答的那个进程的版本，它不跟别的比——这一行还是旧版本号，就是第 4 步没生效。
 
-出问题就[回退](#回退)：每台把第 3 步留的那份按第 4 步的办法装回去，Agent 那台再 `ccnm controller install`。
+出问题就[回退](#回退)：把上一版的包按同样的步骤装回去。
 
 ### 从源码部署（开发用）
 
@@ -88,7 +81,7 @@ ccnm doctor <workspace>
 bash scripts/deploy.sh <另一台的 ssh 别名> [workspace]
 ```
 
-在有 Rust toolchain 的那台上跑。它编译、装两边、重启 controller、最后跑一次 `ccnm doctor`。它只装两台各自登录账号的那份，执行账号的那份要自己按上面第 3、4 步换。Agent 是 Linux 时它也会去重启 systemd 里的 Controller，但这条路还没在真机上跑过。
+在有 Rust toolchain 的那台上跑。它编译、装两边、重启 controller、最后跑一次 `ccnm doctor`。它只装两台各自登录账号的那份，执行账号的那份要自己按上面第 2、3 步换。Agent 是 Linux 时它也会去重启 systemd 里的 Controller，但这条路还没在真机上跑过。
 
 ### 升级前先把会话停掉
 
@@ -157,7 +150,7 @@ ssh <agent> 'ccnm controller uninstall && ccnm controller install'
 
 ### 千万不要 `cp` 覆盖正在用的二进制
 
-上面第 4 步和 `deploy.sh` 都用"新文件 + 改名"，原因就在这里。在 Apple Silicon 上，往一个已经执行过的 Mach-O 里写东西会让它的代码签名失效，之后每一次 exec 都直接 SIGKILL（退出码 137），而**已经在跑的那个进程照常用旧代码继续**。
+上面第 3 步和 `deploy.sh` 都用"新文件 + 改名"，原因就在这里。在 Apple Silicon 上，往一个已经执行过的 Mach-O 里写东西会让它的代码签名失效，之后每一次 exec 都直接 SIGKILL（退出码 137），而**已经在跑的那个进程照常用旧代码继续**。
 
 症状极具迷惑性：`ccnm --version` 显示 `Killed: 9`，`doctor` 报空回复，而 `launchctl` 坚称 controller 一切正常。
 
@@ -172,12 +165,7 @@ mv ~/.local/bin/ccnm.new ~/.local/bin/ccnm
 
 ### 回退
 
-回退就是把旧版本按同样的方式装回去，没有单独的回退命令。用发布包升级的，每台（每个换过的账号）把[升级第 3 步](#用发布包升级一般就用这个)留的那份装回去，跑 AI 的那台再重启 Controller：
-
-```bash
-install -m 755 ~/.local/opt/ccnm-<旧版本>/ccnm ~/.local/bin/ccnm.new && mv ~/.local/bin/ccnm.new ~/.local/bin/ccnm
-ccnm controller install                      # 只在跑 AI 的机器上
-```
+回退就是把旧版本按同样的方式装回去，没有单独的回退命令，也不用事先留备份。用发布包的，把[升级那几步](#用发布包升级一般就用这个)里的 `v=` 换成上一版，从第 1 步走一遍（Releases 页每个版本的包都留着）。
 
 从源码部署的：
 

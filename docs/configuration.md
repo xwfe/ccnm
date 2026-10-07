@@ -201,7 +201,7 @@ allow_unconfined_exec = false
 allow_unisolated_credentials = false   # 默认值；开它之前先读下面那一节
 allow_unattended_exec = false          # 默认值：交互会话每条命令执行前问你一次；常用交互会话的项目建议改成 true，见下
 external_mcp = "disabled"    # 默认值，可省略
-agent_tools = ["web_search", "mcp_servers"] # 默认值，可省略：受管会话能用 Agent 那边的哪些功能
+# agent_tools 不写就是五项全开（P77 起），见下面 agent_tools 一节
 ```
 
 ### `agent_node`
@@ -380,36 +380,38 @@ exec_sandbox = "codex"       # 默认 off
 ### `agent_tools`
 
 ```toml
-agent_tools = ["web_search", "mcp_servers"]              # 默认值，可省略
-agent_tools = ["web_search", "mcp_servers", "web_fetch"] # 再允许抓网页
-agent_tools = ["web_search"]                             # 不用 Agent 上装的 MCP server
-agent_tools = []                                         # 全关，就是 P46 之前的样子
+# 不写这一行就是五项全开（P77 起的默认值）
+agent_tools = ["web_search", "mcp_servers"]                   # P77 之前的默认：只搜索和用 Agent 上的 MCP server
+agent_tools = ["web_search", "mcp_servers", "subagents", "tasks"] # 全开，但不抓网页
+agent_tools = []                                              # 全关，就是 P46 之前的样子
 ```
 
-**远端受管会话能用 Agent 那边的哪些功能**（P46，`mcp_servers` 是 P50 加的）。读、改、搜项目和跑命令一律走 ccnm 的工具、在 Runtime 上执行；Claude Code / Codex 自带的文件、shell、notebook 和 skill 工具永远关着，这一行管不到它们。它管的是这些：
+**远端受管会话能用 Agent 那边的哪些功能**（P46 加的，`mcp_servers` 是 P50 加的，P77 起默认全开）。读、改、搜项目和跑命令一律走 ccnm 的工具、在 Runtime 上执行；Claude Code / Codex 自带的文件、shell、notebook 和 skill 工具永远关着，这一行管不到它们。它管的是这些：
 
 | 值 | 做什么 | Claude Code 里是 | Codex 里是 |
 | --- | --- | --- | --- |
-| `web_search`（默认开） | 搜网页 | `WebSearch` | `web_search = "cached"`：Codex 自己的默认值，用 OpenAI 的索引，不现抓网页 |
-| `mcp_servers`（默认开） | 用 Agent 机器上装好的 MCP server | `mcp__ccnm_agent__call_mcp_tool`、`read_mcp_result` | 同名，在 `mcp__ccnm_agent` 下 |
+| `web_search` | 搜网页 | `WebSearch` | `web_search = "cached"`：Codex 自己的默认值，用 OpenAI 的索引，不现抓网页 |
+| `mcp_servers` | 用 Agent 机器上装好的 MCP server | `mcp__ccnm_agent__call_mcp_tool`、`read_mcp_result` | 同名，在 `mcp__ccnm_agent` 下 |
 | `web_fetch` | 抓任意 URL 的内容 | `WebFetch` | 没有对应工具，不起作用 |
 | `subagents` | 派子代理分头干活 | `Agent`、`TaskStop` | 不起作用，子代理仍关 |
 | `tasks` | 模型自己的待办清单 | `TaskCreate`、`TaskGet`、`TaskList`、`TaskUpdate` | 不起作用 |
 
-**`mcp_servers` 默认开，和 `web_fetch` 默认关的理由是冲突的，这一点要知道**：Agent 上装的远端 server 收得到模型发给它的任何东西，exa 还带一个抓网页的工具——等于换了个名字的 `web_fetch`。默认开是用户 2026-09-22 的决定（"默认全开"）。项目不能接受的话，这一行去掉 `mcp_servers`。开了之后给哪些 server、本机进程类的给不给，是 Agent 那台机器自己的 [`[agent_mcp]`](#agent_mcp) 定的。
+开了的 Claude Code 工具会写进这个会话设置里的允许表（交互会话和 `--print` 用的是同一份），按 Claude Code 的规则不会再为它们问你；`--print` 下实测过，交互会话里没单独量过。
 
-**`web_fetch` 为什么默认关**：它是往外的通道。模型读过的项目内容能拼进 URL 发给任意网站，而让模型这么做只需要一段提示注入——藏在项目某个文件里、或者某条搜索结果里。`web_search` 只把搜索词发给 Anthropic / OpenAI 自己的搜索服务，面窄得多。开之前想清楚这个项目能不能接受。
+**默认全开的代价，开会话前知道一下**（P77，用户 2026-10-07 的决定）：
 
-**子代理不是绕过去的路**：实测（Claude Code 2.1.278）子代理拿到的工具和主会话一模一样，同样没有 Read、Bash。它的代价是额度：每个子代理是一段独立的上下文。
+- **`web_fetch` 是往外的通道。** 模型读过的项目内容能拼进 URL 发给任意网站，而让模型这么做只需要一段提示注入——藏在项目某个文件里、或者某条搜索结果里。项目不能接受的话，把它从这一行去掉（上面第二种写法）。`web_search` 只把搜索词发给 Anthropic / OpenAI 自己的搜索服务，面窄得多。
+- **`mcp_servers` 同理**：Agent 上装的远端 server 收得到模型发给它的任何东西，exa 还带一个抓网页的工具——等于换了个名字的 `web_fetch`。开了之后给哪些 server、本机进程类的给不给，是 Agent 那台机器自己的 [`[agent_mcp]`](#agent_mcp) 定的。
+- **子代理花额度**：每个子代理是一段独立的上下文。它不是绕过去的路：实测（Claude Code 2.1.278）子代理拿到的工具和主会话一模一样，同样没有 Read、Bash。
 
 **写在 Runtime 上，Agent 那边改不了**：和上面几个 `allow_*` 一样，担风险的是项目所在的机器，所以由它说了算。
 
 **会是什么样**：
 
-- 不写这一行等于开 `web_search` 和 `mcp_servers`；`[]` 全关；写了不认识的名字（比如 `todo`）整份配置读不进来，报错里列出能写的值；同一个名字写两遍算一个。
-- P50 之前写了 `agent_tools = ["web_search"]` 的 workspace，意思不变：只有搜索，没有 Agent 上的 MCP server。
-- 不认识这个字段的旧 Agent 连新 Runtime：默认配置照常起会话，只是没有搜索（旧版本本来就全关）；写了别的值，旧 Agent 会拒绝这个请求、报 `unknown field agent_tools`，升级 Agent 就好。认识这个字段、但不认识 `mcp_servers` 的 P46–P49 Agent：默认配置照常起会话（没有 Agent 上的 MCP server，它本来就没有）；明写了 `mcp_servers`，它会拒绝这个请求、报 `unknown variant mcp_servers`。
-- print 模式（`ccnm run --print`、Machine API）没人能点"允许"，所以开了的工具会写进这个会话的权限允许表。实测不写的话，Claude Code 会自动拒绝 `WebSearch` 和 `WebFetch`。
+- 不写这一行等于五项全开；`[]` 全关；写了不认识的名字（比如 `todo`）整份配置读不进来，报错里列出能写的值；同一个名字写两遍算一个。
+- 以前写明了的值意思不变：`agent_tools = ["web_search"]` 只有搜索；`["web_search", "mcp_servers"]` 就是 P77 之前不写时的样子。
+- 两台机器的 ccnm 版本不一样时会话本来就起不来（报 `CCNM_E_VERSION`）。万一混着用：P77 起的 Runtime 默认会把五项写明发给 Agent，v0.8.0 及之前的 Agent 报 `unknown field agent_tools`，P46–P49 的构建报 `unknown variant mcp_servers`，升级 Agent 就好；反过来新 Agent 碰上旧 Runtime，旧 Runtime 不写这一行时仍按旧的默认（搜索 + MCP server）开，不会多开旧 Runtime 没同意过的功能。
+- print 模式（`ccnm run --print`、Machine API）没人能点"允许"，所以开了的工具必须写进允许表。实测不写的话，Claude Code 会自动拒绝 `WebSearch` 和 `WebFetch`。
 - Codex 不写 `model`（用 CLI 默认模型）时，`web_search` 开了也看不到效果：实测 0.154.0 和 0.155.1 在默认模型下三种取值发出的请求一字不差；指定 `gpt-5.1-codex` 这类模型才会带上搜索工具。
 - `WebFetch` 真正取网页之前，Claude Code 会先去 claude.ai 查这个域名安不安全。Agent 机器连不上 claude.ai 的话，每次都报 `Unable to verify if domain … is safe to fetch`。
 - 只管远端受管会话。外部 MCP 客户端（比如 gld）自带自己的工具，和这一行无关。

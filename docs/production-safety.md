@@ -90,7 +90,7 @@ ccnm 不会假装“禁止 `curl` / `wget` / 某几个程序名”就等于 sand
 | --- | --- | --- |
 | Runtime 项目工具与 stdio MCP relay | Runtime Executor | 第三方程序不自动受结构化文件工具的逐路径校验；项目 `.mcp.json` 是可执行配置 |
 | Agent 安装的 skills | Agent Identity，按 skill 目录提供读取 | 只读 skill 不等于整个 `ccnm_agent` 服务只读，也不意味着内容可信 |
-| Agent 远端 HTTP MCP | 从 Agent 发起，携带服务配置的认证信息 | `mcp_servers` 默认开启，不是外发审批；关闭 `web_fetch` 仍可能外发项目内容 |
+| Agent 远端 HTTP MCP | 从 Agent 发起，携带服务配置的认证信息 | `mcp_servers` 默认开启，不是外发审批；`web_fetch` 也默认开启（P77），只关它仍可能经 MCP server 外发项目内容 |
 | Agent `[agent_mcp] local` 点名的本机服务 | Agent Identity | Runtime `exec_sandbox` 不覆盖它；它可能读写本机、接触账号可访问的凭据和服务 |
 
 Agent 子进程去掉部分继承的登录环境和 `SSH_AUTH_SOCK`，随后会加入用户 MCP 配置的显式 `env`；这不是独立 OS 身份隔离，也不是“任何形式的凭据都不可达”的证明。敏感配置只留在相应节点的账号私有文件里，不写进项目仓库、日志、提示或交接文档。缺变量时不要让模型读取个人认证文件来补值。

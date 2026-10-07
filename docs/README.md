@@ -4,7 +4,7 @@ README 负责说明产品、上手与关键边界；本目录保存详细用法�
 
 | 读者与目的 | 阅读顺序 |
 | --- | --- |
-| 初次使用 | [快速开始](getting-started.md) → [配置](configuration.md) → [使用](usage.md) |
+| 初次使用 | [README](../README.md)（有什么用、几个词、该做和别做的）→ [快速开始](getting-started.md) → [配置](configuration.md) → [使用](usage.md) |
 | 接入真实项目 | [生命周期与职责](project-lifecycle.md) → [支持矩阵](support-matrix.md) → [生产安全](production-safety.md) |
 | 升级、清理或断线恢复 | [运维](operations.md) → [故障排查](troubleshooting.md) |
 | 编写外部客户端或编排器 | [公开协议](protocol/README.md) → [执行接口交接](orchestrator-handoff.md) |

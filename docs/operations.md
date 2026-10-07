@@ -176,7 +176,7 @@ fatal: detected dubious ownership in repository at '/path/to/worktree'
 
 - `ccnm workspace add <名字> /home/ccrun/<项目>` 照常登记，并提示它没能核对、也没解析符号链接。**写绝对路径**，和执行身份自己 `pwd -P` 看到的一致。
 - `ccnm run` 不拦；项目在不在由执行身份在开会话时回答。
-- `ccnm doctor` 的 `Runtime 上的项目` 一行是"没查"，执行身份的回答在 `workspace 根目录` 那一行。
+- `ccnm doctor` 的 `Runtime 上的项目` 一行是"不查"（不挡结论），执行身份的回答在 `workspace 根目录` 那一行。
 
 P65 之前这三处都拿 Operator 自己的身份去 stat，报 `is not a directory on this machine`（P62 在 Debian 13 上实测，研究记录 F1）；旧构建上的绕法见[排错手册](troubleshooting.md#linux-上-ccnm-run-报-workspace-root--is-not-a-directory-on-this-machine目录明明在)。
 

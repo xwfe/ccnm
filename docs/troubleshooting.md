@@ -13,6 +13,8 @@ Runtime MCP 转接（`call_mcp_tool`）的 server 自 P52 起：关闭时它进�
 每一条都是真撞过的：先写**你看到的现象**，再写它其实是什么、怎么办。
 按现象找，不用按功能找。
 
+### doctor 的表怎么读
+
 **这页里的 `ccnm doctor` 样本是英文那版**（`ccnm doctor <workspace> --lang en`）。ccnm 默认说中文，所以你屏幕上的行名跟这里贴的不一样。排查时最省事的办法是加 `--lang en` 跑一遍，跟这里逐行对上；要按中文找，常见的几行是这个对应关系：
 
 | 中文 | 英文 | 中文 | 英文 |
@@ -28,7 +30,9 @@ Runtime MCP 转接（`call_mcp_tool`）的 server 自 P52 起：关闭时它进�
 
 英文那几个 `No …` / `Not …` 开头的名字，中文用的是中性名词（`SSH 私钥` 而不是 `没有 SSH 私钥`）。原因是英文那种否定式当表头读得通，中文读起来却像一句陈述——`不在 admin 组｜注意｜this account is in admin` 会让人读到跟事实相反的结论。所以名字只说查了什么，结果全看状态那一列。
 
-状态词：`正常`=OK、`注意`=WARN、`没查`=SKIP、`失败`=FAIL。结论行 `可以用了`=READY、`还不能用`=NOT READY。
+状态词：`正常`=OK、`注意`=WARN、`不查`=NOTE、`没查`=SKIP、`失败`=FAIL。结论行 `可以用了`=READY、`还不能用`=NOT READY。
+
+**`不查` 和 `没查` 差一个字，意思不一样。** `不查` 是 doctor 在这种配置下本来就不查的行：网络隔离（ccnm 管不着，要你自己在 Runtime 上配）、本机工具策略（只有真开着的会话才说得清）、没开 `codex_exec_server` 时的 Codex 原生链、没有 Agent 的 workspace 里那些 Agent 行、你看不进执行账号家目录时的 `Runtime 上的项目`（同一张表的 `workspace 根目录` 会由执行账号回答）。不管两台机器状态如何它都是这个结果，所以**不挡结论**，结论行会写"可以用了（N 项不查……）"。`没查` 是该查、这次没查成：对面没回答、对面构建太旧没报、前面一步失败了。这时结论是"还不能用"、退出码 3，按那一行的说明处理。v0.11.1 及之前没有 `不查`，这些行都写 `没查`，所以任何配置 0 项失败也是"还不能用"（P73 改的）。
 
 **错误码不跟着变。** `CCNM_E_*` 两种语言下都一样，所以拿错误码搜这一页永远搜得到。
 
@@ -680,10 +684,10 @@ workspace root /home/ccrun/proj is not a directory on this machine, which is the
 **P65（2026-09-30）起已修**：ccnm 把"不在"和"这个账号没权限看"分开了。没权限看时：
 
 - `ccnm run` 和其他要连 Agent 的命令不再拦你。项目在不在由执行账号回答——开会话时 Agent 会拿同一个路径问它，真不在就报 `workspace <名字> says its root is …, and on that machine it is missing`。
-- doctor 那一行是"没查"（`SKIP`），并告诉你去看哪一行：
+- doctor 那一行是"不查"（`NOTE`；v0.11.1 及之前是"没查"），并告诉你去看哪一行，结论由那一行决定：
 
   ```text
-  Runtime 上的项目        没查   not checked: bing is not allowed to look at /home/ccrun/proj (Permission denied), so this account cannot say whether the project is there
+  Runtime 上的项目        不查   not checked: bing is not allowed to look at /home/ccrun/proj (Permission denied), so this account cannot say whether the project is there
                                  the account that runs the tools can: its answer is the `Workspace root` row below
   ```
 

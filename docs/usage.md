@@ -313,9 +313,10 @@ workspace 写了 [`codex_exec_server = true`](configuration.md#codex_exec_server
 | --- | --- |
 | 正常 | Runtime 认这个 workspace 走原生链、审计放行命令执行、`codex_bin` 是 Codex 0.154.0、exec-server 起得来也停得掉，写锁取到又放回 |
 | 失败 | 带 Runtime 自己报的码：`CCNM_E_CONFIG`（没配 `codex_bin`）、`CCNM_E_VERSION`（Codex 版本不对）、`CCNM_E_POLICY`（审计不放行，或写锁被占），排查见[出错了怎么办](troubleshooting.md#doctor-里-codex-原生链那一行失败) |
-| 没查 | 没开 `codex_exec_server`、Agent 不是 Codex（Claude 照旧走 MCP 七工具），或前面的 SSH 已经失败——detail 写着是哪种 |
+| 不查 | 没开 `codex_exec_server`，或 Agent 不是 Codex（Claude 照旧走 MCP 七工具）：这一行不适用，不挡结论 |
+| 没查 | 前面的 SSH 已经失败，或对面构建太旧没报——detail 写着是哪种 |
 
-所以**没开这条链的 workspace 表里也有这一行**，是 `没查`：结论行的"N 项没查"比以前多 1，退出码不变（本来就有两行固定的"没查"，结论一直是还不能用）。
+所以**没开这条链的 workspace 表里也有这一行**，是 `不查`，不影响结论（`不查` 和 `没查` 的区别见[排错手册](troubleshooting.md#doctor-的表怎么读)）。
 
 两件事要知道：
 

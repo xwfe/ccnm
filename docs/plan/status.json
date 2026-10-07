@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-10-08T09:00:00+09:00",
-  "current_task": "P79",
+  "last_updated": "2026-10-08T10:30:00+09:00",
+  "current_task": null,
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
     "source": "docs/research/codex-internal-wiring-2026-09-07.md",
@@ -3891,15 +3891,59 @@
     {
       "id": "P79",
       "title": "skill 文件头的 hooks、allowed-tools、model 在远端会话里生效",
-      "status": "in_progress",
+      "status": "completed",
       "depends_on": [
         "P78"
       ],
-      "owner": "Claude Code（claude-opus-5-5，桌面会话）",
+      "owner": null,
       "started_at": "2026-10-08T09:00:00+09:00",
-      "last_updated": "2026-10-08T09:00:00+09:00",
-      "completed_criteria": [],
-      "evidence": [],
+      "last_updated": "2026-10-08T10:30:00+09:00",
+      "completed_criteria": [
+        "P79.1",
+        "P79.2",
+        "P79.3",
+        "P79.4",
+        "P79.5"
+      ],
+      "evidence": [
+        {
+          "kind": "offline",
+          "criteria": [
+            "P79.1"
+          ],
+          "ref": "docs/research/2026-10-08-p79-skill-frontmatter.md",
+          "commit": "ccc1385",
+          "result": "新模块 mcp::hooks（解析、整名匹配、原生形状转换、结果判读、去重与 once、Runner 走 exec_command 同一套凭据复查/环境清理/exec_sandbox）；Server 手写 call_tool，PreToolUse 拦下回 isError CCNM_E_POLICY，PostToolUse 附言放结果最后一个文本块；只在 asks_a_person 为否、执行门放行、会话可写时登记（unattended_commands）。用例：hooks 单元 10 条、server 1 条（四种会话的门）、真实二进制 2 条（rm 被拦且文件还在、apply_patch 后附言与 stdin 为 Write+绝对路径；交互会话不登记）——把门临时恒为否时两条真实二进制用例都红；中立 MCP 客户端 1 条（bridge coding 拦下 rm）。"
+        },
+        {
+          "kind": "offline",
+          "criteria": [
+            "P79.2",
+            "P79.3"
+          ],
+          "ref": "docs/research/2026-10-08-p79-skill-frontmatter.md",
+          "commit": "ccc1385",
+          "result": "skills::load_skill/prompt_text 加 Effects、返回 Loaded；!`命令` 在参数替换后执行、fill 与 inject::find 同规则、单条 120 秒/16 KiB、失败整次加载 CCNM_E_INVALID_ARGS；allowed-tools 按会话写'没什么可放行'或'不起作用+原因'并说明 agent_tools 开关；context: fork 在 subagents Some(true)/Some(false)/None 下三种说法，只写 model 写明不起作用；Agent 侧 ccnm_agent 一律不跑，启动参数加可选 subagents。用例：skills 新增 5 条，旧用例 1 条断言随新措辞改。"
+        },
+        {
+          "kind": "review",
+          "criteria": [
+            "P79.4"
+          ],
+          "ref": "docs/protocol/remote-workspace-mcp-v1.md",
+          "commit": "c796515",
+          "result": "契约第 5.1 节重写不一样之处 1–6 并加 2026-10-08 带日期说明（工具、参数、错误码不变）；fixture 改 call-load-skill-ok.json，新增 call-load-skill-ran.json、call-blocked-by-hook.json；使用说明 frontmatter 对照表、配置说明 allow_unattended_exec 一条、生产安全信任边界表、支持矩阵 skills 行、README 未发版一行、设计记录开头同步。"
+        },
+        {
+          "kind": "offline",
+          "criteria": [
+            "P79.5"
+          ],
+          "ref": "docs/research/2026-10-08-p79-skill-frontmatter.md",
+          "commit": "c796515",
+          "result": "本机 macOS 26.6.2 arm64、rustc 1.98.0：cargo fmt --check、clippy --workspace --all-targets -D warnings、cargo +1.89 check --locked 通过；cargo test --workspace --no-fail-fast 1120 passed / 0 failed；python3 -B scripts/ci_gates.py 通过（计划、协议 46+31 个 fixture、Python 264 条 0 跳过）；cargo test -p ccnm-cli --test external_mcp 含在全量内。没在 Linux 跑、没跑模型、没接真实 Host、没推送、没发版。"
+        }
+      ],
       "blockers": []
     }
   ],
@@ -3966,7 +4010,7 @@
     "【P41 记下不修】mcp-serve 被 SIGKILL（或别的不走正常退出的死法）时，它起的命令的进程组没人收：前台命令一直如此，P41 的后台命令没有期限，所以可能一直跑下去；它们的 run 在 read_output 里读作 exit status unknown。正常路径（客户端断开、stdin EOF、心跳发现对端不在）会先停掉所有命令再放写锁。要收干净得给子进程加会话标记、下次启动时按标记扫（封存的原生链 P26/P30 有类似做法），需另立阶段。依据 docs/research/p41-background-commands-2026-09-18.md 第 5 节。"
   ],
   "handoff": {
-    "next_action": "**2026-10-08 P79 进行中（已认领）：skill 文件头的 hooks、allowed-tools、model 在远端会话里生效。** 用户定设计记录第 7 节四件事全按建议（hooks 只在命令本来不问人的会话里由 Runtime 跑；allowed-tools 不逐条放行；!`命令` 一起做；model 借 Agent 工具派子代理，仅 context: fork），并要求更新文档。ccnm-mobile-handoff.md 未读、未动。\n\n之前的交接：\n**2026-10-08 P76、P77、P78 完成（离线），current_task 为 P79（pending，等用户定设计）。** 用户 2026-10-07 给了四件事：① allow_unattended_exec 文档提醒用户开（P76，3298438）；② agent_tools 默认全开（P77，303df3d、894eaae；内部消息与会话记录里“不带”仍按 P50 的默认读）；③ skill 文件头 hooks、allowed-tools、model 的设计（5fd62eb，docs/research/2026-10-07-skill-frontmatter-design.md；P79 按建议写好验收，开工前要用户定该记录第 7 节四件事：hooks 的门、allowed-tools 不逐条放行、!`命令` 是否一起做、model 借子代理）；④ 默认不要求 ccrun（P78，22adf31、f061def、72481f6：没写 runtime_user 就是共用账号，隔离检查只显示不拒绝）。门禁：Rust 1101/0、clippy、1.89 check、ci_gates（Python 263）。都没推送、没发版、没在 Linux 和真机上跑；v0.12.0 仍是旧判法。下一步由用户定：P79 设计；推送；是否发版并在真机上验共用账号。ccnm-mobile-handoff.md 未读、未动。\n\n之前的交接：\n**2026-10-07 P75 完成（离线）：按项目名停没绑实例的 workspace 也记下“被停止”，current_task 为 null。** 计划 8831829，代码 1f01186，真 tmux 用例 d778370，文档与状态随本提交。门禁：默认 1096/0、64 线程 1095/0、clippy 1.98/1.99、1.89 check、ci_gates 全过。行为变化：旧写法 workspace 按项目名停一个认得出的会话，也会等通道最多 5 秒，确认不了从退出 0 变成 NOT_READY（报错给出 --session <id>）。没在 Linux 跑、没推送、没在真机换候选（修法要 Agent 端是新构建才生效）。同日早些时候发了 v0.12.0 并换装三台（docs/research/2026-10-07-release-0.12.0.md），用户定 dogfood 期间不留回退备份。本机 main 上 21177c4（Windows 当 Runtime 的 OpenSSH 调研记录）是别的会话提交的，同样未推送。下一步由用户定：推送；是否随下个版本发出。ccnm-mobile-handoff.md 未读、未动。\n\n之前的交接：\n**2026-10-07 P74 完成：Linux 当 Agent Node，current_task 为 null。** 代码 daa9f27、90c82f7、bfa42cc，用例 1632ead、49e7c70，文档 d6728b0、3984365、50d3a7a；线上 CI 与 Debian 13 全量 1092/0。hpsrv 上零额度真机（假模型）与一次真实 Codex 会话都通过（bing 当 Agent、同机 ccrun 当 Runtime）。hpsrv 出口在大陆，OpenAI 回 unsupported_country_region_territory，真实模型那次借本机代理（ssh -R，验完即断）；文档已写明跑 AI 的机器要能访问 AI 服务、怎么给 Linux Controller 配代理。保留在 hpsrv 上的：tmux 3.5a、bing 的 linger、用户的 Codex 登录（~/.config/ccnm/agents/codex）。没发版：下一步由用户定是否发 v0.12.0 并换装。Windows 另立设计。ccnm-mobile-handoff.md 未读、未动。",
+    "next_action": "**2026-10-08 P79 完成（离线），current_task 为 null。** 用户定设计记录第 7 节全按建议并要求更新文档。代码 ccc1385（mcp::hooks、Server::call_tool、skills Effects/Loaded、Agent 侧 subagents），文档 c796515（契约 5.1 加带日期说明与 3 份 fixture、使用/配置/生产安全/支持矩阵/README）。命令不问人的会话（--print、bridge coding、allow_unattended_exec）里 skill 的 !`命令` 加载时执行、hooks 围着 ccnm 工具跑；要问人的会话与 Agent 机器上的 skill 不跑。门禁：Rust 1120/0、clippy、1.89 check、ci_gates（Python 264）。P76–P79 都没推送、没发版、没在 Linux 和真机上跑，真实模型会不会照 context: fork 派子代理没验。下一步由用户定：推送；是否发版并真机验共用账号与 hooks。ccnm-mobile-handoff.md 未读、未动。\n\n之前的交接：\n**2026-10-08 P76、P77、P78 完成（离线），current_task 为 P79（pending，等用户定设计）。** 用户 2026-10-07 给了四件事：① allow_unattended_exec 文档提醒用户开（P76，3298438）；② agent_tools 默认全开（P77，303df3d、894eaae；内部消息与会话记录里“不带”仍按 P50 的默认读）；③ skill 文件头 hooks、allowed-tools、model 的设计（5fd62eb，docs/research/2026-10-07-skill-frontmatter-design.md；P79 按建议写好验收，开工前要用户定该记录第 7 节四件事：hooks 的门、allowed-tools 不逐条放行、!`命令` 是否一起做、model 借子代理）；④ 默认不要求 ccrun（P78，22adf31、f061def、72481f6：没写 runtime_user 就是共用账号，隔离检查只显示不拒绝）。门禁：Rust 1101/0、clippy、1.89 check、ci_gates（Python 263）。都没推送、没发版、没在 Linux 和真机上跑；v0.12.0 仍是旧判法。下一步由用户定：P79 设计；推送；是否发版并在真机上验共用账号。ccnm-mobile-handoff.md 未读、未动。\n\n之前的交接：\n**2026-10-07 P75 完成（离线）：按项目名停没绑实例的 workspace 也记下“被停止”，current_task 为 null。** 计划 8831829，代码 1f01186，真 tmux 用例 d778370，文档与状态随本提交。门禁：默认 1096/0、64 线程 1095/0、clippy 1.98/1.99、1.89 check、ci_gates 全过。行为变化：旧写法 workspace 按项目名停一个认得出的会话，也会等通道最多 5 秒，确认不了从退出 0 变成 NOT_READY（报错给出 --session <id>）。没在 Linux 跑、没推送、没在真机换候选（修法要 Agent 端是新构建才生效）。同日早些时候发了 v0.12.0 并换装三台（docs/research/2026-10-07-release-0.12.0.md），用户定 dogfood 期间不留回退备份。本机 main 上 21177c4（Windows 当 Runtime 的 OpenSSH 调研记录）是别的会话提交的，同样未推送。下一步由用户定：推送；是否随下个版本发出。ccnm-mobile-handoff.md 未读、未动。\n\n之前的交接：\n**2026-10-07 P74 完成：Linux 当 Agent Node，current_task 为 null。** 代码 daa9f27、90c82f7、bfa42cc，用例 1632ead、49e7c70，文档 d6728b0、3984365、50d3a7a；线上 CI 与 Debian 13 全量 1092/0。hpsrv 上零额度真机（假模型）与一次真实 Codex 会话都通过（bing 当 Agent、同机 ccrun 当 Runtime）。hpsrv 出口在大陆，OpenAI 回 unsupported_country_region_territory，真实模型那次借本机代理（ssh -R，验完即断）；文档已写明跑 AI 的机器要能访问 AI 服务、怎么给 Linux Controller 配代理。保留在 hpsrv 上的：tmux 3.5a、bing 的 linger、用户的 Codex 登录（~/.config/ccnm/agents/codex）。没发版：下一步由用户定是否发 v0.12.0 并换装。Windows 另立设计。ccnm-mobile-handoff.md 未读、未动。",
     "scope": "2026-10-07 晚 用户给了四件事（文档提醒开 allow_unattended_exec、agent_tools 默认全开、skill 文件头 allowed-tools/hooks/model 怎么生效、默认不要求 ccrun），排成 P76–P79，P79 只出设计。改动：crates/ccnm-core（config、protocol/run、runtime、session、safety、safety/credentials、safety/provider_tests、doctor、mcp/server、work 测试、provider/claude 测试、tests/provider_compat）、crates/ccnm-cli（ws add 帮助、mcp_read_file 与 external_mcp 测试）、tests/test_remote_workspace_mcp.py，docs（计划、研究记录、README、AGENTS.md、配置、使用、快速开始、生产安全、Provider 安全、支持矩阵、运维、排错、架构、契约）。没碰任何机器上的 ccnm 和配置；用户未跟踪的 ccnm-mobile-handoff.md 与 .claude/ 未读、未动。\n\n之前的范围：\n2026-10-07 用户要求把 P62 完成后列的四件事“依次实施”：P70 修 F25/F26（完成）、P71 给受管 Codex 补命令审批（完成）、发版、日用两台换成发布版。P71 下载了 Codex 0.154.0 到会话临时目录做零额度实测（不装进系统），tmux socket 临时放 /tmp/ccnm-p71（已删）。改动：crates/ccnm-core（doctor、work、session、mcp/probe、mcp/server、protocol/mcp、provider/codex）与测试，docs（计划、研究记录、配置、使用、排错、支持矩阵、README）。用户未跟踪的 ccnm-mobile-handoff.md 与 .claude/ 未读、未动；桌面端重建的 P69 worktree 没动。",
     "planning_validation": {
       "at": "2026-09-08T21:22:43+09:00",

@@ -90,7 +90,7 @@ approvals_reviewer = "auto_review"
 
 | 编号 | 影响 | 现象（真机） | 建议 |
 | --- | --- | --- | --- |
-| F27 | 中；**P72 已修（离线 + 零额度，[记录](2026-10-07-p72-approve-for-me-one-session.md)，未发版）** | 受管 Codex 会话里有人选过一次 Approve for me，之后用同一 profile 起的所有受管会话都由 Codex 自动审查，`exec_command` 再也不问人（第 4 节里连 `rm -f` 都放行）。doctor 的 `Command approval` 仍是 OK、说"直到终端前的人把这个会话切走"，doctor 看不到这一行 | 交互会话启动参数加 `-c approvals_reviewer="user"`（上表最后一行实测命令行能盖过配置）。这样会话里的人仍能临时切走（ccnm 拦不住，文档本来就这么写），但只管那一个会话；doctor 的说法随之成立。exec-server 链用 ccnm 自己生成的 `CODEX_HOME`，不读 profile 的配置，按文档推断不受影响，没测 |
+| F27 | 中；**P72 已修**（[记录](2026-10-07-p72-approve-for-me-one-session.md)），v0.11.1 发版，[真机复验](2026-10-07-p72-real-machine-recheck.md)通过 | 受管 Codex 会话里有人选过一次 Approve for me，之后用同一 profile 起的所有受管会话都由 Codex 自动审查，`exec_command` 再也不问人（第 4 节里连 `rm -f` 都放行）。doctor 的 `Command approval` 仍是 OK、说"直到终端前的人把这个会话切走"，doctor 看不到这一行 | 交互会话启动参数加 `-c approvals_reviewer="user"`（上表最后一行实测命令行能盖过配置）。这样会话里的人仍能临时切走（ccnm 拦不住，文档本来就这么写），但只管那一个会话；doctor 的说法随之成立。exec-server 链用 ccnm 自己生成的 `CODEX_HOME`，不读 profile 的配置，按文档推断不受影响，没测 |
 
 本轮先在文档（排错手册、配置说明、使用说明）里按实测写明这一档会延续、怎么看出来、怎么去掉；同日 P72 按上面的建议修了，v0.11.0 及之前的 Agent 仍要用文档里的办法。
 

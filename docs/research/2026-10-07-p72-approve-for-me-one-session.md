@@ -56,6 +56,6 @@
 
 ## 5. 没覆盖的
 
-- **真机与发版**：没做。日用两台和 hpsrv 装的 v0.11.0 仍有 F27；在那之前，旧构建上去掉的办法见[排错手册](../troubleshooting.md#受管-codex-会话exec_command-每次都弹或者一次都不弹)。
+- **真机与发版**：没做。日用两台和 hpsrv 装的 v0.11.0 仍有 F27；在那之前，旧构建上去掉的办法见[排错手册](../troubleshooting.md#受管-codex-会话exec_command-每次都弹或者一次都不弹)。（后注：同日发 v0.11.1 并换装三台；用真实模型的真机复验见 [P72 真机复验](2026-10-07-p72-real-machine-recheck.md)，修法成立。）
 - Approve for me 在当前会话里怎么判，仍是 Codex 自己的事，ccnm 不管。
 - 只测了 Codex 0.154.0。

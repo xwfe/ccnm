@@ -89,7 +89,7 @@ P57 只建立当前构建基线和无真实模型的缺口复现；不要重做 
 | --- | --- | --- |
 | 官方 CLI 版本升级 | 当前 pin 无法日用或新版本有必要能力；先核对官方文档与真实能力探针 | 不按最新版本号直接放宽 allowlist；拒绝伪造 provider/参数/fixture |
 | Linux Agent | 明确需要常驻 Linux Agent，且先设计 Controller、登录上下文、监督和身份隔离的 Linux RFC | hpsrv Runtime 不因此被描述成 Linux Agent；不将 launchd 简单替换成 systemd 就算完成 |
-| Windows | 完成路径、ACL、进程树、SSH、PTY 和打包 RFC 后，先限定 Runtime 或 Agent 的明确范围 | 三端目标保留；本轮不把 POSIX 测试当 Windows 支持 |
+| Windows | 完成路径、ACL、进程树、SSH、PTY 和打包 RFC 后，先限定 Runtime 或 Agent 的明确范围；写 RFC 前先读[别人踩过的 OpenSSH 坑](../research/2026-10-07-windows-openssh-pitfalls.md) | 三端目标保留；本轮不把 POSIX 测试当 Windows 支持 |
 | 交互式 Machine API | 存在明确消费者需要输入、审批、事件流与重连语义 | PocketShell 的终端接入不是理由；不为填满契约而实现 |
 | 强杀/脱组后代自动回收 | OS 监督机制能证明归属与清理，且已具备可复验故障模型 | 当前坚持 fail-closed 和人工处理；不靠 PID 扫描/超时清锁 |
 | 浏览器、Git/CI 或更多工具 | 真实项目验证表明现有命令/MCP 接口确有不足 | 优先组合外部工具，不扩大成通用 IDE/编排/发布平台 |

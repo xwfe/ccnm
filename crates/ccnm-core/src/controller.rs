@@ -24,6 +24,17 @@
 //! Starting Claude from the controller is the same story: a Claude started
 //! from ssh would inherit the session that cannot see its own credentials.
 //!
+//! # On Linux
+//!
+//! There is no login Keychain to reach: Claude Code keeps its login in
+//! `~/.claude/.credentials.json` and Codex in `auth.json`, files any process
+//! of the account can read. The controller is still needed -- it is what
+//! keeps a session alive after the ssh connection that asked for it is
+//! gone -- but "is it in the login session" is not the question there.
+//! It runs as a systemd user service ([`crate::systemd`]), reports
+//! [`Host::Linux`] in its [`Context`], and whether a CLI it starts can log
+//! in is answered by that CLI's own `auth status`, as everywhere (P74).
+//!
 //! # Shape
 //!
 //! ```text
@@ -90,6 +101,32 @@ const IO_TIMEOUT: Duration = Duration::from_secs(10);
 /// confusion; this turns it into a sentence.
 const MAX_SOCKET_PATH: usize = 100;
 
+/// The operating system a controller runs on. Reported by the controller
+/// itself, because the machine reading a [`Context`] is often another one:
+/// `doctor` on a macOS Runtime Node reads the context of a Linux Agent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Host {
+    #[serde(rename = "macos")]
+    MacOs,
+    Linux,
+    /// Built for something else. There is no controller support there yet
+    /// (Windows needs its own design), and it says so rather than guessing.
+    Other,
+}
+
+impl Host {
+    pub fn current() -> Host {
+        if cfg!(target_os = "macos") {
+            Host::MacOs
+        } else if cfg!(target_os = "linux") {
+            Host::Linux
+        } else {
+            Host::Other
+        }
+    }
+}
+
 /// What the controller answers about itself.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Context {
@@ -99,34 +136,85 @@ pub struct Context {
     /// The listening process, so a stuck controller can be found without
     /// guessing which of the ccnm processes it is.
     pub pid: u32,
-    /// `launchctl managername`: the security session this process is in.
-    /// `Aqua` is the GUI login session; an ssh session reports
-    /// `Background`. Only `Aqua` can reach the login Keychain.
+    /// How this process is hosted. On macOS `launchctl managername`, the
+    /// security session it is in: `Aqua` is the GUI login session, an ssh
+    /// session reports `Background`, and only `Aqua` can reach the login
+    /// Keychain. On Linux whether systemd started it.
     pub manager: Reported<String>,
+    /// Absent from controllers before P74, all of which ran on macOS.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platform: Option<Host>,
+    /// Linux only: whether systemd keeps this account's services running
+    /// after its last login ends (`loginctl ... Linger`). `Some(false)`
+    /// means logging out stops this controller and every session it
+    /// started. `None` where the question does not apply or could not be
+    /// answered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub linger: Option<bool>,
 }
 
+/// What a Linux controller reports as its manager.
+pub const SYSTEMD_SERVICE: &str = "systemd user service";
+pub const STARTED_BY_HAND: &str = "not under systemd (started by hand)";
+
 impl Context {
+    /// This process, on the system it was built for.
     pub fn of(runner: &dyn ProcessRunner) -> Context {
+        Context::on(runner, Host::current())
+    }
+
+    /// This process, measured the way `host` measures it. Separate from
+    /// [`Context::of`] so every platform's answer is testable on any.
+    pub fn on(runner: &dyn ProcessRunner, host: Host) -> Context {
+        let hello = hello::answer(&HelloRequest::new(None));
+        let (manager, linger) = match host {
+            Host::MacOs => (
+                runner
+                    .run(&managername_cmd())
+                    .and_then(|out| parse_managername(&out))
+                    .map_err(Into::into),
+                None,
+            ),
+            Host::Linux => (
+                Ok(linux_manager(std::env::var_os("INVOCATION_ID").is_some())),
+                linger(runner, &hello.user),
+            ),
+            Host::Other => (
+                Err(Error::new(
+                    ErrorCode::NotReady,
+                    "ccnm has no controller for this operating system yet; an Agent Node is macOS or Linux",
+                )
+                .into()),
+                None,
+            ),
+        };
         Context {
-            hello: hello::answer(&HelloRequest::new(None)),
+            hello,
             pid: std::process::id(),
-            manager: runner
-                .run(&managername_cmd())
-                .and_then(|out| parse_managername(&out))
-                .map_err(Into::into),
+            manager,
+            platform: Some(host),
+            linger,
         }
     }
 
-    /// Whether this process is in the GUI login session, the only context
-    /// where Claude can reach its credentials.
+    /// Whether a CLI this controller starts can read its own login.
     ///
-    /// Measured values are `Aqua` for a LaunchAgent in `gui/<uid>` and
-    /// `Background` for an ssh session. `StandardIO`, `System` and
-    /// `LoginWindow` also exist and are equally unable to prompt for
-    /// Keychain access, so anything that is not `Aqua` is treated as not a
-    /// login session.
+    /// macOS: only from the GUI login session. Measured values are `Aqua`
+    /// for a LaunchAgent in `gui/<uid>` and `Background` for an ssh
+    /// session. `StandardIO`, `System` and `LoginWindow` also exist and are
+    /// equally unable to prompt for Keychain access, so anything that is
+    /// not `Aqua` is treated as not a login session. A context without a
+    /// platform is a controller from before P74, which only ran on macOS.
+    ///
+    /// Linux: the login is a file the account can read from any session,
+    /// so a controller that answers at all qualifies; the CLI's own
+    /// `auth status` then says whether it is logged in.
     pub fn login_session(&self) -> bool {
-        self.manager.as_deref() == Ok("Aqua")
+        match self.platform.unwrap_or(Host::MacOs) {
+            Host::MacOs => self.manager.as_deref() == Ok("Aqua"),
+            Host::Linux => self.manager.is_ok(),
+            Host::Other => false,
+        }
     }
 
     /// One line for a doctor row.
@@ -163,6 +251,45 @@ pub fn parse_managername(out: &Output) -> Result<String> {
         )));
     }
     Ok(name)
+}
+
+/// `INVOCATION_ID` is set by systemd for every unit it starts, user units
+/// included, and by nothing else.
+pub fn linux_manager(under_systemd: bool) -> String {
+    if under_systemd {
+        SYSTEMD_SERVICE.to_string()
+    } else {
+        STARTED_BY_HAND.to_string()
+    }
+}
+
+/// `loginctl show-user <user> --property=Linger --value`. Read-only.
+pub fn linger_cmd(user: &str) -> Cmd {
+    Cmd::new("loginctl")
+        .args(["show-user", user, "--property=Linger", "--value"])
+        .timeout(Duration::from_secs(5))
+}
+
+/// `yes` / `no`, anything else (no logind, an error) is "cannot say".
+pub fn linger(runner: &dyn ProcessRunner, user: &str) -> Option<bool> {
+    let out = runner.run(&linger_cmd(user)).ok()?;
+    if !out.success() {
+        return None;
+    }
+    match out.stdout_lossy().trim() {
+        "yes" => Some(true),
+        "no" => Some(false),
+        _ => None,
+    }
+}
+
+/// What to type to stop or restart the controller, on this machine.
+fn service_hint(host: Host, verb: &str) -> String {
+    match host {
+        Host::Linux => format!("systemctl --user {verb} {}", crate::systemd::UNIT),
+        _ if verb == "stop" => format!("launchctl bootout gui/$(id -u)/{LABEL}"),
+        _ => format!("launchctl kickstart -k gui/$(id -u)/{LABEL}"),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -310,13 +437,18 @@ pub struct Tools<'a> {
     pub tmux: Option<PathBuf>,
     /// This binary, to run as the supervisor of each session.
     pub exe: PathBuf,
+    /// The system this controller measures its context on:
+    /// [`Host::current`] in production, fixed in tests.
+    pub host: Host,
 }
 
 /// Answer one request. Pure apart from the commands it runs, so the
 /// behaviour is testable without a socket.
 pub fn answer(req: &Request, tools: &Tools<'_>) -> Response {
     match &req.body {
-        RequestBody::Hello => Response::new(ReplyBody::Hello(Context::of(tools.runner))),
+        RequestBody::Hello => {
+            Response::new(ReplyBody::Hello(Context::on(tools.runner, tools.host)))
+        }
         RequestBody::AgentAuth {
             provider,
             identity,
@@ -629,9 +761,9 @@ impl Listener {
                 return Err(Error::new(
                     ErrorCode::Policy,
                     format!(
-                        "another controller is already listening on {}\nask it instead of starting a second one, or stop it with: launchctl bootout gui/$(id -u)/{}",
+                        "another controller is already listening on {}\nask it instead of starting a second one, or stop it with: {}",
                         path.display(),
-                        crate::controller::LABEL
+                        service_hint(Host::current(), "stop")
                     ),
                 ));
             }
@@ -862,6 +994,35 @@ fn unexpected(body: &ReplyBody) -> Error {
     )
 }
 
+/// How long to wait for the service manager to get the controller
+/// listening before calling an install a failure.
+const START_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// launchd and systemd both return as soon as they have accepted the job,
+/// so the socket is not there yet. Poll rather than guess a sleep.
+pub fn wait_until_listening(socket: &Path, log: &Path, manager: &str) -> Result<Context> {
+    let deadline = std::time::Instant::now() + START_TIMEOUT;
+    loop {
+        let last = match context(socket) {
+            Ok(ctx) => return Ok(ctx),
+            Err(e) => e,
+        };
+        if std::time::Instant::now() >= deadline {
+            return Err(Error::new(
+                ErrorCode::NotReady,
+                format!(
+                    "the controller was accepted by {manager} but nothing is listening on {} after {:?}\n{}\nwhat it wrote: {}",
+                    socket.display(),
+                    START_TIMEOUT,
+                    last.message(),
+                    log.display()
+                ),
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
 /// The failure users will actually hit, so it says which of the two
 /// situations this is and what to type.
 ///
@@ -869,6 +1030,7 @@ fn unexpected(body: &ReplyBody) -> Error {
 /// about the Agent Node has been *disproven*. Doctor renders it as SKIP,
 /// which blocks READY without claiming something is broken.
 fn not_listening(path: &Path, err: &std::io::Error) -> Error {
+    let host = Host::current();
     let (what, fix) = if err.kind() == std::io::ErrorKind::NotFound {
         (
             "no socket at",
@@ -878,16 +1040,22 @@ fn not_listening(path: &Path, err: &std::io::Error) -> Error {
         (
             "nothing is listening on",
             format!(
-                "the controller is installed but not running; on the Agent Node: launchctl kickstart -k gui/$(id -u)/{LABEL}"
+                "the controller is installed but not running; on the Agent Node: {}",
+                service_hint(host, "restart")
             ),
         )
     };
+    let why = match host {
+        Host::Linux => {
+            "the controller is the long-lived process that starts Agent sessions, so they outlive the ssh connection that asked for them"
+        }
+        _ => {
+            "the controller is the process that answers from the Agent Node's login session; an ssh session cannot read the login Keychain, so Claude's login cannot be checked without it"
+        }
+    };
     Error::new(
         ErrorCode::NotReady,
-        format!(
-            "{what} {}\nthe controller is the process that answers from the Agent Node's login session; an ssh session cannot read the login Keychain, so Claude's login cannot be checked without it\n{fix}",
-            path.display()
-        ),
+        format!("{what} {}\n{why}\n{fix}", path.display()),
     )
     .with_source(std::io::Error::new(err.kind(), err.to_string()))
 }
@@ -942,6 +1110,7 @@ mod tests {
             ),
             tmux: Some(PathBuf::from("/opt/homebrew/bin/tmux")),
             exe: PathBuf::from("/Users/me/.local/bin/ccnm"),
+            host: crate::controller::Host::MacOs,
         }
     }
 
@@ -977,6 +1146,7 @@ mod tests {
             config_path: Some(path),
             tmux: None,
             exe: "/agent/ccnm".into(),
+            host: crate::controller::Host::MacOs,
         };
         let request = Request::new(RequestBody::AgentAuth {
             provider: AgentProvider::Claude,
@@ -1255,16 +1425,125 @@ mod tests {
         // An ssh session, and anything else, is not a login session.
         let fake = FakeRunner::new();
         fake.push(Output::exited(0, "Background\n"));
-        let ctx = Context::of(&fake);
+        let ctx = Context::on(&fake, Host::MacOs);
         assert!(!ctx.login_session());
         assert!(ctx.describe().contains("Background"));
+    }
+
+    /// P74: a Linux controller answers from a systemd user service, not
+    /// from a GUI session, and its CLIs read their login from a file. It
+    /// must count as able to start Agents -- read on any machine, since
+    /// `doctor` on a macOS Runtime Node reads a Linux Agent's context.
+    #[test]
+    fn a_linux_controller_can_start_agents_without_a_gui_session() {
+        let json = format!(
+            r#"{{"hello":{{"protocol":1,"ccnm_version":"{}","user":"bing","platform":"linux/x86_64","exe":null,"root":null}},"pid":7,"manager":{{"Ok":"systemd user service"}},"platform":"linux","linger":true}}"#,
+            crate::VERSION
+        );
+        let ctx: Context = serde_json::from_str(&json).unwrap();
+        assert!(ctx.login_session(), "{ctx:?}");
+        assert!(
+            ctx.describe().contains("systemd user service"),
+            "{}",
+            ctx.describe()
+        );
+    }
+    /// Measured on Linux: no launchctl, the manager says how it was
+    /// started, and linger comes from logind.
+    #[test]
+    fn a_linux_controller_measures_itself_without_launchctl() {
+        let fake = FakeRunner::new();
+        fake.push(Output::exited(0, "no\n"));
+        let ctx = Context::on(&fake, Host::Linux);
+        assert_eq!(ctx.platform, Some(Host::Linux));
+        assert!(
+            matches!(
+                ctx.manager.as_deref(),
+                Ok(SYSTEMD_SERVICE) | Ok(STARTED_BY_HAND)
+            ),
+            "{:?}",
+            ctx.manager
+        );
+        assert_eq!(ctx.linger, Some(false));
+        assert!(ctx.login_session());
+        let calls: Vec<String> = fake.calls().iter().map(Cmd::display).collect();
+        assert_eq!(calls.len(), 1, "{calls:?}");
+        assert!(
+            calls[0].starts_with("loginctl show-user ")
+                && calls[0].ends_with(" --property=Linger --value"),
+            "{calls:?}"
+        );
+        assert_eq!(linux_manager(true), SYSTEMD_SERVICE);
+        assert_eq!(linux_manager(false), STARTED_BY_HAND);
+        // The wire form other machines read.
+        let json = serde_json::to_value(&ctx).unwrap();
+        assert_eq!(json["platform"], "linux");
+        assert_eq!(json["linger"], false);
+    }
+
+    /// Controllers before P74 send no platform; they all ran on macOS, so
+    /// the macOS rule applies to them -- an unknown is never waved through.
+    #[test]
+    fn a_context_without_a_platform_is_read_as_macos() {
+        let json = format!(
+            r#"{{"hello":{{"protocol":1,"ccnm_version":"{}","user":"me","platform":"macos/aarch64","exe":null,"root":null}},"pid":7,"manager":{{"Ok":"Background"}}}}"#,
+            crate::VERSION
+        );
+        let ctx: Context = serde_json::from_str(&json).unwrap();
+        assert_eq!(ctx.platform, None);
+        assert!(!ctx.login_session());
+        let macos = Context::on(
+            &{
+                let fake = FakeRunner::new();
+                fake.push(Output::exited(0, "Aqua\n"));
+                fake
+            },
+            Host::MacOs,
+        );
+        assert_eq!(macos.platform, Some(Host::MacOs));
+        assert_eq!(macos.linger, None);
+        assert!(macos.login_session());
+        // Fields a pre-P74 reader does not know are left out when empty.
+        let json = serde_json::to_value(&macos).unwrap();
+        assert!(json.get("linger").is_none(), "{json}");
+    }
+
+    #[test]
+    fn other_systems_say_there_is_no_controller_yet() {
+        let fake = FakeRunner::new();
+        let ctx = Context::on(&fake, Host::Other);
+        assert!(!ctx.login_session());
+        assert!(
+            ctx.manager
+                .as_ref()
+                .unwrap_err()
+                .message
+                .contains("no controller for this operating system yet"),
+            "{:?}",
+            ctx.manager
+        );
+        assert!(fake.calls().is_empty());
+    }
+
+    #[test]
+    fn linger_is_yes_no_or_cannot_say() {
+        for (out, want) in [
+            (Output::exited(0, "yes\n"), Some(true)),
+            (Output::exited(0, "no\n"), Some(false)),
+            (Output::exited(1, ""), None),
+            (Output::exited(0, "maybe\n"), None),
+        ] {
+            let fake = FakeRunner::new();
+            fake.push(out);
+            assert_eq!(linger(&fake, "bing"), want);
+        }
     }
 
     #[test]
     fn a_missing_launchctl_is_reported_not_guessed() {
         let fake = FakeRunner::new();
         fake.push(Output::exited(127, ""));
-        let ctx = Context::of(&fake);
+        let ctx = Context::on(&fake, Host::MacOs);
         assert!(ctx.manager.is_err(), "{:?}", ctx.manager);
         assert!(
             !ctx.login_session(),

@@ -24,6 +24,7 @@ pub mod runtime;
 pub mod safety;
 pub mod session;
 pub mod ssh;
+pub mod systemd;
 pub mod tmux;
 pub mod work;
 

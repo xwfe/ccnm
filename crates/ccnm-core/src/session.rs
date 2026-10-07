@@ -701,7 +701,10 @@ pub fn read_outcome(dir: &Dir) -> Result<Option<Outcome>> {
 /// Never fails the run: the answer is diagnostic. A session that works is
 /// worth more than one refused because `launchctl` was slow.
 fn write_context(dir: &Dir) {
-    let measured = measure_context(&crate::process::SystemRunner);
+    let measured = measure_context(
+        &crate::process::SystemRunner,
+        crate::controller::Host::current(),
+    );
     tracing::info!(context = %measured.describe(), "claude will run here");
     if let Ok(json) = pretty(&measured) {
         let _ = fs::write(dir.context(), json);
@@ -718,11 +721,27 @@ fn keychain_cmd(home: &Path) -> process::Cmd {
         .timeout(Duration::from_secs(10))
 }
 
-fn measure_context(runner: &dyn process::ProcessRunner) -> Context {
-    let manager = runner
-        .run(&crate::controller::managername_cmd())
-        .and_then(|out| crate::controller::parse_managername(&out))
-        .ok();
+fn measure_context(runner: &dyn process::ProcessRunner, host: crate::controller::Host) -> Context {
+    use crate::controller::Host;
+    let manager = match host {
+        Host::MacOs => runner
+            .run(&crate::controller::managername_cmd())
+            .and_then(|out| crate::controller::parse_managername(&out))
+            .ok(),
+        // The supervisor inherits the controller's environment, so this is
+        // how the controller was started (P74).
+        Host::Linux => Some(crate::controller::linux_manager(
+            std::env::var_os("INVOCATION_ID").is_some(),
+        )),
+        Host::Other => None,
+    };
+    if host != Host::MacOs {
+        // No login Keychain outside macOS: the question does not apply.
+        return Context {
+            manager,
+            keychain: None,
+        };
+    }
     let keychain = paths::home_dir().ok().and_then(|home| {
         let path = home.join("Library/Keychains/login.keychain-db");
         // No login keychain on this machine: the question does not apply,
@@ -1024,7 +1043,7 @@ mod tests {
             0,
             "Keychain \"login.keychain-db\" no-timeout\n",
         ));
-        let measured = measure_context(&fake);
+        let measured = measure_context(&fake, crate::controller::Host::MacOs);
         assert_eq!(measured.manager.as_deref(), Some("Background"));
         // The keychain answer depends on this machine having a login
         // keychain; the shape of the sentence does not.

@@ -980,6 +980,7 @@ fn controller_rejects_network_supplied_home_before_probing() {
         agents: crate::provider::AgentBinaries::default(),
         tmux: None,
         exe: "/agent/ccnm".into(),
+        host: crate::controller::Host::MacOs,
     };
     let req = Request::new(RequestBody::AgentAuth {
         identity: None,

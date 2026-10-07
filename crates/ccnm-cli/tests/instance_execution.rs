@@ -182,6 +182,8 @@ fn public_default_and_explicit_instance_selection_use_v3_without_private_paths()
         },
         pid: 42,
         manager: Ok("Aqua".into()),
+        platform: None,
+        linger: None,
     };
     let claude = AgentIdentity {
         node: "worker".into(),
@@ -382,6 +384,7 @@ fn identity_mismatched_supervisor_transport_and_controller_requests_fail_before_
         agents: ccnm_core::provider::AgentBinaries::with_claude(Some(fake_agent)),
         tmux: None,
         exe: env!("CARGO_BIN_EXE_ccnm").into(),
+        host: ccnm_core::controller::Host::MacOs,
     };
     let request = ccnm_core::controller::Request::new(ccnm_core::controller::RequestBody::Start {
         identity: None,
@@ -527,6 +530,7 @@ fn bound_print_run(f: &Fixture, supervisor: &str, timeout_secs: u64) -> BoundRun
             config_path: Some(config_path),
             tmux: None,
             exe: script,
+            host: ccnm_core::controller::Host::MacOs,
         };
         for _ in 0..3 {
             listener.serve_one(&tools).unwrap();
@@ -890,6 +894,7 @@ fn a_busy_write_guard_fails_the_run_preflight_as_policy_not_unreachable() {
             config_path: Some(config_path),
             tmux: None,
             exe: PathBuf::from("/synthetic/never-started"),
+            host: ccnm_core::controller::Host::MacOs,
         };
         for _ in 0..2 {
             listener.serve_one(&tools).unwrap();

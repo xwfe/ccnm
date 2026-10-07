@@ -357,7 +357,7 @@ impl AgentProvider {
         match self {
             Self::Claude => Error::new(
                 ErrorCode::Version,
-                "claude not found in the controller's environment; it looked in launchd's PATH, ~/.local/bin, ~/.claude/local, /usr/local/bin, /opt/homebrew/bin",
+                "claude not found in the controller's environment; it looked in the controller service's PATH (launchd or systemd, not your shell's), ~/.local/bin, ~/.claude/local, /usr/local/bin, /opt/homebrew/bin",
             ),
             Self::Codex => Error::new(
                 ErrorCode::Version,

@@ -34,11 +34,6 @@ use crate::controller::{self, Context, LABEL};
 use crate::error::{Error, ErrorCode, Result};
 use crate::process::{Cmd, ProcessRunner};
 
-/// How long to wait for launchd to get the agent listening before calling
-/// the install a failure.
-const START_TIMEOUT: Duration = Duration::from_secs(10);
-const POLL: Duration = Duration::from_millis(100);
-
 /// `~/Library/LaunchAgents/dev.ccnm.controller.plist`.
 ///
 /// A user agent, not `/Library/LaunchAgents` (which needs root and would
@@ -249,32 +244,7 @@ pub fn install(plan: &Plan, runner: &dyn ProcessRunner) -> Result<Context> {
             ),
         ));
     }
-    wait_until_listening(&plan.socket, &plan.log)
-}
-
-/// launchd returns as soon as it has accepted the job, so the socket is
-/// not there yet. Poll rather than guess a sleep.
-fn wait_until_listening(socket: &Path, log: &Path) -> Result<Context> {
-    let deadline = std::time::Instant::now() + START_TIMEOUT;
-    loop {
-        let last = match controller::context(socket) {
-            Ok(ctx) => return Ok(ctx),
-            Err(e) => e,
-        };
-        if std::time::Instant::now() >= deadline {
-            return Err(Error::new(
-                ErrorCode::NotReady,
-                format!(
-                    "the agent was accepted by launchd but nothing is listening on {} after {:?}\n{}\nwhat it wrote: {}",
-                    socket.display(),
-                    START_TIMEOUT,
-                    last.message(),
-                    log.display()
-                ),
-            ));
-        }
-        std::thread::sleep(POLL);
-    }
+    controller::wait_until_listening(&plan.socket, &plan.log, "launchd")
 }
 
 /// Stop the agent and remove its plist. Leaves the log: it is the only

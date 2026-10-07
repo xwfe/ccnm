@@ -157,6 +157,16 @@ pub fn state_dir() -> Result<PathBuf> {
     ))
 }
 
+/// `$XDG_CONFIG_HOME`, defaulting to `~/.config`: where `systemctl --user`
+/// looks for the units an account installed itself (`systemd/user/`).
+pub fn config_home() -> Result<PathBuf> {
+    Ok(xdg_or(
+        env_path("XDG_CONFIG_HOME").as_deref(),
+        &home_dir()?,
+        ".config",
+    ))
+}
+
 pub(crate) fn config_path_in(home: &Path, xdg_config_home: Option<&Path>) -> PathBuf {
     xdg_or(xdg_config_home, home, ".config").join("ccnm/config.toml")
 }

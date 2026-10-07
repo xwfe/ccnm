@@ -912,6 +912,7 @@ mod tests {
                 ))),
                 tmux: Some(PathBuf::from("/opt/homebrew/bin/tmux")),
                 exe: PathBuf::from("/opt/work/ccnm"),
+                host: crate::controller::Host::MacOs,
             };
             listener.serve_one(&tools).expect("hello");
             listener.serve_one(&tools).expect("start");
@@ -1122,6 +1123,7 @@ mod tests {
                     ))),
                     tmux: None,
                     exe: supervisor,
+                    host: crate::controller::Host::MacOs,
                 };
                 listener.serve_one(&tools).expect("hello");
                 listener.serve_one(&tools).expect("start");

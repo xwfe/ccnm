@@ -3266,6 +3266,7 @@ mod tests {
                 ))),
                 tmux: Some(PathBuf::from("/opt/homebrew/bin/tmux")),
                 exe: PathBuf::from("/x/ccnm"),
+                host: crate::controller::Host::MacOs,
             };
             listener.serve_one(&tools).unwrap();
         });
@@ -3705,6 +3706,7 @@ mod tests {
                 ))),
                 tmux: None,
                 exe: PathBuf::from("/x/ccnm"),
+                host: crate::controller::Host::MacOs,
             };
             listener.serve_one(&tools).unwrap();
         });
@@ -3745,6 +3747,7 @@ mod tests {
                 agents: crate::provider::AgentBinaries::with_claude(None),
                 tmux: None,
                 exe: PathBuf::from("/synthetic/ccnm"),
+                host: crate::controller::Host::MacOs,
             };
             listener.serve_one(&tools).unwrap();
             listener.serve_one(&tools).unwrap();
@@ -3816,6 +3819,7 @@ mod tests {
                     ))),
                     tmux: None,
                     exe: supervisor,
+                    host: crate::controller::Host::MacOs,
                 };
                 listener.serve_one(&tools).unwrap(); // hello
                 listener.serve_one(&tools).unwrap(); // start
@@ -3941,6 +3945,7 @@ mod tests {
                 ))),
                 tmux: None,
                 exe: PathBuf::from("/x/ccnm"),
+                host: crate::controller::Host::MacOs,
             };
             listener.serve_one(&tools).unwrap(); // hello
             listener.serve_one(&tools).unwrap(); // claude-auth

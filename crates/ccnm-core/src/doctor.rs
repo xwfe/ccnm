@@ -1311,6 +1311,16 @@ fn controller_row(rep: &ProbeReport) -> Check {
                 ctx.describe()
             ),
         ),
+        // Linux (P74): it works, but only while the account is logged in
+        // somewhere -- the first logout takes the sessions with it.
+        Some(Ok(ctx)) if ctx.linger == Some(false) => Check::warn(
+            NAME,
+            format!(
+                "{}\n{}",
+                ctx.describe(),
+                crate::systemd::linger_warning(&ctx.hello.user)
+            ),
+        ),
         Some(Ok(ctx)) => Check::ok(NAME, ctx.describe()),
     }
 }
@@ -1912,6 +1922,8 @@ mod tests {
             hello: hello("me", crate::VERSION, None),
             pid: 4711,
             manager: Ok(manager.to_string()),
+            platform: None,
+            linger: None,
         }
     }
 
@@ -3493,6 +3505,44 @@ mod tests {
         assert_eq!(report.exit_code(), 0);
         assert!(report.ready());
         assert!(report.render().ends_with("\nREADY\n"));
+    }
+
+    /// P74: a Linux controller is OK as it answers; with linger off it is a
+    /// WARN that says what logging out does and what to type.
+    #[test]
+    fn a_linux_controller_without_linger_is_a_warning_that_names_the_fix() {
+        let ctx = |linger: Option<bool>| crate::controller::Context {
+            hello: crate::protocol::hello::HelloReport {
+                protocol: 1,
+                ccnm_version: crate::VERSION.into(),
+                user: "bing".into(),
+                platform: "linux/x86_64".into(),
+                exe: None,
+                root: None,
+                wire: None,
+            },
+            pid: 7,
+            manager: Ok(crate::controller::SYSTEMD_SERVICE.into()),
+            platform: Some(crate::controller::Host::Linux),
+            linger,
+        };
+        let mut probe = good_probe();
+        probe.controller = Some(Ok(ctx(Some(true))));
+        let row = controller_row(&probe);
+        assert_eq!(row.status, Status::Ok, "{row:?}");
+        assert!(row.detail.contains("systemd user service"), "{row:?}");
+
+        probe.controller = Some(Ok(ctx(Some(false))));
+        let row = controller_row(&probe);
+        assert_eq!(row.status, Status::Warn, "{row:?}");
+        assert!(
+            row.detail.contains("sudo loginctl enable-linger bing"),
+            "{row:?}"
+        );
+
+        // Linger unknown (no logind): nothing to warn about.
+        probe.controller = Some(Ok(ctx(None)));
+        assert_eq!(controller_row(&probe).status, Status::Ok);
     }
 
     /// P73: a NOTE is "not checked, and could not have been" -- it does not

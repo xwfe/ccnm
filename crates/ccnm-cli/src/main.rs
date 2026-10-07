@@ -284,16 +284,17 @@ enum McpCommand {
 
 #[derive(Subcommand)]
 enum ControllerCommand {
-    /// Install the LaunchAgent, start it, and check that it answers from
-    /// the login session
+    /// Install the controller as a background service (a LaunchAgent on
+    /// macOS, a systemd user service on Linux), start it, and check that it
+    /// answers
     Install {
-        /// Print the plist and the launchctl commands; change nothing
+        /// Print the service file and the commands; change nothing
         #[arg(long)]
         dry_run: bool,
     },
-    /// Is a controller listening, and in which security session?
+    /// Is a controller listening, and how is it running?
     Status,
-    /// Stop the controller and remove its LaunchAgent
+    /// Stop the controller and remove its service
     Uninstall,
 }
 
@@ -729,17 +730,17 @@ fn zh_help(command: clap::Command) -> clap::Command {
                 })
         })
         .mut_subcommand("controller", |c| {
-            c.about("登录会话里的 controller。这几条要在 Agent Node 上跑，或者 ssh 过去跑：`ssh work ccnm controller install`")
+            c.about("负责拉起 AI 的后台服务（controller）。这几条要在 Agent Node 上跑，或者 ssh 过去跑：`ssh work ccnm controller install`")
                 .mut_subcommand("install", |c| {
-                    c.about("装上 LaunchAgent、把它起起来，并确认它是从登录会话里回话的")
+                    c.about("把 controller 装成后台服务（macOS 是 LaunchAgent，Linux 是 systemd 用户服务）、起起来，并确认它回话")
                         .mut_arg("dry_run", |a| {
-                            a.help("只打印 plist 和 launchctl 命令，什么都不改")
+                            a.help("只打印服务文件和要跑的命令，什么都不改")
                         })
                 })
                 .mut_subcommand("status", |c| {
-                    c.about("有没有 controller 在监听，它在哪个安全会话里")
+                    c.about("有没有 controller 在监听，它是怎么跑起来的")
                 })
-                .mut_subcommand("uninstall", |c| c.about("停掉 controller，删掉它的 LaunchAgent"))
+                .mut_subcommand("uninstall", |c| c.about("停掉 controller，删掉它的后台服务"))
         })
 }
 
@@ -1384,18 +1385,20 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
                 let controller_config_path = config_path()?;
                 let tools = controller::Tools {
                     runner: &SystemRunner,
-                    // Resolved here, in launchd's environment, because
-                    // that is the PATH Claude will actually be started
-                    // with.
+                    // Resolved here, in the service manager's environment
+                    // (launchd or systemd), because that is the PATH
+                    // Claude will actually be started with.
                     agents: ccnm_core::provider::AgentBinaries::discover(),
                     config: Config::load(&controller_config_path).unwrap_or_default(),
                     local: ccnm_core::instance::AgentLocal::load().ok(),
                     config_path: Some(controller_config_path),
-                    // Same reason as agent: launchd's PATH is not a login
-                    // shell's, and the tmux server has to be started from
-                    // here to be in the login session.
+                    // Same reason as agent: the service's PATH is not a
+                    // login shell's, and the tmux server has to be started
+                    // from here to be in the login session (macOS) and to
+                    // outlive the ssh connection (both).
                     tmux: tmux::locate_from_env(),
                     exe: std::env::current_exe()?,
+                    host: controller::Host::current(),
                 };
                 listener.serve_forever(&tools)?;
                 Ok(0)
@@ -2430,6 +2433,16 @@ fn print_result_report(
 /// of its own at install time, but the one launchd starts must read this
 /// one, so it goes into the plist with the XDG locations (F8).
 fn controller_command(command: &ControllerCommand, config: Option<&Path>) -> Result<i32> {
+    match controller::Host::current() {
+        controller::Host::MacOs => {}
+        controller::Host::Linux => return systemd_controller_command(command, config),
+        controller::Host::Other => {
+            return Err(ccnm_core::Error::new(
+                ccnm_core::ErrorCode::NotReady,
+                "ccnm has no controller for this operating system yet; an Agent Node is macOS or Linux",
+            ));
+        }
+    }
     let state = paths::state_dir()?;
     let socket = paths::controller_socket(&state);
     let plan = || -> Result<launchagent::Plan> {
@@ -2462,6 +2475,54 @@ fn controller_command(command: &ControllerCommand, config: Option<&Path>) -> Res
         }
         ControllerCommand::Uninstall => {
             for line in launchagent::uninstall(&plan()?, &SystemRunner)? {
+                println!("{line}");
+            }
+            Ok(0)
+        }
+    }
+}
+
+/// The Linux half of [`controller_command`]: a systemd user service in
+/// place of the LaunchAgent (P74). Same three commands, same exit codes.
+fn systemd_controller_command(command: &ControllerCommand, config: Option<&Path>) -> Result<i32> {
+    use ccnm_core::systemd;
+    let state = paths::state_dir()?;
+    let socket = paths::controller_socket(&state);
+    let plan = || -> Result<systemd::Plan> {
+        systemd::Plan::new(
+            &paths::config_home()?,
+            &state,
+            &std::env::current_exe()?,
+            paths::location_overrides(config)?,
+        )
+    };
+    let linger = |ctx: &controller::Context| {
+        if ctx.linger == Some(false) {
+            eprintln!("\n{}", systemd::linger_warning(&ctx.hello.user));
+        }
+    };
+    match command {
+        ControllerCommand::Install { dry_run } => {
+            let plan = plan()?;
+            println!("{}", plan.describe());
+            if *dry_run {
+                println!("\n--- {} ---\n{}", plan.unit_path.display(), plan.unit);
+                return Ok(0);
+            }
+            let ctx = systemd::install(&plan, &SystemRunner)?;
+            println!("\nlistening: {}", ctx.describe());
+            linger(&ctx);
+            Ok(login_session_verdict(&ctx))
+        }
+        ControllerCommand::Status => {
+            let ctx = controller::context(&socket)?;
+            println!("{}", ctx.describe());
+            println!("socket:    {}", socket.display());
+            linger(&ctx);
+            Ok(login_session_verdict(&ctx))
+        }
+        ControllerCommand::Uninstall => {
+            for line in systemd::uninstall(&plan()?, &SystemRunner)? {
                 println!("{line}");
             }
             Ok(0)

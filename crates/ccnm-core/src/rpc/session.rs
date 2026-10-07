@@ -1261,6 +1261,8 @@ mod tests {
                 )),
                 pid: 1,
                 manager: Ok("Aqua".to_string()),
+                platform: None,
+                linger: None,
             },
             pid: 2,
             outcome: crate::session::Outcome {

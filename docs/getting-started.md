@@ -1,12 +1,12 @@
 # 快速开始
 
-本页用 Claude Code 走一遍最小的双机流程：一台放项目（Runtime Node），一台跑 Claude（Agent Node）。Agent Node、Runtime Node、执行账号这些词不熟，先看 [README 的"先认识几个词"](../README.md#先认识几个词)。用 Codex、或在一台 Agent 上配多个实例，见[配置说明](configuration.md)和[使用说明](usage.md)；各项验到哪一步见[支持矩阵](support-matrix.md)。不要把个人 Codex 凭据复制到 ccnm 专用 HOME。
+本页用 Claude Code 走一遍最小的双机流程：一台放项目（Runtime Node），一台跑 Claude（Agent Node）。Agent Node、Runtime Node、执行账号这些词不熟，先看 [README 的"两台机器各干什么"](../README.md#两台机器各干什么)。用 Codex、或在一台 Agent 上配多个实例，见[配置说明](configuration.md)和[使用说明](usage.md)；各项验到哪一步见[支持矩阵](support-matrix.md)。不要把个人 Codex 凭据复制到 ccnm 专用 HOME。
 
 ## 环境要求
 
 ### Agent Node
 
-- macOS
+- macOS（Linux 原理上可以，还差一个 Linux 版的后台服务没做，见 [README](../README.md#两台机器各干什么)）
 - ccnm
 - 官方 Claude Code，且已经登录
 - 交互式会话需要 `tmux`

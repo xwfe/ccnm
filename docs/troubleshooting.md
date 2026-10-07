@@ -472,25 +472,16 @@ mv ~/.config/ccnm/config.toml.bak ~/config.toml.bak
 
 只有 `exec_command` 带这个键。另外六个工具被路径策略框在 workspace 根目录里，而这一个是别人机器上的一个 shell，以 Runtime 那个账号的全部权限在跑。给只读工具也挂上只会制造提示疲劳。
 
-**两条路，先想想哪条是你要的**：
+**不想被问，在 Runtime 侧那个 workspace 上打开 `allow_unattended_exec`**（常用交互会话的项目建议开）：
 
-1. **`--print`**——那条路上**不带**这个键（那是"一句问一个答、终端前没人"的模式，挂上只会让模型答"我没处可问"然后拒绝执行）。大部分"它老问我"其实是这种场景：你想让它做一件明确的事，不需要一个常驻会话。
+```toml
+[workspaces.my-project]
+allow_unattended_exec = true
+```
 
-   ```bash
-   ccnm my-project --print "跑一遍 cargo test，把失败的贴给我"
-   ```
+只对之后新起的会话生效。它**不授权任何东西**：命令能做什么完全没变，变的只是中间还有没有人。开了之后少了什么、还剩什么、doctor 为什么一直"注意"，见[配置说明](configuration.md#allow_unattended_exec)。
 
-2. **`allow_unattended_exec`**——真的要常驻会话又不想被问，在 **Runtime 侧**那个 workspace 上写：
-
-   ```toml
-   allow_unattended_exec = true
-   ```
-
-   只对之后新起的会话生效。它**不授权任何东西**：命令能做什么完全没变，变的只是中间还有没有人。开了之后 `ccnm doctor` 里 `Command approval` 那行永远是 WARN，第一次用它起会话时终端上会把代价讲一次。
-
-两条路的对照见[使用说明](usage.md#不想被打断先想想---print)。`ccnm mcp bridge` 无论如何都不带这个键——bridge 不知道 Host 那头有没有人，冒充知道比不说更糟。
-
-**开之前想一下**：如果这个 workspace 已经写了 `allow_unconfined_exec`、`allow_unisolated_credentials`，权限模式又是 `bypassPermissions`，那这个弹窗就是**最后一个还有人在场的环节**了。
+一次性的活也可以走 `--print`：那条路上**不带**这个键（那是"一句问一个答、终端前没人"的模式，挂上只会让模型答"我没处可问"然后拒绝执行）。两条路的对照见[使用说明](usage.md#不想一条条确认开-allow_unattended_exec)。`ccnm mcp bridge` 无论如何都不带这个键——bridge 不知道 Host 那头有没有人，冒充知道比不说更糟。
 
 ### 受管 Codex 会话：`exec_command` 每次都弹，或者一次都不弹
 

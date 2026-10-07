@@ -159,6 +159,16 @@ ccnm my-project
 
 两边配置完成后，也可以直接在 Agent Node 执行同一条命令。Agent Node 会让 Runtime Node 解析 workspace 并发起完整启动流程，然后在本地 attach 到 Agent session。
 
+### 不想每条命令都点确认
+
+交互会话默认每跑一条命令都会停下来问你一次。平时就用交互会话的项目，建议在 **Runtime Node** 的 `config.toml` 里，`ccnm workspace add` 写出来的那个 `[workspaces.my-project]` 下面加一行：
+
+```toml
+allow_unattended_exec = true
+```
+
+之后新起的会话就不问了。别另起一个同名的 `[workspaces.my-project]` 再写这一行：TOML 不允许同一张表出现两次，整份配置会读不进来。开了之后少了什么、怎么收回、`ccnm doctor` 里 `命令审批` 那一行为什么一直是"注意"，见[配置说明](configuration.md#allow_unattended_exec)。
+
 ## dogfood 期间升级
 
 装的是 Releases 页的发布包，照[运维：用发布包升级](operations.md#用发布包升级一般就用这个)做；下面说的是自己从源码编译部署。

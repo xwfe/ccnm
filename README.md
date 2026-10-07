@@ -43,7 +43,7 @@ AI 登录只在这里       ◀──────────── 结果 ─�
 1. 在项目机器上敲 `ccnm my-project`。
 2. AI 那台机器上开出 Claude Code（或 Codex），你的终端直接接进去。
 3. 像平常一样聊。它要看文件、搜代码、改代码、跑 `cargo test`，都在项目机器上做：看和改只限项目目录，命令能碰到什么取决于替它跑命令的那个账号的权限。它自带的读文件、跑命令功能是关掉的。
-4. **每次要跑命令，它会先停下来问你。** 用 Claude 时怎么设都会问；用 Codex 时，你可以在 Codex 里把当前这次会话改成不问。
+4. **默认每次要跑命令，它会先停下来问你。** 嫌一条条点烦可以关掉，见下面[该做的](#该做的和别做的)第一条。
 5. 要走开就直接关终端，AI 接着干；回来敲 `ccnm attach my-project`。做完 `ccnm stop my-project`。
 
 ## 适合和不适合
@@ -124,19 +124,17 @@ mv ccnm ~/.local/bin/ccnm.new && mv ~/.local/bin/ccnm.new ~/.local/bin/ccnm
 
 **该做**
 
+- **常用交互会话的项目，打开 `allow_unattended_exec`**，免得每条命令都点一次确认：在项目机器的 `config.toml` 里那个 workspace 下写 `allow_unattended_exec = true`。开了之后命令执行前就没人看了，挡着它的只剩执行账号自己的权限（[细说](docs/configuration.md#allow_unattended_exec)）。一次性的小活也可以用 `--print`，那条路本来就不问。
 - **真实项目先建一个专门替 AI 跑命令的账号**（建议叫 `ccrun`），写进项目机器配置的 `runtime_user`。不建的话，命令用你自己的账号跑——机器分开了，权限没分开。怎么建见[生产安全](docs/production-safety.md)。
 - **改完配置或升级后，先跑 `ccnm doctor <项目>`。** 最后一行写"可以用了"就行。标"不查"的行是 doctor 本来就不查的（比如网络），看一眼说明；标"失败"或"没查"的要处理。
 - **两台一起升级**，版本要一样，不一样时会报 `CCNM_E_VERSION`。
-- **不想被一次次问的活，用 `--print`**：一问一答，每次都是你亲手发起的。
-- **认真看每次跑命令前的提问**：那是会话里唯一还有人把关的地方。
 
 **别做**
 
 - **别给替 AI 跑命令的账号任何 SSH 私钥、AI 登录或 sudo。** 它只该让别人连进来，自己不该能连出去。
 - **别把 AI 登录拷到项目机器上。** ccnm 的前提就是登录只在 AI 那台。项目和 AI 登录在同一个账号下时，ccnm 默认不开会话（[两条出路](docs/getting-started.md#如果项目和-claude-登录在同一个账号下)）。
 - **升级时别用 `cp` 覆盖正在用的 ccnm。** Apple Silicon 的 Mac 上会让程序签名失效，之后一运行就被系统杀掉（`Killed: 9`）。用上面的"新文件 + 改名"。
-- **别为了省事打开 `allow_unattended_exec`**（常驻会话跑命令不问）。那等于 AI 一路自己跑下去没人看着；要不问就用 `--print`。
-- **用 Codex 时别随手在 `/permissions` 里切 Full Access 或 Approve for me。** 切了，这次会话就不再问你。
+- **用 Codex 时别随手在 `/permissions` 里切 Approve for me。** 切了就是由 Codex 自己的自动审查决定放不放行（真机上连 `rm -f` 都放行），不是你；想不问，用上面的 `allow_unattended_exec`。
 - **同一个项目别配两个状态目录**（比如两个不同的 `XDG_STATE_HOME`）。"同一时间只有一个会话能改代码"靠的是同一把锁，两个目录就成了两把互不知道的锁。
 - **别开 `codex_exec_server`。** 这条路已经停止维护。
 

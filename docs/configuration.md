@@ -199,7 +199,7 @@ root = "/absolute/project/root"
 claude_permission_mode = "acceptEdits"
 allow_unconfined_exec = false
 allow_unisolated_credentials = false   # 默认值；开它之前先读下面那一节
-allow_unattended_exec = false          # 默认值：交互会话每条命令执行前问你一次（Claude 与 Codex 都是，区别见下）
+allow_unattended_exec = false          # 默认值：交互会话每条命令执行前问你一次；常用交互会话的项目建议改成 true，见下
 external_mcp = "disabled"    # 默认值，可省略
 agent_tools = ["web_search", "mcp_servers"] # 默认值，可省略：受管会话能用 Agent 那边的哪些功能
 ```
@@ -278,11 +278,22 @@ ccnm 的反应：第一次用它启动会话时在终端上把风险讲一遍（
 
 ### `allow_unattended_exec`
 
-交互式会话执行命令前不再问你：
+交互式会话执行命令前不再问你。**平时用交互会话干活的 workspace，建议打开**——不开的话模型每跑一条命令（`cargo test`、`git status`、`ls`）你都得点一次"允许"：
 
 ```toml
+[workspaces.my-project]
 allow_unattended_exec = true
 ```
+
+写在**项目那台机器（Runtime Node）**的 `config.toml` 里，之后新起的会话生效，正在跑的会话不变。
+
+**开之前知道这几件事：**
+
+- **少了什么**：命令执行前没人再看一眼。让模型跑一条命令只需要一句话——包括藏在它被要求读的某个文件、某条搜索结果里的那句话。
+- **还剩什么挡着**：命令以执行账号的身份跑，那个账号能做的它都能做，做不了的它也做不了；读写文件的工具出不了 workspace 根目录。所以执行账号的权限越小，这个开关越放心（见[生产安全](production-safety.md)）。
+- **ccnm 会怎么提醒你**：第一次用它起会话时在终端上讲一次风险（只讲一次，关掉再打开算新决定）；`ccnm doctor` 里 `命令审批`（英文 `Command approval`）那一行一直是"注意"，永远不会变成 OK。这是故意的，不是没配好，结论照样是"可以用了"。
+- **只管交互会话**：`--print` 和 `ccnm mcp bridge` 不受影响——那两条路上本来就不问，因为两边都没人在等。
+- **怎么收回**：把这一行删掉或改成 `false`，之后新起的会话又会每条都问。
 
 **默认是会问的，而且任何权限模式都关不掉。** ccnm 给 `exec_command` 挂了 `anthropic/requiresUserInteraction`，Claude Code 在每一种权限模式下都认它——`bypassPermissions` 也一样。理由很直接：一个调用方能关掉的闸门不叫闸门。这个开关是**承担风险的那台机器**把它关掉的唯一入口。
 
@@ -292,13 +303,9 @@ allow_unattended_exec = true
 
 **和 Claude 不同的一点**：Codex 会话里的人用 `/permissions` 切到 Full Access 就不再问（实测），切到 Approve for me 就交给 Codex 自己的自动审查（真机上连 `rm -f` 都直接放行）。这是坐在终端前那个人的决定，ccnm 拦不住；Claude 那边任何权限模式都关不掉。切换只管当前会话：Codex 会把 Approve for me 记进 profile 的 `config.toml`，v0.11.1（P72）起 ccnm 启动时用命令行盖过它；**v0.11.0 及之前的 Agent 盖不住，之后的受管会话都不再问**（F27），怎么看出来、怎么去掉见[排错手册](troubleshooting.md#受管-codex-会话exec_command-每次都弹或者一次都不弹)。P71 之前的构建对 Codex 一律不问（2026-10-04 真机，[P62 续跑记录](research/2026-10-04-p62-resume-release.md) F21），所以 **Agent 那端要装 P71 或之后的构建**才生效。
 
-**它跟前两个开关不是一类东西：它不授权任何事。** 命令能做什么由 `exec_gate` 和 Runtime 执行身份决定，这个开关一点都动不了；它只决定中间还有没有人。所以：
+**它跟前两个开关不是一类东西：它不授权任何事。** 命令能做什么由 `exec_gate` 和 Runtime 执行身份决定，这个开关一点都动不了；它只决定中间还有没有人。
 
-- `ccnm doctor` 里那行 `Command approval` 会变成 WARN，**永远不会是 OK**；
-- 第一次用它起会话时终端上讲一次风险（只讲一次，关掉再打开算新决定）；
-- `--print` 和 `ccnm mcp bridge` **完全不受影响**——那两条路上本来就不问，因为两边都没人在等。
-
-**想要"不被打断"，先考虑 `--print`。** 一问一答、不常驻、输出直接落在你本机终端，边界还是执行身份本身。见[使用说明](usage.md#不想被打断先想想---print)。
+**一次性的活也可以走 `--print`**：一问一答、不常驻、中间本来就不问，输出直接落在你本机终端。两者怎么选见[使用说明](usage.md#不想一条条确认开-allow_unattended_exec)。
 
 ### `external_mcp`
 

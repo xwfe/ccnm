@@ -190,7 +190,7 @@ ccnm session id 是生命周期主键；Claude/Codex 自己的 thread/resume id 
 | --- | --- | --- |
 | `allow_unconfined_exec` | 跑命令的账号是受限的（没 sudo/admin、名下没私钥……） | 还没建专用账号的临时项目 |
 | `allow_unisolated_credentials` | 那个账号**读不到已知 Agent 登录**（含可达性"说不清"：symlink、列不出来） | 项目和 Claude 登录在同一个家目录：一台机器、一个账号 |
-| `allow_unattended_exec` | **每条 `exec_command` 执行前有人确认** | 自己的机器、自己的项目，确认弹窗已经变成纯噪音 |
+| `allow_unattended_exec` | **每条 `exec_command` 执行前有人确认** | 常用交互会话的项目，文档建议开（P76 起），免得每条命令都点一次 |
 
 **前两个是授权，第三个不是。** `allow_unattended_exec` 只决定"要不要问人"，不改变任何一条命令**能做什么**——那由 `exec_gate` 和 Runtime 执行身份决定，没有任何开关能动它。它也完全不影响 `--print` 和 `ccnm mcp bridge`：那两条路上本来就不问（两边都没人在等）。
 

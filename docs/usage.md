@@ -256,18 +256,28 @@ ccnm result my-project --session <id>
 
 Agent Instance 建议同时带 `--agent <instance-id>`；不带 session 的“最近一次”只保留给人类兼容使用，不是稳定机器接口。
 
-### 不想被打断：先想想 `--print`
+### 不想一条条确认：开 `allow_unattended_exec`
 
-Claude 的交互式会话每次执行命令都会停下来问你一次，而且**任何权限模式都关不掉**（[为什么](troubleshooting.md#开了-bypasspermissionsexec_command-还是每次都问)）。Codex 会话 P71 起同样每次都问，但你在会话里用 `/permissions` 切到 Full Access 或 Approve for me 之后就不再问你（[原因](configuration.md#allow_unattended_exec)），只管那一个会话（v0.11.0 及之前的 Agent 上 Approve for me 会延续到之后的会话，[去掉的办法](troubleshooting.md#受管-codex-会话exec_command-每次都弹或者一次都不弹)）。被问烦了有两条路，先想想哪条更合适：
+交互式会话默认每次执行命令都停下来问你一次。Claude 那边**任何权限模式都关不掉**（[为什么](troubleshooting.md#开了-bypasspermissionsexec_command-还是每次都问)）；Codex 那边你可以在会话里用 `/permissions` 切到 Full Access 或 Approve for me，但只管那一个会话（v0.11.0 及之前的 Agent 上 Approve for me 会延续到之后的会话，[去掉的办法](troubleshooting.md#受管-codex-会话exec_command-每次都弹或者一次都不弹)）。
 
-| | `--print` | `allow_unattended_exec = true` |
+平时用交互会话干活的项目，建议在**项目那台机器**的 `config.toml` 里给它打开：
+
+```toml
+[workspaces.my-project]
+allow_unattended_exec = true
+```
+
+新起的会话就不再问了。开了之后少了什么、还剩什么挡着、怎么收回，见[配置说明](configuration.md#allow_unattended_exec)。
+
+另一条路是 `--print`，两者的区别：
+
+| | `allow_unattended_exec = true` | `--print` |
 | --- | --- | --- |
-| 形态 | 一问一答，跑完就结束 | 常驻会话，一直不问 |
-| 输出在哪 | **直接打在你本机终端**，随手复制 | 在对面 tmux 里，要滚要选 |
-| 中间有没有人 | 没有，但每次是你亲手发起的 | 没有，而且会话会自己连着做下去 |
-| 适合 | 明确的一件事：跑测试、查状态、改一处 | 长时间结对，你在旁边看着 |
+| 形态 | 常驻会话，一直不问 | 一问一答，跑完就结束 |
+| 输出在哪 | 在对面 tmux 里，要滚要选 | **直接打在你本机终端**，随手复制 |
+| 适合 | 长时间结对、一来一回地改 | 明确的一件事：跑测试、查状态、改一处 |
 
-大部分"它老问我"的场景其实是第一种——你想让它做一件明确的事，不需要一个常驻会话：
+一件明确的事，不需要常驻会话：
 
 ```bash
 ccnm my-project --print "跑 cargo test，把失败的贴给我"
@@ -282,8 +292,6 @@ ccnm result my-project          # 断线之后回来捞
 ```
 
 多行、带引号的 prompt 走 stdin，见上面的 [Prompt](#prompt) 一节。
-
-真的需要常驻会话又不想被问，再去开 [`allow_unattended_exec`](configuration.md#allow_unattended_exec)——那是把最后一个有人在场的环节去掉，`ccnm doctor` 会一直提醒你它开着。
 
 ## MCP 诊断
 

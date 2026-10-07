@@ -43,6 +43,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::{Error, ErrorCode, ErrorReport};
 use crate::mcp::context;
 use crate::mcp::exec::{self, ExecCommandArgs};
+use crate::mcp::hooks::{self, Event, Outcome};
 use crate::mcp::image::{self, ViewImageArgs};
 use crate::mcp::jobs::{self, Jobs, StopCommandArgs};
 use crate::mcp::list::{self, ListFilesArgs};
@@ -55,7 +56,7 @@ use crate::mcp::relay::{self, CallMcpToolArgs, Relay};
 use crate::mcp::retention;
 use crate::mcp::sandbox;
 use crate::mcp::search::{self, SearchTextArgs};
-use crate::mcp::skills::{self, LoadSkillArgs, Scope};
+use crate::mcp::skills::{self, Effects, LoadSkillArgs, Scope};
 use crate::mcp::with_ignored;
 use crate::process::{Cmd, ProcessRunner, SystemRunner};
 use crate::protocol::mcp::ServePayload;
@@ -313,6 +314,18 @@ struct Inner {
     /// Which entry opened this server, and therefore whether it may write.
     entry: crate::protocol::mcp::Entry,
     calls: AtomicU64,
+    /// Runs what a loaded skill asks to have run for it -- its
+    /// `` !`command` `` lines and hooks (P79) -- or why nothing may run
+    /// that way in this session. Decided once at startup, from the same
+    /// facts the `exec_command` question is.
+    skill_commands: std::result::Result<Arc<hooks::Runner>, &'static str>,
+    /// The hooks loaded skills registered. Empty unless `skill_commands`
+    /// is a runner.
+    hooks: hooks::Registry,
+    /// Whether the client can run a sub-agent: see [`Effects::subagents`].
+    subagents: Option<bool>,
+    /// This workspace's `agent_tools`, as this Runtime's config says.
+    agent_tools: Option<crate::config::AgentTools>,
 }
 
 #[derive(Clone)]
@@ -465,6 +478,28 @@ impl Server {
         } else {
             None
         };
+        let skill_commands = match unattended_commands(payload, &exec_gate) {
+            Ok(()) => Ok(Arc::new(hooks::Runner::new(
+                root.clone(),
+                sandbox.clone(),
+                exec_gate.accepted,
+                exec_gate.audit.shared_account,
+            ))),
+            Err(why) => Err(why),
+        };
+        let agent_tools = exec_gate
+            .config
+            .as_ref()
+            .and_then(|config| config.workspaces.get(&payload.workspace))
+            .map(|workspace| workspace.agent_tools.clone());
+        // A managed session is a provider ccnm started, with the agent tools
+        // this config gave it; an external client is somebody else's.
+        let subagents = (!payload.entry.is_external()).then(|| {
+            payload.provider == crate::provider::AgentProvider::Claude
+                && agent_tools
+                    .as_ref()
+                    .is_some_and(|tools| tools.contains(crate::config::AgentTool::Subagents))
+        });
         tracing::info!(
             workspace = %payload.workspace,
             root = %root.display(),
@@ -504,6 +539,10 @@ impl Server {
                 interactive: payload.interactive,
                 entry: payload.entry,
                 calls: AtomicU64::new(0),
+                skill_commands,
+                hooks: hooks::Registry::default(),
+                subagents,
+                agent_tools,
             }),
             tool_router: Self::tool_router(),
         })
@@ -549,10 +588,11 @@ impl Server {
                 // client: this server cannot know whether there is a person
                 // on the other side of a bridge, and claiming to know would
                 // let a Host skip the approval it would otherwise ask for.
-                if self.inner.interactive
-                    && !self.inner.entry.is_external()
-                    && !self.inner.exec_gate.accepted.unattended_exec
-                    && INTERACTION_TOOLS.contains(&tool.name.as_ref())
+                if asks_a_person(
+                    self.inner.interactive,
+                    self.inner.entry,
+                    self.inner.exec_gate.accepted,
+                ) && INTERACTION_TOOLS.contains(&tool.name.as_ref())
                 {
                     meta.insert(REQUIRES_INTERACTION.into(), true.into());
                 }
@@ -906,16 +946,22 @@ impl Server {
     ) -> std::result::Result<CallToolResult, ErrorData> {
         self.count_call();
         let (root, machine) = self.skill_places();
-        let session = self.inner.session.clone();
         let ignored = args.ignored.note();
+        let inner = Arc::clone(&self.inner);
         let loaded = tokio::task::spawn_blocking(move || {
             let scope = Scope::project(&root).with_machine(machine.as_ref());
-            skills::load_skill(&scope, &args, Some(&session))
+            inner.with_effects(|effects| {
+                skills::load_skill(&scope, &args, Some(&inner.session), effects)
+            })
         })
         .await
         .map_err(|e| ErrorData::internal_error(format!("load_skill task failed: {e}"), None))?;
         match loaded {
-            Ok(text) => Ok(text_only(with_ignored(text, ignored))),
+            Ok(loaded) => {
+                // The text already says these are registered.
+                self.inner.hooks.add(loaded.hooks);
+                Ok(text_only(with_ignored(loaded.text, ignored)))
+            }
             Err(err) => Ok(tool_error(&err)),
         }
     }
@@ -1174,6 +1220,176 @@ pub(crate) fn asks_the_user(tool: &rmcp::model::Tool) -> bool {
         == Some(&serde_json::Value::Bool(true))
 }
 
+/// Whether this session's client is told to ask a person before each
+/// command: somebody is there, it is not an external client (this server
+/// cannot know who is behind a bridge), and the workspace has not said
+/// `allow_unattended_exec`. One answer for `tools/list` and for what a
+/// skill may run (P79), so the two cannot disagree.
+fn asks_a_person(
+    interactive: bool,
+    entry: crate::protocol::mcp::Entry,
+    accepted: crate::safety::Accepted,
+) -> bool {
+    interactive && !entry.is_external() && !accepted.unattended_exec
+}
+
+/// Whether a loaded skill's own commands -- `` !`command` `` lines and
+/// hooks -- may run in this session, and if not, why (P79). They are
+/// commands nobody approves one by one, so only where commands already run
+/// that way: a session that may write, whose `exec_command` this runtime
+/// allows, and whose client does not ask a person first.
+fn unattended_commands(
+    payload: &ServePayload,
+    gate: &ExecGate,
+) -> std::result::Result<(), &'static str> {
+    if !payload.entry.writes() {
+        return Err("this session cannot run commands");
+    }
+    if !gate.allowed() {
+        return Err("exec_command is refused on this runtime, and a skill's commands are commands");
+    }
+    if asks_a_person(payload.interactive, payload.entry, gate.accepted) {
+        return Err(
+            "commands in this session wait for a person to approve them, and a skill does not get around that; allow_unattended_exec on the Runtime lets them run without one",
+        );
+    }
+    Ok(())
+}
+
+/// What one `` !`command` `` line may put into a skill's text. The text as
+/// a whole is cut at 64 KiB anyway; this keeps one chatty command from
+/// taking all of it.
+const MAX_INJECTED_BYTES: usize = 16 * 1024;
+
+impl Inner {
+    /// Call `f` with what loading a skill may do in this session.
+    fn with_effects<T>(&self, f: impl FnOnce(&Effects) -> T) -> T {
+        let run = |line: &str| -> std::result::Result<String, String> {
+            let runner = self
+                .skill_commands
+                .as_ref()
+                .map_err(|why| why.to_string())?;
+            let out = runner
+                .run(line, None, Duration::from_millis(exec::DEFAULT_TIMEOUT_MS))
+                .map_err(|e| e.message().to_string())?;
+            if out.timed_out {
+                return Err(format!(
+                    "it was stopped after {} s",
+                    exec::DEFAULT_TIMEOUT_MS / 1000
+                ));
+            }
+            if !out.success() {
+                return Err(format!(
+                    "it exited {}: {}",
+                    out.exit_code
+                        .map_or("on a signal".to_string(), |c| c.to_string()),
+                    out.stderr_lossy().trim()
+                ));
+            }
+            let printed = out.stdout_lossy();
+            Ok(
+                match printed
+                    .char_indices()
+                    .find(|(at, _)| *at >= MAX_INJECTED_BYTES)
+                {
+                    Some((at, _)) => format!(
+                        "{}\n[... cut: the command printed more than 16 KiB]",
+                        &printed[..at]
+                    ),
+                    None => printed,
+                },
+            )
+        };
+        let effects = Effects {
+            commands: match &self.skill_commands {
+                Ok(_) => Ok(&run),
+                Err(why) => Err((*why).to_string()),
+            },
+            subagents: self.subagents,
+            agent_tools: self.agent_tools.as_ref(),
+        };
+        f(&effects)
+    }
+}
+
+/// What a round of hooks decided about one call.
+#[derive(Debug, Default)]
+struct HookRound {
+    /// Why the call is not to run (`PreToolUse` only).
+    blocked: Option<String>,
+    /// What the hooks said, for the end of the result.
+    notes: Vec<String>,
+}
+
+impl Server {
+    /// Run this session's hooks for `event` on one call, one after another,
+    /// on the blocking pool. Holding `inner` there keeps the write guard
+    /// this session's until the hooks are done, like a running command.
+    async fn hooks_for(
+        &self,
+        event: Event,
+        tool: &str,
+        args: &serde_json::Map<String, serde_json::Value>,
+        response: Option<String>,
+    ) -> HookRound {
+        let Ok(runner) = self.inner.skill_commands.clone() else {
+            return HookRound::default();
+        };
+        let registered = self.inner.hooks.for_event(event);
+        if registered.is_empty() {
+            return HookRound::default();
+        }
+        let inner = Arc::clone(&self.inner);
+        let tool = tool.to_string();
+        let args = args.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut round = HookRound::default();
+            for (id, hook) in registered {
+                for view in hooks::views_for(&hook, &tool, &args, runner.root()) {
+                    let stdin = hooks::input(
+                        event,
+                        &inner.session,
+                        runner.root(),
+                        &view,
+                        response.as_deref(),
+                    );
+                    let ran = runner.run(&hook.command, Some(stdin), hook.timeout);
+                    match hooks::outcome(&hook, &ran) {
+                        Outcome::Block { reason } => {
+                            round.blocked = Some(format!(
+                                "{tool} was not run: a {} hook of skill {} stopped it: {reason}",
+                                event.name(),
+                                hook.skill
+                            ));
+                            return round;
+                        }
+                        Outcome::Proceed { note, succeeded } => {
+                            round.notes.extend(note);
+                            if succeeded && hook.once {
+                                inner.hooks.retire(id);
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            round
+        })
+        .await
+        .unwrap_or_default()
+    }
+}
+
+/// The text of a result, for a `PostToolUse` hook's `tool_response`.
+fn result_text(result: &CallToolResult) -> String {
+    result
+        .content
+        .iter()
+        .filter_map(|block| block.as_text().map(|text| text.text.as_str()))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// The tools whose one result can pass about 50 000 characters: a
 /// `read_file` or `load_skill` page is up to 64 KiB, a `call_mcp_tool`
 /// tool list up to 64 KiB plus the server's instructions.
@@ -1252,6 +1468,46 @@ pub(crate) fn tool_error(err: &Error) -> CallToolResult {
 
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for Server {
+    /// Every tool call, through the hooks loaded skills registered (P79):
+    /// `PreToolUse` before, which can stop the call, and `PostToolUse`
+    /// after one that did not fail. Written by hand for the same reason as
+    /// `list_tools`; with no hooks it is exactly what the macro generates.
+    async fn call_tool(
+        &self,
+        request: rmcp::model::CallToolRequestParams,
+        context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> std::result::Result<rmcp::model::CallToolResponse, ErrorData> {
+        let tool = request.name.to_string();
+        if self.inner.hooks.is_empty() || !self.tool_router.has_route(&tool) || !self.offers(&tool)
+        {
+            let call = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
+            return self.tool_router.call(call).await;
+        }
+        let args = request.arguments.clone().unwrap_or_default();
+        let before = self.hooks_for(Event::PreToolUse, &tool, &args, None).await;
+        if let Some(blocked) = before.blocked {
+            return Ok(tool_error(&Error::policy(blocked)).into());
+        }
+        let call = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
+        let response = self.tool_router.call(call).await?;
+        let rmcp::model::CallToolResponse::Complete(mut result) = response else {
+            return Ok(response);
+        };
+        let mut notes = before.notes;
+        if result.is_error != Some(true) {
+            let text = result_text(&result);
+            notes.extend(
+                self.hooks_for(Event::PostToolUse, &tool, &args, Some(text))
+                    .await
+                    .notes,
+            );
+        }
+        if !notes.is_empty() {
+            result.content.push(ContentBlock::text(notes.join("\n")));
+        }
+        Ok(result.into())
+    }
+
     /// The tool list, with `exec_command` marked as needing the user
     /// every time — but only when there is a user.
     ///
@@ -1323,10 +1579,10 @@ impl ServerHandler for Server {
         _context: rmcp::service::RequestContext<rmcp::RoleServer>,
     ) -> std::result::Result<GetPromptResponse, ErrorData> {
         let (root, machine) = self.skill_places();
-        let session = self.inner.session.clone();
+        let inner = Arc::clone(&self.inner);
         let given = request.arguments.unwrap_or_default();
         let name = request.name;
-        let text = tokio::task::spawn_blocking(move || {
+        let loaded = tokio::task::spawn_blocking(move || {
             let scope = Scope::project(&root).with_machine(machine.as_ref());
             let catalog = skills::discover(&scope);
             let declared = catalog
@@ -1346,14 +1602,19 @@ impl ServerHandler for Server {
                 })
                 .collect::<Vec<_>>()
                 .join(" ");
-            skills::prompt_text(&scope, &name, &line, Some(&session))
+            inner.with_effects(|effects| {
+                skills::prompt_text(&scope, &name, &line, Some(&inner.session), effects)
+            })
         })
         .await
         .map_err(|e| ErrorData::internal_error(format!("skill load failed: {e}"), None))?
         // A prompt has no `isError` result to put a refusal in; a protocol
         // error is the only way to say no.
         .map_err(|err| ErrorData::invalid_params(err.to_string(), None))?;
-        Ok(GetPromptResult::new(vec![PromptMessage::new_text(Role::User, text)]).into())
+        // A person starting a skill registers its hooks as the model loading
+        // it does, as natively.
+        self.inner.hooks.add(loaded.hooks);
+        Ok(GetPromptResult::new(vec![PromptMessage::new_text(Role::User, loaded.text)]).into())
     }
 
     fn get_info(&self) -> ServerInfo {
@@ -1938,6 +2199,55 @@ mod tests {
         let server = fixture_server(&ServePayload::new("xshun", dir.to_path_buf(), "s")).unwrap();
         assert!(!server.tools().iter().any(asks_the_user));
         assert!(!asks_the_user(&server.get_tool("exec_command").unwrap()));
+    }
+
+    /// A skill's own commands (P79) may run exactly where the client is not
+    /// told to ask before `exec_command` -- the same function answers both
+    /// -- and never in a session that cannot run commands at all.
+    #[test]
+    fn a_skill_runs_commands_only_where_exec_command_does_not_ask() {
+        let dir = temp("skill-commands");
+        let unattended = crate::safety::Accepted {
+            unattended_exec: true,
+            ..crate::safety::Accepted::NOTHING
+        };
+        let cases = [
+            (
+                "print",
+                ServePayload::new("x", dir.to_path_buf(), "s"),
+                crate::safety::Accepted::NOTHING,
+                true,
+            ),
+            (
+                "interactive",
+                ServePayload::new("x", dir.to_path_buf(), "s").with_interactive(true),
+                crate::safety::Accepted::NOTHING,
+                false,
+            ),
+            (
+                "interactive, unattended",
+                ServePayload::new("x", dir.to_path_buf(), "s").with_interactive(true),
+                unattended,
+                true,
+            ),
+            (
+                "external read",
+                ServePayload::new("x", dir.to_path_buf(), "s").with_entry(
+                    crate::protocol::mcp::Entry::External(crate::runtime::ExternalMode::Read),
+                ),
+                unattended,
+                false,
+            ),
+        ];
+        for (name, payload, accepted, runs) in cases {
+            let server = fixture_server_accepting(&payload, accepted).unwrap();
+            assert_eq!(server.inner.skill_commands.is_ok(), runs, "{name}");
+            let asks = server.tools().iter().any(asks_the_user);
+            assert!(
+                !(runs && asks),
+                "{name}: a skill runs commands where the client asks"
+            );
+        }
     }
 
     /// The one way the asking stops, and it comes from the Runtime's own

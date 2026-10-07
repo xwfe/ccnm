@@ -45,7 +45,10 @@ use crate::mcp::relay::{self, CallMcpToolArgs};
 use crate::mcp::server::{
     MAX_RESULT_CHARS, MAX_RESULT_SIZE, prompt_arguments, quote_argument, text_only, tool_error,
 };
-use crate::mcp::skills::{self, LoadSkillArgs, Scope, Wording};
+use crate::mcp::skills::{self, Effects, LoadSkillArgs, Scope, Wording};
+
+/// Why a skill installed on the Agent runs nothing (P79).
+const AGENT_RUNS_NOTHING: &str = "this skill is installed on the machine the AI runs on, where ccnm runs nothing for a skill, and the project's tool calls do not pass through it";
 use crate::mcp::with_ignored;
 use crate::process::Cmd;
 use crate::protocol::payload::Protocol;
@@ -93,6 +96,10 @@ pub struct Payload {
     /// The installed MCP servers, when this session may use them (P50).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mcp: Option<McpPayload>,
+    /// Whether the session can run a sub-agent, for a skill with
+    /// `context: fork` (P79). Absent before P79, which reads as not known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subagents: Option<bool>,
 }
 
 fn yes() -> bool {
@@ -118,6 +125,7 @@ pub fn launcher(
     session: &str,
     config: &MachineSkills,
     mcp: Option<&AgentMcp>,
+    subagents: bool,
 ) -> CcnmResult<Option<Recorded>> {
     let mcp = mcp.filter(|mcp| mcp.enabled).map(McpPayload::of);
     if !config.enabled && mcp.is_none() {
@@ -137,6 +145,7 @@ pub fn launcher(
         hidden: config.hidden.iter().cloned().collect(),
         skills: config.enabled,
         mcp,
+        subagents: Some(subagents),
     };
     let cmd = Cmd::new(exe).args([
         "internal",
@@ -204,6 +213,7 @@ pub struct AgentSkills {
     /// `None` when this session gets no MCP servers from here.
     mcp: Option<Arc<agent_mcp::Relay>>,
     session: String,
+    subagents: Option<bool>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -236,8 +246,18 @@ impl AgentSkills {
                 .as_ref()
                 .map(|mcp| Arc::new(agent_mcp::Relay::new(mcp, home))),
             session: payload.session.clone(),
+            subagents: payload.subagents,
             tool_router: Self::tool_router(),
         })
+    }
+
+    /// Nothing from a skill runs here (P79): this is the machine with the
+    /// AI's login, and the project's tool calls do not pass through it.
+    fn effects(&self) -> Effects<'static> {
+        Effects {
+            subagents: self.subagents,
+            ..Effects::none(AGENT_RUNS_NOTHING)
+        }
     }
 
     /// `None` when the skills half is off.
@@ -322,12 +342,12 @@ impl AgentSkills {
         let this = self.clone();
         let loaded = tokio::task::spawn_blocking(move || {
             let scope = this.scope().expect("checked above");
-            skills::load_skill(&scope, &args, Some(&this.session))
+            skills::load_skill(&scope, &args, Some(&this.session), &this.effects())
         })
         .await
         .map_err(|e| ErrorData::internal_error(format!("load_skill task failed: {e}"), None))?;
         match loaded {
-            Ok(text) => Ok(text_only(with_ignored(text, ignored))),
+            Ok(loaded) => Ok(text_only(with_ignored(loaded.text, ignored))),
             Err(err) => Ok(tool_error(&err)),
         }
     }
@@ -430,8 +450,15 @@ impl ServerHandler for AgentSkills {
             })
             .collect::<Vec<_>>()
             .join(" ");
-        let text = skills::prompt_text(&scope, &request.name, &line, Some(&self.session))
-            .map_err(|err| ErrorData::invalid_params(err.to_string(), None))?;
+        let text = skills::prompt_text(
+            &scope,
+            &request.name,
+            &line,
+            Some(&self.session),
+            &self.effects(),
+        )
+        .map_err(|err| ErrorData::invalid_params(err.to_string(), None))?
+        .text;
         Ok(GetPromptResult::new(vec![PromptMessage::new_text(Role::User, text)]).into())
     }
 
@@ -498,7 +525,9 @@ mod tests {
                 .into_iter()
                 .collect(),
         };
-        let recorded = launcher(exe, "sess-1", &config, None).unwrap().unwrap();
+        let recorded = launcher(exe, "sess-1", &config, None, false)
+            .unwrap()
+            .unwrap();
         assert_eq!(recorded.command, "/opt/ccnm/bin/ccnm");
         assert_eq!(
             recorded.args[..3],
@@ -515,6 +544,7 @@ mod tests {
                 hidden: vec!["noise".into(), "pdf".into()],
                 skills: true,
                 mcp: None,
+                subagents: Some(false),
             }
         );
         // A P48 payload says nothing of either half, and reads the same.
@@ -526,7 +556,11 @@ mod tests {
             enabled: false,
             ..Default::default()
         };
-        assert!(launcher(exe, "sess-1", &off, None).unwrap().is_none());
+        assert!(
+            launcher(exe, "sess-1", &off, None, false)
+                .unwrap()
+                .is_none()
+        );
     }
 
     /// P50: with the workspace's leave and this machine's `[agent_mcp]`,
@@ -539,7 +573,7 @@ mod tests {
             local: ["context7".to_string()].into(),
             ..AgentMcp::default()
         };
-        let both = launcher(exe, "s", &MachineSkills::default(), Some(&mcp))
+        let both = launcher(exe, "s", &MachineSkills::default(), Some(&mcp), false)
             .unwrap()
             .unwrap();
         assert_eq!(
@@ -561,7 +595,7 @@ mod tests {
             enabled: false,
             ..Default::default()
         };
-        let only_mcp = launcher(exe, "s", &skills_off, Some(&mcp))
+        let only_mcp = launcher(exe, "s", &skills_off, Some(&mcp), false)
             .unwrap()
             .unwrap();
         assert_eq!(only_mcp.tools, ["call_mcp_tool", "read_mcp_result"]);
@@ -573,7 +607,7 @@ mod tests {
             ..AgentMcp::default()
         };
         assert!(
-            launcher(exe, "s", &skills_off, Some(&mcp_off))
+            launcher(exe, "s", &skills_off, Some(&mcp_off), false)
                 .unwrap()
                 .is_none()
         );
@@ -591,6 +625,7 @@ mod tests {
             hidden: hidden.iter().map(|s| s.to_string()).collect(),
             skills,
             mcp,
+            subagents: None,
         }
     }
 

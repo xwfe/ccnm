@@ -28,13 +28,15 @@
 //! does not go, so this tool reads them itself: `file`, only inside that
 //! skill's own directory, by the rules in `toexec_skill::dir`.
 //!
-//! Nothing here executes anything. A skill's scripts are files: the model
-//! runs them with `exec_command`, on this machine, as the execution account,
-//! under the same write guard and sandbox as every other command. Even the
-//! `` !`command` `` lines a skill may carry -- which the native client runs
-//! while loading the skill -- are listed and left alone: a call that reads
-//! must not be a call that runs what the repository chose, around the
-//! approval `exec_command` is gated by.
+//! A skill's scripts are files: the model runs them with `exec_command`, on
+//! this machine, as the execution account, under the same write guard and
+//! sandbox as every other command. What a skill asks to have run *for* it --
+//! the `` !`command` `` lines the native client runs while loading it, and
+//! its `hooks` -- runs only through the [`Effects`] the caller passes, which
+//! the Runtime gives a runner only in a session whose commands already run
+//! with nobody asked (P79). Everywhere else they are listed and left alone:
+//! a call that reads must not be a call that runs what the repository
+//! chose, around the approval `exec_command` is gated by.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -44,6 +46,7 @@ use serde::Deserialize;
 use toexec_skill::{Frontmatter, Reading, args, dir, frontmatter, inject};
 
 use crate::error::{Error, ErrorCode, Result};
+use crate::mcp::hooks;
 use crate::mcp::machine_skills::{Machine, Role};
 use crate::mcp::path;
 use crate::provider::context::Cap;
@@ -633,8 +636,63 @@ impl Catalog {
     }
 }
 
+/// What loading a skill may do in this session besides being read (P79).
+pub struct Effects<'a> {
+    /// Runs one command for the skill -- a `` !`command` `` line or a hook --
+    /// with nobody asked, returning what it printed or why it failed. `Err`
+    /// says why commands cannot run that way here: they wait for a person,
+    /// or this session or machine runs nothing for a skill. That one answer
+    /// decides `` !`command` ``, `hooks` and what `allowed-tools` is told.
+    pub commands: std::result::Result<Command<'a>, String>,
+    /// Whether the client can run a sub-agent, for `context: fork`:
+    /// `Some(true)` a Claude session with `subagents` on, `Some(false)` a
+    /// session known to have none, `None` a client this server cannot know
+    /// (an external one).
+    pub subagents: Option<bool>,
+    /// This workspace's `agent_tools`, when this server knows them.
+    pub agent_tools: Option<&'a crate::config::AgentTools>,
+}
+
+/// See [`Effects::commands`].
+pub type Command<'a> = &'a dyn Fn(&str) -> std::result::Result<String, String>;
+
+impl Effects<'_> {
+    /// Nothing runs, for the reason given, and nothing is known about the
+    /// client.
+    pub fn none(why: impl Into<String>) -> Effects<'static> {
+        Effects {
+            commands: Err(why.into()),
+            subagents: None,
+            agent_tools: None,
+        }
+    }
+}
+
+/// A loaded skill: the text for the model, and the hooks the caller must
+/// register for the rest of the session -- the text already says they are.
+/// Empty unless [`Effects::commands`] could run them.
+#[derive(Debug, Default)]
+pub struct Loaded {
+    pub text: String,
+    pub hooks: Vec<hooks::Hook>,
+}
+
+impl From<String> for Loaded {
+    fn from(text: String) -> Loaded {
+        Loaded {
+            text,
+            hooks: Vec::new(),
+        }
+    }
+}
+
 /// The tool: the list, one skill's instructions, or one of its files.
-pub fn load_skill(scope: &Scope, call: &LoadSkillArgs, session: Option<&str>) -> Result<String> {
+pub fn load_skill(
+    scope: &Scope,
+    call: &LoadSkillArgs,
+    session: Option<&str>,
+    effects: &Effects,
+) -> Result<Loaded> {
     let catalog = discover(scope);
     let Some(name) = call
         .name
@@ -647,7 +705,7 @@ pub fn load_skill(scope: &Scope, call: &LoadSkillArgs, session: Option<&str>) ->
                 "file and line read a file of one skill: give its name too",
             ));
         }
-        return Ok(catalog.list());
+        return Ok(catalog.list().into());
     };
     let skill = find(&catalog, name)?;
     if !skill.model_invocable {
@@ -662,7 +720,7 @@ pub fn load_skill(scope: &Scope, call: &LoadSkillArgs, session: Option<&str>) ->
         .map(str::trim)
         .filter(|f| !f.is_empty())
     {
-        Some(file) => read_file(scope, skill, file, call.line.unwrap_or(1)),
+        Some(file) => read_file(scope, skill, file, call.line.unwrap_or(1)).map(Loaded::from),
         None if call.line.is_some() => Err(Error::invalid_args(
             "line says where to start reading a file: give file too (SKILL.md for the instructions themselves)",
         )),
@@ -671,6 +729,7 @@ pub fn load_skill(scope: &Scope, call: &LoadSkillArgs, session: Option<&str>) ->
             skill,
             call.arguments.as_deref().unwrap_or(""),
             session,
+            effects,
         ),
     }
 }
@@ -682,7 +741,8 @@ pub fn prompt_text(
     name: &str,
     arguments: &str,
     session: Option<&str>,
-) -> Result<String> {
+    effects: &Effects,
+) -> Result<Loaded> {
     let catalog = discover(scope);
     let skill = find(&catalog, name)?;
     if !skill.user_invocable {
@@ -691,7 +751,7 @@ pub fn prompt_text(
             skill.name
         )));
     }
-    render(scope, skill, arguments, session)
+    render(scope, skill, arguments, session, effects)
 }
 
 fn find<'a>(catalog: &'a Catalog, name: &str) -> Result<&'a Skill> {
@@ -728,7 +788,13 @@ fn installed_note(scope: &Scope) -> &'static str {
     }
 }
 
-fn render(scope: &Scope, skill: &Skill, arguments: &str, session: Option<&str>) -> Result<String> {
+fn render(
+    scope: &Scope,
+    skill: &Skill,
+    arguments: &str,
+    session: Option<&str>,
+    effects: &Effects,
+) -> Result<Loaded> {
     let raw = match (skill.origin, scope.project) {
         (Origin::Project, Some(root)) => {
             let resolved = path::resolve_read(root, &skill.file)?;
@@ -759,30 +825,161 @@ fn render(scope: &Scope, skill: &Skill, arguments: &str, session: Option<&str>) 
     if skill.origin == Origin::Installed {
         head.push_str(installed_note(scope));
     }
+
+    let context = args::Context {
+        skill_dir: Some(if skill.dir.is_empty() {
+            "."
+        } else {
+            &skill.dir
+        }),
+        project_dir: Some("."),
+        session_id: session,
+    };
+    let mut filled = args::substitute(
+        body.trim_start_matches('\n'),
+        arguments,
+        &skill.arguments,
+        context,
+    );
+    // Run after the arguments are in, as natively: `` !`gh pr view $0` ``
+    // means the PR the skill was given.
+    let mut ran_commands = false;
     let injections = inject::find(body);
     if !injections.is_empty() {
-        head.push_str(&format!(
-            "[{} command(s) this skill wants run as it loads were NOT run. Their output is not below; where you need it, run the command with exec_command:\n",
-            injections.len()
-        ));
-        for found in &injections {
-            let first = found.command.lines().next().unwrap_or("");
-            let more = if found.command.lines().count() > 1 {
-                " ..."
-            } else {
-                ""
-            };
-            head.push_str(&format!(
-                "  line {}: {first}{more}\n",
-                found.line + body_starts
-            ));
+        match &effects.commands {
+            Ok(run) => {
+                let found = inject::find(&filled);
+                let mut outputs = Vec::with_capacity(found.len());
+                for one in &found {
+                    let printed = run(&one.command).map_err(|why| {
+                        Error::invalid_args(format!(
+                            "skill \"{}\" was not loaded: a command it runs as it loads failed, as it would natively\n  line {}: {}\n  {why}",
+                            skill.name,
+                            one.line + body_starts,
+                            one.command.lines().next().unwrap_or("")
+                        ))
+                    })?;
+                    outputs.push(printed);
+                }
+                filled = fill(&filled, &outputs);
+                ran_commands = !found.is_empty();
+                head.push_str(&format!(
+                    "[{} command(s) this skill runs as it loads were run on this machine; what they printed is in place below]\n",
+                    found.len()
+                ));
+            }
+            Err(why) => {
+                head.push_str(&format!(
+                    "[{} command(s) this skill wants run as it loads were NOT run ({why}). Their output is not below; where you need it, run the command with exec_command:\n",
+                    injections.len()
+                ));
+                for found in &injections {
+                    let first = found.command.lines().next().unwrap_or("");
+                    let more = if found.command.lines().count() > 1 {
+                        " ..."
+                    } else {
+                        ""
+                    };
+                    head.push_str(&format!(
+                        "  line {}: {first}{more}\n",
+                        found.line + body_starts
+                    ));
+                }
+                head.push_str("]\n");
+            }
         }
-        head.push_str("]\n");
     }
-    let ignored: Vec<&str> = IGNORED_FIELDS
+
+    let mut registered = Vec::new();
+    if let Some(value) = front.get("hooks") {
+        let parsed = hooks::parse(&skill.name, value);
+        match &effects.commands {
+            Ok(_) => {
+                if !parsed.hooks.is_empty() {
+                    let named: Vec<String> = parsed
+                        .hooks
+                        .iter()
+                        .map(|hook| {
+                            format!(
+                                "{} {}",
+                                hook.event.name(),
+                                if hook.matcher.is_empty() {
+                                    "(every tool)"
+                                } else {
+                                    &hook.matcher
+                                }
+                            )
+                        })
+                        .collect();
+                    head.push_str(&format!(
+                        "[hooks: {} registered for the rest of this session; they run on this machine around this server's tools: {}]\n",
+                        parsed.hooks.len(),
+                        named.join(", ")
+                    ));
+                }
+                if !parsed.not_run.is_empty() {
+                    head.push_str(&format!(
+                        "[hooks not run here: {}]\n",
+                        parsed.not_run.join("; ")
+                    ));
+                }
+                registered = parsed.hooks;
+            }
+            Err(why) => head.push_str(&format!("[hooks not run: {why}]\n")),
+        }
+    }
+    if front.get("allowed-tools").is_some() {
+        head.push_str(&match &effects.commands {
+            Ok(_) => "[allowed-tools: nothing to grant here, commands in this session already run without asking]\n".to_string(),
+            Err(why) => format!("[allowed-tools has no effect: {why}]\n"),
+        });
+        if let Some(note) = agent_tools_note(&front.words("allowed-tools"), effects.agent_tools) {
+            head.push_str(&note);
+        }
+    }
+    let fork = front.text("context") == Some("fork");
+    let model = front
+        .text("model")
+        .map(str::trim)
+        .filter(|m| !m.is_empty() && *m != "inherit");
+    if fork {
+        let agent = front
+            .text("agent")
+            .map(str::trim)
+            .filter(|a| !a.is_empty())
+            .unwrap_or("general-purpose");
+        head.push_str(&match effects.subagents {
+            Some(true) => format!(
+                "[this skill runs in a sub-agent (context: fork): call the Agent tool with subagent_type \"{agent}\"{} and the text below as its prompt, and do not follow it in this conversation yourself]\n",
+                model.map_or(String::new(), |m| format!(", model \"{m}\""))
+            ),
+            Some(false) => format!(
+                "[context: fork has no effect: this session has no sub-agents, so follow the text below here{}]\n",
+                if model.is_some() {
+                    "; model has no effect either, the session keeps its model"
+                } else {
+                    ""
+                }
+            ),
+            None => format!(
+                "[context: fork: if your client can run a sub-agent, give it the text below as its prompt{}; otherwise follow it here]\n",
+                model.map_or(String::new(), |m| format!(", with model \"{m}\""))
+            ),
+        });
+    } else if model.is_some() {
+        head.push_str("[model has no effect: a skill loaded over MCP cannot change the session's model, which stays as it is]\n");
+    }
+    let mut ignored: Vec<&str> = IGNORED_FIELDS
         .into_iter()
         .filter(|key| front.get(key).is_some())
         .collect();
+    if !fork {
+        ignored.extend(
+            ["context", "agent"]
+                .into_iter()
+                .filter(|key| front.get(key).is_some()),
+        );
+    }
     if !ignored.is_empty() {
         head.push_str(&format!(
             "[frontmatter with no effect here: {}]\n",
@@ -813,52 +1010,157 @@ fn render(scope: &Scope, skill: &Skill, arguments: &str, session: Option<&str>) 
         }
     }
 
-    let context = args::Context {
-        skill_dir: Some(if skill.dir.is_empty() {
-            "."
-        } else {
-            &skill.dir
-        }),
-        project_dir: Some("."),
-        session_id: session,
-    };
-    let filled = args::substitute(
-        body.trim_start_matches('\n'),
-        arguments,
-        &skill.arguments,
-        context,
-    );
     let kept = Cap::Bytes(MAX_BODY_BYTES).keep(&filled);
     let mut out = format!("{head}\n{kept}");
     if kept.len() < filled.len() {
         let shown = kept.lines().count();
         let next = body_starts + shown + 1;
-        out.push_str(&match skill.origin {
-            Origin::Project => format!(
+        out.push_str(&match (ran_commands, skill.origin) {
+            // The lines above are not the file's any more: what the commands
+            // printed is in them.
+            (true, _) => format!(
+                "\n[cut after {shown} lines: with what its commands printed filled in, the skill is longer than one load; {} without that output is its file]\n",
+                skill.file
+            ),
+            (false, Origin::Project) => format!(
                 "\n[cut after {shown} lines of the skill's text; read_file {} from line {next} for the rest]\n",
                 skill.file
             ),
-            Origin::Installed => format!(
+            (false, Origin::Installed) => format!(
                 "\n[cut after {shown} lines of the skill's text; {TOOL} name={} file=SKILL.md line={next} for the rest]\n",
                 skill.name
             ),
         });
     }
-    Ok(out)
+    Ok(Loaded {
+        text: out,
+        hooks: registered,
+    })
+}
+
+/// `allowed-tools` naming the Agent's own tools (`WebFetch`, `Agent`, ...):
+/// on or off for a whole session by the Runtime's `agent_tools`, never by a
+/// skill. Said only where this server knows which.
+fn agent_tools_note(
+    allowed: &[String],
+    agent_tools: Option<&crate::config::AgentTools>,
+) -> Option<String> {
+    let agent_tools = agent_tools?;
+    let (mut on, mut off) = (Vec::new(), Vec::new());
+    for word in allowed {
+        let name = word.split('(').next().unwrap_or("").trim_end_matches(',');
+        let Some(tool) = crate::config::AgentTool::ALL
+            .into_iter()
+            .find(|tool| crate::provider::claude::tool_names(*tool).contains(&name))
+        else {
+            continue;
+        };
+        let list = if agent_tools.contains(tool) {
+            &mut on
+        } else {
+            &mut off
+        };
+        if !list.contains(&name) {
+            list.push(name);
+        }
+    }
+    let mut out = String::new();
+    if !on.is_empty() {
+        out.push_str(&format!(
+            "[{}: on for this whole session already (the Runtime's agent_tools)]\n",
+            on.join(", ")
+        ));
+    }
+    if !off.is_empty() {
+        out.push_str(&format!(
+            "[{}: off in this workspace (the Runtime's agent_tools), and a skill cannot turn them on]\n",
+            off.join(", ")
+        ));
+    }
+    (!out.is_empty()).then_some(out)
+}
+
+/// The body with each `` !`command` `` and ```` ```! ```` block replaced by
+/// what it printed, `outputs` in the order [`inject::find`] returns the
+/// commands. Walks the text the same way `find` does, so the two agree on
+/// what is a command: a fence that is not a `!` one is left alone, and so
+/// is an empty `!` block or an unclosed one.
+fn fill(body: &str, outputs: &[String]) -> String {
+    let mut next = outputs.iter();
+    let mut out = String::with_capacity(body.len());
+    // In a fence: how many backticks opened it, whether it is a `!` one, and
+    // (for a `!` one) its text so far, opening line included.
+    let mut fence: Option<(usize, bool, String, bool)> = None;
+    for line in body.split_inclusive('\n') {
+        let content = line.trim_end_matches('\n').trim_end_matches('\r');
+        let ending = &line[content.len()..];
+        let trimmed = content.trim_start();
+        let ticks = trimmed.len() - trimmed.trim_start_matches('`').len();
+        if let Some((open, run, mut held, mut has_text)) = fence.take() {
+            if ticks >= open && trimmed[ticks..].trim().is_empty() {
+                if !run {
+                    out.push_str(line);
+                } else if has_text {
+                    if let Some(printed) = next.next() {
+                        out.push_str(printed);
+                        if !printed.ends_with('\n') {
+                            out.push('\n');
+                        }
+                    }
+                } else {
+                    out.push_str(&held);
+                    out.push_str(line);
+                }
+                continue;
+            }
+            if run {
+                held.push_str(line);
+                has_text |= !content.trim().is_empty();
+            } else {
+                out.push_str(line);
+            }
+            fence = Some((open, run, held, has_text));
+            continue;
+        }
+        if ticks >= 3 {
+            let run = trimmed[ticks..].starts_with('!');
+            if run {
+                fence = Some((ticks, true, line.to_string(), false));
+            } else {
+                out.push_str(line);
+                fence = Some((ticks, false, String::new(), false));
+            }
+            continue;
+        }
+        let mut rest = content;
+        while let Some(at) = rest.find("!`") {
+            let after = &rest[at + 2..];
+            let Some(end) = after.find('`') else {
+                break;
+            };
+            if after[..end].trim().is_empty() {
+                out.push_str(&rest[..at + 2 + end + 1]);
+            } else {
+                out.push_str(&rest[..at]);
+                if let Some(printed) = next.next() {
+                    out.push_str(printed.trim_end_matches('\n'));
+                }
+            }
+            rest = &after[end + 1..];
+        }
+        out.push_str(rest);
+        out.push_str(ending);
+    }
+    if let Some((_, true, held, _)) = fence {
+        out.push_str(&held);
+    }
+    out
 }
 
 /// Frontmatter this server cannot honour, named in the loaded text so the
-/// model does not assume they took effect.
-const IGNORED_FIELDS: [&str; 8] = [
-    "allowed-tools",
-    "disallowed-tools",
-    "hooks",
-    "model",
-    "effort",
-    "context",
-    "agent",
-    "shell",
-];
+/// model does not assume they took effect. `allowed-tools`, `hooks`,
+/// `model`, `context` and `agent` have their own lines since P79.
+const IGNORED_FIELDS: [&str; 3] = ["disallowed-tools", "effort", "shell"];
 
 /// One of a skill's files, from line `line` on, at most [`MAX_BODY_BYTES`]
 /// of it.
@@ -953,6 +1255,46 @@ mod tests {
     use super::*;
     use ccnm_testdir::TestDir;
     use std::fs;
+
+    /// What a session that runs nothing for a skill gets: the shape every
+    /// test before P79 was written against.
+    const NOTHING_RUNS: &str = "nothing runs for a skill in this test";
+
+    fn load_skill(scope: &Scope, call: &LoadSkillArgs, session: Option<&str>) -> Result<String> {
+        super::load_skill(scope, call, session, &Effects::none(NOTHING_RUNS)).map(|l| l.text)
+    }
+
+    fn prompt_text(
+        scope: &Scope,
+        name: &str,
+        arguments: &str,
+        session: Option<&str>,
+    ) -> Result<String> {
+        super::prompt_text(
+            scope,
+            name,
+            arguments,
+            session,
+            &Effects::none(NOTHING_RUNS),
+        )
+        .map(|l| l.text)
+    }
+
+    fn render(
+        scope: &Scope,
+        skill: &Skill,
+        arguments: &str,
+        session: Option<&str>,
+    ) -> Result<String> {
+        super::render(
+            scope,
+            skill,
+            arguments,
+            session,
+            &Effects::none(NOTHING_RUNS),
+        )
+        .map(|l| l.text)
+    }
 
     fn workspace(name: &str) -> TestDir {
         let dir = std::env::temp_dir().join(format!("ccnm-skills-{}-{name}", std::process::id()));
@@ -1268,8 +1610,9 @@ mod tests {
         );
         // Line 13 of the file, where read_file will find it.
         assert!(text.contains("  line 13: git status --short\n"), "{text}");
+        // P79: allowed-tools has its own line, saying why it does nothing.
         assert!(
-            text.contains("[frontmatter with no effect here: allowed-tools]"),
+            text.contains("[allowed-tools has no effect: nothing runs for a skill in this test]"),
             "{text}"
         );
         assert!(
@@ -1839,5 +2182,193 @@ mod tests {
         );
         assert!(tail.ends_with(", …"), "{tail}");
         assert!(tail.split(", ").count() > 20, "{tail}");
+    }
+
+    /// What a session that runs commands with nobody asked gets (P79): a
+    /// runner, here one that records what it was asked and answers.
+    fn running(
+        asked: &std::cell::RefCell<Vec<String>>,
+    ) -> impl Fn(&str) -> std::result::Result<String, String> + '_ {
+        move |line: &str| {
+            asked.borrow_mut().push(line.to_string());
+            match line {
+                "false" => Err("it exited 1: nope".into()),
+                other => Ok(format!("<{other}>\n")),
+            }
+        }
+    }
+
+    const RUNS: &str = "---\nname: runs\ndescription: Runs things.\nallowed-tools: Bash(git *) WebFetch Agent\nhooks:\n  PreToolUse:\n    - matcher: Bash\n      hooks:\n        - type: command\n          command: ./guard.sh\n  Stop:\n    - hooks:\n        - command: echo bye\n---\nBranch: !`git branch --show-current` for $0.\n\n```!\nnode --version\nnpm --version\n```\n\n```sh\necho !`not-this`\n```\nEmpty: !` ` stays.\n";
+
+    #[test]
+    fn a_session_that_runs_commands_fills_in_their_output_and_registers_hooks() {
+        let root = workspace("runs");
+        write(&root, ".claude/skills/runs/SKILL.md", RUNS);
+        let asked = std::cell::RefCell::new(Vec::new());
+        let run = running(&asked);
+        let tools = crate::config::AgentTools::of(&[crate::config::AgentTool::WebSearch]);
+        let effects = Effects {
+            commands: Ok(&run),
+            subagents: Some(true),
+            agent_tools: Some(&tools),
+        };
+        let call = LoadSkillArgs {
+            name: Some("runs".into()),
+            arguments: Some("main".into()),
+            ..Default::default()
+        };
+        let loaded = super::load_skill(&Scope::project(&root), &call, None, &effects).unwrap();
+        let text = loaded.text;
+        // The arguments are in before anything runs, and a plain code
+        // block's example is not run.
+        assert_eq!(
+            *asked.borrow(),
+            ["git branch --show-current", "node --version\nnpm --version"]
+        );
+        assert!(
+            text.contains("Branch: <git branch --show-current> for main."),
+            "{text}"
+        );
+        assert!(
+            text.contains("\n<node --version\nnpm --version>\n\n```sh\necho !`not-this`\n```"),
+            "{text}"
+        );
+        assert!(text.contains("Empty: !` ` stays."), "{text}");
+        assert!(
+            text.contains("[2 command(s) this skill runs as it loads were run on this machine"),
+            "{text}"
+        );
+        assert!(!text.contains("were NOT run"), "{text}");
+        assert!(text.contains("[hooks: 1 registered for the rest of this session; they run on this machine around this server's tools: PreToolUse Bash]"), "{text}");
+        assert!(
+            text.contains("[hooks not run here: Stop (it happens inside the client"),
+            "{text}"
+        );
+        assert!(text.contains("[allowed-tools: nothing to grant here, commands in this session already run without asking]"), "{text}");
+        assert!(
+            text.contains("[WebFetch, Agent: off in this workspace (the Runtime's agent_tools), and a skill cannot turn them on]"),
+            "{text}"
+        );
+        assert_eq!(loaded.hooks.len(), 1);
+        assert_eq!(loaded.hooks[0].command, "./guard.sh");
+    }
+
+    /// As natively: a load-time command that fails stops the whole load,
+    /// and the model sees which and why.
+    #[test]
+    fn a_failing_load_time_command_stops_the_load() {
+        let root = workspace("runs-fail");
+        write(
+            &root,
+            ".claude/skills/bad/SKILL.md",
+            "---\ndescription: Bad.\n---\nFirst !`false` then more.\n",
+        );
+        let asked = std::cell::RefCell::new(Vec::new());
+        let run = running(&asked);
+        let effects = Effects {
+            commands: Ok(&run),
+            subagents: None,
+            agent_tools: None,
+        };
+        let call = LoadSkillArgs {
+            name: Some("bad".into()),
+            ..Default::default()
+        };
+        let err = super::load_skill(&Scope::project(&root), &call, None, &effects).unwrap_err();
+        assert_eq!(err.code(), ErrorCode::InvalidArgs);
+        assert!(err.message().contains("line 4: false"), "{err}");
+        assert!(err.message().contains("it exited 1: nope"), "{err}");
+    }
+
+    /// Where commands wait for a person, nothing is run or registered, and
+    /// the text says why -- the reason is the caller's.
+    #[test]
+    fn where_commands_wait_for_a_person_nothing_is_run_or_registered() {
+        let root = workspace("runs-asks");
+        write(&root, ".claude/skills/runs/SKILL.md", RUNS);
+        let effects = Effects::none("commands here wait for a person");
+        let call = LoadSkillArgs {
+            name: Some("runs".into()),
+            ..Default::default()
+        };
+        let loaded = super::load_skill(&Scope::project(&root), &call, None, &effects).unwrap();
+        assert!(loaded.hooks.is_empty());
+        let text = loaded.text;
+        assert!(
+            text.contains("were NOT run (commands here wait for a person)"),
+            "{text}"
+        );
+        assert!(
+            text.contains("[hooks not run: commands here wait for a person]"),
+            "{text}"
+        );
+        assert!(
+            text.contains("[allowed-tools has no effect: commands here wait for a person]"),
+            "{text}"
+        );
+        assert!(
+            text.contains("Branch: !`git branch --show-current`"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn fork_and_model_say_how_they_can_take_effect() {
+        let root = workspace("fork");
+        write(
+            &root,
+            ".claude/skills/review/SKILL.md",
+            "---\ndescription: Review.\ncontext: fork\nagent: Explore\nmodel: opus\neffort: high\n---\nReview it.\n",
+        );
+        write(
+            &root,
+            ".claude/skills/plain/SKILL.md",
+            "---\ndescription: Plain.\nmodel: haiku\nagent: Plan\n---\nDo it.\n",
+        );
+        let load = |name: &str, subagents: Option<bool>| {
+            let effects = Effects {
+                subagents,
+                ..Effects::none("x")
+            };
+            let call = LoadSkillArgs {
+                name: Some(name.into()),
+                ..Default::default()
+            };
+            super::load_skill(&Scope::project(&root), &call, None, &effects)
+                .unwrap()
+                .text
+        };
+        let claude = load("review", Some(true));
+        assert!(claude.contains("[this skill runs in a sub-agent (context: fork): call the Agent tool with subagent_type \"Explore\", model \"opus\" and the text below as its prompt"), "{claude}");
+        assert!(
+            claude.contains("[frontmatter with no effect here: effort]"),
+            "{claude}"
+        );
+        let codex = load("review", Some(false));
+        assert!(codex.contains("[context: fork has no effect: this session has no sub-agents, so follow the text below here; model has no effect either"), "{codex}");
+        let unknown = load("review", None);
+        assert!(unknown.contains("if your client can run a sub-agent, give it the text below as its prompt, with model \"opus\""), "{unknown}");
+        let plain = load("plain", Some(true));
+        assert!(
+            plain.contains(
+                "[model has no effect: a skill loaded over MCP cannot change the session's model"
+            ),
+            "{plain}"
+        );
+        assert!(
+            plain.contains("[frontmatter with no effect here: agent]"),
+            "{plain}"
+        );
+        assert!(!plain.contains("sub-agent"), "{plain}");
+    }
+
+    #[test]
+    fn fill_replaces_what_find_finds_and_nothing_else() {
+        let body = "a !`one` b !`two`\n```!\nthree\n```\n```!\n\n```\n```md\n!`no`\n```\nc\n";
+        assert_eq!(inject::find(body).len(), 3);
+        let filled = fill(body, &["1\n".into(), "2".into(), "3\n".into()]);
+        assert_eq!(filled, "a 1 b 2\n3\n```!\n\n```\n```md\n!`no`\n```\nc\n");
+        // An unclosed `!` block is not a command, and stays.
+        assert_eq!(fill("x\n```!\ny\n", &[]), "x\n```!\ny\n");
     }
 }

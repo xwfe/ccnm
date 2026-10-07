@@ -59,10 +59,31 @@ impl Session {
         environment: &[(&str, &str)],
         provider: ccnm_core::provider::AgentProvider,
     ) -> Session {
-        let wire = payload::encode(
-            &ServePayload::new("t", root.to_path_buf(), "s1").with_provider(provider),
+        Self::start_serving(
+            root,
+            config,
+            environment,
+            ServePayload::new("t", root.to_path_buf(), "s1").with_provider(provider),
         )
-        .unwrap();
+    }
+
+    /// Somebody at a terminal, so `exec_command` asks them first.
+    fn start_interactive(root: &Path, config: &Path) -> Session {
+        Self::start_serving(
+            root,
+            Some(config),
+            &[],
+            ServePayload::new("t", root.to_path_buf(), "s1").with_interactive(true),
+        )
+    }
+
+    fn start_serving(
+        root: &Path,
+        config: Option<&Path>,
+        environment: &[(&str, &str)],
+        serve: ServePayload,
+    ) -> Session {
+        let wire = payload::encode(&serve).unwrap();
         let home = root.parent().unwrap().join("runtime-home");
         std::fs::create_dir_all(&home).unwrap();
         let mut child = Command::new(env!("CARGO_BIN_EXE_ccnm"))
@@ -827,4 +848,121 @@ fn runtime_child_keeps_project_environment_but_not_provider_private_metadata() {
         assert!(!text.contains("CLAUDE_TEST_METADATA"));
         s.shutdown();
     }
+}
+
+/// A skill with hooks and a load-time command (P79), in a session whose
+/// commands run with nobody asked (not interactive -- what `--print` and a
+/// bridge are). Loading it runs `!`date-ish`` on this machine and registers
+/// its hooks; from then on a `PreToolUse` hook on `Bash` stops a command
+/// that would remove files before it runs, and a `PostToolUse` hook on
+/// `Edit|Write` has its say after a patch. The hooks read the native input
+/// on stdin, so the same scripts work in local Claude Code.
+const HOOKED_SKILL: &str = r#"---
+description: Guarded edits.
+allowed-tools: Bash(git *)
+hooks:
+  PreToolUse:
+    - matcher: Bash
+      hooks:
+        - type: command
+          command: "grep -q '\"command\":\"rm ' && { echo 'no rm here, use git rm' >&2; exit 2; }; exit 0"
+  PostToolUse:
+    - matcher: Edit|Write
+      hooks:
+        - type: command
+          command: "cat > .hook-input.json; echo '{\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"additionalContext\":\"formatted\"}}'"
+---
+Marker: !`cat marker.txt`
+"#;
+
+#[test]
+fn a_skills_hooks_and_load_time_commands_run_where_commands_run_unattended() {
+    let root = workspace("hooks");
+    std::fs::create_dir_all(root.join(".claude/skills/guard")).unwrap();
+    std::fs::write(root.join(".claude/skills/guard/SKILL.md"), HOOKED_SKILL).unwrap();
+    std::fs::write(root.join("marker.txt"), "from-the-runtime").unwrap();
+    std::fs::write(root.join("victim.txt"), "keep me").unwrap();
+    let config = shared_config_for(&root);
+    let mut s = Session::start_with(&root, Some(&config));
+
+    // Before loading, nothing is hooked.
+    let loaded = s.call("load_skill", json!({"name": "guard"}));
+    assert!(!is_error(&loaded), "{}", text(&loaded));
+    let body = text(&loaded);
+    assert!(body.contains("Marker: from-the-runtime"), "{body}");
+    assert!(
+        body.contains("[hooks: 2 registered for the rest of this session"),
+        "{body}"
+    );
+    assert!(
+        body.contains("[allowed-tools: nothing to grant here"),
+        "{body}"
+    );
+
+    let stopped = s.call("exec_command", json!({"cmd": ["rm", "victim.txt"]}));
+    assert!(is_error(&stopped), "{stopped}");
+    let said = text(&stopped);
+    assert!(said.starts_with("CCNM_E_POLICY: "), "{said}");
+    assert!(
+        said.contains("PreToolUse hook of skill guard stopped it: no rm here, use git rm"),
+        "{said}"
+    );
+    assert!(
+        root.join("victim.txt").exists(),
+        "the hook runs before the command"
+    );
+
+    let fine = s.call("exec_command", json!({"cmd": ["true"]}));
+    assert!(!is_error(&fine), "{}", text(&fine));
+
+    let patched = s.call(
+        "apply_patch",
+        json!({"files": [{"op": "add", "path": "new.txt", "content": "x\n"}]}),
+    );
+    assert!(!is_error(&patched), "{}", text(&patched));
+    let last = patched["content"].as_array().unwrap().last().unwrap()["text"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(last, "[PostToolUse hook of skill guard: formatted]");
+    let input: Value =
+        serde_json::from_str(&std::fs::read_to_string(root.join(".hook-input.json")).unwrap())
+            .unwrap();
+    assert_eq!(input["hook_event_name"], "PostToolUse");
+    assert_eq!(input["tool_name"], "Write");
+    assert_eq!(
+        input["tool_input"]["file_path"],
+        root.join("new.txt").display().to_string()
+    );
+    s.shutdown();
+}
+
+/// The same skill where `exec_command` asks a person first: nothing it asks
+/// to have run runs, and the text says why and what would change it.
+#[test]
+fn where_exec_command_asks_a_skill_runs_nothing_for_itself() {
+    let root = workspace("hooks-asks");
+    std::fs::create_dir_all(root.join(".claude/skills/guard")).unwrap();
+    std::fs::write(root.join(".claude/skills/guard/SKILL.md"), HOOKED_SKILL).unwrap();
+    std::fs::write(root.join("marker.txt"), "from-the-runtime").unwrap();
+    std::fs::write(root.join("victim.txt"), "x").unwrap();
+    let config = shared_config_for(&root);
+    let mut s = Session::start_interactive(&root, &config);
+
+    let body = text(&s.call("load_skill", json!({"name": "guard"})));
+    assert!(
+        body.contains("were NOT run (commands in this session wait for a person"),
+        "{body}"
+    );
+    assert!(
+        body.contains("[hooks not run: commands in this session wait for a person"),
+        "{body}"
+    );
+    assert!(body.contains("allow_unattended_exec"), "{body}");
+    assert!(body.contains("Marker: !`cat marker.txt`"), "{body}");
+    // Not registered: the server does not stop it (the client would ask).
+    let ran = s.call("exec_command", json!({"cmd": ["rm", "victim.txt"]}));
+    assert!(!is_error(&ran), "{}", text(&ran));
+    assert!(!root.join("victim.txt").exists());
+    s.shutdown();
 }

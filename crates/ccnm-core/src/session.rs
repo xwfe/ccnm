@@ -581,7 +581,16 @@ pub fn create(
         .contains(crate::config::AgentTool::McpServers)
         .then_some(agent_mcp);
     let agent_server = match transport {
-        Some(_) => crate::mcp::agent_skills::launcher(&exe, &spec.id, machine_skills, mcp)?,
+        Some(_) => crate::mcp::agent_skills::launcher(
+            &exe,
+            &spec.id,
+            machine_skills,
+            mcp,
+            spec.provider() == crate::provider::AgentProvider::Claude
+                && spec
+                    .agent_tools
+                    .contains(crate::config::AgentTool::Subagents),
+        )?,
         None => None,
     };
     if let Some(recorded) = &agent_server {

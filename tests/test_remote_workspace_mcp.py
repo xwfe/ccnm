@@ -248,6 +248,28 @@ agent_node = "agent"
         # 原生客户端会在加载时执行 !`命令`；这里一次"读"不能变成一次"执行"。
         self.assertFalse((self.root / "ran-by-loading").exists())
 
+    def test_a_coding_bridge_runs_a_skills_hooks_and_load_time_commands(self):
+        # P79：bridge 那条路上命令本来就不问人，所以 skill 的 !`命令` 在加载时
+        # 照原生执行、hooks 登记；之后 PreToolUse 钩子在 Runtime 上拦下删文件的
+        # 命令（退出码 2），模型看到的是 CCNM_E_POLICY 和钩子说的话。
+        hook = 'grep -q \'"command":"rm \' && { echo "use git rm" >&2; exit 2; }; exit 0'
+        self.add_skill("guard", "---\ndescription: Guard.\nhooks:\n  PreToolUse:\n"
+                       "    - matcher: Bash\n      hooks:\n        - type: command\n"
+                       f"          command: {json.dumps(hook)}\n---\nLoaded: !`touch ran-by-loading`\n")
+        (self.root / "victim.txt").write_text("keep", encoding="utf-8")
+        self.write_config("coding", dedicated=False)
+        client = self.client("demo", "coding", "neutral-skill-hooks")
+        loaded = result_text(client.call_tool("load_skill", {"name": "guard"}))
+        self.assertTrue((self.root / "ran-by-loading").exists(), loaded)
+        self.assertIn("[hooks: 1 registered for the rest of this session", loaded)
+        stopped = client.call_tool("exec_command", {"cmd": ["rm", "victim.txt"]})
+        self.assertTrue(is_error(stopped), stopped)
+        self.assertTrue(result_text(stopped).startswith("CCNM_E_POLICY:"), result_text(stopped))
+        self.assertIn("use git rm", result_text(stopped))
+        self.assertTrue((self.root / "victim.txt").exists())
+        fine = client.call_tool("exec_command", {"cmd": ["true"]})
+        self.assertFalse(is_error(fine), fine)
+
     def test_without_a_name_the_whole_list_comes_back(self):
         self.add_skill()
         # 引号不闭合：原生客户端和这里都读不了。P45 之前这里用的是

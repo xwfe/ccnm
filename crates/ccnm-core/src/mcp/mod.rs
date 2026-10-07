@@ -17,6 +17,7 @@ pub mod context;
 pub mod curl;
 pub mod exec;
 pub mod glob;
+pub mod hooks;
 pub mod image;
 pub mod jobs;
 pub mod list;

@@ -562,7 +562,7 @@ fn workspace_checks(r: &Resolved<'_>, agent: Option<&str>, env: &Env<'_>) -> Vec
             // answered a 0.10.1 probe with no identity at all -- so the
             // identity comparison below would report the symptom and return
             // before the version row could name the cause.
-            let version = version_row("Agent ccnm", &rep.hello, "work");
+            let version = version_row("Agent ccnm", &rep.hello, &agent_side(r.agent_node()));
             if !identity_matches && version.status != Status::Ok {
                 checks.push(Check::ok("Agent SSH", resolved.target()));
                 checks.push(version);
@@ -659,8 +659,20 @@ impl<'a> Subject<'a> {
     }
 }
 
+/// How the version rows name the Agent Node: by the name the config gives
+/// it. They used to say `work` whatever it was called (F26).
+fn agent_side(node: &str) -> String {
+    format!("the Agent Node {node}")
+}
+
 fn probe_rows(r: &Subject<'_>, rep: &ProbeReport) -> Vec<Check> {
-    let mut checks = vec![version_row("Agent ccnm", &rep.hello, "work")];
+    let agent_version = version_row("Agent ccnm", &rep.hello, &agent_side(r.agent_node));
+    // Everything below about the Runtime is the Agent's account of it. An
+    // Agent on another build parses that into its own structs and drops
+    // what it does not know -- a 0.9.0 one drops `wire` -- so only the
+    // version string survives the trip intact (F25).
+    let agent_other_build = agent_version.status != Status::Ok;
+    let mut checks = vec![agent_version];
 
     // Refused before anything was probed: one row with the Agent's reason,
     // and every row it would have filled says it was not checked. Not the
@@ -731,10 +743,14 @@ fn probe_rows(r: &Subject<'_>, rep: &ProbeReport) -> Vec<Check> {
         }
         Some(_) => match &rep.runtime_hello {
             Some(Ok(h)) => {
+                let reached = format!("{} as {}, ccnm {}", r.runtime_node, h.user, h.ccnm_version);
                 checks.push(match version_row("Reverse SSH", h, "the Runtime Node") {
-                    ok if ok.status == Status::Ok => Check::ok(
+                    ok if ok.status == Status::Ok => Check::ok("Reverse SSH", reached),
+                    _ if agent_other_build && h.ccnm_version == crate::VERSION => Check::skip(
                         "Reverse SSH",
-                        format!("{} as {}, ccnm {}", r.runtime_node, h.user, h.ccnm_version),
+                        format!(
+                            "{reached}; build not compared: the Agent Node that relayed this runs another ccnm build and may have dropped what it does not know -- install the same build there first"
+                        ),
                     ),
                     fail => fail,
                 });
@@ -2346,6 +2362,78 @@ mod tests {
         assert!(!text.contains("identity differs"), "{text}");
     }
 
+    /// F25, F26 (P62.4, 2026-10-04). A 0.9.0 Agent that read the selection
+    /// fine relays the Runtime's hello through its own struct, which has no
+    /// `wire`; the Runtime ran this very build, and `Reverse SSH` still said
+    /// it was "not the same build ... older than this build". The version
+    /// row named the Agent `work` though the node was fodelf.
+    #[test]
+    fn an_old_agent_relaying_the_runtime_does_not_make_the_runtime_look_old() {
+        let probe = |agent_version: &str, agent_wire: Option<u32>, runtime_version: &str| {
+            let mut probe = good_probe();
+            probe.protocol = 3;
+            probe.agent_identity = Some(crate::instance::AgentIdentity {
+                node: "agent".into(),
+                instance: "claude-main".into(),
+                provider: AgentProvider::Claude,
+                profile_ref: "default".into(),
+            });
+            probe.hello.ccnm_version = agent_version.into();
+            probe.hello.wire = agent_wire;
+            let mut runtime = hello("ccrun", runtime_version, Some(true));
+            // What reaches this machine: dropped on the way, or never sent.
+            runtime.wire = None;
+            probe.runtime_hello = Some(Ok(runtime));
+            serde_json::to_value(probe).unwrap()
+        };
+
+        let report = doctor_with_probe("old-relay", probe("0.9.0", None, crate::VERSION));
+        let text = report.render();
+        let agent = row(&report, "Agent ccnm");
+        assert_eq!(agent.status, Status::Fail(ErrorCode::Version), "{text}");
+        assert!(
+            agent
+                .detail
+                .contains("the Agent Node agent runs ccnm 0.9.0"),
+            "{text}"
+        );
+        let reverse = row(&report, "Reverse SSH");
+        assert_eq!(reverse.status, Status::Skip, "{text}");
+        assert!(reverse.detail.contains("build not compared"), "{text}");
+        assert!(
+            reverse.detail.contains(&format!("ccnm {}", crate::VERSION)),
+            "{text}"
+        );
+        assert!(!text.contains("not the same build"), "{text}");
+
+        // A version string the Agent cannot have mangled still counts.
+        let report = doctor_with_probe("old-relay-old-runtime", probe("0.9.0", None, "0.8.0"));
+        let reverse = row(&report, "Reverse SSH");
+        assert_eq!(reverse.status, Status::Fail(ErrorCode::Version));
+        assert!(
+            reverse.detail.contains("runs ccnm 0.8.0"),
+            "{}",
+            reverse.detail
+        );
+
+        // Relayed by this same build, a missing `wire` is the Runtime's own.
+        let report = doctor_with_probe(
+            "same-relay",
+            probe(
+                crate::VERSION,
+                Some(crate::protocol::payload::WIRE_LEVEL),
+                crate::VERSION,
+            ),
+        );
+        let reverse = row(&report, "Reverse SSH");
+        assert_eq!(reverse.status, Status::Fail(ErrorCode::Version));
+        assert!(
+            reverse.detail.contains("not the same build"),
+            "{}",
+            reverse.detail
+        );
+    }
+
     /// The comparison F20 moved behind the version stays where it was for
     /// the case it is for: the same build answering for another instance.
     #[test]
@@ -2954,8 +3042,9 @@ mod tests {
         let report = run(&config, Some("xshun"), &env(&fake, &dir));
         let work = row(&report, "Agent ccnm");
         assert_eq!(work.status, Status::Fail(ErrorCode::Version));
+        // Named the way the config names it (F26), not `work`.
         assert!(
-            work.detail.contains("work runs ccnm 0.0.1"),
+            work.detail.contains("the Agent Node agent runs ccnm 0.0.1"),
             "{}",
             work.detail
         );

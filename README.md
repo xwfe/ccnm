@@ -157,7 +157,7 @@ view_image      read_notebook  stop_command   call_mcp_tool
 
 | | |
 | --- | --- |
-| 最新发布 | [v0.11.1](https://github.com/xwfe/ccnm/releases)（2026-10-07），每个版本改了什么写在 Releases 页 |
+| 最新发布 | [v0.11.2](https://github.com/xwfe/ccnm/releases)（2026-10-07），每个版本改了什么写在 Releases 页 |
 | 真机上验到哪 | macOS Agent → Debian 13 Runtime（执行账号 `ccrun`）上：Claude 与 Codex 的受管会话、`--print`、外部 MCP、程序接口、安装升级与回退。逐项范围和**没验过的**见[支持矩阵](docs/support-matrix.md) |
 
 已知限制：

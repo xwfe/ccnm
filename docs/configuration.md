@@ -170,7 +170,7 @@ runtime_node = "runtime"
 ssh = "alias"                    # 从本机连它用的 alias
 ccnm_bin = "~/.local/bin/ccnm"   # 可选：它上面 ccnm 的路径，这一行写的就是默认值
 claude_config_dir = "/path"      # 可选：Agent 角色用的 CLAUDE_CONFIG_DIR
-runtime_user = "ccrun"           # Runtime Executor 期望的系统账号
+runtime_user = "ccrun"           # 可选：建了专用执行账号才写，见下
 codex_bin = "/opt/codex/bin/codex"   # 可选：Codex exec-server 链用的 Codex 二进制，绝对路径
 ```
 
@@ -185,6 +185,8 @@ codex_bin = "/opt/codex/bin/codex"   # 可选：Codex exec-server 链用的 Code
 `codex_bin` 只有 Runtime 自己读，见下面的 [`codex_exec_server`](#codex_exec_server)。必须是绝对路径，不从 `PATH` 找：执行模型命令的那个程序不该取决于 Runtime 账号的 shell 配置。它的 `--version` 必须正好是 ccnm 实测过的 Codex 版本（现在是 0.154.0），否则会话启动前就被拒，报 `CCNM_E_VERSION`。
 
 `runtime_user` 说的是 **Agent 的 MCP transport 落到哪个账号上**，项目工具就以谁的身份执行。它不规定谁可以敲 `ccnm`——那是 Operator，通常就是你自己的账号。四种身份怎么分见[生产安全](production-safety.md)。
+
+**不写（默认，P78 起）就是共用账号**：Agent 登进来的是谁，命令就以谁的身份跑，通常就是你自己；sudo、admin、私钥、Agent 登录这些照查照显示（doctor 里是"注意"），但什么都不挡。**写了就是专用账号模式**：登进来的必须是这个账号，那些检查没通过就拒绝 `exec_command`（够得到 Agent 登录时整个会话不开），直到账号真的干净，或者用下面两个 `allow_*` 开关明确接受。要不要写、怎么建账号，见[生产安全：要不要建专用账号](production-safety.md#要不要建专用账号)。
 
 一个 node 可以同时具备这些字段，也就是同时承担多个角色。
 
@@ -245,21 +247,21 @@ instance workspace（用 `agent` 而不是 `agent_node` 的）不接受这个字
 
 ### `allow_unconfined_exec`
 
-逃生开关，不是生产配置：
+**专用账号模式**（写了 [`runtime_user`](#node-的其他字段)）下的逃生开关，不是生产配置：
 
 ```toml
 allow_unconfined_exec = true
 ```
 
-它允许 Runtime OS 账号没通过 confinement 检查时仍然执行 `exec_command`，但每条命令结果都会标记 runtime **未隔离**。
+它允许 Runtime OS 账号没通过 confinement 检查时仍然执行 `exec_command`，但每条命令结果都会标记 runtime **未隔离**。专用账号配好了就把它改回 `false`。
 
-真实项目应该在 Runtime Node 建 `ccrun` 之类的专用低权限账号，然后把它改回 `false`。
+没写 `runtime_user`（默认的共用账号）时用不上它：那些检查本来就不挡。唯一的例外是以 root 运行，那一条在两种模式下都挡，这个开关能放行——别这么做。
 
 **它waive不了凭据那一条**，那是下面那个开关的事。
 
 ### `allow_unisolated_credentials`
 
-跑这个 workspace 命令的账号能读到本机已知的 Agent 登录（`~/.claude`、`~/.codex` 之类）时，仍然允许打开：
+**专用账号模式**下，跑这个 workspace 命令的账号能读到本机已知的 Agent 登录（`~/.claude`、`~/.codex` 之类）时，仍然允许打开（没写 `runtime_user` 时用不上：共用账号够得到登录也不拦，代价见[生产安全](production-safety.md#要不要建专用账号)）：
 
 ```toml
 allow_unconfined_exec = true                 # 两个都要写
@@ -459,7 +461,7 @@ hidden = ["pdf", "pptx"]  # 这几个不交给会话，按会话里看到的名�
 
 | 写在哪 | 管的是 | 模型那边是什么样 |
 | --- | --- | --- |
-| Runtime Node | 执行账号（通常是 `ccrun`）HOME 里装的 | 并进 `load_skill`，排在项目的后面。附件用 `load_skill` 的 `file` 读；脚本就在项目这台机器上，`exec_command` 按路径直接跑 |
+| Runtime Node | 执行账号（默认就是你在那台机器上的账号；建了专用账号就是它）HOME 里装的 | 并进 `load_skill`，排在项目的后面。附件用 `load_skill` 的 `file` 读；脚本就在项目这台机器上，`exec_command` 按路径直接跑 |
 | Agent Node | 你自己账号 HOME 里装的 | 远端会话启动时，Claude Code / Codex 旁边多起一个小服务 `ccnm internal agent-skills`，工具叫 `mcp__ccnm_agent__load_skill`。附件同样用 `file` 读；脚本在 Agent 机器上，模型得先用 `apply_patch` 写进项目才能在 Runtime 上跑 |
 
 Agent 这边为什么不直接用 Claude Code / Codex 自己的 skills：实测（toexec `evidence/v3-parity/machine-skills/`）Claude 读附件要放开 `Read`，而只对 skills 目录放开的 `Read` 照样能读到会话的工作目录（ccnm 给这个会话记的状态）；Codex 的清单要靠 shell 去读，ccnm 把 shell 关了，列出来也读不到。所以原生的一律关着——Codex 远端会话固定带 `-c skills.include_instructions=false`，不管这一节怎么写。

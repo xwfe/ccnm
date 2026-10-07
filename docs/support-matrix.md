@@ -182,15 +182,17 @@ ccnm session id 是生命周期主键；Claude/Codex 自己的 thread/resume id 
 
 两种情况下 `read` 会话都照常打开，而远端都没有留下孤儿进程。所以"Claude Code 崩了/被关掉"通常什么都不用做；要人动手的是 Runtime 侧的执行者被杀那一种。
 
-## 三个逃生开关：接受了什么，以及绝不会变绿
+## 共用账号与三个逃生开关：接受了什么，以及绝不会变绿
 
-默认形态是 Runtime 上一个专用低权限账号，读不到任何已知 Agent 凭据，而且每条命令执行前有人确认。三个 per-workspace 开关各偏离其中一件，都写在 **Runtime 自己的配置**里（承担风险的机器决定，调用方带不进来），**互不蕴含**：
+**P78 起默认是共用账号**：Runtime 没写 `runtime_user`，命令以 Agent 登进来的那个账号跑；sudo、admin、私钥、Agent 登录照查照显示（doctor 里是 WARN），但什么都不挡，前两个开关也就用不上。只有离线证据（Rust 与中立 MCP 客户端的用例），没在真机上跑过；v0.12.0 及之前没写 `runtime_user` 本身就是一行 FAIL。[要不要建专用账号](production-safety.md#要不要建专用账号)。
+
+**写了 `runtime_user` 就是专用账号模式**：要求那个账号是受限的、读不到任何已知 Agent 凭据，再加上每条命令执行前有人确认。三个 per-workspace 开关各偏离其中一件，都写在 **Runtime 自己的配置**里（承担风险的机器决定，调用方带不进来），**互不蕴含**：
 
 | 开关 | 放弃的那个性质 | 典型场景 |
 | --- | --- | --- |
-| `allow_unconfined_exec` | 跑命令的账号是受限的（没 sudo/admin、名下没私钥……） | 还没建专用账号的临时项目 |
-| `allow_unisolated_credentials` | 那个账号**读不到已知 Agent 登录**（含可达性"说不清"：symlink、列不出来） | 项目和 Claude 登录在同一个家目录：一台机器、一个账号 |
-| `allow_unattended_exec` | **每条 `exec_command` 执行前有人确认** | 常用交互会话的项目，文档建议开（P76 起），免得每条命令都点一次 |
+| `allow_unconfined_exec` | 跑命令的账号是受限的（没 sudo/admin、名下没私钥……） | 写了 `runtime_user`、账号还没配干净的临时项目 |
+| `allow_unisolated_credentials` | 那个账号**读不到已知 Agent 登录**（含可达性"说不清"：symlink、列不出来） | 写了 `runtime_user`、专用账号暂时够得到一份 Agent 登录 |
+| `allow_unattended_exec` | **每条 `exec_command` 执行前有人确认** | 常用交互会话的项目，文档建议开（P76 起），免得每条命令都点一次；两种模式下都管用 |
 
 **前两个是授权，第三个不是。** `allow_unattended_exec` 只决定"要不要问人"，不改变任何一条命令**能做什么**——那由 `exec_gate` 和 Runtime 执行身份决定，没有任何开关能动它。它也完全不影响 `--print` 和 `ccnm mcp bridge`：那两条路上本来就不问（两边都没人在等）。
 

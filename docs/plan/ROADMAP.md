@@ -26,11 +26,11 @@ ccnm 不需要安装 Orchestrator 也能独立使用。Orchestrator 核心不链
 ### 不可漂移的原则
 
 - Node 是机器标识，Agent Instance 是 provider + node + Agent-local profile 的运行身份。workspace 的 root 只由持有项目的一侧权威解析；调用方不能覆盖成任意路径。
-- 凭据边界落实到**进程身份、文件权限和传输**，不是“某台物理机器永远不能装 AI”。一台机器可承担多角色，但执行进程不应因此读到 Agent 登录状态。native colocated 是显式受信任本地执行形态，不能冒充隔离 Runtime。
+- 凭据边界落实到**进程身份、文件权限和传输**，不是“某台物理机器永远不能装 AI”。一台机器可承担多角色，但声明了专用执行账号（`runtime_user`）的执行进程不应因此读到 Agent 登录状态。P78（2026-10-07，用户定）起默认是共用账号：执行账号可以就是你自己的，凭据与提权照查照显示、不拒绝——和直接在那台机器上用官方 CLI 同一个风险，隔离是可选加固。native colocated 是显式受信任本地执行形态，不能冒充隔离 Runtime。
 - 官方 CLI 自己认证，ccnm 不提取、复制、代理或返回订阅凭据；目录路径不是密钥，但私有 profile 路径仍不下发 Runtime。不能保证官方 CLI 包装就自动满足所有订阅、共享或再分发规则；面向他人开放前另行核实。
 - Provider 负责声明经过验证的需求；通用安全层统一落实。Runtime 检查**执行身份可接触的全部已知 Agent 凭据**，不能因当前选 Claude 就忽略 Codex 凭据。不得把检查范围夸大为已证明机器上不存在任何秘密。
 - 环境清理区分 Agent→SSH 的认证环境与 Runtime 自己的项目环境。前者不转发 Agent 私密状态，后者只允许显式授权的项目变量；不把 `OPENAI_*` / `GOOGLE_*` 一刀切当成永远正确的通用策略，也不因此放宽现有 Codex 隔离。来源不明的凭据 fail-closed。
-- `ccrun`/ACL、无 sudo/admin、特权 socket、凭据隔离和网络策略共同约束执行。诊断不能代替 OS 策略；egress 元数据不是防火墙，命令解析器不是 sandbox。
+- 建了专用账号时，`ccrun`/ACL、无 sudo/admin、特权 socket、凭据隔离和网络策略共同约束执行；默认的共用账号下约束执行的只有那个账号本身的权限。诊断不能代替 OS 策略；egress 元数据不是防火墙，命令解析器不是 sandbox。
 - Orchestrator 选择写入者，**ccnm Runtime 执行拒绝/互斥机制**。只在 Orchestrator 记一个 lease，不能拦住另一 CLI；只锁 `apply_patch` 也挡不住 `exec_command`。读者不开放任意 exec，除非有独立验证的只读隔离。
 - 一台 Runtime 上多个 alias/Agent/Controller 不能绕过同一工作树的写入互斥。进程仍存活时不能因超时到期就将写权限交给下一人；不宣称对任意 shell 获得 exactly-once 或原子回滚。
 - 合盖后能继续工作的前提是 Agent **和项目所在 Runtime** 仍在线。项目只在睡眠笔记本上时，不承诺云端继续读写；本轮不做源码迁移、同步或离线缓存。

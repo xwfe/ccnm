@@ -18,6 +18,7 @@
 > 2026-09-22 `read_file`、`load_skill`、`call_mcp_tool` 的工具定义多了 `_meta` 键 `anthropic/maxResultSizeChars`：Claude Code 会把超过约 50 000 字符的结果存盘、只给模型预览，而受管会话读不回来（第 5 节末）。工具、参数、结果都没变。
 > 2026-09-22（P48）**`load_skill` 也交出 Runtime 执行账号装好的 skills**（`~/.claude/skills`、`~/.agents/skills`、`~/.codex/skills`、`~/.claude/commands`），排在项目的后面；同名时装好的赢（照原生）。新增两个可选参数 `file`、`line`：读 skill 目录里的其他文件，长文件分段。不带新参数、执行账号 HOME 里又没装 skill 的调用和以前一样，只有工具的固定说明文字换了。Runtime 配置 `[machine_skills]` 可以整段关掉或按名字藏。见第 5.1 节。
 > 2026-09-22（P45）**skill 的 frontmatter 改成照 Claude Code 2.1.278 的读法读**（共享库 `toexec-skill` 0.2.0），工具、参数、错误码都没变，变的是同一个 SKILL.md 读出来的结果：以 `` ` `` `@` `*` 开头的描述不再让 skill 被跳过，`argument-hint: [filename] [format]` 和 `[issue-number]` 的提示不再丢；`disable-model-invocation: yes` / `on` / `1` 现在生效；写了 `user-invocable` 却不是 true（空值、认不出的字）现在不登记成 prompt；同一个键写两遍后写的赢。宿主会整段丢弃的 frontmatter、重复的键，`load_skill` 的返回开头各多一行说明。见第 5.1 节。
+> 2026-10-07（P78）**协议没变，Runtime 安全门禁的默认判法变了**：Runtime 节点没写 `runtime_user` 时，执行账号按共用账号判——sudo、admin、私钥、Agent 登录这些检查只显示、不拒绝，所以同一个没写 `runtime_user` 的 Runtime，以前在 initialize 前或 `exec_command` 时报 `CCNM_E_POLICY`，现在照常服务。写了 `runtime_user` 的判法、身份未知与继承认证环境的拒绝、错误码和工具都没变。第 4.5 节措辞随之改。
 
 面向的读者是**已经在本机跑着 Claude Code / Codex / 别的 MCP Host，但项目在另一台机器上的人**。它给你的不是一条裸 SSH 通道，而是一个绑定了 workspace 的远程项目工具集。
 
@@ -215,7 +216,7 @@ Remote MCP（coding 模式）  ────┘
 
 ### 4.5 首版不做多租户
 
-transport 的认证边界是 **OpenSSH identity + 独立的 Runtime OS 账号**。一个共享的 `ccrun` key 不是多租户授权：拿到那把 key 的人得到的是那个账号的全部权限。细粒度 token、按用户区分的审计、第三方共享，全部不在首版。
+transport 的认证边界是 **OpenSSH identity + 它落到的那个 Runtime OS 账号**。这个账号默认可以就是你自己的；要和你的私钥、Agent 登录隔开，就用专用账号并在 Runtime 上写 `runtime_user`（[生产安全](../production-safety.md#要不要建专用账号)）。一把共享的 key（比如 `ccrun` 的）不是多租户授权：拿到那把 key 的人得到的是那个账号的全部权限。细粒度 token、按用户区分的审计、第三方共享，全部不在首版。
 
 ## 5. 工具语义与 annotations
 

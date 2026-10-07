@@ -2,13 +2,38 @@
 
 `exec_command` 本质上是在 **Runtime Node** 上，以某个真实操作系统账号执行命令。这个账号才是 ccnm 当前最重要的权限边界。
 
-`ccrun` 是建议使用的 **Runtime Service Account**：一个只用于 ccnm Runtime 执行的低权限 Unix 账号。
+**默认就用你自己的账号**（P78 起）：Agent 经 SSH 登进 Runtime Node 用的是哪个账号，项目命令就以谁的身份跑，和你直接在那台机器上开 Claude Code / Codex 一样。不用建账号，也不用写任何开关。
+
+本页讲的是**要不要、怎么再加一层隔离**：建一个只给 ccnm 用的低权限账号——建议叫 `ccrun`，文档里叫 Runtime Service Account 或执行账号——并在 Runtime 配置里写上 `runtime_user`，让 ccnm 照专用账号的标准去查它。
 
 它不绑定“家庭机”这种物理位置，也不只是为了隐藏某几个目录。它真正解决的是：**AI 的一次工具调用，不应该自动继承你个人登录账号能做的一切。**
 
+## 要不要建专用账号
+
+**不建（默认）是什么样**：Runtime 配置里没写 `runtime_user`，ccnm 把这个账号当成和你共用的。
+
+- 模型跑的命令能碰到这个账号能碰的一切：你的 SSH 私钥和 SSH agent、Git / 云服务凭据、别的仓库、它有的 sudo 或 admin、Docker socket——**如果你在这台机器上也登录过 Claude / Codex，还包括那份登录**。让模型跑一条命令只需要一句话，包括藏在它被要求读的文件里的那句。
+- ccnm 照样把这些查一遍：`ccnm doctor` 里 `Runtime 执行身份`、`sudo 权限`、`admin 组`、`SSH 私钥`、`Claude 凭据` 这些行如实显示，有问题就是"注意"，**但什么都不挡**，结论照样是"可以用了"。
+- 仍然会拒绝的只有三种，和账号是谁无关：以 root 运行；说不清执行身份是谁；Runtime 的环境里继承了 `ANTHROPIC_*`、`CLAUDE_*` 这类 AI 认证变量（修法是别 export，见[凭证边界](#凭证边界)）。
+
+**什么时候该建**：
+
+- 项目机器上这个账号有你不想被一句 prompt 带走的东西：私钥、云凭据、AI 登录、别的项目；
+- 开了 [`allow_unattended_exec`](configuration.md#allow_unattended_exec)（命令执行前没人看），而且不是一次性的小项目；
+- 这台机器有别人在用，或者跑着你不想被误删的东西。
+
+**建了之后**：在 Runtime 配置里写
+
+```toml
+[nodes.runtime]
+runtime_user = "ccrun"
+```
+
+ccnm 就按专用账号查它：上面那些"注意"会变成"失败"，`exec_command` 被拒（够得到 Agent 登录时整个会话不开），直到账号真的干净；`allow_unconfined_exec`、`allow_unisolated_credentials` 两个开关也只在这个模式下有意义。怎么建、怎么配见本页后面几节，下一节讲为什么要分这几种身份。
+
 ## 四种身份，别混成一个
 
-一套 ccnm 区分四种操作身份。它们是职责，不要求为每种职责都创建一个账号；**可信隔离部署必须把 Runtime Executor 与持有 Agent/Operator 私有凭据的身份分开**。同账号风险接受不构成隔离证明：
+一套 ccnm 区分四种操作身份。它们是职责，不要求为每种职责都创建一个账号——默认的共用账号里，Operator 和 Runtime Executor 往往就是同一个账号，代码里仍按不同职责处理。但**可信隔离部署必须把 Runtime Executor 与持有 Agent/Operator 私有凭据的身份分开**，同账号不构成隔离证明。下表说的是建了专用账号之后各自该持有什么：
 
 | 身份 | 干什么 | 可以持有 | 不该持有 |
 | --- | --- | --- | --- |
@@ -29,13 +54,13 @@
 - `ccnm doctor` 关于 Runtime 的那几行不再判"敲命令的人"（Batch D）：由 Runtime Executor 自己回答，经 Agent 那条 ssh 取回。**换个人跑同一个 workspace，这几行一字不差**，有测试钉着。
 - 诊断入口也一样（Batch D2）：在 Agent Node 上跑 `ccnm doctor` / `ccnm mcp probe`，过去是把整条公共命令 ssh 给 Runtime 执行、再由它连回 Agent 探测——执行身份为了一个诊断出站了一次。现在两端各查各能证明的：Agent 本机查 Controller/官方 CLI/登录/tmux，Runtime 的结论由 `ccrun` 自己回答（`runtime-resolve` / `runtime-audit`），MCP transport 由 Agent 主动开。**两个方向跑出来的 Runtime 结论一字不差**，同样有测试钉着。
 
-所以现在的做法就是直白的那个：**用你自己的账号（Operator）敲 ccnm，让 `ccrun` 名下一把私钥都没有。** 诊断命令两台机器上都能跑。
+所以建了专用账号时的做法就是直白的那个：**用你自己的账号（Operator）敲 ccnm，让 `ccrun` 名下一把私钥都没有。** 诊断命令两台机器上都能跑。
 
 **这些在真机上复验过了**（[Batch E 记录](research/p7-batch-e-2026-09-10.md)）：以普通管理员账号跑 doctor，Runtime 那几行报的是 `ccrun` 且全绿——同一条命令在 P7.4 之前会报 7 个 FAIL；两个方向跑 doctor 结论逐字相同；会话期间执行身份的进程表里只有入站 sshd 与 `mcp-serve`。仍未验的是 Codex 那条链。
 
 ## `ccrun` 能解决什么
 
-如果直接让 Runtime 以个人账号运行，`exec_command` 理论上可以继承这个账号能访问的所有资源，例如：
+Runtime 以个人账号运行（也就是默认的共用账号）时，`exec_command` 可以继承这个账号能访问的所有资源，例如：
 
 - 个人 SSH 私钥和 SSH agent；
 - Git / 云服务凭证；
@@ -113,7 +138,7 @@ confinement gate 会检查 Runtime Executor 能在它本机可靠判断的性质
 
 ```text
 Runs as root            Runtime 不能是 root
-Runtime user            被审计的账号必须匹配 nodes.<runtime>.runtime_user
+Runtime user            写了 nodes.<runtime>.runtime_user 时被审计的账号必须是它；没写就是共用账号（注意）
 No sudo                 不能 passwordless sudo
 Not an admin            不应属于 admin / wheel / sudo 等管理组
 No SSH keys             ~/.ssh 和 ~/.config/ccnm 里都不该有该账号可读的私钥
@@ -125,7 +150,9 @@ No Docker socket        当前账号不应能写 Docker socket
 exec_command            confinement 通过后才正常允许
 ```
 
-`allow_unconfined_exec = true` 是逃生开关，不是生产配置。
+**没写 `runtime_user`（默认的共用账号）时**，除了 `Runs as root`、`No authentication environment` 和执行身份未知，其余各行没通过也只显示为"注意"：不挡会话、不挡 `exec_command`，命令结果也不加 unconfined 那一行。下面说的开关都是**写了 `runtime_user` 之后**才用得上的。
+
+专用账号模式下，`allow_unconfined_exec = true` 是逃生开关，不是生产配置。
 
 它的含义只是：
 
@@ -137,9 +164,9 @@ exec_command            confinement 通过后才正常允许
 
 ## 凭据隔离那一条，怎么放开，代价是什么
 
-有一类人确实卡在这里：项目和 Claude 的登录在同一个家目录里——一台机器、一个账号、想先试试这东西。对他们来说没有东西可隔离，而 ccnm 直接拒绝启动，等于没法用。
+**只有写了 `runtime_user` 才会卡在这里。** P78 之前不写也卡：项目和 Claude 登录在同一个家目录的人——一台机器、一个账号、想先试试——ccnm 直接拒绝启动，等于没法用；现在不写 `runtime_user` 就是共用账号，这一条不拦。
 
-所以有第二个开关，写在 **Runtime 那一侧**那个 workspace 上：
+写了 `runtime_user`、而那个账号又确实够得到某份 Agent 登录时，会话起不来。要么把登录从那个账号拿走，要么在 **Runtime 那一侧**那个 workspace 上写第二个开关：
 
 ```toml
 [workspaces.demo]
@@ -167,9 +194,9 @@ allow_unisolated_credentials = true   # 这个账号能读到 Agent 的登录
 
 - **执行身份未知**——ccnm 说不出这是哪个账号，那 `read_file` 返回的是谁的文件、workspace 上那句 `external_mcp = "read"` 是谁替谁签的，都无从谈起。
 - **认证环境是继承来的**——只读会话一样会起子进程：启动时探 git、`search_text` 跑 ripgrep。环境里那个 `ANTHROPIC_*` 照样传给它们。
-- **这个账号能读到 Agent 的登录**——模型确实够不到（工具路径全部限制在 workspace 根内，穿出去的 symlink 会被拒）。但这条隔离是**这台机器的性质**，不是"这次给了多少权限"的性质。ccnm 的全部前提就是 Runtime 执行身份和 Agent 登录身份是两个账号；一个没做这个分离的身份，无论对外开多少，都得有人明确签字才服务。P11 要证的正是这件事：第二个入口没有把第一个入口的边界撑大。
+- **这个账号能读到 Agent 的登录**——模型确实够不到（工具路径全部限制在 workspace 根内，穿出去的 symlink 会被拒）。但这条隔离是**这台机器的性质**，不是"这次给了多少权限"的性质。写了 `runtime_user` 就是在说 Runtime 执行身份和 Agent 登录身份是两个账号；一个说了却没做到这个分离的身份，无论对外开多少，都得有人明确签字才服务。P11 要证的正是这件事：第二个入口没有把第一个入口的边界撑大。
 
-**操作员该怎么办**：和受管会话一样，两条路——建专用账号（下面两节），或者在那个 workspace 上写一行 `allow_unisolated_credentials = true`。只读链到这里就够了，不要再加 `allow_unconfined_exec`。
+**操作员该怎么办**：和受管会话一样——把登录从专用账号里拿走，或者在那个 workspace 上写一行 `allow_unisolated_credentials = true`；不需要隔离的话，去掉 `runtime_user` 回到共用账号。只读链到这里就够了，不要再加 `allow_unconfined_exec`。
 
 **你接受的到底是什么，说清楚：** 跑这个 workspace 命令的那个账号能读到那台机器上已知的 Agent 登录（`~/.claude`、`~/.codex` 之类）。模型跑的每一条命令也能读到——**而让它跑一条命令只需要一句 prompt**，包括从它被要求读的文件里冒出来的那一句。装个依赖、看个 issue、读份 README，都算。
 
@@ -188,7 +215,7 @@ allow_unisolated_credentials = true   # 这个账号能读到 Agent 的登录
 
 还有一条要知道：`No <Agent> credential` 里那种"**目录是 symlink / 列不出来，可达性未知**"的结论，也在这个开关的覆盖范围内。也就是说你接受的包括"说不清"。doctor 行里原话照旧，不会被改写成"没有凭据"。
 
-**真要长期用，还是去建一个专用账号。** 下面两节就是。这个开关是给"我知道我在做什么，我现在就想跑起来"的场景用的。
+**这个开关是给"建了专用账号、但它暂时够得到一份登录"的场景用的。** 长期用，还是把登录拿走。
 
 ### 还有第三个开关，但它不是这一类
 
@@ -198,7 +225,7 @@ allow_unisolated_credentials = true   # 这个账号能读到 Agent 的登录
 allow_unattended_exec = true            # 交互式会话不再问我
 ```
 
-值得单独说的是**三个都开是什么局面**：模型跑的任何命令都不经你确认、都能读到你的 Agent 登录、账号本身也没受限。这时候还站着的只剩两样——那个账号自己的 OS 权限，和工具够不到 workspace 根目录外面这件事。
+值得单独说的是**共用账号再开它是什么局面**——不写 `runtime_user` 是默认，P76 起文档也建议常用交互会话的项目开它：模型跑的任何命令都不经你确认，能做这个账号能做的一切，包括读这台机器上你的 Agent 登录（如果有）。这时候还站着的只剩两样——那个账号自己的 OS 权限，和工具够不到 workspace 根目录外面这件事。专用账号模式下三个开关都开，也是这个局面。项目值钱的话，这就是该建专用账号的时候（[要不要建](#要不要建专用账号)）。
 
 它对 `--print` 和 `ccnm mcp bridge` 没有任何影响：那两条路上本来就不问，因为两边都没人在等。细节见[配置说明](configuration.md#allow_unattended_exec)。
 

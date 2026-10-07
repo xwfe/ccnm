@@ -60,7 +60,7 @@ Node 说的是"哪台机器负责什么"，身份说的是"哪个账号在动手
 
 - **Operator**：你本人，敲 public CLI / `ccnm rpc`。可以持有到 Agent Node 的 SSH 私钥。
 - **Agent Identity**：Agent Node 上跑 Controller 与官方 CLI 的账号，持有登录/订阅，以及连到 Runtime Executor 的 SSH 私钥。
-- **Runtime Executor**（建议叫 `ccrun`）：Runtime Node 上跑 `internal mcp-serve` 和全部项目工具的低权限账号。**入站专用**——Agent 连进来，它不为 ccnm 的控制链连出去。
+- **Runtime Executor**：Runtime Node 上跑 `internal mcp-serve` 和全部项目工具的账号，也就是 Agent 的 SSH 落到的那个。默认（P78 起）可以就是你自己的账号，ccnm 只查不拦；Runtime 写了 `runtime_user` 时它应该是专用低权限账号（建议叫 `ccrun`），ccnm 按专用账号查、不通过就拒。不论哪种，它都是**入站专用**——Agent 连进来，它不为 ccnm 的控制链连出去。
 - **Administrator**：建账号、配 ACL、改网络策略，不参与日常 session。
 
 它不是新的 Node 角色，也不是 AI 账号。要分开是因为：**`exec_command` 到底继承哪个操作系统身份的权限**。Runtime Executor 执行项目命令；若启用 Agent 本机 MCP，Agent Identity 也可能执行模型请求，不能再声明它只有登录和控制能力。

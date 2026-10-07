@@ -23,7 +23,7 @@
 | 哪台 | 哪个账号 | 漏了会怎样 |
 | --- | --- | --- |
 | 放项目的机器（Runtime） | 你敲 `ccnm` 的账号 | `Agent ccnm` 行 FAIL：`the Agent Node <名字> runs ccnm 0.12.0, this machine runs 0.11.2; install the same build on both` |
-| 放项目的机器（Runtime） | 执行账号（配置里的 `runtime_user`，比如 `ccrun`）。AI 那台经 ssh 调起的是它名下 `ccnm_bin` 指的那份，默认 `~/.local/bin/ccnm` | `Reverse SSH` 行 FAIL：`the Runtime Node runs ccnm 0.11.2, this machine runs 0.12.0; …`；起会话也被拒，报同一句外加 `before starting a session` |
+| 放项目的机器（Runtime） | 执行账号（AI 那台 ssh 登进来的那个账号：默认就是你自己的，另建了专用账号就是它，比如 `ccrun`）。AI 那台经 ssh 调起的是它名下 `ccnm_bin` 指的那份，默认 `~/.local/bin/ccnm` | `Reverse SSH` 行 FAIL：`the Runtime Node runs ccnm 0.11.2, this machine runs 0.12.0; …`；起会话也被拒，报同一句外加 `before starting a session` |
 | 跑 AI 的机器（Agent） | 跑 Controller 的账号 | `Agent ccnm` 行 FAIL：`the Agent Node <名字> runs ccnm 0.11.2, this machine runs 0.12.0; …`。换了文件没重启 Controller，见第 4 步 |
 
 一台机器同时当两个角色、或执行账号就是你自己，就少换几份。顺序：
@@ -55,7 +55,7 @@ install -m 755 ccnm ~/.local/bin/ccnm.new && mv ~/.local/bin/ccnm.new ~/.local/b
 ~/.local/bin/ccnm --version                  # 要打出新版本号
 ```
 
-执行账号（`ccrun`）通常不能从你的账号直接 ssh 进去：用有权限的账号把包放过去、`chown` 给它，再 `su - ccrun` 在它名下做第 2、3 步。
+执行账号就是你自己的账号时，照上面做就行。另建了专用执行账号（比如 `ccrun`）时，它通常不能从你的账号直接 ssh 进去：用有权限的账号把包放过去、`chown` 给它，再 `su - ccrun` 在它名下做第 2、3 步。
 
 **4. 跑 AI 的机器上重启 Controller：**
 
@@ -224,7 +224,7 @@ ccnm doctor demo
 
 真机上撞出来的两条，装完环境第一次放真项目时一定会遇到。
 
-这里说的“执行身份”是 **Runtime Executor**（通常叫 `ccrun`）：Agent 的 MCP transport 落到的那个账号，项目工具真正以它的身份跑。敲 `ccnm` 的是 **Operator**，通常是你自己的账号，两者不该是同一个——四种身份的完整边界见[生产安全](production-safety.md)。
+这里说的“执行身份”是 **Runtime Executor**：Agent 的 MCP transport 落到的那个账号，项目工具真正以它的身份跑。敲 `ccnm` 的是 **Operator**，通常是你自己的账号。默认两者可以是同一个账号；另建了专用账号（通常叫 `ccrun`）就是两个，下面说的情况多半出在这时——四种身份的完整边界见[生产安全](production-safety.md)。
 
 **项目目录必须属于 Runtime 执行身份本人，光可写不够。** 放在别人拥有的 0777 目录里，文件是写得进去，但那个身份跑任何 git 命令都会被拒：
 
@@ -344,7 +344,7 @@ rpc/outputs/<handle>/                session.result 从 Agent 拷来的输出（
 ssh/                                 ControlPath socket
 ```
 
-最后一列是"在谁的 state 目录里"。推荐部署下 Operator（敲 `ccnm`、跑 `ccnm rpc` 的账号）和 Runtime 执行账号（Agent 的 ssh 落到的账号，通常是 `ccrun`）是两个账号，这两组东西在两个不同的目录里，谁的东西只能由谁删。
+最后一列是"在谁的 state 目录里"。另建了专用执行账号时，Operator（敲 `ccnm`、跑 `ccnm rpc` 的账号）和 Runtime 执行账号（Agent 的 ssh 落到的账号，通常是 `ccrun`）是两个账号，这两组东西在两个不同的目录里，谁的东西只能由谁删；默认的共用账号下它们是同一个目录。
 
 `tmux.conf` 写在会话目录里，是因为那是 ccnm 一定拥有、一定存在的目录。tmux **只在启动 server 的那一刻**读它，所以哪个会话的那份起的作用不重要，跟着会话一起被删也不影响任何东西。里面设了什么、怎么改回去，见[使用说明](usage.md#会话在-tmux-里所以滚屏和复制跟你平时不一样)。
 

@@ -117,39 +117,11 @@ ccnm doctor my-project
 
 输出默认是中文。文档里贴的样本是英文那版，要逐行对上就加 `--lang en`，语言开关本身见[使用说明](usage.md#说什么语言)。
 
-### 如果项目和 Claude 登录在同一个账号下
+### 标"注意"的几行
 
-`doctor` 会直接红掉、MCP 握手都起不来，报的是 `Claude 凭据`（英文 `No Claude credential`）那一行。这不是配错了：跑项目命令的账号能读到 Agent 的登录，而把这两件事分开正是 ccnm 存在的理由。
+`Runtime 执行身份`、`admin 组`、`SSH 私钥`、`Claude 凭据` 这几行是"注意"很正常，结论照样是"可以用了"：默认项目命令就以 Agent 登进 Runtime Node 的那个账号跑（通常就是你自己的），这几行告诉你模型跑的命令够得到什么。要把它们隔开，建一个专用账号并写上 `runtime_user`，见[生产安全：要不要建专用账号](production-safety.md#要不要建专用账号)；不建也能用。
 
-两条路——建专用账号（下一节），或者在 **Runtime 侧**那个 workspace 上明确接受：
-
-```toml
-allow_unconfined_exec = true
-allow_unisolated_credentials = true
-```
-
-开之前先看清代价：[生产安全](production-safety.md#凭据隔离那一条怎么放开代价是什么)。ccnm 会在你第一次用它起会话时把风险讲一次，`doctor` 里那几行会一直是 WARN。
-
-## 5. 真实项目先配置 Runtime Service Account
-
-对于有价值的项目，不建议长期依赖：
-
-```toml
-allow_unconfined_exec = true
-```
-
-应该在 Runtime Node 创建专用低权限账号，例如 `ccrun`，然后配置：
-
-```toml
-[nodes.runtime]
-runtime_user = "ccrun"
-```
-
-这一行的意思是"Agent 连进来之后，项目工具以 `ccrun` 的身份跑"，**不是"你要用 `ccrun` 敲 ccnm"**。
-
-详细做法见 [生产安全](production-safety.md)。系统用户、ACL 和网络策略仍然故意由人手工配置；ccnm 负责检查边界，不会静默修改主机安全模型。
-
-## 6. 启动项目
+## 5. 启动项目
 
 在 Runtime Node：
 

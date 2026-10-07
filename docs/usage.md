@@ -479,7 +479,7 @@ Runtime MCP 在完整 session 生命周期持有独占写 guard。另一个 Agen
 - 同一 Git common dir 下的 worktree 保守互斥；
 - 正常退出释放；异常退出留下 unknown，不会按超时自动接管。
 
-unknown 的人工恢复步骤见[支持矩阵](support-matrix.md)。命令 parser 不是 sandbox；真正的边界仍是 `ccrun`/ACL/sudo/credential/network policy。
+unknown 的人工恢复步骤见[支持矩阵](support-matrix.md)。命令 parser 不是 sandbox；真正的边界仍是执行账号本身（默认是你自己的，要隔离就建专用账号，见[生产安全](production-safety.md#要不要建专用账号)）与 ACL/sudo/credential/network policy。
 
 ## 当前不做什么
 

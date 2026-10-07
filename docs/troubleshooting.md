@@ -394,13 +394,13 @@ ccnm mcp bridge <workspace> --node <node> --mode read < /dev/null
 
 最常见的是那个 workspace 根本没开放给外部 MCP（`workspace X is not available to external MCP`，退出码 33）——`external_mcp` 默认就是 `disabled`，要在 **Runtime 的**配置里给它写 `read` 或 `coding`。
 
-第二常见的是 Runtime 那个账号家里就有 Agent 的登录（`does not hold the Agent boundary`，同样是 33）。**只读链也要过这道闸**，一行开关就能签，见下一节。
+第二常见的是 Runtime 写了 `runtime_user`、而那个账号家里就有 Agent 的登录（`does not hold the Agent boundary`，同样是 33）。**只读链也要过这道闸**，一行开关就能签，见下一节。
 
 **别拿退出码当判据，先看 stderr 第一行。** bridge 是 `exec` 成那条 ssh 的，远端的退出码要靠 SSH 的 exit-status 带回来；**服务端不发，你就只能看到 0**。2026-09-16 在 Tailscale SSH 上实测：远端 `mcp-serve` 自己退 33，`ccnm mcp bridge` 退 0，连 `ssh -T <host> "exit 33"` 都退 0。所以上面这条命令**退 0 不代表起来了**——看它有没有在 stderr 上打 `CCNM_E_*`，以及有没有真的回答 `initialize`。这是 SSH 服务端的属性，ccnm 改不了。
 
-### 一台机器就能跑吗：`No Claude credential` 把整个会话挡在门外
+### `No Claude credential` 把整个会话挡在门外
 
-**症状**：项目和 Claude Code 在同一台机器、同一个账号下，`ccnm doctor` 一片红，MCP 握手根本起不来：
+**症状**：`ccnm doctor` 一片红，MCP 握手根本起不来：
 
 ```text
 No Claude credential    FAIL  the Runtime identity can access a known Agent credential file or container
@@ -408,12 +408,13 @@ exec_command            FAIL  refused until the runtime account is confined
 Remote MCP handshake    FAIL  CCNM_E_POLICY: MCP initialize failed over `…`: connection closed: initialize response
 ```
 
-**其实是**：跑项目命令的那个账号，家里有 `~/.claude` / `~/.codex`。ccnm 存在的理由就是把这两件事分开，所以它在 `initialize` 之前就拒了。**`allow_unconfined_exec` 救不了**，那个开关只接受 confinement 风险。
+**其实是**：跑项目命令的那个账号家里有 `~/.claude` / `~/.codex`，而 Runtime 配置里写了 `runtime_user`（专用账号模式），所以它在 `initialize` 之前就拒了。**`allow_unconfined_exec` 救不了**，那个开关只接受 confinement 风险。**v0.12.0 及之前**不写 `runtime_user` 也会这样（那时没写本身就算失败）；P78 之后的版本不写 `runtime_user` 就是共用账号，这一行只是"注意"，不拦。
 
-**两条路，选一条：**
+**三条路，选一条：**
 
-1. **正路**：在 Runtime 上建一个专用低权限账号（`ccrun`），把项目目录按 ACL 授权给它，Agent 的 SSH 落到那个账号上。见[生产安全](production-safety.md)。代价是 Agent 建出来的文件属主是那个账号。
-2. **明确接受**：在 **Runtime 侧**那个 workspace 上写这一个开关：
+1. **不需要隔离**：去掉 `runtime_user`（要 P78 之后的版本），按共用账号跑——和你在那台机器上直接用 Claude Code 一样，模型跑的命令读得到那份登录。代价见[生产安全：要不要建专用账号](production-safety.md#要不要建专用账号)。
+2. **要隔离**：让 Agent 的 SSH 落到一个家里没有 Agent 登录的专用低权限账号上（比如 `ccrun`），把项目目录按 ACL 授权给它。见[生产安全](production-safety.md)。代价是 Agent 建出来的文件属主是那个账号。
+3. **明确接受**：在 **Runtime 侧**那个 workspace 上写这一个开关：
 
    ```toml
    allow_unisolated_credentials = true

@@ -7,7 +7,9 @@
 
 use std::fmt;
 
-/// Every failure ccnm can report. Mirrors design doc section 24.
+/// Every failure ccnm can report. The public contracts list the ones each
+/// entry can return (docs/protocol/machine-protocol-v1.md section 10,
+/// docs/protocol/remote-workspace-mcp-v1.md section 11.3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ErrorCode {
     /// A bug or an unexpected OS failure. Not a user-facing category; if a

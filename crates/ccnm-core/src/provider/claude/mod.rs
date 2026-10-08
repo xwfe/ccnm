@@ -1,6 +1,5 @@
 //! Asking the official Claude Code CLI about itself. ccnm only ever runs
-//! `claude --version` and `claude auth status`; it never logs in (design
-//! doc section 10).
+//! `claude --version` and `claude auth status`; it never logs in.
 
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -230,7 +229,7 @@ pub fn report(
 /// The argv ccnm starts Claude Code with.
 ///
 /// Every flag was checked against 2.1.260 `--help` and one real run on
-/// 2026-09-04 (design doc section 13):
+/// 2026-09-04:
 ///
 /// - `--tools <list>` names the only built-in tools a remote session
 ///   keeps: the workspace's `agent_tools` (P46), by default `WebSearch`.

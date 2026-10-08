@@ -7,10 +7,10 @@ use crate::process::Cmd;
 use crate::session::{Dir, MCP_TOOLS, SSH_BIN, pretty};
 
 /// Built-in tools that must never be available in a remote ccnm session
-/// (design doc section 13). `--tools` already leaves out every built-in
-/// tool but the workspace's `agent_tools`; this deny list is the second
-/// lock, so that a future Claude that reads `--tools` differently still
-/// cannot hand the model this machine's disk.
+/// (docs/configuration.md, `agent_tools`). `--tools` already leaves out
+/// every built-in tool but the workspace's `agent_tools`; this deny list
+/// is the second lock, so that a future Claude that reads `--tools`
+/// differently still cannot hand the model this machine's disk.
 ///
 /// `NotebookEdit` and `Skill` joined in P46, when `--tools` was measured
 /// to accept both names on 2.1.278: a notebook edit writes this machine's
@@ -109,7 +109,7 @@ pub fn mcp_config(cmd: &Cmd, agent_server: Option<&agent_skills::Recorded>) -> s
 /// enabled agent tool without a prompt (there is nobody to answer one in
 /// print mode), and the native file and shell tools plus the agent tools
 /// this workspace left off, denied by name. Nothing else — the user's own
-/// settings still load underneath this (design doc section 24).
+/// settings still load underneath this.
 ///
 /// The enabled agent tools have to be in `allow`: measured on 2.1.278,
 /// print mode denies WebSearch and WebFetch automatically otherwise

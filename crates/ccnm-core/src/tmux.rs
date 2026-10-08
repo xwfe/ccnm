@@ -1,6 +1,5 @@
 //! tmux on the Agent Node: the thing that keeps an interactive Claude
-//! alive when the terminal it was started from goes away (design doc
-//! section 23).
+//! alive when the terminal it was started from goes away.
 //!
 //! ```text
 //! 家庭机 shell → ssh -t → work: tmux attach → claude → ssh stdio MCP → home

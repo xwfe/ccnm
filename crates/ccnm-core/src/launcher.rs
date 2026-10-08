@@ -24,10 +24,10 @@ use crate::ssh::{Master, Ssh};
 /// `ccnm run <workspace> --print <prompt>`: one Claude session on the
 /// Agent Node, its result brought back here.
 ///
-/// The local preflight is only what this machine can see (design doc
-/// section 10): the project must exist here, because here is where the
-/// runtime will serve it from. Everything about the Agent Node is
-/// checked by the Agent Node and reported back in the same round trip.
+/// The local preflight is only what this machine can see: the project
+/// must exist here, because here is where the runtime will serve it from.
+/// Everything about the Agent Node is checked by the Agent Node and
+/// reported back in the same round trip.
 pub fn run_print(
     resolved: &Resolved<'_>,
     env: &Env<'_>,
@@ -650,7 +650,7 @@ pub fn probe_session_id() -> String {
 }
 
 /// Speak MCP to `ccnm internal mcp-serve` in a child of this process: the
-/// runtime cost with no network in it (design doc section 27).
+/// runtime cost with no network in it.
 pub fn mcp_probe_local(resolved: &Resolved<'_>, env: &Env<'_>, calls: u32) -> Result<ProbeReport> {
     let wire = payload::encode(&ServePayload::new(
         resolved.name,

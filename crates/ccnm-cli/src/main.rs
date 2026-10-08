@@ -299,8 +299,10 @@ enum ControllerCommand {
     Uninstall,
 }
 
-/// Every internal command takes exactly one base64url payload (design doc
-/// section 8) and answers with one JSON document on stdout.
+/// Every internal command takes exactly one base64url payload and answers
+/// with one JSON document on stdout (the internal control protocol;
+/// docs/protocol/machine-protocol-v1.md section 11 sets it apart from the
+/// public ones).
 #[derive(Subcommand)]
 enum InternalCommand {
     /// Report this build, user and platform; answered by either machine
@@ -2023,11 +2025,11 @@ fn agent_side<'a>(
 ///
 /// stdin exists because of the Agent Node. A prompt is free text, and
 /// nothing that would need shell quoting is allowed on a remote command
-/// line (design doc section 8), so the Agent Node cannot put one in the
-/// `ccnm run` it sends home -- it pipes the bytes down the same
-/// connection and passes `--prompt-stdin`. The flag is not hidden: piping
-/// a prompt in is just as useful by hand, and a heredoc keeps the
-/// newlines that a shell argument would fight you over.
+/// line, so the Agent Node cannot put one in the `ccnm run` it sends
+/// home -- it pipes the bytes down the same connection and passes
+/// `--prompt-stdin`. The flag is not hidden: piping a prompt in is just as
+/// useful by hand, and a heredoc keeps the newlines that a shell argument
+/// would fight you over.
 ///
 /// Empty input is refused rather than treated as "no prompt". An empty
 /// prompt looks exactly like the bug this replaced -- a sentence typed on
@@ -2550,7 +2552,8 @@ fn login_session_verdict(ctx: &controller::Context) -> i32 {
 }
 
 /// Replies to the other machine go on stdout as one JSON document.
-/// Nothing else may ever be printed there (design doc section 8).
+/// Nothing else may ever be printed there: the caller parses the whole of
+/// stdout as that document, and a stray line reads as a version mismatch.
 fn print_json<T: serde::Serialize>(value: &T) -> Result<i32> {
     println!("{}", payload::to_json(value)?);
     Ok(0)

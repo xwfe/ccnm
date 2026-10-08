@@ -78,9 +78,9 @@ pub const AGENT: Wording = Wording {
 
 /// What `ccnm internal agent-skills --payload` carries. It is started on
 /// this machine by Claude Code or Codex, not over ssh, but the payload is
-/// how every internal command is called (design doc section 8), and it
-/// keeps the home and the session out of the environment: Codex hands an
-/// MCP server only some of its own.
+/// how every internal command is called, and it keeps the home and the
+/// session out of the environment: Codex hands an MCP server only some of
+/// its own.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Payload {

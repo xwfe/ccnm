@@ -1,13 +1,13 @@
 //! `read_output`: page through what a command wrote.
 //!
-//! The seventh and last tool of the set (design doc section 14).
-//! `exec_command` returns the head and the tail of its output and keeps
-//! all of it on the Runtime Node; this is how the middle is reached.
+//! The last of the seven core tools. `exec_command` returns the head and
+//! the tail of its output and keeps all of it on the Runtime Node; this is
+//! how the middle is reached.
 //!
 //! Offsets are byte offsets into the retained file and they are stable,
 //! because the file is only ever appended to: offset 4096 means the same
-//! thing an hour later. That is the property the design doc asks for, and it
-//! is what makes paging cheap — no cursor to keep, nothing re-sent.
+//! thing an hour later. That property is what makes paging cheap — no
+//! cursor to keep, nothing re-sent.
 //!
 //! A foreground command's file is finished before its reference exists. A
 //! background command's (P41) is not: reading up to the end of it while it
@@ -31,7 +31,7 @@ use crate::mcp::retention;
 
 /// Bytes returned when the caller does not say.
 pub const DEFAULT_LIMIT: usize = 16 * 1024;
-/// Ceiling on `limit` (design doc section 15).
+/// Ceiling on `limit` (docs/protocol/remote-workspace-mcp-v1.md section 8).
 pub const MAX_LIMIT: usize = 32 * 1024;
 /// Ceiling on `wait_ms`: the same ten minutes a command may take in the
 /// foreground. Claude Code's MCP idle timeout for a stdio server is 30

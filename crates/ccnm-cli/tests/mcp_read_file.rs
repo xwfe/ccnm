@@ -10,8 +10,7 @@
 //! and that stdout carries nothing but JSON-RPC.
 //!
 //! Every request runs against one long-lived server, because that is how
-//! it runs in production: a single ssh, a single process (design doc
-//! section 27).
+//! it runs in production: a single ssh, a single process.
 
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -713,11 +712,11 @@ fn a_runtime_without_runtime_user_runs_commands_as_a_shared_account() {
     s.shutdown();
 }
 
-/// The hard gate of design doc section 18. A runtime that is meant to be
-/// a dedicated confined account (`runtime_user`) and is not refuses to
+/// The hard gate on `exec_command`. A runtime that is meant to be a
+/// dedicated confined account (`runtime_user`) and is not refuses to
 /// run commands, and says exactly what is wrong and where to read about
-/// it. Every other tool still works: the gate is on the shell, not on the
-/// session.
+/// it (docs/production-safety.md, "ccnm 当前会检查什么"). Every other
+/// tool still works: the gate is on the shell, not on the session.
 #[test]
 fn exec_command_is_refused_until_the_runtime_is_confined() {
     let root = workspace("gate");

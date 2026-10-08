@@ -1,10 +1,10 @@
 //! Building ssh command lines the ccnm way.
 //!
-//! ccnm owns multiplexing, not identity (design doc section 18): the alias,
-//! HostName, User, IdentityFile and ProxyJump come from the user's
-//! `~/.ssh/config`. ccnm only appends ControlMaster / ControlPath /
-//! BatchMode and the SendEnv overrides on the command line, where OpenSSH
-//! gives them precedence over the config file.
+//! ccnm owns multiplexing, not identity: the alias, HostName, User,
+//! IdentityFile and ProxyJump come from the user's `~/.ssh/config`. ccnm
+//! only appends ControlMaster / ControlPath / BatchMode and the SendEnv
+//! overrides on the command line, where OpenSSH gives them precedence over
+//! the config file.
 //!
 //! Nothing here goes through a shell on this side, and every argument sent
 //! to the remote side is checked against a no-quoting-needed character set,
@@ -136,8 +136,9 @@ impl Ssh {
         ]))
     }
 
-    /// Where ccnm lives on the far side (`hosts.<x>.ccnm_bin`, design doc
-    /// section 7). Defaults to [`DEFAULT_CCNM_BIN`].
+    /// Where ccnm lives on the far side (`nodes.<x>.ccnm_bin`,
+    /// docs/configuration.md, Node 的其他字段). Defaults to
+    /// [`DEFAULT_CCNM_BIN`].
     pub fn with_ccnm_bin(mut self, bin: impl Into<String>) -> Self {
         self.ccnm_bin = bin.into();
         self
@@ -184,8 +185,9 @@ impl Ssh {
             format!("ControlPersist={CONTROL_PERSIST}"),
             "ServerAliveInterval=15".to_string(),
             "ServerAliveCountMax=3".to_string(),
-            // Design doc section 32: clear any SendEnv the user's config
-            // added, so Anthropic credentials never ride along.
+            // Clear any SendEnv the user's config added, so Anthropic
+            // credentials never ride along (docs/provider-safety.md,
+            // 身份、状态和来源).
         ]
         .into_iter()
         .chain(
@@ -199,10 +201,10 @@ impl Ssh {
         .collect()
     }
 
-    /// The `-o` pairs for the long-lived MCP transport (design doc
-    /// sections 11 and 12). Unlike [`options`](Self::options) it never
-    /// touches a ControlMaster: the session owns its own connection and
-    /// must not die with a master that some other command started.
+    /// The `-o` pairs for the long-lived MCP transport. Unlike
+    /// [`options`](Self::options) it never touches a ControlMaster: the
+    /// session owns its own connection and must not die with a master that
+    /// some other command started.
     /// `ClearAllForwardings` keeps a user's `LocalForward` lines out of a
     /// session that only needs stdio.
     pub fn transport_options(&self) -> Vec<String> {
@@ -471,7 +473,7 @@ pub(crate) const EXEC_PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(90);
 /// line built from them means the same thing on every login shell. `~` is
 /// the one deliberate exception: a leading `~/` is expanded to the remote
 /// home by every login shell, which is exactly how the default ccnm path
-/// is found (design doc section 7).
+/// ([`DEFAULT_CCNM_BIN`]) is found.
 pub fn is_remote_safe(arg: &str) -> bool {
     !arg.is_empty()
         && arg.chars().all(|c| {

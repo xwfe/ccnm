@@ -1,5 +1,5 @@
 //! The project's own `CLAUDE.md`, carried to the model in the MCP
-//! handshake (design doc section 20).
+//! handshake.
 //!
 //! Why this file exists at all: Claude Code loads `CLAUDE.md` from its own
 //! working directory. Under ccnm that directory is on the *work* machine

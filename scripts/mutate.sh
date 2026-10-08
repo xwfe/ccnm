@@ -19,8 +19,8 @@
 # moves. A case that prints COULD NOT APPLY has to be rewritten or dropped
 # -- it is proving nothing. The set below is the newest rounds (the write
 # path, the interruption paths, and the two directions a session is
-# started from); earlier rounds were run the same way and are recorded in
-# the design doc rather than kept here forever.
+# started from); earlier rounds were run the same way and were dropped
+# from here rather than kept forever.
 #
 # Needs a clean tree: every restore is `git checkout <file>`.
 set -uo pipefail

@@ -19,7 +19,7 @@
 //! the machine *is* logged in. Only the second is the truth about the
 //! machine. So ccnm never asks an ssh session about Claude — it asks the
 //! controller, and if there is no controller it reports "not verified"
-//! rather than a lie (design doc section 21).
+//! rather than a lie.
 //!
 //! Starting Claude from the controller is the same story: a Claude started
 //! from ssh would inherit the session that cannot see its own credentials.
@@ -48,9 +48,9 @@
 //!                                 └── connect(controller.sock), one JSON line each way
 //! ```
 //!
-//! The wire format is the control protocol of design doc section 8 minus
-//! the base64: no shell parses this, so the JSON travels as-is, one line
-//! per message, `protocol` checked on both ends.
+//! The wire format is the internal control protocol ([`crate::protocol`])
+//! minus the base64: no shell parses this, so the JSON travels as-is, one
+//! line per message, `protocol` checked on both ends.
 //!
 //! # What guards the socket
 //!
@@ -331,8 +331,7 @@ pub enum RequestBody {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         identity: Option<crate::instance::AgentIdentity>,
         /// `CLAUDE_CONFIG_DIR` for the call, from the Runtime Node's
-        /// config. `None` means Claude's own default (design doc
-        /// section 21).
+        /// config. `None` means Claude's own default (`~/.claude`).
         #[serde(default)]
         config_dir: Option<PathBuf>,
         /// How much to ask. A caller that has already seen this
@@ -704,8 +703,8 @@ pub fn supervisor_cmd(exe: &Path, req: &SuperviseRequest) -> Result<Cmd> {
 /// Its own process group, because launchd kills the agent's whole group
 /// when the agent is booted out — which `ccnm controller install`
 /// does on every upgrade — and a session must not die of its controller
-/// being replaced (design doc section 23). A thread waits on the child so
-/// finished supervisors do not pile up as zombies; the wait is all it does.
+/// being replaced. A thread waits on the child so finished supervisors do
+/// not pile up as zombies; the wait is all it does.
 fn spawn_detached(cmd: &Cmd, log: &Path) -> Result<u32> {
     use std::os::unix::process::CommandExt as _;
     use std::process::Stdio;

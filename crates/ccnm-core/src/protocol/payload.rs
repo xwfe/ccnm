@@ -3,8 +3,8 @@
 //! Requests ride on an ssh command line, which the remote login shell
 //! parses. Rather than quoting JSON for an unknown shell, the request is
 //! serialized to JSON and base64url-encoded, so the only characters on the
-//! wire are `[A-Za-z0-9_-]` (design doc section 16). Responses come back on
-//! stdout, which no shell touches, so they stay plain JSON.
+//! wire are `[A-Za-z0-9_-]`. Responses come back on stdout, which no shell
+//! touches, so they stay plain JSON.
 //!
 //! Every message carries `protocol`; a mismatch means the two ccnm builds
 //! disagree and is reported as `CCNM_E_VERSION` before anything is trusted.

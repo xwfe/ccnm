@@ -1081,3 +1081,14 @@ ccnm 这一轮只定权威语义、补自己这边的证据。租约展示与状
 - **P80.4** Rust、Python、协议与计划门禁通过；研究记录与状态同步。
 
 停止点：不改 ccnm 自己的任何上限；不改公开协议的工具与字段；`ccnm_agent`（Agent 上的 MCP 转发）的同类问题只记录不修——它的最长调用取决于用户给各 server 配的超时，不归 ccnm 的常量管；不跑真实模型；不发版。
+
+### P81 — Claude Code 默认按 MCP 2026-07-28 协商之后：实测兼容，补齐缓存提示
+
+**依赖 P80。** 现象（2026-10-08）：Claude Code 2.1.292 起对 stdio server 默认按 2026-07-28 协商，第一条消息改成 `server/discover`，不再先发 `initialize`（CHANGELOG 2.1.292，`MCP_PROTOCOL_NEGOTIATION=legacy` 可退回）；Homebrew 上 2.1.293 已经可以升级，本机还是 2.1.286。ccnm 用的 rmcp 3.2.0 能回答 `server/discover`，但没人实测过。用户同日要求按[同类方案调研](../research/2026-10-08-peer-survey.md)第 2 节第 11 条的建议先做这条。初测时发现：2026-07-28 规定 `server/discover`、`tools/list`、`prompts/list` 的完整结果**必须**带 `ttlMs` 和 `cacheScope`（规范 `server/utilities/caching`），ccnm 的 `prompts/list` 没带；`tools/list` 带的是 `ttlMs: 0`（规范含义：马上过期，客户端可以每次都重拉）和 `public`（规范含义：对所有用户都一样，共享缓存可以转给别人），和代码注释想表达的"整个连接期间不变"相反，而工具表其实随读写模式、会话有没有人值守而变；Agent 上的 `ccnm_agent` 两个列表都没带。
+
+- **P81.1** 兼容实测（零额度）：真实 Claude Code 2.1.286、2.1.293（默认）、2.1.293 加 `MCP_PROTOCOL_NEGOTIATION=legacy` 三组，连真实的 `ccnm internal mcp-serve`（中间一层只抄录不改动，用 `env -i` 模拟 ssh 那道环境边界），各跑一次工具调用和一次 `MCP_TOOL_TIMEOUT` 触发的取消；记下握手方法与协商到的版本、ccnm 的工具有没有交给模型、instructions 有没有进系统提示、取消有没有送到、命令有没有停。夹具放 `docs/research/probes/`。
+- **P81.2** 缓存提示合规：协商到 2026-07-28 及以后时，Runtime 的 `tools/list`、`prompts/list` 和 `ccnm_agent` 的两个列表都带上按规范含义给的 `ttlMs` 与 `cacheScope`；更早的版本照旧不带。值和理由写在代码注释里。先有在旧代码上红的测试；中立 Python 客户端也要能独立验证 Runtime 这一侧。
+- **P81.3** 协议文档第 9 节写清两种握手路径、缓存提示和实测结果（详细说明只放这一处）；调研文档第 2 节第 11 条指过去。
+- **P81.4** Rust、Python、协议与计划门禁通过；修复后用 P81.1 的夹具复测；研究记录与状态同步。
+
+停止点：不升级本机 Claude Code；不改工具和字段；不实现 MRTR、Tasks 扩展等新协议的其他部分；不发版。

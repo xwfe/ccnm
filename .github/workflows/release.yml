@@ -179,7 +179,8 @@ jobs:
             "  systemd and tmux). Needs glibc >= $GLIBC; Debian 13 has 2.41." \
             '' \
             'Both machines need the same ccnm version -- including the copy the' \
-            'execution account (`runtime_user`, e.g. `ccrun`) runs. Upgrading: stop' \
+            'execution account runs (your own account by default; the `runtime_user`,' \
+            'e.g. `ccrun`, if the Runtime names one). Upgrading: stop' \
             'every session first, and after replacing the binary on the Agent Node' \
             'run `ccnm controller install` there, or the old Controller keeps' \
             'running. Full steps and rollback: docs/operations.md.' \

@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-10-08T23:30:00+09:00",
-  "current_task": null,
+  "last_updated": "2026-10-08T23:32:00+09:00",
+  "current_task": "P86",
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
     "source": "docs/research/codex-internal-wiring-2026-09-07.md",
@@ -4157,6 +4157,20 @@
           "result": "排错手册\"不查/没查\"一节补没有 Agent 的 workspace 那两行；observed_gaps 对应条目标为已处理。本机 macOS arm64：fmt --check、clippy -D warnings、cargo +1.89 check、cargo test --workspace（22 个二进制 1126 passed / 0 failed）、ci_gates（Python 247 ran / 0 failed，含计划与协议检查）。没在真机上重跑 doctor。"
         }
       ],
+      "blockers": []
+    },
+    {
+      "id": "P86",
+      "title": "删掉封存的 Codex 原生执行链",
+      "status": "in_progress",
+      "depends_on": [
+        "P83"
+      ],
+      "owner": "claude-code-session-2026-10-08-peer-survey",
+      "started_at": "2026-10-08T23:32:00+09:00",
+      "last_updated": "2026-10-08T23:32:00+09:00",
+      "completed_criteria": [],
+      "evidence": [],
       "blockers": []
     }
   ],

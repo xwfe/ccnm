@@ -109,6 +109,36 @@ pub(crate) fn code_mode(model: Option<&str>) -> bool {
     model.is_none_or(|model| CODE_MODE_MODELS.contains(&model))
 }
 
+/// How long Codex waits for one call to ccnm's tools (P80).
+///
+/// Without `tool_timeout_sec` Codex 0.154.0 gives up after 300 s
+/// (`DEFAULT_TOOL_TIMEOUT` in codex-mcp `rmcp_client.rs`; its docs say 60)
+/// and tells the server nothing. Measured against a fake model: the model
+/// reads "timed out awaiting tools/call", no `notifications/cancelled`
+/// arrives, the command runs on and its result is dropped
+/// (docs/research/2026-10-08-p80-codex-tool-timeout.md). So this has to
+/// outlast everything ccnm's own limits let one call wait for: a
+/// `PreToolUse` hook, the tool itself (a foreground command or a
+/// `read_output` wait, then stopping a command that ran out of time), a
+/// `PostToolUse` hook, and a minute for the link. Raising any of those
+/// raises this. More than one slow hook on a call, or a relayed MCP server
+/// whose own timeout is longer, can still outlast it.
+const TOOL_TIMEOUT: Duration = {
+    use crate::mcp::{exec, hooks, jobs, output};
+    let tool_ms = if exec::MAX_TIMEOUT_MS > output::MAX_WAIT_MS {
+        exec::MAX_TIMEOUT_MS
+    } else {
+        output::MAX_WAIT_MS
+    };
+    Duration::from_secs(
+        hooks::MAX_TIMEOUT.as_secs()
+            + tool_ms / 1000
+            + jobs::STOP_GIVE_UP.as_secs()
+            + hooks::MAX_TIMEOUT.as_secs()
+            + 60,
+    )
+};
+
 pub fn locate(path: Option<&OsStr>, home: Option<&Path>) -> Option<PathBuf> {
     let mut candidates = Vec::new();
     if let Some(path) = path {
@@ -421,6 +451,11 @@ pub(crate) fn build_launch_cmd(
         .arg(format!(
             "mcp_servers.ccnm.enabled_tools={}",
             serde_json::json!(crate::session::MCP_TOOLS)
+        ))
+        .arg("-c")
+        .arg(format!(
+            "mcp_servers.ccnm.tool_timeout_sec={}",
+            TOOL_TIMEOUT.as_secs()
         ));
     // The tools the Runtime marked for a person's approval (P71). Codex
     // does not read that marker, so each gets its own `approval_mode`.

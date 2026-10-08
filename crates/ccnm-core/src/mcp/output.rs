@@ -35,7 +35,10 @@ pub const DEFAULT_LIMIT: usize = 16 * 1024;
 pub const MAX_LIMIT: usize = 32 * 1024;
 /// Ceiling on `wait_ms`: the same ten minutes a command may take in the
 /// foreground. Claude Code's MCP idle timeout for a stdio server is 30
-/// minutes (2.1.273) and Codex 0.154.0 waited a 75 s call out.
+/// minutes (2.1.273). Codex 0.154.0 gives up on any call after 300 s unless
+/// the server's `tool_timeout_sec` says longer, which a managed session's
+/// launch does (`provider::codex::TOOL_TIMEOUT`, P80); a Codex Host on
+/// `ccnm mcp bridge` has to set it itself.
 pub const MAX_WAIT_MS: u64 = 600_000;
 
 /// Arguments of `read_output`.

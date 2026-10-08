@@ -261,6 +261,57 @@ fn the_tools_the_runtime_marks_ask_in_an_interactive_session_only() {
     assert!(prompts(&launch(Mode::Interactive { prompt: None }, &[])).is_empty());
 }
 
+/// P80: without `tool_timeout_sec` Codex 0.154.0 gives up on a call after
+/// 300 s and sends the server no cancel, so a ten-minute `exec_command` was
+/// reported to the model as failed while it went on running on the Runtime.
+/// Both kinds of session now name a timeout past the longest wait ccnm's own
+/// limits allow one call, written after the MCP wiring so the argv the
+/// 0.154.0 fixture recorded up to there is unchanged.
+#[test]
+fn codex_waits_out_the_longest_call_ccnm_lets_one_take() {
+    use crate::mcp::{exec, hooks, jobs, output};
+    for mode in [
+        Mode::Print {
+            prompt: "hi".into(),
+        },
+        Mode::Interactive { prompt: None },
+    ] {
+        let args = strings(
+            &build_launch_cmd(
+                Path::new("/agent/codex"),
+                &spec(mode),
+                &Dir::at("/agent/session"),
+                Path::new("/agent/private-codex"),
+                Path::new("/agent/ccnm"),
+                None,
+            )
+            .unwrap(),
+        );
+        let at = args
+            .iter()
+            .position(|a| a.starts_with("mcp_servers.ccnm.tool_timeout_sec="))
+            .unwrap_or_else(|| panic!("no tool timeout for ccnm: {args:?}"));
+        assert_eq!(args[at - 1], "-c");
+        let secs: u64 = args[at]
+            .strip_prefix("mcp_servers.ccnm.tool_timeout_sec=")
+            .unwrap()
+            .parse()
+            .unwrap();
+        let tool_ms =
+            exec::MAX_TIMEOUT_MS.max(output::MAX_WAIT_MS) + jobs::STOP_GIVE_UP.as_millis() as u64;
+        let hooks_ms = 2 * hooks::MAX_TIMEOUT.as_millis() as u64;
+        assert!(
+            secs * 1000 > tool_ms + hooks_ms,
+            "{secs} s does not outlast a call ccnm allows ({tool_ms} ms + hooks {hooks_ms} ms)"
+        );
+        let wiring = args
+            .iter()
+            .position(|a| a.starts_with("mcp_servers."))
+            .unwrap();
+        assert!(at > wiring, "{args:?}");
+    }
+}
+
 /// F27: "Approve for me" in `/permissions` is written into the profile's
 /// `config.toml` as `approvals_reviewer = "auto_review"`, and an interactive
 /// session reads that file -- so one choice made in one session used to hand

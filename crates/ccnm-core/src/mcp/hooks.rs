@@ -40,7 +40,7 @@ use crate::process::{Cmd, Output, ProcessRunner, SystemRunner};
 /// Native's default for a command hook.
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(600);
 /// And the most this server waits, the same ceiling as `exec_command`.
-const MAX_TIMEOUT: Duration = Duration::from_secs(600);
+pub(crate) const MAX_TIMEOUT: Duration = Duration::from_secs(600);
 /// What of one hook's stderr or message reaches the model. Native caps what
 /// hooks add to the context; a hook that dumps a log should not flood it.
 const MAX_MESSAGE_CHARS: usize = 4000;

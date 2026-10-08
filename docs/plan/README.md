@@ -14,8 +14,8 @@
 | [../research/](../research/) | 脱敏的实测记录；回归 fixture 放在 `tests/fixtures/` |
 | [三仓重构落地清单](../research/2026-09-19-cross-project-refactor-actions.md) | 2026-09-19 跨仓评审建议、依赖与验收；不替代 status，也不自动认领新阶段 |
 | [外部终端接入决策](terminal-access.md) | 直接通过 PocketShell 等第三方终端使用 CLI；原 P54–P56 未实施即撤销，不继续移动端工程 |
-| [下一轮核心开发总纲](core-hardening.md) | P57–P62 的优先级、代码依据、依赖、共同约束和候选后续方向 |
-| [会话控制](core-session-control.md) · [输出与清理](core-output-cleanup.md) · [基线与真机验收](core-verification.md) | 精确身份/状态、结果分页、Runtime 占用、跨身份清理、普通项目与候选包验收的实施细则 |
+| [P57–P62 总纲](core-hardening.md) | P57–P62（已完成）当时的优先级、代码依据、依赖和共同约束 |
+| [会话控制](core-session-control.md) · [输出与清理](core-output-cleanup.md) · [基线与真机验收](core-verification.md) | P57–P62（已完成）的实施细则：精确身份/状态、结果分页、Runtime 占用、跨身份清理、普通项目与候选包验收 |
 
 `AGENTS.md` 是模型入口，`CLAUDE.md` 只指向它。开发命令见 [开发文档](../development.md)。整个接续流程只依赖 Git、仓库文件和项目自身命令，不要求任何特定 MCP、IDE 插件、Agent harness 或私有任务系统。旧的“在 ccnm 内做多 Agent”计划已被本路线替代，不要恢复执行。
 

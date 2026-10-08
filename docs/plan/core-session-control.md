@@ -1,6 +1,6 @@
 # 会话控制与 Runtime 写权：P58 / P60
 
-共同边界见[总纲](core-hardening.md)。本文件定义待实现的行为，不修改当前已冻结的公共协议；进度和验收编号仍以 [ROADMAP](ROADMAP.md) / [status](status.json) 为准。P57 先建立反证与测试基线。
+共同边界见[总纲](core-hardening.md)。本文件定义 P58 / P60 要实现的行为（两阶段都已完成，见 status），不修改当前已冻结的公共协议；进度和验收编号仍以 [ROADMAP](ROADMAP.md) / [status](status.json) 为准。P57 先建立反证与测试基线。
 
 ## 1. P58：精确控制，而不是按 workspace 猜测
 

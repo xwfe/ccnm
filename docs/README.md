@@ -9,7 +9,7 @@ README 负责说明产品、上手与关键边界；本目录保存详细用法�
 | 升级、清理或断线恢复 | [运维](operations.md) → [故障排查](troubleshooting.md) |
 | 编写外部客户端或编排器 | [公开协议](protocol/README.md) → [执行接口交接](orchestrator-handoff.md) |
 | 维护 ccnm | [架构](architecture.md) → [开发与发布](development.md) → [计划入口](plan/README.md) |
-| 了解缺口与下一步 | [核心开发总纲](plan/core-hardening.md) → [状态账本](plan/status.json)；历史依据见[2026-09-23 审计](research/2026-09-23-lifecycle-and-docs-audit.md) |
+| 了解缺口与下一步 | [状态账本](plan/status.json)（`handoff.next_action`、`observed_gaps`）→ [支持矩阵](support-matrix.md)；历史依据见[2026-09-23 审计](research/2026-09-23-lifecycle-and-docs-audit.md) |
 | 通过手机或第三方终端使用 | [普通 CLI 接入](usage.md#通过第三方终端使用) · [旧移动计划撤销记录](plan/terminal-access.md) |
 
 ## 哪份文档回答哪种事实

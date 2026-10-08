@@ -1,6 +1,6 @@
 # 项目开发生命周期：能执行什么，谁对交付负责
 
-适用基线：v0.9.0，2026-09-23。具体平台、Provider 和真实模型覆盖见[支持矩阵](support-matrix.md)，本轮缺陷及后续优先级见[审计](research/2026-09-23-lifecycle-and-docs-audit.md)。
+写于 v0.9.0（2026-09-23），之后随 P77–P79 的默认值改过。具体平台、Provider 和真实模型覆盖见[支持矩阵](support-matrix.md)，本轮缺陷及后续优先级见[审计](research/2026-09-23-lifecycle-and-docs-audit.md)。
 
 ## 结论
 

@@ -111,9 +111,9 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_blackbox_client -q
 
 单独跑一个文件时，找不到二进制这组测试会 skip 而不是失败——测试文件本身不依赖 cargo。看到 skip 就是没构建；`scripts/ci_gates.py` 自己构建，并把任何 skip 判成失败。
 
-**没有真实 Agent 的验收。** 用真 provider 做双机闭环排在 P6.3。
+**这些测试里没有真实 Agent。** 真机双机闭环（真实 Claude / Codex）另有带日期的记录，见[支持矩阵](support-matrix.md)；离线测试数量不能代替它。
 
-第二阶段先保存了 [Codex 0.153.4 真机测量](research/codex-provider-probe-2026-09-07.md)，尚未开放 provider。`cargo test -p ccnm-core --test codex_measurements` 只检查 fixture，不启动模型；重放/SSH transport 脚本的 7 个离线测试另用 `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p 'test_*codex*.py' -v` 运行。反向真实交互和 tmux 生命周期的证据见 [interactive 测量](research/codex-interactive-reverse-2026-09-07.md)。
+[Codex 0.153.4 真机测量](research/codex-provider-probe-2026-09-07.md)是 Codex provider 的回归基线（受管会话现在钉 0.154.0）。`cargo test -p ccnm-core --test codex_measurements` 只检查 fixture，不启动模型；测量脚本 `scripts/measure_codex.py` 的离线测试另用 `python3 -m unittest tests.test_measure_codex -v` 运行。反向真实交互和 tmux 生命周期的证据见 [interactive 测量](research/codex-interactive-reverse-2026-09-07.md)。
 
 内部接线后的回归另跑 `cargo test -p ccnm-core provider::codex`；覆盖已测 JSONL、失败/拒绝/截断、私有目录权限、工具策略和版本边界。P3 公共 instance 回归另见 `cargo test -p ccnm-cli --test instance_execution`、`cargo test -p ccnm-core --test public_lifecycle`、`cargo test -p ccnm-core --test session_identity` 和 `cargo test -p ccnm-cli --test write_guard`。不要手改已有 session 的 Provider/identity；临时 Controller、历史真机与当前未复验边界见[内部接线记录](research/codex-internal-wiring-2026-09-07.md)和[支持矩阵](support-matrix.md)。
 

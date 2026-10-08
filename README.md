@@ -157,7 +157,7 @@ mv ccnm ~/.local/bin/ccnm.new && mv ~/.local/bin/ccnm.new ~/.local/bin/ccnm
 
 | | |
 | --- | --- |
-| 最新版本 | [v0.13.0](https://github.com/xwfe/ccnm/releases)（2026-10-08），每个版本改了什么写在 Releases 页 |
+| 最新版本 | [v0.13.1](https://github.com/xwfe/ccnm/releases)（2026-10-08），每个版本改了什么写在 Releases 页 |
 | 真机验过什么 | 按搭配见上面[两台机器各干什么](#两台机器各干什么)；哪些**没验过**逐条写在[支持矩阵](docs/support-matrix.md) |
 | v0.13.0 改了默认 | 不写 `runtime_user` 也能跑命令（v0.12.0 及之前要求专用账号，或者在 workspace 上写 `allow_unconfined_exec` 和 `allow_unisolated_credentials`）；`agent_tools` 默认全开；命令不问人的会话里，skill 的 `hooks` 和加载时的 `` !`命令` `` 会在项目机器上跑（[说明](docs/usage.md#项目自带的-skills)）。真机上验到哪一步见[支持矩阵](docs/support-matrix.md) |
 

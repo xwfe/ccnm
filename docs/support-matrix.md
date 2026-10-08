@@ -2,7 +2,7 @@
 
 本页区分当前支持结论与分阶段证据。`docs/plan/status.json` 是阶段进度的唯一事实来源；历史真机记录不能替代当前 build 的重新验收。
 
-## 当前能力与证据汇总（2026-10-08 文档同步，版本基线 v0.13.0）
+## 当前能力与证据汇总（2026-10-08 文档同步，版本基线 v0.13.1）
 
 本表是当前判断入口。下方详细记录保留阶段初验与后来补验，不把“阶段完成”换算成所有环境通过。P51、P52、P53 的测试仍分别属于其带日期证据；2026-09-28 只整理文档与计划，没有新增远端、真实模型或手机兼容性验收。
 
@@ -80,11 +80,11 @@ Linux 那个在 `ubuntu-24.04` 上本机构建，**glibc 下限是从二进制�
 
 下面是各轮操作的历史安装/发布记录，不是本轮对远端节点的实时查询。P51 起点 Cargo 为 `0.9.0`、HEAD 为 `7f0e018`，没有更换任何已安装二进制。
 
-**最新的 release 是 `v0.13.0`**（2026-10-08，tag 指向 `9a59ddc`）：P75–P79——按项目名停也记"被停止"、文档建议开 `allow_unattended_exec`、`agent_tools` 默认全开、不写 `runtime_user` 就是共用账号、命令不问人的会话里跑 skill 的 `hooks` 与加载时命令。四个产物齐全（macOS universal 包 `aa9c237f…`、linux-x86_64 包 `0c430330…`），当天三台都换成了它，四个日用 workspace 的 doctor 都是"可以用了"，并零额度真机验了 P75、P77、P78、P79，见[发版记录](research/2026-10-08-release-0.13.0.md)。
+**最新的 release 是 `v0.13.1`**（2026-10-08）：P80–P83——受管 Codex 会话的工具调用不再在 300 秒被 Codex 掐断、Claude Code 2.1.292 起默认的 MCP 2026-07-28 开场实测兼容并补齐列表缓存提示、等命令的调用每 10 秒报进度、只给外部 MCP 用的 workspace 的 doctor 不再永远"还不能用"，外加 2026-10-08 的清理（删了从没实现过的 `hybrid-smb` 配置分支，写了它的配置从 doctor 判失败变成解析失败，都是 `CCNM_E_CONFIG`）。产物与换装见[发版记录](research/2026-10-08-release-0.13.1.md)。
 
-上一个是 `v0.12.0`（2026-10-07，tag 指向 `fa1b025`）：Linux 能当 Agent Node（P74）。四个产物齐全（macOS universal 包 `accaafe2…`、linux-x86_64 包 `b7c942a2…`，release 页正文取自 tag 注释），当天本机、fodelf、hpsrv `ccrun` 三台都换成了它，四个日用 workspace 的 doctor 都是"可以用了"，见[发版记录](research/2026-10-07-release-0.12.0.md)。同一天之前还发了 [v0.11.0](research/2026-10-07-release-0.11.0.md)（P70、P71）、[v0.11.1](research/2026-10-07-release-0.11.1.md)（P72）、[v0.11.2](research/2026-10-07-release-0.11.2.md)（P73）。
+上一个是 `v0.13.0`（2026-10-08，tag 指向 `9a59ddc`）：P75–P79——按项目名停也记"被停止"、文档建议开 `allow_unattended_exec`、`agent_tools` 默认全开、不写 `runtime_user` 就是共用账号、命令不问人的会话里跑 skill 的 `hooks` 与加载时命令。四个产物齐全（macOS universal 包 `aa9c237f…`、linux-x86_64 包 `0c430330…`），当天三台都换成了它，四个日用 workspace 的 doctor 都是"可以用了"，并零额度真机验了 P75、P77、P78、P79，见[发版记录](research/2026-10-08-release-0.13.0.md)。
 
-**main 比 v0.13.0 多的、还没发版的**：2026-10-08 的清理——删了从没实现过的 `hybrid-smb` 配置分支（写了它的配置从 doctor 判失败变成解析失败，都是 `CCNM_E_CONFIG`）、几个没有调用方的函数、一次性授权脚本和过时文档，没有新能力。
+再上一个是 `v0.12.0`（2026-10-07，tag 指向 `fa1b025`）：Linux 能当 Agent Node（P74）。四个产物齐全（macOS universal 包 `accaafe2…`、linux-x86_64 包 `b7c942a2…`，release 页正文取自 tag 注释），当天本机、fodelf、hpsrv `ccrun` 三台都换成了它，四个日用 workspace 的 doctor 都是"可以用了"，见[发版记录](research/2026-10-07-release-0.12.0.md)。同一天之前还发了 [v0.11.0](research/2026-10-07-release-0.11.0.md)（P70、P71）、[v0.11.1](research/2026-10-07-release-0.11.1.md)（P72）、[v0.11.2](research/2026-10-07-release-0.11.2.md)（P73）。
 
 更早的 `v0.10.1`（2026-10-04，tag 指向 `33f9193`），四个产物齐全：macOS universal（包 `0cdabf87…`）和 linux-x86_64（包 `08dc00a7…`，glibc ≥ 2.39）各一个 tar.gz 加 sha256；release 页正文取自 tag 注释。它带的是 P51–P67：会话精确控制、完整结果分页、写锁预检、跨账号清理，以及第一轮真机验收查出的问题。内部协议从 6 升到 10，和 v0.9.0 不能混装。`v0.10.0` 的 tag 也在，但它的发布被 macOS 门禁上一条测试的时序问题挡住、没有产物；v0.10.1 只多了修好的那条测试和版本号（[P62 续跑记录](research/2026-10-04-p62-resume-release.md)第 2 节）。发版后用这两个包在三台机器上与日用版本并存装了一轮做 P62 续跑，hpsrv 的 `ccrun` 现在是 v0.10.1；本机与 fodelf 的日用版本仍是 v0.9.0，要一起升。
 

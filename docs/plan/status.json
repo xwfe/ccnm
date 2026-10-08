@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-10-08T10:40:00+09:00",
+  "last_updated": "2026-10-08T11:50:00+09:00",
   "current_task": null,
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
@@ -3963,6 +3963,61 @@
         }
       ],
       "blockers": []
+    },
+    {
+      "id": "P80",
+      "title": "受管 Codex 会话给 ccnm 的工具调用配足等待时间",
+      "status": "completed",
+      "depends_on": [
+        "P79"
+      ],
+      "owner": null,
+      "started_at": "2026-10-08T10:55:00+09:00",
+      "last_updated": "2026-10-08T11:50:00+09:00",
+      "completed_criteria": [
+        "P80.1",
+        "P80.2",
+        "P80.3",
+        "P80.4"
+      ],
+      "evidence": [
+        {
+          "kind": "offline",
+          "criteria": [
+            "P80.1"
+          ],
+          "ref": "docs/research/2026-10-08-p80-codex-tool-timeout.md",
+          "commit": "6a78756",
+          "result": "零额度：夹具 docs/research/probes/p80-codex-tool-timeout.py，真实 Codex 0.154.0（两个 release 包 sha256 与 GitHub digest 一致）对着本机假模型和一个拖住 tools/call 的假 server，codex exec、sandbox-exec 只许连本机。不配 tool_timeout_sec、server 拖 320 秒：顶层工具 300.0056 秒、Code Mode 300.0 秒（脚本量到 300007 ms）告诉模型 timed out awaiting tools/call after 300s，到 Codex 退出（315.9 秒）server 没收到 notifications/cancelled；tool_timeout_sec=3、拖 10 秒：两种工具面都是 3 秒报错、无取消，server 第 10 秒写回的结果 Codex 不报错也不交给模型。源码 codex-mcp rmcp_client.rs:103 DEFAULT_TOOL_TIMEOUT=300s、connection_manager.rs:314-318；rmcp-client 超时只丢 future，rmcp 3.2.0 只在自己的超时分支发取消、RequestHandle 无 Drop。官方文档写 60 秒与源码不符。单元测试 codex_waits_out_the_longest_call_ccnm_lets_one_take 在旧代码上红（no tool timeout for ccnm）。没跑真实模型，没让 Codex 连真实 ccnm 跑满 300 秒，交互会话没测。"
+        },
+        {
+          "kind": "offline",
+          "criteria": [
+            "P80.2"
+          ],
+          "ref": "docs/research/2026-10-08-p80-codex-tool-timeout.md",
+          "commit": "19dd912",
+          "result": "provider::codex::build_launch_cmd 在 mcp_servers.ccnm.enabled_tools 之后加 -c mcp_servers.ccnm.tool_timeout_sec=1870，交互与 --print 都加；TOOL_TIMEOUT 由 hooks::MAX_TIMEOUT×2 + max(exec::MAX_TIMEOUT_MS, output::MAX_WAIT_MS) + jobs::STOP_GIVE_UP + 60 秒算出（hooks::MAX_TIMEOUT 改为 pub(crate)）。0.154.0 fixture 对照的接线前参数不变、没重录。同设置零额度实测：server 拖 320 秒的调用在顶层工具与 Code Mode 下都正常返回 held 320.0s。output::MAX_WAIT_MS 注释里\"Codex 0.154.0 等完 75 秒调用\"改为写明 300 秒上限与这次的修法。"
+        },
+        {
+          "kind": "review",
+          "criteria": [
+            "P80.3"
+          ],
+          "ref": "docs/protocol/remote-workspace-mcp-v1.md",
+          "commit": "9eb2eab",
+          "result": "协议文档第 3.3 节加\"Codex 当 Host：写上 tool_timeout_sec\"（TOML 形状、不写会怎样、为什么是 1870、依据与没验的部分，详细说明只在这一处），第 8 节上限表 exec_command 超时一行加指向；使用说明 bridge 一节\"三条\"改\"四条\"加一条；排错手册加\"Codex 里报 timed out awaiting tools/call after 300s，命令其实还在跑\"。工具、参数、错误码不变。"
+        },
+        {
+          "kind": "offline",
+          "criteria": [
+            "P80.4"
+          ],
+          "ref": "docs/research/2026-10-08-p80-codex-tool-timeout.md",
+          "result": "本机 macOS 26.6.2 arm64、rustc 1.98.0，负载约 47：cargo fmt --check、clippy --workspace --all-targets -D warnings、cargo +1.89 check --locked 通过；cargo test --workspace --no-fail-fast 1116/0（清理后 1115，新增 1 条）；check_protocol.py（46+31 个 fixture）与 tests.test_check_protocol（24 条）通过；python3 -B scripts/ci_gates.py 通过（计划、协议、Python 244 条 0 跳过，用带修复的二进制）；check_plan.py、git diff --check 通过。没跑 64 线程那轮（没动 process.rs），没在 Linux 跑、没推送、没过线上 CI。"
+        }
+      ],
+      "blockers": []
     }
   ],
   "observed_gaps": [
@@ -4026,11 +4081,12 @@
     "【P33 发现，已处理】Codex 拒绝在临时目录里建它的辅助程序：CODEX_HOME 在 /tmp 下时打 WARNING: proceeding, even though we could not create PATH aliases: Refusing to create helper binaries under temporary dir，Linux 上随后每条沙箱命令都死于 bwrap: execvp codex-linux-sandbox: No such file or directory（macOS 不需要这个辅助程序，看不出来）。ccnm 给 codex sandbox 和 exec-server 的 CODEX_HOME 都在状态目录下，正常部署碰不到；XDG_STATE_HOME 指到 /tmp 下的部署或测试会撞上。现在 exec_sandbox 的会话启动探针会把它当沙箱起不来拒掉，排错手册有条目；封存的原生链没有探针，只有 P21 的记录。",
     "【P38 已处理】search_text 的 glob 写成 **、*、src/** 这类能匹配目录的形状时，rg 会搜进 .gitignore 排除的目录（target/、node_modules/）：rg 里 glob 命中即跳过 .gitignore 判断。P37 把 dotfile 与 .git 的排除挪到最后修掉了同源的 dotfile 问题，但 .gitignore 没法靠顺序表达。修法二选一，都改变现有调用的结果：ccnm 自己按 glob 过滤 rg 结果（*.rs 在 rg 里是任意深度的文件名、在 ccnm Glob 里只匹配顶层），或拒绝能匹配目录的 glob。工具说明 Files that .gitignore rules out are never searched 在这种 glob 下不成立。依据 docs/research/p37-execution-surface-batch1-2026-09-17.md 第 2.2、5 节。 处理结果：两种设想的修法都没用——实测只能匹配文件的 *.log 也越过 .gitignore；改为 --type-add 缩小范围 + ccnm 按 rg 规则过滤，glob 含义不变，见 docs/research/p38-glob-gitignore-2026-09-17.md。",
     "【P41 记下不修】mcp-serve 被 SIGKILL（或别的不走正常退出的死法）时，它起的命令的进程组没人收：前台命令一直如此，P41 的后台命令没有期限，所以可能一直跑下去；它们的 run 在 read_output 里读作 exit status unknown。正常路径（客户端断开、stdin EOF、心跳发现对端不在）会先停掉所有命令再放写锁。要收干净得给子进程加会话标记、下次启动时按标记扫（封存的原生链 P26/P30 有类似做法），需另立阶段。依据 docs/research/p41-background-commands-2026-09-18.md 第 5 节。",
-    "【2026-10-08 v0.13.0 真机看到 / 没修】没有 Agent、只给外部 MCP 用的 workspace，doctor 的结论永远是“还不能用（0 项失败，2 项没查）”：Runtime 安全、exec_command 两行写“没查”（体检结果只随 Agent 探测回来），而这种 workspace 设计上就没有 Agent。和 P73 同类，设计上查不到的行该是“不查”、不挡结论。依据 docs/research/2026-10-08-release-0.13.0.md 第 5 节。"
+    "【2026-10-08 v0.13.0 真机看到 / 没修】没有 Agent、只给外部 MCP 用的 workspace，doctor 的结论永远是“还不能用（0 项失败，2 项没查）”：Runtime 安全、exec_command 两行写“没查”（体检结果只随 Agent 探测回来），而这种 workspace 设计上就没有 Agent。和 P73 同类，设计上查不到的行该是“不查”、不挡结论。依据 docs/research/2026-10-08-release-0.13.0.md 第 5 节。",
+    "【2026-10-08 P80 时看到 / 只记不修】Agent 上的 MCP 转发 ccnm_agent（P50）在受管 Codex 会话里同样没配 tool_timeout_sec，Codex 对它只等 300 秒。它的 call_mcp_tool 默认等 60 秒、起 server 30 秒，用户给 Agent 上某个 server 配的 tool_timeout_sec 接近或超过 300 秒时（还没起的 server 起它的时间也算在内），调用会被 Codex 先截断、不发取消，照样在 Agent 上跑完。值取决于用户配置、不归 ccnm 的常量管，P80 没修。依据 docs/research/2026-10-08-p80-codex-tool-timeout.md 第 6 节。"
   ],
   "handoff": {
-    "next_action": "**2026-10-08 发 v0.13.0、三台换装并零额度真机验了 P75/P77/P78/P79；按用户要求清理冗余文档和代码；current_task 为 null。** 用户 10-08 定四件事：推送；发版换装并真机验共用账号与 skill 钩子；删冗余过时的文档和代码；给遗留项排优先级。发版：版本号 9a59ddc（CI run 37710601717 全绿后打 tag），release run 37711327546，macOS 包 aa9c237f…、Linux 包 0c430330…；本机、fodelf（Controller pid 18762）、hpsrv ccrun 都换成 0.13.0，四个日用 workspace 的 doctor 都是“可以用了”。真机（docs/research/2026-10-08-release-0.13.0.md）：fodelf 当外部 MCP Host 经 ssh 连本机一份不写 runtime_user、不写两个 allow_* 的临时配置，v0.12.0 握手就拒、v0.13.0 照常服务，skill 加载时命令、PreToolUse 拦下 push --force、PostToolUse 附言都对；日用受管 Claude 会话 --tools 五项全开；按项目名停记成“被停止”；hpsrv ccrun 用发布的 Linux 二进制跑中立客户端 48/48。没验：doctor 在共用账号下那几行、真实模型与真实 Host。清理（c62746e…243c8ee，连同本条记录都没推送）：删了移动端旧交接、三份早期调研、P3 执行契约、13 个一次性授权脚本与 2 份测试、P51/P57 探针、6 个无调用方的函数与出网探测、hybrid-smb 配置分支（行为变化：写了它的配置从 doctor 判失败变成解析失败），改了几处停在旧阶段的说法；9df4914 误带了 config-hybrid.toml 的删除（单独检出它时 3 条测试找不到夹具），按规则没改写历史。清理后门禁：Rust 1115/0、clippy、1.89 check、Python 244/0。待用户定：封存的 Codex 原生链（P21–P30，专属约 4,200 行加共享文件里约 1,000–1,400 行；删了 codex_exec_server 键，写了它的配置哪怕是 false 也会解析失败）删不删；本机 P7 留下的 ccrun 账号（uid 504，家目录已不在）删不删（要 sudo）；推不推送。遗留项建议顺序：① P41 mcp-serve 被 SIGKILL 后它起的进程组没人收（后台命令没有期限，P79 的钩子也在 Runtime 上跑）；② 没有 Agent 的 workspace doctor 结论永远“还不能用”（同 P73 的处理，改动小）；③ 高负载下出现过一次的中立客户端写锁用例，再出现再查；④ P31 跨身份 purge（P78 后默认共用账号不受影响，只剩专用账号模式）；⑤ Windows（先要有机器和 RFC）。\n\n之前的交接：\n**2026-10-08 推送 main，CI 全绿；current_task 为 null。** 用户选“只推送 main”：71d1e33..47d3bd0 共 24 个提交（P75 的 5 个、21177c4 Windows 调研记录、P76–P79 及补修 40e3188、日期更正 9cc6e39），CI run 37706579297 的 test、linux-runtime、msrv 三个 job 都成功——P76–P79 第一次在 Linux 上跑过测试。没打 tag、没发版、没动任何机器。之后本地又提交了 a165743（记 CI 结果）与 3e46b1a（用户要求\"完善更新文档\"：清掉 P76–P79 之后仍和新默认对不上的说法，支持矩阵最新 release 改为 v0.12.0，排错手册加钩子拦截与加载时命令失败两条，使用说明的钩子例子在真实二进制上原样跑过），这两个没推送。下一步由用户定：是否发 v0.13.0、换装三台并在真机上验共用账号与 skill 钩子。ccnm-mobile-handoff.md 未读、未动。\n\n之前的交接：\n**2026-10-07 P79 完成（离线），current_task 为 null；复查补修 40e3188：钩子跑着时取消的调用不再执行。** 用户定设计记录第 7 节全按建议并要求更新文档。代码 ccc1385（mcp::hooks、Server::call_tool、skills Effects/Loaded、Agent 侧 subagents），文档 c796515（契约 5.1 加带日期说明与 3 份 fixture、使用/配置/生产安全/支持矩阵/README）。命令不问人的会话（--print、bridge coding、allow_unattended_exec）里 skill 的 !`命令` 加载时执行、hooks 围着 ccnm 工具跑；要问人的会话与 Agent 机器上的 skill 不跑。门禁：Rust 1119/0（原记 1120 是重复注册的一条用例）、clippy、1.89 check、ci_gates（Python 264）。P76–P79 都没推送、没发版、没在 Linux 和真机上跑，真实模型会不会照 context: fork 派子代理没验。下一步由用户定：推送；是否发版并真机验共用账号与 hooks。ccnm-mobile-handoff.md 未读、未动。\n\n之前的交接：\n**2026-10-07 P76、P77、P78 完成（离线），current_task 为 P79（pending，等用户定设计）。** 用户 2026-10-07 给了四件事：① allow_unattended_exec 文档提醒用户开（P76，3298438）；② agent_tools 默认全开（P77，303df3d、894eaae；内部消息与会话记录里“不带”仍按 P50 的默认读）；③ skill 文件头 hooks、allowed-tools、model 的设计（5fd62eb，docs/research/2026-10-07-skill-frontmatter-design.md；P79 按建议写好验收，开工前要用户定该记录第 7 节四件事：hooks 的门、allowed-tools 不逐条放行、!`命令` 是否一起做、model 借子代理）；④ 默认不要求 ccrun（P78，22adf31、f061def、72481f6：没写 runtime_user 就是共用账号，隔离检查只显示不拒绝）。门禁：Rust 1101/0、clippy、1.89 check、ci_gates（Python 263）。都没推送、没发版、没在 Linux 和真机上跑；v0.12.0 仍是旧判法。下一步由用户定：P79 设计；推送；是否发版并在真机上验共用账号。ccnm-mobile-handoff.md 未读、未动。",
-    "scope": "2026-10-08 用户要求：推送、发 v0.13.0 换装三台并真机验共用账号与 skill 钩子、删冗余过时文档和代码、给遗留项排优先级。改动：Cargo 版本号、release.yml 安装说明一句、README、支持矩阵、发版记录；删除见 next_action；crates/ccnm-core（config、doctor、launcher、paths、provider、safety、ssh）、crates/ccnm-cli/tests/cli.rs。机器：三台换装 0.13.0（不留备份）；fodelf /tmp/ccnm-v013h、本机 /tmp/ccnm-v013、hpsrv ccrun 的临时目录都已删；本机被忽略的 dist/（v0.9.0 包）删了，.gld/ 与 .coding-tools/ 不归 ccnm 管、没动。",
+    "next_action": "**2026-10-08 P80 完成（离线 + 零额度），current_task 为 null。** 用户给了一个读源码发现、还没实测的缺陷：Codex 0.154.0 的 MCP server 不配 tool_timeout_sec 时一次调用只等 300 秒（codex-mcp rmcp_client.rs:103；官方文档写 60，与源码不符），ccnm 允许 exec_command 的 timeout_ms、read_output 的 wait_ms 到 600 秒，受管会话的启动参数没传这个键。零额度复现（docs/research/probes/p80-codex-tool-timeout.py，真实 Codex 0.154.0 + 假模型 + 拖住 tools/call 的假 server）：不配时顶层工具与 Code Mode 都在 300.0 秒告诉模型 timed out awaiting tools/call，server 收不到 notifications/cancelled，晚到的结果被丢；配 1870 后 320 秒的调用正常返回。修法（用户给的两种里选了传参数，理由见研究记录第 2 节）：19dd912 受管 Codex 会话（交互与 --print）在 MCP 接线之后加 mcp_servers.ccnm.tool_timeout_sec=1870，由钩子 600×2 + 工具 600 + 停命令 10 + 60 算出，0.154.0 fixture 不重录；6a78756 研究记录与夹具；9eb2eab 协议文档 3.3 写明 Codex 当 Host 要自己配，使用说明、排错手册链过去。门禁：Rust 1116/0、clippy、1.89 check、协议检查、ci_gates（Python 244/0）。没推送、没发版、没跑真实模型、没让 Codex 连真实 ccnm 跑满 300 秒、交互会话没测；v0.13.0 及之前的 Agent 仍在 300 秒断开。只记不修：ccnm_agent（P50）同样只得 300 秒，值取决于用户给 Agent 上 server 配的超时（observed_gaps 最后一条）。下一步由用户定：推送；是否随下一个版本发。上一段交接里的遗留项顺序不变。\n\n之前的交接：\n**2026-10-08 发 v0.13.0、三台换装并零额度真机验了 P75/P77/P78/P79；按用户要求清理冗余文档和代码；current_task 为 null。** 用户 10-08 定四件事：推送；发版换装并真机验共用账号与 skill 钩子；删冗余过时的文档和代码；给遗留项排优先级。发版：版本号 9a59ddc（CI run 37710601717 全绿后打 tag），release run 37711327546，macOS 包 aa9c237f…、Linux 包 0c430330…；本机、fodelf（Controller pid 18762）、hpsrv ccrun 都换成 0.13.0，四个日用 workspace 的 doctor 都是“可以用了”。真机（docs/research/2026-10-08-release-0.13.0.md）：fodelf 当外部 MCP Host 经 ssh 连本机一份不写 runtime_user、不写两个 allow_* 的临时配置，v0.12.0 握手就拒、v0.13.0 照常服务，skill 加载时命令、PreToolUse 拦下 push --force、PostToolUse 附言都对；日用受管 Claude 会话 --tools 五项全开；按项目名停记成“被停止”；hpsrv ccrun 用发布的 Linux 二进制跑中立客户端 48/48。没验：doctor 在共用账号下那几行、真实模型与真实 Host。清理（c62746e…243c8ee，连同本条记录都没推送）：删了移动端旧交接、三份早期调研、P3 执行契约、13 个一次性授权脚本与 2 份测试、P51/P57 探针、6 个无调用方的函数与出网探测、hybrid-smb 配置分支（行为变化：写了它的配置从 doctor 判失败变成解析失败），改了几处停在旧阶段的说法；9df4914 误带了 config-hybrid.toml 的删除（单独检出它时 3 条测试找不到夹具），按规则没改写历史。清理后门禁：Rust 1115/0、clippy、1.89 check、Python 244/0。待用户定：封存的 Codex 原生链（P21–P30，专属约 4,200 行加共享文件里约 1,000–1,400 行；删了 codex_exec_server 键，写了它的配置哪怕是 false 也会解析失败）删不删；本机 P7 留下的 ccrun 账号（uid 504，家目录已不在）删不删（要 sudo）；推不推送。遗留项建议顺序：① P41 mcp-serve 被 SIGKILL 后它起的进程组没人收（后台命令没有期限，P79 的钩子也在 Runtime 上跑）；② 没有 Agent 的 workspace doctor 结论永远“还不能用”（同 P73 的处理，改动小）；③ 高负载下出现过一次的中立客户端写锁用例，再出现再查；④ P31 跨身份 purge（P78 后默认共用账号不受影响，只剩专用账号模式）；⑤ Windows（先要有机器和 RFC）。\n\n之前的交接：\n**2026-10-08 推送 main，CI 全绿；current_task 为 null。** 用户选“只推送 main”：71d1e33..47d3bd0 共 24 个提交（P75 的 5 个、21177c4 Windows 调研记录、P76–P79 及补修 40e3188、日期更正 9cc6e39），CI run 37706579297 的 test、linux-runtime、msrv 三个 job 都成功——P76–P79 第一次在 Linux 上跑过测试。没打 tag、没发版、没动任何机器。之后本地又提交了 a165743（记 CI 结果）与 3e46b1a（用户要求\"完善更新文档\"：清掉 P76–P79 之后仍和新默认对不上的说法，支持矩阵最新 release 改为 v0.12.0，排错手册加钩子拦截与加载时命令失败两条，使用说明的钩子例子在真实二进制上原样跑过），这两个没推送。下一步由用户定：是否发 v0.13.0、换装三台并在真机上验共用账号与 skill 钩子。ccnm-mobile-handoff.md 未读、未动。\n\n之前的交接：\n**2026-10-07 P79 完成（离线），current_task 为 null；复查补修 40e3188：钩子跑着时取消的调用不再执行。** 用户定设计记录第 7 节全按建议并要求更新文档。代码 ccc1385（mcp::hooks、Server::call_tool、skills Effects/Loaded、Agent 侧 subagents），文档 c796515（契约 5.1 加带日期说明与 3 份 fixture、使用/配置/生产安全/支持矩阵/README）。命令不问人的会话（--print、bridge coding、allow_unattended_exec）里 skill 的 !`命令` 加载时执行、hooks 围着 ccnm 工具跑；要问人的会话与 Agent 机器上的 skill 不跑。门禁：Rust 1119/0（原记 1120 是重复注册的一条用例）、clippy、1.89 check、ci_gates（Python 264）。P76–P79 都没推送、没发版、没在 Linux 和真机上跑，真实模型会不会照 context: fork 派子代理没验。下一步由用户定：推送；是否发版并真机验共用账号与 hooks。ccnm-mobile-handoff.md 未读、未动。",
+    "scope": "2026-10-08 用户要求：零额度复现 Codex 300 秒工具超时、选修法、补外部入口文档、跑门禁、更新状态、粒度提交、不推送。改动：crates/ccnm-core（provider/codex 的 TOOL_TIMEOUT 与启动参数、测试；mcp/hooks 的 MAX_TIMEOUT 改 pub(crate)；mcp/output 注释）、docs/protocol/remote-workspace-mcp-v1.md、docs/usage.md、docs/troubleshooting.md、docs/research 的 P80 记录与夹具、ROADMAP、status。没动任何机器、已装的 ccnm 与配置；Codex 0.154.0 包和源码只下到会话 scratchpad。",
     "planning_validation": {
       "at": "2026-09-08T21:22:43+09:00",
       "commands": [
@@ -4042,14 +4098,13 @@
       "limits": "本轮离线门禁；fodelf SSH 建连失败，没有新增远端资源或运行真实模型，不替代 P3.5。"
     },
     "planning_validation_latest": {
-      "at": "2026-10-08T10:40:00+09:00",
+      "at": "2026-10-08T11:50:00+09:00",
       "commands": [
-        "发版前（9a59ddc）：cargo fmt --check、clippy -D warnings（1.98 与 +1.99.0）、cargo +1.89 check --locked 通过；cargo test --workspace 默认与 64 线程各 1119/0；python3 -B scripts/ci_gates.py 通过（Python 265/0 跳过）",
-        "线上：CI run 37710601717（9a59ddc）test、linux-runtime、msrv 全绿；release run 37711327546（v0.13.0）linux、macos、publish 全绿",
-        "三台换装 v0.13.0：四个日用 workspace doctor 可以用了、退出 0；零额度受管会话起停一次，写锁 released；外部 MCP 经 ssh 的共用账号与钩子验证；hpsrv ccrun 中立客户端 48/48",
-        "清理后：cargo fmt --check、clippy -D warnings、cargo +1.89 check --locked 通过；cargo test --workspace 1115/0；ci_gates.py 通过（Python 244/0）；check_plan.py、git diff --check 通过"
+        "P80（19dd912 之后的工作区）：cargo fmt --check、clippy -D warnings、cargo +1.89 check --locked 通过；cargo test --workspace --no-fail-fast 1116/0",
+        "check_protocol.py 与 tests.test_check_protocol 通过；python3 -B scripts/ci_gates.py 通过（计划、协议、Python 244/0 跳过）；check_plan.py、git diff --check 通过",
+        "零额度：Codex 0.154.0 + 假模型 + 假 server 六轮（不配 / 1870 / 3 秒 × 顶层工具与 Code Mode），结果见 docs/research/2026-10-08-p80-codex-tool-timeout.md 第 3 节"
       ],
-      "limits": "没用真实模型；doctor 在共用账号下的那几行没在真机上看到；清理后没有跑 64 线程那轮，也没推送、没过线上 CI。"
+      "limits": "没用真实模型、没让 Codex 连真实 ccnm、交互会话没测；没跑 64 线程那轮；没在 Linux 跑、没推送、没过线上 CI。"
     },
     "inherited_changes": [],
     "authorization": "P24 真机轮（2026-09-16）：用户同意授权清单 A0–A9（docs/plan/p24-native-real-machine-session.md 第四节），明确 root 步骤由本会话执行、完成后清理并同步文档。实际执行：A0 查登录；A1 本机一次性密钥 + hpsrv root 追加公钥（已撤）；A2 hpsrv 装 bubblewrap（保留，清单 /var/lib/ccnm-p24-20260916）；A3/A4 ccrun 名下 Codex 0.154.0 与 ccnm 7ae2d4b（保留）；A5 ccrun 配置与测试项目（已删）；A6/A7 本机 P24 构建、Agent 配置、临时 Controller（已删/已卸）；A8 模型 3 次（上限 5）；A9 nftables 单连接黑洞 5 次（每次 60 秒自动删除，已核无残留）。授权不含：fodelf 任何变更、本机已装 ccnm/config.toml/LaunchAgent/sshd、hpsrv sshd 与持久防火墙、tag/release。\n\n之前的授权记录：\nP12 真机轮已由用户授权并执行完毕（2026-09-11），三问三答：hpsrv 上按计划全做（建专用账号 ccrun、系统级装 gcc/libc6-dev/make/ripgrep、以 ccrun 身份装 rustup 与 Node）；花订阅额度做真实 Claude Code 那一腿；轮后**保留账号与工具链**、删一次性资源。特权命令由本会话经 root ssh 执行（该机 root 登录用的是用户自己的 key），没有要用户输密码。授权明确不含：改 ACL/防火墙/Tailscale 策略、动 bing 或 git 账号的任何东西、push/tag/release。保留物的撤销脚本仍在：scripts/p12-provision-linux-runtime.sh --revert（账号 + 按清单 purge 的 36 个包）、scripts/p12-runtime-toolchain.sh --revert（rustup/Node/PATH 块）；root 清单 /var/lib/ccnm-p12-20260911 为此保留。历史授权记录（P3/P7/P11 各轮）见 Git 历史；P11 那两条 macOS 的 sudo 授予（ccrun 的本轮公钥、临时进 com.apple.access_ssh）**仍未撤销**，要用户 sudo 跑对应的 --revert。 【2026-09-11 发布前收口复核】P11 那两条 macOS 临时授予**已经不在了**，只读证据：`dsmemberutil checkmembership -U ccrun -G com.apple.access_ssh` 和 `dseditgroup -o checkmember` 都说不是成员，该组 GroupMembership 键不存在（没有直接成员）；p11 那把公钥的清单目录 /var/db/ccnm-p11-local-20260911 不存在，而 --revert 的最后一步就是 rmdir 它。还留着的 /var/db/ccnm-p7-local-20260910 是更早 P7 轮的清单目录（root 0700），不是这两条要撤的东西，里面还有什么只有 sudo 看得到。【2026-10-08 复核】`/var/db` 下已没有任何 `ccnm-*` 清单目录（P7 那个也不在了），fodelf 上的 `ccnmp3test` 账号也不存在；p3/p7/p11 的授权与回退脚本随之删除（原文在 git 历史里）。本机 P7 那轮建的 `ccrun` 账号（uid 504）还在，家目录已不存在，删账号要用户自己 sudo。",

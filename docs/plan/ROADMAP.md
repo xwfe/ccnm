@@ -1070,3 +1070,14 @@ ccnm 这一轮只定权威语义、补自己这边的证据。租约展示与状
 - **P79.5** Rust、Python、协议与计划门禁通过；研究记录与状态同步。
 
 停止点：不改 Host 的权限与模型设置；不在 Agent 机器上执行任何来自 skill 的命令；不加工具、不改工具参数；不跑模型；不发版。
+
+### P80 — 受管 Codex 会话给 ccnm 的工具调用配足等待时间
+
+**依赖 P79。** 现象（2026-10-08 读源码发现，同日零额度实测确认）：Codex 0.154.0 在 MCP server 没配 `tool_timeout_sec` 时，一次工具调用最多等 300 秒（`codex-rs/codex-mcp/src/rmcp_client.rs` 的 `DEFAULT_TOOL_TIMEOUT`；官方文档写 60 秒，与源码不符），ccnm 却允许 `exec_command` 的 `timeout_ms`、`read_output` 的 `wait_ms` 到 600000；受管 Codex 会话的启动参数没传这个键。超过 300 秒时模型被告知超时，Codex 不发取消，命令照跑、结果被丢。用户同日要求：先零额度复现，再选修法。
+
+- **P80.1** 复现（零额度）：真实 Codex 0.154.0 对着本机假模型和一个故意拖住 `tools/call` 的假 server，量出不配时 300 秒报超时、超时后 server 收不到 `notifications/cancelled`、晚到的结果被丢；配上修复值后同一次调用正常返回；顶层工具与 Code Mode 两种工具面各一遍。另有在旧代码上红的单元测试，证明启动参数里没有这个键。
+- **P80.2** 实现：受管 Codex 会话（交互与 `--print`）的启动参数在 MCP 接线之后加 `mcp_servers.ccnm.tool_timeout_sec`，值由 ccnm 自己的上限算出（前置钩子 + 工具 + 停命令 + 后置钩子 + 60 秒余量），这几个上限改了它跟着变；0.154.0 fixture 记录的那段参数不变。
+- **P80.3** 外部 MCP 入口：协议文档"Host 怎么配"写明 Codex 当 Host 要自己配 `tool_timeout_sec`、不配会怎样、值怎么来的（详细说明只放这一处）；使用说明、排错手册链接过去。
+- **P80.4** Rust、Python、协议与计划门禁通过；研究记录与状态同步。
+
+停止点：不改 ccnm 自己的任何上限；不改公开协议的工具与字段；`ccnm_agent`（Agent 上的 MCP 转发）的同类问题只记录不修——它的最长调用取决于用户给各 server 配的超时，不归 ccnm 的常量管；不跑真实模型；不发版。

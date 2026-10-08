@@ -369,21 +369,6 @@ fn doctor_unknown_workspace_exits_config_code() {
 }
 
 #[test]
-fn doctor_refuses_hybrid_backend() {
-    let out = ccnm()
-        .args(["doctor", "legacy", "--config"])
-        .arg(fixture("config-hybrid.toml"))
-        .output()
-        .unwrap();
-    assert_eq!(out.status.code(), Some(10), "{}", stdout(&out));
-    assert!(
-        stdout(&out).contains("Backend                 FAIL   CCNM_E_CONFIG"),
-        "{}",
-        stdout(&out)
-    );
-}
-
-#[test]
 fn internal_commands_are_hidden_from_help() {
     let out = ccnm().arg("--help").output().unwrap();
     let text = stdout(&out);

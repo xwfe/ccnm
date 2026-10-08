@@ -46,7 +46,7 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use crate::config::{Backend, Config, Resolved, Topology};
+use crate::config::{Config, Resolved, Topology};
 use crate::error::{Error, ErrorCode, ErrorReport};
 use crate::lang::Lang;
 use crate::mcp::context;
@@ -454,13 +454,6 @@ fn describe_workspace(r: &Resolved<'_>) -> String {
 
 fn workspace_checks(r: &Resolved<'_>, agent: Option<&str>, env: &Env<'_>) -> Vec<Check> {
     let ws = r.workspace;
-    if ws.backend == Backend::HybridSmb {
-        return vec![Check::fail_with(
-            "Backend",
-            ErrorCode::Config,
-            "backend = \"hybrid-smb\" is parsed but not implemented by this build\nsee design doc appendix A; use backend = \"mcp-ssh\"",
-        )];
-    }
     // A workspace with no Agent is not a broken workspace: it exists for
     // external MCP clients, which bring their own. Everything below this
     // point is about an Agent session, so reporting those rows as failures
@@ -2226,23 +2219,6 @@ mod tests {
             row(&report, "Workspace config")
                 .detail
                 .contains("defined: xshun")
-        );
-    }
-
-    #[test]
-    fn hybrid_backend_is_refused_by_this_build() {
-        let fake = FakeRunner::new();
-        let report = run(
-            &fixture("config-hybrid.toml"),
-            Some("legacy"),
-            &env(&fake, Path::new("/tmp")),
-        );
-        assert_eq!(report.exit_code(), 10, "{}", report.render());
-        let backend = row(&report, "Backend");
-        assert!(backend.detail.contains("appendix A"), "{}", backend.detail);
-        assert!(
-            fake.calls().is_empty(),
-            "nothing remote for a hybrid config"
         );
     }
 

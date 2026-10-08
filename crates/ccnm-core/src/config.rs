@@ -8,12 +8,11 @@
 //! silently falls back to a default is exactly the drift doctor exists to
 //! catch, so the parser refuses it up front.
 //!
-//! Two backends share the schema. `mcp-ssh` (the default and the only one
-//! this build implements) needs nothing beyond nodes and `root`. The
-//! `hybrid-smb` fallback (appendix A) additionally needs `share`,
-//! `runtime_root`, `mount_mode` and the Runtime Node's `smb_user`; those
-//! fields are rejected on an `mcp-ssh` workspace so a half-migrated config
-//! cannot look valid.
+//! Every workspace uses one backend, `mcp-ssh`: an SSH stdio transport
+//! carrying MCP to the Runtime Node. `backend` is still accepted with that
+//! one value, so a config that spells it out keeps parsing. The SMB
+//! fallback that once shared this schema was never built and is gone; a
+//! config naming it fails to parse rather than looking valid.
 
 use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
@@ -292,13 +291,12 @@ pub struct Node {
     /// hold the control SSH credential to the Agent Node; the Runtime
     /// Executor is inbound-only. See docs/production-safety.md.
     ///
-    /// Unset is itself a failure on the Runtime Node: without it ccnm
-    /// cannot tell the dedicated account from the developer's own.
+    /// Unset (the default since P78) means a shared account: whoever the
+    /// Agent's SSH lands as runs the tools, and the isolation findings are
+    /// shown without refusing anything. Set, the dedicated-account checks
+    /// refuse as described above.
     #[serde(default)]
     pub runtime_user: Option<String>,
-    /// Hybrid only: account the Agent Node mounts the SMB share as.
-    #[serde(default)]
-    pub smb_user: Option<String>,
     /// The Codex binary this node runs `codex exec-server` with, for
     /// workspaces that set [`Workspace::codex_exec_server`]
     /// (docs/plan/runtime-surfaces.md section 12).
@@ -455,16 +453,6 @@ pub struct Workspace {
     /// whole native tool set anyway, nor to an external MCP client.
     #[serde(default, skip_serializing_if = "AgentTools::is_default")]
     pub agent_tools: AgentTools,
-    /// Hybrid only: where the restricted runner may write. Must not overlap
-    /// `root`.
-    #[serde(default)]
-    pub runtime_root: Option<PathBuf>,
-    /// Hybrid only: SMB share name the Agent Node mounts.
-    #[serde(default)]
-    pub share: Option<String>,
-    /// Hybrid only.
-    #[serde(default)]
-    pub mount_mode: Option<MountMode>,
 }
 
 fn default_runtime_node() -> String {
@@ -478,9 +466,6 @@ pub enum Backend {
     /// on the Runtime Node. The primary architecture.
     #[default]
     McpSsh,
-    /// SMB mount plus SSH runner (appendix A). Parsed so a config can name
-    /// it; not implemented by this build.
-    HybridSmb,
 }
 
 impl Backend {
@@ -488,7 +473,6 @@ impl Backend {
     pub fn as_str(self) -> &'static str {
         match self {
             Backend::McpSsh => "mcp-ssh",
-            Backend::HybridSmb => "hybrid-smb",
         }
     }
 }
@@ -563,15 +547,6 @@ impl ExternalInstructions {
             ExternalInstructions::None => "none",
         }
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum MountMode {
-    /// Mount with `nodatacache,nomdatacache,nopassprompt,soft,nobrowse`
-    /// (appendix A.12). The only mode the Hybrid design ever had.
-    #[default]
-    Coherence,
 }
 
 /// One native Agent feature a remote managed session may be given.
@@ -996,10 +971,8 @@ impl Config {
         for (name, node) in &self.nodes {
             let at = format!("nodes.{name}");
             check_name(&at, name, &mut problems);
-            for (field, value) in [("ssh", &node.ssh), ("smb_user", &node.smb_user)] {
-                if let Some(value) = value {
-                    check_token(&format!("{at}.{field}"), value, &mut problems);
-                }
+            if let Some(ssh) = &node.ssh {
+                check_token(&format!("{at}.ssh"), ssh, &mut problems);
             }
             if let Some(dir) = &node.claude_config_dir {
                 check_absolute(&format!("{at}.claude_config_dir"), dir, &mut problems);
@@ -1062,60 +1035,7 @@ impl Config {
                     Some(_) => {}
                 }
             }
-            let runtime = self.nodes.get(&ws.runtime_node);
-            let root_ok = check_absolute(&format!("{at}.root"), &ws.root, &mut problems);
-
-            match ws.backend {
-                Backend::McpSsh => {
-                    for (field, present) in [
-                        ("share", ws.share.is_some()),
-                        ("mount_mode", ws.mount_mode.is_some()),
-                        ("runtime_root", ws.runtime_root.is_some()),
-                    ] {
-                        if present {
-                            problems.push(format!(
-                                "{at}.{field} is only valid with backend = \"hybrid-smb\"; the mcp-ssh runtime has no mount"
-                            ));
-                        }
-                    }
-                }
-                Backend::HybridSmb => {
-                    match &ws.share {
-                        None => problems.push(format!(
-                            "{at}.share is required with backend = \"hybrid-smb\""
-                        )),
-                        Some(share) if share.trim().is_empty() => {
-                            problems.push(format!("{at}.share must be the SMB share name"));
-                        }
-                        Some(share) => check_token(&format!("{at}.share"), share, &mut problems),
-                    }
-                    match &ws.runtime_root {
-                        None => problems.push(format!(
-                            "{at}.runtime_root is required with backend = \"hybrid-smb\""
-                        )),
-                        Some(runtime_root) => {
-                            let ok = check_absolute(
-                                &format!("{at}.runtime_root"),
-                                runtime_root,
-                                &mut problems,
-                            );
-                            if root_ok && ok && overlaps(&ws.root, runtime_root) {
-                                problems.push(format!(
-                                    "{at}.runtime_root must not overlap root: the runner would get write access to source"
-                                ));
-                            }
-                        }
-                    }
-                    if let Some(host) = runtime
-                        && host.smb_user.is_none()
-                    {
-                        problems.push(format!(
-                            "{at}.runtime_node = \"{}\" names a host without `smb_user`, which backend = \"hybrid-smb\" needs to mount the share",
-                            ws.runtime_node
-                        ));
-                    }
-                }
-            }
+            check_absolute(&format!("{at}.root"), &ws.root, &mut problems);
         }
 
         crate::instance::validate_config(self, &mut problems);
@@ -1230,10 +1150,6 @@ fn check_absolute(at: &str, path: &Path, problems: &mut Vec<String>) -> bool {
         return false;
     }
     true
-}
-
-fn overlaps(a: &Path, b: &Path) -> bool {
-    a.starts_with(b) || b.starts_with(a)
 }
 
 #[cfg(test)]
@@ -1500,8 +1416,6 @@ mod tests {
             r.workspace.root,
             PathBuf::from("/Users/fodelf/Projects/xshun")
         );
-        assert_eq!(r.workspace.share, None);
-        assert_eq!(r.workspace.runtime_root, None);
         assert_eq!(
             r.workspace.claude_permission_mode,
             PermissionMode::AcceptEdits
@@ -1522,40 +1436,16 @@ mod tests {
     }
 
     #[test]
-    fn hybrid_fixture_parses_but_needs_its_fields() {
-        let config = Config::load(&fixture("config-hybrid.toml")).unwrap();
-        let ws = &config.workspaces["legacy"];
-        assert_eq!(ws.backend, Backend::HybridSmb);
-        assert_eq!(ws.share.as_deref(), Some("legacy"));
-        assert_eq!(ws.mount_mode, Some(MountMode::Coherence));
-        assert_eq!(
-            ws.runtime_root,
-            Some(PathBuf::from("/Users/Shared/cc-runtime/legacy"))
-        );
-
-        let err = parse_err(
-            "version = 1\nthis = \"runtime\"\n[nodes.agent]\nssh = \"work\"\n[nodes.runtime]\n[workspaces.x]\nbackend = \"hybrid-smb\"\nagent_node = \"agent\"\nroot = \"/a\"\n",
-        );
-        let msg = err.message();
-        assert!(msg.contains("share is required"), "{msg}");
-        assert!(msg.contains("runtime_root is required"), "{msg}");
-        assert!(msg.contains("without `smb_user`"), "{msg}");
-    }
-
-    #[test]
-    fn hybrid_fields_are_rejected_on_mcp_ssh() {
-        let err = parse_err(&with_workspace(
-            "agent_node = \"agent\"\nroot = \"/a\"\nshare = \"x\"\nmount_mode = \"coherence\"\nruntime_root = \"/b\"",
-        ));
-        let msg = err.message();
-        for field in ["share", "mount_mode", "runtime_root"] {
-            assert!(
-                msg.contains(&format!(
-                    "{field} is only valid with backend = \"hybrid-smb\""
-                )),
-                "{field}: {msg}"
-            );
-        }
+    fn the_smb_fallback_is_not_a_backend_any_more() {
+        // It was parsed and refused by doctor until 0.13.0. Now a config
+        // naming it, or carrying its fields, fails to parse: nothing about
+        // it can look valid.
+        let err = parse_err(&with_workspace(&format!(
+            "{VALID_WS}\nbackend = \"hybrid-smb\""
+        )));
+        assert!(err.message().contains("hybrid-smb"), "{err}");
+        let err = parse_err(&with_workspace(&format!("{VALID_WS}\nshare = \"x\"")));
+        assert!(err.message().contains("share"), "{err}");
     }
 
     #[test]
@@ -1665,14 +1555,6 @@ mod tests {
             ));
             assert!(err.message().contains(expected), "{bin}: {err}");
         }
-    }
-
-    #[test]
-    fn hybrid_runtime_root_inside_root_is_rejected() {
-        let err = parse_err(
-            "version = 1\nthis = \"runtime\"\n[nodes.agent]\nssh = \"work\"\n[nodes.runtime]\nsmb_user = \"u\"\n[workspaces.x]\nbackend = \"hybrid-smb\"\nagent_node = \"agent\"\nroot = \"/Users/Shared/cc-workspaces/x\"\nruntime_root = \"/Users/Shared/cc-workspaces/x/target\"\nshare = \"x\"\n",
-        );
-        assert!(err.message().contains("must not overlap root"), "{err}");
     }
 
     #[test]

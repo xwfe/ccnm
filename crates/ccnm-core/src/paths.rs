@@ -92,11 +92,6 @@ pub fn workspace_dir(state: &Path, name: &str) -> PathBuf {
     workspaces_dir(state).join(safe_name(name, "workspace"))
 }
 
-/// Rebuildable state. Nothing here is ever required.
-pub fn cache_dir(state: &Path) -> PathBuf {
-    state.join("cache")
-}
-
 /// Where `apply_patch` records a commit it is part way through.
 ///
 /// Neither lifetime above. A journal exists for the few microseconds a

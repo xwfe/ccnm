@@ -355,10 +355,6 @@ impl Ssh {
         parse_resolved(&out.stdout_lossy())
     }
 
-    pub fn master_running(&self, runner: &dyn ProcessRunner) -> Result<bool> {
-        Ok(runner.run(&self.check_master_cmd())?.success())
-    }
-
     /// Run `<ccnm_bin> <subcommand> --payload <request>` on the other
     /// machine and decode its JSON reply. `unreachable` is the code to
     /// report when ssh itself fails, since which side is unreachable

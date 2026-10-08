@@ -226,10 +226,6 @@ impl AgentProvider {
         }
     }
 
-    pub fn redact_output(self, text: String) -> String {
-        self.redact_output_at(text, None)
-    }
-
     pub fn redact_output_at(self, text: String, profile_dir: Option<&Path>) -> String {
         match self.output_redaction(profile_dir) {
             Redaction::Keep => text,
@@ -385,10 +381,6 @@ impl AgentBinaries {
             claude,
             codex: None,
         }
-    }
-    pub fn with_codex(mut self, codex: Option<PathBuf>) -> Self {
-        self.codex = codex;
-        self
     }
     pub fn get(&self, provider: AgentProvider) -> Option<&Path> {
         match provider {

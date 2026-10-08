@@ -574,10 +574,6 @@ fn build_native_launch_cmd(
     Ok(cmd)
 }
 
-pub fn check_inventory(bin: &Path, spec: &Spec, runner: &dyn ProcessRunner) -> Result<()> {
-    check_inventory_at(bin, spec, None, runner)
-}
-
 pub fn check_inventory_at(
     bin: &Path,
     spec: &Spec,

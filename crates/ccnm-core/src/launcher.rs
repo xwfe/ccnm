@@ -663,10 +663,6 @@ pub fn mcp_probe_local(resolved: &Resolved<'_>, env: &Env<'_>, calls: u32) -> Re
 
 /// Ask the Agent Node to probe the Runtime Node over its own ssh: the
 /// path Claude Code will use. Returns the MCP part of the work probe.
-pub fn mcp_probe_remote(resolved: &Resolved<'_>, env: &Env<'_>, calls: u32) -> Result<ProbeReport> {
-    mcp_probe_remote_selected(resolved, env, calls, None)
-}
-
 pub fn mcp_probe_remote_selected(
     resolved: &Resolved<'_>,
     env: &Env<'_>,

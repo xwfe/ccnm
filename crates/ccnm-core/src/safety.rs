@@ -841,52 +841,6 @@ impl Identity {
     }
 }
 
-/// Can this machine reach `api.anthropic.com`?
-///
-/// Separate from [`audit`] and never called by the MCP runtime: it makes
-/// an outbound connection, which is fine for a diagnostic the user asked
-/// for and wrong to do on every session start.
-///
-/// Reaching it is not automatically a failure. Section 19 makes the egress
-/// rule conditional — *if* this is your compliance boundary, block it at
-/// the OS or the network, and do not mistake a static command deny list
-/// for a network boundary. So this reports, and leaves the judgement to
-/// the person reading.
-pub fn egress_finding(timeout: Duration) -> Finding {
-    egress_finding_for(crate::provider::AgentProvider::current(), timeout)
-}
-
-pub fn egress_finding_for(provider: crate::provider::AgentProvider, timeout: Duration) -> Finding {
-    let metadata = provider.credentials();
-    let name = format!("{} egress", metadata.vendor_name);
-    let host = metadata.egress_host;
-    use std::net::ToSocketAddrs;
-    let Ok(mut addrs) = (host, 443).to_socket_addrs() else {
-        return Finding::warn(
-            &name,
-            format!("{host} DNS result is unknown; this does not prove an egress policy"),
-        );
-    };
-    let Some(addr) = addrs.next() else {
-        return Finding::warn(
-            &name,
-            format!("{host} resolved no addresses; this does not prove an egress policy"),
-        );
-    };
-    match std::net::TcpStream::connect_timeout(&addr, timeout) {
-        Ok(_) => Finding::warn(
-            &name,
-            format!(
-                "this machine can reach {host}; if that is your compliance boundary, block it at the OS or network level rather than trusting a command deny list"
-            ),
-        ),
-        Err(_) => Finding::warn(
-            &name,
-            format!("{host} was not reachable in this probe; this does not prove an egress policy"),
-        ),
-    }
-}
-
 #[cfg(test)]
 mod provider_tests;
 

@@ -34,6 +34,8 @@ Runtime MCP 转接（`call_mcp_tool`）的 server 自 P52 起：关闭时它进�
 
 **`不查` 和 `没查` 差一个字，意思不一样。** `不查` 是 doctor 在这种配置下本来就不查的行：网络隔离（ccnm 管不着，要你自己在 Runtime 上配）、本机工具策略（只有真开着的会话才说得清）、没开 `codex_exec_server` 时的 Codex 原生链、没有 Agent 的 workspace 里那些 Agent 行、你看不进执行账号家目录时的 `Runtime 上的项目`（同一张表的 `workspace 根目录` 会由执行账号回答）。不管两台机器状态如何它都是这个结果，所以**不挡结论**，结论行会写"可以用了（N 项不查……）"。`没查` 是该查、这次没查成：对面没回答、对面构建太旧没报、前面一步失败了。这时结论是"还不能用"、退出码 3，按那一行的说明处理。v0.11.1 及之前没有 `不查`，这些行都写 `没查`，所以任何配置 0 项失败也是"还不能用"（P73 改的）。
 
+**`注意` 不挡结论。** 最常见的几行：`Runtime 执行身份`、`admin 组`、`SSH 私钥`、`Claude 凭据` 是"注意"，说明 Runtime 没写 `runtime_user`，按默认的共用账号跑（P78 起），这几行在告诉你模型跑的命令够得到什么；`命令审批` 是"注意"，说明开了 `allow_unattended_exec`。都是提醒，不是没配好。**v0.12.0 及之前的 Runtime** 没写 `runtime_user` 时，`Runtime 执行身份` 是"失败"、`exec_command` 被拒——升级 Runtime，或者按[生产安全](production-safety.md#要不要建专用账号)建专用账号、写上 `runtime_user`。
+
 **错误码不跟着变。** `CCNM_E_*` 两种语言下都一样，所以拿错误码搜这一页永远搜得到。
 
 ### `TOOLS DOWN` —— 会话看着在跑，模型却什么都够不着
@@ -436,7 +438,7 @@ allow_unconfined_exec = true      # 只为 exec_command，跟上面那条无关
 
 ### `exec_command is refused`，理由说有 SSH 私钥，可你明明一把都没有
 
-**症状**：外部 MCP 或受管会话里 `exec_command` 被拒：
+**症状**：Runtime 写了 `runtime_user`（专用账号模式），外部 MCP 或受管会话里 `exec_command` 被拒（没写 `runtime_user` 的共用账号里这一行只是"注意"，不拦）：
 
 ```text
 CCNM_E_POLICY: the runtime is running as ccrun and is not confined, so exec_command is refused:
@@ -456,6 +458,38 @@ mv ~/.config/ccnm/config.toml.bak ~/config.toml.bak
 ```
 
 **不要**为了这个去开 `allow_unconfined_exec = true`——那是把这个账号的整套 confinement 判定都接受下来，为了一个备份文件不值得。
+
+### 命令或改文件被拒：`was not run: a PreToolUse hook of skill … stopped it`
+
+**症状**：会话里本来能跑的命令（或 `apply_patch`）突然报：
+
+```text
+CCNM_E_POLICY: exec_command was not run: a PreToolUse hook of skill guard stopped it: use git rm, not rm
+```
+
+**其实是**：这个会话早些时候加载过一个带 `hooks` 的 skill（模型自己调的 `load_skill`，或你敲的 `/mcp__ccnm__<名字>`），它的 `PreToolUse` 钩子在项目机器上跑了，退出码 2 或回了 `deny` / `ask`，所以这次调用没执行。冒号后面是钩子自己说的话。只有命令不问人的会话会这样（开了 `allow_unattended_exec`、`--print`、`ccnm mcp bridge` 的 coding 模式），见[使用说明](usage.md#项目自带的-skills)。
+
+**怎么办**：
+
+- 按钩子说的改做法，这通常就是 skill 作者的本意。
+- 钩子写错了：改项目里那个 SKILL.md。**已经登记的钩子到会话结束前一直有效**，改了文件也不撤——停掉会话再起一个（`ccnm stop <项目>` 后 `ccnm <项目>`）。
+- 不想让 skill 的钩子跑：去掉 `allow_unattended_exec`，交互会话里一个都不跑，代价是每条命令又要确认一次。
+
+钩子自己失败（退出码不是 0 也不是 2，或超时）不挡调用，只在结果末尾多一行说明：`[PreToolUse hook of skill … failed (exit 1) and was ignored: …]`，超时是 `… was stopped after N s and ignored`。调用在钩子跑着时被取消，工具不执行，报 `CCNM_E_INVALID_ARGS: … was not run: the call was cancelled while its PreToolUse hooks ran`。
+
+### 加载 skill 报 `was not loaded: a command it runs as it loads failed`
+
+**症状**：
+
+```text
+CCNM_E_INVALID_ARGS: skill "deploy" was not loaded: a command it runs as it loads failed, as it would natively
+  line 14: gh pr view
+  it exited 1: …
+```
+
+**其实是**：SKILL.md 里有 `` !`命令` ``，命令不问人的会话里它在加载时于项目机器上执行（P79），有一条失败，整次加载就失败——原生 Claude Code 也是这样。后两行是哪一行、怎么失败的。常见原因：项目机器上没装那个命令（`gh`、`node`），命令要登录或联网，或者它假设自己在别的目录（`` !`命令` `` 在 workspace 根下跑），也可能是超过 120 秒被停掉。
+
+**怎么办**：以执行账号在项目机器的 workspace 根下跑一遍那条命令看报错；装上缺的东西，或者改 SKILL.md。要问人的会话里这些命令本来就不跑，模型只看到一份清单。
 
 ### 开了 `bypassPermissions`，`exec_command` 还是每次都问
 

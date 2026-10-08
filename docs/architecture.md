@@ -141,7 +141,7 @@ Agent 和项目在同一台机器上，workspace 的 Agent Node 和 `runtime_nod
 
 ### 为什么不是"单 Node"
 
-安全边界是进程身份、文件权限和传输，不是物理机器的标签。同一机器可以承担多个角色，但默认形态下 Runtime 执行身份不能访问 Agent 凭据；这种部署必须单独验收，不能靠跳过诊断来证明隔离。一台机器一个账号、项目和登录在同一个家目录的情况根本没有东西可隔离，要跑就得在那个 workspace 上写 `allow_unisolated_credentials` **明确接受边界不存在**——它不是把诊断关掉：那几行照旧显示，只是从 FAIL 变成注明了接受者的 WARN。代价见[生产安全](production-safety.md#凭据隔离那一条怎么放开代价是什么)。
+安全边界是进程身份、文件权限和传输，不是物理机器的标签。**P78 起有两种模式，由 Runtime 节点的 `runtime_user` 决定**：没写就是共用账号（默认），执行身份能碰到什么照查照显示（WARN），但除 root、身份未知、继承认证环境之外什么都不拦，风险和直接在那台机器上用官方 CLI 一样；写了就是专用账号模式，Runtime 执行身份不能访问 Agent 凭据、不能有 sudo/admin/私钥，这种部署必须单独验收，不能靠跳过诊断来证明隔离。专用账号模式下项目和登录恰好在同一个家目录时，要跑就得在那个 workspace 上写 `allow_unisolated_credentials` **明确接受边界不存在**——它不是把诊断关掉：那几行照旧显示，只是从 FAIL 变成注明了接受者的 WARN。代价见[生产安全](production-safety.md#要不要建专用账号)。
 
 如果未来重新开放第 3 种拓扑，它只能作为显式受信任的 native 模式，不能冒充隔离 Runtime。当前准确结论见[支持矩阵](support-matrix.md)。
 
@@ -202,9 +202,9 @@ work machine ≈ Agent Node
 - `provider/claude/`：CLI 定位、version/auth 探测、配置目录环境变量、启动参数、交互/print 输入、MCP 配置和工具权限、结果解析，以及项目 instruction/context 规则。
 - `provider/codex/`：已实测的官方 CLI `0.154.0` 适配（唯一接受的版本，见[支持矩阵](support-matrix.md)）、Agent-local HOME、固定工具策略、JSONL 结果和 Runtime 根目录 AGENTS 上下文。未测版本和 colocated 模式拒绝启动。
 - `provider/types.rs`：Controller、work 和报告消费者使用的 Agent 观测/结果；保留 v1 字段形状。
-- `provider` 的凭据元数据声明环境前缀、已知目录/容器、文件名和 egress 检查目标。P1 由 `safety/` 统一执行所有已知 Provider 的可访问性检查和分来源环境策略。凭据可访问或未知**不可由 `allow_unconfined_exec` 跳过**——那个开关只接受 confinement 风险，要接受凭据这一条得单独写 `allow_unisolated_credentials`；身份未知和继承来的认证环境两个开关都放不开。不读取或传递凭据内容。
+- `provider` 的凭据元数据声明环境前缀、已知目录/容器、文件名和 egress 检查目标。P1 由 `safety/` 统一执行所有已知 Provider 的可访问性检查和分来源环境策略。专用账号模式下，凭据可访问或未知**不可由 `allow_unconfined_exec` 跳过**——那个开关只接受 confinement 风险，要接受凭据这一条得单独写 `allow_unisolated_credentials`；身份未知和继承来的认证环境两个开关都放不开，共用账号下也照样拒绝（`safety::audit` 按 `runtime_user` 有没有写把其余失败降为警告，`Audit::shared_account` 记着是哪种）。不读取或传递凭据内容。
 - `session/transport.rs` 是两 Provider 共用的 Agent-side stdio wrapper；Claude MCP JSON 和 Codex 会话参数均指向它，再由它清理环境并执行 OpenSSH。SSH 与 Runtime child 的机制不放在 Codex 模块里；详情见 [安全契约](provider-safety.md)。
-- session/Controller 负责进程、tmux 和生命周期；launcher/work 负责 topology、OpenSSH alias 与 Runtime Node 握手。Runtime 当前有 12 个工具定义，实际工具表按权限和配置生成；Agent 的 skills/MCP 是另一执行面，不能用早期七工具的边界概括它。
+- session/Controller 负责进程、tmux 和生命周期；launcher/work 负责 topology、OpenSSH alias 与 Runtime Node 握手。Runtime 当前有 12 个工具定义，实际工具表按权限和配置生成；工具调用经手写的 `call_tool` 进来，已加载 skill 的 `hooks` 在这里前后执行（P79，`mcp::hooks`，只在命令不问人的会话里登记）；Agent 的 skills/MCP 是另一执行面，不能用早期七工具的边界概括它。
 
 legacy 公开配置仍是 `claude_config_dir`、`claude_permission_mode`。Rust 内部使用通用字段名，通过 serde 显式保留旧 session/协议的 `claude_config_dir`、`claude_bin`、`claude-auth`、`claude`；没有顺便重命名旧字段。
 

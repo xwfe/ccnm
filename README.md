@@ -126,7 +126,7 @@ mv ccnm ~/.local/bin/ccnm.new && mv ~/.local/bin/ccnm.new ~/.local/bin/ccnm
 
 - **常用交互会话的项目，打开 `allow_unattended_exec`**，免得每条命令都点一次确认：在项目机器的 `config.toml` 里那个 workspace 下写 `allow_unattended_exec = true`。开了之后命令执行前就没人看了，挡着它的只剩执行账号自己的权限（[细说](docs/configuration.md#allow_unattended_exec)）。一次性的小活也可以用 `--print`，那条路本来就不问。
 - **想让 AI 的命令碰不到你账号里的私钥和登录**，看[生产安全：要不要建专用账号](docs/production-safety.md#要不要建专用账号)。不建也能用：命令就以你自己的账号跑，机器分开了、权限没分开。
-- **改完配置或升级后，先跑 `ccnm doctor <项目>`。** 最后一行写"可以用了"就行。标"不查"的行是 doctor 本来就不查的（比如网络），看一眼说明；标"失败"或"没查"的要处理。
+- **改完配置或升级后，先跑 `ccnm doctor <项目>`。** 最后一行写"可以用了"就行。标"注意"的行是提醒，不挡你用（比如命令以你自己的账号跑、能碰到哪些东西，或者开了 `allow_unattended_exec` 不再问）；标"不查"的是 doctor 本来就不查的（比如网络），看一眼说明；标"失败"或"没查"的要处理。
 - **两台一起升级**，版本要一样，不一样时会报 `CCNM_E_VERSION`。
 
 **别做**

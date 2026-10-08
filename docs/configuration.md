@@ -199,8 +199,8 @@ agent_node = "agent"
 runtime_node = "runtime"     # 可省略，默认就是 "runtime"
 root = "/absolute/project/root"
 claude_permission_mode = "acceptEdits"
-allow_unconfined_exec = false
-allow_unisolated_credentials = false   # 默认值；开它之前先读下面那一节
+allow_unconfined_exec = false          # 默认值；只在写了 runtime_user（专用账号）时才用得上
+allow_unisolated_credentials = false   # 默认值；同上，开它之前先读下面那一节
 allow_unattended_exec = false          # 默认值：交互会话每条命令执行前问你一次；常用交互会话的项目建议改成 true，见下
 external_mcp = "disabled"    # 默认值，可省略
 # agent_tools 不写就是五项全开（P77 起），见下面 agent_tools 一节
@@ -350,7 +350,7 @@ codex_exec_server = true     # 默认 false
 
 它不比 coding 会话多给任何权限，但也要满足 coding 会话的全部条件：
 
-- 执行身份的审计和 `exec_command` 一样——没确认隔离又没写 `allow_unconfined_exec`，就不开。
+- 和 `exec_command` 过同一道执行门：写了 `runtime_user` 的专用账号没通过隔离检查、又没写 `allow_unconfined_exec`，就不开；没写 `runtime_user` 的共用账号不因此挡（P78）。
 - 和受管会话、外部 MCP 的 coding 会话抢**同一把**写入互斥锁。
 - Codex 发给 exec-server 的每条请求先过 ccnm 的规则表：读写路径和 MCP 工具同一套规则（只许工作区内，不写 `.git`，不写穿 symlink）；命令和写文件必须带 Codex 实测过的那种沙箱，**人在 Codex 里批准提权后发出的请求一律拒绝**——Codex 里表现为工具失败，比如 `exec-server rejected request (-32600): ccnm refused process/start: a sandbox is required`；网络请求一律拒绝。规则表的依据见 [P21 记录](research/p21-codex-native-surface-2026-09-16.md)。
 - Runtime 是 Linux 时要装 bubblewrap，并允许执行账号创建 user namespace，否则 Codex 发来的沙箱起不来，命令不执行。
@@ -493,7 +493,7 @@ hidden = ["computer"]  # 这几个不转，按名字
 **会是什么样**：
 
 - 只有能写的会话有这个工具（Managed 会话、`external_mcp = "coding"` 的外部连接），而且那台机器上至少有一个能转的 server；read 模式永远没有。
-- 起一个 server 就是以执行账号跑一个程序，所以它过的门和 `exec_command` 一样：执行身份没隔离又没写 `allow_unconfined_exec` 时拒绝（报 `CCNM_E_POLICY`，写明理由）；配了 `exec_sandbox` 就套同一个沙箱（server 没有网络，context7 这类要联网的会失败）；有人值守的 Claude 会话每次调用都问人。只列清单（不带 `server`）不起任何东西，不过这些门。
+- 起一个 server 就是以执行账号跑一个程序，所以它过的门和 `exec_command` 一样：写了 `runtime_user` 的专用账号没隔离又没写 `allow_unconfined_exec` 时拒绝（报 `CCNM_E_POLICY`，写明理由），没写 `runtime_user` 的共用账号不挡；配了 `exec_sandbox` 就套同一个沙箱（server 没有网络，context7 这类要联网的会失败）；有人值守的 Claude 会话每次调用都问人。只列清单（不带 `server`）不起任何东西，不过这些门。
 - 项目的 `.mcp.json` 排最前、同名压过装好的（Claude Code 的规矩）。只转 stdio 的；HTTP 的列出来、写明"从 Agent 那边连"（Agent 上装的见 [`[agent_mcp]`](#agent_mcp)）。配置里自己关掉的（Codex 的 `enabled = false`、JSON 里的 `"disabled": true`）列出来、写明关着，不起。
 - server 配置里自己的 `env` 照传，token 也传；Agent 的登录变量（`ANTHROPIC_API_KEY` 这些）不传。`${VAR}` 查不到像凭据的变量名——ccnm 的执行门本来就不许 Runtime 的环境里有它们——这样的 server 标成"缺什么"，不起。
 - 结果文字超过 32 KiB 的，先交前 32 KiB，其余像命令输出一样用 `read_output` 接着读。

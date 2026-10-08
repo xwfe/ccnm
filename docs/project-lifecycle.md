@@ -27,13 +27,13 @@
 
 ### 执行在哪，权限属于谁
 
-Runtime 的 `exec_command` 与 `call_mcp_tool` 使用 Runtime Executor 身份；结构化文件工具、第三方程序和任意 shell 不是同一种文件边界。项目 `.mcp.json` 是可执行配置，不应当作普通无害文档。
+Runtime 的 `exec_command` 与 `call_mcp_tool`，以及命令不问人的会话里 skill 的 `` !`命令` `` 和 `hooks`（P79），都使用 Runtime Executor 身份——默认就是 Agent 登进来的那个账号（P78），要隔离见[生产安全](production-safety.md#要不要建专用账号)；结构化文件工具、第三方程序和任意 shell 不是同一种文件边界。项目 `.mcp.json` 是可执行配置，不应当作普通无害文档。
 
 不整库同步不等于源码从不离开 Runtime：读取、搜索和命令输出会进入 Agent 的上下文及相应模型服务。启用其他远端 MCP 又增加了数据接收方，须按实际项目授权判断。
 
 Agent 的 `ccnm_agent` 在 Agent Identity 下运行。skills 的目录内读取不等于所有 Agent MCP 都只读；`[agent_mcp] local` 允许的程序能按该账号的权限接触本机文件和服务，Runtime 沙箱管不到它。去掉继承的认证变量也不等于该账号读不到凭据文件。
 
-默认 `agent_tools = ["web_search", "mcp_servers"]` 是功能默认值，不是数据外发安全保证。远端 MCP 可能接收源码、日志或查询词；关闭 `web_fetch` 不能阻断其他外发路径。详细配置与关闭方式见[配置](configuration.md)和[生产安全](production-safety.md)。
+`agent_tools` 默认五项全开（P77 起，含抓任意网页的 `web_fetch`），这是功能默认值，不是数据外发安全保证。远端 MCP 可能接收源码、日志或查询词；关闭 `web_fetch` 不能阻断其他外发路径。详细配置与关闭方式见[配置](configuration.md)和[生产安全](production-safety.md)。
 
 ### 终端、会话、命令和结果不是同一生命周期
 

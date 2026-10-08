@@ -425,7 +425,26 @@ call_mcp_tool
 | 只写了 `model` | 不起作用：经 MCP 交出去的 skill 换不了会话的模型 |
 | `effort`、`shell`、`disallowed-tools` | 不起作用，加载时写明 |
 
-还有两处和官方 CLI 不一样：
+**钩子什么时候开始管、管到什么时候**：模型（或你用 `/mcp__ccnm__<名字>`）加载这个 skill 之后才登记，在那之前一条都不跑；登记后管到这个会话结束，改了 SKILL.md 也不撤，要撤就重开会话。钩子在项目机器上、workspace 根下、以执行账号跑，`CLAUDE_PROJECT_DIR` 是 workspace 根，最长 600 秒（可用 `timeout` 改短）。所以想让钩子从一开始就管着，就在项目的 `CLAUDE.md` / `AGENTS.md` 里写一句"改代码前先加载 guard 这个 skill"。
+
+一个例子：拦下 force push、加载时把当前分支填进正文。放在项目的 `.claude/skills/guard/SKILL.md`；命令不问人的会话里两样都生效，要问人的会话里都不跑（`jq` 要装在项目机器上）：
+
+```markdown
+---
+description: 推送和发版前的规矩。改代码、推送之前先加载它。
+hooks:
+  PreToolUse:
+    - matcher: Bash
+      hooks:
+        - type: command
+          command: "jq -r .tool_input.command | grep -q 'push --force' && { echo '别 force push，用 scripts/release.sh' >&2; exit 2; }; exit 0"
+---
+当前分支：!`git branch --show-current`。推送一律走 scripts/release.sh。
+```
+
+模型之后要是跑 `git push --force`，拿到的是 `CCNM_E_POLICY: exec_command was not run: a PreToolUse hook of skill guard stopped it: 别 force push，用 scripts/release.sh`，命令没有执行。
+
+还有两点要知道：
 
 - Agent 机器上装的 skill（下一条），`` !`命令` `` 和 `hooks` 一律不跑：那台机器上有 AI 的登录，而且项目的工具调用不经过它。
 - 两台机器上**装好的** skills（`~/.claude/skills`、`~/.agents/skills` 这些）也会交给模型（P48，默认全开）：Runtime 执行账号装的并进 `load_skill`，排在项目的后面；Agent 上你自己装的由一个叫 `mcp__ccnm_agent__load_skill` 的工具交出去。附件用 `load_skill` 的 `file` 读。怎么关、怎么按名字藏、同名谁赢，见[配置说明](configuration.md#machine_skills)。

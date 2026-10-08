@@ -80,7 +80,11 @@ Linux 那个在 `ubuntu-24.04` 上本机构建，**glibc 下限是从二进制�
 
 下面是各轮操作的历史安装/发布记录，不是本轮对远端节点的实时查询。P51 起点 Cargo 为 `0.9.0`、HEAD 为 `7f0e018`，没有更换任何已安装二进制。
 
-**最新的 release 是 `v0.10.1`**（2026-10-04，tag 指向 `33f9193`），四个产物齐全：macOS universal（包 `0cdabf87…`）和 linux-x86_64（包 `08dc00a7…`，glibc ≥ 2.39）各一个 tar.gz 加 sha256；release 页正文取自 tag 注释。它带的是 P51–P67：会话精确控制、完整结果分页、写锁预检、跨账号清理，以及第一轮真机验收查出的问题。内部协议从 6 升到 10，和 v0.9.0 不能混装。`v0.10.0` 的 tag 也在，但它的发布被 macOS 门禁上一条测试的时序问题挡住、没有产物；v0.10.1 只多了修好的那条测试和版本号（[P62 续跑记录](research/2026-10-04-p62-resume-release.md)第 2 节）。发版后用这两个包在三台机器上与日用版本并存装了一轮做 P62 续跑，hpsrv 的 `ccrun` 现在是 v0.10.1；本机与 fodelf 的日用版本仍是 v0.9.0，要一起升。
+**最新的 release 是 `v0.12.0`**（2026-10-07，tag 指向 `fa1b025`）：Linux 能当 Agent Node（P74）。四个产物齐全（macOS universal 包 `accaafe2…`、linux-x86_64 包 `b7c942a2…`，release 页正文取自 tag 注释），当天本机、fodelf、hpsrv `ccrun` 三台都换成了它，四个日用 workspace 的 doctor 都是"可以用了"，见[发版记录](research/2026-10-07-release-0.12.0.md)。同一天之前还发了 [v0.11.0](research/2026-10-07-release-0.11.0.md)（P70、P71）、[v0.11.1](research/2026-10-07-release-0.11.1.md)（P72）、[v0.11.2](research/2026-10-07-release-0.11.2.md)（P73）。
+
+**main 比 v0.12.0 多的、还没发版的**：P75（按项目名停也记"被停止"）、P76（文档建议开 `allow_unattended_exec`）、P77（`agent_tools` 默认全开）、P78（不写 `runtime_user` 就是共用账号）、P79（skill 的 `hooks` 与加载时命令）。2026-10-08 已推送，CI run 37706579297 在 Linux 与 macOS 上全绿；没换装任何机器，所以三台上跑的仍是 v0.12.0 的判法。
+
+更早的 `v0.10.1`（2026-10-04，tag 指向 `33f9193`），四个产物齐全：macOS universal（包 `0cdabf87…`）和 linux-x86_64（包 `08dc00a7…`，glibc ≥ 2.39）各一个 tar.gz 加 sha256；release 页正文取自 tag 注释。它带的是 P51–P67：会话精确控制、完整结果分页、写锁预检、跨账号清理，以及第一轮真机验收查出的问题。内部协议从 6 升到 10，和 v0.9.0 不能混装。`v0.10.0` 的 tag 也在，但它的发布被 macOS 门禁上一条测试的时序问题挡住、没有产物；v0.10.1 只多了修好的那条测试和版本号（[P62 续跑记录](research/2026-10-04-p62-resume-release.md)第 2 节）。发版后用这两个包在三台机器上与日用版本并存装了一轮做 P62 续跑，hpsrv 的 `ccrun` 现在是 v0.10.1；本机与 fodelf 的日用版本仍是 v0.9.0，要一起升。
 
 上一个 release 是 `v0.9.0`（2026-09-23，tag 指向 `86bdac0`），四个产物齐全：macOS universal 和 linux-x86_64 各一个 tar.gz 加 sha256。它带的是 P45–P50：两台机器上装好的 skills 和 MCP server、受管会话的 `agent_tools` 开关，以及两个客户端截大结果的修复。
 

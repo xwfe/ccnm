@@ -119,7 +119,7 @@ ccnm doctor my-project
 
 ### 标"注意"的几行
 
-`Runtime 执行身份`、`admin 组`、`SSH 私钥`、`Claude 凭据` 这几行是"注意"很正常，结论照样是"可以用了"：默认项目命令就以 Agent 登进 Runtime Node 的那个账号跑（通常就是你自己的），这几行告诉你模型跑的命令够得到什么。要把它们隔开，建一个专用账号并写上 `runtime_user`，见[生产安全：要不要建专用账号](production-safety.md#要不要建专用账号)；不建也能用。
+`Runtime 执行身份`、`admin 组`、`SSH 私钥`、`Claude 凭据` 这几行是"注意"很正常，结论照样是"可以用了"：默认项目命令就以 Agent 登进 Runtime Node 的那个账号跑（通常就是你自己的），这几行告诉你模型跑的命令够得到什么；开了下面的 `allow_unattended_exec` 之后，`命令审批` 那一行也是"注意"。要把它们隔开，建一个专用账号并写上 `runtime_user`，见[生产安全：要不要建专用账号](production-safety.md#要不要建专用账号)；不建也能用。
 
 ## 5. 启动项目
 
@@ -139,7 +139,7 @@ ccnm my-project
 allow_unattended_exec = true
 ```
 
-之后新起的会话就不问了。别另起一个同名的 `[workspaces.my-project]` 再写这一行：TOML 不允许同一张表出现两次，整份配置会读不进来。开了之后少了什么、怎么收回、`ccnm doctor` 里 `命令审批` 那一行为什么一直是"注意"，见[配置说明](configuration.md#allow_unattended_exec)。
+之后新起的会话就不问了，项目 skill 里要求加载时跑的命令和 `hooks` 也会跟着跑（[说明](usage.md#项目自带的-skills)）。别另起一个同名的 `[workspaces.my-project]` 再写这一行：TOML 不允许同一张表出现两次，整份配置会读不进来。开了之后少了什么、怎么收回、`ccnm doctor` 里 `命令审批` 那一行为什么一直是"注意"，见[配置说明](configuration.md#allow_unattended_exec)。
 
 ## dogfood 期间升级
 

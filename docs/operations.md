@@ -526,7 +526,7 @@ To accept that for one workspace -- every command the model runs could then read
 set allow_unisolated_credentials = true on it in config.toml.
 ```
 
-凭据检查见到祖先目录是 symlink 就判 **unknown**，而 unknown 跟"能读到"走同一条路：`allow_unconfined_exec` 救不了它（那个开关只接受 confinement 风险），要么修路径，要么用 `allow_unisolated_credentials` 明确接受"说不清"。这是刻意的——够不到和"看不清能不能够到"不是一回事，后者得有人签字。
+这只会出现在写了 `runtime_user` 的专用账号模式下（P78 起，没写 `runtime_user` 的共用账号里这一行只是"注意"，不拦）。凭据检查见到祖先目录是 symlink 就判 **unknown**，而 unknown 跟"能读到"走同一条路：`allow_unconfined_exec` 救不了它（那个开关只接受 confinement 风险），要么修路径，要么用 `allow_unisolated_credentials` 明确接受"说不清"。这是刻意的——够不到和"看不清能不能够到"不是一回事，后者得有人签字。
 
 **这种情况下先别急着开开关**，多半只是路径写歪了：用真实路径（`/private/tmp/...` 而不是 `/tmp/...`）就好了。macOS 的 `/tmp` 和 `/var` 都是符号链接，把 Runtime 执行身份的 home 放在系统临时目录下就会撞到这个。
 

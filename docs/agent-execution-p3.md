@@ -28,7 +28,7 @@ P3 把已配置的 Agent Instance 接入既有 Controller/session/SSH MCP，不�
 
 - Remote SSH MCP 支持 Claude/Codex print 与 interactive。Codex colocated 继续拒绝。
 - Claude legacy colocated 的候选启动命令已移除 remote-only `--tools ""`、`--mcp-config`/strict 限制，但真实 installed Claude 尚未验证；公共入口因此在创建 session 前明确拒绝。instance colocated 仍不开放。
-- P3 离线门禁之外，公共双机 dogfood、Ctrl-D/stop、detach/reattach、Controller 重启和链路失败需要真实节点证据。生产 READY 还需要专用执行身份验证 workspace 可用、Agent 凭据/SSH 私有状态不可访问、无 sudo/admin/特权 socket，并逐项说明网络策略。
+- P3 离线门禁之外，公共双机 dogfood、Ctrl-D/stop、detach/reattach、Controller 重启和链路失败需要真实节点证据。生产 READY 还需要专用执行身份验证 workspace 可用、Agent 凭据/SSH 私有状态不可访问、无 sudo/admin/特权 socket，并逐项说明网络策略。（这是 P3 当时的验收口径；P78 起产品默认是共用账号，专用执行身份成了可选加固，见[生产安全](production-safety.md#要不要建专用账号)。）
 - 当前用户没有针对创建账号、ACL/firewall、登录或部署替换的明确授权。先完成不改变系统的实现与 fixture；缺失的 P3.5 证据必须标记 blocked，不能拿 scratch/unconfined 或历史内部入口冒充生产验收。
 
 公开配置/CLI 只写已实现语法。部署或替换正在使用的 ccnm/Controller、真实模型调用及系统安全变更均需针对该动作的明确授权；P3 代码完成不自动授权这些操作。

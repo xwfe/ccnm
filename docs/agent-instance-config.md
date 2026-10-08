@@ -2,7 +2,7 @@
 
 状态与验收见 `docs/plan/status.json`。P2 只交付配置、身份绑定与只读预览；公开执行入口在 P3 才开放。下述新配置即使合法，也不能通过旧入口退回 Claude 执行。
 
-> 这是 P2 停止点的历史契约；当前 P3 已接入公共执行。运行语义和当前验收级别见[单 Agent 执行契约](agent-execution-p3.md)与[支持矩阵](support-matrix.md)，不要把本页的 P2 阶段描述当成当前开关状态。
+> 这是 P2 停止点的历史契约；当前 P3 已接入公共执行。运行语义见[架构说明](architecture.md#agent-instance-执行边界p2p3)，当前验收级别见[支持矩阵](support-matrix.md)，不要把本页的 P2 阶段描述当成当前开关状态。
 
 ## 唯一事实来源
 

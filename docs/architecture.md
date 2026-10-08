@@ -230,7 +230,7 @@ P2 增加 node-scoped instance 配置与公开身份 DTO：Runtime workspace 保
 
 P3 将 v3 identity 接入现有 launcher/work/Controller/supervisor/tmux/SSH MCP。Runtime 发出受限 `InstanceRef`；Agent 每一层重新解析并比较 identity，Controller 启动前重新加载权威配置，supervisor 再解析 profile。session 固定 workspace/root/runtime_node/identity；不同 Provider 或 instance 不复用也不自动替换。ccnm session id 与 Provider thread/resume id 分开。
 
-Runtime MCP 初始化再用自己的配置重算 binding；legacy payload 不能打开 instance workspace。完整契约见[单 Agent 执行](agent-execution-p3.md)和[实例配置](agent-instance-config.md)。本阶段没有协调器、分布式 lease 或 worktree 调度。
+Runtime MCP 初始化再用自己的配置重算 binding；legacy payload 不能打开 instance workspace。实例配置的契约见[实例配置](agent-instance-config.md)，写互斥见下面的 [Runtime 单写者](#runtime-单写者)。本阶段没有协调器、分布式 lease 或 worktree 调度。
 
 ## Runtime 权威解析（P7.4 Batch B）
 

@@ -541,6 +541,27 @@ allow_unattended_exec = true
 
 细节与实测见 [P71 记录](research/2026-10-07-p71-codex-asks-before-exec.md)，真实模型与 F27 见 [P71 真机复验](research/2026-10-07-p71-real-machine-recheck.md)，F27 的修法见 [P72 记录](research/2026-10-07-p72-approve-for-me-one-session.md)。
 
+### Codex 里报 `timed out awaiting tools/call after 300s`，命令其实还在跑
+
+**症状**：Codex 里一条长命令（或一次长的 `read_output` 等待）过了 5 分钟，模型看到：
+
+```text
+tool call error: tool call failed for `ccnm/exec_command`
+
+Caused by:
+    timed out awaiting tools/call after 300s
+```
+
+模型以为没跑成，往往再跑一遍；去项目机器上看，第一条还在跑。
+
+**其实是**：300 秒是 Codex 自己等一次调用的上限（server 没配 `tool_timeout_sec` 时），不是 ccnm 的——ccnm 允许一次调用最多 10 分钟。Codex 到点只是不等了，不通知 ccnm 取消，所以第一条照跑到它自己的 `timeout_ms`，结果没人收。
+
+**怎么办**：
+
+- **受管 Codex 会话**：Agent 上换成 P80 之后的构建，启动参数自带 `tool_timeout_sec`。v0.13.0 及之前的构建上，超过 5 分钟的命令让模型用 `run_in_background`，`read_output` 的 `wait_ms` 不超过 300000。
+- **Codex 当 Host 连 `ccnm mcp bridge`**：在 Codex 的 server 配置里加 `tool_timeout_sec = 1870`，见[协议文档](protocol/remote-workspace-mcp-v1.md#codex-当-host写上-tool_timeout_sec)。
+- 已经撞上了：第一条会在它自己的 `timeout_ms` 到点时被 ccnm 停掉，在那之前别让模型并行再起一份。
+
 ### 自己的 settings.json 里写了 `bypassPermissions`，ccnm 会话里还是一个个问
 
 **症状**：Agent Node 的 `~/.claude/settings.json` 里明明有

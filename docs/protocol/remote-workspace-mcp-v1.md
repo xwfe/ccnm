@@ -137,6 +137,32 @@ Claude Code 的 `mcpServers` 形状：
 
 Managed 路径（`ccnm` 自己启动的 Claude Code 会话）不需要也没有这个设置：那条路的 `--tools` 只列 workspace 开了的几个 Agent 功能（P46 起默认是 `WebSearch`，之前是空），`ToolSearch` 永远不在里面，所以本身就不可用，ccnm 的工具一直是全量加载的。P46 实测过：把 `ToolSearch` 加进 `--tools`，ccnm 的工具就全进了延迟加载池。
 
+#### Codex 当 Host：写上 `tool_timeout_sec`
+
+在 Codex 的 `config.toml` 里给这个 server 加一行（2026-10-08 加，P80）：
+
+```toml
+[mcp_servers.ccnm-myproject]
+command = "ccnm"
+args = ["mcp", "bridge", "myproject", "--mode", "coding"]
+tool_timeout_sec = 1870
+```
+
+**不写会怎样**：Codex 等一次工具调用最多 300 秒（Codex 0.154.0 源码 `codex-rs/codex-mcp/src/rmcp_client.rs` 的 `DEFAULT_TOOL_TIMEOUT`；它的[官方文档](https://developers.openai.com/codex/mcp)写的是 60 秒，和源码对不上，以源码和下面的实测为准），而 ccnm 允许一次调用更久：`exec_command` 的 `timeout_ms`、`read_output` 的 `wait_ms` 都最多 600000（第 8 节）。超过 300 秒时模型看到：
+
+```text
+tool call error: tool call failed for `ccnm-myproject/exec_command`
+
+Caused by:
+    timed out awaiting tools/call after 300s
+```
+
+**但 Codex 不通知 server 取消**（不发 `notifications/cancelled`）：命令在 Runtime 上照跑，到它自己的 `timeout_ms` 为止，结果回来时 Codex 直接丢掉。模型以为没跑成、再跑一遍，就是两份同时在跑。
+
+**为什么是 1870**：一次调用 ccnm 自己最多等这么久——skill 的 `PreToolUse` 钩子 600 秒、命令或等待 600 秒、停掉超时的命令 10 秒、`PostToolUse` 钩子 600 秒，再给链路留 60 秒。会话里没加载带钩子的 skill，写 700 也够；一次调用上挂了不止一个慢钩子，或 `call_mcp_tool` 转发的 server 自己的超时比这还长，1870 也不够，按实际加。受管 Codex 会话的启动参数里带的是同一个值，不用自己配。
+
+**依据**：Codex 0.154.0 对着本机假模型和一个故意拖住 `tools/call` 的假 server 跑的（零额度，配置用 `-c` 传、和写进 `config.toml` 是同一组键），见 [P80 记录](../research/2026-10-08-p80-codex-tool-timeout.md)。没有用真实的 `ccnm mcp bridge` 接 Codex 跑过，上面那句"本文不声称验证过它们"对 Codex 的其余配置仍然成立。
+
 ### 3.4 stdio 的硬规矩
 
 - **stdout 只有 MCP 消息**，一个字节的杂音都不行。日志全部走 stderr，和 Managed 路径同一条规矩。
@@ -590,7 +616,7 @@ rows: 3
 | `read_file` 一次最多 | 2000 行（`max_lines`）、64 KiB（`max_bytes`，默认 32 KiB），超了给你续读的行号 |
 | `list_files` 一次最多 | 1000 条（`max_entries`） |
 | `search_text` | 200 条结果（只列文件、计数两种模式下是 200 个文件）、上下文 10 行、整体 32 KiB、单行 512 字节 |
-| `exec_command` 超时 | 最大 600000 ms（10 分钟）；后台命令不给就没有期限 |
+| `exec_command` 超时 | 最大 600000 ms（10 分钟）；后台命令不给就没有期限。Codex 当 Host 时不配 `tool_timeout_sec` 只等 300 秒，见第 3.3 节 |
 | 后台命令 | 一条连接最多 8 个同时在跑；`read_output` 的 `wait_ms` 最大 600000 ms；停的时候 TERM 之后 2 秒 KILL，一个信号都够不着的（离开了进程组又占着管道）等 10 秒后放弃 |
 | `exec_command` 回传 | 预览总共默认 4 KiB，`preview_bytes` 最大 16 KiB；stderr 最多占一半，其余给 stdout，某个流超出时只留它的开头和结尾。完整输出用 `output_ref` 读 |
 | `read_output` 一次最多 | 32 KiB（默认 16 KiB） |

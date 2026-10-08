@@ -1,10 +1,9 @@
 //! What the runtime account can reach, and whether that is acceptable.
 //!
-//! `exec_command` is a remote shell. Design doc sections 18 and 19 say
-//! what has to be true before a real project is put behind one, and none
-//! of it is something ccnm can implement in Rust: a dedicated Unix user,
-//! filesystem ACLs, no sudo, no egress. Those are the operating system's
-//! job.
+//! `exec_command` is a remote shell. What it takes to put a real project
+//! behind one is nothing ccnm can implement in Rust: a dedicated Unix
+//! user, filesystem ACLs, no sudo, no egress (docs/production-safety.md).
+//! Those are the operating system's job.
 //!
 //! So this module does the only two useful things left:
 //!
@@ -40,9 +39,9 @@
 //!
 //! Passing the audit does not make `exec_command` safe to point at
 //! untrusted input. It means the blast radius is the `ccrun` account
-//! rather than the developer's own. That is the difference the design doc
-//! asks for, and it is worth having; it is not a sandbox, and section 18
-//! is explicit that no command parser can be one.
+//! rather than the developer's own. That difference is worth having; it
+//! is not a sandbox, and no command parser can be one
+//! (docs/production-safety.md, "`ccrun` 不能解决什么").
 
 use std::path::Path;
 use std::time::Duration;

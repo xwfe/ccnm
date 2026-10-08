@@ -1,4 +1,4 @@
-//! `search_text`: the third phase 2 tool (design doc section 15).
+//! `search_text`: search the contents of the workspace's files.
 //!
 //! The search runs where the files are. Nothing is shipped to the work
 //! machine to be searched there — only the hits come back, which is the
@@ -80,7 +80,7 @@ use crate::mcp::path;
 use crate::mcp::truncate_bytes;
 use crate::process::{Cmd, Flow, stream_lines};
 
-/// Matches returned when the caller does not say (design doc section 15).
+/// Matches returned when the caller does not say.
 pub const DEFAULT_MAX_RESULTS: u32 = 50;
 /// Ceiling on `max_results`. Also bounds `hits`, the one part of the
 /// result that grows with the answer.

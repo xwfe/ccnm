@@ -52,7 +52,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 uuid = { version = "1", features = ["v4"] }
 # MCP: the official Rust SDK, trimmed to stdio server + child-process
 # client. It needs tokio; nothing outside crates/ccnm-core/src/mcp is
-# async (design doc section 25).
+# async.
 rmcp = { version = "3.2", default-features = false, features = [
     "server",
     "macros",

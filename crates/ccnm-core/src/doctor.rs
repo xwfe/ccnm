@@ -40,7 +40,7 @@
 //! disagree and hides whether the environment was broken before doctor
 //! ran. Every ssh here uses [`crate::ssh::Master::Reuse`]
 //! (`ControlMaster=no`), which reuses an existing master but never creates
-//! one (design doc section 4).
+//! one.
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -205,7 +205,8 @@ impl Report {
         self.blocking_code().map_or(0, ErrorCode::exit_code)
     }
 
-    /// The table from design doc section 4, ending in READY or NOT READY.
+    /// The doctor table, ending in READY or NOT READY (how to read it:
+    /// docs/troubleshooting.md, "doctor 的表怎么读").
     ///
     /// English, which is what every caller inside this crate wants: the
     /// tests assert on it, and core has no business deciding what a person
@@ -944,7 +945,7 @@ fn skipped_after_reverse_ssh() -> Vec<Check> {
 }
 
 /// tmux on the Agent Node, and whether this workspace has a session in
-/// it right now (design doc section 23).
+/// it right now.
 ///
 /// No tmux is a WARN, not a FAIL: `--print` sessions do not need it, and
 /// half the product works without it. A live session is reported with what
@@ -1260,7 +1261,7 @@ fn safety_row_name(check: &str) -> &'static str {
 }
 
 /// OK when the other side runs this build, else CCNM_E_VERSION. Both
-/// machines must run the same binary (design doc section 7).
+/// machines must run the same binary.
 ///
 /// The same number is not the same build (F2): everything built from main
 /// between two releases carries the last release's number. So a matching
@@ -1457,8 +1458,8 @@ fn skipped_after_agent_ssh() -> Vec<Check> {
     .collect()
 }
 
-/// What the project's own `CLAUDE.md` contributes to a session (design doc
-/// section 20).
+/// What the project's own `CLAUDE.md` contributes to a session (the row
+/// explained in docs/troubleshooting.md, "`Project instructions ... WARN`").
 ///
 /// Checked here, on the runtime host, because this is the machine that has
 /// the file and the machine the MCP server reads it from: the row is about

@@ -3,8 +3,7 @@
 //!
 //! [`ServePayload`] rides on the argv of `ccnm internal mcp-serve` exactly
 //! once, when Claude Code (or a probe) spawns the ssh transport. From then
-//! on stdin/stdout belong to MCP JSON-RPC; nothing here wraps that
-//! (design doc section 9).
+//! on stdin/stdout belong to MCP JSON-RPC; nothing here wraps that.
 
 use std::path::PathBuf;
 
@@ -57,7 +56,8 @@ pub struct ServePayload {
     pub binding: Option<crate::instance::WorkspaceBinding>,
     pub workspace: String,
     /// Project root on this (runtime) host. Canonicalized at startup; every
-    /// tool path is relative to it (design doc section 17).
+    /// tool path is relative to it (docs/protocol/remote-workspace-mcp-v1.md
+    /// section 11.4).
     pub root: PathBuf,
     /// Session id chosen by the launcher; names the retained-output
     /// directory later.
@@ -139,7 +139,7 @@ impl Protocol for ServePayload {
 
 /// What one probe of a live MCP server observed. Every number is measured
 /// by the client side of the transport, so over ssh it includes the
-/// network (design doc section 27).
+/// network.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProbeReport {
     /// Spawning the transport and finishing `initialize`, in microseconds.
@@ -149,8 +149,8 @@ pub struct ProbeReport {
     /// Bytes of `initialize.result.instructions` the server sent.
     pub instructions_bytes: usize,
     /// What the instructions said about the project's CLAUDE.md — the
-    /// `[project instructions: ...]` line, without its brackets (design
-    /// doc section 20). `None` from a build that sends no such line.
+    /// `[project instructions: ...]` line, without its brackets. `None`
+    /// from a build that sends no such line.
     ///
     /// It is here so the projection is proved *through the transport*:
     /// doctor can read the file itself, but only this says the bytes
@@ -168,8 +168,8 @@ pub struct ProbeReport {
     /// gets.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub asks_user: Vec<String>,
-    /// `tools/list` result serialized as JSON, in bytes: the schema budget
-    /// of design doc section 27.
+    /// `tools/list` result serialized as JSON, in bytes: the schema budget,
+    /// what the tool definitions cost a session before its first call.
     pub tools_list_bytes: usize,
     /// How many `workspace_info` calls were made after `initialize`.
     pub calls: u32,

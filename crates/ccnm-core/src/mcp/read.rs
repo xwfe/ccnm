@@ -1,5 +1,4 @@
-//! `read_file`: the first of the six coding tools (design doc sections 14
-//! and 15).
+//! `read_file`: the first of the coding tools.
 //!
 //! It streams. The file is read one line at a time and the loop stops at
 //! the first limit it hits, so `read_file` on a 2 GB log costs the same as
@@ -7,8 +6,9 @@
 //! then trims to `max_bytes`; on a Runtime Node shared with the user's
 //! real work that is a memory spike nobody asked for.
 //!
-//! Everything it returns is bounded (section 16), and all of it is in
-//! `content[0].text`: the numbered lines, then one footer with the
+//! Everything it returns is bounded
+//! (docs/protocol/remote-workspace-mcp-v1.md section 8), and all of it is
+//! in `content[0].text`: the numbered lines, then one footer with the
 //! version and where to continue. Nothing goes in `structuredContent`,
 //! because Claude Code shows the model that *instead of* the text when
 //! both are present (measured 2026-09-04; see `text_only` in the server).
@@ -45,7 +45,7 @@ use toexec_text::{LineLimits, Terminator, next_line};
 use crate::error::{Error, ErrorCode, Result};
 use crate::mcp::path;
 
-/// Lines returned when the caller does not say (design doc section 15).
+/// Lines returned when the caller does not say.
 pub const DEFAULT_MAX_LINES: u32 = 200;
 /// Ceiling on `max_lines`. A request above this is clamped, not refused:
 /// `max_lines` is "give me at most N", so a big N is a preference, not a

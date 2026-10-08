@@ -501,8 +501,7 @@ pub fn run(req: &RunRequest, tools: &Tools<'_>) -> Result<RunReport> {
 ///
 /// Unlike [`run`] this returns as soon as the session exists: the session
 /// outlives the ssh call that made it, which is the whole point of putting
-/// it in tmux (design doc section 23). What comes back is what the home
-/// machine needs to attach.
+/// it in tmux. What comes back is what the home machine needs to attach.
 pub fn start(req: &StartRequest, tools: &Tools<'_>) -> Result<StartReport> {
     let selected = select_agent(
         req.agent.as_ref(),
@@ -2104,7 +2103,7 @@ fn tail(bytes: &[u8]) -> String {
 /// Everything doctor wants to know about this machine, in one round trip.
 /// Read-only: no master connection, no file written. The MCP handshake
 /// starts a server on the Runtime Node and shuts it down again before
-/// returning (design doc section 4); so does the exec-server preflight.
+/// returning; so does the exec-server preflight.
 /// Both take the workspace write guard and give it back on the far side,
 /// which is as close to read-only as proving them gets: while a session is
 /// writing, both report the guard busy instead.

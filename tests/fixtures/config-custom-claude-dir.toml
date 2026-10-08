@@ -1,6 +1,5 @@
-# Every optional field set: opt-in CLAUDE_CONFIG_DIR (design doc section
-# 21), explicit ccnm paths on both nodes (section 7), and the backend
-# spelled out.
+# Every optional field set: opt-in CLAUDE_CONFIG_DIR, explicit ccnm paths
+# on both nodes, and the backend spelled out.
 version = 1
 
 this = "runtime"

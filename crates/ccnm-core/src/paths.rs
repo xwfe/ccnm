@@ -1,10 +1,10 @@
 //! Where ccnm keeps its own files on this machine.
 //!
-//! The design doc fixes these as `~/.config/ccnm/config.toml` and
-//! `~/.local/state/ccnm/`. That is the XDG layout, not macOS
-//! `~/Library/Application Support`, so this module resolves XDG variables
-//! itself instead of asking a platform-dirs crate that would pick the
-//! Library path on a Mac.
+//! These are `~/.config/ccnm/config.toml` and `~/.local/state/ccnm/`, as
+//! docs/configuration.md and docs/operations.md tell users. That is the
+//! XDG layout, not macOS `~/Library/Application Support`, so this module
+//! resolves XDG variables itself instead of asking a platform-dirs crate
+//! that would pick the Library path on a Mac.
 
 use std::env;
 use std::path::{Path, PathBuf};
@@ -66,9 +66,8 @@ pub(crate) fn codex_home_in(home: &Path, xdg: Option<&Path>) -> PathBuf {
 ///
 /// Everything ccnm writes goes here. Not the user's project, and not
 /// `~/.claude`: a tool that edits the developer's own Claude
-/// configuration is a tool they cannot reason about (design doc section
-/// 21), and one that leaves files in the repository shows up in their
-/// `git status`.
+/// configuration is a tool they cannot reason about, and one that leaves
+/// files in the repository shows up in their `git status`.
 ///
 /// The split is by lifetime. A session directory is finished when the
 /// session is, and can be removed wholesale; a workspace directory

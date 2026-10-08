@@ -3,10 +3,9 @@
 //!
 //! This is the only async code in the binary. Both entry points build a
 //! current-thread tokio runtime, do their work inside one `block_on`, and
-//! hand a plain `Result` back to synchronous callers (design doc section
-//! 25). MCP JSON-RPC goes straight over stdin/stdout; the control
-//! protocol's base64 payload is consumed once, before the first byte of
-//! MCP (section 9).
+//! hand a plain `Result` back to synchronous callers. MCP JSON-RPC goes
+//! straight over stdin/stdout; the control protocol's base64 payload is
+//! consumed once, before the first byte of MCP.
 
 use rmcp::schemars;
 
@@ -106,7 +105,7 @@ pub(crate) fn truncate_bytes(s: &str, max: usize) -> &str {
 ///
 /// `read_file` returns it and `apply_patch` requires it back, which is how
 /// a patch built on content the user has since changed is refused instead
-/// of applied (design doc section 15).
+/// of applied.
 ///
 /// It is size and modification time, **not** a hash of the content, and the
 /// difference is deliberate. `read_file` streams: it can answer about the

@@ -1386,14 +1386,15 @@ impl Drop for Journal {
 /// The one place ccnm shows the model a path outside the workspace.
 ///
 /// Everything else the server says is workspace-relative on purpose
-/// (`server.rs`, design doc section 17): absolute paths tell the model
-/// about a machine it has no business knowing the shape of, and they
-/// travel back to Anthropic in the transcript. This message is the
-/// deliberate exception, and only for the journal file: it is a recovery
-/// instruction, "delete this and patching works again" is worthless
-/// without saying which file, and the person who has to act on it is
-/// reading it through the model. The backups are shown relative, because
-/// those are inside the workspace and relative is all anyone needs.
+/// (`server.rs`; docs/protocol/remote-workspace-mcp-v1.md section 11.4):
+/// absolute paths tell the model about a machine it has no business
+/// knowing the shape of, and they travel back to Anthropic in the
+/// transcript. This message is the deliberate exception, and only for the
+/// journal file: it is a recovery instruction, "delete this and patching
+/// works again" is worthless without saying which file, and the person
+/// who has to act on it is reading it through the model. The backups are
+/// shown relative, because those are inside the workspace and relative is
+/// all anyone needs.
 fn interrupted_report(record: &JournalFile, journal: &Path) -> String {
     let mut out = String::from(
         "a previous apply_patch was interrupted while it was renaming files, so these may not agree with each other:\n",

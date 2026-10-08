@@ -1,8 +1,8 @@
 //! `~/.config/ccnm/config.toml`, the Runtime Node's source of truth for
 //! workspace definitions.
 //!
-//! Secrets never live here (design doc section 5); SSH keys and Claude
-//! OAuth stay with OpenSSH and Claude Code itself.
+//! Secrets never live here (docs/configuration.md, 校验是严格的); SSH keys
+//! and Claude OAuth stay with OpenSSH and Claude Code itself.
 //!
 //! Unknown keys are an error, not ignored. A typo like `runtime_hots` that
 //! silently falls back to a default is exactly the drift doctor exists to
@@ -36,7 +36,8 @@ pub const DEFAULT_RUNTIME_NODE: &str = "runtime";
 /// Where a remote ccnm is invoked when `nodes.<x>.ccnm_bin` is unset. The
 /// `~` is expanded by the remote login shell, which is the one thing
 /// every POSIX shell and fish agree on; a bare `ccnm` would depend on the
-/// PATH of a non-interactive shell (design doc section 7).
+/// PATH of a non-interactive shell (docs/troubleshooting.md,
+/// "zsh:1: command not found: ccnm").
 pub const DEFAULT_CCNM_BIN: &str = "~/.local/bin/ccnm";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
@@ -276,15 +277,14 @@ pub struct Node {
     /// `CLAUDE_CONFIG_DIR` for Claude Code on this host. Unset means Claude's
     /// own default (`~/.claude`) and whatever login is already there. A custom
     /// dir has its own credentials and needs its own `claude auth login`;
-    /// ccnm never performs that login (design doc section 21).
+    /// ccnm never performs that login.
     #[serde(default)]
     pub claude_config_dir: Option<PathBuf>,
     /// The **Runtime Executor**'s expected identity on this node: the
     /// dedicated account the Agent's SSH MCP transport lands on, under
-    /// which `internal mcp-serve` and every project tool run (design doc
-    /// section 18). ccnm never creates it and never switches to it; it
-    /// checks that the runtime is running as that account and refuses
-    /// `exec_command` when it is not.
+    /// which `internal mcp-serve` and every project tool run. ccnm never
+    /// creates it and never switches to it; it checks that the runtime is
+    /// running as that account and refuses `exec_command` when it is not.
     ///
     /// It does **not** say which account may type `ccnm`. The Operator
     /// running the public CLI or `ccnm rpc` is a separate identity and may
@@ -339,12 +339,13 @@ pub struct Workspace {
     #[serde(default)]
     pub claude_permission_mode: PermissionMode,
     /// Run `exec_command` for this workspace even though the runtime
-    /// account is not confined (design doc section 18).
+    /// account is not confined (docs/configuration.md,
+    /// `allow_unconfined_exec`).
     ///
     /// Spelled out rather than shortened on purpose. The default refusal
-    /// is the hard gate the design document asks for; this is the way to
-    /// say "I know, this is a scratch project, go ahead", and every
-    /// result of such a session says so.
+    /// is the hard gate on an unconfined runtime; this is the way to say
+    /// "I know, this is a scratch project, go ahead", and every result of
+    /// such a session says so.
     #[serde(default)]
     pub allow_unconfined_exec: bool,
     /// Open this workspace even though the Runtime execution identity can

@@ -31,8 +31,8 @@
 //! `ccnm controller install` after a binary upgrade) would orphan or
 //! kill every running session. A supervisor is a process that lives
 //! exactly as long as its Claude, in its own process group, and owes the
-//! controller nothing once started. Design doc section 23: the session's
-//! lifetime is Claude's, not any outer process's.
+//! controller nothing once started. The rule: the session's lifetime is
+//! Claude's, not any outer process's.
 
 pub mod transport;
 pub mod view;
@@ -269,9 +269,8 @@ pub enum Mode {
     /// `claude -p`: one prompt in, one JSON result out, no terminal.
     Print { prompt: String },
     /// The real Claude Code terminal, inside tmux on the Agent Node, with
-    /// the person's own terminal attached over ssh (design doc section 23).
-    /// The optional prompt is what it starts with; without one it opens
-    /// empty.
+    /// the person's own terminal attached over ssh. The optional prompt is
+    /// what it starts with; without one it opens empty.
     Interactive {
         #[serde(default)]
         prompt: Option<String>,
@@ -469,8 +468,7 @@ impl Dir {
 /// `Background` either way. What survives that is the audit session, which
 /// is what the Keychain actually gates on. A session judged by
 /// `managername` alone would look broken when it works, which is the same
-/// class of lie the controller exists to stop telling (design doc section
-/// 21).
+/// class of lie the controller exists to stop telling.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Context {
     /// `launchctl managername`: `Aqua` for the GUI login session,
@@ -485,8 +483,7 @@ pub struct Context {
     /// This reads no secret. It asks the *keychain* about its own lock
     /// settings — `security show-keychain-info`, whose whole output is a
     /// line like `Keychain "…/login.keychain-db" no-timeout` — and keeps
-    /// only whether that succeeded. ccnm still never reads a credential
-    /// (design doc section 6).
+    /// only whether that succeeded. ccnm still never reads a credential.
     #[serde(default)]
     pub keychain: Option<bool>,
 }

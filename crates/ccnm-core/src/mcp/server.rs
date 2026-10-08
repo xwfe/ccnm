@@ -1,19 +1,20 @@
 //! `ccnm internal mcp-serve`: the coding runtime Claude Code talks to over
-//! one ssh. Phase 2 fills in the bounded tools of design doc section 15
-//! one at a time; the set of section 14 is now complete:
-//! `workspace_info`, `read_file`, `list_files`, `search_text`,
-//! `apply_patch`, `exec_command` and `read_output`. Later phases added
-//! `load_skill` (P36), `view_image` (P39), `read_notebook` (P40) and
-//! `stop_command` (P41).
+//! one ssh. It started with seven bounded tools: `workspace_info`,
+//! `read_file`, `list_files`, `search_text`, `apply_patch`,
+//! `exec_command` and `read_output`. Later phases added `load_skill`
+//! (P36), `view_image` (P39), `read_notebook` (P40) and `stop_command`
+//! (P41). What each one may do is in
+//! docs/protocol/remote-workspace-mcp-v1.md section 5.
 //!
 //! Two rules are enforced here because everything later depends on them.
 //! The workspace root is canonicalized once at startup, and every path
-//! the server shows the model is relative to it (section 17) — with one
+//! the server shows the model is relative to it
+//! (docs/protocol/remote-workspace-mcp-v1.md section 11.4) — with one
 //! deliberate exception, documented at `patch::interrupted_report`: the
 //! journal file a person has to delete to recover from an interrupted
-//! patch. And nothing is written to
-//! stdout except MCP: logs go to stderr through `tracing`, so a stray
-//! `println!` cannot corrupt the JSON-RPC stream (section 8).
+//! patch. And nothing is written to stdout except MCP: logs go to stderr
+//! through `tracing`, so a stray `println!` cannot corrupt the JSON-RPC
+//! stream.
 //!
 //! A third rule shows up as soon as there is a tool that can fail. A tool
 //! whose *work* failed returns `CallToolResult::error`, not `Err`. `Err`
@@ -21,7 +22,8 @@
 //! call itself was malformed; the model may never see the text and cannot
 //! react to it. "This path is outside the workspace" is a result the
 //! model has to read, so it travels as a result with `isError: true`, and
-//! its first line is the `CCNM_E_*` name from section 24.
+//! its first line is the `CCNM_E_*` name. External clients are promised
+//! the same split (docs/protocol/remote-workspace-mcp-v1.md section 11.1).
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -68,9 +70,9 @@ pub const SERVER_NAME: &str = "ccnm";
 
 /// The `structuredContent` of `workspace_info`. Small on purpose: the
 /// model needs to know where it is, not the server's environment.
-/// `server_pid` and `calls_served` are the persistence evidence of design
-/// doc section 27 (same pid and a counter that only goes up means one
-/// process, hence one ssh, served every call).
+/// `server_pid` and `calls_served` are the persistence evidence (same pid
+/// and a counter that only goes up means one process, hence one ssh,
+/// served every call).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkspaceInfo {
     pub workspace: String,
@@ -99,9 +101,9 @@ impl WorkspaceInfo {
     /// server process and its call counter.
     ///
     /// Those two numbers are how the probe proves one server answered a
-    /// whole session (design doc section 27). They ride in the text
-    /// because the text is the only channel Claude Code shows the model,
-    /// and a second channel nobody reads is not worth keeping in step.
+    /// whole session. They ride in the text because the text is the only
+    /// channel Claude Code shows the model, and a second channel nobody
+    /// reads is not worth keeping in step.
     pub fn render(&self) -> String {
         format!(
             "{}\n[server pid {}, call {}]",
@@ -636,7 +638,7 @@ impl Server {
 
     /// What goes into `initialize.result.instructions`: ccnm's own
     /// paragraph, then the project's CLAUDE.md, within
-    /// [`Server::instructions_cap`] (design doc section 20).
+    /// [`Server::instructions_cap`].
     ///
     /// An external client gets what the workspace configured instead, and
     /// never a provider's projection: which instruction file a managed
@@ -684,7 +686,7 @@ impl Server {
 
     /// Count one served tool call and return the new total. Every tool
     /// calls this, so `calls_served` is evidence about the whole session
-    /// rather than about `workspace_info` alone (design doc section 27).
+    /// rather than about `workspace_info` alone.
     fn count_call(&self) -> u64 {
         self.inner.calls.fetch_add(1, Ordering::SeqCst) + 1
     }
@@ -795,10 +797,11 @@ impl Server {
         if let Some(refusal) = self.refuse_withheld("exec_command") {
             return Ok(refusal);
         }
-        // The hard gate of design doc section 18. Every other tool is
-        // bounded by the path policy; this one is a shell, so it is
-        // bounded by the account it runs as -- and if nobody has arranged
-        // for that account to be a confined one, it does not run.
+        // The hard gate (docs/production-safety.md, "ccnm 当前会检查什么").
+        // Every other tool is bounded by the path policy; this one is a
+        // shell, so it is bounded by the account it runs as -- and if
+        // nobody has arranged for that account to be a confined one, it
+        // does not run.
         if !self.inner.exec_gate.allowed() {
             return Ok(tool_error(&Error::policy(
                 self.inner.exec_gate.audit.refusal(

@@ -1,9 +1,8 @@
 //! Workspace path policy: the one place a path from the model becomes a
 //! path on this disk.
 //!
-//! Design doc section 17. Every file tool resolves through here, so the
-//! rules exist once instead of once per tool, and one test module covers
-//! all of them.
+//! Every file tool resolves through here, so the rules exist once instead
+//! of once per tool, and one test module covers all of them.
 //!
 //! The rules are deliberately the opposite of coding-tools-mcp's read
 //! side (`lengsukq/coding-tools-mcp`, studied 2026-09-03), which lets
@@ -162,9 +161,9 @@ impl WriteTarget {
 /// stricter in three ways that only matter once something can be changed:
 ///
 /// ```text
-/// .git is refused           design doc section 17. Reading it is allowed
-///                           today; writing it corrupts a repository in ways
-///                           no file tool should be able to
+/// .git is refused           reading it is allowed today; writing it
+///                           corrupts a repository in ways no file tool
+///                           should be able to
 /// symlinks are refused      not just ones that escape. Writing "through" a
 ///                           link means the commit rename would replace the
 ///                           link with a regular file, quietly detaching it
@@ -583,9 +582,9 @@ mod tests {
 
     #[test]
     fn dot_git_is_readable_for_now() {
-        // Design doc section 17 forbids *modifying* .git through the file
-        // tools, not reading it. Kept as a test so that if the rule ever
-        // tightens, the change is deliberate and this test is what fails.
+        // The file tools may not *modify* .git; reading it is allowed.
+        // Kept as a test so that if the rule ever tightens, the change is
+        // deliberate and this test is what fails.
         let root = fixture("git");
         fs::create_dir_all(root.join(".git")).unwrap();
         fs::write(root.join(".git/config"), "[core]\n").unwrap();

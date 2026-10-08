@@ -6,7 +6,7 @@
 //! - argv is a list, never a shell string, so there is no quoting to get wrong;
 //! - every call has a timeout and cannot hang a Claude hook forever;
 //! - the child's environment is explicit, which is how the runner strips
-//!   `ANTHROPIC_*` later (design doc section 13);
+//!   `ANTHROPIC_*` later;
 //! - tests can swap in [`FakeRunner`] and assert exactly what would run.
 //!
 //! Interactive things (attaching a terminal to tmux, launching the Claude
@@ -737,9 +737,8 @@ where
 /// needs the pane's terminal, not a pipe — a pipe is what makes it decide
 /// it has no terminal and fall back to print mode. And it needs no
 /// watchdog, because the clock that ends an interactive session is the
-/// person using it (design doc section 23). `cmd.timeout` and `cmd.stdin`
-/// are ignored here; a caller that needs either wants
-/// [`run_captured`] instead.
+/// person using it. `cmd.timeout` and `cmd.stdin` are ignored here; a
+/// caller that needs either wants [`run_captured`] instead.
 pub fn run_attached(cmd: &Cmd) -> Result<Captured> {
     run_attached_observed(cmd, |_| Ok(()))
 }

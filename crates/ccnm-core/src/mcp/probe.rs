@@ -2,11 +2,12 @@
 //! mcp-serve`, or the same binary locally), performs `initialize` and
 //! `tools/list`, calls `workspace_info` N times, and reports what it saw.
 //! Doctor uses it with N = 1 as the "Remote MCP handshake" row; `ccnm mcp
-//! probe` uses N = 100 for the persistence proof of design doc section 27.
+//! probe` uses N = 100 to prove that one persistent server answered every
+//! call.
 //!
 //! Cleanup is part of the contract: the client closes the server's stdin,
 //! waits for it to exit, and kills it if it does not, so doctor never
-//! leaves a server behind (section 4).
+//! leaves a server behind.
 
 use std::process::Stdio;
 use std::time::{Duration, Instant};
@@ -122,7 +123,7 @@ async fn run(transport: &Cmd, calls: u32, unreachable: ErrorCode) -> Result<Prob
     let instructions = info.instructions.as_deref().unwrap_or_default();
     let instructions_bytes = instructions.len();
     // Proof that the project's CLAUDE.md survived the trip, read from the
-    // same text the model is given (design doc section 20).
+    // same text the model is given.
     let project_instructions = crate::mcp::context::parse_marker(instructions);
 
     let list = client

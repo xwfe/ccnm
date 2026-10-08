@@ -2,9 +2,9 @@
 //!
 //! # This is not a sandbox, and nothing here pretends otherwise
 //!
-//! Design doc section 18. Path validation protects `read_file` and
-//! `apply_patch`; it protects nothing here, because a command can go
-//! wherever the user it runs as can go:
+//! Path validation protects `read_file` and `apply_patch`; it protects
+//! nothing here, because a command can go wherever the user it runs as
+//! can go:
 //!
 //! ```text
 //! cat ~/.ssh/id_ed25519
@@ -12,22 +12,21 @@
 //! rm -rf ~
 //! ```
 //!
-//! There is deliberately **no deny list in this phase**. A list of
-//! forbidden program names is trivially stepped around — `env claude`,
-//! `/usr/bin/claude`, a wrapper script — and its real effect would be to
-//! make the tool look policed when it is not. False confidence is worse
-//! than none, and the design document says so in as many words: *command
-//! parser 不是 sandbox*.
+//! There is deliberately **no deny list**. A list of forbidden program
+//! names is trivially stepped around — `env claude`, `/usr/bin/claude`, a
+//! wrapper script — and its real effect would be to make the tool look
+//! policed when it is not. False confidence is worse than none; why a
+//! command parser cannot be a sandbox is in docs/production-safety.md,
+//! "`ccrun` 不能解决什么".
 //!
-//! What actually makes this safe is phase 5's work, not phase 2's: a
-//! dedicated Unix user (`ccrun`) on the Runtime Node with access to the
+//! What actually makes this safe is the operating system, not this module:
+//! a dedicated Unix user (`ccrun`) on the Runtime Node with access to the
 //! project and nothing else — no sudo, no ssh key, no Claude credential,
-//! no browser profile — plus filesystem ACLs and the network policy of
-//! section 19. Until that exists, `exec_command` is exactly as trusted as
-//! the account the runtime runs as, and the design document already calls
-//! a dedicated runtime identity a hard gate before real daily use.
+//! no browser profile — plus filesystem ACLs and a network policy
+//! (docs/production-safety.md). Until that exists, `exec_command` is
+//! exactly as trusted as the account the runtime runs as.
 //!
-//! The one thing this phase does enforce is the core invariant: no
+//! The one thing this module does enforce is the core invariant: no
 //! `ANTHROPIC_*` or `CLAUDE_*` variable is passed to a child. The home
 //! machine holds no Claude credential and must not learn one through a
 //! command ccnm ran.
@@ -89,7 +88,8 @@ pub const DEFAULT_TIMEOUT_MS: u64 = 120_000;
 pub const MAX_TIMEOUT_MS: u64 = 600_000;
 /// Bytes of output returned inline when the caller does not say.
 pub const DEFAULT_PREVIEW_BYTES: usize = 4 * 1024;
-/// Ceiling on `preview_bytes` (design doc section 15).
+/// Ceiling on `preview_bytes` (docs/protocol/remote-workspace-mcp-v1.md
+/// section 8).
 pub const MAX_PREVIEW_BYTES: usize = 16 * 1024;
 
 /// Arguments of `exec_command`.
@@ -157,10 +157,10 @@ pub struct ExecResult {
 /// What to say when the directory a session works in is no longer there.
 ///
 /// Never the absolute path: the server does not reveal where the
-/// workspace lives (design doc section 17), and it is not what anyone
-/// needs anyway. What they need is that this session cannot be saved by
-/// retrying -- its root was resolved when it started -- and the two
-/// commands that make a session with the right one.
+/// workspace lives (docs/protocol/remote-workspace-mcp-v1.md section 11.4),
+/// and it is not what anyone needs anyway. What they need is that this
+/// session cannot be saved by retrying -- its root was resolved when it
+/// started -- and the two commands that make a session with the right one.
 pub(crate) fn workspace_gone(rel: &str) -> String {
     let what = if rel == "." {
         "the workspace root".to_string()
@@ -482,10 +482,10 @@ fn bytes_label(bytes: u64) -> String {
 
 /// Every `ANTHROPIC_*` and `CLAUDE_*` name in this process's environment.
 ///
-/// The core invariant is that the Runtime Node holds no Claude credential
-/// (section 6). It also must not hand one to a command it runs: the ssh
-/// session that started this server could have carried one in, and a
-/// child that inherited it could use it or log it.
+/// The core invariant is that the Runtime Node holds no Claude credential.
+/// It also must not hand one to a command it runs: the ssh session that
+/// started this server could have carried one in, and a child that
+/// inherited it could use it or log it.
 #[cfg(test)]
 fn strip_names<I>(names: I) -> Vec<std::ffi::OsString>
 where

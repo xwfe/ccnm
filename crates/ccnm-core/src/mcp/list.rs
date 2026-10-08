@@ -1,4 +1,4 @@
-//! `list_files`: the second phase 2 tool (design doc section 15).
+//! `list_files`: the files under one path of the workspace.
 //!
 //! The whole job is navigation, so the thing that decides whether it is
 //! useful is not the listing code but what it leaves out. A plain

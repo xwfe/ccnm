@@ -1,6 +1,6 @@
 # 下一轮开发：执行可靠性、结果完整性与真实项目交付
 
-制定日期：2026-09-28。核对基线：`main/623dbdf`；已跟踪文件无未提交修改，用户已有未跟踪文件 `ccnm-mobile-handoff.md` 保持原样。本文是后续实施方案，不是功能完成或部署记录。唯一进度为 [status.json](status.json)，稳定验收编号为 [ROADMAP.md](ROADMAP.md)。
+制定日期：2026-09-28。核对基线：`main/623dbdf`；已跟踪文件无未提交修改。本文是后续实施方案，不是功能完成或部署记录。唯一进度为 [status.json](status.json)，稳定验收编号为 [ROADMAP.md](ROADMAP.md)。
 
 ## 1. 本轮目标与不做的事
 
@@ -75,7 +75,7 @@ P57 复现结果与本计划的静态判断相反时，先更新该缺口的依�
 
 ```text
 先读 AGENTS.md、docs/plan/README.md、status.json、ROADMAP 当前阶段。
-核对 HEAD、git status 和两种 diff；不动用户已有 ccnm-mobile-handoff.md。
+核对 HEAD、git status 和两种 diff。
 阅读 core-hardening.md 与当前阶段的分方案。本轮先做 P57，不连续实现整条队列。
 P57 只建立当前构建基线和无真实模型的缺口复现；不要重做 P52/P53。
 静态风险必须先复现并记录，失败探针不伪装成产品测试已通过。

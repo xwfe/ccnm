@@ -6,7 +6,7 @@
 
 ### 1.1 必读与复用
 
-先读 [AGENTS.md](../../AGENTS.md)、计划入口、status/ROADMAP、[支持矩阵](../support-matrix.md)、[生命周期](../project-lifecycle.md)和本轮三份分方案。核对 Git HEAD、全部未提交与已暂存差异；用户旧 `ccnm-mobile-handoff.md` 不属于本轮。
+先读 [AGENTS.md](../../AGENTS.md)、计划入口、status/ROADMAP、[支持矩阵](../support-matrix.md)、[生命周期](../project-lifecycle.md)和本轮三份分方案。核对 Git HEAD、全部未提交与已暂存差异。
 
 复用仓库已有设施：`scripts/ci_gates.py` 自建 CLI 和执行中立测试；`tests/mcp_client.py`、`tests/test_blackbox_client.py`、`tests/test_execution_backend.py`、`tests/test_remote_workspace_mcp.py`；真实链路准备参考 `scripts/p7_parity_check.py`、`scripts/p11_matrix_check.py`、`scripts/p12_dogfood_check.py`，但不自动运行这些脚本的 SSH/模型分支。
 

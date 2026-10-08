@@ -40,7 +40,7 @@
 
 用户撤销尚未实施的阶段时，同步移出 ROADMAP 验收队列与 `status.json.tasks`，在决策文档保留原因、退役编号和原提交；不伪标完成、不悬挂 pending、不复用编号。已实施阶段不能套用这条规则抹除证据。P54–P56 的撤销见[终端接入决策](terminal-access.md)。保留队列全部完成时 `current_task` 为 `null`，只表示没有已排定的下一阶段，不表示产品没有缺口。
 
-根目录若存在 `ccnm-mobile-handoff.md`，它是外部下载的旧方案摘要，不是接续入口；不要据此恢复已撤销阶段。历史 handoff 中的“下一步”也只描述当时决定，以最新 `next_action`、活动阶段和撤销记录为准。
+历史 handoff 中的“下一步”也只描述当时决定，以最新 `next_action`、活动阶段和撤销记录为准。
 
 `blockers` 每项为 `{"criteria":["P1.3"],"reason":"实际阻塞原因","unblock":"具体解锁动作"}`。暂停交接清空 owner；`pending` 不携带已经实施的验收或证据，已做一部分则保持 `in_progress` 或 `blocked`。
 

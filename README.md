@@ -1,24 +1,24 @@
 # ccnm
 
-**在你自己的电脑上用 Claude Code / Codex 写代码，看文件、改代码、跑测试却都发生在另一台机器上。**
+**让 Claude Code / Codex 在一台机器上跑，它看文件、改代码、跑命令却都在另一台机器上做。**
 
-项目放在服务器上、AI 登录在自己电脑（比如 Mac）上的人用得上它：代码不用搬，AI 登录也不用往服务器上放。
+一台机器跑 AI，AI 的登录只放在这里；另一台放项目，代码、Git、编译环境只在这里。两台都可以是 macOS 或 Linux：Mac 跑 AI、Linux 服务器放项目最常见，反过来、两台都是 Mac 或都是 Linux 也都实现了，每种搭配验到哪一步见[下面的表](#两台机器各干什么)。
 
-*ccnm lets you use Claude Code or Codex on your Mac while every file read, edit and command happens over SSH on another machine that holds the project — as your own account there by default, or as a dedicated low-privilege one if you set it up. The AI side runs on macOS, and on Linux since P74 (not yet released or verified on a real machine); the project side can be macOS or Linux x86\_64. Docs are in Chinese.*
+*ccnm runs Claude Code or Codex on one machine while every file read, edit and command happens over SSH on another machine that holds the project. Either machine can be macOS or Linux x86\_64, in any combination; Windows is not supported yet. On the project machine, commands run as your own account by default, or as a dedicated low-privilege one if you set it up. Docs are in Chinese.*
 
 ## 它解决什么问题
 
-项目在家里的 Linux 服务器或公司的台式机上，Claude / Codex 登录在你的 MacBook 上。常见的两种凑合办法都有代价：
+项目在一台机器上（家里的 Linux 服务器、公司的台式机、另一台 Mac），Claude / Codex 登录在你平时用的那台上。常见的两种凑合办法都有代价：
 
 | 办法 | 问题 |
 | --- | --- |
-| 在服务器上也登录 AI | 登录凭证多放一处，而且就放在 AI 跑命令的那个账号里，一句 prompt 就能被读出去 |
-| 把代码同步到 Mac 上改 | 两份代码要对齐；Mac 上没有服务器那套环境，测试跑不了或结果不一样 |
+| 在放项目的机器上也登录 AI | 登录凭证多放一处，而且就放在 AI 跑命令的那个账号里，一句 prompt 就能被读出去 |
+| 把代码同步到跑 AI 的机器上改 | 两份代码要对齐；这边没有那套环境，测试跑不了或结果不一样 |
 
-用 ccnm：AI 照常在 Mac 上跑，但它看文件、改代码、跑命令，都通过 SSH 交给项目那台机器去做，结果再传回来。命令默认以你在项目机器上的账号跑，和你在那台机器上直接用 Claude Code 一样；想让它碰不到那个账号里的私钥和各种登录，可以另建一个专门的低权限账号替它干活（可选，见[生产安全](docs/production-safety.md#要不要建专用账号)）。
+用 ccnm：AI 照常在它那台机器上跑，但它看文件、改代码、跑命令，都通过 SSH 交给放项目的机器去做，结果再传回来。命令默认以你在项目机器上的账号跑，和你在那台机器上直接用 Claude Code 一样；想让它碰不到那个账号里的私钥和各种登录，可以另建一个专门的低权限账号替它干活（可选，见[生产安全](docs/production-safety.md#要不要建专用账号)）。
 
 ```text
-你的 Mac（跑 AI）                                  项目机器（放代码）
+跑 AI 的机器（macOS / Linux）                       放项目的机器（macOS / Linux）
 Claude Code / Codex  ── 通过 SSH 发出"看/改/跑" ──▶  ccnm 在这台机器上去做
 AI 登录只在这里       ◀──────────── 结果 ───────────  代码、Git、编译环境只在这里
 ```
@@ -28,10 +28,26 @@ AI 登录只在这里       ◀──────────── 结果 ─�
 | | 跑 AI 的机器 | 放项目的机器 |
 | --- | --- | --- |
 | 文档里叫 | Agent Node | Runtime Node |
-| 上面有什么 | Claude Code / Codex 和它的登录；一个常驻后台（Controller），负责拉起 AI | 项目代码、Git、编译测试工具。AI 的命令以 SSH 登进来的那个账号跑（文档里叫执行账号），默认就是你自己的 |
-| 支持的系统 | macOS；Linux（带 systemd，新加的，见下） | macOS；Linux x86_64（实测 Debian 13，要 glibc 2.39 以上，比如 Ubuntu 24.04） |
+| 上面有什么 | Claude Code / Codex 和它的登录；一个常驻后台（Controller），负责拉起 AI（Mac 上是 launchd 服务，Linux 上是 systemd 用户服务） | 项目代码、Git、编译测试工具。AI 的命令以 SSH 登进来的那个账号跑（文档里叫执行账号），默认就是你自己的 |
+| 系统 | macOS；Linux x86_64 | macOS；Linux x86_64 |
 
-**Linux 当跑 AI 的机器**是 v0.12.0 新加的：那个拉起 AI 的后台服务在 Mac 上靠 launchd，在 Linux 上装成 systemd 用户服务；Linux 上 AI 的登录存在普通文件里，不需要 Mac 那种图形登录。在一台 Debian 13 上从安装到用真实 Codex 改代码都跑通过；Claude Code 当 Linux 的跑 AI 机器还没用真实模型跑过。v0.11.2 及之前的包在 Linux 上会拒绝起会话。另外，跑 AI 的机器要能访问 OpenAI / Anthropic，在不支持的地区（比如中国大陆）要先配代理（[怎么配](docs/troubleshooting.md#登录-codex-报-device-code-request-failed-with-status-403-forbidden或会话里模型一直连不上)）。Linux 上有一件事要知道：默认你退出登录，systemd 会把后台服务和会话一起停掉，要常驻得开 linger（`sudo loginctl enable-linger <账号>`，详见[快速开始](docs/getting-started.md#3-初始化-agent-node)）。Windows 两边都还没做，要先单独设计。
+"两台"指的是两个 SSH 能互相连上的账号，不一定是两台物理机：同一台机器上，用你的账号跑 AI、另建一个账号放项目也行。真正不支持的是一个账号同时当两边（配置里两边写成同一个节点，ccnm 会拒绝），那种情况直接用 Claude Code / Codex 就好。Windows 两边都还没做，要先单独设计。
+
+每种搭配验到了哪一步：
+
+| 跑 AI → 放项目 | 验到哪一步 |
+| --- | --- |
+| macOS → Linux | Claude 和 Codex 都用真实模型跑过：交互会话、一问一答、别的 AI 工具接入、脚本调用、安装升级回退（Debian 13，执行账号是专门的 `ccrun`） |
+| macOS → macOS | 作者日常就这么用（Claude） |
+| Linux → Linux | 同一台 Debian 13 上的两个账号：Codex 用真实模型从安装到改代码跑通；Claude Code 当跑 AI 的一边还没用真实模型跑过 |
+| Linux → macOS | 还没在真机上配过 |
+
+逐项没验过的写在[支持矩阵](docs/support-matrix.md)。Linux 上有两件事先知道：
+
+- 要 glibc 2.39 以上（比如 Debian 13、Ubuntu 24.04）。
+- 跑 AI 的那台默认你一退出登录，systemd 就把后台服务和会话一起停掉，要常驻得开 linger（`sudo loginctl enable-linger <账号>`，见[快速开始](docs/getting-started.md#3-初始化-agent-node)）。
+
+不管哪种系统，跑 AI 的机器都要能访问 OpenAI / Anthropic；在不支持的地区（比如中国大陆）要先配代理（[怎么配](docs/troubleshooting.md#登录-codex-报-device-code-request-failed-with-status-403-forbidden或会话里模型一直连不上)）。
 
 还有两个词会经常看到：
 
@@ -50,15 +66,15 @@ AI 登录只在这里       ◀──────────── 结果 ─�
 
 适合：
 
-- **代码在服务器，AI 在 Mac**：最主要的用法。
+- **代码在一台机器，AI 登录在另一台**：最主要的用法。
 - **本机已经开着 Claude Code / Codex，想让它顺手改远端项目**：用 `ccnm mcp bridge`，不用 ccnm 另起 AI。默认关着，要在项目机器上先打开（[怎么开](docs/usage.md#把远端项目给已经在跑的-agent-用)）。
 - **一句话的小活**：`ccnm my-project --print "修复 parser 测试"`，跑完结果直接打在终端里，中间不问。
 - **让脚本派活**：`ccnm rpc`，不开网络端口，有现成的 Python 客户端（[协议说明](docs/protocol/README.md)）。
-- **在手机上看进度、批命令**：用 PocketShell 这类 SSH App 连上 Mac，敲同样的命令（[说明](docs/usage.md#通过第三方终端使用)）。
+- **在手机上看进度、批命令**：用 PocketShell 这类 SSH App 连上跑 AI 的那台，敲同样的命令（[说明](docs/usage.md#通过第三方终端使用)）。
 
 不适合：
 
-- **项目和 AI 在同一台机器上**：直接用 Claude Code / Codex 就好。ccnm 会拒绝这种配法。
+- **项目和 AI 在同一个账号下**：直接用 Claude Code / Codex 就好。ccnm 会拒绝这种配法（同一台机器的两个账号可以，见上）。
 - **要多个 AI 分工协作、自动拆任务、自动审查**：ccnm 只管"让一个 AI 在远端项目上干活"，安排活是另一个项目的事（[交接说明](docs/orchestrator-handoff.md)）。
 - **要让代码一点都不出服务器**：AI 读到的代码会发给模型服务商。ccnm 分开的是机器和权限，不是数据。
 - **要防数据外传**：ccnm 不管网络，防火墙要你自己在项目机器上配。
@@ -142,7 +158,7 @@ mv ccnm ~/.local/bin/ccnm.new && mv ~/.local/bin/ccnm.new ~/.local/bin/ccnm
 | | |
 | --- | --- |
 | 最新版本 | [v0.13.0](https://github.com/xwfe/ccnm/releases)（2026-10-08），每个版本改了什么写在 Releases 页 |
-| 真机验过什么 | Mac 跑 AI → Debian 13 放项目（替 AI 跑命令的是专门的 `ccrun` 账号）：Claude 和 Codex 都用真实模型跑过——交互会话、一问一答、别的 AI 工具接入、脚本调用、安装升级回退。哪些**没验过**逐条写在[支持矩阵](docs/support-matrix.md) |
+| 真机验过什么 | 按搭配见上面[两台机器各干什么](#两台机器各干什么)；哪些**没验过**逐条写在[支持矩阵](docs/support-matrix.md) |
 | v0.13.0 改了默认 | 不写 `runtime_user` 也能跑命令（v0.12.0 及之前要求专用账号，或者在 workspace 上写 `allow_unconfined_exec` 和 `allow_unisolated_credentials`）；`agent_tools` 默认全开；命令不问人的会话里，skill 的 `hooks` 和加载时的 `` !`命令` `` 会在项目机器上跑（[说明](docs/usage.md#项目自带的-skills)）。真机上验到哪一步见[支持矩阵](docs/support-matrix.md) |
 
 已知限制：

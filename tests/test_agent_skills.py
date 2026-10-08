@@ -85,6 +85,21 @@ class AgentSkillsTests(unittest.TestCase):
         got = client.call_tool("load_skill", {"name": "noise"})
         self.assertTrue(is_error(got), got)
 
+    def test_a_2026_07_28_host_gets_private_cache_hints_on_both_lists(self):
+        """P81：Agent 这头的列表在 2026-07-28 下同样要带缓存提示，值和 Runtime 一致。"""
+        self.install(".claude/skills", "release", "---\ndescription: Cut a release.\n"
+                     "disable-model-invocation: true\n---\nTag it.\n")
+        argv = [str(BINARY), "internal", "agent-skills", "--payload",
+                payload(self.home, "sess-agent-discover")]
+        client = McpClient(argv, {"PATH": os.environ.get("PATH", "")})
+        self.addCleanup(client.close)
+        self.assertIn("2026-07-28", client.discover()["supportedVersions"])
+        tools = client.call_2026("tools/list")
+        self.assertEqual((tools["ttlMs"], tools["cacheScope"]), (300000, "private"))
+        prompts = client.call_2026("prompts/list")
+        self.assertEqual((prompts["ttlMs"], prompts["cacheScope"]), (0, "private"))
+        self.assertEqual([p["name"] for p in prompts["prompts"]], ["release"])
+
     def test_a_skill_for_a_person_is_a_prompt_and_not_for_the_model(self):
         self.install(".claude/skills", "release", "---\ndescription: Cut a release.\n"
                      "disable-model-invocation: true\narguments: [version]\n---\nTag $version.\n")

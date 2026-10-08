@@ -1540,22 +1540,17 @@ impl ServerHandler for Server {
         _request: Option<rmcp::model::PaginatedRequestParams>,
         context: rmcp::service::RequestContext<rmcp::RoleServer>,
     ) -> std::result::Result<rmcp::model::ListToolsResult, ErrorData> {
-        // The cache hints the generated version sends, kept because
-        // replacing a method means inheriting everything it did, not just
-        // the part being changed. `ttl_ms: 0` with a public scope is what
-        // the macro emits: the list never changes for the life of a
-        // server, so a client may hold it, and every re-fetch of it over
-        // ssh is a round trip nobody needed.
-        let supports_cache_hints = context
-            .protocol_version()
-            .is_some_and(|version| version >= rmcp::model::ProtocolVersion::V_2026_07_28);
+        // Not the macro's `0` / `public`: under 2026-07-28 those say "stale
+        // at once" and "the same for everybody", and this list is neither
+        // (see `cache_hints`).
+        let (ttl_ms, cache_scope) = super::cache_hints(&context, super::TOOLS_TTL_MS);
         Ok(rmcp::model::ListToolsResult {
             result_type: Some(rmcp::model::ResultType::COMPLETE),
             tools: self.tools(),
             meta: None,
             next_cursor: None,
-            ttl_ms: supports_cache_hints.then_some(0),
-            cache_scope: supports_cache_hints.then_some(rmcp::model::CacheScope::Public),
+            ttl_ms,
+            cache_scope,
         })
     }
 
@@ -1570,8 +1565,9 @@ impl ServerHandler for Server {
     async fn list_prompts(
         &self,
         _request: Option<rmcp::model::PaginatedRequestParams>,
-        _context: rmcp::service::RequestContext<rmcp::RoleServer>,
+        context: rmcp::service::RequestContext<rmcp::RoleServer>,
     ) -> std::result::Result<ListPromptsResult, ErrorData> {
+        let hints = super::cache_hints(&context, super::PROMPTS_TTL_MS);
         let (root, machine) = self.skill_places();
         let catalog = tokio::task::spawn_blocking(move || {
             skills::discover(&Scope::project(&root).with_machine(machine.as_ref()))
@@ -1590,7 +1586,9 @@ impl ServerHandler for Server {
                 )
             })
             .collect();
-        Ok(ListPromptsResult::with_all_items(prompts))
+        let mut listed = ListPromptsResult::with_all_items(prompts);
+        (listed.ttl_ms, listed.cache_scope) = hints;
+        Ok(listed)
     }
 
     async fn get_prompt(

@@ -195,6 +195,29 @@ impl Session {
         session
     }
 
+    /// A Host on MCP 2026-07-28, the way Claude Code 2.1.292+ opens one by
+    /// default (P81): no `initialize`, a `server/discover` first, and the
+    /// version, client and capabilities in the `_meta` of every request.
+    fn discover(mut command: Command) -> (Session, Value) {
+        let mut child = command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let stdin = child.stdin.take().unwrap();
+        let stdout = BufReader::new(child.stdout.take().unwrap());
+        let mut session = Session {
+            child,
+            stdin,
+            stdout,
+            id: 0,
+            instructions: String::new(),
+        };
+        let discovered = session.rpc("server/discover", json!({"_meta": meta_2026_07_28()}));
+        (session, discovered)
+    }
+
     fn notify(&mut self, method: &str) {
         writeln!(self.stdin, r#"{{"jsonrpc":"2.0","method":"{method}"}}"#).unwrap();
         self.stdin.flush().unwrap();
@@ -243,6 +266,17 @@ impl Session {
         let status = self.child.wait().unwrap();
         assert!(status.success(), "server exited with {status}");
     }
+}
+
+/// What a 2026-07-28 Host puts in every request's `_meta`: the three keys
+/// Claude Code 2.1.293 sends, which rmcp requires once there is no
+/// `initialize`.
+fn meta_2026_07_28() -> Value {
+    json!({
+        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+        "io.modelcontextprotocol/clientInfo": {"name": "external-host-test", "version": "0"},
+        "io.modelcontextprotocol/clientCapabilities": {}
+    })
 }
 
 fn text(result: &Value) -> String {
@@ -1331,4 +1365,56 @@ fn the_credential_switch_alone_opens_a_read_session() {
     let read = session.call("read_file", json!({"path": "hello.txt"}));
     assert!(!is_error(&read), "{}", text(&read));
     session.shutdown();
+}
+
+/// P81: a Host that opened with `server/discover` -- Claude Code's default
+/// from 2.1.292 -- gets the cache hints MCP 2026-07-28 makes mandatory on
+/// both lists, with values that mean what is true here: the tool list is
+/// this session's own (a read session lists fewer tools), so `private`, and
+/// it stays put for the connection; the prompts are rescanned on every
+/// request. A Host that said `initialize` with an older version gets neither
+/// field, exactly as before.
+#[test]
+fn list_results_carry_cache_hints_only_for_a_2026_07_28_host() {
+    let fixture = Fixture::new("cache-hints", "coding", "generic");
+
+    let (mut current, discovered) =
+        Session::discover(fixture.serve(&fixture.wire("demo", ExternalMode::Coding, "p81-new")));
+    assert!(
+        discovered["supportedVersions"]
+            .as_array()
+            .is_some_and(|versions| versions.contains(&json!("2026-07-28"))),
+        "{discovered}"
+    );
+    assert!(
+        discovered["instructions"]
+            .as_str()
+            .is_some_and(|text| text.starts_with("CCNM remote workspace")),
+        "{discovered}"
+    );
+    let meta = json!({"_meta": meta_2026_07_28()});
+    let hints = |listed: &Value| (listed["ttlMs"].clone(), listed["cacheScope"].clone());
+    let tools = current.rpc("tools/list", meta.clone());
+    assert_eq!(
+        hints(&tools),
+        (json!(ccnm_core::mcp::TOOLS_TTL_MS), json!("private"))
+    );
+    assert!(!tools["tools"].as_array().unwrap().is_empty());
+    let prompts = current.rpc("prompts/list", meta);
+    assert_eq!(
+        hints(&prompts),
+        (json!(ccnm_core::mcp::PROMPTS_TTL_MS), json!("private"))
+    );
+    // A coding session holds the workspace's write lock until it ends.
+    current.shutdown();
+
+    let mut older = fixture.open("demo", ExternalMode::Coding, "p81-old");
+    for method in ["tools/list", "prompts/list"] {
+        let listed = older.rpc(method, json!({}));
+        assert!(
+            listed.get("ttlMs").is_none() && listed.get("cacheScope").is_none(),
+            "{method} on 2025-06-18: {listed}"
+        );
+    }
+    older.shutdown();
 }

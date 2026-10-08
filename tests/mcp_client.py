@@ -99,6 +99,25 @@ class McpClient:
         self.notify("notifications/initialized")
         return result
 
+    #: MCP 2026-07-28 起每条请求自带版本、客户端和能力，不再有 initialize 握手。
+    META_2026_07_28 = {
+        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+        "io.modelcontextprotocol/clientInfo": {"name": "provider-neutral-test-client", "version": "0"},
+        "io.modelcontextprotocol/clientCapabilities": {},
+    }
+
+    def discover(self) -> dict[str, Any]:
+        """按 2026-07-28 开场（Claude Code 2.1.292 起的默认）：先 server/discover，不发 initialize。
+
+        之后的请求要用 `call_2026(method, params)`，它把同一份 `_meta` 带上。
+        """
+        result = self.call("server/discover", {"_meta": self.META_2026_07_28})
+        self.instructions = result.get("instructions", "")
+        return result
+
+    def call_2026(self, method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        return self.call(method, {**(params or {}), "_meta": self.META_2026_07_28})
+
     def tools(self) -> list[dict[str, Any]]:
         return self.call("tools/list", {})["tools"]
 

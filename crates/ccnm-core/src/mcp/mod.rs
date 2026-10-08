@@ -129,6 +129,49 @@ pub(crate) fn version_of(meta: &std::fs::Metadata) -> String {
     format!("{}-{mtime:x}", meta.len())
 }
 
+/// How long a Host on MCP 2026-07-28 may keep a `tools/list` answer
+/// before asking again (P81).
+///
+/// The list never changes while one server runs, so any positive value is
+/// true for that connection. It is kept to five minutes rather than "for
+/// ever" because a Host may carry the answer over to the next connection,
+/// and that one can list different tools: the workspace's `external_mcp`
+/// edited from `read` to `coding`, say. Five minutes bounds how long such
+/// a Host shows the old list; a call to a tool the new session withholds is
+/// refused by the server anyway, cache or not.
+pub const TOOLS_TTL_MS: u64 = 300_000;
+
+/// How long a Host may keep a `prompts/list` answer (P81).
+///
+/// Prompts are the skills found on disk, and the scan runs again on every
+/// request, so a skill added mid-session shows up on the next one. Zero
+/// says exactly that: stale at once, ask again when needed.
+pub const PROMPTS_TTL_MS: u64 = 0;
+
+/// The cache hints for one list result, or none at all for a Host on a
+/// protocol older than 2026-07-28, which has no such fields.
+///
+/// 2026-07-28 makes them mandatory on `tools/list` and `prompts/list`
+/// (`server/utilities/caching`), and rmcp leaves both unset unless the
+/// handler fills them in. The scope is always `private`: every list here
+/// belongs to its session -- a read session lists fewer tools than a coding
+/// one, and the prompts are this project's and this machine's skills.
+/// `public` would tell a shared cache it may hand one session's list to
+/// anybody.
+pub(crate) fn cache_hints(
+    context: &rmcp::service::RequestContext<rmcp::RoleServer>,
+    ttl_ms: u64,
+) -> (Option<u64>, Option<rmcp::model::CacheScope>) {
+    let speaks_it = context
+        .protocol_version()
+        .is_some_and(|version| version >= rmcp::model::ProtocolVersion::V_2026_07_28);
+    if speaks_it {
+        (Some(ttl_ms), Some(rmcp::model::CacheScope::Private))
+    } else {
+        (None, None)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::truncate_bytes;

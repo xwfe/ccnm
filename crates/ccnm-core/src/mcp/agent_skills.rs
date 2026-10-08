@@ -390,9 +390,11 @@ impl ServerHandler for AgentSkills {
     async fn list_tools(
         &self,
         _request: Option<rmcp::model::PaginatedRequestParams>,
-        _context: rmcp::service::RequestContext<rmcp::RoleServer>,
+        context: rmcp::service::RequestContext<rmcp::RoleServer>,
     ) -> std::result::Result<rmcp::model::ListToolsResult, ErrorData> {
-        Ok(rmcp::model::ListToolsResult::with_all_items(self.tools()))
+        let mut listed = rmcp::model::ListToolsResult::with_all_items(self.tools());
+        (listed.ttl_ms, listed.cache_scope) = super::cache_hints(&context, super::TOOLS_TTL_MS);
+        Ok(listed)
     }
 
     fn get_tool(&self, name: &str) -> Option<rmcp::model::Tool> {
@@ -405,10 +407,15 @@ impl ServerHandler for AgentSkills {
     async fn list_prompts(
         &self,
         _request: Option<rmcp::model::PaginatedRequestParams>,
-        _context: rmcp::service::RequestContext<rmcp::RoleServer>,
+        context: rmcp::service::RequestContext<rmcp::RoleServer>,
     ) -> std::result::Result<ListPromptsResult, ErrorData> {
+        let hints = super::cache_hints(&context, super::PROMPTS_TTL_MS);
+        let hinted = |mut listed: ListPromptsResult| {
+            (listed.ttl_ms, listed.cache_scope) = hints;
+            listed
+        };
         let Some(scope) = self.scope() else {
-            return Ok(ListPromptsResult::with_all_items(Vec::new()));
+            return Ok(hinted(ListPromptsResult::with_all_items(Vec::new())));
         };
         let catalog = skills::discover(&scope);
         let prompts = catalog
@@ -423,7 +430,7 @@ impl ServerHandler for AgentSkills {
                 )
             })
             .collect();
-        Ok(ListPromptsResult::with_all_items(prompts))
+        Ok(hinted(ListPromptsResult::with_all_items(prompts)))
     }
 
     async fn get_prompt(

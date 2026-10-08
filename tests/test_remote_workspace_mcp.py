@@ -183,6 +183,30 @@ agent_node = "agent"
 
     # -- 允许矩阵 --
 
+    def test_a_2026_07_28_host_gets_private_cache_hints_on_both_lists(self):
+        """P81：Claude Code 2.1.292 起先发 server/discover、不发 initialize。
+
+        2026-07-28 要求两个列表都带 ttlMs 和 cacheScope；值见协议文档第 9 节：工具表一个
+        连接里不变（5 分钟），prompts 每次重扫（0），两个都只属于这个会话（private）。
+        用 initialize 的旧版本 Host 照旧拿不到这两个字段。
+        """
+        client = McpClient(self.argv("demo", "read", "neutral-discover"), self.env())
+        self.addCleanup(client.close)
+        found = client.discover()
+        self.assertIn("2026-07-28", found["supportedVersions"])
+        self.assertTrue(client.instructions.startswith("CCNM remote workspace"), client.instructions)
+        tools = client.call_2026("tools/list")
+        self.assertEqual((tools["ttlMs"], tools["cacheScope"]), (300000, "private"))
+        self.assertEqual(sorted(t["name"] for t in tools["tools"]), READ_TOOLS)
+        prompts = client.call_2026("prompts/list")
+        self.assertEqual((prompts["ttlMs"], prompts["cacheScope"]), (0, "private"))
+
+        older = self.client("demo", "read", "neutral-initialize")
+        for method in ("tools/list", "prompts/list"):
+            listed = older.call(method, {})
+            self.assertNotIn("ttlMs", listed, method)
+            self.assertNotIn("cacheScope", listed, method)
+
     def test_a_read_session_offers_exactly_the_read_tools(self):
         client = self.client("demo", "read", "neutral-read")
         self.assertEqual(client.tool_names(), READ_TOOLS)

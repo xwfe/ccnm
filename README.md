@@ -166,7 +166,7 @@ mv ccnm ~/.local/bin/ccnm.new && mv ~/.local/bin/ccnm.new ~/.local/bin/ccnm
 - **ccnm 不管网络。** AI 跑的命令能连到哪里，ccnm 不限制也没验证。
 - **Codex 只认 0.154.0 这一个版本**（实测过的）；Claude Code 用你装的那个。
 - **doctor 只看得出 Codex "登录过"**，登录失效要到会话的第一条消息才知道。
-- **命令里自己脱离出去的后台进程**（比如用 `setsid` 起的守护进程）ccnm 停不掉，要按[运维手册](docs/operations.md#写入-guard-残留)手工收。
+- **命令里自己脱离出去的后台进程**（比如用 `setsid` 起的守护进程）：项目机器是 Linux 时，会话结束时会一并收掉（[说明](docs/protocol/remote-workspace-mcp-v1.md)开头 2026-10-09 那条）；是 macOS 时 ccnm 停不掉，要按[运维手册](docs/operations.md#写入-guard-残留)手工收。
 - **还在用 v0.11.0 的**：Codex 会话里有人选过一次 Approve for me，之后所有会话都不再问。升到 v0.11.1 以上就好；不升的话，去掉的办法见[排错手册](docs/troubleshooting.md#受管-codex-会话exec_command-每次都弹或者一次都不弹)。
 
 会话里 AI 具体有哪些工具、能用哪些 skills 和 MCP，见[使用说明](docs/usage.md)和[配置说明](docs/configuration.md)。

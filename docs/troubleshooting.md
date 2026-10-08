@@ -655,7 +655,7 @@ CCNM_E_INVALID_ARGS: no output kept for r-0193f2c8a1b74e05
 
 - 长命令一律 `run_in_background`，然后用 `read_output` 分次看。**别靠把 `wait_ms` 调大来扛**——一次长等待正是触发第 1 条的做法。
 - 起了后台任务就别让这条会话静默太久：隔一会儿 `read_output` 一次，既看到进度，也把空闲计时清零。
-- **别用 `nohup` / `setsid` 把进程从进程组里摘出去。**那样 Runtime 停不掉它：写入互斥放掉之后它还在改文件，另一个会话进来就是两个人改同一棵树，比任务被杀糟得多。真要长活的服务，交给 Runtime 上的 systemd / launchd / tmux，ccnm 只负责起它。
+- **别用 `nohup` / `setsid` 把进程从进程组里摘出去。**项目机器是 macOS 时 Runtime 停不掉它：写入互斥放掉之后它还在改文件，另一个会话进来就是两个人改同一棵树，比任务被杀糟得多。Linux 上会话结束时它会被收掉（P84），想让它活过会话也办不到。真要长活的服务，交给 Runtime 上的 systemd / launchd / tmux，ccnm 只负责起它。
 
 **怎么不再踩**：状态行就是答案，先读它。`stopped when its session ended` 是连接断了；`killed on its timeout` 是你给的 `timeout_ms` 到了；`stopped by stop_command` 是有人显式停的；`no longer running, and its exit status is unknown` 是跑它的 server 被强杀——那种情况它起的进程组**可能还在**，得上 Runtime 自己看。
 
@@ -696,7 +696,7 @@ kill <那个 sshd-session 的 pid>
 
 如果 busy 是**你自己那个会话**的分身造成的，看上一条。其余情况：busy 表示仍有 writer 持锁——**受管入口和外部 MCP 共用同一把锁**，所以持锁的可能是任一侧；unknown 表示异常退出或 marker 不完整，不能证明旧执行者已经结束。不要循环删锁或按时间强制接管。
 
-**还有第三种，话不一样**：`workspace write guard was kept on purpose`。这不是崩溃——上一个会话结束时有命令**停不掉**（离开了进程组又攥着管道，ccnm 的信号够不着），它明知有东西可能还在改这棵树，故意没交出写权。拒绝信息里点名还剩哪些 `output_ref`。**先把那些命令收掉再谈清锁**，顺序反了就是两个写者进同一棵树；每条命令的命令行在 `sessions/<session>/output/<ref>/status` 里，步骤见[写入 guard 残留](operations.md#写入-guard-残留)。
+**还有第三种，话不一样**：`workspace write guard was kept on purpose`。这不是崩溃——上一个会话结束时有命令**停不掉**（macOS 上离开了进程组又攥着管道，ccnm 的信号够不着；Linux 上这种会被收掉，杀不掉的才会这样），它明知有东西可能还在改这棵树，故意没交出写权。拒绝信息里点名还剩哪些 `output_ref`，Linux 上还有剩下的 pid。**先把那些命令收掉再谈清锁**，顺序反了就是两个写者进同一棵树；每条命令的命令行在 `sessions/<session>/output/<ref>/status` 里，步骤见[写入 guard 残留](operations.md#写入-guard-残留)。
 
 拒绝信息里还会说上一个会话的 pid 现在是什么（还在跑，连命令行一起给；已经不在；或者被别的程序复用了）。**pid 没了不等于可以接管**——它起的命令可能还活着，而 ccnm 看不见它们。
 

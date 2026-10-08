@@ -187,11 +187,12 @@ jobs:
           dist/ccnm --version
 
   msrv:
-    # One platform is enough while no item is compiled for one OS only --
-    # the OS checks left are `cfg!()` expressions, which compile on both --
-    # and no dependency is platform-specific. Add a `#[cfg(target_os)]`
-    # item or such a dependency and this needs rethinking: the other
-    # platform's branch would never be compiled here.
+    # Linux on purpose: the one item compiled for one OS only is the
+    # subreaper in mcp::orphans (P84), with its Linux-only `nix`
+    # dependency, and this is where it compiles. Its other branch is a
+    # stub that does nothing; every other OS check is a `cfg!()`
+    # expression, which compiles on both. Add a real macOS-only item or
+    # dependency and this needs a macOS run too.
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4

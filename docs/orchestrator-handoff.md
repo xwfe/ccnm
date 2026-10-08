@@ -147,7 +147,7 @@ with CcnmBackend.spawn() as backend:
 
 `ccnm.machine/1` 当前只有 print；结果输出自 P59 起可分页读回（每流最后 32 MiB，结束后才有），不会自动过期，但运维人员可以用 `ccnm cleanup` 清掉（P61）：之后 `session.result` 回 `-32012`（`reason: cleaned`），`status` 照常，同一个 `start_key` 仍指回原 session、不重跑——要长期保留的产物由编排层自己归档；`session.start` 自 P60 起在启动前问 Runtime 的写锁：有进程正持有回 `-32008 busy`（`effect: none`，可退避），残留锁回 `-32007` 并带 `data.reason`（要人处理，别自动重试）。这只是启动那一刻的观察：之后被别人抢先的，仍表现为接受后执行失败，编排层两种结局都要处理；也不要把尾部文本当完整验收产物，详见[协议实现差距](protocol/README.md)。
 
-写互斥要求共享 state 域及 canonical 资源；Runtime MCP relay 的子进程未退出即交权缺陷（C51-01）P52 已修复，macOS 与 Linux 均已验证；离开进程组的后代仍在范围外（[P52 记录](research/2026-09-25-p52-relay-group-cleanup.md)），所以写锁 `released` 不证明整棵进程树已停，不应单凭它编排无人值守的并行或连续交权。消费者不能用旁路 SSH、删除锁或无限重试“修复”它。
+写互斥要求共享 state 域及 canonical 资源；Runtime MCP relay 的子进程未退出即交权缺陷（C51-01）P52 已修复，macOS 与 Linux 均已验证；离开进程组的后代 Linux 上 P84 起会话结束时一并收掉，macOS 上仍在范围外（[P52 记录](research/2026-09-25-p52-relay-group-cleanup.md)），所以 macOS 上写锁 `released` 不证明整棵进程树已停，不应单凭它编排无人值守的并行或连续交权。消费者不能用旁路 SSH、删除锁或无限重试“修复”它。
 
 ## 9. 这份文档不保证什么
 

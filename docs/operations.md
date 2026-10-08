@@ -454,7 +454,7 @@ held bridge-abandoned demo pid 25669
 abandoned 1 command(s) (r-e69acf4e804643a2)
 ```
 
-**有 `abandoned` 这一行 = 不是异常退出。**上一个会话结束时有命令停不掉（离开了进程组、又攥着管道那种，ccnm 的信号够不着它），ccnm 明知有东西可能还在改这棵树，**故意**没把写权交出去。所以**先去收那些命令，别急着删 marker**——删了就是放第二个写者进同一棵树，那正是这把锁存在的理由。每条命令的命令行在 `${XDG_STATE_HOME:-~/.local/state}/ccnm/sessions/<session>/output/<ref>/status` 里；进程要按它自己留下的进程组找，`ccnm status` 看不到它们。`ccnm status` 这时会说"故意留着的"，不是"异常退出留下的"。
+**有 `abandoned` 这一行 = 不是异常退出。**上一个会话结束时有命令停不掉（macOS 上离开了进程组、又攥着管道那种，ccnm 的信号够不着它；Linux 上 P84 起这种会被收掉，杀不掉的才会留在这里，marker 里写着它的 pid），ccnm 明知有东西可能还在改这棵树，**故意**没把写权交出去。所以**先去收那些命令，别急着删 marker**——删了就是放第二个写者进同一棵树，那正是这把锁存在的理由。每条命令的命令行在 `${XDG_STATE_HOME:-~/.local/state}/ccnm/sessions/<session>/output/<ref>/status` 里；进程要按它自己留下的进程组找，`ccnm status` 看不到它们。`ccnm status` 这时会说"故意留着的"，不是"异常退出留下的"。
 
 第二行也可能是 `abandoned MCP server <名字> (process group <组号>: <pid>, ... still running after SIGKILL)`，或 `... could not be checked: ...`（P52 起）：`call_mcp_tool` 转接的 server 关掉后，它进程组里还有 SIGKILL 也杀不掉的进程（setuid 程序、卡在内核里的），或者 ccnm 跑不了 `/bin/ps` 没法确认。用 `ps -A -o pid,pgid,stat,command` 按组号找，那几个 pid 都结束了再往下删 marker。一直是"查不了"的，先看这台机器有没有 `ps`（精简 Linux 镜像要装 procps）。
 

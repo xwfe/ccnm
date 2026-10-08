@@ -436,7 +436,7 @@ hooks:
 
 ## 项目那台机器上的 MCP server
 
-**进程收尾（P52）**：server 关闭时，它留在自己进程组里的子进程一起被杀掉并确认；清不掉就不交出写权。离开进程组的后代（`setsid`、守护进程）够不着，会这样做的 server 怎么处理见[支持矩阵](support-matrix.md)里 C51-01 那段。详见 [P52 记录](research/2026-09-25-p52-relay-group-cleanup.md)。
+**进程收尾（P52）**：server 关闭时，它留在自己进程组里的子进程一起被杀掉并确认；清不掉就不交出写权。离开进程组的后代（`setsid`、守护进程）：Linux 上会话结束时一并收掉（P84，见[协议](protocol/remote-workspace-mcp-v1.md)开头 2026-10-09 那条），macOS 上够不着，会这样做的 server 怎么处理见[支持矩阵](support-matrix.md)里 C51-01 那段。详见 [P52 记录](research/2026-09-25-p52-relay-group-cleanup.md)。
 
 项目的 `.mcp.json` 里声明了 server（比如一个连本地数据库的），或者 Runtime 的执行账号给 Claude Code / Codex 装了 server，模型会多一个工具 `call_mcp_tool`（P49，默认全开）：
 

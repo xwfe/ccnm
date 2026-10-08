@@ -20,6 +20,7 @@
 > 2026-09-22（P45）**skill 的 frontmatter 改成照 Claude Code 2.1.278 的读法读**（共享库 `toexec-skill` 0.2.0），工具、参数、错误码都没变，变的是同一个 SKILL.md 读出来的结果：以 `` ` `` `@` `*` 开头的描述不再让 skill 被跳过，`argument-hint: [filename] [format]` 和 `[issue-number]` 的提示不再丢；`disable-model-invocation: yes` / `on` / `1` 现在生效；写了 `user-invocable` 却不是 true（空值、认不出的字）现在不登记成 prompt；同一个键写两遍后写的赢。宿主会整段丢弃的 frontmatter、重复的键，`load_skill` 的返回开头各多一行说明。见第 5.1 节。
 > 2026-10-07（P78）**协议没变，Runtime 安全门禁的默认判法变了**：Runtime 节点没写 `runtime_user` 时，执行账号按共用账号判——sudo、admin、私钥、Agent 登录这些检查只显示、不拒绝，所以同一个没写 `runtime_user` 的 Runtime，以前在 initialize 前或 `exec_command` 时报 `CCNM_E_POLICY`，现在照常服务。写了 `runtime_user` 的判法、身份未知与继承认证环境的拒绝、错误码和工具都没变。第 4.5 节措辞随之改。
 > 2026-10-07（P79）**skill 要求替它跑的命令，在命令不问人的会话里会跑了**：`load_skill`（和 `prompts/get`）加载一个带 `` !`命令` `` 的 skill 时，在 Runtime 上执行这些命令、把输出填进正文；带 `hooks` 的 skill 加载后，它的 `PreToolUse` / `PostToolUse` 钩子在本会话余下的时间里围着这个 server 的工具跑，`PreToolUse` 可以拦下一次调用（`isError`，`CCNM_E_POLICY`），钩子说的话附在结果末尾的一个文本块里。只在命令本来就不问人的会话里这样：受管会话开了 `allow_unattended_exec` 或是 `--print`，以及 bridge 的 coding 模式；`read` 模式和要问人的交互会话里跟以前一样不跑。`allowed-tools`、`model`、`context: fork` 不再笼统地说"不起作用"，改成各自一行写明怎样。工具、参数、错误码都没变。见第 5.1 节。
+> 2026-10-09（P84）**Linux 上，会话结束时离开了进程组的后代也会被收掉**：Runtime 的 server 一启动就把自己设成后代的 subreaper（`PR_SET_CHILD_SUBREAPER`），命令里 `setsid` 出去的进程在它的命令退出后转到 server 名下。会话结束时，server 把这些进程连同各自的进程组一起 TERM，2 秒后 KILL，确认都没了才放写锁；再过 5 秒还在的，和 P43 一样不交写权，并点名剩下的 pid（第 7 节）。攥着管道的那种因此也不再让 server 白等 10 秒。macOS 没有 subreaper，行为不变。没有加工具、参数或错误码。server 被 `SIGKILL` 时它起的进程仍然没人收：收养它们的正是被杀的那个进程。实测与覆盖范围见 [P84 记录](../research/2026-10-09-p84-linux-orphans.md)。
 
 面向的读者是**已经在本机跑着 Claude Code / Codex / 别的 MCP Host，但项目在另一台机器上的人**。它给你的不是一条裸 SSH 通道，而是一个绑定了 workspace 的远程项目工具集。
 
@@ -626,7 +627,7 @@ rows: 3
 | --- | --- | --- |
 | 工作树被别的 coding session 占着 | `CCNM_E_POLICY`，一句话说明 guard busy | 等，或者改用 `--mode read` |
 | 锁的状态无法确定（锁文件坏了、持有者存活性证明不了） | `CCNM_E_POLICY`，说明拒绝转移写权限 | **人去看现场**，不要重试到它"好了" |
-| 上一个会话结束时有命令**停不掉**（离开了进程组又攥着管道，信号够不着） | `CCNM_E_POLICY`，说明写权是**故意**没交出来的，并点名还剩哪些 `output_ref`（P43 新增） | 先按那些 ref 找到命令、把它们收掉，**再**谈清锁；顺序反了就是两个写者进同一棵树 |
+| 上一个会话结束时有命令**停不掉**（macOS 上离开了进程组又攥着管道，信号够不着；Linux 上 P84 起这种会被收掉，杀不掉才会这样） | `CCNM_E_POLICY`，说明写权是**故意**没交出来的，并点名还剩哪些 `output_ref`（P43 新增），Linux 上还有剩下的 pid（P84） | 先按那些 ref 找到命令、把它们收掉，**再**谈清锁；顺序反了就是两个写者进同一棵树 |
 
 **unknown 绝不自动降级成"没人占，那就给你"。** 把写权限交给第二个人的代价是两个 Agent 同时改一棵树，宁可停在这里等人。上一个会话的 pid 记在锁标记里，只为让诊断说得准（那个 pid 还在跑 / 已经不在 / 变成了别的程序）；**pid 不在从来不是交权的理由**，它起的命令可能还活着。
 
@@ -642,7 +643,7 @@ rows: 3
 | `list_files` 一次最多 | 1000 条（`max_entries`） |
 | `search_text` | 200 条结果（只列文件、计数两种模式下是 200 个文件）、上下文 10 行、整体 32 KiB、单行 512 字节 |
 | `exec_command` 超时 | 最大 600000 ms（10 分钟）；后台命令不给就没有期限。Codex 当 Host 时不配 `tool_timeout_sec` 只等 300 秒，见第 3.3 节 |
-| 后台命令 | 一条连接最多 8 个同时在跑；`read_output` 的 `wait_ms` 最大 600000 ms；停的时候 TERM 之后 2 秒 KILL，一个信号都够不着的（离开了进程组又占着管道）等 10 秒后放弃 |
+| 后台命令 | 一条连接最多 8 个同时在跑；`read_output` 的 `wait_ms` 最大 600000 ms；停的时候 TERM 之后 2 秒 KILL，一个信号都够不着的（离开了进程组又占着管道）等 10 秒后放弃；Linux 上 P84 起这种在命令退出后转到 server 名下、一并收掉 |
 | `exec_command` 回传 | 预览总共默认 4 KiB，`preview_bytes` 最大 16 KiB；stderr 最多占一半，其余给 stdout，某个流超出时只留它的开头和结尾。完整输出用 `output_ref` 读 |
 | `read_output` 一次最多 | 32 KiB（默认 16 KiB） |
 | `apply_patch` | 一次最多 50 个文件；一次请求里所有文件的新内容**合计** 1 MiB；被编辑的文件超过 16 MiB 直接拒绝 |

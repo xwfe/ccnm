@@ -13,6 +13,7 @@
 | [runtime-surfaces.md](runtime-surfaces.md) | Managed Agent Runtime、Remote Workspace MCP、OS 身份和 v1/v1.x 实施边界，以及 Codex 原生执行链的设计 |
 | [../research/](../research/) | 脱敏的实测记录；回归 fixture 放在 `tests/fixtures/` |
 | [三仓重构落地清单](../research/2026-09-19-cross-project-refactor-actions.md) | 2026-09-19 跨仓评审建议、依赖与验收；不替代 status，也不自动认领新阶段 |
+| [同类方案调研](../research/2026-10-08-peer-survey.md) | 2026-10-08 业界和社区可借鉴的做法、Claude Code 多主机现状和怎么盯；同样不替代 status、不自动认领阶段 |
 | [外部终端接入决策](terminal-access.md) | 直接通过 PocketShell 等第三方终端使用 CLI；原 P54–P56 未实施即撤销，不继续移动端工程 |
 | [P57–P62 总纲](core-hardening.md) | P57–P62（已完成）当时的优先级、代码依据、依赖和共同约束 |
 | [会话控制](core-session-control.md) · [输出与清理](core-output-cleanup.md) · [基线与真机验收](core-verification.md) | P57–P62（已完成）的实施细则：精确身份/状态、结果分页、Runtime 占用、跨身份清理、普通项目与候选包验收 |

@@ -546,7 +546,32 @@ rows: 3
 
 **连接**：用到才起，同一个会话复用；闲 5 分钟收掉（每分钟看一次）；**会话结束时先停 server 再放写锁**——它能写工作树。起不来、超时、断开报 `CCNM_E_DEPENDENCY`；调用发出去之后断了或超时，报的话里写明"做没做成不知道"，下一次调用会重起它。server 回了 JSON-RPC 错误（参数不对）报 `CCNM_E_INVALID_ARGS`。握手接 2024-11-05 到 2025-11-25 之间的版本。
 
-**开关**：Runtime 自己的配置 `[runtime_mcp]`：`enabled = false` 全关，`project = false` 不读项目的 `.mcp.json`，`hidden = [...]` 按名字藏。默认全开。见[配置说明](../configuration.md#runtime_mcp)。
+**开关**：Runtime 自己的配置 `[runtime_mcp]`：`enabled = false` 全关，`project = false` 不读项目的 `.mcp.json`，`hidden = [...]` 按名字藏。默认全开。
+
+### 5.8 进度通知（P82 新增）
+
+**什么时候发**：Host 在 `tools/call` 的 `_meta` 里带了 `progressToken`，并且这次调用在等一条命令：
+- 前台 `exec_command`；
+- 带 `wait_ms` 的 `read_output`。
+
+满足这两条，ccnm 每 10 秒发一条 `notifications/progress`。命令 10 秒内结束的，一条也不发。没带 token 不发。`run_in_background` 立即返回，不发。结果发出之后不再发。
+
+| 字段 | 内容 |
+| --- | --- |
+| `progressToken` | Host 给的那个，原样带回 |
+| `progress` | 这次调用已经等了多少秒（只增不减），没有 `total` |
+| `message` | `exec_command`：`running for 40 s`；`read_output`：`waited 40 s for r-…`。命令写过输出的话，后面跟 ` · ` 和最后一行 |
+
+**最后一行**取 stdout、stderr 里最近被写过的那个，只读文件末尾 4 KiB，做三件事：
+- 进度条用 `\r` 重画，只留最后一帧；
+- 去掉颜色和光标控制序列，其他控制字符换成空格；
+- 截到 120 个字符。
+
+它是给人看的状态行，不是输出本身，完整输出照旧用 `read_output` 读。
+
+**为什么发**：Claude Code 每次调用都带 token，会把进度显示出来，空闲计时也按进度重算（[官方 MCP 文档](https://code.claude.com/docs/en/mcp)）。不发的话，一个跑 5 分钟的 `cargo test`，人看到的只有一个转圈，分不清是卡住了还是在干活。Codex 0.154.0 收到进度只写日志（据调研读源码，未复核），不影响调用。
+
+**实测**（[P82 记录](../research/2026-10-08-p82-progress.md)）：真实 Claude Code 2.1.286 和 2.1.293（新协议开场）跑一条 25 秒的命令，都在 10 秒、20 秒各收到一条，调用照常返回。这只加了 server 发给客户端的通知，工具、参数、结果和错误码都没变，不升 `ccnm.workspace-mcp/2`。见[配置说明](../configuration.md#runtime_mcp)。
 
 ## 6. 连接生命周期
 

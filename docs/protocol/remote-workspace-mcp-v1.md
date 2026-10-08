@@ -639,11 +639,31 @@ rows: 3
 
 | 版本 | 谁和谁之间 | 现在是什么 |
 | --- | --- | --- |
-| MCP 协议版本 | Host ↔ 远端 server | 服务端默认 `2025-11-25`（SDK 的 LATEST） |
+| MCP 协议版本 | Host ↔ 远端 server | 用 `initialize` 开场的 Host：服务端默认 `2025-11-25`（SDK 的 LATEST）；用 `server/discover` 开场的 Host（Claude Code 2.1.292 起的默认）：按每条请求自带的版本，可以是 `2026-07-28`，见下文 |
 | ccnm 内部 open 协议 | bridge ↔ 远端 ccnm | 整数，当前是 4；不匹配 fail-closed |
 | ccnm 版本 | 两端的二进制 | 两端不必逐位相同，但内部协议必须谈得拢 |
 
 **MCP 版本协商的实际行为**（rmcp 3.2.0 实测代码路径，不是猜）：客户端要一个服务端认识的旧版本（早于 `2026-07-28` 的那几个：`2024-11-05` / `2025-03-26` / `2025-06-18` / `2025-11-25`），服务端就照它回；否则回服务端自己最新的旧版本。只有当服务端一个带 `initialize` 握手的版本都不支持时才会回 `-32022`——ccnm 不会走到那一步。**所以不要写"版本不匹配会报错"这种话**，实际是安静地协商到一个共同版本。
+
+**2026-07-28 的开场方式**（P81，2026-10-08 用真实 Claude Code 二进制零额度实测，[记录](../research/2026-10-08-p81-mcp-2026-07-28.md)）：
+
+- **怎么开场**：Claude Code 2.1.292 起默认不发 `initialize`，第一条是 `server/discover`。之后每条请求的 `_meta` 都自带三项：`io.modelcontextprotocol/protocolVersion`、`clientInfo`、`clientCapabilities`；缺了任何一项，rmcp 回 `-32602`。
+- **ccnm 怎么回**：rmcp 3.2.0 回答 `supportedVersions`（含 `2026-07-28`）和本 workspace 的 instructions，之后按 2026-07-28 服务。
+- **实测结果**：2.1.293 默认、2.1.293 设 `MCP_PROTOCOL_NEGOTIATION=legacy`（退回 `initialize`）、2.1.286 三种都一样：
+  - 拿到全部工具，调用成功；
+  - instructions 交给了模型（这两版 Claude Code 都把它放在一条消息里，不在 system 字段）；
+  - `MCP_TOOL_TIMEOUT` 超时后 `notifications/cancelled` 送达，命令随即被停。
+- **不用改配置**：Host 换到哪种开场，都不需要改 ccnm 这边的配置。
+
+**列表的缓存提示（P81 起）**：协商到 `2026-07-28` 或更新的版本时，`tools/list` 和 `prompts/list` 的结果带上规范（`server/utilities/caching`）要求的 `ttlMs` 和 `cacheScope`；更早的版本不带这两个字段。Agent 机器上的 `ccnm_agent` 两个列表取同样的值。
+
+| 结果 | `ttlMs` | `cacheScope` | 为什么 |
+| --- | --- | --- | --- |
+| `tools/list` | `300000`（5 分钟） | `private` | 一个连接里工具表不变。没给"永远"，是因为 Host 可能把它带到下一个连接，而 workspace 的 `external_mcp` 改了之后下一个连接的工具表会不同，5 分钟就是旧表最多被沿用的时间；就算沿用，调用新会话不提供的工具也会被服务端拒绝。工具表随读写模式变，不是对所有人都一样，所以不能是 `public` |
+| `prompts/list` | `0` | `private` | prompts 就是磁盘上的 skills，每次请求都重新扫，会话中途加的 skill 下一次就能看到；内容是这个项目、这台机器的 |
+| `server/discover` | `0` | `private` | rmcp 的默认值；里面有本 workspace 的 instructions |
+
+P81 之前：`prompts/list` 不带这两个字段，`tools/list` 带的是 `0` / `public`。规范里这两个值的意思是"马上过期""对所有人都一样"，和实际情况相反。Claude Code 2.1.293 拿到不带提示的 `prompts/list`，会每隔 0.25、0.5、1 秒再拉三次，第一次工具调用因此推迟到 2.03 秒（带上提示后是 0.17 秒）。这次只改 MCP 层的元数据，不涉及工具、字段和错误码，不升 `ccnm.workspace-mcp/2`。
 
 内部 open 协议不一样：**不匹配就停**，不静默回退到不检查 root 的老路径。远端 ccnm 太旧的表现是启动失败 + `CCNM_E_VERSION`，不是"连上了但行为不同"。
 

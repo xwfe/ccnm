@@ -1374,14 +1374,18 @@ fn auth_row(r: &Subject<'_>, rep: &ProbeReport) -> Check {
 /// The rows for a workspace that only external MCP clients open.
 ///
 /// It reports what this machine can prove — the policy, the project
-/// directory, the ccnm that will serve it — and skips the Agent half by
-/// name. Two of the skips are worth reading rather than glossing:
+/// directory, the ccnm that will serve it — and marks the Agent half NOTE
+/// by name. Two of those rows are worth reading rather than glossing:
 ///
 /// * the Runtime **safety** verdict has to come from the account the tools
 ///   run as, and on the managed path it arrives with the Agent's probe.
 ///   There is no Agent here, so this machine cannot answer it and must not
 ///   answer it with its own audit: "is the operator confined?" is not the
-///   question.
+///   question. It is not missing, though: `mcp-serve` takes it as that
+///   account when a client connects and refuses a failing one. Before P83
+///   these rows were SKIPs, which kept every such workspace NOT READY on
+///   every machine for ever; no machine state could have changed that,
+///   which is what NOTE means (P73).
 /// * the write guard is not checked either. Asking would mean taking it,
 ///   and taking it is what a real session does.
 fn external_only_checks(r: &Resolved<'_>, env: &Env<'_>) -> Vec<Check> {
@@ -1409,7 +1413,7 @@ fn external_only_checks(r: &Resolved<'_>, env: &Env<'_>) -> Vec<Check> {
     }
     const NO_AGENT: &str =
         "not checked: this workspace has no Agent, so there is no Agent session to diagnose";
-    const NO_TRANSPORT: &str = "not checked: the verdict belongs to the account the tools run as, and it arrives with an Agent probe this workspace has none of";
+    const NO_TRANSPORT: &str = "not checked here: the verdict belongs to the account the tools run as, and this workspace has no Agent probe to bring it; it is taken when a client connects through `ccnm mcp bridge`, and an account that fails it is refused with CCNM_E_POLICY and the reason";
     checks.extend(
         [
             "Agent SSH",
@@ -1429,7 +1433,7 @@ fn external_only_checks(r: &Resolved<'_>, env: &Env<'_>) -> Vec<Check> {
     checks.extend(
         ["Runtime safety", "exec_command"]
             .into_iter()
-            .map(|name| Check::skip(name, NO_TRANSPORT)),
+            .map(|name| Check::note(name, NO_TRANSPORT)),
     );
     checks.extend(not_yet_implemented());
     checks
@@ -2068,7 +2072,10 @@ mod tests {
     /// for a config error that is not there.
     ///
     /// What it must do instead: report the policy and the rows this machine
-    /// can prove, skip the Agent half by name, and stay READY.
+    /// can prove, mark the rows it cannot answer by design as NOTE, and --
+    /// since P83 -- be READY. Before P83 the two safety rows were SKIPs and
+    /// the verdict was NOT READY for every such workspace on every machine,
+    /// for ever (seen on real hardware at v0.13.0).
     #[test]
     fn an_external_mcp_only_workspace_is_diagnosed_not_called_a_bug() {
         let dir = std::env::temp_dir().join(format!("ccnm-doctor-{}-extonly", std::process::id()));
@@ -2100,22 +2107,18 @@ mod tests {
         let text = report.render();
 
         assert!(!text.contains("CCNM_E_INTERNAL"), "{text}");
-        // Nothing failed. It is still NOT READY, and deliberately so: the
-        // Runtime's own verdict is not knowable from here, and an unknown
-        // never renders as green in this report.
+        // Nothing failed and nothing is unknown: every row this machine
+        // cannot answer is one no machine state would change, and says why.
         assert!(
-            !report
+            report
                 .checks
                 .iter()
-                .any(|c| matches!(c.status, Status::Fail(_))),
+                .all(|c| matches!(c.status, Status::Ok | Status::Warn | Status::Note)),
             "{text}"
         );
-        assert_eq!(
-            report.exit_code(),
-            ErrorCode::NotReady.exit_code(),
-            "{text}"
-        );
-        assert!(text.contains("NOT READY (0 failed,"), "{text}");
+        assert_eq!(report.exit_code(), 0, "{text}");
+        assert!(text.contains("READY ("), "{text}");
+        assert!(!text.contains("NOT READY"), "{text}");
         let policy = row(&report, "External MCP");
         assert_eq!(policy.status, Status::Ok);
         assert!(
@@ -2127,21 +2130,27 @@ mod tests {
         assert_eq!(row(&report, "Runtime workspace").status, Status::Ok);
         assert_eq!(row(&report, "Runtime ccnm").status, Status::Ok);
         // The Agent half does not apply (NOTE since P73: no Agent, nothing
-        // to diagnose), and the safety verdict stays unknown rather than
-        // being answered with an audit of whoever typed this -- that is the
-        // SKIP that keeps this report NOT READY.
+        // to diagnose). The safety verdict is not answered with an audit of
+        // whoever typed this either -- it belongs to the account the tools
+        // run as -- but it is not missing: the server takes it when a client
+        // connects and refuses a failing account. So NOTE (P83), saying so.
         for name in ["Agent SSH", "Controller", "Remote MCP handshake"] {
             assert_eq!(row(&report, name).status, Status::Note, "{name}: {text}");
         }
         for name in ["Runtime safety", "exec_command"] {
-            assert_eq!(row(&report, name).status, Status::Skip, "{name}: {text}");
+            let row = row(&report, name);
+            assert_eq!(row.status, Status::Note, "{name}: {text}");
+            assert!(
+                row.detail
+                    .contains("belongs to the account the tools run as"),
+                "{name}: {text}"
+            );
+            assert!(
+                row.detail.contains("when a client connects")
+                    && row.detail.contains("CCNM_E_POLICY"),
+                "{name}: {text}"
+            );
         }
-        assert!(
-            row(&report, "Runtime safety")
-                .detail
-                .contains("belongs to the account the tools run as"),
-            "{text}"
-        );
         // Only the local version check ran: there is nowhere to dial.
         let calls = fake.calls();
         assert_eq!(calls.len(), 1, "{calls:?}");

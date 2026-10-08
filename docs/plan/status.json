@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-10-08T23:55:00+09:00",
-  "current_task": null,
+  "last_updated": "2026-10-08T23:59:00+09:00",
+  "current_task": "P84",
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
     "source": "docs/research/codex-internal-wiring-2026-09-07.md",
@@ -4204,6 +4204,20 @@
           "result": "本机 macOS arm64：fmt --check、clippy --workspace --all-targets -D warnings、cargo +1.89 check、cargo test --workspace --no-fail-fast（20 个二进制 1068 passed / 0 failed，少了两个只测原生链的二进制）、check_protocol 与 test_check_protocol、test_ci_gates、ci_gates（Python 247 ran / 0 failed）。没在 Linux 和真机上跑。"
         }
       ],
+      "blockers": []
+    },
+    {
+      "id": "P84",
+      "title": "Linux：收掉逃出进程组的后代，再交写锁",
+      "status": "in_progress",
+      "depends_on": [
+        "P86"
+      ],
+      "owner": "claude-code-session-2026-10-08-peer-survey",
+      "started_at": "2026-10-08T23:59:00+09:00",
+      "last_updated": "2026-10-08T23:59:00+09:00",
+      "completed_criteria": [],
+      "evidence": [],
       "blockers": []
     }
   ],

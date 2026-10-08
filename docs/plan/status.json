@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-10-08T21:00:00+09:00",
-  "current_task": null,
+  "last_updated": "2026-10-08T21:02:00+09:00",
+  "current_task": "P82",
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
     "source": "docs/research/codex-internal-wiring-2026-09-07.md",
@@ -4071,6 +4071,20 @@
           "result": "本机 macOS arm64：cargo fmt --check、clippy --workspace --all-targets -D warnings、cargo +1.89 check、cargo test --workspace（22 个二进制 1117 passed / 0 failed）、check_protocol（46 + 31 fixture）与 test_check_protocol、ci_gates（Python 246 ran / 0 failed，含计划检查）。修复后用 P81.1 夹具三组复测，结果见上一条。"
         }
       ],
+      "blockers": []
+    },
+    {
+      "id": "P82",
+      "title": "长命令跑着时给 Host 发进度",
+      "status": "in_progress",
+      "depends_on": [
+        "P81"
+      ],
+      "owner": "claude-code-session-2026-10-08-peer-survey",
+      "started_at": "2026-10-08T21:02:00+09:00",
+      "last_updated": "2026-10-08T21:02:00+09:00",
+      "completed_criteria": [],
+      "evidence": [],
       "blockers": []
     }
   ],

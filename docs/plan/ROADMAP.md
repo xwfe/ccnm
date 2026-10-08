@@ -1092,3 +1092,14 @@ ccnm 这一轮只定权威语义、补自己这边的证据。租约展示与状
 - **P81.4** Rust、Python、协议与计划门禁通过；修复后用 P81.1 的夹具复测；研究记录与状态同步。
 
 停止点：不升级本机 Claude Code；不改工具和字段；不实现 MRTR、Tasks 扩展等新协议的其他部分；不发版。
+
+### P82 — 长命令跑着时给 Host 发进度
+
+**依赖 P81。** 现象（2026-10-08）：Claude Code 2.1.286 和 2.1.293 在每次 `tools/call` 的 `_meta` 里都带 `progressToken`（P81 夹具抄录到的），它的官方 MCP 文档说会显示 progress，空闲计时也按 progress 重算；ccnm 一条都不发。一个跑 5 分钟的 `cargo test`，Host 那边从头到尾只有一个转圈，人看不出是卡住了还是在干活。用户同日要求按[同类方案调研](../research/2026-10-08-peer-survey.md)的建议实施，这是第 2 节第 2 条。
+
+- **P82.1** 前台 `exec_command`：请求带 `progressToken` 时，每 10 秒发一次 `notifications/progress`。`progress` 是已经跑了的秒数；`message` 是 `running N s`，后面跟输出的最后一行（取最近写过的那个流；去掉终端控制序列和 `\r` 之前被覆盖掉的进度条残片；截到 120 个字符）。没带 token 就不发；结果返回之后不再发；`run_in_background` 立即返回，不发。
+- **P82.2** `read_output` 带 `wait_ms` 等待时同样发，`message` 写明在等哪个 `output_ref`。
+- **P82.3** 测试：最后一行的提取写单元测试；真实二进制上，带 token 的调用收到进度、不带 token 的收不到（Rust 集成测试和中立 Python 客户端各一条）；用 P81 的夹具让真实 Claude Code 2.1.286 和 2.1.293 跑一条约 25 秒的命令，看进度通知被接受、调用照常返回。
+- **P82.4** 协议文档写明进度通知（详细说明只放这一处）；Rust、Python、协议与计划门禁通过；研究记录与状态同步。
+
+停止点：不改工具的参数和结果；不给 `call_mcp_tool` 转发远端 server 的进度；不发版。

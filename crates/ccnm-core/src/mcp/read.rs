@@ -4,9 +4,8 @@
 //! It streams. The file is read one line at a time and the loop stops at
 //! the first limit it hits, so `read_file` on a 2 GB log costs the same as
 //! on a 2 KB one. coding-tools-mcp reads the whole file into memory and
-//! then trims to `max_bytes` (`docs/research/coding-tools-mcp.md`, item 7
-//! of section m); on a Runtime Node shared with the user's real work that
-//! is a memory spike nobody asked for.
+//! then trims to `max_bytes`; on a Runtime Node shared with the user's
+//! real work that is a memory spike nobody asked for.
 //!
 //! Everything it returns is bounded (section 16), and all of it is in
 //! `content[0].text`: the numbered lines, then one footer with the

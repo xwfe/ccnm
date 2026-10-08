@@ -247,6 +247,39 @@ impl Session {
         }
     }
 
+    /// Send a request without waiting for its answer, for calls that must
+    /// be in flight at the same time.
+    fn send(&mut self, method: &str, params: Value) -> u64 {
+        self.id += 1;
+        let request = json!({"jsonrpc": "2.0", "id": self.id, "method": method, "params": params});
+        writeln!(self.stdin, "{request}").unwrap();
+        self.stdin.flush().unwrap();
+        self.id
+    }
+
+    /// Read until every one of `ids` is answered, keeping the answers and
+    /// whatever notifications arrived on the way.
+    fn answers(&mut self, ids: &[u64]) -> (std::collections::HashMap<u64, Value>, Vec<Value>) {
+        let mut answers = std::collections::HashMap::new();
+        let mut notifications = Vec::new();
+        while answers.len() < ids.len() {
+            let mut line = String::new();
+            let read = self.stdout.read_line(&mut line).unwrap();
+            assert!(
+                read > 0,
+                "server closed stdout with {answers:?} answered of {ids:?}"
+            );
+            let message: Value = serde_json::from_str(line.trim()).unwrap();
+            match message.get("id").and_then(Value::as_u64) {
+                Some(id) if ids.contains(&id) => {
+                    answers.insert(id, message["result"].clone());
+                }
+                _ => notifications.push(message),
+            }
+        }
+        (answers, notifications)
+    }
+
     fn tools(&mut self) -> Vec<String> {
         let listed = self.rpc("tools/list", json!({}));
         listed["tools"]
@@ -1417,4 +1450,79 @@ fn list_results_carry_cache_hints_only_for_a_2026_07_28_host() {
         );
     }
     older.shutdown();
+}
+
+/// P82: a call that waits on a command reports on the token the Host gave
+/// it -- the foreground `exec_command` with how long it has run, a
+/// `read_output` wait with what it is waiting for, each with the last line
+/// the command wrote -- and a call without a token gets nothing it could
+/// not have asked for. Both are in flight at once, so this costs one
+/// reporting interval (10 s) rather than two.
+#[test]
+fn a_call_waiting_on_a_command_reports_progress_on_its_token() {
+    let fixture = Fixture::unconfined("progress", "coding");
+    let mut session = fixture.open("demo", ExternalMode::Coding, "p82-progress");
+    let background = session.call(
+        "exec_command",
+        json!({"shell": "echo background line; sleep 11", "run_in_background": true}),
+    );
+    let reference = output_ref(&background);
+
+    let foreground = session.send(
+        "tools/call",
+        json!({
+            "name": "exec_command",
+            "arguments": {"shell": "echo step one; sleep 11", "timeout_ms": 30000},
+            "_meta": {"progressToken": "p82-fg"}
+        }),
+    );
+    let waiting = session.send(
+        "tools/call",
+        json!({
+            "name": "read_output",
+            "arguments": {"output_ref": reference, "wait_ms": 20000},
+            "_meta": {"progressToken": "p82-wait"}
+        }),
+    );
+    let silent = session.send(
+        "tools/call",
+        json!({"name": "exec_command", "arguments": {"shell": "sleep 11", "timeout_ms": 30000}}),
+    );
+    let (answers, notifications) = session.answers(&[foreground, waiting, silent]);
+    for id in [foreground, waiting, silent] {
+        assert!(!is_error(&answers[&id]), "{}", text(&answers[&id]));
+    }
+
+    let progress: Vec<&Value> = notifications
+        .iter()
+        .filter(|n| n["method"] == "notifications/progress")
+        .collect();
+    let said = |token: &str| -> Vec<String> {
+        progress
+            .iter()
+            .filter(|n| n["params"]["progressToken"] == token)
+            .map(|n| n["params"]["message"].as_str().unwrap().to_string())
+            .collect()
+    };
+    let foreground_said = said("p82-fg");
+    let waiting_said = said("p82-wait");
+    assert!(
+        foreground_said
+            .iter()
+            .any(|m| m.starts_with("running for 1") && m.ends_with(" · step one")),
+        "{progress:?}"
+    );
+    assert!(
+        waiting_said.iter().any(|m| m.starts_with("waited 1")
+            && m.contains(&format!("s for {reference}"))
+            && m.ends_with(" · background line")),
+        "{progress:?}"
+    );
+    // Every report belongs to one of the two calls that asked for them.
+    assert_eq!(
+        progress.len(),
+        foreground_said.len() + waiting_said.len(),
+        "{progress:?}"
+    );
+    session.shutdown();
 }

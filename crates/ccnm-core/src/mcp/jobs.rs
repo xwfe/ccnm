@@ -731,6 +731,7 @@ mod tests {
                     jobs: &self.jobs,
                     stop,
                     sandbox: None,
+                    run_dir: None,
                 },
             )
         }

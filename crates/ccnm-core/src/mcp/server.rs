@@ -53,6 +53,7 @@ use crate::mcp::machine_skills::{self, Machine};
 use crate::mcp::notebook::{self, ReadNotebookArgs};
 use crate::mcp::output::{self, ReadOutputArgs};
 use crate::mcp::patch::{self, ApplyPatchArgs};
+use crate::mcp::progress;
 use crate::mcp::read::{self, ReadFileArgs};
 use crate::mcp::relay::{self, CallMcpToolArgs, Relay};
 use crate::mcp::retention;
@@ -838,22 +839,34 @@ impl Server {
         let jobs = Arc::clone(&self.inner.jobs);
         let stop = Arc::new(jobs::Stop::default());
         let running = Arc::clone(&stop);
+        let run_dir = Arc::new(std::sync::OnceLock::new());
+        let found = Arc::clone(&run_dir);
         let mut task = tokio::task::spawn_blocking(move || {
             let running = exec::Running {
                 jobs: &jobs,
                 stop: running,
                 sandbox: sandbox.as_deref(),
+                run_dir: Some(&found),
             };
             exec::exec_command_in(provider, &root, &output, &args, running)
         });
+        let reporter = progress::Reporter::for_call(&context);
+        let mut ticks = progress::Reporter::ticks();
         // A client that cancels the call wants the command gone, not just
         // the answer: before P41 it ran on to its end or its timeout, up to
         // ten minutes after the client had given up on it.
-        let ran = tokio::select! {
-            ran = &mut task => ran,
-            () = context.ct.cancelled() => {
-                let _ = tokio::task::spawn_blocking(move || stop.stop(jobs::StopReason::Cancelled)).await;
-                task.await
+        let ran = loop {
+            tokio::select! {
+                ran = &mut task => break ran,
+                () = context.ct.cancelled() => {
+                    let _ = tokio::task::spawn_blocking(move || stop.stop(jobs::StopReason::Cancelled)).await;
+                    break task.await;
+                }
+                _ = ticks.tick(), if reporter.is_some() => {
+                    if let Some(reporter) = &reporter {
+                        reporter.report(run_dir.get().cloned(), None).await;
+                    }
+                }
             }
         }
         .map_err(|e| ErrorData::internal_error(format!("exec_command task failed: {e}"), None))?;
@@ -1009,12 +1022,25 @@ impl Server {
         if let Some(wait) = args.wait_ms.filter(|ms| *ms > 0)
             && let Ok(reference) = output::validate_ref(&args.output_ref)
         {
-            wait_while_running(
-                dir.join(reference),
+            let run = dir.join(&reference);
+            let waited = wait_while_running(
+                run.clone(),
                 Duration::from_millis(wait.min(output::MAX_WAIT_MS)),
                 context.ct.cancelled(),
-            )
-            .await;
+            );
+            tokio::pin!(waited);
+            let reporter = progress::Reporter::for_call(&context);
+            let mut ticks = progress::Reporter::ticks();
+            loop {
+                tokio::select! {
+                    () = &mut waited => break,
+                    _ = ticks.tick(), if reporter.is_some() => {
+                        if let Some(reporter) = &reporter {
+                            reporter.report(Some(run.clone()), Some(&reference)).await;
+                        }
+                    }
+                }
+            }
         }
         let page = tokio::task::spawn_blocking(move || output::read_output(&dir, &args))
             .await

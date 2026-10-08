@@ -189,6 +189,7 @@ pub fn exec_command(
             jobs: &Jobs::new(),
             stop: Arc::default(),
             sandbox: None,
+            run_dir: None,
         },
     )
 }
@@ -203,6 +204,9 @@ pub(crate) struct Running<'a> {
     /// (`exec_sandbox = "codex"`, P33); the command then runs behind
     /// [`Sandbox::wrap`] and the result says so.
     pub sandbox: Option<&'a Sandbox>,
+    /// Where the caller learns the run's directory once there is one, to
+    /// report the last line the command wrote while it waits (P82).
+    pub run_dir: Option<&'a std::sync::OnceLock<std::path::PathBuf>>,
 }
 
 pub(crate) fn exec_command_in(
@@ -216,6 +220,7 @@ pub(crate) fn exec_command_in(
         jobs,
         stop,
         sandbox,
+        run_dir,
     } = running;
     let (argv, command) = match (args.cmd.is_empty(), args.shell.as_deref()) {
         (false, Some(_)) => {
@@ -292,6 +297,9 @@ pub(crate) fn exec_command_in(
     }
     let (run, stdout, stderr) = output.begin()?;
     ticket.name(&run.reference);
+    if let Some(slot) = run_dir {
+        let _ = slot.set(run.dir.clone());
+    }
     let mut cmd = Cmd::new(&argv[0])
         .args(&argv[1..])
         .cwd(&cwd_abs)
@@ -1147,6 +1155,7 @@ mod tests {
                 jobs: &Jobs::new(),
                 stop: Arc::default(),
                 sandbox: None,
+                run_dir: None,
             },
         )
         .unwrap();

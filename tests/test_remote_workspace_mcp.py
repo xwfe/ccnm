@@ -808,6 +808,46 @@ agent_node = "agent"
         self.assertIn("\nrunning in the background as output_ref r-", text)
         return text.split("output_ref ", 1)[1].split()[0]
 
+    def test_a_call_waiting_on_a_command_reports_progress_on_its_token(self):
+        """P82：等命令的调用按 Host 给的 progressToken 报进度，没给 token 的什么也收不到。
+
+        前台 exec_command 报"跑了多久 · 最后一行"，read_output 的 wait_ms 报"等了多久、
+        在等哪个 output_ref · 最后一行"。三个调用同时在跑，所以只花一个报告间隔（10 秒）。
+        """
+        self.write_config("coding", dedicated=False)
+        client = self.client("demo", "coding", "neutral-progress")
+        ref = self.background(client, "echo background line; sleep 11")
+        fg = client.send("tools/call", {
+            "name": "exec_command",
+            "arguments": {"shell": "echo step one; sleep 11", "timeout_ms": 30000},
+            "_meta": {"progressToken": "neutral-fg"},
+        })
+        wait = client.send("tools/call", {
+            "name": "read_output",
+            "arguments": {"output_ref": ref, "wait_ms": 20000},
+            "_meta": {"progressToken": "neutral-wait"},
+        })
+        silent = client.send("tools/call", {
+            "name": "exec_command", "arguments": {"shell": "sleep 11", "timeout_ms": 30000},
+        })
+        results, notes = client.answers([fg, wait, silent])
+        for got in results.values():
+            self.assertFalse(is_error(got), result_text(got))
+        progress = [n["params"] for n in notes if n.get("method") == "notifications/progress"]
+        by_token = {}
+        for p in progress:
+            by_token.setdefault(p["progressToken"], []).append(p["message"])
+        self.assertEqual(set(by_token), {"neutral-fg", "neutral-wait"}, progress)
+        self.assertTrue(any(m.startswith("running for 1") and m.endswith(" · step one")
+                            for m in by_token["neutral-fg"]), progress)
+        self.assertTrue(any(m.startswith("waited 1") and f"s for {ref}" in m
+                            and m.endswith(" · background line")
+                            for m in by_token["neutral-wait"]), progress)
+        # progress 是已过的秒数，只增不减。
+        for token in by_token:
+            seconds = [p["progress"] for p in progress if p["progressToken"] == token]
+            self.assertEqual(seconds, sorted(seconds), progress)
+
     def wait_pid(self, name: str) -> int:
         path = self.root / name
         deadline = time.monotonic() + 10

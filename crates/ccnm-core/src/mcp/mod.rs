@@ -26,6 +26,7 @@ pub mod output;
 pub mod patch;
 pub mod path;
 pub mod probe;
+pub(crate) mod progress;
 pub mod read;
 pub mod relay;
 pub mod retention;

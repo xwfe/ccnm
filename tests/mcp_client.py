@@ -69,6 +69,25 @@ class McpClient:
                     raise RpcError(message["error"]["code"], message["error"]["message"])
                 return message["result"]
 
+    def answers(self, ids: list[int]) -> tuple[dict[int, dict[str, Any]], list[dict[str, Any]]]:
+        """读到 ids 全都有回答为止；返回各自的 result，和路上收到的通知（进度之类）。"""
+        assert self._proc.stdout
+        results: dict[int, dict[str, Any]] = {}
+        notes: list[dict[str, Any]] = []
+        while len(results) < len(ids):
+            line = self._proc.stdout.readline()
+            if not line:
+                raise ConnectionError(f"服务端在回答 {ids} 之前关掉了 stdout\n{self._diagnostic()}")
+            self.lines.append(line.rstrip("\n"))
+            message = json.loads(line)
+            if message.get("id") in ids:
+                if "error" in message:
+                    raise RpcError(message["error"]["code"], message["error"]["message"])
+                results[message["id"]] = message["result"]
+            else:
+                notes.append(message)
+        return results, notes
+
     def _diagnostic(self) -> str:
         """服务端的退出码和它留在 stderr 上的话。"""
         self._proc.wait(timeout=10)

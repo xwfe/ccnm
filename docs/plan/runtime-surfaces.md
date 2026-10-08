@@ -426,72 +426,18 @@ ROADMAP 的 P9–P12 对应以下顺序；P8 仍先完成独立 Orchestrator 的
 
 如果真实代码证明某一批需要调整顺序，可以改计划，但必须先在 status blocker/evidence 写清楚“哪条已验证假设被推翻”，不能静默换架构。
 
-## 12. Codex 原生执行链（P21–P30；2026-09-17 封存）
+## 12. Codex 原生执行链（P21–P30；2026-09-17 封存，2026-10-08 删除）
 
-### 12.0 封存决定（2026-09-17）
+**已删除**（P86，2026-10-08，用户定："目前处于 dogfood，删掉不影响"）。执行路径只有一条：ccnm 的 MCP 七工具 + 共享库，Claude Code、Codex、Web AI（经 gld hub）都走它。配置键 `codex_exec_server` 一起去掉，写着它的配置解析失败（`CCNM_E_CONFIG`）。
 
-**用户决定：这条链封存。**代码和测试保留，`codex_exec_server` 仍是 opt-in、默认关，版本门仍钉 Codex 0.154.0；**不再随 Codex 版本重测规则表、不为它发版推广、不做剩下的真机和 Linux 补测**（hpsrv 黑洞复测、Linux 上 fs helper 的实测都取消）。默认执行路径只有一条：ccnm 的 MCP 七工具 + 共享库，Claude Code、Codex CLI、Web AI（经 gld hub）三种客户端都走它。跨仓库的最终目标——三种客户端 × macOS / Linux / Windows——和当前覆盖表写在 toexec 仓库 `docs/plan/implementation-plan-v2.md` 第 0 节；只留一条路径，才谈得上把它做到跨平台。
+**它原来是什么**：受管 Codex 交互会话不用 ccnm 的 MCP 工具，改用 Codex 自带的执行工具，由官方 `codex exec-server` 在 Runtime 上执行；Agent 侧 `ccnm internal exec-transport` 接成到 Runtime 的 ssh，Runtime 侧 `ccnm internal exec-serve` 解析 workspace、审计、取写锁，并按规则表逐条过滤 JSON-RPC（内部协议号 6，删除后不再分配给别的东西）。
 
-**为什么**（依据都是已有实测，不是估计）：
+**为什么先封存、再删**（依据都是实测，详见 P21–P30 研究记录，原设计文字在 git 历史里本节删除之前的版本）：
 
-- **收益没量过。**原生链的假设收益是"模型用自带工具比用 MCP 七工具干得好"，从头到尾没做过对照：P24 只跑了 3 次模型、没有 MCP 组；P0 时 Codex 经 MCP 七工具本来就跑通了。
-- **量过的那一项收益不需要这条链。**命令有 OS 沙箱（Seatbelt / bubblewrap）是原生链相对 MCP 路径唯一实测过的额外约束；toexec V2-P1 证明 `codex sandbox` 包一下命令、不经 exec-server 的 RPC，挡住的集合完全相同（macOS 实测，Linux 未测）。
-- **自动化那条主线用不上它。**原生链只开交互模式（`codex exec` 要求 Agent 本机有同名目录，第 12.3 节），而 Machine API / Orchestrator 走的正是 print。它只服务人坐在 TUI 前的用法。
-- **带来的新限制**：单个文件写入约 24 MiB 就断会话、exec-server 读 200 MiB 文件占约 1 GiB、Agent 离开 10 分钟会话作废、Agent 本机个人 skill 的名字进提示（P24、P29）。
-- **持续成本的大头是版本钉死。**exec-server 协议没有版本协商、未知通知直接断连、沙箱内容完全信客户端，ccnm 只能逐字段核对；Codex 每发一版就要按 P21 的 17 个实验重测一遍规则表，不测就永远钉在 0.154.0。另外两条执行路径、两套安全模型要保持等价，Runtime 还要装 Codex 二进制和 bubblewrap。
-- **通往三平台的不是它。**它依赖 Unix 进程组、`ps` / `/proc`、ssh stdio 和 macOS / Linux 各自的沙箱。
+- 假设的收益（模型用自带工具比用 MCP 七工具干得好）从头到尾没做过对照。
+- 实测到的唯一额外约束是命令的 OS 沙箱，而 P33 的 `exec_sandbox = "codex"` 不经这条链就拿到了同一个沙箱，三种客户端都受益。
+- 它只服务交互模式（`codex exec` 要求项目在 Agent 本机），Machine API / Orchestrator 用不上。
+- 持续成本大：exec-server 协议没有版本协商，Codex 每发一版都得重测规则表，只能钉死 0.154.0；它还依赖 Unix 进程组和 `ps` / `/proc`，挡在三平台目标的路上。
+- 封存后它仍占着十几个文件里的分支和一套测试；P84 改进程组回收这类共享机制时还得同时照顾它，所以删掉。
 
-**封存状态下会发生什么**：Codex 升到 0.154.0 之后的版本，这条链在会话启动前就被版本门拒绝（`CCNM_E_VERSION`），不需要人做任何事；开着 `codex_exec_server` 的 workspace 在 0.154.0 上仍按 P24–P30 实测的样子工作，但不再有新的证据和承诺。CI 里它的测试照跑（不到 30 秒），代码坏了会知道。
-
-**什么情况下解封**：有人做了同任务的对照（MCP 七工具 vs 原生链，约 30 次额度）且原生链明显更好；或者 Codex 官方给 exec-server 协议加了版本协商、把沙箱判定挪到服务端。两条都没发生就不动它。
-
-**沙箱那项收益怎么拿**：P33 做了——workspace 写 `exec_sandbox = "codex"`，MCP 路径的 `exec_command` 就包进 `codex sandbox`，三种客户端都受益；opt-in、默认不变，权限对象一字不改，被挡就报错不放行重试（[配置说明](../configuration.md#exec_sandbox)、[P33 记录](../research/p33-exec-sandbox-2026-09-17.md)）。
-
-下面从 12.1 起是这条链的设计原文，保留作记录；各阶段的实测见 P21–P30 的研究记录。
-
-来自跨仓计划 toexec v2 的 V2-C。**现在的 Managed Codex 关掉自己的执行工具，改用 ccnm 的七个 MCP 工具**；原生链让 Codex 用它自带的执行工具，由官方 `codex exec-server` 在 Runtime 上执行。它是入口 A 在 Codex 上的一个 opt-in 变体，默认仍走 MCP，不影响 Claude 和入口 B。
-
-```text
-Agent Node（Agent Identity）                                        Runtime Node（ccrun）
-Codex ── stdio（它自己 spawn 的子进程）──> ccnm exec-transport ── SSH stdio ──> ccnm exec-serve ── stdio ──> codex exec-server
-         按 CODEX_HOME/environments.toml 起      exec 成一条 ssh                 解析 workspace / 审计
-         没有端口、没有秘密                      每会话一条，Codex 保证            写锁 / 按方法过滤
-```
-
-### 12.1 谁负责什么
-
-| 位置 | 负责 | 不负责 |
-| --- | --- | --- |
-| Agent 侧传输程序 | 被 Codex 按每会话的 `environments.toml` 启动，exec 成一条到 Runtime 的 ssh；每会话一份 CODEX_HOME（`auth.json` symlink 到 profile，`environments.toml`，`config.toml` 只有信任条目） | 不解析方法、不做授权——授权只在 Runtime 做一次，避免两份规则漂开 |
-| Runtime 受管入口 | 按自己的配置解析 workspace、安全审计、取写锁、监督 exec-server、逐条过滤 JSON-RPC | 不信任客户端给的 root、sandbox 或版本声明 |
-| exec-server | 执行已放行的请求 | **不能当权限边界**：它完全信客户端传来的 sandbox |
-
-授权放在 Runtime，是因为路径要在项目所在的文件系统上解析 symlink 才判得准，root 也只有 Runtime 知道。
-
-**为什么不是 WebSocket 网桥。**立项时按 `CODEX_EXEC_SERVER_URL` 设计：ccnm 在 Agent 本机监听回环端口、按对端 uid 放行、每会话只放一条连接（toexec G05-peer 实测通过）。P23 开工前核对 0.154.0 源码：TUI 启动时先读 `CODEX_HOME/environments.toml`，里面每个环境要么写 `url`（WebSocket），要么写 `program`/`args`/`env`/`cwd`——后者由 Codex 自己 spawn 成子进程、拿它的 stdin/stdout 走同一套 JSON-RPC，客户端里这条传输没有 reconnect 策略。实测（[P23 记录](../research/p23-stdio-transport-2026-09-16.md)）：TUI 真的这样连；传输程序死掉后 Codex 不再起第二个，第二条命令报 `exec-server transport disconnected`；`--ignore-user-config` 会关掉 environments.toml，但交互模式本来就不传它。于是网桥要解决的三件事——连接身份、只放一条、不 resume——都由"Codex 自己 spawn、自己持有管道"直接给出，不需要监听端口，也不需要新依赖。
-
-依据（toexec 仓库，均为 Codex 0.154.0 实测、零模型额度）：[连接身份](https://github.com/xwfe/toexec/blob/main/evidence/v2-c/g05-peer/README.md)（URL 令牌方案否决；按 uid 放行通过；放行重连时 Codex 会自己 resume——这两条现在只作对照）、[协议](https://github.com/xwfe/toexec/blob/main/evidence/v2-c/g01/README.md)（没有版本协商；未知通知和超过 64 MiB 的帧直接断连）、[权限](https://github.com/xwfe/toexec/blob/main/evidence/v2-c/g06/README.md)（`sandbox: null` 就不受限；`http/request` 无限制；`environmentConfig/read` 返回服务端配置里的凭据）、[stdio 传输](https://github.com/xwfe/toexec/blob/main/evidence/v2-c/p23-stdio/README.md)（environments.toml 的 program 传输、断线不重连、symlink 的 auth.json 读写穿透）。
-
-### 12.2 原生读和 MCP 读同一个契约（用户 2026-09-16 决定）
-
-**exec-server 的文件读方法**（`fs/readFile`、`fs/open`/`readBlock`、`fs/readDirectory`、`fs/walk`、`fs/getMetadata`、`fs/canonicalize`）**按 ccnm `read_file` 的路径契约校验**：先查原始输入、拒绝 `..`，再解析 symlink，结果必须仍在 workspace 根内。不看请求里的 sandbox 是什么——Codex 自己发的这些请求本来就是 `sandbox: null`。
-
-Codex 启动时会从工作区一路往上查 `.git`（实测直到 `/`）。根以上的这类查询**不转给 exec-server**，由受管入口照 exec-server 自己的"不存在"原样回答（`-32004`）；P21 实测这样回答后 Codex 的请求和"上面确实没有仓库"时一致。代价：workspace 是某个 Git 仓库的子目录时，Codex 看不到上层仓库——不拦的话，它找到上层 `.git` 后还会去那个仓库根读 `AGENTS.md`，那已经在根外了。
-
-没选的方案：让"能读的范围 = ccrun 账号能读的范围"。实现简单，但原生入口会比 MCP 入口宽，同一个 workspace 换个入口就能读到根外的文件。
-
-**命令执行不受这条约束**，与 MCP 的 `exec_command` 一样：命令能读 ccrun 能读的一切，写入受 Codex 发来的 sandbox 限制（受管入口要求 sandbox 存在且根钉在 workspace 上）。真正的上限仍是 ccrun 身份，见第 4 节。
-
-### 12.3 首版范围
-
-- **只开 coding 会话。**Codex 靠跑命令读文件，而只读会话不开任意命令（第 7.2 节同一理由），原生链开了也没法用；只读会话继续走 MCP。
-- **只开交互模式，启动时传 `-C <Runtime 根>`。**`codex exec`（print）会先在 Agent 本机检查这个目录，要求 Agent Node 上有同一绝对路径，而 Runtime 根常在 Agent 账号建不了的地方；交互模式不检查。代价是 Machine API（只有 print）起的 Codex 会话继续走 MCP。依据见 [P21 记录](../research/p21-codex-native-surface-2026-09-16.md)第 1 条。
-- **规则表只核对 sandbox 在不在是不够的。**人在 Codex 里批准提权后，命令会带 `sandbox: null`，越界 patch 会带一条多出来的路径写条目；逐方法的规则见 P21 记录的规则表。
-- **Linux Runtime 要装 bubblewrap，并允许执行账号创建 user namespace**，否则 Codex 发来的沙箱起不来（失败即拒，命令不执行）。
-- **不 resume。**断线就结束会话，与 ccnm v1 一致；Codex 对 stdio 传输没有重连策略（实测传输死掉后不再起第二个），受管入口另外拒绝带 `resumeSessionId` 的握手。
-- **每个原生会话一份 CODEX_HOME。**Codex 只从 `CODEX_HOME/environments.toml` 读传输配置，profile 目录是凭据所在、多个会话共用，不能写会话文件进去。session 目录下的 `codex-home/` 放 `environments.toml`、指向 profile `auth.json` 的 symlink、只含信任条目的 `config.toml`；Codex 的会话记录、历史和缓存也落在这里，随 session 目录一起 purge。代价：profile 自己的 `config.toml` 在原生会话里不生效（print 模式本来就带 `--ignore-user-config`，MCP 交互会话仍读它），要改模型走实例注册表的 `model` 字段。
-- **只对 Codex Agent 生效。**同一 workspace 的 Claude 会话仍走 MCP 七工具；opt-in 的 workspace 起 Codex print 会话在创建 session 前拒绝，不退回 MCP。
-- `http/request` 一律拒绝；exec-server 的环境和 MCP `exec_command` 的子进程用同一套清理，`CODEX_HOME` 由 ccnm 生成、不含凭据。
-- **会话结束先证明进程都没了才放锁。**exec-server 给每条命令单独开进程组，`setsid` 脱离的进程它关 stdin 时也不清；ccnm 按每个会话独有的环境变量标记扫进程表，扫不干净锁就留在 `held`（P22）。
-- **静默的 Agent 由 Runtime 判定离开（P26）。**exec-server 协议没有给客户端的 ping，但 Codex 0.154.0 对不认识的服务端**请求**回 `-32601` 并照常工作（不认识的**通知**则会断连）。`exec-serve` 在客户端静默 30 秒时发 `ccnm/liveness` 请求，回答由 ccnm 吃掉、不转给 exec-server；连续 10 分钟没有任何客户端字节、也没有一条大消息在向客户端推进，就走上面那条正常收尾。和 MCP 入口的心跳不同，这里无响应会结束会话——用户选的取舍：离开超过 10 分钟的原生会话作废，换锁不再需要人工去杀 sshd（P24 黑洞 5/5 一直占锁）。
-- Claude 经 exec-server 是另一件事（toexec v2 的 V2-P 实验线），不在这里。
+**留下来的**：P33 的沙箱用到的东西（`codex_bin`、`codex sandbox` 的版本门、`tests/fixtures/codex-0.154.0/exec-server/process-start-workspace-write.json` 这份权限对象），以及 P21–P30 的研究记录。

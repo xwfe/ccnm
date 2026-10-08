@@ -268,12 +268,12 @@ git config --global user.email "<email>"
 | `git` | `list_files`、写 guard 的资源判定、项目自己 | 降级成非 git 视图；guard 按目录而不是按仓库互斥 |
 | `ripgrep`（`rg`） | `search_text`——它不自己扫文件 | 七工具少一个，报 `ripgrep is not installed on the Runtime Node` |
 
-workspace 开了 [`exec_sandbox = "codex"`](configuration.md#exec_sandbox)（`exec_command` 包进 Codex 的 OS 沙箱）或 [`codex_exec_server`](configuration.md#codex_exec_server)（这条链已封存，默认关，新项目别开）时，Runtime 上还要：
+workspace 开了 [`exec_sandbox = "codex"`](configuration.md#exec_sandbox)（`exec_command` 包进 Codex 的 OS 沙箱）时，Runtime 上还要：
 
 | 前提 | 为什么 | 没有它会怎样 |
 | --- | --- | --- |
-| 节点配置里的 `codex_bin` 指向 Codex 0.154.0 | 沙箱是它的 `codex sandbox`；封存的原生链用它的 `exec-server` | 会话启动前报 `CCNM_E_CONFIG` 或 `CCNM_E_VERSION`（沙箱：任何入口的会话都起不来，不会退回裸跑）；原生链另有 `ccnm doctor` 的 `Codex 原生链` 一行提前报同一个错 |
-| **Linux**：装 `bubblewrap`，并允许执行账号创建 user namespace（Debian 13 默认允许） | Codex 在 Linux 上用 bwrap 实现 workspace-write 沙箱 | 每条命令都失败、不执行（P21 容器实测）；**doctor 查不出来**，原因见[使用说明](usage.md#codex-原生链那一行) |
+| 节点配置里的 `codex_bin` 指向 Codex 0.154.0 | 沙箱是它的 `codex sandbox` | 会话启动前报 `CCNM_E_CONFIG` 或 `CCNM_E_VERSION`，任何入口的会话都起不来，不会退回裸跑 |
+| **Linux**：装 `bubblewrap`，并允许执行账号创建 user namespace（Debian 13 默认允许） | Codex 在 Linux 上用 bwrap 实现 workspace-write 沙箱 | 会话启动时那次 `sh -c 'exit 0'` 探测失败，报 `CCNM_E_DEPENDENCY`（带 Codex 自己的报错），不会退回裸跑；doctor 不提前查（[配置说明](configuration.md#exec_sandbox)） |
 
 Codex 的 Linux 沙箱会在真实的 `/tmp` 里留下几个空目录（`/tmp/.git`、`/tmp/.agents`、`/tmp/.codex`、`/tmp/codex-bwrap-synthetic-mount-targets-<uid>/`），属主是执行账号，用完不删；`/tmp` 是 tmpfs 的话重启就没了。这是 Codex 的行为，ccnm 不清理它们（P24 实测）。
 
@@ -325,13 +325,10 @@ sessions/<ccnm-session-id>/
 ├── stderr           官方 CLI 的 stderr
 ├── supervisor.log   supervisor 自己的诊断
 ├── tmux.conf        ccnm 自己那个 tmux server 启动时读的配置（见下）
-├── codex-home/      只有 codex_exec_server 的 Codex 会话有：这个会话的 CODEX_HOME（见下）
 └── exit             最后写的：它是怎么结束的
 workspaces/<name>/   官方 CLI 的工作目录
 controller.sock      controller 的监听 socket
 ```
-
-`codex-home/` 是 exec-server 链（[配置说明](configuration.md#codex_exec_server)）给 Codex 的私有 `CODEX_HOME`：ccnm 写进去的只有 `environments.toml`、指向 profile 里 `auth.json` 的 **symlink** 和只含信任条目的 `config.toml`；其余（`sessions/`、`history.jsonl`、几个 sqlite）是 Codex 自己在会话里写的。symlink 指向的那个文件才是登录凭据，删这个目录不动 profile。
 
 **Runtime Node：**
 
@@ -476,38 +473,6 @@ abandoned 1 command(s) (r-e69acf4e804643a2)
 写锁存在**传给 ccnm 的那个 state 目录**里（`${XDG_STATE_HOME:-~/.local/state}/ccnm/write-guards/`），文件名按工作树的规范化路径算。所以同一棵工作树，只要两边的 `XDG_STATE_HOME` 不一样，就是两把互不相干的锁：两个 coding 会话能同时开起来，各写各的，谁也不知道谁。2026-09-20 用真实二进制实测过——两个会话都成功写进了同一棵树（[P43 记录](research/p43-guard-recovery-2026-09-20.md)）。
 
 这是设计的边界，不是 bug：ccnm 不往工作树里放状态，也不占用系统级的固定路径。避开它只有一条：**同一台机器上服务同一棵树的所有 ccnm 进程，用同一个 `XDG_STATE_HOME`**。两个不同的系统用户各自跑 ccnm 服务同一棵树也是这个问题（各自的 home 就是各自的 state），那种情况下这把锁保护不了你，得靠别的办法（比如干脆不让第二个账号写那棵树）。
-
-**占着锁的是 Codex exec-server 链时**（`codex_exec_server = true` 的 workspace），第 1 步要找的是 `ccnm internal exec-serve`、`codex exec-server` 和它们起的命令；Agent Node 那边对应的是 Codex 自己 spawn 的 `ccnm internal exec-transport`——它 exec 成了一条 `ssh … internal exec-serve`，`ps` 里看到的是 ssh。命令不一定还挂在这两个进程下面：exec-server 给每条命令单独开进程组，用 `setsid` 脱离的进程会被 init 收养。它们的环境变量里都有 `CCNM_EXEC_SESSION=<session id>-<随机串>`，按这个找（macOS 用 `ps -axEww -o pid,command`，Linux 看 `/proc/<pid>/environ`）。监督进程自己放不了锁时报的错里就带着这个值。
-
-### Agent 静默离网之后，exec-server 链的锁一直 held
-
-症状：Agent 那台机器断了网、睡着了或者直接关机，之后谁在这个 workspace 上开新会话都报 `workspace write guard is busy`，而 Agent 那边早就没有这个会话了。
-
-**先等：从 Agent 最后一次有动静算起，最多 10 分钟锁会自己释放**（P26 起的构建）。Runtime 上的 `ccnm internal exec-serve` 在连接上连续 30 秒收不到任何字节时，发一个探活请求 `ccnm/liveness`。Codex 不认识这个请求，按它的规矩回一个 `-32601` 错误，回了就说明它还在。**连续 10 分钟一个字节都没收到**（探活的回答也没有），`exec-serve` 就按正常路径收尾：关 exec-server、扫进程、写 `released`。Runtime 的 stderr 里是这三行（时间戳省略），第三行出现才说明锁真的放了：
-
-```text
-WARN nothing from the client, not even an answer to a liveness request; ending the exec-server session silent_seconds=600
-INFO exec-server relay ended end=ClientSilent
-INFO exec-server session ended; write guard released session=<session id>
-```
-
-为什么要等这么久、不是立刻判死：TCP 连接在网络抖一下、机器短暂睡眠时是会活过来的，30 秒没回答不代表人走了。10 分钟内回来的会话照常可用：本机把真实 Codex 冻住 2 分钟再恢复，积压的 4 个探活在恢复瞬间全部得到回答，下一条命令正常执行（[P26 记录](research/p26-native-liveness-2026-09-17.md)）。
-
-**代价**：Agent 机器睡眠或断网**超过 10 分钟**，原生会话会被 Runtime 结束。醒来之后 TUI 上**不会**先有任何提示，要等 Codex 的下一条命令报 `exec-server transport disconnected`（[排错手册](troubleshooting.md#codex-会话里模型报-toolsexec_command-is-not-a-function或-exec-server-transport-disconnected)症状 B），在 Codex 里 `/exit` 再起一个会话。结束前没跑完的命令已经被杀掉，不会在断线后继续改文件。
-
-**等了 10 分钟还是 held**，只有两种可能：
-
-- Runtime 上的 ccnm 早于 P26，没有探活。比如 P24 真机验收装在 hpsrv 上的那份（7ae2d4b）就没有。换成新构建，或者按下面的步骤手工结束。
-- 收尾时有进程没能证明已经结束，锁按设计留在 `held`。stderr 里会有 `the workspace write guard stays held`，按[写入 guard 残留](#写入-guard-残留)处理，**不要**用下面的步骤。
-
-**手工结束**（不想等，或者 Runtime 是旧构建），在 Runtime 上以执行账号做，顺序不能反：
-
-1. 从 `write-guards/` 里那个 `held <session> <workspace>` 找到 session id，确认 Agent 那边这个会话确实已经不在了（`ccnm status` 或者 Agent 机器的进程表）。
-2. 找到这个会话的 `ccnm internal exec-serve`（`ps -u <执行账号> -o pid,ppid,args`，payload 里带 session id；看不出来就按 `CCNM_EXEC_SESSION` 环境变量找它起的进程），它的父进程是这条连接的 `sshd-session: <执行账号>@notty`。
-3. 给那个 `sshd-session` 发 TERM。`exec-serve` 读到 EOF，按正常路径关掉 exec-server、扫进程、写 `released`——**不用手工删锁标记**。
-4. 再看一眼 `write-guards/` 里是不是 `released`，带 `CCNM_EXEC_SESSION` 的进程是不是一个都没有。
-
-想比 10 分钟更早发现：给 Runtime 的 sshd 配 `ClientAliveInterval`（系统配置变更，按你们的变更流程走），代价是网络短暂抖动更容易把正常会话断掉。10 分钟这个值目前不能配置。
 
 ### 会话在 initialize 就断，报 "connection closed: initialize response"
 

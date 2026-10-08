@@ -10,7 +10,7 @@
 | --- | --- |
 | [ROADMAP.md](ROADMAP.md) | 范围、依赖、稳定验收编号和阶段停止点，不记录可变进度 |
 | [status.json](status.json) | 当前阶段、完成项、阻塞、证据与下一动作，唯一进度来源 |
-| [runtime-surfaces.md](runtime-surfaces.md) | Managed Agent Runtime、Remote Workspace MCP、OS 身份和 v1/v1.x 实施边界，以及 Codex 原生执行链的设计 |
+| [runtime-surfaces.md](runtime-surfaces.md) | Managed Agent Runtime、Remote Workspace MCP、OS 身份和 v1/v1.x 实施边界，以及 Codex 原生执行链为什么删掉 |
 | [../research/](../research/) | 脱敏的实测记录；回归 fixture 放在 `tests/fixtures/` |
 | [三仓重构落地清单](../research/2026-09-19-cross-project-refactor-actions.md) | 2026-09-19 跨仓评审建议、依赖与验收；不替代 status，也不自动认领新阶段 |
 | [同类方案调研](../research/2026-10-08-peer-survey.md) | 2026-10-08 业界和社区可借鉴的做法、Claude Code 多主机现状和怎么盯；同样不替代 status、不自动认领阶段 |

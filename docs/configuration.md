@@ -171,7 +171,7 @@ ssh = "alias"                    # 从本机连它用的 alias
 ccnm_bin = "~/.local/bin/ccnm"   # 可选：它上面 ccnm 的路径，这一行写的就是默认值
 claude_config_dir = "/path"      # 可选：Agent 角色用的 CLAUDE_CONFIG_DIR
 runtime_user = "ccrun"           # 可选：建了专用执行账号才写，见下
-codex_bin = "/opt/codex/bin/codex"   # 可选：Codex exec-server 链用的 Codex 二进制，绝对路径
+codex_bin = "/opt/codex/bin/codex"   # 可选：exec_sandbox = "codex" 用的 Codex 二进制，绝对路径
 ```
 
 哪些必填取决于这个 node 承担什么角色：
@@ -182,7 +182,7 @@ codex_bin = "/opt/codex/bin/codex"   # 可选：Codex exec-server 链用的 Code
 
 `ccnm_bin` 可以是绝对路径，也可以是 `~/` 开头——`~` 由**对面**的登录 shell 展开，这是每种 shell 都认的写法。别人的家目录（`~someone/...`）不行，`..` 也不行，路径里只能有 `[A-Za-z0-9._/-]`，因为它要出现在一条 ssh 命令行上而 ccnm 不给它加引号。
 
-`codex_bin` 只有 Runtime 自己读，见下面的 [`codex_exec_server`](#codex_exec_server)。必须是绝对路径，不从 `PATH` 找：执行模型命令的那个程序不该取决于 Runtime 账号的 shell 配置。它的 `--version` 必须正好是 ccnm 实测过的 Codex 版本（现在是 0.154.0），否则会话启动前就被拒，报 `CCNM_E_VERSION`。
+`codex_bin` 只有 Runtime 自己读，给下面的 [`exec_sandbox`](#exec_sandbox) 用。必须是绝对路径，不从 `PATH` 找：执行模型命令的那个程序不该取决于 Runtime 账号的 shell 配置。它的 `--version` 必须正好是 ccnm 实测过的 Codex 版本（现在是 0.154.0），否则会话启动前就被拒，报 `CCNM_E_VERSION`。
 
 `runtime_user` 说的是 **Agent 的 MCP transport 落到哪个账号上**，项目工具就以谁的身份执行。它不规定谁可以敲 `ccnm`——那是 Operator，通常就是你自己的账号。四种身份怎么分见[生产安全](production-safety.md)。
 
@@ -330,34 +330,9 @@ external_mcp = "read"        # disabled（默认）| read | coding
 
 用法和限制见 [Remote Workspace MCP 契约](protocol/remote-workspace-mcp-v1.md)，验收范围见[支持矩阵](support-matrix.md)。契约于 2026-09-11 冻结。
 
-### `codex_exec_server`
+### `codex_exec_server`（已删除）
 
-```toml
-codex_exec_server = true     # 默认 false
-```
-
-**当前状态：封存（2026-09-17）。**代码保留、默认关、只认 Codex 0.154.0，不再随 Codex 版本重测，也不为它发版；开了它就是按 P24–P30 实测的样子工作，没有新的证据和承诺，新项目别开。为什么封存、什么情况下解封，见[双执行入口方案](plan/runtime-surfaces.md)第 12.0 节。默认执行路径是 MCP 七工具，Claude 和 Codex 都走它。打开只影响 Codex 交互会话；封存前验证过的范围和已知限制以[支持矩阵](support-matrix.md)为准。
-
-打开后，这个 workspace 的受管 **Codex 交互会话**改用 Codex **自带**的执行工具（它的 `exec_command`、`apply_patch` 等），由官方 `codex exec-server` 在这台 Runtime 上执行，不再注入 ccnm 的七个 MCP 工具（设计见[双执行入口方案](plan/runtime-surfaces.md)第 12 节）。需要三样都在：这一行、Runtime node 上的 `codex_bin`、会话的 Agent 是 Codex。缺哪样就在启动前拒绝，不会退回别的执行方式。
-
-**它管到谁、管不到谁：**
-
-- 同一 workspace 的 **Claude** 会话不受影响，照旧走 MCP 七工具。
-- Codex 的 **print 模式**（`ccnm run --print`、Machine API）在创建会话前拒绝，报 `CCNM_E_INVALID_ARGS`：`codex exec` 会先在 Agent 本机检查 `-C` 的目录，而项目不在那台机器上（[P21 记录](research/p21-codex-native-surface-2026-09-16.md)第 1 条）。要跑 print 就把这一行关掉。
-- 交互会话启动前，Agent 会先经 `exec-serve` 做一次空会话预检：Runtime 没 opt-in、没 `codex_bin`、Codex 版本不对，都在起 Codex 之前报出来，而不是等 Codex 里显示"environment unavailable"。不想起会话就先看，`ccnm doctor` 的 `Codex 原生链` 一行做的是同一次预检（[使用说明](usage.md#codex-原生链那一行)）。
-
-**Agent 那一侧发生了什么**（[P23 记录](research/p23-stdio-transport-2026-09-16.md)）：Codex 0.154.0 从 `CODEX_HOME/environments.toml` 读它的 exec-server 传输，ccnm 给每个原生会话生成一份自己的 `CODEX_HOME`（session 目录下的 `codex-home/`），里面只有三样：`environments.toml`（让 Codex 自己 spawn `ccnm internal exec-transport`，那个进程再 exec 成到 Runtime 的 ssh）、指向 profile 里 `auth.json` 的 symlink（Codex 读写都穿过它，刷新的 token 落回 profile；ccnm 不读、不复制凭据）、只写了一条对 Runtime 根 `trust_level = "trusted"` 的 `config.toml`（否则每个会话都弹一次信任提示）。**代价**：profile 自己的 `config.toml` 在原生会话里不生效，模型要走实例注册表的 `model` 字段；Codex 的会话记录、历史和缓存也落在 `codex-home/`，随 session 目录一起 `purge`。没有监听端口，别的 OS 用户没有东西可连；Codex 对这种传输不重连、不 resume，断线后的命令哪里都不执行。
-
-它不比 coding 会话多给任何权限，但也要满足 coding 会话的全部条件：
-
-- 和 `exec_command` 过同一道执行门：写了 `runtime_user` 的专用账号没通过隔离检查、又没写 `allow_unconfined_exec`，就不开；没写 `runtime_user` 的共用账号不因此挡（P78）。
-- 和受管会话、外部 MCP 的 coding 会话抢**同一把**写入互斥锁。
-- Codex 发给 exec-server 的每条请求先过 ccnm 的规则表：读写路径和 MCP 工具同一套规则（只许工作区内，不写 `.git`，不写穿 symlink）；命令和写文件必须带 Codex 实测过的那种沙箱，**人在 Codex 里批准提权后发出的请求一律拒绝**——Codex 里表现为工具失败，比如 `exec-server rejected request (-32600): ccnm refused process/start: a sandbox is required`；网络请求一律拒绝。规则表的依据见 [P21 记录](research/p21-codex-native-surface-2026-09-16.md)。
-- Runtime 是 Linux 时要装 bubblewrap，并允许执行账号创建 user namespace，否则 Codex 发来的沙箱起不来，命令不执行。
-
-会话结束时，ccnm 要先确认 exec-server 起过的进程都不在了才放锁。确认不了——比如有进程被杀后还在，或者列不出进程表——锁就保持 `held`，下一个会话按"状态未知"拒绝，恢复步骤和其他入口一样，见[运维手册](operations.md)。
-
-**Agent 离开太久，会话会被 Runtime 结束**（P26）：Runtime 连续 30 秒收不到 Codex 的任何字节就发一个探活请求，Codex 回一个错误就算还在；连续 10 分钟一个字节都没有，就当 Agent 已经不在，按上面的正常收尾放锁。笔记本合盖、断网超过 10 分钟再回来，Codex 的下一条命令会报 `exec-server transport disconnected`，`/exit` 重开即可。这两个时间不能配置；为什么这样选、以及锁没释放时怎么办，见[运维手册](operations.md#agent-静默离网之后exec-server-链的锁一直-held)。
+**P86（2026-10-08）起没有这个开关了**：封存的 Codex 原生执行链连同它一起删掉。配置里还写着这一行（哪怕是 `false`），会解析失败、报 `CCNM_E_CONFIG`，消息里有 `unknown field `codex_exec_server``。把这一行删掉就行，Codex 会话照常走 MCP 七工具。它原来是什么、为什么删，见[双执行入口方案](plan/runtime-surfaces.md)第 12 节。
 
 ### `exec_sandbox`
 
@@ -367,7 +342,7 @@ exec_sandbox = "codex"       # 默认 off
 
 **把这个 workspace 的每条 `exec_command` 包进 Codex 自带的 workspace-write 沙箱里跑**（P33）：命令只能写工作区根目录以内（`.git` 除外）、`$TMPDIR` 和 `/tmp`，不能连网；读不受限。Claude、Codex 的受管会话和外部 MCP 客户端（gld hub）的 coding 会话都生效，因为它们跑命令走的是同一个 `exec_command`。`--print`、`ccnm mcp bridge` 也一样。
 
-**需要什么**：Runtime 节点写 [`codex_bin`](#node-的其他字段)（Codex 0.154.0，和 exec-server 链共用同一个版本 pin）；Linux 上装 bubblewrap 并允许执行账号创建 user namespace（[运维手册](operations.md#runtime-node-的前置条件与项目工具链)）。开了却给不了——没 `codex_bin`、版本不对、找不到状态目录——会话启动就失败（`CCNM_E_CONFIG` / `CCNM_E_VERSION`）；启动时 ccnm 还会用这个沙箱跑一条 `sh -c 'exit 0'` 探一下，起不来（Linux 没装 bubblewrap、建不了 user namespace，或者 ccnm 的状态目录在 `/tmp` 下——Codex 拒绝在临时目录里建它的辅助程序）也在启动时拒（`CCNM_E_DEPENDENCY`，带 Codex 自己的报错）。**任何一种都不会退回不带沙箱地跑。**
+**需要什么**：Runtime 节点写 [`codex_bin`](#node-的其他字段)（Codex 0.154.0）；Linux 上装 bubblewrap 并允许执行账号创建 user namespace（[运维手册](operations.md#runtime-node-的前置条件与项目工具链)）。开了却给不了——没 `codex_bin`、版本不对、找不到状态目录——会话启动就失败（`CCNM_E_CONFIG` / `CCNM_E_VERSION`）；启动时 ccnm 还会用这个沙箱跑一条 `sh -c 'exit 0'` 探一下，起不来（Linux 没装 bubblewrap、建不了 user namespace，或者 ccnm 的状态目录在 `/tmp` 下——Codex 拒绝在临时目录里建它的辅助程序）也在启动时拒（`CCNM_E_DEPENDENCY`，带 Codex 自己的报错）。**任何一种都不会退回不带沙箱地跑。**
 
 **代价**（本机 macOS 和 Linux 容器实测，[P33 记录](research/p33-exec-sandbox-2026-09-17.md)）：
 

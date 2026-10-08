@@ -26,13 +26,12 @@ Runtime MCP 转接（`call_mcp_tool`）的 server 自 P52 起：关闭时它进�
 | 连 Agent 的 SSH | Agent SSH | SSH 私钥 | No SSH keys |
 | 终端会话 | Terminal session | 命令审批 | Command approval |
 | Runtime 上的项目 | Runtime workspace | sudo 权限 | No sudo |
-| Codex 原生链 | Codex exec-server | | |
 
 英文那几个 `No …` / `Not …` 开头的名字，中文用的是中性名词（`SSH 私钥` 而不是 `没有 SSH 私钥`）。原因是英文那种否定式当表头读得通，中文读起来却像一句陈述——`不在 admin 组｜注意｜this account is in admin` 会让人读到跟事实相反的结论。所以名字只说查了什么，结果全看状态那一列。
 
 状态词：`正常`=OK、`注意`=WARN、`不查`=NOTE、`没查`=SKIP、`失败`=FAIL。结论行 `可以用了`=READY、`还不能用`=NOT READY。
 
-**`不查` 和 `没查` 差一个字，意思不一样。** `不查` 是 doctor 在这种配置下本来就不查的行：网络隔离（ccnm 管不着，要你自己在 Runtime 上配）、本机工具策略（只有真开着的会话才说得清）、没开 `codex_exec_server` 时的 Codex 原生链、没有 Agent 的 workspace 里那些 Agent 行、你看不进执行账号家目录时的 `Runtime 上的项目`（同一张表的 `workspace 根目录` 会由执行账号回答）。不管两台机器状态如何它都是这个结果，所以**不挡结论**，结论行会写"可以用了（N 项不查……）"。`没查` 是该查、这次没查成：对面没回答、对面构建太旧没报、前面一步失败了。这时结论是"还不能用"、退出码 3，按那一行的说明处理。v0.11.1 及之前没有 `不查`，这些行都写 `没查`，所以任何配置 0 项失败也是"还不能用"（P73 改的）。
+**`不查` 和 `没查` 差一个字，意思不一样。** `不查` 是 doctor 在这种配置下本来就不查的行：网络隔离（ccnm 管不着，要你自己在 Runtime 上配）、本机工具策略（只有真开着的会话才说得清）、没有 Agent 的 workspace 里那些 Agent 行、你看不进执行账号家目录时的 `Runtime 上的项目`（同一张表的 `workspace 根目录` 会由执行账号回答）。不管两台机器状态如何它都是这个结果，所以**不挡结论**，结论行会写"可以用了（N 项不查……）"。`没查` 是该查、这次没查成：对面没回答、对面构建太旧没报、前面一步失败了。这时结论是"还不能用"、退出码 3，按那一行的说明处理。v0.11.1 及之前没有 `不查`，这些行都写 `没查`，所以任何配置 0 项失败也是"还不能用"（P73 改的）。
 
 **没有 Agent、只给外部 MCP 用的 workspace**，`Runtime 安全` 和 `exec_command` 两行是 `不查`（P83 起；v0.13.0 及之前是 `没查`，结论永远是"还不能用（0 项失败，2 项没查）"）。这两行的结论属于替 AI 跑命令的执行账号，不属于敲 doctor 的人；没有 Agent 也就没有探测把它带回来。它不是没人管：外部客户端经 `ccnm mcp bridge` 连上来时，服务端以执行账号自己核对，不过就以 `CCNM_E_POLICY` 拒绝并写明原因。
 
@@ -70,41 +69,17 @@ stderr: CCNM_E_POLICY:
 workspace write guard is busy; another session still owns this working tree
 ```
 
-**Runtime 连得上，是这个 workspace 的写锁被别的会话占着**（退出码 33）。起会话前，Agent Node 上的 ccnm 先经 ssh 跟 Runtime 做一次 MCP 握手预检；Runtime 在握手之前拒绝，第一行就是它给的理由。`MCP initialize failed over …` 那一行不是另一个错误，只是说明这个拒绝从哪条链路带回来的，看着像网络问题，其实不是。按 [MCP 初始化报 busy 或 unknown](#mcp-初始化报-workspace-write-guard-is-busy-或-unknown) 处理：看 Runtime 上 `write-guards/` 里是谁占着，见[写入 guard 残留](operations.md#写入-guard-残留)；占锁的是已经离网的 Codex exec-server 会话时，见[静默离网之后锁一直 held](operations.md#agent-静默离网之后exec-server-链的锁一直-held)。`ccnm doctor` 的 `Remote MCP handshake` 行和 `ccnm mcp probe` 走的是同一次握手，报法一样。
+**Runtime 连得上，是这个 workspace 的写锁被别的会话占着**（退出码 33）。起会话前，Agent Node 上的 ccnm 先经 ssh 跟 Runtime 做一次 MCP 握手预检；Runtime 在握手之前拒绝，第一行就是它给的理由。`MCP initialize failed over …` 那一行不是另一个错误，只是说明这个拒绝从哪条链路带回来的，看着像网络问题，其实不是。按 [MCP 初始化报 busy 或 unknown](#mcp-初始化报-workspace-write-guard-is-busy-或-unknown) 处理：看 Runtime 上 `write-guards/` 里是谁占着，见[写入 guard 残留](operations.md#写入-guard-残留)。`ccnm doctor` 的 `Remote MCP handshake` 行和 `ccnm mcp probe` 走的是同一次握手，报法一样。
 
 **旧版本的第一行是 `CCNM_E_RUNTIME_UNREACHABLE`（退出码 21），原因相同。** 已发布的 0.7.0 及更早版本把握手时 Runtime 的拒绝一律报成"连不上 Runtime"，真正的码只在 `stderr:` 后面（P24 真机撞到，P25 修）。预检在 Agent Node 上跑，所以看的是**Agent Node 上** ccnm 的版本；脚本按退出码判断时，那边还是旧版就得先看 `stderr:` 后面第一行。真连不上（ssh 超时、拒绝连接、认证失败）新旧版本都还是 `CCNM_E_RUNTIME_UNREACHABLE`。
 
-### Codex 会话里模型报 `tools.exec_command is not a function`，或 `exec-server transport disconnected`
-
-只出现在 workspace 写了 `codex_exec_server = true` 的 Codex 交互会话里（[配置说明](configuration.md#codex_exec_server)；这条链 2026-09-17 起封存，只认 Codex 0.154.0）。这条链上 Codex 用自带的执行工具，工具在 Runtime 上由 exec-server 执行，Codex 通过它自己 spawn 的 `ccnm internal exec-transport` → ssh → `ccnm internal exec-serve` 连过去。
-
-**症状 A**：一开始就没有工具——模型调 `exec_command` 时报 `TypeError: tools.exec_command is not a function`，TUI 上什么也不说。**原因**：Codex 起来时连不上 Runtime（ssh 失败、Runtime 那边拒绝了），于是它的"远端环境"不可用，`include_local = false` 又让它没有本地环境可退，工具表就是空的。Codex **不会**退回到本机执行，这是设计。**修**：在 Agent Node 上手工跑一遍会话目录里 `codex-home/environments.toml` 写的那条 `program`/`args`（就是 `ccnm internal exec-transport --payload …`），ssh 或 Runtime 的 `CCNM_E_*` 错误会直接打出来。正常情况下这一步在创建会话前的预检就会失败，走不到 Codex；走到了多半是会话启动之后网络或 Runtime 变了。
-
-**症状 B**：跑着跑着某条命令报 `exec_command failed: ProcessFailed { message: "exec-server transport disconnected" }`，之后每条都报 `Rejected("Failed to create unified exec process: exec-server transport disconnected")`。**原因**：那条 ssh 断了，或者 Agent 机器睡眠、断网超过 10 分钟，Runtime 已经按无响应结束了这个会话（P26，见[运维手册](operations.md#agent-静默离网之后exec-server-链的锁一直-held)）；还有一种是**模型让 Codex 写了一个超过约 24 MiB 的文件**——Codex 把整个文件 base64 之后放进一条消息，Runtime 上的 `exec-serve` 单条消息上限 32 MiB，超过就结束整个会话、文件不写（exec-server 自己到 64 MiB 会一声不吭断连，ccnm 在前面先停；`exec-serve` 的 stderr 里是 `client message too long; ending the exec-server session`；[P29](research/p29-native-gates-2026-09-17.md#43-写单文件上限与磁盘写满) 用录下的 Codex 请求实测了会话结束，没在真实 Codex 里撞过，Codex 界面上先报什么不确定）。大文件让模型用命令生成，别用 patch 写。Codex 对这种传输**不重连、不 resume**，断线之后的命令哪里都没执行；Runtime 侧的 `exec-serve` 看到 EOF 会关掉 exec-server、扫进程、放锁。**修**：`/exit` 结束会话再起一个。断线时若 Codex 正好有 patch 没写完，它会问"command failed; retry without sandbox?"——答"是"也到不了 Runtime（传输已经死了），到了也会被 ccnm 拒绝（`sandbox: null` 一律拒）。
-
-### doctor 里 Codex 原生链那一行失败
-
-只出现在写了 `codex_exec_server = true`、Agent 是 Codex 的 workspace 上。这一行做的就是 `ccnm run` 起 Codex 之前那次预检（[它查什么、不查什么](usage.md#codex-原生链那一行)），所以这里红，起会话也会停在同一处。看 `CCNM_E_*` 后面 Runtime 自己说的原因：
+### 升级后 `ccnm` 报 `unknown field `codex_exec_server``
 
 ```text
-Codex exec-server       FAIL   CCNM_E_CONFIG: ccnm internal exec-serve on runtime-alias failed (exit 10): nodes.runtime.codex_bin is not set; the exec-server chain needs this Runtime to name its Codex binary
+CCNM_E_CONFIG: …: unknown field `codex_exec_server`, expected one of …
 ```
 
-**Runtime 没配 `codex_bin`。**在 **Runtime 的** config.toml 里给那个节点写上 Codex 0.154.0 的绝对路径（`[nodes.<runtime>]` 下的 `codex_bin`，见[配置说明](configuration.md#codex_exec_server)）。写在 Agent 的配置里没用：这个值只从 Runtime 自己的配置读，不上 wire。
-
-```text
-Codex exec-server       FAIL   CCNM_E_VERSION: ccnm internal exec-serve on runtime-alias failed (exit 11): Codex 0.155.0 has not been measured; this adapter requires 0.154.0
-```
-
-**`codex_bin` 指的不是 0.154.0。**这条链只对实测过的那一个版本开。以执行账号跑一遍 `<codex_bin> --version` 核对，把 `codex_bin` 指到 0.154.0 那份。
-
-```text
-Codex exec-server       FAIL   CCNM_E_POLICY: ccnm internal exec-serve on runtime-alias failed (exit 33): workspace write guard is busy; another session still owns this working tree
-```
-
-**链没坏，是这个 workspace 正有会话在写。**这一行和 `Remote MCP handshake` 都要取一次写锁再放掉，会话进行中跑 doctor，两行都会带这句话。等会话结束再跑；要是占锁的会话其实已经不在了，按[写入 guard 残留](operations.md#写入-guard-残留)处理，别为了让 doctor 变绿去删锁标记。`CCNM_E_POLICY` 后面换成审计的拒绝理由（执行账号没隔离、读得到 Agent 登录）时，处理办法和 `exec_command` 被拒一样，见[生产安全](production-safety.md)：这条链能跑任意命令，要的是 `exec_command` 那一级放行。
-
-**这一行正常，Codex 里第一条命令却报 `bubblewrap is unavailable: no system bwrap was found on PATH and no bundled codex-resources/bwrap binary`**（P21 容器实测的原文）：Linux Runtime 没装 bubblewrap。执行账号建不了 user namespace 时也是第一条命令才失败。空会话一条命令都不跑，doctor 看不出来，这是有意的（理由见上面那个链接）。按[运维手册](operations.md#runtime-node-的前置条件与项目工具链)补上前提。Codex 接着会问要不要不带沙箱重试，答"是"也会被 ccnm 拒掉。
+**配置里还写着已经删掉的开关。**封存的 Codex 原生执行链在 P86（2026-10-08）连同 `codex_exec_server` 一起删了，写着它的配置（哪怕是 `false`）不再能解析。在报错的那份 config.toml 里删掉这一行即可，Codex 会话照常走 MCP 七工具（[配置说明](configuration.md#codex_exec_server已删除)）。
 
 ### 工具报 `failed to deserialize parameters: unknown field ...`
 

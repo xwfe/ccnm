@@ -151,7 +151,7 @@ mv ccnm ~/.local/bin/ccnm.new && mv ~/.local/bin/ccnm.new ~/.local/bin/ccnm
 - **升级时别用 `cp` 覆盖正在用的 ccnm。** Apple Silicon 的 Mac 上会让程序签名失效，之后一运行就被系统杀掉（`Killed: 9`）。用上面的"新文件 + 改名"。
 - **用 Codex 时别随手在 `/permissions` 里切 Approve for me。** 切了就是由 Codex 自己的自动审查决定放不放行（真机上连 `rm -f` 都放行），不是你；想不问，用上面的 `allow_unattended_exec`。
 - **同一个项目别配两个状态目录**（比如两个不同的 `XDG_STATE_HOME`）。"同一时间只有一个会话能改代码"靠的是同一把锁，两个目录就成了两把互不知道的锁。
-- **别开 `codex_exec_server`。** 这条路已经停止维护。
+- **配置里别写 `codex_exec_server`。** 那条封存的路已经删了，写着这一行（哪怕是 `false`）会报 `CCNM_E_CONFIG`，删掉这一行即可。
 
 ## 现在的状态
 

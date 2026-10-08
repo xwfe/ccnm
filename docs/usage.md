@@ -313,24 +313,6 @@ ccnm doctor my-project
 
 进行验证。
 
-### Codex 原生链那一行
-
-workspace 写了 [`codex_exec_server = true`](configuration.md#codex_exec_server)、选中的 Agent 又是 Codex 时，doctor 表里 `远端 MCP 握手` 下面那行 `Codex 原生链`（英文 `Codex exec-server`）才会给结论：Agent 替你做一次 `ccnm run` 起 Codex 之前的**同一个**预检——经 ssh 在 Runtime 上开一个空的 `exec-serve` 会话，stdin 立刻关掉。Runtime 侧、Agent 侧跑 doctor 都一样。（这条链 2026-09-17 起封存，原因在[配置说明](configuration.md#codex_exec_server)；这一行的行为不变。）
-
-| 状态 | 说明什么 |
-| --- | --- |
-| 正常 | Runtime 认这个 workspace 走原生链、审计放行命令执行、`codex_bin` 是 Codex 0.154.0、exec-server 起得来也停得掉，写锁取到又放回 |
-| 失败 | 带 Runtime 自己报的码：`CCNM_E_CONFIG`（没配 `codex_bin`）、`CCNM_E_VERSION`（Codex 版本不对）、`CCNM_E_POLICY`（审计不放行，或写锁被占），排查见[出错了怎么办](troubleshooting.md#doctor-里-codex-原生链那一行失败) |
-| 不查 | 没开 `codex_exec_server`，或 Agent 不是 Codex（Claude 照旧走 MCP 七工具）：这一行不适用，不挡结论 |
-| 没查 | 前面的 SSH 已经失败，或对面构建太旧没报——detail 写着是哪种 |
-
-所以**没开这条链的 workspace 表里也有这一行**，是 `不查`，不影响结论（`不查` 和 `没查` 的区别见[排错手册](troubleshooting.md#doctor-的表怎么读)）。
-
-两件事要知道：
-
-- **它和 `远端 MCP 握手` 一样要取一次写锁再放掉。**这个 workspace 正有会话在写（受管会话、外部 MCP 的 coding 会话、原生链会话都算），两行都会报 `workspace write guard is busy`。那说明有人在用，不是链路坏了；别为了让 doctor 变绿去清锁。
-- **正常不代表 Linux 沙箱能用。**空会话一条命令都不跑，而 Codex 在 Linux 上靠 bubblewrap 和 user namespace 建沙箱，缺了要到第一条命令才报错（前提见[运维手册](operations.md#runtime-node-的前置条件与项目工具链)）。doctor 不去猜它：bwrap 的查找位置和 user namespace 的限制都读不准，读 sysctl 会在容器里报通过而沙箱实际起不来，理由记在 [ROADMAP P27.3](plan/ROADMAP.md)。
-
 ## 给程序用的接口
 
 上面这些命令是给人敲的。要让别的程序驱动 ccnm，用 machine API：
@@ -402,8 +384,6 @@ call_mcp_tool
 - 受管会话里模型还能**搜网页**（Claude 的 `WebSearch`、Codex 的 `web_search`）、用 **Agent 机器上装好的 MCP server**（默认只给远端地址的，见下面[那一节](#agent-机器上的-mcp-server)），Claude 还能**抓网页、派子代理、记待办清单**——P77 起这五项默认全开，不想要哪项就在 Runtime 的 workspace 上写 `agent_tools` 去掉它，全关写 `agent_tools = []`。Agent 自带的文件和 shell 工具一直关着，见[配置说明](configuration.md#agent_tools)。
 
 **传错参数会怎样**：`exec_command`、`apply_patch`、`stop_command` 不接受它们没声明的字段，连 `files[]` 里的每一项也一样——拒绝发生在命令跑起来、补丁落盘之前。P49 的 `call_mcp_tool` 外层参数也拒绝未知字段，嵌套 `arguments` 则是目标 server 的参数对象，不能套用 ccnm 文件工具的 schema。只读文件工具通常接受额外字段并在末尾说明；Agent 的 `read_mcp_result` 有自己的严格 schema，不应据此推定所有只读工具都相同。`timeout_ms`、`preview_bytes` 超上限是拒不是钳，规则见[协议](protocol/remote-workspace-mcp-v1.md)。
-
-**Codex 还有一条 opt-in 的路（已封存）**：`codex_exec_server = true` 是历史原生执行链，不是当前 MCP 工具的新版本。只支持已测的 Codex 0.154.0 交互模式，不支持 print，2026-09-17 起不再维护、新项目不要启用。原因见[双执行入口方案](plan/runtime-surfaces.md)第 12.0 节，开关和边界见[配置说明](configuration.md#codex_exec_server)。
 
 ## 项目自带的 skills
 

@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-10-08T21:13:00+09:00",
-  "current_task": null,
+  "last_updated": "2026-10-08T21:14:00+09:00",
+  "current_task": "P83",
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
     "source": "docs/research/codex-internal-wiring-2026-09-07.md",
@@ -4119,6 +4119,20 @@
           "result": "协议文档 5.8 节（只写这一处），不升 ccnm.workspace-mcp/2。本机 macOS arm64：fmt --check、clippy -D warnings、cargo +1.89 check、cargo test --workspace（22 个二进制 1126 passed / 0 failed）、check_protocol 与 test_check_protocol、ci_gates（Python 247 ran / 0 failed，含计划检查）。"
         }
       ],
+      "blockers": []
+    },
+    {
+      "id": "P83",
+      "title": "只给外部 MCP 用的 workspace，doctor 不再永远\"还不能用\"",
+      "status": "in_progress",
+      "depends_on": [
+        "P82"
+      ],
+      "owner": "claude-code-session-2026-10-08-peer-survey",
+      "started_at": "2026-10-08T21:14:00+09:00",
+      "last_updated": "2026-10-08T21:14:00+09:00",
+      "completed_criteria": [],
+      "evidence": [],
       "blockers": []
     }
   ],

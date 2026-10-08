@@ -42,8 +42,41 @@ use serde_json::{Value, json};
 
 use crate::config::ExecSandbox;
 use crate::error::{Error, Result};
-use crate::native::serve::CodexHome;
 use crate::process::{Cmd, ProcessRunner};
+
+/// A CODEX_HOME for the `codex` the sandbox runs. Made by ccnm, empty,
+/// private, and under ccnm's state directory rather than the system temp
+/// dir, where Codex refuses to create its helper links (measured on Linux:
+/// the first command failed until it moved, P21/P33). Codex writes into it
+/// (the sandbox's `tmp/arg0/` helpers), so it must be a real directory of
+/// its own, not the profile with the login in it.
+struct CodexHome {
+    dir: PathBuf,
+}
+
+impl CodexHome {
+    /// `<state>/<parent>/<name>`, mode 0700 both levels.
+    fn create_in(state: &Path, parent: &str, name: &str) -> Result<Self> {
+        use std::os::unix::fs::PermissionsExt;
+        let parent = state.join(parent);
+        std::fs::create_dir_all(&parent)?;
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o700))?;
+        let dir = parent.join(name);
+        std::fs::create_dir(&dir)?;
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
+        Ok(CodexHome { dir })
+    }
+
+    fn path(&self) -> &Path {
+        &self.dir
+    }
+}
+
+impl Drop for CodexHome {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
 
 /// What [`Sandbox::resolve`] runs through the sandbox once, to see it work.
 pub const PROBE: [&str; 3] = ["/bin/sh", "-c", "exit 0"];

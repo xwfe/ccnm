@@ -434,7 +434,6 @@ mod tests {
             },
             timeout_secs: 600,
             cwd: PathBuf::from("/Users/me/.local/state/ccnm/workspaces/fixture"),
-            codex_exec_server: false,
             agent_tools: Default::default(),
             ask_before: Vec::new(),
         }

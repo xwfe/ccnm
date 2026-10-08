@@ -327,18 +327,6 @@ enum InternalCommand {
         #[arg(long)]
         payload: String,
     },
-    /// Run `codex exec-server` for a managed Codex session, filtering every
-    /// request through the Runtime's rule table (P22)
-    ExecServe {
-        #[arg(long)]
-        payload: String,
-    },
-    /// What Codex spawns as its exec-server transport (P23): becomes the ssh
-    /// to the Runtime's exec-serve for the session in the payload
-    ExecTransport {
-        #[arg(long)]
-        payload: String,
-    },
     /// Answer what a workspace is, from this Runtime's own config. Read
     /// only: it starts nothing and creates no session
     RuntimeResolve {
@@ -1282,13 +1270,6 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
                 session::transport::exec(&req)?;
                 Ok(0)
             }
-            InternalCommand::ExecTransport { payload } => {
-                // Same record, other verb: the session says where it leads,
-                // and a build reaching the wrong verb fails on the name.
-                let req: session::transport::Request = payload::decode(payload)?;
-                session::transport::exec_native(&req)?;
-                Ok(0)
-            }
             InternalCommand::AgentSkills { payload } => {
                 mcp::agent_skills::serve(&ccnm_core::protocol::payload::decode(payload)?)?;
                 Ok(0)
@@ -1310,15 +1291,6 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
                         mcp::server::serve_external(&req)?
                     }
                 }
-                Ok(0)
-            }
-            InternalCommand::ExecServe { payload } => {
-                // Its own command rather than a sixth shape of mcp-serve: what
-                // comes back over this pipe is not MCP, and a caller that
-                // reached the wrong one must fail on the name, not halfway
-                // through a handshake in the other protocol.
-                let req: ccnm_core::runtime::NativeOpenPayload = payload::decode(payload)?;
-                ccnm_core::native::serve::serve(&req)?;
                 Ok(0)
             }
             InternalCommand::RuntimeResolve { payload } => {
@@ -2090,7 +2062,6 @@ fn start_request(
         provider_config_dir: authority.provider_config_dir.clone(),
         permission_mode: authority.permission_mode,
         prompt,
-        codex_exec_server: authority.codex_exec_server,
         agent_tools: authority.agent_tools.clone(),
     }
 }
@@ -2177,7 +2148,6 @@ fn probe_request(authority: &ccnm_core::runtime::ResolveReport, mcp_calls: u32) 
         runtime_node: authority.runtime_node.clone(),
         provider_config_dir: authority.provider_config_dir.clone(),
         mcp_calls,
-        codex_exec_server: authority.codex_exec_server,
     }
 }
 

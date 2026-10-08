@@ -71,7 +71,6 @@ impl Fixture {
             mode,
             timeout_secs: 60,
             cwd: self.root.join("cwd"),
-            codex_exec_server: false,
             agent_tools: Default::default(),
             ask_before: Vec::new(),
         };
@@ -1003,7 +1002,6 @@ fn active_session_with_another_identity_is_never_reused_or_replaced() {
         provider_config_dir: None,
         permission_mode: Default::default(),
         prompt: None,
-        codex_exec_server: false,
         agent_tools: Default::default(),
     };
     let error = work::start(&request, &f.tools(&runner)).unwrap_err();

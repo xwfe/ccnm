@@ -47,17 +47,11 @@ pub struct RunRequest {
     pub prompt: String,
     /// Claude is killed after this many seconds.
     pub timeout_secs: u64,
-    /// The workspace runs Codex through exec-server (P23). A print session
-    /// cannot (`codex exec` needs the project on the Agent Node, P21.1),
-    /// so the Agent refuses before creating anything rather than quietly
-    /// starting an MCP session instead. Sent only when true, so an Agent
-    /// that predates the field still reads every other request.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub codex_exec_server: bool,
     /// The workspace's `agent_tools` (P46), left out when it is
-    /// [`AgentTools::omitted`](crate::config::AgentTools::omitted) for the
-    /// same reason as `codex_exec_server` -- not when it is the config
-    /// default, which since P77 an older Agent would read as fewer tools.
+    /// [`AgentTools::omitted`](crate::config::AgentTools::omitted) so an
+    /// Agent that predates the field still reads the request -- not when it
+    /// is the config default, which since P77 an older Agent would read as
+    /// fewer tools.
     #[serde(
         default = "crate::config::AgentTools::omitted",
         skip_serializing_if = "crate::config::AgentTools::is_omitted"
@@ -184,13 +178,6 @@ pub struct StartRequest {
     /// What Claude opens with; `None` opens an empty prompt.
     #[serde(default)]
     pub prompt: Option<String>,
-    /// The workspace runs Codex through exec-server (P23): a Codex session
-    /// started for it gets Codex's own tools over the Runtime's
-    /// `exec-serve` instead of ccnm's MCP server. Says nothing to a Claude
-    /// session. Sent only when true, so an Agent that predates the field
-    /// still reads every other request.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub codex_exec_server: bool,
     /// The workspace's `agent_tools` (P46); see [`RunRequest::agent_tools`].
     #[serde(
         default = "crate::config::AgentTools::omitted",

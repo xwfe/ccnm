@@ -545,7 +545,6 @@ fn session_identity_requires_version_three_and_a_verified_remote_transport() {
         },
         timeout_secs: 10,
         cwd: f.0.clone(),
-        codex_exec_server: false,
         agent_tools: Default::default(),
         ask_before: Vec::new(),
     };

@@ -340,7 +340,6 @@ fn identity_mismatched_supervisor_transport_and_controller_requests_fail_before_
         },
         timeout_secs: 10,
         cwd: f.0.clone(),
-        codex_exec_server: false,
         agent_tools: Default::default(),
         ask_before: Vec::new(),
     };
@@ -551,7 +550,6 @@ fn bound_print_run(f: &Fixture, supervisor: &str, timeout_secs: u64) -> BoundRun
         permission_mode: Default::default(),
         prompt: "fixture".into(),
         timeout_secs,
-        codex_exec_server: false,
         agent_tools: Default::default(),
         session: None,
     };
@@ -915,7 +913,6 @@ fn a_busy_write_guard_fails_the_run_preflight_as_policy_not_unreachable() {
         permission_mode: Default::default(),
         prompt: "fixture".into(),
         timeout_secs: 30,
-        codex_exec_server: false,
         agent_tools: Default::default(),
         session: None,
     };
@@ -1024,7 +1021,6 @@ fn supervisor_re_resolves_named_profile_without_storing_it_in_public_identity() 
         },
         timeout_secs: 10,
         cwd,
-        codex_exec_server: false,
         agent_tools: Default::default(),
         ask_before: Vec::new(),
     };

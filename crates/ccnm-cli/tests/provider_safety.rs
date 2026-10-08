@@ -66,7 +66,6 @@ fn claude_mcp_launch_plan_and_shared_exec_environment_boundary() {
         },
         timeout_secs: 10,
         cwd: root.clone(),
-        codex_exec_server: false,
         agent_tools: Default::default(),
         ask_before: Vec::new(),
     };

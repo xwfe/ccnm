@@ -28,7 +28,6 @@ fn spec(remote: bool, mode: session::Mode) -> session::Spec {
         } else {
             "/project"
         }),
-        codex_exec_server: false,
         agent_tools: Default::default(),
         ask_before: Vec::new(),
     }

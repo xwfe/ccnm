@@ -153,9 +153,6 @@ impl WorkspaceInfo {
 
 /// Whether this session may run commands, and why.
 ///
-/// Shared with the Codex exec-server entry (`crate::native::serve`), so both
-/// are judged by one audit and one set of waivers.
-///
 /// The policy is read from *this* machine's config, not from the payload
 /// the other machine sent. The payload says which workspace and where;
 /// what the runtime account is allowed to do is a property of the machine

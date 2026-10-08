@@ -118,7 +118,6 @@ fn send_run(
         permission_mode: AgentProvider::current().permission_mode(resolved.workspace),
         prompt: prompt.to_string(),
         timeout_secs: timeout.as_secs(),
-        codex_exec_server: resolved.workspace.codex_exec_server,
         agent_tools: resolved.workspace.agent_tools.clone(),
         session: session.map(str::to_string),
     };
@@ -179,7 +178,6 @@ pub fn start_interactive_with_agent(
             .map(|dir| dir.to_path_buf()),
         permission_mode: AgentProvider::current().permission_mode(resolved.workspace),
         prompt: prompt.map(str::to_string),
-        codex_exec_server: resolved.workspace.codex_exec_server,
         agent_tools: resolved.workspace.agent_tools.clone(),
     };
     let report: StartReport = ssh.call_ccnm(
@@ -687,8 +685,6 @@ pub fn mcp_probe_remote_selected(
             .and_then(|node| AgentProvider::current().config_dir(node))
             .map(|dir| dir.to_path_buf()),
         mcp_calls: calls,
-        // An MCP probe: the exec-server chain has its own row in doctor.
-        codex_exec_server: false,
     };
     let rep: WorkProbeReport = ssh.call_ccnm(
         env.runner,

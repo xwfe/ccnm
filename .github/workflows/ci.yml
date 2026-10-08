@@ -187,10 +187,11 @@ jobs:
           dist/ccnm --version
 
   msrv:
-    # One platform is enough while the only OS-gated code is
-    # native::serve::session_processes (/proc on Linux, `ps` elsewhere) and
-    # no dependency is platform-specific. Add either and this needs
-    # rethinking: the other platform's branch would never be compiled here.
+    # One platform is enough while no item is compiled for one OS only --
+    # the OS checks left are `cfg!()` expressions, which compile on both --
+    # and no dependency is platform-specific. Add a `#[cfg(target_os)]`
+    # item or such a dependency and this needs rethinking: the other
+    # platform's branch would never be compiled here.
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4

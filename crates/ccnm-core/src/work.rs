@@ -329,17 +329,6 @@ pub fn run(req: &RunRequest, tools: &Tools<'_>) -> Result<RunReport> {
         req.permission_mode,
         tools,
     )?;
-    // The chain serves interactive Codex only: `codex exec` canonicalizes
-    // its working directory on this machine and exits when the project is
-    // not here (P21.1). Said before anything is dialled or created, and
-    // not answered by quietly starting an MCP session instead -- the
-    // workspace asked for one thing and cannot have it in this mode.
-    if req.codex_exec_server && selected.provider == AgentProvider::Codex {
-        return Err(Error::invalid_args(format!(
-            "workspace {} runs Codex through exec-server, which serves interactive sessions only: codex exec needs the project on this machine\nstart it interactively (ccnm run {}), or turn codex_exec_server off on the workspace to use the MCP tools",
-            req.workspace, req.workspace
-        )));
-    }
     require_remote_topology(&req.runtime_node, &selected, tools)?;
     let ctx = controller::context(&tools.controller)?;
     if !ctx.login_session() {
@@ -415,7 +404,6 @@ pub fn run(req: &RunRequest, tools: &Tools<'_>) -> Result<RunReport> {
         },
         timeout_secs: req.timeout_secs,
         cwd,
-        codex_exec_server: false,
         agent_tools: req.agent_tools.clone(),
         ask_before: Vec::new(),
     };
@@ -744,16 +732,6 @@ fn preflight(
             ssh,
             true,
         )?;
-        if req.codex_exec_server && selected.provider == AgentProvider::Codex {
-            native_runtime_preflight(
-                selected,
-                &req.workspace,
-                &req.root,
-                &req.runtime_node,
-                ssh,
-                tools.runner,
-            )?;
-        }
     }
 
     Ok((ctx, ssh, ask_before))
@@ -803,13 +781,10 @@ fn start_fresh(
         // Not used interactively: nothing kills this session on a clock.
         timeout_secs: 0,
         cwd,
-        // The workspace's choice, and only Codex can take it up: a Claude
-        // session on the same workspace keeps its MCP tools.
-        codex_exec_server: req.codex_exec_server && selected.provider == AgentProvider::Codex,
         agent_tools: req.agent_tools.clone(),
-        // Only an MCP Codex session reads it (P71): Claude takes the marker
-        // off the tool list, and the exec-server chain has no ccnm tools.
-        ask_before: if selected.provider == AgentProvider::Codex && !req.codex_exec_server {
+        // Only a Codex session reads it (P71): Claude takes the marker off
+        // the tool list.
+        ask_before: if selected.provider == AgentProvider::Codex {
             ask_before
         } else {
             Vec::new()
@@ -2103,10 +2078,9 @@ fn tail(bytes: &[u8]) -> String {
 /// Everything doctor wants to know about this machine, in one round trip.
 /// Read-only: no master connection, no file written. The MCP handshake
 /// starts a server on the Runtime Node and shuts it down again before
-/// returning; so does the exec-server preflight.
-/// Both take the workspace write guard and give it back on the far side,
-/// which is as close to read-only as proving them gets: while a session is
-/// writing, both report the guard busy instead.
+/// returning. It takes the workspace write guard and gives it back on the
+/// far side, which is as close to read-only as proving it gets: while a
+/// session is writing, it reports the guard busy instead.
 pub fn probe(req: &ProbeRequest, tools: &Tools<'_>) -> ProbeReport {
     let selected = match select_agent(
         req.agent.as_ref(),
@@ -2121,10 +2095,10 @@ pub fn probe(req: &ProbeRequest, tools: &Tools<'_>) -> ProbeReport {
     // A colocated workspace has no reverse link at all, and says so with
     // `None` rather than with an error: there is nothing broken about a
     // machine that is already holding the project.
-    let (runtime_ssh, runtime_hello, runtime_audit, mcp, exec_server) =
+    let (runtime_ssh, runtime_hello, runtime_audit, mcp) =
         match tools.runtime_link(&req.runtime_node) {
-            Ok(None) => (None, None, None, None, None),
-            Err(e) => (Some(Err(e.into())), None, None, None, None),
+            Ok(None) => (None, None, None, None),
+            Err(e) => (Some(Err(e.into())), None, None, None),
             Ok(Some(link)) => {
                 match Ssh::new(&link.alias, &tools.control_dir).map(|ssh| {
                     ssh.with_ccnm_bin(&link.ccnm_bin)
@@ -2140,7 +2114,6 @@ pub fn probe(req: &ProbeRequest, tools: &Tools<'_>) -> ProbeReport {
                             ),
                         )
                         .into())),
-                        None,
                         None,
                         None,
                     ),
@@ -2177,34 +2150,7 @@ pub fn probe(req: &ProbeRequest, tools: &Tools<'_>) -> ProbeReport {
                         // Only worth the round trips if the plain reverse ssh worked.
                         let mcp = (req.mcp_calls > 0 && runtime_hello.is_ok())
                             .then(|| mcp_handshake(req, &selected, &ssh).map_err(Into::into));
-                        // The chain's own preflight, the very call `ccnm run`
-                        // makes before starting Codex, so a green row means
-                        // the same check passed (P27). Gated on the hello
-                        // alone, like the audit and the handshake: a failed
-                        // handshake is its own row, and this one may fail
-                        // for a reason that row cannot see -- no codex_bin,
-                        // the wrong Codex.
-                        let exec_server = (req.codex_exec_server
-                            && selected.provider == AgentProvider::Codex
-                            && runtime_hello.is_ok())
-                        .then(|| {
-                            native_runtime_preflight(
-                                &selected,
-                                &req.workspace,
-                                &req.root,
-                                &req.runtime_node,
-                                &ssh,
-                                tools.runner,
-                            )
-                            .map_err(Into::into)
-                        });
-                        (
-                            Some(runtime_ssh),
-                            Some(runtime_hello),
-                            runtime_audit,
-                            mcp,
-                            exec_server,
-                        )
+                        (Some(runtime_ssh), Some(runtime_hello), runtime_audit, mcp)
                     }
                 }
             }
@@ -2227,7 +2173,6 @@ pub fn probe(req: &ProbeRequest, tools: &Tools<'_>) -> ProbeReport {
         runtime_hello,
         runtime_audit,
         mcp,
-        exec_server,
         // Read-only, like everything else here: tmux is asked its version
         // and which sessions exist, and nothing is started or stopped.
         terminal: Some(status(
@@ -2261,7 +2206,6 @@ fn rejected_probe(req: &ProbeRequest, tools: &Tools<'_>, error: Error) -> ProbeR
         runtime_hello: None,
         runtime_audit: None,
         mcp: None,
-        exec_server: None,
         terminal: Some(status(
             &StatusRequest {
                 agent: None,
@@ -2454,33 +2398,6 @@ fn provider_runtime_preflight(
     Ok(report.asks_user)
 }
 
-/// The exec-server chain's own preflight (P23), after the MCP one has
-/// shown the Runtime is reachable and the workspace opens: one empty
-/// `exec-serve` session. What it catches before Codex is started: no
-/// `codex_exec_server` on the far side, no `codex_bin`, the wrong Codex
-/// version, an exec-server that does not start. Inside Codex all of those
-/// would read as "environment unavailable".
-fn native_runtime_preflight(
-    selected: &SelectedAgent,
-    workspace: &str,
-    root: &Path,
-    runtime_node: &str,
-    ssh: &Ssh,
-    runner: &dyn ProcessRunner,
-) -> Result<()> {
-    let binding = selected
-        .binding(workspace, root, runtime_node)?
-        .ok_or_else(|| {
-            Error::invalid_args("the exec-server chain needs an instance-bound Codex session")
-        })?;
-    let wire = payload::encode(&crate::runtime::NativeOpenPayload::new(
-        workspace,
-        binding.agent,
-        "provider-preflight",
-    ))?;
-    ssh.exec_transport_preflight(runner, &wire)
-}
-
 fn agent_readiness(selected: &SelectedAgent, tools: &Tools<'_>) -> Result<()> {
     let report = match selected.identity.as_ref() {
         Some(identity) => {
@@ -2628,7 +2545,6 @@ mod tests {
             runtime_node: "runtime".into(),
             provider_config_dir: Some(PathBuf::from("/x/claude")),
             mcp_calls: 0,
-            codex_exec_server: false,
         }
     }
 
@@ -2639,80 +2555,6 @@ mod tests {
             "/tmp/ccnm-absent-{}-{test}.sock",
             std::process::id()
         ))
-    }
-
-    /// P27: the probe runs the exec-server chain's preflight only where
-    /// `ccnm run` would -- the workspace asks for it and the Agent is
-    /// Codex -- and runs the same call, so it refuses what run refuses.
-    #[test]
-    fn probe_runs_the_exec_server_preflight_only_for_codex_on_the_chain() {
-        fn scripted<'a>(dir: &Path, fake: &'a FakeRunner, test: &str) -> Tools<'a> {
-            fake.push(Output::exited(0, "hostname home.ts\nuser ccrun\n"));
-            fake.push(Output::exited(0, hello_json(true)));
-            fake.push(Output::exited(0, audit_json()));
-            Tools {
-                local: None,
-                config: agent_config(),
-                runner: fake,
-                state: dir.to_path_buf(),
-                control_dir: control(dir),
-                agents: crate::provider::AgentBinaries::with_claude(None),
-                tmux: None,
-                controller: absent_socket(test),
-            }
-        }
-
-        // Claude on a workspace that opted in keeps its MCP tools: nothing
-        // is asked beyond the usual three calls.
-        let dir = temp("probe-native-claude");
-        let fake = FakeRunner::new();
-        let tools = scripted(&dir, &fake, "probe-native-claude");
-        let rep = probe(
-            &ProbeRequest {
-                codex_exec_server: true,
-                ..request()
-            },
-            &tools,
-        );
-        assert_eq!(rep.exec_server, None);
-        assert_eq!(fake.calls().len(), 3);
-
-        // Codex on the same workspace gets the preflight. This one is not
-        // instance-bound, which `ccnm run` refuses before dialling, and the
-        // row carries that same refusal.
-        let dir = temp("probe-native-codex");
-        let fake = FakeRunner::new();
-        let tools = scripted(&dir, &fake, "probe-native-codex");
-        let rep = probe(
-            &ProbeRequest {
-                provider: AgentProvider::Codex,
-                provider_config_dir: None,
-                codex_exec_server: true,
-                ..request()
-            },
-            &tools,
-        );
-        let refused = rep.exec_server.unwrap().unwrap_err();
-        assert_eq!(refused.code(), ErrorCode::InvalidArgs);
-        assert!(
-            refused.message.contains("instance-bound"),
-            "{}",
-            refused.message
-        );
-
-        // Codex off the chain: no preflight.
-        let dir = temp("probe-native-off");
-        let fake = FakeRunner::new();
-        let tools = scripted(&dir, &fake, "probe-native-off");
-        let rep = probe(
-            &ProbeRequest {
-                provider: AgentProvider::Codex,
-                provider_config_dir: None,
-                ..request()
-            },
-            &tools,
-        );
-        assert_eq!(rep.exec_server, None);
     }
 
     #[test]
@@ -2933,44 +2775,9 @@ mod tests {
             permission_mode: crate::config::PermissionMode::AcceptEdits,
             prompt: prompt.into(),
             timeout_secs: 5,
-            codex_exec_server: false,
             agent_tools: Default::default(),
             session: None,
         }
-    }
-
-    /// The chain has no print mode (P21.1), and the answer is a refusal
-    /// before anything is dialled, asked or written -- not an MCP session
-    /// the workspace did not ask for.
-    #[test]
-    fn run_refuses_a_print_session_on_the_exec_server_chain_before_anything() {
-        let dir = temp("run-native-print");
-        let runner = FakeRunner::new();
-        let tools = Tools {
-            local: None,
-            config: agent_config(),
-            runner: &runner,
-            state: dir.to_path_buf(),
-            control_dir: control(&dir),
-            agents: crate::provider::AgentBinaries::with_claude(None),
-            tmux: None,
-            controller: absent_socket("run-native-print"),
-        };
-        let mut req = run_request("x");
-        req.provider = AgentProvider::Codex;
-        req.permission_mode = crate::config::PermissionMode::default();
-        req.codex_exec_server = true;
-        let err = run(&req, &tools).unwrap_err();
-        assert_eq!(err.code(), ErrorCode::InvalidArgs);
-        assert!(err.message().contains("interactive"), "{err}");
-        assert!(runner.calls().is_empty(), "nothing is dialled");
-        assert!(!dir.join("sessions").exists(), "no session may be created");
-        // The same word on a Claude request means nothing: Claude keeps
-        // its MCP tools, and this run fails for the usual reason instead.
-        req.provider = AgentProvider::Claude;
-        req.permission_mode = crate::config::PermissionMode::AcceptEdits;
-        let err = run(&req, &tools).unwrap_err();
-        assert_eq!(err.code(), ErrorCode::NotReady);
     }
 
     /// Two builds that still decode each other's control messages can
@@ -3072,7 +2879,6 @@ mod tests {
             mode: Mode::Interactive { prompt: None },
             timeout_secs: 0,
             cwd: dir.to_path_buf(),
-            codex_exec_server: false,
             agent_tools: Default::default(),
             ask_before: Vec::new(),
         };
@@ -3166,7 +2972,6 @@ mod tests {
             provider_config_dir: None,
             permission_mode: crate::config::PermissionMode::default(),
             prompt: None,
-            codex_exec_server: false,
             agent_tools: Default::default(),
         }
     }
@@ -3265,7 +3070,6 @@ mod tests {
             mode: Mode::Interactive { prompt: None },
             timeout_secs: 0,
             cwd: dir.to_path_buf(),
-            codex_exec_server: false,
             agent_tools: Default::default(),
             ask_before: Vec::new(),
         };
@@ -3504,7 +3308,6 @@ mod tests {
                 mode,
                 timeout_secs: 600,
                 cwd: dir.to_path_buf(),
-                codex_exec_server: false,
                 agent_tools: Default::default(),
                 ask_before: Vec::new(),
             };

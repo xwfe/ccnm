@@ -466,10 +466,6 @@ fn doctor_against_an_unreachable_agent_exits_agent_unreachable() {
         "{text}"
     );
     assert!(
-        text.contains("Codex exec-server       SKIP   not checked: Agent SSH failed"),
-        "{text}"
-    );
-    assert!(
         text.contains(
             "Native tool policy      NOTE   not checked: only a live selected Agent session"
         ),
@@ -491,10 +487,11 @@ fn doctor_against_an_unreachable_agent_exits_agent_unreachable() {
         text.contains("exec_command            SKIP   not checked: Agent SSH failed"),
         "{text}"
     );
-    // 11, not 13: Native tool policy and Network isolation are NOTE since
-    // P73; everything behind the failed ssh is still an unknown.
+    // 10: Native tool policy and Network isolation are NOTE since P73, and
+    // the Codex exec-server row went with the chain (P86); everything
+    // behind the failed ssh is still an unknown.
     assert!(
-        text.contains("NOT READY (1 failed, 11 not checked)"),
+        text.contains("NOT READY (1 failed, 10 not checked)"),
         "{text}"
     );
     // Read-only: nothing appeared in the root.
@@ -1873,7 +1870,6 @@ fn supervise_runs_the_session_and_writes_its_exit_record() {
         },
         timeout_secs: 60,
         cwd: dir.to_path_buf(),
-        codex_exec_server: false,
         agent_tools: Default::default(),
         ask_before: Vec::new(),
     };
@@ -1949,7 +1945,6 @@ fn codex_supervisor_records_launch_validation_failure_without_running_an_agent()
         },
         timeout_secs: 10,
         cwd: root.to_path_buf(),
-        codex_exec_server: false,
         agent_tools: Default::default(),
         ask_before: Vec::new(),
     };

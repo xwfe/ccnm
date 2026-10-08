@@ -13,7 +13,6 @@ pub mod lang;
 pub mod launchagent;
 pub mod launcher;
 pub mod mcp;
-pub mod native;
 pub mod overview;
 pub mod paths;
 pub mod process;

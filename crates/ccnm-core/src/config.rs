@@ -297,9 +297,8 @@ pub struct Node {
     /// refuse as described above.
     #[serde(default)]
     pub runtime_user: Option<String>,
-    /// The Codex binary this node runs `codex exec-server` with, for
-    /// workspaces that set [`Workspace::codex_exec_server`]
-    /// (docs/plan/runtime-surfaces.md section 12).
+    /// The Codex binary this node runs `codex sandbox` with, for workspaces
+    /// that set `exec_sandbox = "codex"` (P33).
     ///
     /// Read only by this node itself, never sent anywhere, and never looked
     /// up on `PATH`: the Runtime Executor's `PATH` is whatever its shell
@@ -416,17 +415,6 @@ pub struct Workspace {
     /// instruction file and grants nothing.
     #[serde(default)]
     pub external_instructions: ExternalInstructions,
-    /// Let a managed Codex session on this workspace run Codex's own
-    /// execution tools through `codex exec-server` on this Runtime, instead
-    /// of ccnm's seven MCP tools (P22).
-    ///
-    /// Off by default for the same reason [`external_mcp`](Self::external_mcp)
-    /// is: it is another way in, and each project says so for itself. It
-    /// grants nothing beyond a coding session -- the session takes the same
-    /// write guard, and every request is checked against the rule table in
-    /// `crate::native::policy` before exec-server sees it.
-    #[serde(default)]
-    pub codex_exec_server: bool,
     /// Run every `exec_command` of this workspace inside Codex's own
     /// workspace-write OS sandbox (P33): the command can write only under
     /// the workspace root (never `.git`), under `$TMPDIR` and `/tmp`, and
@@ -1447,6 +1435,21 @@ mod tests {
         assert!(err.message().contains("hybrid-smb"), "{err}");
         let err = parse_err(&with_workspace(&format!("{VALID_WS}\nshare = \"x\"")));
         assert!(err.message().contains("share"), "{err}");
+    }
+
+    #[test]
+    fn the_codex_exec_server_switch_is_gone_even_when_off() {
+        // P86 removed the sealed exec-server chain, and its switch with it.
+        // `false` is refused too: a config that names the key was written
+        // for a build that had the chain, and the person editing it should
+        // hear that once, not find out which value happens to slip through.
+        for value in ["true", "false"] {
+            let err = parse_err(&with_workspace(&format!(
+                "{VALID_WS}\ncodex_exec_server = {value}"
+            )));
+            assert_eq!(err.code(), ErrorCode::Config, "{err}");
+            assert!(err.message().contains("codex_exec_server"), "{err}");
+        }
     }
 
     #[test]

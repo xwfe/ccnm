@@ -329,124 +329,6 @@ pub fn open_external(config: &Config, request: &ExternalOpenPayload) -> Result<O
     })
 }
 
-/// The wire version of a **Codex exec-server** open (P22).
-///
-/// A fourth number, for the reason each of the others got one: what the
-/// caller receives is different again. Not seven MCP tools but a pipe to
-/// `codex exec-server`, filtered by `crate::native::policy`. A build that
-/// does not know 6 must stop with `CCNM_E_VERSION`, never read it as a
-/// managed open and start serving MCP to a client that speaks another
-/// protocol.
-pub const NATIVE_PROTOCOL: u32 = 6;
-
-/// A request to run a managed Codex session's execution tools here.
-///
-/// The same missing fields as [`OpenPayload`] -- no root, no paths, no
-/// binary. The Codex binary especially: the program that executes the
-/// model's commands is named by this machine's config, not by the machine
-/// asking.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct NativeOpenPayload {
-    pub protocol: u32,
-    pub workspace: String,
-    pub agent: AgentIdentity,
-    pub session: String,
-}
-
-impl NativeOpenPayload {
-    pub fn new(workspace: &str, agent: AgentIdentity, session: &str) -> Self {
-        NativeOpenPayload {
-            protocol: NATIVE_PROTOCOL,
-            workspace: workspace.to_string(),
-            agent,
-            session: session.to_string(),
-        }
-    }
-}
-
-impl Protocol for NativeOpenPayload {
-    fn protocol(&self) -> u32 {
-        self.protocol
-    }
-    fn expected_protocol(&self) -> u32 {
-        NATIVE_PROTOCOL
-    }
-}
-
-/// What this Runtime decided for a Codex exec-server open.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OpenedNative {
-    pub opened: Opened,
-    /// From this node's own `codex_bin`.
-    pub codex_bin: PathBuf,
-}
-
-impl OpenedNative {
-    /// The shape the MCP server's safety gate reads, so this entry is judged
-    /// by exactly the same audit, binding re-check and waivers.
-    pub fn serve_payload(&self, request: &NativeOpenPayload) -> ServePayload {
-        ServePayload::new(
-            &self.opened.workspace,
-            self.opened.root.clone(),
-            &request.session,
-        )
-        .with_binding(self.opened.binding.clone())
-        .with_interactive(true)
-    }
-}
-
-/// Resolve a Codex exec-server open against this Runtime's config.
-///
-/// Everything [`open`] checks, and three things more: the Agent is Codex,
-/// this workspace opted in with `codex_exec_server`, and this node names the
-/// binary. The refusal for a workspace that did not opt in is the same text
-/// whether or not the workspace exists, as with external MCP.
-pub fn open_native(config: &Config, request: &NativeOpenPayload) -> Result<OpenedNative> {
-    if request.protocol != NATIVE_PROTOCOL {
-        return Err(Error::new(
-            ErrorCode::Version,
-            format!(
-                "exec-server open request is protocol {}, this Runtime opens protocol {NATIVE_PROTOCOL}",
-                request.protocol
-            ),
-        ));
-    }
-    let unavailable = || {
-        Error::policy(format!(
-            "workspace {} does not accept the Codex exec-server chain",
-            request.workspace
-        ))
-    };
-    if !config
-        .workspaces
-        .get(&request.workspace)
-        .is_some_and(|workspace| workspace.codex_exec_server)
-    {
-        return Err(unavailable());
-    }
-    if request.agent.provider != crate::provider::AgentProvider::Codex {
-        return Err(Error::policy(
-            "the exec-server chain runs Codex's own tools; this Agent is not Codex",
-        ));
-    }
-    let opened = open(
-        config,
-        &OpenPayload::new(&request.workspace, request.agent.clone(), &request.session),
-    )?;
-    let codex_bin = config
-        .nodes
-        .get(&opened.binding.runtime_node)
-        .and_then(|node| node.codex_bin.clone())
-        .ok_or_else(|| {
-            Error::config(format!(
-                "nodes.{}.codex_bin is not set; the exec-server chain needs this Runtime to name its Codex binary",
-                opened.binding.runtime_node
-            ))
-        })?;
-    Ok(OpenedNative { opened, codex_bin })
-}
-
 /// What the Agent Node asks the Runtime before starting a session on its
 /// own machine (P7.4 Batch C).
 ///
@@ -512,14 +394,6 @@ pub struct ResolveReport {
     pub allow_unisolated_credentials: bool,
     #[serde(default)]
     pub allow_unattended_exec: bool,
-    /// The workspace's own `codex_exec_server` (P23). When set, `root`
-    /// above is canonical: Codex is started with `-C <root>` and spells
-    /// every URI against it, and the rule table on this Runtime judges
-    /// canonical paths, so a symlinked spelling from config.toml would have
-    /// every request refused. Absent means off, which is what an older
-    /// Runtime that does not know the field means too.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub codex_exec_server: bool,
     /// The workspace's own `agent_tools` (P46). Left out only when it is
     /// [`AgentTools::omitted`](crate::config::AgentTools::omitted), the
     /// P50 default, so such a workspace still reads on an older Agent;
@@ -560,16 +434,7 @@ pub fn resolve(config: &Config, request: &ResolveRequest) -> Result<ResolveRepor
     let resolved = config.workspace(&request.workspace)?;
     let agent = resolved.agent_reference(request.agent.as_deref())?;
     let provider = crate::provider::AgentProvider::current();
-    let codex_exec_server = resolved.workspace.codex_exec_server;
-    // The exec-server chain needs the path as this host resolves it (see
-    // the field's doc). It also has to exist here for that chain to do
-    // anything at all, so refusing a missing root now says so one step
-    // earlier than the open would.
-    let root = if codex_exec_server {
-        canonical_root(&resolved.workspace.root)?
-    } else {
-        resolved.workspace.root.clone()
-    };
+    let root = resolved.workspace.root.clone();
     Ok(ResolveReport {
         protocol: OPEN_PROTOCOL,
         workspace: request.workspace.clone(),
@@ -583,7 +448,6 @@ pub fn resolve(config: &Config, request: &ResolveRequest) -> Result<ResolveRepor
         permission_mode: provider.permission_mode(resolved.workspace),
         allow_unisolated_credentials: resolved.workspace.allow_unisolated_credentials,
         allow_unattended_exec: resolved.workspace.allow_unattended_exec,
-        codex_exec_server,
         agent_tools: resolved.workspace.agent_tools.clone(),
     })
 }
@@ -1341,12 +1205,10 @@ root = "{}"
     /// retried as an older shape until one of them parses.
     #[test]
     fn an_unknown_protocol_is_a_version_error_not_a_fallback() {
-        // One past the highest number this build knows. It moves when a new
-        // shape is added -- 5 stopped being "the future" when external
-        // opens got it, 6 when the exec-server chain did -- and that is the
-        // point: the assertion is about a number nothing here serves, not
-        // about a particular integer.
-        let unknown = NATIVE_PROTOCOL + 1;
+        // 6 was the Codex exec-server chain's open, removed with the chain
+        // in P86: a payload from a build that still had it must stop here,
+        // not be read as some other shape. Never give 6 to anything else.
+        let unknown = 6;
         let json = serde_json::json!({"protocol": unknown, "workspace": "demo"});
         let wire = {
             use base64::Engine as _;
@@ -1359,207 +1221,6 @@ root = "{}"
             err.message().contains(&format!("protocol {unknown}")),
             "{err}"
         );
-    }
-
-    /// `mcp-serve` does not serve the exec-server chain's number either: a
-    /// caller that reached the wrong command stops on the version, instead
-    /// of being handed seven MCP tools while it speaks exec-server JSON-RPC.
-    #[test]
-    fn the_exec_server_protocol_is_not_an_mcp_serve_shape() {
-        let wire =
-            crate::protocol::payload::encode(&NativeOpenPayload::new("demo", identity(), "s-1"))
-                .unwrap();
-        assert_eq!(decode_serve(&wire).unwrap_err().code(), ErrorCode::Version);
-    }
-
-    fn native_config(root: &Path, opted_in: bool, bin: bool) -> Config {
-        let toml = format!(
-            r#"
-this = "runtime"
-
-[nodes.runtime]
-runtime_user = "ccrun"
-{}
-
-[nodes.agent]
-ssh = "agent-node"
-
-[workspaces.demo]
-root = "{}"
-agent = {{ node = "agent", instance = "codex-main" }}
-codex_exec_server = {opted_in}
-"#,
-            if bin {
-                "codex_bin = \"/opt/codex/bin/codex\""
-            } else {
-                ""
-            },
-            root.display()
-        );
-        toml::from_str(&toml).expect("test config")
-    }
-
-    fn codex() -> AgentIdentity {
-        AgentIdentity {
-            node: "agent".into(),
-            instance: "codex-main".into(),
-            provider: AgentProvider::Codex,
-            profile_ref: "default".into(),
-        }
-    }
-
-    /// The Agent starts Codex with `-C <root>` and Codex spells every URI
-    /// against that string, while the rule table here judges canonical
-    /// paths. So the root a resolve reports for an exec-server workspace
-    /// is the one this host resolves, and a workspace that has not opted
-    /// in keeps reporting the spelling in its config, as it always has.
-    #[test]
-    fn an_exec_server_workspace_resolves_to_its_canonical_root() {
-        let dir = workspace_dir("resolve-native");
-        let link = dir.join("link");
-        std::os::unix::fs::symlink(dir.join("project"), &link).unwrap();
-        let request = ResolveRequest::new("demo", None);
-
-        let plain = resolve(&native_config(&link, false, true), &request).unwrap();
-        assert_eq!(plain.root, link, "not opted in: the config's own spelling");
-        assert!(!plain.codex_exec_server);
-        let json = serde_json::to_value(&plain).unwrap();
-        assert!(
-            json.get("codex_exec_server").is_none(),
-            "off is absent, so an older Agent reads the same report it always did"
-        );
-
-        let native = resolve(&native_config(&link, true, true), &request).unwrap();
-        assert_eq!(native.root, dir.join("project").canonicalize().unwrap());
-        assert!(native.codex_exec_server);
-        let json = serde_json::to_value(&native).unwrap();
-        assert_eq!(json["codex_exec_server"], serde_json::json!(true));
-
-        // The chain cannot run against a root this host does not have, and
-        // that is said here rather than when Codex is already up.
-        let missing = native_config(&dir.join("gone"), true, true);
-        let err = resolve(&missing, &request).unwrap_err();
-        assert_eq!(err.code(), ErrorCode::WrongWorkspace);
-        assert!(
-            resolve(&native_config(&dir.join("gone"), false, true), &request).is_ok(),
-            "a missing root is still only the open's business for the MCP chain"
-        );
-    }
-
-    /// `agent_tools` is the Runtime's decision and reaches the Agent only
-    /// through this report. Only the P50 default is absent on the wire, so
-    /// an older Agent reads such a workspace as it always has; anything
-    /// else -- the P77 default of all five included -- is written out, and
-    /// an older Agent refuses it as an unknown field or name instead of
-    /// launching with a tool set nobody chose. Absent reads back as the P50
-    /// default, never as the new one: a report from an older Runtime must
-    /// not turn on what that Runtime never agreed to.
-    #[test]
-    fn a_resolve_carries_the_workspace_agent_tools() {
-        use crate::config::{AgentTool, AgentTools};
-        let dir = workspace_dir("resolve-agent-tools");
-        let request = ResolveRequest::new("demo", None);
-        let mut config = native_config(&dir.join("project"), false, false);
-
-        let default = resolve(&config, &request).unwrap();
-        assert!(default.agent_tools.is_default());
-        let json = serde_json::to_value(&default).unwrap();
-        assert_eq!(
-            json["agent_tools"],
-            serde_json::json!([
-                "web_search",
-                "web_fetch",
-                "subagents",
-                "tasks",
-                "mcp_servers"
-            ]),
-            "{json}"
-        );
-
-        config.workspaces.get_mut("demo").unwrap().agent_tools = AgentTools::omitted();
-        let mut json = serde_json::to_value(resolve(&config, &request).unwrap()).unwrap();
-        assert!(json.get("agent_tools").is_none(), "{json}");
-        // And what an older Runtime sends for its default reads as that.
-        json.as_object_mut().unwrap().remove("agent_tools");
-        let back: ResolveReport = serde_json::from_value(json).unwrap();
-        assert_eq!(back.agent_tools, AgentTools::omitted());
-
-        config.workspaces.get_mut("demo").unwrap().agent_tools =
-            AgentTools::of(&[AgentTool::WebFetch]);
-        let chosen = resolve(&config, &request).unwrap();
-        let json = serde_json::to_value(&chosen).unwrap();
-        assert_eq!(json["agent_tools"], serde_json::json!(["web_fetch"]));
-        let back: ResolveReport = serde_json::from_value(json).unwrap();
-        assert_eq!(back.agent_tools, AgentTools::of(&[AgentTool::WebFetch]));
-
-        config.workspaces.get_mut("demo").unwrap().agent_tools = AgentTools::none();
-        let json = serde_json::to_value(resolve(&config, &request).unwrap()).unwrap();
-        assert_eq!(
-            json["agent_tools"],
-            serde_json::json!([]),
-            "off is not the default"
-        );
-    }
-
-    #[test]
-    fn an_exec_server_open_needs_the_workspace_codex_and_this_nodes_binary() {
-        let dir = workspace_dir("native");
-        let root = dir.join("project");
-        let request = NativeOpenPayload::new("demo", codex(), "s-1");
-
-        let opened = open_native(&native_config(&root, true, true), &request).unwrap();
-        assert_eq!(opened.codex_bin, PathBuf::from("/opt/codex/bin/codex"));
-        assert_eq!(opened.opened.root, root.canonicalize().unwrap());
-        let payload = opened.serve_payload(&request);
-        assert_eq!(payload.binding.as_ref(), Some(&opened.opened.binding));
-        assert!(payload.interactive);
-
-        // Not opted in, and not there at all: one message, so the refusal
-        // does not say which projects exist.
-        let not_opted = open_native(&native_config(&root, false, true), &request).unwrap_err();
-        let absent = open_native(
-            &native_config(&root, true, true),
-            &NativeOpenPayload::new("elsewhere", codex(), "s-1"),
-        )
-        .unwrap_err();
-        assert_eq!(not_opted.code(), ErrorCode::Policy);
-        assert_eq!(
-            not_opted.message().replace("demo", "elsewhere"),
-            absent.message()
-        );
-
-        let claude = NativeOpenPayload::new("demo", identity(), "s-1");
-        let err = open_native(&native_config(&root, true, true), &claude).unwrap_err();
-        assert_eq!(err.code(), ErrorCode::Policy);
-
-        let err = open_native(&native_config(&root, true, false), &request).unwrap_err();
-        assert_eq!(err.code(), ErrorCode::Config);
-        assert!(err.message().contains("codex_bin"), "{err}");
-
-        let mut old = request.clone();
-        old.protocol = OPEN_PROTOCOL;
-        let err = open_native(&native_config(&root, true, true), &old).unwrap_err();
-        assert_eq!(err.code(), ErrorCode::Version);
-
-        let unsafe_session = NativeOpenPayload::new("demo", codex(), "../escape");
-        assert!(open_native(&native_config(&root, true, true), &unsafe_session).is_err());
-    }
-
-    /// The Runtime names the binary; a request that tries to is not decoded.
-    #[test]
-    fn an_exec_server_request_cannot_carry_a_root_or_a_binary() {
-        let mut json =
-            serde_json::to_value(NativeOpenPayload::new("demo", codex(), "s-1")).unwrap();
-        for (field, value) in [("root", "/etc"), ("codex_bin", "/tmp/evil")] {
-            let mut tampered = json.clone();
-            tampered[field] = serde_json::json!(value);
-            assert!(
-                serde_json::from_value::<NativeOpenPayload>(tampered).is_err(),
-                "{field}"
-            );
-        }
-        json["protocol"] = serde_json::json!(NATIVE_PROTOCOL);
-        assert!(serde_json::from_value::<NativeOpenPayload>(json).is_ok());
     }
 
     #[test]

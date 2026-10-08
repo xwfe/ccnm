@@ -1750,6 +1750,9 @@ pub fn serve_external(request: &crate::runtime::ExternalOpenPayload) -> CcnmResu
 pub const HEARTBEAT: Duration = Duration::from_secs(30);
 
 fn run(server: Server) -> CcnmResult<()> {
+    // Before any command starts: what one leaves outside its process group
+    // then comes back to this process, and is ended with the session (P84).
+    let adopting = super::orphans::adopt();
     if let Some(state) = server.inner.state.clone() {
         // Off this thread: a sweep of every session on the machine must
         // not delay the handshake, and nothing it runs into is this
@@ -1791,6 +1794,12 @@ fn run(server: Server) -> CcnmResult<()> {
     // handed on: the next session is refused and a person looks. Until P43
     // the guard was marked released here and the next writer walked straight
     // in beside it (评审 X05).
+    //
+    // On Linux, what left its group is adopted by this process and ended
+    // alongside (P84) -- including one that holds a pipe, which would
+    // otherwise keep its command from being waited for until `stop_all`
+    // gives up on it.
+    let sweeper = super::orphans::Sweeper::start(adopting);
     let abandoned = inner.jobs.stop_all();
     // Dropping the runtime waits for what is left in `spawn_blocking`:
     // results being written, so runs are finished before they are removed,
@@ -1807,7 +1816,10 @@ fn run(server: Server) -> CcnmResult<()> {
         .as_ref()
         .map(|relay| relay.close_all())
         .unwrap_or_default();
-    if let Some(what) = left_behind(&abandoned, &servers)
+    // Last, so whatever stopping the rest handed to this process is taken
+    // too; what would not end keeps the guard.
+    let orphans = sweeper.finish();
+    if let Some(what) = left_behind(&abandoned, &servers, &orphans)
         && let Some(guard) = &inner.write_guard
     {
         guard.abandon(&what);
@@ -1821,10 +1833,11 @@ fn run(server: Server) -> CcnmResult<()> {
 
 /// What a session ends with that it could not stop and that can still write
 /// the working tree, in words for [`WriteGuard::abandon`]: the commands by
-/// output_ref, then each relayed server's leftovers. `None` when nothing.
+/// output_ref, then each relayed server's leftovers, then the processes that
+/// left their groups and would not end (P84). `None` when nothing.
 ///
 /// [`WriteGuard::abandon`]: crate::mcp::write_guard::WriteGuard::abandon
-fn left_behind(commands: &[String], servers: &[String]) -> Option<String> {
+fn left_behind(commands: &[String], servers: &[String], orphans: &[String]) -> Option<String> {
     let mut parts = Vec::new();
     if !commands.is_empty() {
         parts.push(format!(
@@ -1834,6 +1847,13 @@ fn left_behind(commands: &[String], servers: &[String]) -> Option<String> {
         ));
     }
     parts.extend(servers.iter().cloned());
+    if !orphans.is_empty() {
+        parts.push(format!(
+            "{} process(es) that left their process group ({})",
+            orphans.len(),
+            orphans.join(", ")
+        ));
+    }
     (!parts.is_empty()).then(|| parts.join("; "))
 }
 
@@ -2177,17 +2197,25 @@ mod tests {
     /// not be cleared both keep the guard; the wording for commands is what
     /// `external_mcp.rs` and people's notes already match on.
     #[test]
-    fn what_a_session_left_behind_names_commands_then_servers() {
-        assert_eq!(left_behind(&[], &[]), None);
+    fn what_a_session_left_behind_names_commands_then_servers_then_escapees() {
+        assert_eq!(left_behind(&[], &[], &[]), None);
         assert_eq!(
-            left_behind(&["r-a".into(), "r-b".into()], &[]).as_deref(),
+            left_behind(&["r-a".into(), "r-b".into()], &[], &[]).as_deref(),
             Some("2 command(s) (r-a, r-b)")
         );
         let server = "MCP server db (process group 9: 12 still running after SIGKILL)";
-        assert_eq!(left_behind(&[], &[server.into()]).as_deref(), Some(server));
         assert_eq!(
-            left_behind(&["r-a".into()], &[server.into()]).as_deref(),
+            left_behind(&[], &[server.into()], &[]).as_deref(),
+            Some(server)
+        );
+        assert_eq!(
+            left_behind(&["r-a".into()], &[server.into()], &[]).as_deref(),
             Some(format!("1 command(s) (r-a); {server}").as_str())
+        );
+        // P84: what left its group and would not end.
+        assert_eq!(
+            left_behind(&[], &[], &["pid 7 (sleep 99)".into()]).as_deref(),
+            Some("1 process(es) that left their process group (pid 7 (sleep 99))")
         );
     }
 

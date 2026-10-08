@@ -129,6 +129,7 @@ version = "0.13.1"
 dependencies = [
  "base64",
  "ccnm-testdir",
+ "nix",
  "rmcp",
  "serde",
  "serde_json",

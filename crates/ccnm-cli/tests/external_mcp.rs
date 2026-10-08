@@ -992,8 +992,12 @@ const ESCAPING_CHILD: &str = r#"python3 -c "import os,sys,time;pid=os.fork();ope
 /// stays `held` with an `abandoned` line, the next session is refused, and
 /// the refusal names the `output_ref` that is still out there.
 ///
-/// The slowest test in this file: it waits out both give-up windows, ten
-/// seconds each.
+/// The slowest test in this file on macOS: it waits out both give-up
+/// windows, ten seconds each.
+///
+/// On Linux the premise no longer holds (P84): the server is the subreaper
+/// of what its commands leave, so the escaped child is adopted once its
+/// parent exits and ended with the session -- and the guard is released.
 #[test]
 fn a_command_that_cannot_be_stopped_keeps_the_guard() {
     let fixture = Fixture::unconfined("abandoned", "coding");
@@ -1010,6 +1014,11 @@ fn a_command_that_cannot_be_stopped_keeps_the_guard() {
     session.shutdown();
 
     let marker = one_guard_marker(&fixture.dir.join("state/ccnm/write-guards"));
+    if cfg!(target_os = "linux") {
+        assert_eq!(marker, "released\n");
+        assert!(gone(escaped), "pid {escaped} outlived its session");
+        return;
+    }
     assert!(
         marker.starts_with("held bridge-abandoned demo pid "),
         "{marker:?}"
@@ -1035,6 +1044,65 @@ fn a_command_that_cannot_be_stopped_keeps_the_guard() {
     let _ = Command::new("kill")
         .args(["-9", &escaped.to_string()])
         .status();
+}
+
+/// A command whose descendant leaves the process group with `setsid` **and**
+/// lets go of every pipe: nothing about it reaches ccnm the way a command's
+/// output does. Linux only, for `setsid(1)`.
+#[cfg(target_os = "linux")]
+const ESCAPING_QUIETLY: &str =
+    "setsid sh -c 'echo $$ > quiet.pid; exec sleep 120' </dev/null >/dev/null 2>&1 &";
+
+/// P84: before it, the descendant above went on running after the session
+/// ended, and the guard was released beside it -- the next writer shared the
+/// tree with something nobody knew about (the gap P43 recorded). Now the
+/// server, as its subreaper, adopts it when the command exits and ends it
+/// with the session; only then is the guard let go.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_descendant_that_left_quietly_is_ended_with_the_session() {
+    let fixture = Fixture::unconfined("escaped-quietly", "coding");
+    let mut session = fixture.open("demo", ExternalMode::Coding, "bridge-escaped-quietly");
+    let ran = session.call("exec_command", json!({"shell": ESCAPING_QUIETLY}));
+    assert!(!is_error(&ran), "{}", text(&ran));
+    let escaped = wait_for_pid(&fixture.root.join("quiet.pid"));
+    assert!(alive(escaped), "pid {escaped} should be running");
+
+    session.shutdown();
+
+    let marker = one_guard_marker(&fixture.dir.join("state/ccnm/write-guards"));
+    let ended = gone(escaped);
+    if !ended {
+        let _ = Command::new("kill")
+            .args(["-9", &escaped.to_string()])
+            .status();
+    }
+    assert!(ended, "pid {escaped} outlived its session");
+    assert_eq!(marker, "released\n");
+}
+
+/// Whether `pid` is gone, waiting up to ten seconds: a process this server
+/// ended is reaped by init once the server has exited, which takes a moment.
+fn gone(pid: i32) -> bool {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        if !alive(pid) {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
+/// Asked once: `!gone(pid)` would wait out the whole ten seconds first.
+fn alive(pid: i32) -> bool {
+    Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
 }
 
 fn wait_for_pid(path: &Path) -> i32 {

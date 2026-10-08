@@ -4,7 +4,7 @@
 tests/fixtures/fake_agent_ssh.py 冒充（PATH 最前面放一个叫 ssh 的包装脚本），
 它只演协议约定的样子；时序靠它的“放行文件”控制，不靠 sleep 猜。
 
-这些用例是 P57 探针（docs/research/probes/p57-rpc-control.py）的反证改写成的
+这些用例是 P57 探针（p57-rpc-control.py，已删）的反证改写成的
 正式回归：P58 之前它们全红，见 docs/research/2026-09-28-p58-exact-session-control.md。
 
 沙盒放在 /tmp：macOS 的 $TMPDIR 太长，拼上 `ccnm/ssh` 和 socket 名会超过

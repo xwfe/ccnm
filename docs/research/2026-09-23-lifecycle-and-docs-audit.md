@@ -14,7 +14,7 @@
 
 源代码链条：[`mcp/relay.rs`](../../crates/ccnm-core/src/mcp/relay.rs) 的 `stop()` 只在 server leader 尚未退出时发进程组 KILL，且不返回清理成败；`Relay::close_all()` 返回 `()`。[`mcp/server.rs`](../../crates/ccnm-core/src/mcp/server.rs) 收尾时只把 `jobs.stop_all()` 返回的残留接到 `write_guard.abandon()`，relay 收尾不参与这项判定。
 
-隔离探针：[probes/p51-relay-cleanup.py](probes/p51-relay-cleanup.py)。使用本机真实 `target/debug/ccnm`、中立 MCP 客户端、临时 workspace/HOME/state；临时配置显式接受该开发账号未隔离，仅用于故障注入。假 stdio MCP server 启动一个**仍在原进程组内**的子进程，子进程关闭继承的管道、持续写测试文件，server 收到 EOF 正常退出。探针随后打开第二个 coding 会话写入另一个文件。
+隔离探针：`probes/p51-relay-cleanup.py`（后来改写成 `tests/test_remote_workspace_mcp.py` 的 C51-01 用例，探针已删）。使用本机真实 `target/debug/ccnm`、中立 MCP 客户端、临时 workspace/HOME/state；临时配置显式接受该开发账号未隔离，仅用于故障注入。假 stdio MCP server 启动一个**仍在原进程组内**的子进程，子进程关闭继承的管道、持续写测试文件，server 收到 EOF 正常退出。探针随后打开第二个 coding 会话写入另一个文件。
 
 2026-09-23，macOS 26.6.2 / arm64，实际输出：
 

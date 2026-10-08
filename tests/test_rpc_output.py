@@ -4,7 +4,7 @@
 对面的 Agent 由 tests/fixtures/fake_agent_ssh.py 冒充，它的 `agent-output` 只按偏移
 切测试放进去的视图。脱敏、UTF-8 规整、超长截尾是真实 Agent 的事，由 Rust 测试覆盖。
 
-这些用例对应 P57 探针 docs/research/probes/p57-output.py 的 C0–C5：P59 之前
+这些用例对应 P57 探针 p57-output.py（已删）的 C0–C5：P59 之前
 Agent 只交回 2 KiB 尾巴，RPC 报 `truncated=false`，`max_bytes` 被忽略，stderr 丢失。
 """
 

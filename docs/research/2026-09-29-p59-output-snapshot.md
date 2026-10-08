@@ -70,7 +70,7 @@ stash 随即 `pop`，`git stash list` 为空；`/tmp/ccnm-exact-*` 与假 Agent 
 
 原有用例的调整跟着行为走：测试替身的 `FakeRuns::ok` 让 Agent 视图等于它报告的内容；超长输出那条的 `cursor` 由“永远 null”改为“有更早的内容可翻”。
 
-P57 的 [p57-output.py](probes/p57-output.py) 在新构建上重跑：它的假 Agent 早于 `agent-output`，所以走的是回退路径——输出带 `unavailable_reason: agent_refused`，stderr 也能用 `stream` 取到；探针的判定字段是 P57 时的，不再作为结论依据，结论以上面的正式回归为准。
+P57 的 `p57-output.py`（后来改写成 `tests/test_rpc_output.py`，探针已删）在新构建上重跑：它的假 Agent 早于 `agent-output`，所以走的是回退路径——输出带 `unavailable_reason: agent_refused`，stderr 也能用 `stream` 取到；探针的判定字段是 P57 时的，不再作为结论依据，结论以上面的正式回归为准。
 
 ## 4. 门禁
 

@@ -9,7 +9,7 @@
 **这是分目录的路由测试，不是跨 UID 的权限证明**：三个目录同属当前用户，
 OS 隔离留给 P62 在 hpsrv/ccrun 上验。
 
-改写自 P57 的 E（docs/research/probes/p57-purge-routing.py）：P61 之前 purge 只删
+改写自 P57 的 E（探针 p57-purge-routing.py，已删，原文在 git 历史里）：P61 之前 purge 只删
 Operator 自己 state 下的 sessions/<id>，Runtime 执行账号那份输出没人删，workspace
 配置却照删，之后再没有命令找得到它。见 docs/research/2026-09-30-p61-cleanup.md。
 """

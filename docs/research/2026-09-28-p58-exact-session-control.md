@@ -48,7 +48,7 @@ stash 在红跑之后立即 `pop`，`git stash list` 为空；随后重新构建
 
 ### 3.2 P57 探针复验
 
-P57 的 [p57-rpc-control.py](probes/p57-rpc-control.py) 在新构建上重跑。为了让它能跑，本轮改了三处探针代码：假 Agent 按请求里的会话 id 回话（真实 Agent 就是这样），列键目录时兼容新布局，A7 在“一个 stop 都没发出”时不再越界取值。判定逻辑没改。
+P57 的 `p57-rpc-control.py`（后来改写成 `tests/test_rpc_exact_control.py`，探针已删）在新构建上重跑。为了让它能跑，本轮改了三处探针代码：假 Agent 按请求里的会话 id 回话（真实 Agent 就是这样），列键目录时兼容新布局，A7 在“一个 stop 都没发出”时不再越界取值。判定逻辑没改。
 
 | 项 | P57（旧构建） | P58 构建 |
 | --- | --- | --- |

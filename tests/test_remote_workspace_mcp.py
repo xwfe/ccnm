@@ -463,7 +463,7 @@ agent_node = "agent"
         self.client("demo", "coding", "neutral-relay-next")
 
     def test_a_child_left_in_the_servers_process_group_ends_before_the_next_writer(self):
-        """C51-01：P51 探针（docs/research/probes/p51-relay-cleanup.py）转成的回归。
+        """C51-01：P51 探针（p51-relay-cleanup.py，已删）转成的回归。
 
         server 起一个子进程：同一个进程组、没有 setsid、关掉继承的管道、一直
         写文件；然后 server 读到 EOF 正常退出。P52 之前 ccnm 把"server 自己退

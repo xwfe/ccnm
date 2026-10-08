@@ -43,23 +43,15 @@
 
 ### 3.1 方法
 
-四个探针加一个公共模块，都在 [probes/](probes/)：
+四个探针加一个公共模块，当时放在 `probes/` 下。P58–P61 已把对应项改写成正式回归（`tests/test_rpc_exact_control.py`、`tests/test_rpc_output.py`、`tests/test_rpc_write_guard.py`、`tests/test_cleanup.py`），探针本身 2026-10-08 删除，原文在 git 历史里：
 
 | 文件 | 覆盖 | 被测的真实二进制 | 假的只有 |
 | --- | --- | --- | --- |
-| [p57-rpc-control.py](probes/p57-rpc-control.py) | CTRL-01/02/03、AUTH-01 的 RPC 一半 | `ccnm rpc`、`ccnm internal agent-stop` | 冒充 Agent 的 ssh（文件屏障控制每次运行何时结束）、Agent 上的 tmux |
-| [p57-output.py](probes/p57-output.py) | OUT-01/02 | `ccnm internal agent-result`、`ccnm rpc` | 冒充 Agent 的 ssh |
-| [p57-write-guard.py](probes/p57-write-guard.py) | AUTH-01/02 的 Runtime 一半 | `ccnm internal mcp-serve` | 无：客户端是不 import ccnm 的 [mcp_client.py](../../tests/mcp_client.py) |
-| [p57-purge-routing.py](probes/p57-purge-routing.py) | CLEAN-01 | `ccnm workspace remove --purge` | 冒充 Agent 的 ssh |
-| [p57_common.py](probes/p57_common.py) | 沙盒、假 ssh / 假 tmux 本体、RPC 客户端 | — | — |
-
-```bash
-cargo build
-python3 -B docs/research/probes/p57-rpc-control.py
-python3 -B docs/research/probes/p57-output.py
-python3 -B docs/research/probes/p57-write-guard.py
-python3 -B docs/research/probes/p57-purge-routing.py
-```
+| `p57-rpc-control.py` | CTRL-01/02/03、AUTH-01 的 RPC 一半 | `ccnm rpc`、`ccnm internal agent-stop` | 冒充 Agent 的 ssh（文件屏障控制每次运行何时结束）、Agent 上的 tmux |
+| `p57-output.py` | OUT-01/02 | `ccnm internal agent-result`、`ccnm rpc` | 冒充 Agent 的 ssh |
+| `p57-write-guard.py` | AUTH-01/02 的 Runtime 一半 | `ccnm internal mcp-serve` | 无：客户端是不 import ccnm 的 [mcp_client.py](../../tests/mcp_client.py) |
+| `p57-purge-routing.py` | CLEAN-01 | `ccnm workspace remove --purge` | 冒充 Agent 的 ssh |
+| `p57_common.py` | 沙盒、假 ssh / 假 tmux 本体、RPC 客户端 | — | — |
 
 时序靠文件屏障和轮询，不靠固定 sleep：假 Agent 的 `agent-run` 停在“等放行文件”上，探针决定先放行还是先 stop。唯一依赖调度的是压力项 A4，只记计数。每个探针退出 0 只表示探针跑完，不表示产品通过；它们**不进 CI**，P58–P61 修复时把对应项改写成正式回归。
 

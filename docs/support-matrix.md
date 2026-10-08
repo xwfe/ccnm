@@ -80,7 +80,7 @@ Linux 那个在 `ubuntu-24.04` 上本机构建，**glibc 下限是从二进制�
 
 下面是各轮操作的历史安装/发布记录，不是本轮对远端节点的实时查询。P51 起点 Cargo 为 `0.9.0`、HEAD 为 `7f0e018`，没有更换任何已安装二进制。
 
-**最新的 release 是 `v0.13.1`**（2026-10-08）：P80–P83——受管 Codex 会话的工具调用不再在 300 秒被 Codex 掐断、Claude Code 2.1.292 起默认的 MCP 2026-07-28 开场实测兼容并补齐列表缓存提示、等命令的调用每 10 秒报进度、只给外部 MCP 用的 workspace 的 doctor 不再永远"还不能用"，外加 2026-10-08 的清理（删了从没实现过的 `hybrid-smb` 配置分支，写了它的配置从 doctor 判失败变成解析失败，都是 `CCNM_E_CONFIG`）。产物与换装见[发版记录](research/2026-10-08-release-0.13.1.md)。
+**最新的 release 是 `v0.13.1`**（2026-10-08）：P80–P83——受管 Codex 会话的工具调用不再在 300 秒被 Codex 掐断、Claude Code 2.1.292 起默认的 MCP 2026-07-28 开场实测兼容并补齐列表缓存提示、等命令的调用每 10 秒报进度、只给外部 MCP 用的 workspace 的 doctor 不再永远"还不能用"，外加 2026-10-08 的清理（删了从没实现过的 `hybrid-smb` 配置分支，写了它的配置从 doctor 判失败变成解析失败，都是 `CCNM_E_CONFIG`）。tag 指向 `45ba3c0`，四个产物齐全（macOS universal 包 `ac9b4594…`、linux-x86_64 包 `fbee8ae0…`），当天三台都换成了它，四个日用 workspace 的 doctor 都是"可以用了"；零额度真机验了 P81（受管会话里 fodelf 的 Claude Code 2.1.293 与 ccnm、ccnm_agent 都协商到 2026-07-28）、P82（经真实 ssh 收到进度）、P83，hpsrv 上发布的 Linux 二进制跑中立客户端 54 条全过，见[发版记录](research/2026-10-08-release-0.13.1.md)。P80 在真机上没验。
 
 上一个是 `v0.13.0`（2026-10-08，tag 指向 `9a59ddc`）：P75–P79——按项目名停也记"被停止"、文档建议开 `allow_unattended_exec`、`agent_tools` 默认全开、不写 `runtime_user` 就是共用账号、命令不问人的会话里跑 skill 的 `hooks` 与加载时命令。四个产物齐全（macOS universal 包 `aa9c237f…`、linux-x86_64 包 `0c430330…`），当天三台都换成了它，四个日用 workspace 的 doctor 都是"可以用了"，并零额度真机验了 P75、P77、P78、P79，见[发版记录](research/2026-10-08-release-0.13.0.md)。
 

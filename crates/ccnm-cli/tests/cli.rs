@@ -517,9 +517,9 @@ fn doctor_missing_home_ccnm_exits_version_code() {
     );
 }
 
-/// The phase 1B proof, minus the network: this binary spawns itself as
-/// `internal mcp-serve`, speaks MCP to it over pipes, and one process
-/// answers every call.
+/// The one-persistent-server proof, minus the network: this binary spawns
+/// itself as `internal mcp-serve`, speaks MCP to it over pipes, and one
+/// process answers every call.
 #[test]
 fn mcp_probe_local_speaks_to_one_persistent_server() {
     let (dir, config) = setup("mcp-local", env!("CARGO_BIN_EXE_ccnm"));

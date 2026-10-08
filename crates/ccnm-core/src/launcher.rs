@@ -1,5 +1,6 @@
 //! The home-launcher role's commands other than doctor: `ccnm mcp probe`
-//! (the phase 1B persistence measurement) and `ccnm run --print`.
+//! (measures whether one persistent server answers every call) and `ccnm
+//! run --print`.
 
 use std::path::PathBuf;
 use std::time::Duration;

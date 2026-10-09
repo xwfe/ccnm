@@ -1137,3 +1137,5 @@ P73 当时把"外部 MCP workspace 里执行账号的安全没人验"留作挡�
 - **P84.4** 文档（支持矩阵、运维手册、README 已知限制里"setsid 出去的进程 ccnm 停不掉"那条按平台改写）；CI 的 msrv 注释按新加的 `#[cfg(target_os)]` 更新；门禁通过。
 
 停止点：macOS 不改；mcp-serve 被 `SIGKILL` 后它起的进程（P41 那条缺口）不在本阶段——收养它们的正是被杀的那个进程；不收僵尸；不发版。
+
+**macOS 部分 2026-10-09 用户定不做**（P84 完成后按建议）。macOS 没有 subreaper，逃出去的进程父进程一退就归 launchd，事后列 mcp-serve 的子进程找不到它们。能做的只剩两种，都只能尽力而为：照 Codex `pid_tracker.rs` 用 kqueue `NOTE_FORK` 边跑边跟，要加 libproc 依赖，fork 后马上 `setsid` 再退出的中间进程可能在登记前就跑掉；或给命令带环境变量标记、收尾时用 `ps -E` 扫同账号进程，进程清掉自己的环境就漏。写锁不能建在"尽力而为"上，所以 macOS 维持现状：支持矩阵和运维手册写明这类进程要手工收。

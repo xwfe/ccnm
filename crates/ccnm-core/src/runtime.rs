@@ -587,6 +587,47 @@ pub struct AuditReport {
     pub allow_unisolated_credentials: bool,
     #[serde(default)]
     pub allow_unattended_exec: bool,
+    /// Which of [`OPENER_CONFIG`] are in the project now, as this account
+    /// sees it (P85). `None` from a Runtime older than P85, which is not
+    /// the same as "none there".
+    #[serde(default)]
+    pub opener_config: Option<Vec<String>>,
+}
+
+/// What in a project takes effect as whoever opens it: an IDE's tasks and
+/// settings, Claude Code's hooks, commands and MCP servers, Codex's
+/// project config, a shell's startup files (for a root that is a home).
+/// After srt's mandatory deny list (docs/research/2026-10-08-peer-survey.md).
+///
+/// It matters with a dedicated account (P85): the project belongs to it,
+/// and what it writes here runs as the person who opens the tree, outside
+/// the account it was confined to. `.git` is left out on purpose -- that
+/// person's git refuses another account's repository (`dubious ownership`)
+/// unless they add it to `safe.directory`, so its hooks do not run as them.
+pub const OPENER_CONFIG: [&str; 13] = [
+    ".bash_profile",
+    ".bashrc",
+    ".claude",
+    ".codex",
+    ".gitconfig",
+    ".gitmodules",
+    ".idea",
+    ".mcp.json",
+    ".profile",
+    ".ripgreprc",
+    ".vscode",
+    ".zprofile",
+    ".zshrc",
+];
+
+/// The [`OPENER_CONFIG`] entries present under `root`. A link counts
+/// whatever it points at: it can be pointed somewhere else later.
+fn opener_config_in(root: &Path) -> Vec<String> {
+    OPENER_CONFIG
+        .iter()
+        .filter(|name| std::fs::symlink_metadata(root.join(name)).is_ok())
+        .map(|name| (*name).to_string())
+        .collect()
 }
 
 impl AuditReport {
@@ -639,6 +680,7 @@ pub fn audit(
         allow_unconfined_exec: resolved.workspace.allow_unconfined_exec,
         allow_unisolated_credentials: resolved.workspace.allow_unisolated_credentials,
         allow_unattended_exec: resolved.workspace.allow_unattended_exec,
+        opener_config: Some(opener_config_in(&resolved.workspace.root)),
     })
 }
 
@@ -1234,5 +1276,34 @@ root = "{}"
         assert_eq!(payload.binding.as_ref(), Some(&opened.binding));
         assert!(payload.interactive);
         assert_eq!(payload.protocol, crate::instance::INSTANCE_SESSION_PROTOCOL);
+    }
+
+    /// P85: the audit names what in the project takes effect as whoever
+    /// opens it -- names only, a link counts whatever it points at, `.git`
+    /// and ordinary files never. Read off the wire, as doctor gets it.
+    #[test]
+    fn the_audit_names_what_takes_effect_as_whoever_opens_the_project() {
+        let dir = workspace_dir("opener-config");
+        let root = dir.join("project");
+        let request = AuditRequest::new("demo");
+        let answer = |root: &Path| {
+            let report = audit(&config(root), &request, &crate::process::FakeRunner::new());
+            serde_json::to_value(report.unwrap()).unwrap()["opener_config"].clone()
+        };
+        assert_eq!(
+            answer(&root),
+            serde_json::json!([]),
+            "none yet is not unknown"
+        );
+
+        std::fs::create_dir(root.join(".vscode")).unwrap();
+        std::fs::write(root.join(".mcp.json"), "{}").unwrap();
+        std::os::unix::fs::symlink("/nonexistent", root.join(".claude")).unwrap();
+        std::fs::create_dir_all(root.join(".git/hooks")).unwrap();
+        std::fs::write(root.join("README.md"), "").unwrap();
+        assert_eq!(
+            answer(&root),
+            serde_json::json!([".claude", ".mcp.json", ".vscode"])
+        );
     }
 }

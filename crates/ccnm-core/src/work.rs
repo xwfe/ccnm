@@ -2531,6 +2531,7 @@ mod tests {
             allow_unconfined_exec: false,
             allow_unisolated_credentials: false,
             allow_unattended_exec: false,
+            opener_config: Some(Vec::new()),
         })
         .unwrap()
     }

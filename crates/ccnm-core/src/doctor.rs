@@ -1115,7 +1115,45 @@ fn runtime_safety_rows(
             "interactive sessions ask before each exec_command, in every permission mode\n--print and ccnm mcp bridge never ask: nobody is waiting at either",
         )
     });
+    if !audit.shared_account {
+        rows.push(opener_config_row(report));
+    }
     rows
+}
+
+/// What in the project takes effect as whoever opens it, for a dedicated
+/// account (P85).
+///
+/// The project belongs to that account -- the `Workspace root` row insists
+/// on it -- so chmod and ACLs cannot keep it out of these files: an owner
+/// changes both. What helps is knowing which are there before opening the
+/// tree as yourself, so the row lists them: WARN while any is, OK when none
+/// is. It never refuses; nothing here is wrong with the Runtime. A shared
+/// account gets no row: its commands already run as you.
+fn opener_config_row(report: &crate::runtime::AuditReport) -> Check {
+    const NAME: &str = "Files that act as you";
+    let user = &report.audit.user;
+    let Some(present) = &report.opener_config else {
+        return Check::note(
+            NAME,
+            "not checked: that Runtime's ccnm does not report them",
+        );
+    };
+    if present.is_empty() {
+        return Check::ok(
+            NAME,
+            format!(
+                "none present (IDE tasks, Claude Code hooks and MCP servers, shell startup files); {user} can create them, and this row will list them"
+            ),
+        );
+    }
+    Check::warn(
+        NAME,
+        format!(
+            "{user} can change these, and they take effect as whoever opens the project: IDE tasks, Claude Code hooks and MCP servers, shell startup files\npresent now: {}\nbefore opening this tree as yourself in an IDE, Claude Code or Codex, read them first; chmod and ACLs do not stop {user}, whose project it is\nyour git refuses this tree as another account's repository, so its hooks do not run as you; keep it so: no safe.directory for it",
+            present.join(", ")
+        ),
+    )
 }
 
 /// A check's name as a person reads it, for display only.
@@ -1166,6 +1204,7 @@ fn row_label(lang: Lang, name: &str) -> &str {
         "Anthropic egress" => "Anthropic 出口",
         "Runtime safety" => "Runtime 安全",
         "Command approval" => "命令审批",
+        "Files that act as you" => "以你身份生效的文件",
         "Remote MCP handshake" => "远端 MCP 握手",
         "Terminal session" => "终端会话",
         "Native tool policy" => "本机工具策略",
@@ -1662,6 +1701,7 @@ mod tests {
             allow_unconfined_exec: false,
             allow_unisolated_credentials: false,
             allow_unattended_exec: false,
+            opener_config: Some(Vec::new()),
         }
     }
 
@@ -1870,6 +1910,61 @@ mod tests {
             .find(|r| r.name == "No Claude credential")
             .unwrap();
         assert!(matches!(row.status, Status::Fail(_)), "{row:?}");
+    }
+
+    /// P85. A report as the wire carries it, so the same test reads an
+    /// older Runtime's answer by leaving the field out.
+    fn report_with(opener_config: Option<serde_json::Value>, shared: bool) -> Vec<Check> {
+        let mut wire = serde_json::to_value(confined_report()).unwrap();
+        match opener_config {
+            Some(names) => wire["opener_config"] = names,
+            None => {
+                wire.as_object_mut().unwrap().remove("opener_config");
+            }
+        }
+        wire["audit"]["shared_account"] = serde_json::json!(shared);
+        let report = serde_json::from_value(wire).unwrap();
+        runtime_safety_rows(&report, AgentProvider::Claude)
+    }
+
+    /// P85: with a dedicated account the project belongs to it, so what it
+    /// writes into an IDE's tasks or Claude Code's hooks runs as the person
+    /// who opens the tree. chmod cannot stop an owner, so the row says
+    /// what is there and what to do -- a warning, never a refusal.
+    #[test]
+    fn a_dedicated_account_is_told_which_files_act_as_whoever_opens_the_project() {
+        const NAME: &str = "Files that act as you";
+        let rows = report_with(Some(serde_json::json!([".claude", ".vscode"])), false);
+        let row = rows
+            .iter()
+            .find(|r| r.name == NAME)
+            .expect("shown for a dedicated account");
+        assert_eq!(row.status, Status::Warn, "{row:?}");
+        assert!(row.detail.contains("ccrun"), "{row:?}");
+        assert!(
+            row.detail.contains("present now: .claude, .vscode"),
+            "{row:?}"
+        );
+        assert!(row.detail.contains("safe.directory"), "{row:?}");
+        assert!(row.detail.contains("chmod"), "{row:?}");
+        assert_eq!(row_label(Lang::Zh, NAME), "以你身份生效的文件");
+
+        let none = report_with(Some(serde_json::json!([])), false);
+        let row = none.iter().find(|r| r.name == NAME).unwrap();
+        assert_eq!(row.status, Status::Ok, "nothing to read first: {row:?}");
+        assert!(row.detail.contains("none present"), "{row:?}");
+        assert!(row.detail.contains("can create"), "{row:?}");
+
+        // A Runtime from before P85 did not say. Not a pass, but not a
+        // reason to hold the table back either: the row never decides.
+        let older = report_with(None, false);
+        let row = older.iter().find(|r| r.name == NAME).unwrap();
+        assert_eq!(row.status, Status::Note, "{row:?}");
+
+        // A shared account already runs every command as you: these files
+        // add nothing, and the row would be noise.
+        let shared = report_with(Some(serde_json::json!([".vscode"])), true);
+        assert!(shared.iter().all(|r| r.name != NAME), "{shared:?}");
     }
 
     fn unconfined_audit() -> safety::Audit {

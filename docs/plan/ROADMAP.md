@@ -1145,7 +1145,7 @@ P73 当时把"外部 MCP workspace 里执行账号的安全没人验"留作挡�
 **依赖 P84。** 现象（[调研](../research/2026-10-08-peer-survey.md)第 2 节第 3 条）：专用账号模式下项目目录归执行账号所有。它写进 `.vscode/tasks.json`、`.claude/settings.json`、`.mcp.json` 这类文件的东西，会在你本人用 IDE、Claude Code 打开这棵树时按你的权限执行，等于绕过了专用账号。`apply_patch` 只拒 `.git`，而且模型照样能用 shell 写。用户 2026-10-08 定"doctor 查可写性"，2026-10-09 按建议定为只提醒：实施前核对发现，项目目录必须归执行账号所有（[运维手册](../operations.md#项目目录属主要对git-身份要配)），属主自己能改 chmod 和 ACL，所以"查可写性"在这个模式下每次都答"写得了"，查它没有信息量。有信息量的是这些文件现在有哪些、该怎么做。
 
 - **P85.1** Runtime 的审计回答（执行账号自己答）加一项：项目根下固定清单里现在存在的条目，只报相对名字，符号链接也算。清单照 srt 的 mandatory deny：文件 `.mcp.json .gitmodules .gitconfig .ripgreprc .bashrc .bash_profile .zshrc .zprofile .profile`，目录 `.vscode .idea .claude .codex`。`.git` 不在内：你本人的 git 默认因属主不同拒绝这棵树（`dubious ownership`），钩子和 `core.fsmonitor` 不会以你的身份跑，前提是别给它加 `safe.directory`。字段可缺省，旧 Runtime 不报。
-- **P85.2** doctor：专用账号模式下多一行"以你身份生效的文件"，状态"注意"，不挡结论。写明现有哪些、执行账号能改也能新建、以你的身份打开前先看过、别加 `safe.directory`、chmod 和 ACL 挡不住属主。旧 Runtime 没报时记"不查"。共用账号模式不出这一行：命令本来就以你的身份跑，这些文件不额外提权。
+- **P85.2** doctor：专用账号模式下多一行"以你身份生效的文件"，有条目时状态"注意"、一个都没有时"正常"，都不挡结论。写明现有哪些、执行账号能改也能新建、以你的身份打开前先看过、别加 `safe.directory`、chmod 和 ACL 挡不住属主。旧 Runtime 没报时记"不查"。共用账号模式不出这一行：命令本来就以你的身份跑，这些文件不额外提权。
 - **P85.3** 测试先在旧代码上红：Runtime 侧列条目（有、没有、符号链接）；doctor 三种情况（专用账号、共用账号、旧 Runtime 没报）。
 - **P85.4** 文档：运维手册"项目目录"一节写怎么做；要硬挡的做法只写实测过的平台；调研第 3 条标已做；门禁通过。
 

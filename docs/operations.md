@@ -257,6 +257,29 @@ git config --global user.email "<email>"
 
 不配也能干活——Agent 会退而用 `git -c user.name=… -c user.email=…` 传单次参数，但**下一个会话还会撞同一堵墙**。（[P12 那一轮](research/p12-real-project-2026-09-11.md)里真实 Claude Code 就是这么干的：它没去改那台机器的 git 全局配置，只给自己那一次提交带上了身份。）
 
+### 专用账号写进项目的配置，你打开时按你的身份生效
+
+专用账号模式下（写了 `runtime_user`），`ccnm doctor` 有一行 `以你身份生效的文件`（`Files that act as you`）。项目里有 `.vscode`、`.idea`、`.claude`、`.codex`、`.mcp.json`、`.gitmodules` 或 shell 启动文件时，这一行是"注意"，并把它们列出来；一个都没有时是"正常"。这一行不挡结论。
+
+原因：这些是 IDE、Claude Code、Codex 打开项目时会读来执行的配置。VS Code 的任务、Claude Code 的 hooks、`.mcp.json` 里的 server，都按**打开它的人**的权限跑。执行账号写进去的东西，等你本人打开这棵树时就以你的身份执行了，专用账号隔出来的那道边界就这么绕过去了。
+
+**怎么做：**
+
+- **以你自己的身份打开这棵树之前**（IDE、Claude Code、Codex），先把这一行列出的文件看一遍。
+- **别给这棵树加 git 的 `safe.directory`。** 你的 git 现在因属主不同拒绝它（`detected dubious ownership`），所以它的钩子和 `core.fsmonitor` 不会以你的身份跑。加了，执行账号写进 `.git/hooks` 的东西就会在你跑 `git status` 时执行。`.git` 因此不在这一行的清单里。
+- **要硬挡**（Linux，Debian 13 实测）：由 root 递归设不可变标志。还不存在的条目执行账号能新建，所以要挡的话由 root 先建出空目录再设：
+
+  ```bash
+  sudo mkdir -p <项目>/.vscode <项目>/.claude
+  sudo chattr -R +i <项目>/.vscode <项目>/.claude
+  ```
+
+  设完后，执行账号对这两个目录里的东西改不了、删不了、挪不走，也撤不掉这个标志。**一定要带 `-R`**：只给目录本身设，挡住的只是在目录里新建、删除、改名，目录里已有的文件照样能改（实测 `.vscode/tasks.json` 被改写成功）。代价是 git 要改这些文件时（切分支、pull）会失败（按标志的语义推断，没实测）。撤掉用 `sudo chattr -R -i <同样的路径>`。macOS 上对应的是 `chflags`，没实测，这里不写做法。
+
+**为什么不用 chmod 或 ACL**：项目目录必须归执行账号所有（见本节开头），属主自己就能改权限和 ACL，还能把整个条目挪走再建一个新的。同样的原因，doctor 不查"写不写得了"：这个模式下答案永远是"写得了"。
+
+**共用账号模式（没写 `runtime_user`）没有这一行**：命令本来就以你的身份跑，这些文件不额外给它什么。Runtime 是 P85 之前的版本时，这一行是"不查"。
+
 ## Runtime Node 的前置条件与项目工具链
 
 **ccnm 不装工具链，不升级它，也不代管版本。** 它不知道你的项目要什么。装什么、装在哪、谁维护，是 Runtime Node 管理员的事——这一节说的是怎么装得让工具**真的能被调用到**，因为这里有一脚很容易踩空。

@@ -109,6 +109,8 @@ privilege inheritance
 
 ccnm 不会假装“禁止 `curl` / `wget` / 某几个程序名”就等于 sandbox，因为 shell、解释器、绝对路径、wrapper 和自定义二进制都可以绕过这种黑名单。
 
+**它也拦不住"写进项目、等你打开时生效"的东西。** 项目目录归 `ccrun` 所有，它写进 `.vscode/tasks.json`、`.claude/settings.json`、`.mcp.json` 的内容，会在你本人用 IDE、Claude Code 打开这棵树时按你的权限执行。`ccnm doctor` 的 `Files that act as you` 一行会列出现有的这类文件；怎么看、怎么硬挡，见[运维手册](operations.md#专用账号写进项目的配置你打开时按你的身份生效)。
+
 ## 两侧 skills 与 MCP 的信任边界
 
 | 能力 | 使用什么身份 | 不能被误读成什么 |
@@ -149,6 +151,7 @@ No Codex credential     不论当前选谁，都检查 Codex 默认、专用及�
 No authentication environment  不接受未授权的认证环境（只检查名称，不打印值）
 No Docker socket        当前账号不应能写 Docker socket
 exec_command            confinement 通过后才正常允许
+Files that act as you   专用账号时，列出项目里你打开就以你身份生效的文件（注意，不挡）
 ```
 
 **没写 `runtime_user`（默认的共用账号）时**，除了 `Runs as root`、`No authentication environment` 和执行身份未知，其余各行没通过也只显示为"注意"：不挡会话、不挡 `exec_command`，命令结果也不加 unconfined 那一行。下面说的开关都是**写了 `runtime_user` 之后**才用得上的。

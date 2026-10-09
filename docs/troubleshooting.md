@@ -26,6 +26,7 @@ Runtime MCP 转接（`call_mcp_tool`）的 server 自 P52 起：关闭时它进�
 | 连 Agent 的 SSH | Agent SSH | SSH 私钥 | No SSH keys |
 | 终端会话 | Terminal session | 命令审批 | Command approval |
 | Runtime 上的项目 | Runtime workspace | sudo 权限 | No sudo |
+| 以你身份生效的文件 | Files that act as you | | |
 
 英文那几个 `No …` / `Not …` 开头的名字，中文用的是中性名词（`SSH 私钥` 而不是 `没有 SSH 私钥`）。原因是英文那种否定式当表头读得通，中文读起来却像一句陈述——`不在 admin 组｜注意｜this account is in admin` 会让人读到跟事实相反的结论。所以名字只说查了什么，结果全看状态那一列。
 
@@ -35,7 +36,7 @@ Runtime MCP 转接（`call_mcp_tool`）的 server 自 P52 起：关闭时它进�
 
 **没有 Agent、只给外部 MCP 用的 workspace**，`Runtime 安全` 和 `exec_command` 两行是 `不查`（P83 起；v0.13.0 及之前是 `没查`，结论永远是"还不能用（0 项失败，2 项没查）"）。这两行的结论属于替 AI 跑命令的执行账号，不属于敲 doctor 的人；没有 Agent 也就没有探测把它带回来。它不是没人管：外部客户端经 `ccnm mcp bridge` 连上来时，服务端以执行账号自己核对，不过就以 `CCNM_E_POLICY` 拒绝并写明原因。
 
-**`注意` 不挡结论。** 最常见的几行：`Runtime 执行身份`、`admin 组`、`SSH 私钥`、`Claude 凭据` 是"注意"，说明 Runtime 没写 `runtime_user`，按默认的共用账号跑（P78 起），这几行在告诉你模型跑的命令够得到什么；`命令审批` 是"注意"，说明开了 `allow_unattended_exec`。都是提醒，不是没配好。**v0.12.0 及之前的 Runtime** 没写 `runtime_user` 时，`Runtime 执行身份` 是"失败"、`exec_command` 被拒——升级 Runtime，或者按[生产安全](production-safety.md#要不要建专用账号)建专用账号、写上 `runtime_user`。
+**`注意` 不挡结论。** 最常见的几行：`Runtime 执行身份`、`admin 组`、`SSH 私钥`、`Claude 凭据` 是"注意"，说明 Runtime 没写 `runtime_user`，按默认的共用账号跑（P78 起），这几行在告诉你模型跑的命令够得到什么；`命令审批` 是"注意"，说明开了 `allow_unattended_exec`。专用账号下 `以你身份生效的文件` 是"注意"，说明项目里有你打开就以你身份生效的配置，列出来让你打开前先看（[运维手册](operations.md#专用账号写进项目的配置你打开时按你的身份生效)）。都是提醒，不是没配好。**v0.12.0 及之前的 Runtime** 没写 `runtime_user` 时，`Runtime 执行身份` 是"失败"、`exec_command` 被拒——升级 Runtime，或者按[生产安全](production-safety.md#要不要建专用账号)建专用账号、写上 `runtime_user`。
 
 **错误码不跟着变。** `CCNM_E_*` 两种语言下都一样，所以拿错误码搜这一页永远搜得到。
 

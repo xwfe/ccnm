@@ -522,6 +522,13 @@ agent_node = "agent"
         self.addCleanup(stop_if_still_ours, child, str(tick))
         self.assertEqual(os.getpgid(child), os.getpgid(server_pid), "同一个进程组")
         self.assertTrue(still_running(child))
+        # 先等它真的在写再关。忙的机器上 Python 子进程还没写第一笔就被正常收掉，
+        # 下面读 tick 就是 FileNotFoundError：2026-10-09 CI 的 macOS job 撞上过，
+        # 本机后台优先级并发压测 v0.13.1 也是 32 次里 2 次。
+        deadline = time.monotonic() + 30
+        while not tick.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertTrue(tick.exists(), "子进程一直没开始写")
 
         self.assertEqual(first.close(), 0)
         self.assertFalse(still_running(child), "server 组里剩下的在交出写锁前没了")

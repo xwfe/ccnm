@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-10-09T08:57:00+09:00",
-  "current_task": null,
+  "last_updated": "2026-10-09T22:25:00+09:00",
+  "current_task": "P85",
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
     "source": "docs/research/codex-internal-wiring-2026-09-07.md",
@@ -4253,6 +4253,20 @@
         }
       ],
       "blockers": []
+    },
+    {
+      "id": "P85",
+      "title": "专用账号模式下，doctor 提醒\"以你身份生效\"的项目文件",
+      "status": "in_progress",
+      "depends_on": [
+        "P84"
+      ],
+      "owner": "claude-code-session-2026-10-08-peer-survey",
+      "started_at": "2026-10-09T22:25:00+09:00",
+      "last_updated": "2026-10-09T22:25:00+09:00",
+      "completed_criteria": [],
+      "evidence": [],
+      "blockers": []
     }
   ],
   "observed_gaps": [
@@ -4320,7 +4334,7 @@
     "【2026-10-08 P80 时看到 / 只记不修】Agent 上的 MCP 转发 ccnm_agent（P50）在受管 Codex 会话里同样没配 tool_timeout_sec，Codex 对它只等 300 秒。它的 call_mcp_tool 默认等 60 秒、起 server 30 秒，用户给 Agent 上某个 server 配的 tool_timeout_sec 接近或超过 300 秒时（还没起的 server 起它的时间也算在内），调用会被 Codex 先截断、不发取消，照样在 Agent 上跑完。值取决于用户配置、不归 ccnm 的常量管，P80 没修。依据 docs/research/2026-10-08-p80-codex-tool-timeout.md 第 6 节。"
   ],
   "handoff": {
-    "next_action": "**2026-10-09 P84 完成（离线，Linux 在 hpsrv 上跑），current_task 为 null。** Linux 上 mcp-serve 是后代的 subreaper，命令里 setsid 出去的后代会话结束时收掉才交写锁（7625ac8 代码，534c561 文档，记录 docs/research/2026-10-09-p84-linux-orphans.md）。实施中查出按进程组判定会误杀中继 server，改为只认会话号。都没推送、没发版；连同 P86（不兼容，下次发版升 0.14.0）一起等用户定推送。剩下要用户定的：①P84 的 macOS 部分——nix 没有列子进程的接口，可选加 libproc 依赖、轮询 ps（尽力而为）或不做；②P85 专用账号模式下 doctor 查以人身份生效的文件可写性，细节待确认（Linux 上项目根可写就做不到按条目保护，macOS 可用 ACL deny delete，检测在专用账号模式下基本总会报注意）；③推送 f69a648 起本地的提交（含 P86、P84）。hpsrv 上 /home/ccrun/p84 是本轮临时目录，可删。\n\n之前的交接：\n**2026-10-08 P86 完成（离线），current_task 为 null。** 封存的 Codex 原生执行链删掉（577bc0a 代码 +107/-6089，3f08a61 文档）。不兼容：配置键 codex_exec_server 写着就解析失败，下次发版升次版本号（0.14.0）；doctor 不查少一项（日用 3→2）。都没推送、没发版、没在 Linux 跑。下一步按用户的决定：P84 孤儿进程组（Linux subreaper + macOS kqueue，nix 0.31.3 加成直接依赖）、P85 专用账号模式下 doctor 查以人身份生效的文件可写性。\n\n之前的交接：\n**2026-10-08 P83 完成（离线），current_task 为 null。** 只给外部 MCP 用的 workspace，doctor 的 Runtime 安全与 exec_command 改为\"不查\"，结论不再永远\"还不能用\"（75d18ab）；没在真机重跑 doctor。本轮按调研建议做完 P81（MCP 2026-07-28 兼容 + 缓存提示）、P82（进度通知）、P83 和 README 简介重写，都没推送、没发版。剩下的都要用户定：①孤儿进程组（P41 SIGKILL、setsid 逃逸）——nix 0.31.3 已在依赖树里（rmcp→process-wrap），加成直接依赖可做 Linux subreaper 与 macOS kqueue 跟踪而不放开 unsafe_code；②\"以人身份生效\"的文件——apply_patch 拦是摆设，可做的是专用账号模式下 doctor 查这些路径执行账号写不写得了并给修法；③版本目录安装、影子 git 快照要先讨论；④发不发 v0.13.1、删不删封存的原生链和本机 uid 504 的 ccrun、出口代理。后续改进：doctor 由执行账号运行时对外部 MCP workspace 做真实体检。\n\n之前的交接：\n**2026-10-08 P80 完成（离线 + 零额度），current_task 为 null。** 用户给了一个读源码发现、还没实测的缺陷：Codex 0.154.0 的 MCP server 不配 tool_timeout_sec 时一次调用只等 300 秒（codex-mcp rmcp_client.rs:103；官方文档写 60，与源码不符），ccnm 允许 exec_command 的 timeout_ms、read_output 的 wait_ms 到 600 秒，受管会话的启动参数没传这个键。零额度复现（docs/research/probes/p80-codex-tool-timeout.py，真实 Codex 0.154.0 + 假模型 + 拖住 tools/call 的假 server）：不配时顶层工具与 Code Mode 都在 300.0 秒告诉模型 timed out awaiting tools/call，server 收不到 notifications/cancelled，晚到的结果被丢；配 1870 后 320 秒的调用正常返回。修法（用户给的两种里选了传参数，理由见研究记录第 2 节）：19dd912 受管 Codex 会话（交互与 --print）在 MCP 接线之后加 mcp_servers.ccnm.tool_timeout_sec=1870，由钩子 600×2 + 工具 600 + 停命令 10 + 60 算出，0.154.0 fixture 不重录；6a78756 研究记录与夹具；9eb2eab 协议文档 3.3 写明 Codex 当 Host 要自己配，使用说明、排错手册链过去。门禁：Rust 1116/0、clippy、1.89 check、协议检查、ci_gates（Python 244/0）。没推送、没发版、没跑真实模型、没让 Codex 连真实 ccnm 跑满 300 秒、交互会话没测；v0.13.0 及之前的 Agent 仍在 300 秒断开。只记不修：ccnm_agent（P50）同样只得 300 秒，值取决于用户给 Agent 上 server 配的超时（observed_gaps 最后一条）。下一步由用户定：推送；是否随下一个版本发。上一段交接里的遗留项顺序不变。",
+    "next_action": "**2026-10-09 认领 P85（进行中）。** 用户按建议定：P84 的 macOS 部分不做（02efd99，理由在 ROADMAP P84 停止点）；P85 由\"查可写性\"改为只提醒——项目目录归执行账号所有，属主能改 chmod/ACL，查可写性每次都是\"写得了\"。做法：Runtime 审计回答带上项目根下固定清单里现有的条目，doctor 专用账号模式下多一行\"注意\"。推送仍等用户点头。\n\n之前的交接：\n**2026-10-09 P84 完成（离线，Linux 在 hpsrv 上跑），current_task 为 null。** Linux 上 mcp-serve 是后代的 subreaper，命令里 setsid 出去的后代会话结束时收掉才交写锁（7625ac8 代码，534c561 文档，记录 docs/research/2026-10-09-p84-linux-orphans.md）。实施中查出按进程组判定会误杀中继 server，改为只认会话号。都没推送、没发版；连同 P86（不兼容，下次发版升 0.14.0）一起等用户定推送。剩下要用户定的：①P84 的 macOS 部分——nix 没有列子进程的接口，可选加 libproc 依赖、轮询 ps（尽力而为）或不做；②P85 专用账号模式下 doctor 查以人身份生效的文件可写性，细节待确认（Linux 上项目根可写就做不到按条目保护，macOS 可用 ACL deny delete，检测在专用账号模式下基本总会报注意）；③推送 f69a648 起本地的提交（含 P86、P84）。hpsrv 上 /home/ccrun/p84 是本轮临时目录，可删。\n\n之前的交接：\n**2026-10-08 P86 完成（离线），current_task 为 null。** 封存的 Codex 原生执行链删掉（577bc0a 代码 +107/-6089，3f08a61 文档）。不兼容：配置键 codex_exec_server 写着就解析失败，下次发版升次版本号（0.14.0）；doctor 不查少一项（日用 3→2）。都没推送、没发版、没在 Linux 跑。下一步按用户的决定：P84 孤儿进程组（Linux subreaper + macOS kqueue，nix 0.31.3 加成直接依赖）、P85 专用账号模式下 doctor 查以人身份生效的文件可写性。\n\n之前的交接：\n**2026-10-08 发 v0.13.1、三台换装并零额度真机验证；current_task 为 null。** 用户在 P83 后定了四件事：发 v0.13.1 并换装三台；孤儿进程组两个平台都做（nix 加成直接依赖）；\"以人身份生效\"的文件由 doctor 查可写性；封存的 Codex 原生链删掉（dogfood 期间删了不影响）。发版：版本号提交 45ba3c0，CI run 37788244626 全绿后打带说明的 tag，release run 37789341475 四个文件齐全；macOS 包 ac9b4594…（二进制 15f01f13…），Linux 包 fbee8ae0…（二进制 b6200d31…）。三台换装（本机、fodelf Controller pid 3768、hpsrv ccrun），四个日用 workspace doctor 可以用了、退出 0。真机（docs/research/2026-10-08-release-0.13.1.md，f69a648）：P83 临时无 Agent workspace 可以用了（14 项不查）；fodelf 经真实 ssh 跑 bridge，2026-07-28 开场、缓存提示、10 秒进度都对；受管会话里 fodelf 的 Claude Code 2.1.293 与 ccnm、ccnm_agent 都协商到 2026-07-28；hpsrv 中立客户端 54/0。P80 真机没验。fodelf 由本机 scp 很慢（60 秒只到一半），改由它自己下载；hpsrv 反过来本机 scp 2 秒。发版记录与这段交接没推送。下一步按用户的决定：P84 孤儿进程组（Linux subreaper + macOS kqueue，nix 0.31.3 加成直接依赖）、P85 专用账号模式下 doctor 查以人身份生效的文件可写性、P86 删掉封存的 Codex 原生链（配置里写了 codex_exec_server 的会解析失败，属不兼容改动，下一个版本升次版本号）。",
     "scope": "2026-10-08 用户要求：零额度复现 Codex 300 秒工具超时、选修法、补外部入口文档、跑门禁、更新状态、粒度提交、不推送。改动：crates/ccnm-core（provider/codex 的 TOOL_TIMEOUT 与启动参数、测试；mcp/hooks 的 MAX_TIMEOUT 改 pub(crate)；mcp/output 注释）、docs/protocol/remote-workspace-mcp-v1.md、docs/usage.md、docs/troubleshooting.md、docs/research 的 P80 记录与夹具、ROADMAP、status。没动任何机器、已装的 ccnm 与配置；Codex 0.154.0 包和源码只下到会话 scratchpad。",
     "planning_validation": {
       "at": "2026-09-08T21:22:43+09:00",

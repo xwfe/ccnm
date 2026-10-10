@@ -2,7 +2,7 @@
 
 `exec_command` 本质上是在 **Runtime Node** 上，以某个真实操作系统账号执行命令。这个账号才是 ccnm 当前最重要的权限边界。
 
-**默认就用你自己的账号**（P78 起）：Agent 经 SSH 登进 Runtime Node 用的是哪个账号，项目命令就以谁的身份跑，和你直接在那台机器上开 Claude Code / Codex 一样。不用建账号，也不用写任何开关。
+**默认就用你自己的账号**：Agent 经 SSH 登进 Runtime Node 用的是哪个账号，项目命令就以谁的身份跑，和你直接在那台机器上开 Claude Code / Codex 一样。不用建账号，也不用写任何开关。
 
 本页讲的是**要不要、怎么再加一层隔离**：建一个只给 ccnm 用的低权限账号——建议叫 `ccrun`，文档里叫 Runtime Service Account 或执行账号——并在 Runtime 配置里写上 `runtime_user`，让 ccnm 照专用账号的标准去查它。
 
@@ -46,17 +46,14 @@ ccnm 就按专用账号查它：上面那些"注意"会变成"失败"，`exec_co
 
 > **以 Runtime Executor 身份运行、会碰到 Agent 输入或项目数据的 ccnm 进程，不能为了完成 ccnm 自己的控制链而主动 SSH 到别处。** `ccrun` 只接受入站连接。
 
-**为什么要分。** Runtime Executor 执行模型的项目命令；它多一把出站私钥，就等于把“Agent 让我跑一条命令”变成“Agent 可以以我的名义连到别的机器”。Operator 持有控制链所需钥匙，不应直接执行未经审查的模型命令。P50 的 Agent 本机 MCP opt-in 是另一处执行授权，不能借此宣称 Agent Identity 永远不执行模型输入。
+**为什么要分。** Runtime Executor 执行模型的项目命令；它多一把出站私钥，就等于把“Agent 让我跑一条命令”变成“Agent 可以以我的名义连到别的机器”。Operator 持有控制链所需钥匙，不应直接执行未经审查的模型命令。Agent 上点名开放的本机 MCP server（[`[agent_mcp] local`](configuration.md#agent_mcp)）是另一处执行授权，所以不能说 Agent Identity 永远不执行模型的输入。
 
-**代码里怎么落实的**（P7.3 真机量出问题，P7.4 四批改完）：
+**代码里怎么落实的**：
 
-- 控制链不再要求 Runtime Executor 出站（Batch C）：Runtime 侧发起时是 **Operator** 的进程拨号去 Agent Node，Agent 侧发起时只把一句只读的 `internal runtime-resolve` 问过去、会话在 Agent 本机创建。
-- `ccnm doctor` 关于 Runtime 的那几行不再判"敲命令的人"（Batch D）：由 Runtime Executor 自己回答，经 Agent 那条 ssh 取回。**换个人跑同一个 workspace，这几行一字不差**，有测试钉着。
-- 诊断入口也一样（Batch D2）：在 Agent Node 上跑 `ccnm doctor` / `ccnm mcp probe`，过去是把整条公共命令 ssh 给 Runtime 执行、再由它连回 Agent 探测——执行身份为了一个诊断出站了一次。现在两端各查各能证明的：Agent 本机查 Controller/官方 CLI/登录/tmux，Runtime 的结论由 `ccrun` 自己回答（`runtime-resolve` / `runtime-audit`），MCP transport 由 Agent 主动开。**两个方向跑出来的 Runtime 结论一字不差**，同样有测试钉着。
+- 控制链不要求 Runtime Executor 出站：从项目机器发起时，是 Operator 的进程拨号去 Agent Node；从 Agent Node 发起时，只把一句只读的"这个项目在哪"问过去，会话在 Agent 本机创建。
+- doctor 关于 Runtime 的那几行由 Runtime Executor 自己回答，经 Agent 那条 ssh 取回。换谁敲、在哪台机器上敲，这几行都一字不差，有测试钉着。
 
-所以建了专用账号时的做法就是直白的那个：**用你自己的账号（Operator）敲 ccnm，让 `ccrun` 名下一把私钥都没有。** 诊断命令两台机器上都能跑。
-
-**这些在真机上复验过了**（[Batch E 记录](research/p7-batch-e-2026-09-10.md)）：以普通管理员账号跑 doctor，Runtime 那几行报的是 `ccrun` 且全绿——同一条命令在 P7.4 之前会报 7 个 FAIL；两个方向跑 doctor 结论逐字相同；会话期间执行身份的进程表里只有入站 sshd 与 `mcp-serve`。仍未验的是 Codex 那条链。
+所以建了专用账号时的做法就是直白的那个：**用你自己的账号（Operator）敲 ccnm，让 `ccrun` 名下一把私钥都没有。** 诊断命令两台机器上都能跑。这在真机上验过（[记录](research/p7-batch-e-2026-09-10.md)）：会话期间执行账号的进程表里只有入站的 sshd 和 `mcp-serve`。
 
 ## `ccrun` 能解决什么
 
@@ -116,14 +113,14 @@ ccnm 不会假装“禁止 `curl` / `wget` / 某几个程序名”就等于 sand
 | 能力 | 使用什么身份 | 不能被误读成什么 |
 | --- | --- | --- |
 | Runtime 项目工具与 stdio MCP relay | Runtime Executor | 第三方程序不自动受结构化文件工具的逐路径校验；项目 `.mcp.json` 是可执行配置 |
-| Runtime 上的 skills 要求替它跑的命令（`` !`命令` ``、`hooks`，P79） | Runtime Executor，和 `exec_command` 同一套环境清理、凭据复查与 `exec_sandbox` | 只在命令本来不问人的会话里跑（`allow_unattended_exec`、`--print`、bridge coding）；那时它们和模型自己跑的命令一样没人看，skill 文件也可能是模型刚写的 |
+| Runtime 上的 skills 要求替它跑的命令（`` !`命令` ``、`hooks`） | Runtime Executor，和 `exec_command` 同一套环境清理、凭据复查与 `exec_sandbox` | 只在命令本来不问人的会话里跑（`allow_unattended_exec`、`--print`、bridge coding）；那时它们和模型自己跑的命令一样没人看，skill 文件也可能是模型刚写的 |
 | Agent 安装的 skills | Agent Identity，按 skill 目录提供读取 | 只读 skill 不等于整个 `ccnm_agent` 服务只读，也不意味着内容可信；它们的 `` !`命令` `` 和 `hooks` 一律不跑 |
-| Agent 远端 HTTP MCP | 从 Agent 发起，携带服务配置的认证信息 | `mcp_servers` 默认开启，不是外发审批；`web_fetch` 也默认开启（P77），只关它仍可能经 MCP server 外发项目内容 |
+| Agent 远端 HTTP MCP | 从 Agent 发起，携带服务配置的认证信息 | `mcp_servers` 默认开启，不是外发审批；`web_fetch` 也默认开启，只关它仍可能经 MCP server 外发项目内容 |
 | Agent `[agent_mcp] local` 点名的本机服务 | Agent Identity | Runtime `exec_sandbox` 不覆盖它；它可能读写本机、接触账号可访问的凭据和服务 |
 
 Agent 子进程去掉部分继承的登录环境和 `SSH_AUTH_SOCK`，随后会加入用户 MCP 配置的显式 `env`；这不是独立 OS 身份隔离，也不是“任何形式的凭据都不可达”的证明。敏感配置只留在相应节点的账号私有文件里，不写进项目仓库、日志、提示或交接文档。缺变量时不要让模型读取个人认证文件来补值。
 
-**写互斥当前还有已确认缺陷**：Runtime MCP 服务 leader 正常退出后，同进程组子进程仍能写，而写锁已释放（[P51 探针](research/2026-09-23-lifecycle-and-docs-audit.md)）。要求可靠交权的环境先设 `[runtime_mcp] enabled = false`，关闭旧会话并核实旧进程树；仅改配置不会结束已运行的进程。本轮只修正文档，没有修复产品逻辑。
+**进程收尾的边界**：项目机器上的 MCP server 关闭时，它进程组里剩下的进程会被杀掉并确认，清不掉写锁就不交。server 或命令派生出去、离开了进程组的后代，项目机器是 Linux 时一并收掉，是 macOS 时够不着；要求可靠交接、又用了这类 server 时怎么办，见[支持矩阵](support-matrix.md)里 C51-01 那段。
 
 ## ccnm 当前会检查什么
 
@@ -135,9 +132,9 @@ ccnm doctor <workspace>
 
 **先说清楚这几行在审谁**：审的是 Runtime Executor——`ccnm doctor` 把这个问题经 Agent 的那条 ssh 交给它自己回答（`internal runtime-audit`），拿回来的是结构化结论，不含路径、环境值或凭据内容。你用哪个账号敲 doctor 不改变答案。
 
-Agent 不通的时候这几行是 SKIP，不是 OK：问不到的 Runtime 必须读作"没查"，不能读作"没问题"。
+Agent 不通的时候这几行是"没查"，不是"正常"：问不到的 Runtime 不能读作"没问题"。
 
-confinement gate 会检查 Runtime Executor 能在它本机可靠判断的性质（这一页用的是英文行名，也就是 `ccnm doctor <workspace> --lang en` 那版；ccnm 默认说中文，中英对照见[出错了怎么办](troubleshooting.md)开头那张表）：
+confinement gate 会检查 Runtime Executor 能在它本机可靠判断的性质（这里用英文行名，中英对照见[排错手册：doctor 的表怎么读](troubleshooting.md#doctor-的表怎么读)）：
 
 ```text
 Runs as root            Runtime 不能是 root
@@ -145,16 +142,16 @@ Runtime user            写了 nodes.<runtime>.runtime_user 时被审计的账�
 No sudo                 不能 passwordless sudo
 Not an admin            不应属于 admin / wheel / sudo 等管理组
 No SSH keys             ~/.ssh 和 ~/.config/ccnm 里都不该有该账号可读的私钥
-Workspace root          项目目录对该账号是可用的（存在、是目录、git 不因属主拒绝）
 No Claude credential    Runtime identity 不应持有 Claude 凭证
-No Codex credential     不论当前选谁，都检查 Codex 默认、专用及本地引用目录
-No authentication environment  不接受未授权的认证环境（只检查名称，不打印值）
 No Docker socket        当前账号不应能写 Docker socket
+Runtime safety          身份能否识别、Codex 凭据（默认、专用及本地引用目录）、继承来的认证环境变量（只看名称，不打印值），都归在这一行
+Workspace root          项目目录对该账号是可用的（存在、是目录、git 不因属主拒绝）
 exec_command            confinement 通过后才正常允许
+Command approval        交互会话跑命令前问不问人
 Files that act as you   专用账号时，列出项目里你打开就以你身份生效的文件（注意，不挡）
 ```
 
-**没写 `runtime_user`（默认的共用账号）时**，除了 `Runs as root`、`No authentication environment` 和执行身份未知，其余各行没通过也只显示为"注意"：不挡会话、不挡 `exec_command`，命令结果也不加 unconfined 那一行。下面说的开关都是**写了 `runtime_user` 之后**才用得上的。
+**没写 `runtime_user`（默认的共用账号）时**，除了 `Runs as root`、继承来的认证环境和执行身份未知（后两个在 `Runtime safety` 行），其余各行没通过也只显示为"注意"：不挡会话、不挡 `exec_command`，命令结果也不加 unconfined 那一行。下面说的开关都是**写了 `runtime_user` 之后**才用得上的。
 
 专用账号模式下，`allow_unconfined_exec = true` 是逃生开关，不是生产配置。
 
@@ -168,7 +165,7 @@ Files that act as you   专用账号时，列出项目里你打开就以你身�
 
 ## 凭据隔离那一条，怎么放开，代价是什么
 
-**只有写了 `runtime_user` 才会卡在这里。** P78 之前不写也卡：项目和 Claude 登录在同一个家目录的人——一台机器、一个账号、想先试试——ccnm 直接拒绝启动，等于没法用；现在不写 `runtime_user` 就是共用账号，这一条不拦。
+**只有写了 `runtime_user` 才会卡在这里。** 不写 `runtime_user` 就是共用账号，这一条不拦。
 
 写了 `runtime_user`、而那个账号又确实够得到某份 Agent 登录时，会话起不来。要么把登录从那个账号拿走，要么在 **Runtime 那一侧**那个 workspace 上写第二个开关：
 
@@ -188,17 +185,17 @@ allow_unisolated_credentials = true   # 这个账号能读到 Agent 的登录
 | `allow_unisolated_credentials` | **会话本身**。MCP `initialize` 之前那道闸 | 整个会话起不来，一个工具都拿不到 |
 | `allow_unconfined_exec` | **只有 `exec_command`** | 会话正常，读文件/列目录/搜索都能用，跑命令被拒 |
 
-所以一个普通的受管会话两个都要；**一条只读链只要上面那一个**——`ccnm mcp bridge --mode read` 一共四个只读工具，没有 `exec_command`，第二个开关在它身上一点作用都没有。反过来也一样：只写 `allow_unconfined_exec` 不会让会话起来，因为那一条在初始化这道闸里**一个 finding 都不豁免**。
+所以一个普通的受管会话两个都要；**一条只读链只要上面那一个**——`ccnm mcp bridge --mode read` 只有只读工具，没有 `exec_command`，第二个开关在它身上一点作用都没有。反过来也一样：只写 `allow_unconfined_exec` 不会让会话起来，因为那一条在初始化这道闸里**一个 finding 都不豁免**。
 
 ### 只读会话为什么也要过这道闸
 
-`external_mcp = "read"` 只给四个读工具，`exec_command` 不在里面，那为什么凭据这一条还拦着它？
+`external_mcp = "read"` 只给只读工具，`exec_command` 不在里面，那为什么凭据这一条还拦着它？
 
 因为这道闸读的三类结论，没有一条是关于 `exec_command` 的：
 
 - **执行身份未知**——ccnm 说不出这是哪个账号，那 `read_file` 返回的是谁的文件、workspace 上那句 `external_mcp = "read"` 是谁替谁签的，都无从谈起。
 - **认证环境是继承来的**——只读会话一样会起子进程：启动时探 git、`search_text` 跑 ripgrep。环境里那个 `ANTHROPIC_*` 照样传给它们。
-- **这个账号能读到 Agent 的登录**——模型确实够不到（工具路径全部限制在 workspace 根内，穿出去的 symlink 会被拒）。但这条隔离是**这台机器的性质**，不是"这次给了多少权限"的性质。写了 `runtime_user` 就是在说 Runtime 执行身份和 Agent 登录身份是两个账号；一个说了却没做到这个分离的身份，无论对外开多少，都得有人明确签字才服务。P11 要证的正是这件事：第二个入口没有把第一个入口的边界撑大。
+- **这个账号能读到 Agent 的登录**——模型确实够不到（工具路径全部限制在 workspace 根内，穿出去的 symlink 会被拒）。但这条隔离是**这台机器的性质**，不是"这次给了多少权限"的性质。写了 `runtime_user` 就是在说 Runtime 执行身份和 Agent 登录身份是两个账号；一个说了却没做到这个分离的身份，无论对外开多少，都得有人明确签字才服务。外部 MCP 这个入口不能把受管会话那个入口的边界撑大。
 
 **操作员该怎么办**：和受管会话一样——把登录从专用账号里拿走，或者在那个 workspace 上写一行 `allow_unisolated_credentials = true`；不需要隔离的话，去掉 `runtime_user` 回到共用账号。只读链到这里就够了，不要再加 `allow_unconfined_exec`。
 
@@ -229,7 +226,7 @@ allow_unisolated_credentials = true   # 这个账号能读到 Agent 的登录
 allow_unattended_exec = true            # 交互式会话不再问我
 ```
 
-值得单独说的是**共用账号再开它是什么局面**——不写 `runtime_user` 是默认，P76 起文档也建议常用交互会话的项目开它：模型跑的任何命令都不经你确认，能做这个账号能做的一切，包括读这台机器上你的 Agent 登录（如果有）。这时候还站着的只剩两样——那个账号自己的 OS 权限，和工具够不到 workspace 根目录外面这件事。专用账号模式下三个开关都开，也是这个局面。项目值钱的话，这就是该建专用账号的时候（[要不要建](#要不要建专用账号)）。
+值得单独说的是**共用账号再开它是什么局面**——不写 `runtime_user` 是默认，文档也建议常用交互会话的项目开它：模型跑的任何命令都不经你确认，能做这个账号能做的一切，包括读这台机器上你的 Agent 登录（如果有）。这时候还站着的只剩两样——那个账号自己的 OS 权限，和工具够不到 workspace 根目录外面这件事。专用账号模式下三个开关都开，也是这个局面。项目值钱的话，这就是该建专用账号的时候（[要不要建](#要不要建专用账号)）。
 
 它对 `--print` 和 `ccnm mcp bridge` 没有任何影响：那两条路上本来就不问，因为两边都没人在等。细节见[配置说明](configuration.md#allow_unattended_exec)。
 
@@ -294,9 +291,9 @@ sudo chmod 600 /Users/ccrun/.ssh/authorized_keys
 
 ### 换个目录藏私钥不算数
 
-以前 `No SSH keys` 只看 `~/.ssh`：把同一把私钥挪到 `~/.config/ccnm/transport/`，这一行就从 FAIL 变成 OK，而账号该能连出去还是能连出去。P7.3 真机上正是这么达标的，那份绿灯不能当隔离证据。
+以前 `No SSH keys` 只看 `~/.ssh`：把同一把私钥挪到 `~/.config/ccnm/transport/`，这一行就从 FAIL 变成 OK，而账号该能连出去还是能连出去。早期真机验收就这么"达标"过，那份绿灯不能当隔离证据。
 
-**现在两个目录都查**（`~/.ssh` 与 ccnm 自己的 `~/.config/ccnm`，含子目录），所以这条路走不通了。同时链路那一半也改完了（Batch C）：Runtime 侧发起时拨号的是 Operator 的进程，Agent 侧发起时只把一句只读的问题问过来。**`ccrun` 一把私钥都不需要，把它清空是现在就能做到的目标。**
+**现在两个目录都查**（`~/.ssh` 与 ccnm 自己的 `~/.config/ccnm`，含子目录），所以这条路走不通了。链路那一半也不需要它：从项目机器发起时拨号的是 Operator 的进程，Agent 侧发起时只把一句只读的问题问过来。**`ccrun` 一把私钥都不需要，把它清空是现在就能做到的目标。**
 
 这一行仍然只说它查过的地方：这两个目录之外没有搜。真正的隔离靠独立账号和 OS 权限，不靠这条启发式。另外一种没有文件的出站凭据是继承来的 `SSH_AUTH_SOCK`，它由"认证环境"那一行按名字拒绝，不在这条里重复。
 
@@ -349,18 +346,7 @@ sudo -u ccrun git -C "$PROJ" status
 
 ## 给 `ccrun` 安装 ccnm
 
-Agent Node 反向 SSH 到 Runtime Node 后，需要能执行 Runtime 侧 ccnm。
-
-一种安装方式：
-
-```bash
-sudo -u ccrun mkdir -p /Users/ccrun/.local/bin
-sudo cp target/release/ccnm /Users/ccrun/.local/bin/ccnm.new
-sudo chown ccrun:staff /Users/ccrun/.local/bin/ccnm.new
-sudo -u ccrun mv /Users/ccrun/.local/bin/ccnm.new /Users/ccrun/.local/bin/ccnm
-```
-
-仍然使用 `.new` + `mv`，不要直接覆盖正在运行过的二进制 inode。
+Agent Node 经 SSH 登进 `ccrun` 后，调的是 `ccrun` 名下的 `~/.local/bin/ccnm`，所以它也要装一份，和两台机器上的版本一样。`ccrun` 通常不能从你的账号直接 ssh 进去：用有权限的账号把发布包放过去、`chown` 给它，再 `su - ccrun` 在它名下按[运维：用发布包升级](operations.md#用发布包升级一般就用这个)的第 2、3 步装（核 sha256、新文件 + 改名）。
 
 Runtime 依赖，例如 `ripgrep`，也必须安装在 `ccrun` 能执行到的位置。
 
@@ -384,7 +370,7 @@ Agent Node 那份则是它自己怎么连过来：
 ssh = "runtime-ssh-alias"
 ```
 
-真实项目应移除 dogfood bypass：
+专用账号配好之后，把临时放开的那个开关关掉：
 
 ```toml
 [workspaces.my-project]
@@ -442,7 +428,7 @@ ccnm 的 doctor 能覆盖一部分明确可验证项，但不能证明整个操�
 
 ## 网络出口
 
-**先把边界划清楚，这是 v1 的正式声明：**
+**先把边界划清楚：**
 
 - **ccnm 不提供 egress isolation，也不声称提供。** 项目工具能不能连出去，由 OS、网络、防火墙、VM 或容器决定，不由 ccnm 决定。
 - **ccnm 保证的是它自己：控制链不要求 Runtime Executor 持有任何出站凭据。** 没有出站 SSH 私钥，没有 SSH agent，正常路径上不发起任何出站连接——这一条有真机证据（会话活着时 `ccrun` 名下只有入站 `sshd-session` 和它的 `mcp-serve` 子进程，没有任何 ssh 客户端）。
@@ -457,7 +443,7 @@ ccnm 的 doctor 能覆盖一部分明确可验证项，但不能证明整个操�
 
 那么必须在 Runtime Node / `ccrun` 周围通过 OS、网络、防火墙、VM 或容器环境真正执行这个策略。
 
-**"名下没有私钥"不等于"连不出去"，这一条是真机上撞出来的。** Batch E 把 `ccrun` 的出站私钥删干净之后再试，它照样连得到 Agent Node：
+**"名下没有私钥"不等于"连不出去"，这一条是真机上撞出来的。** 把 `ccrun` 的出站私钥删干净之后再试，它照样连得到 Agent Node：
 
 ```text
 debug1: no identity pubkey loaded from ~/.config/ccnm/transport/agent-key
@@ -498,12 +484,14 @@ ccnm doctor <workspace>
 目标是这些行全部成为 OK：
 
 ```text
+Runs as root
 Runtime user
 No sudo
 Not an admin
 No SSH keys
 No Claude credential
 No Docker socket
+Runtime safety
 Workspace root
 exec_command
 ```
@@ -512,6 +500,6 @@ exec_command
 
 它们**不**证明这个账号绝对连不出去：查的是两个目录，别的地方没搜。要那种程度的保证，得靠独立账号、OS 权限和网络策略。
 
-达到这个状态后，再让有价值的真实项目脱离 `allow_unconfined_exec` 进入长期 dogfood。
+达到这个状态后，再把真实项目上的 `allow_unconfined_exec` 关掉，长期用下去。
 
 如果还需要更强的数据防外传边界，再继续叠加 network policy / VM / container，而不是继续往 ccnm 命令解析器里堆假的安全规则。

@@ -9,7 +9,7 @@
 | 能力 | 当前结论 | 尚不能宣称 |
 | --- | --- | --- |
 | Managed Claude / Codex | 两 Provider 有历史双机证据；Codex 受管 adapter 仍 pin `0.154.0`。**P62（2026-09-30）**：Claude 在 macOS Agent（fodelf）→ Debian 13 Runtime（`ccrun`）上用 main 的候选构建跑通交互闭环，含审批中与命令运行中的 detach/reattach 和精确停止（[记录](research/2026-09-30-p62-real-machine.md) 4.1）。**P62 续跑（2026-10-04，v0.10.1）**：Codex 在本机 Agent → 同一台 Runtime 上先红后绿、ccrun 独立核对、精确停止第一次就确认且 `ccnm log` 记成被停止；Claude 的精确停止同样一次确认（[P62 续跑记录](research/2026-10-04-p62-resume-release.md) 5.1、5.7） | 零额度测过 `0.155.1` 不代表受管支持；不是全部新工具都已验完整 SSH 链；P62 查出的交互 stop 先报 NOT_READY、`ccnm log` 把被停止的会话写成 `failed to start`（F4）P64 修好，续跑在两个 Provider 上真机复验通过；**受管 Codex 会话执行 `exec_command` 前原来不问人**（F21："每次都问"靠的是只有 Claude Code 认的键）；P71（2026-10-07）起会问——Agent 按 Runtime 标的工具给 Codex 设 `approval_mode="prompt"`，会话里切到 Full Access 就不再问，doctor 的 `Command approval` 行照此说明（Codex 0.154.0 零额度实测加离线证据；2026-10-07 真机复验用真实模型跑过，问、放行、取消都对，[记录](research/2026-10-07-p71-real-machine-recheck.md)）；会话里选过一次 Approve for me 会被 Codex 记进 profile，v0.11.0 及之前的 Agent 上之后的受管会话都不再问（F27），v0.11.1（P72）起启动参数盖过它（离线测试、零额度实测，2026-10-07 在 v0.11.2 上用真实模型真机复验：profile 里写着 `auto_review` 时新会话照样问人，会话里切走只管当前会话，[记录](research/2026-10-07-p72-real-machine-recheck.md)）；doctor 的 `Codex authentication` 只看本地登录状态，令牌被吊销时仍是 OK（F5），P65 起这一行自己写明这一点，没有变成真的校验 |
-| 平台与拓扑 | Agent：macOS 有证据；Linux v0.12.0（P74）起已实现（systemd 用户服务），Debian 13 上零额度真机与一次真实 Codex 会话通过（经代理，那台出口地区不受 OpenAI 支持）。Runtime 的 macOS、Debian 13 x86_64 有证据 | Linux Agent、Windows、colocated；Linux curl/容器探针不等于扩展了完整支持平台 |
+| 平台与拓扑 | Agent：macOS 有证据；Linux v0.12.0（P74）起已实现（systemd 用户服务），Debian 13 上零额度真机与一次真实 Codex 会话通过（经代理，那台出口地区不受 OpenAI 支持）。Runtime 的 macOS、Debian 13 x86_64 有证据 | Linux Agent 上的 Claude Code（没用真实模型跑过）、Windows、一个账号同时当两边；Linux curl/容器探针不等于扩展了完整支持平台 |
 | PocketShell 等第三方终端 | 复用公共 CLI/SSH/PTY；[接入条件](usage.md#通过第三方终端使用)，不内建移动/Web 入口，不绑定手机 Tailscale | 特定客户端/手机版本已通过，或所有终端行为完全一致 |
 | Runtime 工具表 | 共 12 个工具定义；read 模式 7 个，coding 通常 11 个，有可转接服务才出现第 12 个 | 固定“七/八/十二工具”适用于所有连接；以实际 `tools/list` 为准 |
 | shell、搜索、图片与项目 skills | 已实现，有各自的离线测试和部分真实模型记录 | 每个入口/平台/Provider 都有同等级证据；不能再统一标为“只有离线证据” |
@@ -59,9 +59,9 @@
 
 平台要分两件事说，因为 P12 之后它们不再是同一个答案。
 
-**Agent 那一侧：macOS 有真机证据，Linux 是 v0.12.0（P74）起实现的，Debian 13 上零额度真机通过（假模型，含重启 Controller 不断会话），并用真实 Codex 跑过一次交互会话（问、放行、取消都对）；Claude Code 当 Linux Agent 没用真实模型跑过。** macOS 上 Controller 是 launchd LaunchAgent，起会话前要求 `launchctl managername` 是 `Aqua`（为登录钥匙串设的）；Linux 上它是 systemd 用户服务，不要求图形会话——官方 CLI 的登录在文件里，由 CLI 自己的 `auth status` 证明——Controller 在会话信息里自报平台，所以在 macOS 的 Runtime 上读 Linux Agent 也按 Linux 判（[P74 记录](research/2026-10-07-p74-linux-agent.md)）。v0.11.2 及之前 Linux 上 `controller install` 装不上、起会话被拒；Linux Controller、Windows 和其他官方 CLI 版本均未验收。P66 起 `ccnm controller install` 把非默认的配置与状态位置（`--config`/`CCNM_CONFIG`、`XDG_CONFIG_HOME`、`XDG_STATE_HOME`）写进 plist，2026-10-04 在真的 launchd 下装过一次（[P62 续跑记录](research/2026-10-04-p62-resume-release.md) 4.1）；一个账号仍只能有一个 Controller（Label 固定）。CI 有一个 Linux job，但它是 **Runtime 门禁**：绿的意思是代码在 Linux 上编得过、测试过得去，不是说 Agent 那一半在那儿能跑。
+**Agent 那一侧：macOS 有真机证据，Linux 是 v0.12.0（P74）起实现的，Debian 13 上零额度真机通过（假模型，含重启 Controller 不断会话），并用真实 Codex 跑过一次交互会话（问、放行、取消都对）；Claude Code 当 Linux Agent 没用真实模型跑过。** macOS 上 Controller 是 launchd LaunchAgent，起会话前要求 `launchctl managername` 是 `Aqua`（为登录钥匙串设的）；Linux 上它是 systemd 用户服务，不要求图形会话——官方 CLI 的登录在文件里，由 CLI 自己的 `auth status` 证明——Controller 在会话信息里自报平台，所以在 macOS 的 Runtime 上读 Linux Agent 也按 Linux 判（[P74 记录](research/2026-10-07-p74-linux-agent.md)）。v0.11.2 及之前 Linux 上 `controller install` 装不上、起会话被拒。Windows 和其他官方 CLI 版本都没验收。P66 起 `ccnm controller install` 把非默认的配置与状态位置（`--config`/`CCNM_CONFIG`、`XDG_CONFIG_HOME`、`XDG_STATE_HOME`）写进 plist，2026-10-04 在真的 launchd 下装过一次（[P62 续跑记录](research/2026-10-04-p62-resume-release.md) 4.1）；一个账号仍只能有一个 Controller（Label 固定）。CI 有一个 Linux job，但它是 **Runtime 门禁**：绿的意思是代码在 Linux 上编得过、测试过得去，不是说 Agent 那一半在那儿能跑。
 
-**Runtime 那一侧（`internal mcp-serve` 与七工具）在 Debian 13 / x86_64 上验过一次**，作为 Remote Workspace MCP 的 dogfood（[记录](research/p12-real-project-2026-09-11.md)）：`cargo fmt`、严格 clippy 与全套测试在那台机器上 676 passed / 0 failed，与 macOS 同数。**那一次是从两个红开始的**，两个都真修了：`SystemRunner::run` 的超时只杀 leader（macOS 因为 bash 会 exec 而一直看不见），以及一个测试助手用了 BSD 语义的 `date -r`。Linux 上的 Managed 入口（Controller/session）仍未验收，Runtime 侧也只验过这一种发行版和架构。
+**Runtime 那一侧（`internal mcp-serve` 与七工具）在 Debian 13 / x86_64 上验过一次**，作为 Remote Workspace MCP 的 dogfood（[记录](research/p12-real-project-2026-09-11.md)）：`cargo fmt`、严格 clippy 与全套测试在那台机器上 676 passed / 0 failed，与 macOS 同数。**那一次是从两个红开始的**，两个都真修了：`SystemRunner::run` 的超时只杀 leader（macOS 因为 bash 会 exec 而一直看不见），以及一个测试助手用了 BSD 语义的 `date -r`。Linux 当 Agent（Controller）后来在 v0.12.0 做了，见上一段；Runtime 侧也只验过这一种发行版和架构。
 
 **第三个红是发布前收口那一轮、由 CI 自己照出来的，它证明 P12 那次只修了一半。** 杀进程组走的是 `kill -KILL -<pgid>`，而 GNU/procps 的 `kill` 把开头带减号的参数当成**信号**读：`-8421` 被读成信号号，命令最后一个 pid 都没有，**退出码 0，什么都没杀**。所以进程组还在、孙进程还占着管道、超时还是不超时——而且这次还报成功。macOS 的 BSD `kill` 两种写法都当进程组，本机永远看不见；Debian 13 上碰巧是绿的（孤儿被别的东西收走了），所以 P12 的真机轮也没照出来。**是 ubuntu-24.04 的 runner 照出来的**：`write_guard` 里那条"残留子进程要人工恢复"的测试红了，残留进程在本该杀掉它的 kill 之后还活着。修法是在负 pid 前加 `--`（macOS 和 Linux 都认），三处都改了。当前 HEAD 在 ubuntu-24.04 与 macOS 上都是 **681 passed / 0 failed**（当时的数字；当前 HEAD 是 688），严格 clippy 都干净。
 
@@ -178,7 +178,7 @@ ccnm session id 是生命周期主键；Claude/Codex 自己的 thread/resume id 
 - guard 覆盖 `exec_command` 和 `apply_patch` 所在的完整 MCP 生命周期，不只是某个工具调用或某个 Agent Node；
 - **外部 MCP 的 `coding` 会话抢同一把锁**，`read` 会话不碰它（没有能改东西的工具，让它等写者只会白等）。
 
-异常恢复必须由 Runtime 操作者完成：先按 session/status 和进程列表证明旧 supervisor、Agent、SSH MCP 及其子进程都已结束，再在 Runtime 的 `${XDG_STATE_HOME:-$HOME/.local/state}/ccnm/write-guards/` 中定位包含该 session id 的**单个** marker，备份后删除该文件。不要批量删除，也不要仅因时间过去就清理。删除前无法证明旧执行者结束时，保持 unknown 才是正确状态。
+异常恢复必须由项目机器上的人来做，步骤见[运维手册：写入 guard 残留](operations.md#写入-guard-残留)。删除前证明不了旧执行者已经结束，保持 unknown 才是对的。
 
 **"崩了"有两种，结局不同**，两种都在真机上验过（[P12 记录](research/p12-real-project-2026-09-11.md)）：
 

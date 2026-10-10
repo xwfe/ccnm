@@ -82,7 +82,7 @@ A0–A9 用户全部同意，root 步骤由我经本机的 root 密钥执行。�
 
 **结论**：Agent 静默离网时，Runtime 这头察觉不到，锁由已经不存在的会话一直持有。原因是三件事叠在一起：exec-server 协议没有能发给 Codex 的 ping（P22 已记）；hpsrv 的 sshd `ClientAliveInterval 0`；那条连接上没有数据要发，内核的 TCP keepalive 默认 2 小时才探测。**这不违反验收**——未确认退出本来就不该放锁，而且不会有东西在断线后被执行——但它是运维上必须知道的限制。
 
-**恢复**（每轮都这样做，都成功）：在 Runtime 上找到那个会话的 `ccnm internal exec-serve`，给它的父进程（`ccrun` 的 `sshd-session`）发 TERM；`exec-serve` 读到 EOF，按正常路径关掉 exec-server、扫进程、放锁，**不需要删锁标记**。步骤写进了[运维手册](../operations.md#agent-静默离网之后exec-server-链的锁一直-held)。
+**恢复**（每轮都这样做，都成功）：在 Runtime 上找到那个会话的 `ccnm internal exec-serve`，给它的父进程（`ccrun` 的 `sshd-session`）发 TERM；`exec-serve` 读到 EOF，按正常路径关掉 exec-server、扫进程、放锁，**不需要删锁标记**。步骤写进了运维手册（那一节随 P86 删原生链时删了，原文在 v0.13.1 的 `docs/operations.md`）。
 
 **推断，没有实测**：命令在这段时间里有输出或者结束的话，hpsrv 要往这条连接写数据，对端内核会回 RST，应该会更早察觉；本轮的 `sleep 300` 在观察期内没有任何输出。要从根上缩短这段时间，可以在 Runtime 的 sshd 上开 `ClientAliveInterval`（系统配置变更），或者让 ccnm 自己加空闲超时（产品改动）——都没做，留给用户决定。
 

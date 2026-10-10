@@ -4,27 +4,17 @@
 
 ## 安装与升级
 
-两台机器要装**同一个 build**。`ccnm doctor` 会比对两端版本，不一致就是 FAIL：
-
-```text
-<对面> runs ccnm 0.2.0, this machine runs 0.2.1; install the same build on both
-```
-
-这是 doctor 拦下来的，不是协议层拦的——协议只在**协议号**不同时才拒。所以版本不同的两端有可能跑起来，只是没人验证过那种组合，别让它发生。
-
-**Machine API（`ccnm rpc`）的 print 运行从 P58 起用内部协议 7**：Runtime 在派发前定好 Agent 上的会话 id，好让 `session.stop` 能点名停它。只升级 Runtime、Agent 还是 P58 之前的 build 时，每次 `session.start` 都会以 `failed` 结束、错误是 `CCNM_E_VERSION`（旧 Agent 在解析请求时就拒绝，什么都没创建）——这是两端版本不一致，装成同一个 build 即可，不是 Agent 坏了。人类用的 `ccnm run --print` 不受影响。P59 起 `session.result` 用新请求 `agent-output`（内部协议 8）从 Agent 拷输出；Agent 还是 P59 之前的版本时结果照常返回，只是 `output` 降级为旧尾巴并带 `unavailable_reason: agent_refused`，不是出错。升级前还在跑的 `ccnm rpc` 会话，新 build 的 `session.stop` 会拒绝（它们没有记 Agent 上的会话 id，见[协议说明](protocol/README.md)），所以按下一节先把会话停掉再升级。
-
-**Machine API 的输出占多少盘、在哪**（P59）：Agent 在会话目录里为读过的流各存一份只读视图（`sessions/<id>/stdout.view` 等，每个流最多约 32 MiB，全是非法 UTF-8 的极端情况最多约 96 MiB）；Runtime 这边第一次 `session.result` 时整份拷到 `${XDG_STATE_HOME:-~/.local/state}/ccnm/rpc/outputs/<session>/`。两边都不会自动删；要腾地方用 [`ccnm cleanup`](#想立刻腾地方ccnm-cleanup)，它先预览，由各自的账号删，Machine API 的记录留作墓碑。
+两台机器要装**同一个 build**。版本或构建不同时，doctor 报失败，起会话也会被拒（`CCNM_E_VERSION`），报法见下面的表；版本号一样、构建不同的情况见[排错手册](troubleshooting.md#doctor-报-reports-ccnm-版本-like-this-machine-but-it-is-not-the-same-build)。
 
 ### 用发布包升级（一般就用这个）
 
-**要换的是每一份会被执行的 ccnm**，不只是你敲命令的那份。以 0.11.2 升 0.12.0 为例，漏了哪份 doctor 怎么报：
+**要换的是每一份会被执行的 ccnm**，不只是你敲命令的那份。以 0.13.1 升 0.14.0 为例，漏了哪份 doctor 怎么报：
 
 | 哪台 | 哪个账号 | 漏了会怎样 |
 | --- | --- | --- |
-| 放项目的机器（Runtime） | 你敲 `ccnm` 的账号 | `Agent ccnm` 行 FAIL：`the Agent Node <名字> runs ccnm 0.12.0, this machine runs 0.11.2; install the same build on both` |
-| 放项目的机器（Runtime） | 执行账号（AI 那台 ssh 登进来的那个账号：默认就是你自己的，另建了专用账号就是它，比如 `ccrun`）。AI 那台经 ssh 调起的是它名下 `ccnm_bin` 指的那份，默认 `~/.local/bin/ccnm` | `Reverse SSH` 行 FAIL：`the Runtime Node runs ccnm 0.11.2, this machine runs 0.12.0; …`；起会话也被拒，报同一句外加 `before starting a session` |
-| 跑 AI 的机器（Agent） | 跑 Controller 的账号 | `Agent ccnm` 行 FAIL：`the Agent Node <名字> runs ccnm 0.11.2, this machine runs 0.12.0; …`。换了文件没重启 Controller，见第 4 步 |
+| 放项目的机器（Runtime） | 你敲 `ccnm` 的账号 | `Agent 的 ccnm` 行失败：`the Agent Node <名字> runs ccnm 0.14.0, this machine runs 0.13.1; install the same build on both` |
+| 放项目的机器（Runtime） | 执行账号（AI 那台 ssh 登进来的那个账号：默认就是你自己的，另建了专用账号就是它，比如 `ccrun`）。AI 那台经 ssh 调起的是它名下 `ccnm_bin` 指的那份，默认 `~/.local/bin/ccnm` | `反向 SSH` 行失败：`the Runtime Node runs ccnm 0.13.1, this machine runs 0.14.0; …`；起会话也被拒，报同一句外加 `before starting a session` |
+| 跑 AI 的机器（Agent） | 跑 Controller 的账号 | `Agent 的 ccnm` 行失败：`the Agent Node <名字> runs ccnm 0.13.1, this machine runs 0.14.0; …`。换了文件没重启 Controller，见第 4 步 |
 
 一台机器同时当两个角色、或执行账号就是你自己，就少换几份。顺序：
 
@@ -36,12 +26,12 @@ ccnm stop <workspace>                        # 上面列出来在跑的，每个
 ps aux | grep '[c]cnm internal mcp-serve'    # 应该什么都不打
 ```
 
-为什么不能跳，见下一节。
+**不停会怎样**：正在跑的会话不会被升级杀掉，但它连着的 `ccnm internal mcp-serve` 还在用老代码跑，而且攥着这棵工作树的写锁。升完之后新会话起不来（doctor 的 `远端 MCP 握手` 报 `workspace write guard is busy`），会话里模型手里一个工具都没有，会把工具调用**当成普通文本打出来**，看着像模型抽风。已经升完才想起来，按[写入 guard 残留](#写入-guard-残留)收。
 
 **2. 每台下载自己系统的包，核 sha256。** Mac 用 `macos-universal`，Linux 用 `linux-x86_64`：
 
 ```bash
-v=0.12.0; p=macos-universal                  # Linux 上 p=linux-x86_64
+v=<版本号>; p=macos-universal                # 版本号看 Releases 页；Linux 上 p=linux-x86_64
 base=https://github.com/xwfe/ccnm/releases/download/v$v
 curl -fLO $base/ccnm-$v-$p.tar.gz && curl -fLO $base/ccnm-$v-$p.tar.gz.sha256
 shasum -a 256 -c ccnm-$v-$p.tar.gz.sha256    # Linux 上用 sha256sum -c；要看到 OK
@@ -63,7 +53,7 @@ install -m 755 ccnm ~/.local/bin/ccnm.new && mv ~/.local/bin/ccnm.new ~/.local/b
 ccnm controller install
 ```
 
-不重启的话，Controller 还是那个用旧文件起的进程。Mac 上它会换掉 launchd 里的那个；Linux 上是 `systemctl --user` 的 daemon-reload、enable、restart，**要在这个账号用 ssh 登录进来的会话里跑**（`su` 进来的先 `export XDG_RUNTIME_DIR=/run/user/$(id -u)`，否则报 `Failed to connect to bus`）。重启 Controller 不会断已有的会话，但第 1 步已经都停了。最后一行 `listening: ccnm 0.12.0 as <账号>, pid …` 的版本号要是新的；还是旧的，按[下面](#升级完一定要核对-controller-的进程启动时间)核对。
+不重启的话，Controller 还是那个用旧文件起的进程。Mac 上它会换掉 launchd 里的那个；Linux 上是 `systemctl --user` 的 daemon-reload、enable、restart，**要在这个账号用 ssh 登录进来的会话里跑**（`su` 进来的报 `Failed to connect to bus`，见[排错手册](troubleshooting.md#linux-上-ccnm-controller-install-报-failed-to-connect-to-bus)）。重启 Controller 不会断已有的会话，但第 1 步已经都停了。最后一行 `listening: ccnm <新版本号> as <账号>, pid …` 的版本号要是新的；还是旧的，见[下面](#升级完-controller-还是旧的)。
 
 **5. 在放项目的机器上跑 doctor：**
 
@@ -77,80 +67,34 @@ ccnm doctor <workspace>
 
 ### 从源码部署（开发用）
 
+先照上面第 1 步停掉所有会话，再：
+
 ```bash
 bash scripts/deploy.sh <另一台的 ssh 别名> [workspace]
 ```
 
 在有 Rust toolchain 的那台上跑。它编译、装两边、重启 controller、最后跑一次 `ccnm doctor`。它只装两台各自登录账号的那份，执行账号的那份要自己按上面第 2、3 步换。Agent 是 Linux 时它也会去重启 systemd 里的 Controller，但这条路还没在真机上跑过。
 
-### 升级前先把会话停掉
+### 升级完 Controller 还是旧的
 
-**正在跑的会话不会被升级杀掉**——tmux server 在自己的进程组里。听起来是好事，实际是这一节存在的原因：那个活下来的会话，连着的 `ccnm internal mcp-serve` 还在用**老代码**跑，而且攥着这棵工作树的写入 guard 不放。
+`ccnm controller install` 最后一行报的是**此刻在 socket 上应答的那个进程**。同一个 socket 上要是还有一个不归 launchd / systemd 管的 Controller（手工起的，或者很老的构建留下的），install 换不掉它，报出来的就是它；doctor 的 `Controller` 行只报版本号，也分不出同号的新旧构建。
 
-于是升级之后：
-
-```text
-Remote MCP handshake    FAIL   CCNM_E_POLICY: MCP initialize failed over ...
-                               stderr: CCNM_E_POLICY:
-                               workspace write guard is busy; another session still owns this working tree
-```
-
-**在会话里看到的完全是另一回事**：Claude Code 对 stdio server 退出只显示 `CONNECTION_CLOSED`，不显示 stderr。所以模型手里一个 ccnm 工具都没有，而它自己机器上的文件工具本来就是关掉的——它会把工具调用**当成普通文本打出来**：
-
-```text
-<parameter name="command">ls -la ...</parameter>
-```
-
-看着像模型抽风，实际是它一个能用的工具都没有。2026-09-12 真撞过一次，查了半天才定位到是升级留下的孤儿进程。
-
-所以顺序是：
+核对：二进制的修改时间要早于 Controller 进程的启动时间。
 
 ```bash
-ccnm stop <workspace>                  # 每个在跑的 workspace 都停
-ps aux | grep 'ccnm internal mcp-serve'   # 确认真没了，别只看 ccnm status
-bash scripts/deploy.sh <另一台的 ssh 别名> [workspace]
-```
-
-第二条不能省：`ccnm status` 只报 Agent Node 上的 tmux 会话，`--print` 的运行和已经断开的 SSH MCP 都不在里面（见下面[状态文件](#状态文件在哪多大怎么清)那一节）。
-
-万一已经升完了才想起来，按[写入 guard 残留](#写入-guard-残留)清：杀掉那个 `mcp-serve`，确认没有残留子进程，再备份删掉那**一个** marker 文件。
-
-### 升级完一定要核对 controller 的进程启动时间
-
-`ccnm controller install` 先 `launchctl bootout` 再 `bootstrap`，标签 `dev.ccnm.controller` 管着的那个 Controller 会被换掉（2026-10-04 fodelf 从 0.9.0 换到 P68 构建：pid 1075 → 29110，新进程的启动时间晚于二进制的修改时间，见 [P68 记录](research/2026-10-04-p68-supervisor-gone-lost-output.md)第 6 节）。**但它最后报告的是"此刻在 socket 上应答的那一个"**：同一个 socket 上要是还有一个不归这个标签管的 Controller——更老的构建里子命令叫 `internal work-controller` 时留下的，或者手工起的——`bootout` 碰不到它，install 报出来的就是它，输出长这样：
-
-```text
-listening: ccnm 0.2.0 as fodelf, pid 1716, Aqua
-```
-
-读起来像刚重启过，实际那个 pid 可能是好几天前起的，跑的还是旧二进制（2026-09-10 真撞过：一个五天前的 Controller 接着替新二进制应答）。`ccnm doctor` 也抓不到——它显示的 `0.2.0` 是版本字符串，同一个版本号的新旧构建长得一模一样。
-
-症状出现在别的地方，而且不指向 controller：
-
-```text
-Claude Code             FAIL   CCNM_E_VERSION: remote ccnm speaks protocol 3, this one speaks 1
-Claude authentication   FAIL   CCNM_E_VERSION: remote ccnm speaks protocol 3, this one speaks 1
-```
-
-所以升级后自己核对一次，比对二进制的 mtime 和进程的启动时间：
-
-```bash
-ssh <agent> 'stat -f "%N %Sm" -t "%Y-%m-%d %H:%M" ~/.local/bin/ccnm; ccnm controller status'
-ssh <agent> 'stat -c "%n %y" ~/.local/bin/ccnm; ccnm controller status'     # Agent 是 Linux 时用这条
+ssh <agent> 'stat -f "%N %Sm" ~/.local/bin/ccnm; ccnm controller status'   # Agent 是 Linux 时用 stat -c "%n %y"
 ssh <agent> 'ps -o pid=,lstart=,command= -p <上面那个 pid>'
 ```
 
-进程比二进制还老就是没换掉。真正的重启是先卸再装：
+进程比二进制还老，或者 `controller status` 写着 `not under systemd (started by hand)`，就先卸再装，再按 pid 确认旧进程退了（卸载不保证它退出，没退就自己结束它）：
 
 ```bash
 ssh <agent> 'ccnm controller uninstall && ccnm controller install'
 ```
 
-`uninstall` 会移除 plist 和 socket，但**不保证旧进程退出**：更老的构建里这个子命令叫 `internal work-controller`，launchd 的当前标签管不到它，卸载之后它会作为孤儿进程留着。socket 已经没了，所以它不会再被连上，但要彻底干净就自己确认一次并按 pid 结束它。
-
 ### 千万不要 `cp` 覆盖正在用的二进制
 
-上面第 3 步和 `deploy.sh` 都用"新文件 + 改名"，原因就在这里。在 Apple Silicon 上，往一个已经执行过的 Mach-O 里写东西会让它的代码签名失效，之后每一次 exec 都直接 SIGKILL（退出码 137），而**已经在跑的那个进程照常用旧代码继续**。
+升级第 3 步和 `deploy.sh` 都用"新文件 + 改名"，原因就在这里。在 Apple Silicon 上，往一个已经执行过的 Mach-O 里写东西会让它的代码签名失效，之后每一次 exec 都直接 SIGKILL（退出码 137），而**已经在跑的那个进程照常用旧代码继续**。
 
 症状极具迷惑性：`ccnm --version` 显示 `Killed: 9`，`doctor` 报空回复，而 `launchctl` 坚称 controller 一切正常。
 
@@ -181,6 +125,8 @@ bash scripts/deploy.sh <另一台的 ssh 别名>
 保险起见，回退前把正在跑的会话停掉——一个会话的两半分别记在两台机器上，让它跨越一次两端不同步的回退没有意义。
 
 ## 配置迁移：legacy → Agent Instance
+
+**什么时候需要**：要用 Codex、一台 Agent Node 上配多个实例、或者要用 `--agent` 切换时。只用 Claude、用默认登录的，不用改。
 
 **没有自动迁移命令**，是手动改配置文件。改动很小，改完用 `doctor` 验。
 
@@ -216,7 +162,7 @@ ccnm doctor demo
 
 - **两个字段不能同时存在。** 配置校验会拒绝 `agent` 和 `agent_node` 并存，报 `cannot combine agent with legacy agent_node`。
 - **instance workspace 的 root 只能定义在它的 Runtime Node 上**，在 Agent Node 的配置里写同名 workspace 会被拒。
-- **`claude_permission_mode` 对 instance workspace 无效**，配了会被拒；instance 的策略在 Agent 端。
+- **instance workspace 改不了权限模式**，Claude 固定用 `acceptEdits`：`claude_permission_mode` 只写 `"acceptEdits"` 不报错，写别的值被拒。
 
 迁移前有会话在跑的话，先 `ccnm stop <workspace>`：会话记着自己的 identity，配置换了它也不会跟着换。
 
@@ -232,15 +178,13 @@ ccnm doctor demo
 fatal: detected dubious ownership in repository at '/path/to/worktree'
 ```
 
-以前 `ccnm doctor` 那一行照样是绿的（`Workspace root OK … is a directory for <user>`），因为它只查目录在不在。**现在它连属主和 git 一起查**：git 因属主拒绝时这一行是 FAIL 并直说原因，属主不对但 git 能用时是 WARN。绿灯这才等于"这个身份真的能用这个项目"。
+`ccnm doctor` 的 `workspace 根目录` 那一行连属主和 git 一起查：git 因属主拒绝时这一行是 FAIL 并直说原因，属主不对但 git 能用时是 WARN。绿灯这才等于"这个身份真的能用这个项目"。
 
-**项目可以放在执行身份自己的家目录里，哪怕 Operator 进不去**（P65 起）。Debian 12 起新账号的家默认 0700（`/etc/login.defs` 的 `HOME_MODE`），Operator 看不了 `/home/ccrun/` 下的任何东西；macOS 的家目录默认别人能进入，所以只有 Linux 会遇到。ccnm 把"不在"和"这个账号没权限看"分开处理：
+**项目可以放在执行身份自己的家目录里，哪怕 Operator 进不去**。Debian 12 起新账号的家默认 0700（`/etc/login.defs` 的 `HOME_MODE`），Operator 看不了 `/home/ccrun/` 下的任何东西；macOS 的家目录默认别人能进入，所以只有 Linux 会遇到。ccnm 把"不在"和"这个账号没权限看"分开处理：
 
 - `ccnm workspace add <名字> /home/ccrun/<项目>` 照常登记，并提示它没能核对、也没解析符号链接。**写绝对路径**，和执行身份自己 `pwd -P` 看到的一致。
 - `ccnm run` 不拦；项目在不在由执行身份在开会话时回答。
 - `ccnm doctor` 的 `Runtime 上的项目` 一行是"不查"（不挡结论），执行身份的回答在 `workspace 根目录` 那一行。
-
-P65 之前这三处都拿 Operator 自己的身份去 stat，报 `is not a directory on this machine`（P62 在 Debian 13 上实测，研究记录 F1）；旧构建上的绕法见[排错手册](troubleshooting.md#linux-上-ccnm-run-报-workspace-root--is-not-a-directory-on-this-machine目录明明在)。
 
 **新建的执行身份没有 git 身份，第一次 commit 直接失败：**
 
@@ -259,7 +203,7 @@ git config --global user.email "<email>"
 
 ### 专用账号写进项目的配置，你打开时按你的身份生效
 
-专用账号模式下（写了 `runtime_user`），`ccnm doctor` 有一行 `以你身份生效的文件`（`Files that act as you`）。项目里有 `.vscode`、`.idea`、`.claude`、`.codex`、`.mcp.json`、`.gitmodules` 或 shell 启动文件时，这一行是"注意"，并把它们列出来；一个都没有时是"正常"。这一行不挡结论。
+专用账号模式下（写了 `runtime_user`），`ccnm doctor` 有一行 `以你身份生效的文件`（`Files that act as you`）。项目里有 `.vscode`、`.idea`、`.claude`、`.codex`、`.mcp.json`、`.gitmodules`、`.gitconfig`、`.ripgreprc` 或 shell 启动文件时，这一行是"注意"，并把它们列出来；一个都没有时是"正常"。这一行不挡结论。
 
 原因：这些是 IDE、Claude Code、Codex 打开项目时会读来执行的配置。VS Code 的任务、Claude Code 的 hooks、`.mcp.json` 里的 server，都按**打开它的人**的权限跑。执行账号写进去的东西，等你本人打开这棵树时就以你的身份执行了，专用账号隔出来的那道边界就这么绕过去了。
 
@@ -280,7 +224,7 @@ git config --global user.email "<email>"
 
 **`runtime_user` 写的就是你自己的账号时**，这一行照样会出，但它提醒的事不存在：执行账号就是你，写进去的东西本来就以你的身份跑。想让它消失，就删掉 `runtime_user`（连同只在专用账号模式下有用的几个 `allow_*`），改用共用账号模式。
 
-**共用账号模式（没写 `runtime_user`）没有这一行**：命令本来就以你的身份跑，这些文件不额外给它什么。Runtime 是 P85 之前的版本时，这一行是"不查"。
+**共用账号模式（没写 `runtime_user`）没有这一行**：命令本来就以你的身份跑，这些文件不额外给它什么。
 
 ## Runtime Node 的前置条件与项目工具链
 
@@ -291,7 +235,7 @@ git config --global user.email "<email>"
 | 程序 | 谁要它 | 没有它会怎样 |
 | --- | --- | --- |
 | `git` | `list_files`、写 guard 的资源判定、项目自己 | 降级成非 git 视图；guard 按目录而不是按仓库互斥 |
-| `ripgrep`（`rg`） | `search_text`——它不自己扫文件 | 七工具少一个，报 `ripgrep is not installed on the Runtime Node` |
+| `ripgrep`（`rg`） | `search_text`——它不自己扫文件；doctor 不查它 | 少了 `search_text`，模型一搜就报 `ripgrep is not installed on the Runtime Node` |
 
 workspace 开了 [`exec_sandbox = "codex"`](configuration.md#exec_sandbox)（`exec_command` 包进 Codex 的 OS 沙箱）时，Runtime 上还要：
 
@@ -300,7 +244,7 @@ workspace 开了 [`exec_sandbox = "codex"`](configuration.md#exec_sandbox)（`ex
 | 节点配置里的 `codex_bin` 指向 Codex 0.154.0 | 沙箱是它的 `codex sandbox` | 会话启动前报 `CCNM_E_CONFIG` 或 `CCNM_E_VERSION`，任何入口的会话都起不来，不会退回裸跑 |
 | **Linux**：装 `bubblewrap`，并允许执行账号创建 user namespace（Debian 13 默认允许） | Codex 在 Linux 上用 bwrap 实现 workspace-write 沙箱 | 会话启动时那次 `sh -c 'exit 0'` 探测失败，报 `CCNM_E_DEPENDENCY`（带 Codex 自己的报错），不会退回裸跑；doctor 不提前查（[配置说明](configuration.md#exec_sandbox)） |
 
-Codex 的 Linux 沙箱会在真实的 `/tmp` 里留下几个空目录（`/tmp/.git`、`/tmp/.agents`、`/tmp/.codex`、`/tmp/codex-bwrap-synthetic-mount-targets-<uid>/`），属主是执行账号，用完不删；`/tmp` 是 tmpfs 的话重启就没了。这是 Codex 的行为，ccnm 不清理它们（P24 实测）。
+Codex 的 Linux 沙箱会在真实的 `/tmp` 里留下几个空目录（`/tmp/.git`、`/tmp/.agents`、`/tmp/.codex`、`/tmp/codex-bwrap-synthetic-mount-targets-<uid>/`），属主是执行账号，用完不删；`/tmp` 是 tmpfs 的话重启就没了。这是 Codex 的行为，ccnm 不清理它们。
 
 剩下的是项目自己的：编译器、包管理器、测试运行器。
 
@@ -361,8 +305,8 @@ controller.sock      controller 的监听 socket
 sessions/<ccnm-session-id>/output/   exec_command 留下的命令输出（会自己清，见下）       执行账号的
 write-guards/                        工作树级独占锁                                       执行账号的
 rpc/sessions/<handle>.json           machine API 的会话记录                               Operator 的
-rpc/start-keys/                      启动幂等键（P58 之前的 rpc/keys/ 只读）               Operator 的
-rpc/outputs/<handle>/                session.result 从 Agent 拷来的输出（P59）             Operator 的
+rpc/start-keys/                      启动幂等键                                           Operator 的
+rpc/outputs/<handle>/                session.result 从 Agent 拷来的输出                   Operator 的
 ssh/                                 ControlPath socket
 ```
 
@@ -375,11 +319,13 @@ ssh/                                 ControlPath socket
 **Runtime 上的 `output/` 例外，它自己清。**这是 `exec_command` 留下的完整输出，大小看命令打印了多少。规则（数字的出处和并发时的细节见[协议第 8 节](protocol/remote-workspace-mcp-v1.md#8-输出预算与保留)）：
 
 - 一个会话最多留 256 MiB 左右，满了从最旧的运行删。
-- 外部 MCP（`ccnm mcp bridge`）的会话，连接一断就删。前提是 `mcp-serve` 自己正常退出：它被 `kill -9` 时后台命令会继续跑，输出留在 `sessions/bridge-<id>/output/`，`ccnm cleanup` 按设计不列 bridge 会话，只能等下面的 7 天过期或由执行账号手动删（P62 实测，先按[写入 guard 残留](#写入-guard-残留)收掉还在跑的命令）。
+- 外部 MCP（`ccnm mcp bridge`）的会话，连接一断就删。前提是 `mcp-serve` 自己正常退出：它被 `kill -9` 时后台命令会继续跑，输出留在 `sessions/bridge-<id>/output/`，`ccnm cleanup` 按设计不列 bridge 会话，只能等下面的 7 天过期或由执行账号手动删（先按[写入 guard 残留](#写入-guard-残留)收掉还在跑的命令）。
 - Managed 会话断开不删，`/mcp Reconnect` 回来还要读。它的输出在**最后一次运行过去 7 天、且这台机器上没有 `mcp-serve` 在服务它**之后删。
 - 过期检查在执行账号每次起 `mcp-serve` 时做（任何会话都算，包括 `ccnm doctor` 的握手），在后台跑，不拖慢连接。`ps` 跑不了时一个都不删。
 
 所以一台 Runtime 上 `output/` 的总量最多大约是"最近 7 天里跑过命令的 Managed 会话数 × 256 MiB"。
+
+**Machine API 的输出占多少盘、在哪**：Agent 在会话目录里为读过的流各存一份只读视图（`sessions/<id>/stdout.view` 等，每个流最多约 32 MiB，全是非法 UTF-8 的极端情况最多约 96 MiB）；Runtime 这边第一次 `session.result` 时整份拷到 `${XDG_STATE_HOME:-~/.local/state}/ccnm/rpc/outputs/<session>/`。两边都不会自动删；要腾地方用 [`ccnm cleanup`](#想立刻腾地方ccnm-cleanup)，它先预览，由各自的账号删，Machine API 的记录留作墓碑。
 
 ### 想立刻腾地方：`ccnm cleanup`
 
@@ -409,10 +355,6 @@ ccnm workspace remove demo --purge     # 先停会话，再清 ccnm 为它保存
 
 `--purge` 走的是同一个清理服务，`--purge` 本身就算确认，不再要令牌；另外还会删 Agent 上这个 workspace 的 CLI 工作目录。区别在最后一步：**只要有任何东西没清掉（包括上面"会留下的"），workspace 就留在配置里、退出码 3**，因为配置是以后唯一还能找到那些东西的入口。处理完再跑一次；只想忘掉 workspace、数据留着不管，去掉 `--purge`。
 
-P61 之前的 `--purge` 删的是**敲命令这个账号自己**状态目录里同名的 `sessions/<id>/`，推荐部署下那根本不是执行账号的输出所在，那份输出从此没人找得到（只能等 7 天过期）；配置却照删。升级前用旧 `--purge` 删过的 workspace，执行账号那边可能还剩输出，按 7 天过期处理或由执行账号手动删 `sessions/<id>/output`。
-
-两端版本要一致：清理用内部协议 10，旧 Agent 不认识 `agent-cleanup`，预览会说 Agent 问不到；新 Agent 收到旧 Operator 的 `agent-purge` 会以 `CCNM_E_VERSION` 拒绝，不再照旧删。
-
 ## 停止
 
 ```bash
@@ -424,14 +366,13 @@ ccnm stop demo --agent codex-main --session <id>  # 精确停一个
 
 `ccnm status demo` 看当前状态。两个实测出来的坑：
 
-- **`stop` 对已经结束的会话是幂等的**（v1 起）：没有会话在跑时它退出码 **0**，报告里 `killed` 为 false。清理脚本可以无脑调一次，不用先判断有没有人在用。
+- **`stop` 对已经结束的会话是幂等的**：没有会话在跑时它退出码 **0**，报告里 `killed` 为 false。清理脚本可以无脑调一次，不用先判断有没有人在用。
 
   但幂等**不等于 stop 永远不报错**。有一种情况仍然是失败：workspace 的终端**确实在跑**，而 ccnm 认不出它是不是你选的那个会话——报 `CCNM_E_NOT_READY: a terminal is running for this workspace but carries no verifiable ccnm session identity`。那道检查是为了不去杀别人的会话，跟幂等无关。
 
   另外，`--session <id>` 指到一个这台机器上没有记录的 id，仍然报 `no session <id> on this machine`：不知道那个会话，和知道它已经结束，是两件事。
 
-  > 早于 v1 的构建在第一种情况下也报退出码 3。写清理脚本时如果要兼容旧版本，容忍这个码即可。
-- **`status` 的会话列表看不见 `ccnm run --print` 的会话。** 它只报 Agent Node 上的 tmux 会话，非交互的 print 运行不在其中——会话正跑着，`status` 照样说 `no live sessions`。要判断有没有人在写，看同一条命令输出最后的**写锁**那一行（P60 起，在 Runtime Node 上跑 `ccnm status <workspace>` 才有），它由 Runtime 执行账号自己回答，print 运行和外部 MCP 客户端占着锁都看得见：
+- **`status` 的会话列表看不见 `ccnm run --print` 的会话。** 它只报 Agent Node 上的 tmux 会话，非交互的 print 运行不在其中——会话正跑着，`status` 照样说 `no live sessions`。要判断有没有人在写，看同一条命令输出最后的**写锁**那一行（在 Runtime Node 上跑 `ccnm status <workspace>` 才有），它由 Runtime 执行账号自己回答，print 运行和外部 MCP 客户端占着锁都看得见：
 
   ```text
   写锁  被占：会话 402638ca 正持有（09-29 13:40）
@@ -441,32 +382,39 @@ ccnm stop demo --agent codex-main --session <id>  # 精确停一个
 
   它只是看一眼：不建文件、不改标记、不拿写权。"空闲"是那一刻的样子，不是替你占住；"问不到 Runtime"不等于空闲。为什么要绕 Agent 去问：写锁在执行账号自己的 state 目录里，Operator 账号通常读不到，读自己的 `write-guards/` 看到的是另一个写域（见[一棵树配两个 state 目录](#一棵树配两个-state-目录--两个互不知晓的写域)）。
 
-## 两侧 MCP 的停止与结果保留
-
-**P51 已复现：Runtime MCP server 自己退出后，其同组子进程仍在写，但写锁已 `released`。** 不要只看 server pid、`ccnm stop` 或锁标记就认定整棵进程树清空。需要可靠交权的环境先停用 `[runtime_mcp]`，关闭现有会话，按实际执行身份核实其创建的进程和项目写入，再放行下一 writer；不要盲目删除 guard，也不要按模糊进程名批量 kill。复现、边界和待修复项见[审计](research/2026-09-23-lifecycle-and-docs-audit.md)。
-
-Agent 的长 MCP 结果另存 `ccnm_agent` 进程内存：`read_mcp_result` 每页最多 32 KiB，30 分钟保留，单条最多 16 MiB、总量 64 MiB；服务结束不能恢复。它不属于上述磁盘 `output/`，也不会被 `workspace remove --purge` 补存或恢复。正式验收报告应另存项目产物或交付系统。
-
-Runtime Managed 输出的保留不等于后台命令继续运行；外部连接的输出断开即清理，Managed 输出按会话和保留规则读取。不要用旧 `output_ref` 代替新的命令执行或跨连接的持久任务身份。
-
 ## 故障恢复
 
 ### 写入 guard 残留
 
-症状：新会话起不来，报工作树被占，但没有会话在跑。Machine API 的 `session.start` 这时回 `-32007`，`data.reason` 是 `left_held` 或 `kept_on_purpose`（P60 起）。
+症状：新会话起不来，报工作树被占，但没有会话在跑。Machine API 的 `session.start` 这时回 `-32007`，`data.reason` 是 `left_held` 或 `kept_on_purpose`。
 
 先在 Runtime Node 上跑 `ccnm status <workspace>`，看最后的写锁行。它告诉你是哪一种、标记文件叫什么、标记里的 pid 现在是什么：
 
 | 写锁行说 | 意思 | 往下看 |
 | --- | --- | --- |
-| 被占 | 有进程正持有。等它结束，或者去结束它；Agent 那边说这个会话已经结束的，多半是孤儿 `mcp-serve`（见[排错手册](troubleshooting.md#mcp-初始化报-workspace-write-guard-is-busy-或-unknown)） | 不是残留，下面的步骤不适用 |
+| 被占 | 有进程正持有。等它结束，或者去结束它 | Agent 那边说这个会话已经结束的，是孤儿 `mcp-serve`，看下面"孤儿 `mcp-serve` 占着锁" |
 | 故意留着 | 上一个会话有东西停不掉 | 下面"有 `abandoned` 这一行" |
 | 说不清：标记说……占着，但没有进程持锁 | 异常退出留下的 | 下面"没有第二行" |
 | 说不清：标记内容不完整 / 读不了 | 标记损坏，或执行账号读不了自己的目录 | 按"没有第二行"的顺序处理；读不了的先查目录属主和权限 |
 
 这一行只是看，不清理任何东西；下面的恢复仍然要人按顺序做。
 
-Runtime 的 `write-guards/` 里那个 marker 长这样（P43 起多了 pid）：
+#### 孤儿 `mcp-serve` 占着锁
+
+Agent 那边的会话早结束了，Runtime 上它的 `mcp-serve` 还活着（典型是 Runtime 笔记本睡眠时连接成了半开）。它空闲时每 30 秒 ping 一次，一般半分钟内自己就退了。没退的话：
+
+**别直接 kill `mcp-serve`**，那会留下 `held` 标记，还得再删 marker。结束它背后那个 sshd 会话，`mcp-serve` 读到 EOF 会正常收尾、锁变 `released`，不用动 marker：
+
+```bash
+ps -o pid,ppid,lstart,command -p <mcp-serve 的 pid>   # PPID 那列是 sshd-session
+kill <那个 sshd-session 的 pid>
+```
+
+动手前先确认 Agent Node 上那个会话确实结束了（会话目录里有 `exit` 文件，没有对应的 `ccnm internal supervise` 进程）。
+
+#### 标记文件长什么样
+
+Runtime 的 `write-guards/` 里那个 marker 长这样：
 
 ```text
 held <session> <workspace> pid <pid>
@@ -479,9 +427,9 @@ held bridge-abandoned demo pid 25669
 abandoned 1 command(s) (r-e69acf4e804643a2)
 ```
 
-**有 `abandoned` 这一行 = 不是异常退出。**上一个会话结束时有命令停不掉（macOS 上离开了进程组、又攥着管道那种，ccnm 的信号够不着它；Linux 上 P84 起这种会被收掉，杀不掉的才会留在这里，marker 里写着它的 pid），ccnm 明知有东西可能还在改这棵树，**故意**没把写权交出去。所以**先去收那些命令，别急着删 marker**——删了就是放第二个写者进同一棵树，那正是这把锁存在的理由。每条命令的命令行在 `${XDG_STATE_HOME:-~/.local/state}/ccnm/sessions/<session>/output/<ref>/status` 里；进程要按它自己留下的进程组找，`ccnm status` 看不到它们。`ccnm status` 这时会说"故意留着的"，不是"异常退出留下的"。
+**有 `abandoned` 这一行 = 不是异常退出。**上一个会话结束时有命令停不掉（macOS 上离开了进程组、又攥着管道那种，ccnm 的信号够不着它；Linux 上这种会被收掉，杀不掉的才留在这里，写成 `abandoned 1 process(es) that left their process group (pid 4321 (sleep 120))` 这样），ccnm 明知有东西可能还在改这棵树，**故意**没把写权交出去。所以**先去收那些命令，别急着删 marker**——删了就是放第二个写者进同一棵树，那正是这把锁存在的理由。每条命令的命令行在 `${XDG_STATE_HOME:-~/.local/state}/ccnm/sessions/<session>/output/<ref>/status` 里；进程要按它自己留下的进程组找，`ccnm status` 看不到它们。`ccnm status` 这时会说"故意留着的"，不是"异常退出留下的"。
 
-第二行也可能是 `abandoned MCP server <名字> (process group <组号>: <pid>, ... still running after SIGKILL)`，或 `... could not be checked: ...`（P52 起）：`call_mcp_tool` 转接的 server 关掉后，它进程组里还有 SIGKILL 也杀不掉的进程（setuid 程序、卡在内核里的），或者 ccnm 跑不了 `/bin/ps` 没法确认。用 `ps -A -o pid,pgid,stat,command` 按组号找，那几个 pid 都结束了再往下删 marker。一直是"查不了"的，先看这台机器有没有 `ps`（精简 Linux 镜像要装 procps）。
+第二行也可能是 `abandoned MCP server <名字> (process group <组号>: <pid>, ... still running after SIGKILL)`，或 `... could not be checked: ...`：`call_mcp_tool` 转接的 server 关掉后，它进程组里还有 SIGKILL 也杀不掉的进程（setuid 程序、卡在内核里的），或者 ccnm 跑不了 `/bin/ps` 没法确认。用 `ps -A -o pid,pgid,stat,command` 按组号找，那几个 pid 都结束了再往下删 marker。一直是"查不了"的，先看这台机器有没有 `ps`（精简 Linux 镜像要装 procps）。
 
 **没有第二行 = 异常退出留下的**，状态是 unknown。**ccnm 不会因为时间过去就自动接管**——它证明不了旧的执行者已经结束。marker 里的 pid 只帮你少找一步：拒绝信息会告诉你那个 pid 现在是什么（还在跑，连命令行一起给你；已经不在；或者被别的程序复用了）。**pid 没了不等于可以接管**——它起的命令可能还活着，而这里看不见它们。
 
@@ -499,27 +447,6 @@ abandoned 1 command(s) (r-e69acf4e804643a2)
 
 这是设计的边界，不是 bug：ccnm 不往工作树里放状态，也不占用系统级的固定路径。避开它只有一条：**同一台机器上服务同一棵树的所有 ccnm 进程，用同一个 `XDG_STATE_HOME`**。两个不同的系统用户各自跑 ccnm 服务同一棵树也是这个问题（各自的 home 就是各自的 state），那种情况下这把锁保护不了你，得靠别的办法（比如干脆不让第二个账号写那棵树）。
 
-### 会话在 initialize 就断，报 "connection closed: initialize response"
-
-先看 Runtime 执行身份的 home 路径上**有没有一层是符号链接**。macOS 的 `/tmp` 和 `/var` 都是，所以任何把 Runtime home 放在系统临时目录下的做法都会踩到：
-
-```text
-ccnm: handshaking with MCP server failed: connection closed: initialize response
-```
-
-真正的原因在 mcp-serve 的 stderr 里：
-
-```text
-CCNM_E_POLICY: … No Claude credential: known credential accessibility is unknown
-Runtime initialization is also refused: this identity can reach a known Agent login.
-To accept that for one workspace -- every command the model runs could then read it --
-set allow_unisolated_credentials = true on it in config.toml.
-```
-
-这只会出现在写了 `runtime_user` 的专用账号模式下（P78 起，没写 `runtime_user` 的共用账号里这一行只是"注意"，不拦）。凭据检查见到祖先目录是 symlink 就判 **unknown**，而 unknown 跟"能读到"走同一条路：`allow_unconfined_exec` 救不了它（那个开关只接受 confinement 风险），要么修路径，要么用 `allow_unisolated_credentials` 明确接受"说不清"。这是刻意的——够不到和"看不清能不能够到"不是一回事，后者得有人签字。
-
-**这种情况下先别急着开开关**，多半只是路径写歪了：用真实路径（`/private/tmp/...` 而不是 `/tmp/...`）就好了。macOS 的 `/tmp` 和 `/var` 都是符号链接，把 Runtime 执行身份的 home 放在系统临时目录下就会撞到这个。
-
 ### controller 不响应
 
 ```bash
@@ -527,11 +454,11 @@ ccnm controller status      # 在监听吗？是怎么跑起来的？
 ccnm controller install     # 重装并重启；已有会话不受影响
 ```
 
-**Linux 上**它是 systemd 用户服务 `dev.ccnm.controller.service`：`systemctl --user status dev.ccnm.controller.service` 看状态，日志在 `~/.local/state/ccnm/controller.log`（和 macOS 同一个文件）。`controller install` 就是重写单元文件再 `systemctl --user restart`；单元里写了 `KillMode=process`，重启只换 Controller 本身，它起的 tmux 和会话照常跑。`status` 那一行写 `systemd user service` 才是被 systemd 管着的；写 `started by hand` 说明它是手工起的，退出登录、重启机器都不会自己回来。linger 关着时 `status` 会提示，原因与开法见[快速开始](getting-started.md#3-初始化-agent-node)。
+**Linux 上**它是 systemd 用户服务 `dev.ccnm.controller.service`：`systemctl --user status dev.ccnm.controller.service` 看状态，日志在 `~/.local/state/ccnm/controller.log`（和 macOS 同一个文件）。`controller install` 就是重写单元文件再 `systemctl --user restart`；单元里写了 `KillMode=process`，重启只换 Controller 本身，它起的 tmux 和会话照常跑。`status` 那一行写 `systemd user service` 才是被 systemd 管着的；写 `started by hand` 说明它是手工起的，退出登录、重启机器都不会自己回来。linger 关着时 `status` 会提示，原因与开法见[快速开始](getting-started.md#4-初始化跑-ai-的机器)。
 
-**macOS 上**，`managername` 必须是 `Aqua`。如果是 `Background`，说明它不在图形登录会话里，那样它启动的 Agent 读不到 Keychain，会以认证失败告终——`ccnm run` 会在创建会话前就拒绝，报 `CCNM_E_NOT_READY`。
+**macOS 上**，`managername` 必须是 `Aqua`。是 `Background` 时见[排错手册](troubleshooting.md#doctor-的-controller-行失败写着-backgroundmacos)；`ccnm run` 会在创建会话前就拒绝，报 `CCNM_E_NOT_READY`。
 
-**配置或状态目录不在默认位置时**（用了 `--config` / `CCNM_CONFIG`、`XDG_CONFIG_HOME` 或 `XDG_STATE_HOME`），先 `ccnm controller install --dry-run` 看一眼：P66 起这几个变量会写进 plist，安装计划里每个一行 `with 变量=值`，`--config` 给的相对路径会换成绝对路径（launchd 在 `/` 下启动 Controller）。更早的构建不写，Controller 读默认配置、在默认目录监听，install 在另一个 socket 上等满 10 秒报 `nothing is listening`——看着像 Controller 起不来，其实它在别处听着（P62 实测）；那种构建只能手工往 plist 的 `EnvironmentVariables` 里补。
+**配置或状态目录不在默认位置时**（用了 `--config` / `CCNM_CONFIG`、`XDG_CONFIG_HOME` 或 `XDG_STATE_HOME`），先 `ccnm controller install --dry-run` 看一眼：这几个变量会写进 plist，安装计划里每个一行 `with 变量=值`，`--config` 给的相对路径会换成绝对路径（launchd 在 `/` 下启动 Controller）。
 
 一个账号只有一个 Controller：Label 固定是 `dev.ccnm.controller`，换个位置再装一次就把原来那个换掉。要在同一个账号上和日用的并存跑另一份，只能手工另写一个 Label 的 plist，收尾也得手工——`ccnm controller uninstall` 只认固定的那个。
 

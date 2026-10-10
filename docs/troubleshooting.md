@@ -1,44 +1,38 @@
 # 出错了怎么办
 
-## 会话已经结束，工作区却仍有后台写入
+每一条都是真撞过的：先写**你看到的现象**，再写它其实是什么、怎么办。按现象找，不用按功能找；报错码 `CCNM_E_*` 两种语言下都一样，拿它搜这一页总搜得到。
 
-先停止向该工作区派发新的写任务。不能凭 `stop` 成功或 leader pid 消失推断所有后代已停。
-
-Runtime MCP 转接（`call_mcp_tool`）的 server 自 P52 起：关闭时它进程组里剩下的进程被杀掉并确认，清不掉写锁就留 `held` 加 `abandoned` 一行，按[写入 guard 残留](operations.md#写入-guard-残留)处理。仍会漏的是 server 派生的、离开了进程组的后代（`setsid`、守护进程）。2026-09-23 复现的缺陷——server 正常退出，同组子进程接着写，写锁却 `released`——就是 P52 修的那一种（[审计 C51-01](research/2026-09-23-lifecycle-and-docs-audit.md)、[P52 记录](research/2026-09-25-p52-relay-group-cleanup.md)）。
-
-遇到这种 server、又要求可靠交权的环境，先在 Runtime 配置里用 `[runtime_mcp] hidden` 藏掉它（或 `enabled = false` 整个停用），结束旧会话，并由实际执行身份核实和清理本次创建的进程。不要删除 guard 来强行恢复，不要按模糊名字批量 kill。
-
-## 其他常见现象
-
-每一条都是真撞过的：先写**你看到的现象**，再写它其实是什么、怎么办。
-按现象找，不用按功能找。
+## 按现象查
 
 ### doctor 的表怎么读
 
-**这页里的 `ccnm doctor` 样本是英文那版**（`ccnm doctor <workspace> --lang en`）。ccnm 默认说中文，所以你屏幕上的行名跟这里贴的不一样。排查时最省事的办法是加 `--lang en` 跑一遍，跟这里逐行对上；要按中文找，常见的几行是这个对应关系：
+**行名、状态词和最后一行结论随语言变（默认中文），每行状态后面的说明一律是英文。** 本页大部分样本用中文行名；要和英文资料对上，加 `--lang en` 再跑一遍。行名对照：
 
 | 中文 | 英文 | 中文 | 英文 |
 |---|---|---|---|
 | 配置文件 | Config | Runtime 执行身份 | Runtime user |
-| workspace 配置 | Workspace config | Claude 凭据 | No Claude credential |
-| workspace 根目录 | Workspace root | Runtime 安全 | Runtime safety |
-| 远端 MCP 握手 | Remote MCP handshake | admin 组 | Not an admin |
-| 连 Agent 的 SSH | Agent SSH | SSH 私钥 | No SSH keys |
-| 终端会话 | Terminal session | 命令审批 | Command approval |
-| Runtime 上的项目 | Runtime workspace | sudo 权限 | No sudo |
-| 以你身份生效的文件 | Files that act as you | | |
+| workspace 列表 | Workspaces | root 身份 | Runs as root |
+| workspace 配置 | Workspace config | sudo 权限 | No sudo |
+| workspace 根目录 | Workspace root | admin 组 | Not an admin |
+| Runtime 上的项目 | Runtime workspace | SSH 私钥 | No SSH keys |
+| 项目指令 | Project instructions | Claude 凭据 | No Claude credential |
+| Runtime 的 ccnm | Runtime ccnm | Docker socket | No Docker socket |
+| Agent 的 ccnm | Agent ccnm | Anthropic 出口 | Anthropic egress |
+| 连 Agent 的 SSH | Agent SSH | Runtime 安全 | Runtime safety |
+| 选哪个 Agent | Agent selection | 命令审批 | Command approval |
+| 反向 SSH | Reverse SSH | 网络隔离 | Network isolation |
+| 远端 MCP 握手 | Remote MCP handshake | 本机工具策略 | Native tool policy |
+| 终端会话 | Terminal session | 以你身份生效的文件 | Files that act as you |
 
-英文那几个 `No …` / `Not …` 开头的名字，中文用的是中性名词（`SSH 私钥` 而不是 `没有 SSH 私钥`）。原因是英文那种否定式当表头读得通，中文读起来却像一句陈述——`不在 admin 组｜注意｜this account is in admin` 会让人读到跟事实相反的结论。所以名字只说查了什么，结果全看状态那一列。
+`Controller`、`exec_command`、`Claude Code`、`Codex CLI`、`Claude authentication`、`Codex authentication` 这几行两种语言下同名。`No …`/`Not …` 这类英文名，中文用的是中性名词（`SSH 私钥`，不是"没有 SSH 私钥"），查得怎么样只看状态那一列。
 
 状态词：`正常`=OK、`注意`=WARN、`不查`=NOTE、`没查`=SKIP、`失败`=FAIL。结论行 `可以用了`=READY、`还不能用`=NOT READY。
 
-**`不查` 和 `没查` 差一个字，意思不一样。** `不查` 是 doctor 在这种配置下本来就不查的行：网络隔离（ccnm 管不着，要你自己在 Runtime 上配）、本机工具策略（只有真开着的会话才说得清）、没有 Agent 的 workspace 里那些 Agent 行、你看不进执行账号家目录时的 `Runtime 上的项目`（同一张表的 `workspace 根目录` 会由执行账号回答）。不管两台机器状态如何它都是这个结果，所以**不挡结论**，结论行会写"可以用了（N 项不查……）"。`没查` 是该查、这次没查成：对面没回答、对面构建太旧没报、前面一步失败了。这时结论是"还不能用"、退出码 3，按那一行的说明处理。v0.11.1 及之前没有 `不查`，这些行都写 `没查`，所以任何配置 0 项失败也是"还不能用"（P73 改的）。
+**`不查` 和 `没查` 差一个字，意思不一样。** `不查` 是 doctor 在这种配置下本来就不查的行：网络隔离（ccnm 管不着，要你自己在 Runtime 上配）、本机工具策略（只有真开着的会话才说得清）、没有 Agent 的 workspace 里那些 Agent 行、你看不进执行账号家目录时的 `Runtime 上的项目`（同一张表的 `workspace 根目录` 会由执行账号回答）。不管两台机器状态如何它都是这个结果，所以**不挡结论**，结论行会写"可以用了（N 项不查……）"。`没查` 是该查、这次没查成：对面没回答、对面构建太旧没报、前面一步失败了。这时结论是"还不能用"、退出码 3，按那一行的说明处理。
 
-**没有 Agent、只给外部 MCP 用的 workspace**，`Runtime 安全` 和 `exec_command` 两行是 `不查`（P83 起；v0.13.0 及之前是 `没查`，结论永远是"还不能用（0 项失败，2 项没查）"）。这两行的结论属于替 AI 跑命令的执行账号，不属于敲 doctor 的人；没有 Agent 也就没有探测把它带回来。它不是没人管：外部客户端经 `ccnm mcp bridge` 连上来时，服务端以执行账号自己核对，不过就以 `CCNM_E_POLICY` 拒绝并写明原因。
+**没有 Agent、只给外部 MCP 用的 workspace**，`Runtime 安全` 和 `exec_command` 两行是 `不查`。这两行的结论属于替 AI 跑命令的执行账号，不属于敲 doctor 的人；没有 Agent 也就没有探测把它带回来。它不是没人管：外部客户端经 `ccnm mcp bridge` 连上来时，服务端以执行账号自己核对，不过就以 `CCNM_E_POLICY` 拒绝并写明原因。
 
-**`注意` 不挡结论。** 最常见的几行：`Runtime 执行身份`、`admin 组`、`SSH 私钥`、`Claude 凭据` 是"注意"，说明 Runtime 没写 `runtime_user`，按默认的共用账号跑（P78 起），这几行在告诉你模型跑的命令够得到什么；`命令审批` 是"注意"，说明开了 `allow_unattended_exec`。专用账号下 `以你身份生效的文件` 是"注意"，说明项目里有你打开就以你身份生效的配置，列出来让你打开前先看（[运维手册](operations.md#专用账号写进项目的配置你打开时按你的身份生效)）。都是提醒，不是没配好。**v0.12.0 及之前的 Runtime** 没写 `runtime_user` 时，`Runtime 执行身份` 是"失败"、`exec_command` 被拒——升级 Runtime，或者按[生产安全](production-safety.md#要不要建专用账号)建专用账号、写上 `runtime_user`。
-
-**错误码不跟着变。** `CCNM_E_*` 两种语言下都一样，所以拿错误码搜这一页永远搜得到。
+**`注意` 不挡结论。** 最常见的几行：`Runtime 执行身份`、`admin 组`、`SSH 私钥`、`Claude 凭据` 是"注意"，说明 Runtime 没写 `runtime_user`，按默认的共用账号跑，这几行在告诉你模型跑的命令够得到什么；`命令审批` 是"注意"，说明开了 `allow_unattended_exec`。专用账号下 `以你身份生效的文件` 是"注意"，说明项目里有你打开就以你身份生效的配置，列出来让你打开前先看（[运维手册](operations.md#专用账号写进项目的配置你打开时按你的身份生效)）。都是提醒，不是没配好。
 
 ### `TOOLS DOWN` —— 会话看着在跑，模型却什么都够不着
 
@@ -61,6 +55,8 @@ Claude 不会自己重连。
 `ccnm status <ws>` 和 `ccnm doctor <ws>` 都会明说这个状态——**看着正常的会话是不会显示
 这行的**，所以看到了就是真断了。
 
+**Codex 会话**显示的是 `TOOLS DOWN (exit Codex and use official resume with its exact session ID on the Agent Node)`。Codex 里没有 `/mcp` 重连。最简单的做法是 `ccnm stop <项目>` 再 `ccnm <项目>` 开一个新会话，代价是对话上下文不带过来。要接回原对话，必须用 ccnm 那个 Codex 目录（`CODEX_HOME=~/.config/ccnm/agents/codex`）和 ccnm 起会话时的那套参数；直接敲 `codex resume <id>` 用的是你日常的 `~/.codex`，没有 ccnm 的工具，Codex 自带的 shell 还开着，命令会跑在 AI 那台上，别这么做。
+
 ### `ccnm run` 报 `CCNM_E_POLICY`，第二行却是 `MCP initialize failed over …`
 
 ```text
@@ -72,7 +68,7 @@ workspace write guard is busy; another session still owns this working tree
 
 **Runtime 连得上，是这个 workspace 的写锁被别的会话占着**（退出码 33）。起会话前，Agent Node 上的 ccnm 先经 ssh 跟 Runtime 做一次 MCP 握手预检；Runtime 在握手之前拒绝，第一行就是它给的理由。`MCP initialize failed over …` 那一行不是另一个错误，只是说明这个拒绝从哪条链路带回来的，看着像网络问题，其实不是。按 [MCP 初始化报 busy 或 unknown](#mcp-初始化报-workspace-write-guard-is-busy-或-unknown) 处理：看 Runtime 上 `write-guards/` 里是谁占着，见[写入 guard 残留](operations.md#写入-guard-残留)。`ccnm doctor` 的 `Remote MCP handshake` 行和 `ccnm mcp probe` 走的是同一次握手，报法一样。
 
-**旧版本的第一行是 `CCNM_E_RUNTIME_UNREACHABLE`（退出码 21），原因相同。** 已发布的 0.7.0 及更早版本把握手时 Runtime 的拒绝一律报成"连不上 Runtime"，真正的码只在 `stderr:` 后面（P24 真机撞到，P25 修）。预检在 Agent Node 上跑，所以看的是**Agent Node 上** ccnm 的版本；脚本按退出码判断时，那边还是旧版就得先看 `stderr:` 后面第一行。真连不上（ssh 超时、拒绝连接、认证失败）新旧版本都还是 `CCNM_E_RUNTIME_UNREACHABLE`。
+真连不上（ssh 超时、拒绝连接、认证失败）报的是 `CCNM_E_RUNTIME_UNREACHABLE`（退出码 21）。
 
 ### 升级后 `ccnm` 报 `unknown field `codex_exec_server``
 
@@ -80,19 +76,19 @@ workspace write guard is busy; another session still owns this working tree
 CCNM_E_CONFIG: …: unknown field `codex_exec_server`, expected one of …
 ```
 
-**配置里还写着已经删掉的开关。**封存的 Codex 原生执行链在 P86（2026-10-08）连同 `codex_exec_server` 一起删了，写着它的配置（哪怕是 `false`）不再能解析。在报错的那份 config.toml 里删掉这一行即可，Codex 会话照常走 MCP 七工具（[配置说明](configuration.md#codex_exec_server已删除)）。
+**配置里还写着 v0.14.0 删掉的开关。** 它管的是一条早就封存的 Codex 执行方式，v0.14.0 连同开关一起删了，写着它的配置（哪怕是 `false`）不再能解析。在报错的那份 `config.toml` 里删掉这一行即可，Codex 会话不受影响。
 
 ### 工具报 `failed to deserialize parameters: unknown field ...`
 
-**症状**：`exec_command`、`apply_patch` 或 `stop_command` 回一个 `isError`，说某个字段它不认识，后面跟着它认识的那些名字。
+**症状**：`exec_command`、`apply_patch`、`stop_command` 或 `call_mcp_tool` 回一个 `isError`，说某个字段它不认识，后面跟着它认识的那些名字。
 
-**其实是**：这三个工具（连同 `files[]` 里每一项）**不接受它们没声明的字段**，而且拒绝发生在命令跑起来、补丁落盘之前。P44 起如此，之前是静默丢掉——那更糟：调用方以为自己传了 `sandbox: false` 之类的开关，其实那个字段根本没人看，命令照着它没同意的条件跑完了。
+**其实是**：这几个会改东西的工具（连同 `files[]` 里每一项）**不接受它们没声明的字段**，拒绝发生在命令跑起来、补丁落盘之前。悄悄丢掉更糟：调用方会以为自己传的开关生效了。
 
 **修**：照它列出的名字改。每个工具真正收什么，`tools/list` 里的 `inputSchema` 就是权威，规则见[协议第 5.6 节](protocol/remote-workspace-mcp-v1.md#56-参数怎么验有副作用的拒绝只读的说一声p44-新增)。
 
 **只读工具不一样**：`read_file` 这些照常回答，只在结果末尾加一行 `[ignored, this tool has no such argument: …]`。看到那一行说明你以为生效的参数其实没生效，答案是按**没有它**算出来的。
 
-**顺带**：`timeout_ms`、`preview_bytes` 超过上限现在是**拒绝**（以前悄悄钳到上限，调用方以为自己要到了 27 小时）。命令要跑更久就 `run_in_background`，它没有期限。`read_output` 的 `wait_ms` 超界仍然钳，但结果里会说钳了多少。
+**顺带**：`timeout_ms`、`preview_bytes` 超过上限是**拒绝**，不会自动截到上限。命令要跑更久就 `run_in_background`，它没有期限。`read_output` 的 `wait_ms` 超界仍然钳，但结果里会说钳了多少。
 
 ### 开了 `exec_sandbox` 之后命令报 `Operation not permitted`、`git commit` 失败、`cargo build` 下不了依赖
 
@@ -112,12 +108,17 @@ CCNM_E_CONFIG: …: unknown field `codex_exec_server`, expected one of …
 
 ```text
 CCNM_E_INTERNAL: systemctl --user daemon-reload failed (exit Some(1)): Failed to connect to bus: No medium found
-this account has no systemd user manager running: log in to it over ssh (not `su` or `sudo -u`), or keep one running with: sudo loginctl enable-linger $(id -un)
+this shell cannot reach the account's systemd user manager
+if one is running (linger on, or the account is logged in elsewhere), a `su` or `sudo -u` shell only lacks its address: export XDG_RUNTIME_DIR=/run/user/$(id -u) and run this again
+if none is running: log in to this account over ssh, or keep one running with: sudo loginctl enable-linger $(id -un)
 ```
 
-**原因**：Linux 上 Controller 是 systemd 用户服务，`systemctl --user` 要跟这个账号自己的 systemd 实例说话。这个实例是账号**登录**时才起来的；用 `su - 账号` 或 `sudo -u 账号` 切过来不算登录，没有它。
+**怎么办**，分两种：
 
-**怎么办**：直接 `ssh 账号@机器` 登录进来再装；或者开 linger（`sudo loginctl enable-linger <账号>`），实例就一直在。v0.11.2 及之前的构建在 Linux 上根本装不了，会打算往 `~/Library/LaunchAgents` 写 plist、调 `/bin/launchctl`——那是 P74 之前 Linux 当 Agent 没实现的表现。
+- **开了 linger，或这个账号在别处登录着**（用户实例在跑）：`su` / `sudo -u` 进来的 shell 只是缺了它的地址，`export XDG_RUNTIME_DIR=/run/user/$(id -u)` 之后再跑一次。
+- **用户实例没在跑**：直接 `ssh 账号@机器` 登录进来再装；或者开 linger（`sudo loginctl enable-linger <账号>`），实例就一直在。
+
+**原因**：Linux 上 Controller 是 systemd 用户服务，`systemctl --user` 要跟这个账号自己的 systemd 实例说话。这个实例要账号登录过（或开了 linger）才在；`su` 切过来的 shell 不算登录，也不带它的地址。
 
 ### Linux 上退出登录之后，Controller 和会话都没了
 
@@ -127,7 +128,7 @@ this account has no systemd user manager running: log in to it over ssh (not `su
 
 ### 登录 Codex 报 `device code request failed with status 403 Forbidden`，或会话里模型一直连不上
 
-**原因**：跑 AI 的这台机器出口所在的地区，OpenAI 不提供服务（Anthropic 也一样）。2026-10-07 在 hpsrv（出口在中国大陆）上撞到：登录接口回 `{"error":{"code":"unsupported_country_region_territory",...}}`，`api.openai.com` 和 `chatgpt.com` 直接连不上。这不是 ccnm 的问题，但跑 AI 的机器必须能访问 AI 服务，模型的每一次调用都是从这台机器发出去的。
+**原因**：跑 AI 的这台机器出口所在的地区，OpenAI 不提供服务（Anthropic 也一样）。2026-10-07 在一台出口在中国大陆的 Linux 机器上撞到：登录接口回 `{"error":{"code":"unsupported_country_region_territory",...}}`，`api.openai.com` 和 `chatgpt.com` 直接连不上。这不是 ccnm 的问题，但跑 AI 的机器必须能访问 AI 服务，模型的每一次调用都是从这台机器发出去的。
 
 **先确认是不是这个**（不带任何凭据，只看回什么）：
 
@@ -139,7 +140,7 @@ curl -sS -m 15 -o /dev/null -w "%{http_code}\n" https://api.openai.com/v1/models
 
 **怎么办**：给这台机器配一个能出去的代理，登录和 Controller 都要用上。
 
-- 登录时在命令前加上代理：`HTTPS_PROXY=http://<代理> CODEX_HOME=~/.config/ccnm/agents/codex codex login --device-auth`。
+- 登录时在命令前加上代理：`HTTPS_PROXY=http://<代理> CODEX_HOME=~/.config/ccnm/agents/codex codex login --device-auth`（`codex` 要是 0.154.0 那份，见[快速开始：用 Codex](getting-started.md#7-用-codex)）。
 - **Linux 上让 Controller 带上代理**：ccnm 不会去掉 `HTTPS_PROXY` 这类变量，Controller 的环境里有，它起的 Codex 就有。临时的做法（实测过）：`systemctl --user set-environment HTTPS_PROXY=http://<代理> NO_PROXY=127.0.0.1,localhost`，再 `ccnm controller install` 重启一次；用户实例重启后就没了。要长期生效，按 systemd 的常规做法写一个附加配置 `~/.config/systemd/user/dev.ccnm.controller.service.d/proxy.conf`（`[Service]` 下写 `Environment="HTTPS_PROXY=..."`），`controller install` 只重写主单元文件、不碰这个目录——这种写法这次没实测。
 - macOS 上通常用系统级代理，Controller 不用另配。
 
@@ -161,18 +162,18 @@ curl -sS -m 15 -o /dev/null -w "%{http_code}\n" https://api.openai.com/v1/models
 ccnm 自己调对面时一直是全路径（`nodes.<x>.ccnm_bin`，默认 `~/.local/bin/ccnm`），所以
 `ccnm doctor` 能通而你手敲的那条不通，是正常的，不是配置坏了。
 
-### 在Agent Node上 `ccnm <ws>` 报 `/xxx/ccnm not found on <home> (the login shell exited 127)`
+### 在 Agent Node 上 `ccnm <ws>` 报 `/xxx/ccnm not found on <home> (the login shell exited 127)`
 
-Runtime Node的 ccnm 不在 `~/.local/bin/ccnm`，而Agent Node这份 config 没说它在哪。补一行：
+Runtime Node 的 ccnm 不在 `~/.local/bin/ccnm`，而 Agent Node 这份配置没说它在哪。最省事的是把它挪到 `~/.local/bin/ccnm`；不想挪就在 Agent Node 的配置里补一行：
 
 ```toml
 [nodes.runtime]
-ssh = "xdwmbp"
-ccnm_bin = "/opt/homebrew/bin/ccnm"     # Runtime Node上的实际路径
+ssh = "runtime-ssh-alias"
+ccnm_bin = "/opt/homebrew/bin/ccnm"     # Runtime Node 上的实际路径
 ```
 
 `ccnm init --runtime <alias>` 只写别名，因为绝大多数情况默认路径就是对的。**报错里的那个路径
-就是它试过的那个**——如果它跟你在Runtime Node上 `which ccnm` 的结果不一样，那这行就是要补的。
+就是它试过的那个**——如果它跟你在 Runtime Node 上 `which ccnm` 的结果不一样，那这行就是要补的。
 
 ### `zsh: permission denied: ccnm`
 
@@ -187,47 +188,44 @@ ssh other 'chmod +x ~/.local/bin/ccnm'
 ccnm 自己撞上这个会直接说出来：
 
 ```text
-Work SSH   FAIL   CCNM_E_VERSION: ~/.local/bin/ccnm on work is there but not executable (exit 126)
-                  ssh work 'chmod +x ~/.local/bin/ccnm'
-                  this is what copying it over with `scp` and no -p leaves behind
+CCNM_E_VERSION: ~/.local/bin/ccnm on work is there but not executable (exit 126)
+ssh work 'chmod +x ~/.local/bin/ccnm'
+this is what copying it over with `scp` and no -p leaves behind
 ```
 
 ### `message is not valid for protocol 1; ccnm versions probably differ`
 
-如果你看到的是这句、而两台机器的 `ccnm --version` 明明一样——那不是版本问题。
+**怎么办**：两台装同一个 release（或者同一个提交编出来的两份），然后到**新的那台**上跑 doctor：旧构建的 doctor 看不出差别，见下一节。
 
-**背景**：有的 SSH 传输不传递远程命令的退出码。实测 Tailscale SSH（tailscaled 1.102.2，
+**两台 `ccnm --version` 明明一样也会这样**，原因有两种。一是号一样、构建不一样：两次发版之间从 main 编出来的构建都叫上一个发布的号，内部协议却可能不同，doctor 会直接说，见下一节。二是 SSH 链路不传退出码。
+
+**SSH 不传退出码**：有的 SSH 传输不传递远程命令的退出码。实测 Tailscale SSH（tailscaled 1.102.2，
 `RunSSH = true`）：`ssh work 'exit 3'` 返回 **0**，`ssh work false` 也返回 **0**，
 换成 OpenSSH 服务的机器返回 3 和 1。ccnm 靠退出码分辨"命令没找到 / 不可执行 / 远程拒绝"，
 在这种链路上全部退化成"成功但没输出"，于是报成版本不一致。
 
-**现在不会了**：stdout 为空时 ccnm 改看 stderr，shell 的抱怨和远程 ccnm 自己的
-`CCNM_E_*` 都能认出来。要是你还看到这句，那才是真的版本对不上——
-**不要只比 `--version`**：P62 实测，未发版的构建和已装的旧构建都报 `0.9.0`，
-当时的 doctor 0 失败，起会话才撞上这句（内部协议不同）。P64 起 doctor 会直接说，
-见下一节。
+现在 stdout 为空时 ccnm 改看 stderr，shell 的抱怨和远程 ccnm 自己的 `CCNM_E_*` 都能认出来，
+所以这种链路一般不会再被误报成版本不一致；还看到这句，就按上面装同一个构建。
 
 顺带：这个特性也意味着**你自己在命令行上 `ssh work '任何会失败的命令'` 都会得到 `$? = 0`**，
 调试的时候别信那个退出码。
 
-### doctor 报 `reports ccnm 0.9.0 like this machine, but it is not the same build`
+### doctor 报 `reports ccnm <版本> like this machine, but it is not the same build`
 
-**症状**：两台机器 `ccnm --version` 一样，doctor 的 `Agent 的 ccnm`（`Agent ccnm`）或 `反向 SSH`（`Reverse SSH`）那一行却失败：
+**症状**：两台机器 `ccnm --version` 一样，doctor 的 `Agent 的 ccnm` 或 `反向 SSH` 那一行却失败：
 
 ```text
-Agent 的 ccnm           失败   CCNM_E_VERSION: the Agent Node fodelf reports ccnm 0.9.0 like this machine, but it is not the same build: it does not say how far its internal protocols go, so it is older than this build; this machine speaks up to 10
+Agent 的 ccnm           失败   CCNM_E_VERSION: the Agent Node agent reports ccnm 0.14.0 like this machine, but it is not the same build: it speaks internal protocols up to 9; this machine speaks up to 10
                                install the same build on both
 ```
 
 起会话时 Agent 问 Runtime 的那次握手对不上，报的是同一个意思（`the Runtime Node reports ccnm … like this one, but it is not the same build`）。
 
-**原因**：版本号取自 Cargo.toml，两次发版之间从 main 编出来的每个构建都叫上一个发布的号。号一样，能说的内部协议（两台机器上的 ccnm 互相说话用的那套请求格式）可以不一样。P64（2026-09-30）起，每个构建在握手时多报一个数——它认得的内部协议最高号，两边版本号相同时再比这个数。`it does not say how far its internal protocols go` 说的是对方是 P64 之前的构建，根本没报；`it speaks internal protocols up to 6` 这种是报了，但和这边不是同一个数。
+**怎么办**：两台装同一个构建——同一个 release 的两个平台包，或者同一个提交编出来的两份。哪一边旧，看各自二进制的修改时间，或者拿 release 页上的 sha256 对本平台那一份（**两个平台的 sha256 本来就不同，别拿两台机器互相比**）。`反向 SSH` 那一行是经 Agent 转述的，先把 `Agent 的 ccnm` 那行修好。
 
-**怎么办**：两台装同一个构建——同一个 release 的两个平台包，或者同一个提交编出来的两份。哪一边旧，看各自二进制的修改时间，或者拿 release 页上的 sha256 对本平台那一份（**两个平台的 sha256 本来就不同，别拿两台机器互相比**）。
+**原因**：版本号取自 Cargo.toml，两次发版之间从 main 编出来的每个构建都叫上一个发布的号。号一样，两台 ccnm 互相说话用的那套请求格式（内部协议）可以不一样，所以握手时还会比各自认得的最高协议号。
 
-`反向 SSH` 那一行的结论是经 Agent 转述的：Agent 自己是别的构建时，P70 起它记成没比较，不再把 Runtime 判成旧的，先把 Agent 那行修好。
-
-**这一行只在新的那一端看得出来。** 旧构建的 doctor 只比版本号，它看新构建仍然是"同一个 0.9.0"；所以在旧的那台上跑 doctor 全绿不算数，到新的那台上再跑一次。
+**这一行只在新的那一端看得出来。** 旧构建的 doctor 只比版本号，所以在旧的那台上跑 doctor 全绿不算数，到新的那台上再跑一次。
 
 ### doctor 报 `the Agent Node refused this Agent before probing anything`
 
@@ -238,28 +236,15 @@ Agent 的 ccnm           失败   CCNM_E_VERSION: the Agent Node fodelf reports 
 反向 SSH                没查   not checked: the Agent Node refused the selected Agent
 ```
 
-**原因**：Agent Node 拒绝了这个 workspace 选的实例，什么都没往下探。冒号后面那句就是要修的东西，P62 真机上是 Agent 账号的 `~/.claude` 权限是 0755（要 0700）。
+**原因**：Agent Node 拒绝了这个 workspace 选的实例，什么都没往下探。冒号后面那句就是要修的东西，比如 Agent 账号的 `~/.claude` 权限是 0755（要 0700）。
 
 **怎么办**：照冒号后面那句修，修完再跑一次 doctor。
 
-P66 之前的构建把原因弄丢了，同一件事在两边说成两个不相干的错：Runtime Node 上只说 `Agent probe identity differs from the Runtime selection`，Agent Node 上反向 SSH 那一行说 `agent and project are both on <agent>`（把"没探"当成了"在同一台机器上"）。看到这两句，到 Agent Node 上跑一次 doctor，那边的 Controller 那几行带着真正的原因。
-
 ### doctor 只说 `Agent probe identity differs from the Runtime selection`，Agent 的版本行没出现
 
-**症状**：`Agent selection` 一行失败，码是 `CCNM_E_VERSION`，下面没有 `Agent ccnm` 那几行。
+**症状**：`选哪个 Agent` 一行失败，码是 `CCNM_E_VERSION`，下面没有 `Agent 的 ccnm` 那几行。
 
-**多半是两台的 ccnm 版本不一样**：对面是旧版本（比如 v0.9.0）时，它看不懂这次的请求，回来的报告没有身份，doctor 先比身份就停在这一行，版本那行根本没轮到（2026-10-04 真机，[F20](research/2026-10-04-p62-resume-release.md#7-新发现)）。
-
-**P69（2026-10-04）起已修**：身份对不上时先比版本，失败的是这一行，`Agent selection` 记成没比较：
-
-```text
-Agent 的 ccnm           失败   CCNM_E_VERSION: the Agent Node fodelf runs ccnm 0.9.0, this machine runs 0.10.1; install the same build on both
-选哪个 Agent            没查   not compared: the Agent Node runs another ccnm build, which may not have read the selection
-```
-
-修在跑 doctor 的这一端，对面是旧版本也照样看得出来。Agent 是旧构建、但身份对得上时（比如它读的配置节点名正好一样），表会接着往下走；P70 之前 `Reverse SSH` 一行这时会说 Runtime "reports ccnm … like this machine, but it is not the same build"——Runtime 其实没问题，是旧 Agent 转述 Runtime 的回答时丢了它不认识的字段（2026-10-04 真机，[F25](research/2026-10-04-p62-4-recheck.md#6-零额度复看与新发现)）。**P70（2026-10-07）起**这种情况记成没查：`build not compared: the Agent Node that relayed this runs another ccnm build …`；版本号本身不同仍是失败。先按 `Agent ccnm` 那行把 Agent 装成同一个构建，再看这一行。还看到 `identity differs`，要么跑 doctor 的这台还是 P69 之前的构建，要么两台确实是同一个构建、Agent 回答的是另一个实例——后一种按上一节去 Agent Node 上看原因。
-
-**怎么办**：两台装同一个版本（各跑一次 `ccnm --version` 核对）。
+**多半是两台的 ccnm 版本不一样**，对面看不懂这次的请求。**怎么办**：两台装同一个版本（各跑一次 `ccnm --version` 核对），然后在新的那台再跑 doctor。两台确实是同一个构建还这样，说明 Agent 回答的是另一个实例，按上一节去 Agent Node 上跑 doctor 看原因。
 
 ### 会话里工具全废，报 "xxx is not installed"、`workspace_info` 却一切正常
 
@@ -272,29 +257,34 @@ payload 里，之后改 config 也好、`mv` 目录也好，都动不了它。
 **修**：把 config 里的路径改对，然后
 
 ```bash
-ccnm workspace add xshun ~/新路径     # 或者手动改 root
-ccnm xshun                            # 它会自己发现老会话指向别处，结束它、开一个新的
+ccnm workspace add xshun ~/新路径 --replace   # 名字已经有了，不加 --replace 会报错
+ccnm xshun                                    # 它会自己发现老会话指向别处，结束它、开一个新的
 ```
 
 `ccnm run` 遇到"活着但 root 对不上"的会话会**直接换掉它**，并在输出里说明换掉了哪一个。
 
-### `Work controller ... Background`
-
-controller 不在登录会话里。两种可能：
+### doctor 的 `Controller` 行失败，写着 `Background`（macOS）
 
 ```text
-它是手工起的，不是 launchd 起的       → ssh work 'ccnm controller install'
-Agent Node屏幕前根本没人登录过            → 去那台机器上登录一次（之后锁屏无所谓）
+Controller              失败   CCNM_E_NOT_READY: … Background …
+                               it answers, but not from a login session, so Claude started there could not read its own credentials
+                               run on the Agent Node: ccnm controller install
 ```
 
-### `Claude authentication` 是 SKIP 不是 FAIL
+Controller 不在图形登录会话里，从它起的 Claude 读不到钥匙串里的登录。两种可能：
 
-没有 controller 的时候 ccnm **不会**去问 Claude 登录状态——从 ssh 会话问必然得到
-"没登录"，那是假的。所以它报 SKIP 并指向 `Work controller` 那一行。先把 controller 弄好。
+```text
+它是手工起的，不是 launchd 起的     → 在 Agent Node 上跑 ccnm controller install
+Agent Node 屏幕前根本没人登录过     → 去那台机器上登录一次（之后锁屏无所谓）
+```
+
+### `Claude authentication` 是"没查"不是"失败"
+
+Controller 不在登录会话里的时候，ccnm **不会**去问 Claude 登录状态：从那里问必然得到"没登录"，那是假的。所以它记"没查"，说明写着 `fix the Controller row first`。先按上一节把 Controller 弄好。
 
 ### `CCNM_E_DEPENDENCY: tmux is not installed`
 
-Agent Node没装 tmux。`brew install tmux`。或者用 `--print` 模式，那个不需要 tmux。
+Agent Node 没装 tmux：macOS 上 `brew install tmux`，Debian / Ubuntu 上 `sudo apt install tmux`。或者用 `--print` 模式，那个不需要 tmux。
 
 ### `Project instructions ... WARN`
 
@@ -388,11 +378,11 @@ exec_command            FAIL  refused until the runtime account is confined
 Remote MCP handshake    FAIL  CCNM_E_POLICY: MCP initialize failed over `…`: connection closed: initialize response
 ```
 
-**其实是**：跑项目命令的那个账号家里有 `~/.claude` / `~/.codex`，而 Runtime 配置里写了 `runtime_user`（专用账号模式），所以它在 `initialize` 之前就拒了。**`allow_unconfined_exec` 救不了**，那个开关只接受 confinement 风险。**v0.12.0 及之前**不写 `runtime_user` 也会这样（那时没写本身就算失败）；P78 之后的版本不写 `runtime_user` 就是共用账号，这一行只是"注意"，不拦。
+**其实是**：跑项目命令的那个账号家里有 `~/.claude` / `~/.codex`，而 Runtime 配置里写了 `runtime_user`（专用账号模式），所以它在 `initialize` 之前就拒了。**`allow_unconfined_exec` 救不了**，那个开关只管账号权限过大那一类。不写 `runtime_user`（共用账号）时这一行只是"注意"，不拦。
 
 **三条路，选一条：**
 
-1. **不需要隔离**：去掉 `runtime_user`（要 P78 之后的版本），按共用账号跑——和你在那台机器上直接用 Claude Code 一样，模型跑的命令读得到那份登录。代价见[生产安全：要不要建专用账号](production-safety.md#要不要建专用账号)。
+1. **不需要隔离**：去掉 `runtime_user`，按共用账号跑——和你在那台机器上直接用 Claude Code 一样，模型跑的命令读得到那份登录。代价见[生产安全：要不要建专用账号](production-safety.md#要不要建专用账号)。
 2. **要隔离**：让 Agent 的 SSH 落到一个家里没有 Agent 登录的专用低权限账号上（比如 `ccrun`），把项目目录按 ACL 授权给它。见[生产安全](production-safety.md)。代价是 Agent 建出来的文件属主是那个账号。
 3. **明确接受**：在 **Runtime 侧**那个 workspace 上写这一个开关：
 
@@ -400,17 +390,13 @@ Remote MCP handshake    FAIL  CCNM_E_POLICY: MCP initialize failed over `…`: c
    allow_unisolated_credentials = true
    ```
 
-   **先读一遍你接受了什么**：模型跑的每一条命令都能读到那份登录，而让它跑一条命令只需要一句 prompt——包括从它被要求读的文件里冒出来的那一句。第一次用它起会话时终端上会把这段讲一遍（只讲一次），`doctor` 里那几行会变成 WARN 并注明是接受的，**不会变 OK**。完整代价见[生产安全](production-safety.md#凭据隔离那一条怎么放开代价是什么)。
+   **先读一遍你接受了什么**：模型跑的每一条命令都能读到那份登录，而让它跑一条命令只需要一句 prompt——包括从它被要求读的文件里冒出来的那一句。`doctor` 里那几行会变成"注意"并注明是接受的，**不会变成"正常"**。完整代价见[生产安全](production-safety.md#凭据隔离那一条怎么放开代价是什么)。
 
-**只有想让模型跑命令时才加第二个开关。** `allow_unisolated_credentials` 让会话起得来；`exec_command` 还要求这个账号本身是受限的，那一条由 `allow_unconfined_exec` 单独接受：
+**要几个开关看会话类型**：只读的外部连接（`ccnm mcp bridge --mode read`）只写上面这一个就够，它根本没有 `exec_command` 可跑；要跑命令的会话（受管会话、`bridge --mode coding`）还要 `allow_unconfined_exec`，因为 `exec_command` 另外要求账号本身是受限的。为一条只读链去签"允许不受限执行命令"，是接受了比实际需要大得多的东西。
 
-```toml
-allow_unconfined_exec = true      # 只为 exec_command，跟上面那条无关
-```
+有两条写什么开关都放不开，见[生产安全](production-safety.md#凭据隔离那一条怎么放开代价是什么)。
 
-顺序别搞反：**先只写凭据那一条，看会话起不起得来。** 起得来就说明你不需要第二条——最典型的是 `ccnm mcp bridge --mode read`，它一共只有 `workspace_info` / `read_file` / `list_files` / `search_text` 四个工具，根本没有 `exec_command` 可跑。为了开一条只读链去签一个名字叫"允许不受限执行命令"的开关，是接受了比实际需要大得多的东西，而且它一个 finding 都不豁免，握手照样失败。
-
-**这两条放不开**，写什么开关都一样：执行身份未知（identity 探针答不出来），以及认证环境是继承来的（`ANTHROPIC_*` / `CLAUDE_*` 出现在 Runtime 的服务环境里）。后者的修法只是别 export 它。
+**报的是 `known credential accessibility is unknown`（说不清能不能读到）时，先看路径**：执行账号的家目录路径上只要有一层是符号链接，凭据检查就判"说不清"，和"能读到"一样被拒。macOS 的 `/tmp` 和 `/var` 都是符号链接，把执行账号的家放在它们下面就会撞到。用真实路径（`/private/tmp/...`）就好了，先别急着开开关。
 
 **看消息里列了哪几行。** 会话被拒时，错误里**只列真正挡住它的那几行**——通常就是 `No Claude credential` 一条。`ccnm doctor` 里同时红着的 `Not an admin`、`No SSH keys` 是真的，但它们拦的是 `exec_command`，不是这次握手；去修它们不会让握手过。
 
@@ -465,7 +451,7 @@ CCNM_E_INVALID_ARGS: skill "deploy" was not loaded: a command it runs as it load
   it exited 1: …
 ```
 
-**其实是**：SKILL.md 里有 `` !`命令` ``，命令不问人的会话里它在加载时于项目机器上执行（P79），有一条失败，整次加载就失败——原生 Claude Code 也是这样。后两行是哪一行、怎么失败的。常见原因：项目机器上没装那个命令（`gh`、`node`），命令要登录或联网，或者它假设自己在别的目录（`` !`命令` `` 在 workspace 根下跑），也可能是超过 120 秒被停掉。
+**其实是**：SKILL.md 里有 `` !`命令` ``，命令不问人的会话里它在加载时于项目机器上执行，有一条失败，整次加载就失败——原生 Claude Code 也是这样。后两行是哪一行、怎么失败的。常见原因：项目机器上没装那个命令（`gh`、`node`），命令要登录或联网，或者它假设自己在别的目录（`` !`命令` `` 在 workspace 根下跑），也可能是超过 120 秒被停掉。
 
 **怎么办**：以执行账号在项目机器的 workspace 根下跑一遍那条命令看报错；装上缺的东西，或者改 SKILL.md。要问人的会话里这些命令本来就不跑，模型只看到一份清单。
 
@@ -483,7 +469,7 @@ CCNM_E_INVALID_ARGS: skill "deploy" was not loaded: a command it runs as it load
 
 **这是故意的，不是没配对。** ccnm 给 `exec_command` 挂了一个 `_meta` 键 `anthropic/requiresUserInteraction`，Claude Code **在任何权限模式下都认它，`bypassPermissions` 也不例外**——这正是它值得挂的理由：一个用户能关掉的闸门不叫闸门。
 
-只有 `exec_command` 带这个键。另外六个工具被路径策略框在 workspace 根目录里，而这一个是别人机器上的一个 shell，以 Runtime 那个账号的全部权限在跑。给只读工具也挂上只会制造提示疲劳。
+带这个键的是 `exec_command` 和 `call_mcp_tool`（后者会在项目机器上起程序）：它们以 Runtime 那个账号的全部权限在跑。其余工具出不了 workspace 根目录，不带；给它们也挂上只会制造提示疲劳。
 
 **不想被问，在 Runtime 侧那个 workspace 上打开 `allow_unattended_exec`**（常用交互会话的项目建议开）：
 
@@ -498,7 +484,7 @@ allow_unattended_exec = true
 
 ### 受管 Codex 会话：`exec_command` 每次都弹，或者一次都不弹
 
-**每次都弹是 P71（2026-10-07）起的正常行为**，样子是：
+**每次都弹是正常行为**，样子是：
 
 ```text
 • Calling ccnm.exec_command({"cmd":"cargo test --offline"})
@@ -508,16 +494,15 @@ allow_unattended_exec = true
     2. Cancel  Cancel this tool call
 ```
 
-只有"允许 / 取消"，没有"本会话都允许"，下一次照样问；取消（或按 Esc）的那次调用根本到不了 Runtime，模型收到的是 `user cancelled MCP tool call`。其余工具不问。不想被问，和 Claude 一样两条路：`--print`，或在 Runtime 侧的 workspace 写 `allow_unattended_exec = true`（见上一节）。
+只有"允许 / 取消"，没有"本会话都允许"，下一次照样问；取消（或按 Esc）的那次调用根本到不了 Runtime，模型收到的是 `user cancelled MCP tool call`。`call_mcp_tool` 也一样会问，其余工具不问。不想被问，和 Claude 一样两条路：`--print`，或在 Runtime 侧的 workspace 写 `allow_unattended_exec = true`（见上一节）。
 
 **一次都不弹**，按顺序查：
 
-1. **Agent Node 上的 ccnm 是 P71 之前的构建。** 那时 Codex 会话一律不问（2026-10-04 真机，F21）。两台装同一个构建，`ccnm doctor <workspace>` 的版本行会指出来。
-2. **这个会话里切过权限。** 在 Codex 里用 `/permissions` 选了 Full Access 就不再问（实测）；选 Approve for me 是交给 Codex 自己的自动审查，真机上它连 `rm -f` 都直接放行、不问人。这是终端前那个人的选择，ccnm 拦不住，但只管这一个会话，下一个会话照样问。Claude 会话没有这个口子。
-3. **Agent 上是 v0.11.0 或更早的构建，而且以前哪个会话选过 Approve for me。** Codex 把这一档写进 profile 的 `config.toml`（`approvals_reviewer = "auto_review"`），那些构建没盖住它，之后用这个 profile 起的受管会话一开始就是它，一次都不弹，doctor 也看不出来（F27，2026-10-07 真机）。会话里 `/status` 的 Permissions 行写着 `(Approve for me)` 就是它。去掉：删掉 Agent 上 Codex profile 的 `config.toml`（默认 `~/.config/ccnm/agents/codex/config.toml`）里那一行，下一个会话回到 `(Ask for approval)`（实测）。v0.11.1（P72）起启动参数盖过这一行，不用删。
-4. **workspace 开了 `allow_unattended_exec`。** 这时 `ccnm doctor` 的 `Command approval` 是 WARN，写着这个开关。
+1. **这个会话里切过权限。** 在 Codex 里用 `/permissions` 选了 Full Access 就不再问；选 Approve for me 是交给 Codex 自己的自动审查，真机上它连 `rm -f` 都直接放行、不问人。这是终端前那个人的选择，ccnm 拦不住，但只管这一个会话，下一个会话照样问。Claude 会话没有这个口子。
+2. **workspace 开了 `allow_unattended_exec`。** 这时 doctor 的 `命令审批` 是"注意"，写着这个开关。
+3. **两台的 ccnm 不是同一个构建。** 两台装同一个版本，doctor 的版本行会指出哪边不对。
 
-细节与实测见 [P71 记录](research/2026-10-07-p71-codex-asks-before-exec.md)，真实模型与 F27 见 [P71 真机复验](research/2026-10-07-p71-real-machine-recheck.md)，F27 的修法见 [P72 记录](research/2026-10-07-p72-approve-for-me-one-session.md)。
+实测见 [记录](research/2026-10-07-p71-codex-asks-before-exec.md)。
 
 ### Codex 里报 `timed out awaiting tools/call after 300s`，命令其实还在跑
 
@@ -536,7 +521,7 @@ Caused by:
 
 **怎么办**：
 
-- **受管 Codex 会话**：Agent 上换成 P80 之后的构建，启动参数自带 `tool_timeout_sec`。v0.13.0 及之前的构建上，超过 5 分钟的命令让模型用 `run_in_background`，`read_output` 的 `wait_ms` 不超过 300000。
+- **受管 Codex 会话**：ccnm 启动 Codex 时已经自带足够长的 `tool_timeout_sec`，不会撞上。撞上了说明 Agent 上的 ccnm 太旧，两台装同一个新版本。
 - **Codex 当 Host 连 `ccnm mcp bridge`**：在 Codex 的 server 配置里加 `tool_timeout_sec = 1870`，见[协议文档](protocol/remote-workspace-mcp-v1.md#codex-当-host写上-tool_timeout_sec)。
 - 已经撞上了：第一条会在它自己的 `timeout_ms` 到点时被 ccnm 停掉，在那之前别让模型并行再起一份。
 
@@ -598,7 +583,7 @@ ccnm attach <workspace>
 
 **别做的事**：不要为了让分身能跑去删锁。那把锁挡住的正是"两个 Claude 同时改同一棵树"。
 
-**怎么不再踩**：受管会话里别用后台，要离开就 detach（状态栏右下角写着按键，默认 `C-b d`），回来用 `ccnm attach`。从 v0.4.0 起，每次 attach 时状态栏会把这句提示一遍。
+**怎么不再踩**：受管会话里别用后台，要离开就 detach（状态栏右下角写着按键，默认 `C-b d`），回来用 `ccnm attach`。每次 attach 时状态栏会把这句提示一遍。
 
 ### 模型说命令跑过了，可是什么都没发生（`command not found`，秒回）
 
@@ -648,15 +633,15 @@ CCNM_E_INVALID_ARGS: no output kept for r-0193f2c8a1b74e05
 
 **其实是**：**后台命令活不过连接**（[协议第 6 节](protocol/remote-workspace-mcp-v1.md#6-连接生命周期)）。连接一断，Runtime 就停掉这条连接起的所有命令，再放写入互斥——这是有意的，否则一个没人管的进程会一直占着那棵树的写权，谁也接不上。所以要查的不是 Runtime，是**谁把连接断掉了**。按"最容易中"的顺序：
 
-1. **中间层的单次调用预算。**不是直连 ccnm，而是过了一层 hub 的时候，它一般给每次远端调用一个预算，超时就丢掉这条连接（gld 现在是 60 秒）。触发它的往往是一条跑长的**前台** `exec_command`——出事的是前台那条，陪葬的是同一个会话里所有后台命令。
-2. **中间层的空闲回收。**hub 还会回收一段时间没人用的连接（gld 的 coding 会话现在是 2 分钟）。判据通常是"上一次调用返回到现在多久"，**在跑的后台命令不算在用**：模型起完任务就去干别的，两分钟后连接就可能被收走。
+1. **中间层的单次调用预算。**不是直连 ccnm，而是过了一层 hub（比如 gld）的时候，它一般给每次远端调用一个预算，超时就丢掉这条连接。触发它的往往是一条跑长的**前台** `exec_command`——出事的是前台那条，陪葬的是同一个会话里所有后台命令。
+2. **中间层的空闲回收。**hub 还会回收一段时间没人用的连接，判据通常是"上一次调用返回到现在多久"，**在跑的后台命令不算在用**：模型起完任务就去干别的，过一会儿连接就可能被收走。具体多久看那个 hub 的文档。
 3. **Host 那边断了。**Claude Code 里 `/mcp` 重连、关掉会话、SSH 掉线，都是连接结束。
 
 **修**：
 
 - 长命令一律 `run_in_background`，然后用 `read_output` 分次看。**别靠把 `wait_ms` 调大来扛**——一次长等待正是触发第 1 条的做法。
 - 起了后台任务就别让这条会话静默太久：隔一会儿 `read_output` 一次，既看到进度，也把空闲计时清零。
-- **别用 `nohup` / `setsid` 把进程从进程组里摘出去。**项目机器是 macOS 时 Runtime 停不掉它：写入互斥放掉之后它还在改文件，另一个会话进来就是两个人改同一棵树，比任务被杀糟得多。Linux 上会话结束时它会被收掉（P84），想让它活过会话也办不到。真要长活的服务，交给 Runtime 上的 systemd / launchd / tmux，ccnm 只负责起它。
+- **别用 `nohup` / `setsid` 把进程从进程组里摘出去。**项目机器是 macOS 时 Runtime 停不掉它：写入互斥放掉之后它还在改文件，另一个会话进来就是两个人改同一棵树，比任务被杀糟得多。Linux 上会话结束时它会被收掉，想让它活过会话也办不到。真要长活的服务，交给 Runtime 上的 systemd / launchd / tmux，ccnm 只负责起它。
 
 **怎么不再踩**：状态行就是答案，先读它。`stopped when its session ended` 是连接断了；`killed on its timeout` 是你给的 `timeout_ms` 到了；`stopped by stop_command` 是有人显式停的；`no longer running, and its exit status is unknown` 是跑它的 server 被强杀——那种情况它起的进程组**可能还在**，得上 Runtime 自己看。
 
@@ -672,16 +657,7 @@ CCNM_E_INVALID_ARGS: no output kept for r-0193f2c8a1b74e05
 ccnm status                 # 不带项目名：会把"Agent 那头已经没有的会话"标成孤儿
 ```
 
-**修**：v0.6.0 之后的 `mcp-serve` 空闲时每 30 秒 ping 一次客户端，半开的连接一写就断，锁自己释放。所以等半分钟，在 Claude 里 `/mcp` → `ccnm` → `Reconnect`。
-
-还在跑 v0.6.0 或更早的 Runtime：没有这个 ping，只能人工结束。**别直接 kill `mcp-serve`**——那会留下 `held` 标记，还得再做一遍[写入 guard 残留](operations.md#写入-guard-残留)。结束它背后那个 sshd 会话，`mcp-serve` 读到 EOF 会正常收尾、锁变 `released`：
-
-```bash
-ps -o pid,ppid,lstart,command -p <mcp-serve 的 pid>   # PPID 那列是 sshd-session
-kill <那个 sshd-session 的 pid>
-```
-
-动手前先确认 Agent Node 上那个会话确实结束了（会话目录里有 `exit` 文件，没有对应的 `ccnm internal supervise` 进程）。
+**修**：`mcp-serve` 空闲时每 30 秒 ping 一次客户端，半开的连接一写就断，锁自己释放。所以等半分钟，在 Claude 里 `/mcp` → `ccnm` → `Reconnect`。过了一分钟还占着，按[运维手册：写入 guard 残留](operations.md#写入-guard-残留)手工收。
 
 ### 开盖之后命令行不停打印 `^[[<35;41;12M` 这类字符
 
@@ -691,21 +667,30 @@ kill <那个 sshd-session 的 pid>
 
 **修**：ccnm 在 attach 的 ssh 返回后，会把 tmux 正常退出时发的那组"关闭"指令补发一遍（鼠标、括号粘贴、焦点事件、键盘模式、光标）。连接断在 30 秒以上的会话里时，也一起退出 tmux 留下的备用屏；30 秒内就断的不动屏幕，因为那种多半是根本没连上，贸然退出备用屏会把光标拉回旧位置。
 
-还在用旧版本、或者不是经 ccnm 进的 tmux：终端里跑 `reset`，或者用 Ghostty 的 `reset` 快捷键动作。
+不是经 ccnm 进的 tmux 也这样时：终端里跑 `reset`，或者用 Ghostty 的 `reset` 快捷键动作。
 
 ### MCP 初始化报 `workspace write guard is busy` 或 `unknown`
 
-如果 busy 是**你自己那个会话**的分身造成的，看上一条。其余情况：busy 表示仍有 writer 持锁——**受管入口和外部 MCP 共用同一把锁**，所以持锁的可能是任一侧；unknown 表示异常退出或 marker 不完整，不能证明旧执行者已经结束。不要循环删锁或按时间强制接管。
+如果 busy 是**你自己那个会话**的分身造成的，见[按了 Claude Code 的"后台"](#在受管会话里按了-claude-code-的后台工具全没了)。其余情况：busy 表示仍有 writer 持锁——**受管入口和外部 MCP 共用同一把锁**，所以持锁的可能是任一侧；unknown 表示异常退出或 marker 不完整，不能证明旧执行者已经结束。不要循环删锁或按时间强制接管。
 
 **还有第三种，话不一样**：`workspace write guard was kept on purpose`。这不是崩溃——上一个会话结束时有命令**停不掉**（macOS 上离开了进程组又攥着管道，ccnm 的信号够不着；Linux 上这种会被收掉，杀不掉的才会这样），它明知有东西可能还在改这棵树，故意没交出写权。拒绝信息里点名还剩哪些 `output_ref`，Linux 上还有剩下的 pid。**先把那些命令收掉再谈清锁**，顺序反了就是两个写者进同一棵树；每条命令的命令行在 `sessions/<session>/output/<ref>/status` 里，步骤见[写入 guard 残留](operations.md#写入-guard-残留)。
 
 拒绝信息里还会说上一个会话的 pid 现在是什么（还在跑，连命令行一起给；已经不在；或者被别的程序复用了）。**pid 没了不等于可以接管**——它起的命令可能还活着，而 ccnm 看不见它们。
 
-先在 Runtime Node 上跑 `ccnm status <workspace>`，看最后那一行写锁：谁占着、那个 pid 现在是什么、Agent 那边这个会话是不是早结束了（P60 起；它经 Agent 问 Runtime 执行账号，只看不动）。说"Agent 那边已经结束"的，就是上一条那种孤儿 `mcp-serve`。再在 Agent Node 用 `ccnm status <workspace> --agent <instance-id> --session <ccnm-session-id>` 定位会话，由 Runtime 操作者确认旧 MCP 和子进程。完整人工恢复边界见[支持矩阵](support-matrix.md#runtime-单写-guard)。`doctor`/MCP probe 同样经过写 guard，活动 writer 下诊断被拒绝不等于 SSH 损坏；写锁那一行不拿锁，不会被拒，也不会挡别人。
+先在 Runtime Node 上跑 `ccnm status <workspace>`，看最后那一行写锁：谁占着、那个 pid 现在是什么、Agent 那边这个会话是不是早结束了（它经 Agent 问 Runtime 执行账号，只看不动）。说"Agent 那边已经结束"的，就是[合上笔记本睡一觉](#合上笔记本睡一觉第二天某个项目的工具连不上)那种孤儿 `mcp-serve`。再在 Agent Node 用 `ccnm status <workspace> --agent <instance-id> --session <ccnm-session-id>` 定位会话，由 Runtime 那边的人确认旧 MCP 和子进程都没了，再按[写入 guard 残留](operations.md#写入-guard-残留)处理。`doctor`/MCP probe 同样经过写 guard，活动 writer 下诊断被拒绝不等于 SSH 损坏；写锁那一行不拿锁，不会被拒，也不会挡别人。
 
 Machine API 那边看到的是同一件事的两种码：有进程正持有，`session.start` 回 `-32008`，等它结束再发；异常退出或故意留下的，回 `-32007`，`data.reason` 是 `left_held` / `kept_on_purpose` 等，按上面处理，重发不会好。
 
 **两个会话都开起来了、都能写同一棵树**，那不是锁坏了：写锁只在一个 state 目录内有效，两边的 `XDG_STATE_HOME` 不同就是两把互不相干的锁。见[运维手册](operations.md#一棵树配两个-state-目录--两个互不知晓的写域)。
+
+### 会话已经结束，工作区却还在被写
+
+**先停止往这个项目派新的写任务。** `ccnm stop` 成功、会话的主进程没了，都不能说明它所有的后代都停了。
+
+- **项目机器是 Linux**：会话结束时，命令和项目机器上的 MCP server 留下的、`setsid` 出去的后台进程会被一起收掉，收掉才交写锁；收不掉的，下一个会话报 `workspace write guard was kept on purpose`，见上一节。
+- **项目机器是 macOS**：脱离了进程组的后代（`setsid`、守护进程）ccnm 够不着。还攥着命令输出的，写锁留着（上一节那种 `kept on purpose`）；连输出都放掉了的，写锁照常交出，它会在下一个会话旁边接着改文件。用 `ps -A -o pid,pgid,stat,command` 找到它（命令行里通常带着项目路径），以执行账号结束它。
+
+在这么干的是项目机器上的某个 MCP server（`call_mcp_tool`），而你又要求可靠交接时，在 Runtime 配置里用 `[runtime_mcp] hidden` 藏掉它（或 `enabled = false` 整个停用），结束旧会话后再核实一遍。不要删写锁强行恢复，不要按模糊的名字批量 kill。
 
 ### doctor 报 `ssh <别名>: connect to host ... port 22: Operation timed out`
 
@@ -732,59 +717,21 @@ Tailscale 掉线时对面照样连不上。2026-09-16 真机上就是这样：�
 
 ### Linux 上 `ccnm run` 报 `workspace root … is not a directory on this machine`，目录明明在
 
-**症状**：在 Runtime Node 上用自己的账号（Operator）敲 `ccnm run <ws>`，退出码 30：
+**先看是不是路径真写错了**（或者那里是个文件）：这句话现在只在 ccnm 确实看到"不在"时才说。
 
-```text
-CCNM_E_WRONG_WORKSPACE:
-workspace root /home/ccrun/proj is not a directory on this machine, which is the Runtime Node for 'proj'
-```
+**项目放在执行账号的家目录里、你自己的账号进不去时**（Debian 12 起新账号的家目录默认 0700），ccnm 分得清"不在"和"这个账号没权限看"：
 
-`ccnm doctor <ws>` 的 `Runtime 上的项目`（`Runtime workspace`）那一行同时报 `cannot stat`。
-
-**原因**：这两处检查用的是**你自己**的身份，而 Debian 12 起新账号的家目录默认 0700（`/etc/login.defs` 的 `HOME_MODE`），你进不去执行账号的家，stat 得到 `Permission denied`，被说成了"不是目录"。项目本身没问题，执行账号那边的 `Workspace root` 行照样是绿的。P62 在 Debian 13 上撞到（研究记录 F1）。
-
-**P65（2026-09-30）起已修**：ccnm 把"不在"和"这个账号没权限看"分开了。没权限看时：
-
-- `ccnm run` 和其他要连 Agent 的命令不再拦你。项目在不在由执行账号回答——开会话时 Agent 会拿同一个路径问它，真不在就报 `workspace <名字> says its root is …, and on that machine it is missing`。
-- doctor 那一行是"不查"（`NOTE`；v0.11.1 及之前是"没查"），并告诉你去看哪一行，结论由那一行决定：
+- `ccnm run` 不拦你。项目在不在由执行账号回答，真不在就报 `workspace <名字> says its root is …, and on that machine it is missing`。
+- doctor 的 `Runtime 上的项目` 那一行是"不查"，并告诉你去看 `workspace 根目录` 那一行，那一行才是执行账号的回答：
 
   ```text
   Runtime 上的项目        不查   not checked: bing is not allowed to look at /home/ccrun/proj (Permission denied), so this account cannot say whether the project is there
                                  the account that runs the tools can: its answer is the `Workspace root` row below
   ```
 
-- `ccnm workspace add <名字> /home/ccrun/proj` 能登记了，会提示"按你写的路径登记，没有核对、没有解析符号链接"。这时**必须写绝对路径**，而且要和执行账号自己看到的写法一致（别经过符号链接）；相对路径照旧拒绝。
-- `ccnm workspace list` 标的是"这个账号没权限看"，不再是"不在这台机器上"。
+- `ccnm workspace add <名字> /home/ccrun/proj` 能登记，会提示"按你写的路径登记，没有核对、没有解析符号链接"。这时**必须写绝对路径**，而且要和执行账号自己看到的写法一致（别经过符号链接）。
 
-还看到上面那句 `is not a directory on this machine`，要么路径真写错了（或者那里是个文件），要么 Runtime Node 上装的是 P65 之前的构建。
-
-**旧构建上怎么办**：把项目放到执行账号家目录**之外**、而你能进入其父目录的地方，项目目录本身仍归执行账号（git 要求属主是它，见[运维手册](operations.md#项目目录属主要对git-身份要配)）：
-
-```bash
-sudo install -d -o root -g root -m 755 /srv/ccnm
-sudo install -d -o ccrun -g ccrun -m 700 /srv/ccnm/proj    # 你只需要能 stat 到它，读不到里面
-```
-
-别为了绕过去把执行账号的家目录改成 0755：那等于让机器上所有账号都能读它家里的东西。
-
-### `ccnm workspace add` 报 `agent_node = "agent" does not match any [nodes.*] entry`
-
-**症状**：配置里的节点不叫 `agent`、`runtime`（比如按主机名叫 `hpsrv`、`fodelf`），`workspace add` 退出码 10，什么都没写：
-
-```text
-CCNM_E_CONFIG:
-that change would leave …/config.toml unusable, so nothing was written: workspaces.proj.agent_node = "agent" does not match any [nodes.*] entry
-workspaces.proj.runtime_node = "runtime" does not match any [nodes.*] entry
-```
-
-**原因**：P69 之前它不看配置，总写 `agent_node = "agent"`，`runtime_node` 留默认的 `runtime`（2026-10-04 真机，[F24](research/2026-10-04-p62-resume-release.md#7-新发现)）。
-
-**P69（2026-10-04）起已修**：
-
-- `runtime_node` 取配置里的 `this`——`workspace add` 本来就在项目所在的机器上跑。`this` 就叫 `runtime` 时不写这一行，和以前一样。
-- Agent 节点：有叫 `agent` 的就用它；没有的话，`this` 以外只有一个节点就用那一个；不止一个时报错列出候选，要你用 `--agent-node <节点名>` 指定，什么都不写。不替你猜，猜错了这个 workspace 的会话会被派到别的机器上。
-
-**旧构建上怎么办**：手工在 `[workspaces.<名字>]` 里写 `agent_node = "<节点名>"`、`runtime_node = "<this 的值>"`，再跑 `ccnm doctor <名字>`。
+别为了让自己看得见，把执行账号的家目录改成 0755：那等于让机器上所有账号都能读它家里的东西。
 
 ### Machine API 的会话 `failed`，`text`、`exit_code`、输出全是空的
 
@@ -792,7 +739,7 @@ workspaces.proj.runtime_node = "runtime" does not match any [nodes.*] entry
 
 **原因**：Agent 进程根本没起来——Agent 上的 CLI 没登录、两端构建不一致、Agent 连不上之类。
 
-**P65（2026-09-30）起，原因就在同一个回答里**（P62 研究记录 F3）。看 `failure`：
+**原因就在同一个回答里**，看 `failure`：
 
 ```json
 "failure": {"code": -32003, "ccnm_code": "CCNM_E_AUTH", "detail": "Claude is not authenticated on the Agent Node"}
@@ -808,50 +755,22 @@ workspaces.proj.runtime_node = "runtime" does not match any [nodes.*] entry
 
 程序里**按 `code` 分支**，`detail` 只给人看。状态是 `unknown` 时也可能有 `failure`——它说的是服务端为什么说不清，不是"可以重试"。Agent 起来了、自己退出的会话没有 `failure`，那种看 `outcome.exit_code` 和输出。字段定义见[协议 5.5 节](protocol/machine-protocol-v1.md#55-sessionresult)。
 
-**没有 `failure` 这个键**：Runtime Node 上跑 `ccnm rpc` 的是 P65 之前的构建。那时协议 v1 没有这个字段，原因只写在 Operator 自己的会话记录里，得在 Runtime Node 上用跑 `ccnm rpc` 的那个账号去看：
+### `ccnm stop` 报 `terminal ended but its Runtime MCP transport is still alive`
 
-```bash
-python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["finish"].get("error"))' \
-  ~/.local/state/ccnm/rpc/sessions/<句柄>.json
-```
-
-P62 实测见到的三种：`Claude is not authenticated on the Agent Node`（去 Agent 上 `claude auth login`）、`the Runtime Node runs ccnm 0.8.0, this one runs 0.9.0`（两端装同一个构建）、`message is not valid for protocol 1; ccnm versions probably differ`（版本号一样但构建不同；P64 起 doctor 会[直接指出来](#doctor-报-reports-ccnm-090-like-this-machine-but-it-is-not-the-same-build)）。
-
-### `ccnm stop --session` 报 `terminal ended but its Runtime MCP transport is still alive`，之后 `ccnm log` 说 `failed to start`
-
-**症状**：停交互会话，第一次退出码 3：
+**症状**：停交互会话，退出码 3：
 
 ```text
 CCNM_E_NOT_READY:
 … terminal ended but its Runtime MCP transport is still alive; state remains stopping
 ```
 
-几秒后再 stop 一次说 `nothing to stop`，`ccnm log` 把这个会话列成 `failed to start`、时长 `<1m`，不管它实际跑了多久。
+**其实是**：终端关掉了，但通往 Runtime 的那条 ssh 通道 5 秒内还没退。ccnm 不确认通道没了，就不报"停成功"。
 
-**P64（2026-09-30）起已修**（P62 研究记录 F4）：
+**怎么办**：等几秒再 stop 一次，这一次会把会话记成"被停止"，时长算到第一次敲 stop 为止。再用 `ccnm status <ws>` 确认写锁那一行是"空闲"；不是的，按[写入 guard 残留](operations.md#写入-guard-残留)查。
 
-- stop 关掉终端之后，每 100 毫秒看一次通往 Runtime 的 ssh 通道退了没有，最多等 5 秒，退了才报成功。P62 真机上 Codex 会话 3 次停止 3 次撞上的就是"只看一眼"。
-- 被 stop 停掉的会话，`ccnm log` 显示"被停止"（`stopped`），时长是从会话建立到你敲 stop 的那一刻；`ccnm result <ws> --session <id>` 显示 `stopped by ccnm after N s`。
+**按项目名停（没带 `--session`）时报这一句**：报错第二行是 `to record the stop once it has ended: ccnm stop <ws> --session <完整 id>`。再停一次要照抄这一行：不带 `--session` 的话，终端已经没了，ccnm 找不回这条记录，它会一直停在"正在停"。
 
-还看到上面的现象，说明 Agent Node 上是 P64 之前的构建（记结局的是 Agent 那一端）。P64 之前写下的记录不会变：那时没记时长，补不出来。
-
-**升级之后仍然报这一句**：通道过了 5 秒还没退。等几秒再 stop 一次——这一次会把会话记成"被停止"，时长仍算到第一次敲 stop 为止。再用 `ccnm status <ws>` 确认写锁行是 `free`；不是的，按[写入 guard 残留](operations.md#写入-guard-残留)查。
-
-**没带 `--session`、按项目名停时报这一句**（P75 起，旧写法的 workspace 也会等通道）：报错第二行是 `to record the stop once it has ended: ccnm stop <ws> --session <完整 id>`。再停一次要照抄这一行——不带 `--session` 的话，终端已经没了，ccnm 找不回这条记录，它会一直停在"正在停"。
-
-**旧构建上怎么办**：等几秒，用 `ccnm status <ws>` 确认会话没了、写锁行是 `free`，就算停成功；`log` 里那条 `failed to start` 忽略即可——会话其实是正常停的。
-
-**`log` 里仍是 `failed to start` 的另一种情况**：终端不是 stop 停的，而是自己没了（tmux server 被杀、机器重启），之后才有人对它 stop。ccnm 不知道它什么时候结束的，仍然记成"没有终端"。
-
-### `ccnm stop <项目>` 停完，`ccnm log` 里那条是"启动中"、过一会儿变"没有结束记录"
-
-**症状**：没绑 Agent 实例的 workspace（配置里写 `agent_node` 的旧写法）按项目名停，`stop` 退出 0，`ccnm ls` 也说没在跑，但 `ccnm log` 里这条 10 分钟内显示"启动中"（`starting`），之后显示"没有结束记录"（`no end record`），不是"被停止"。同一个 workspace 用 `ccnm stop <ws> --session <id>` 停的，记的是"被停止"。
-
-**原因**：不带 `--session`、也没绑实例时，stop 只按名字杀掉终端，不问它是哪个会话，所以会话记录里既没有停止标志也没有结局。交互会话没有结局时先算"启动中"，满 10 分钟改算"没有结束记录"。会话其实是正常停掉的。
-
-**P75 起已修**（记结局的是 Agent 那一端，要 Agent 是新构建）：按项目名停时也问终端它是哪个会话；是这个 workspace 自己的旧写法会话，就跟 `--session` 一样，杀之前写停止标志，确认终端和通道都没了再记"被停止"。代价是按项目名停也会等通道最多 5 秒，确认不了报 `CCNM_E_NOT_READY`，怎么办见上一节。终端说不出自己是哪个会话（更老的构建起的），或者会话绑了实例的，照旧只停不记。
-
-**旧构建上怎么办**：用 `ccnm ls` 确认这个项目是"没在跑"，那一条记录忽略即可。别为了补记再用 `--session` 停它：终端已经没了，旧构建会把它记成"没有终端"（`failed to start`），更不对。
+**`ccnm log` 里是"没有终端"（`failed to start`）**：终端不是 stop 停的，而是自己没了（tmux server 被杀、机器重启），之后才有人对它 stop。ccnm 不知道它什么时候结束的，只能这么记。
 
 ### doctor 说 Codex 已登录，会话里第一条消息却报 `refresh token was revoked`
 
@@ -861,9 +780,9 @@ CCNM_E_NOT_READY:
 Your access token could not be refreshed because your refresh token was revoked. Please log out and sign in again.
 ```
 
-**原因**：doctor 和 `codex login status` 都只看本地的登录状态，不去服务器验证令牌（P62 研究记录 F5）。在别处登录同一个账号、或者长时间没用，都可能让这份令牌失效。
+**原因**：doctor 和 `codex login status` 都只看本地的登录状态，不去服务器验证令牌。在别处登录同一个账号、或者长时间没用，都可能让这份令牌失效。
 
-**P65（2026-09-30）起 doctor 自己会说这一点**，那一行仍是 OK，但多一句：
+**doctor 自己会说这一点**，那一行仍是"正常"，但多一句：
 
 ```text
 Codex authentication    OK     logged in via ChatGPT
@@ -880,50 +799,29 @@ CODEX_HOME=~/.config/ccnm/agents/codex /path/to/codex-0.154.0/codex login
 
 用更新版本的 Codex 登录这个目录，它可能顺手升级目录里的状态文件，0.154.0 之后未必读得了。
 
-### Machine API：Agent 根本连不上，会话却是 `unknown`（Operator 在 Linux 上）
+### Machine API：会话一直是 `unknown`
 
-**症状**：Agent 的 ssh 别名解析不了或拒绝连接，`session.status` 却是 `unknown` 而不是 `failed`。
+`unknown` 的意思是 ccnm 说不清这次运行到了哪一步，**别自动重试**：那次运行可能已经改过东西。
 
-**P63（2026-09-30）起已修**：ssh 自己说还没连进去（解析不了主机名、TCP 连不上、认证被拒、主机指纹不符、密钥交换失败）的会话记 `failed`，这时 stop 失败的 `effect` 是 `none`。还看到这个现象，说明 Runtime 上跑 `ccnm rpc` 的是 P63 之前的构建（P62 研究记录 F14）。
+- 每个会话由自己的 owner 进程（`ccnm internal rpc-run --handle s-…`）带着跑，`ccnm rpc` 断开不影响它，回来能查到真实状态。还是 `unknown`，说明这个 owner 进程真的没了（被 `kill -9`、机器重启）。
+- ssh 根本没连进去（解析不了主机名、TCP 连不上、认证被拒）的会话记的是 `failed`，不是 `unknown`，修好连接后换一个新的 `start_key` 重来就行。
 
-**旧构建上怎么办**：记录里的 `finish.error` 以 `ssh <别名>: ssh: Could not resolve hostname`、`ssh: connect to host` 开头，或是 `Permission denied (publickey…)` 的，可以按"没派发"处理，修好连接后换一个新的 `start_key` 重来；其他 `unknown` 仍按 `unknown` 对待：先看工作树和 Agent 上的会话，别直接重试。
+先看工作树和 Agent 上的会话，再决定要不要重发。
 
-### Machine API：`session.start` 之后马上断开，会话一直是 `unknown`
+### Machine API：`session.stop` 回的是 `stopping`
 
-**症状**：程序调完 `session.start` 拿到句柄就关掉了 `ccnm rpc`，再连上查，`session.status` 是 `unknown`，Agent 上却没有任何运行；或者运行在 Agent 上跑完了，这边一直是 `unknown`。
+`stopping` 表示停止已经发出、还没看到结束：Agent 发完 SIGTERM 最多等 5 秒进程组退出，确认不了就先回这个。继续查 `session.status`，到终态才算停了；一直不结束（进程不理 SIGTERM）就再发一次 stop，或者按[运维手册](operations.md#写入-guard-残留)去 Agent 上找那个进程组。Agent 连不上时 stop 回错误，`effect` 告诉你它有没有可能已经送到。
 
-**P63（2026-09-30）起已修**：每个 session 由自己的 owner 进程（`ccnm internal rpc-run --handle s-…`，独立进程组）带着跑，`ccnm rpc` 退出不影响它，断开后回来查得到真实状态和结果（P62 研究记录 F16）。还看到这个现象，说明 Runtime 上是 P63 之前的构建：运行挂在 `ccnm rpc` 进程里，进程一退就没了。
+### Machine API：会话变成 `unknown`，`failure` 说 `the supervisor is gone`
 
-**旧构建上怎么办**：`session.start` 之后保持这条连接，直到 `session.status` 变成终态（参考客户端的 `wait()` 就是这样做的）。已经撞上的：Operator 记录里 `dispatched` 为空的 `unknown` 可以确定没有执行过，换一个新的 `start_key` 重来；`dispatched` 为真的仍按 `unknown` 对待。
+**症状**：`session.status` 是 `unknown`，`failure` 说 `the supervisor is gone and left no exit record … the Agent it started (pid N) may still be running`；`output.unavailable_reason` 是 `agent_refused`。
 
-**升级之后仍是 `unknown`**：带着它的 owner 进程真的没了（被 `kill -9`、机器重启）。这时不知道 Agent 上跑到了哪一步，按 `unknown` 对待，别自动重试。
+**其实是**：Agent 上管这次运行的监督进程（`ccnm internal supervise`）没了：被杀、机器重启、Controller 被强行卸掉。Agent 每 2 秒核一次它，没了几秒内就收尾成 `unknown`。`unknown` 是对的：被留下的 Claude / Codex 进程可能还在跑，ccnm 不替它写结局、也不去杀它。`agent_refused` 也是对的：监督进程是 Agent 输出的转存者，它死后的输出没人接，别据此去查认证。
 
-**P63 的构建上还有一种假的 `unknown`**：任务正常结束的那一刻去查，约 40 次里有 1 次被回成 `unknown`——查询先读了记录、再去看 owner 进程，owner 恰好在两步之间写完结局退出了（P64 已修）。分辨方法：再查一次 `session.status`，结局已经落盘的话第二次就是 `completed` 或 `failed`；两次都是 `unknown` 才是真的。
+**怎么办**：在 Agent Node 上看 `ps` 里还有没有这次会话的 `claude` / `codex`（`failure` 里有它的 pid，命令行里有会话 id），有就按进程组结束它；Runtime 上的写锁由执行账号保管，命令都收掉了它自己会放。别重发同一个任务。
 
-### Machine API：`session.stop` 回 `-32000 … Agent process group has not ended`
+### Machine API：`session.result` 带 `unavailable_reason: agent_refused`，完整输出拿不到
 
-**症状**：对一个正在跑的 print 会话调 `session.stop`，回的是 `-32000 … Agent process group has not ended; state remains stopping`，再调一次还是这样；一两秒后状态已经是 `failed`（`exit_code` 143，被 SIGTERM 结束），但 `stop_requested` 是 `false`。
+**其实是**：Runtime 第一次读结果之前，Agent 上那次会话的原始输出已经没了（被手动删、被清理），Agent 拒绝交出，`session.result` 给的是旧的尾部。`text` 是会话结束时就解析好的，不受影响；完整输出已经找不回来。从没启动的会话（没登录、被提前停掉）本来就没有输出，那种是 `bytes_total` 0、完整。
 
-**P63（2026-09-30）起已修**：停止标志在联系 Agent 之前就记下；Agent 发完 SIGTERM 最多等 5 秒进程组退出，正常情况下直接确认；还确认不了时回 `stopping`（契约第 5.6 节），不再回错误（P62 研究记录 F17）。
-
-**升级之后**：`stopping` 表示停止已经发出、还没看到结束——继续查 `session.status`，到终态才算停了；一直不结束（进程不理 SIGTERM）就再发一次 stop，或者按[运维手册](operations.md#写入-guard-残留)去 Agent 上找那个进程组。Agent 连不上时 stop 仍然回错误，`effect` 告诉你它有没有可能已经送到。
-
-### Machine API：会话一直是 `running`，Agent 上其实早就没在跑了
-
-**症状**：`session.status` 一直是 `running`（发过 stop 就是 `stopping`），十几分钟后才变成 `unknown`，`failure` 说 `no exit record after 930s … the supervisor did not finish`；`output.unavailable_reason` 是 `agent_refused`。Agent Node 上 `ccnm log` 那一行是 `no end record`。
-
-**其实是**：Agent 上管这次运行的监督进程（`ccnm internal supervise`）没了——被杀、机器重启、Controller 被强行卸掉。P68 之前 `agent-run` 只等结局文件，不看监督进程还在不在，于是要等满这次运行的超时（默认 900 秒）加 30 秒才放弃（2026-10-04 真机，[F22](research/2026-10-04-p62-resume-release.md#61-agent-上的监督进程丢了结果不对f22)）。
-
-**P68（2026-10-04）起**：Agent 每 2 秒核一次监督进程，没了就收尾，几秒内变成 `unknown`，`failure` 说 `the supervisor is gone and left no exit record … the Agent it started (pid N) may still be running`。要 Agent Node 装的是新构建；还是十几分钟才变，就是 Agent 那端还旧。`unknown` 是对的：被留下的 Claude/Codex 进程可能还在跑，ccnm 不替它写结局、也不去杀它。`agent_refused` 也是对的：Agent 答复了"这次运行没有结局"，它的输出以后也拿不到（监督进程是 Agent 输出的转存者，它死后的输出没人接），别据此去查认证。
-
-**怎么办**：在 Agent Node 上看 `ps` 里还有没有这次会话的 `claude`/`codex`（`failure` 里有它的 pid，命令行里有会话 id），有就按进程组结束它；Runtime 上写锁由执行账号保管，命令都收掉了它自己会放。别重发同一个任务——那次运行可能已经改过东西。
-
-### Machine API：`session.result` 说输出是空的，`text` 里却明明有内容
-
-**症状**：`output.bytes_total` 为 0、`complete: true`、没有 `unavailable_reason`，可 `text` 有内容，或者你知道它打印过东西。
-
-**其实是**：Runtime 第一次读结果之前，Agent 上那次会话的原始输出已经没了（被手动删、被清理）。P68 之前 ccnm 把"文件不在"当成了"输出是空的"（2026-10-04 真机，[F23](research/2026-10-04-p62-resume-release.md#62-分页的源头丢了结果不对f23)）。`text` 是会话结束时就解析好的，不受影响；完整输出已经找不回来。
-
-**P68（2026-10-04）起**：跑过的会话缺原始输出，Agent 拒绝交出，`session.result` 给的是旧尾部并带 `unavailable_reason: agent_refused`，不会再说"完整"。要 Agent Node 装的是新构建。从没启动的会话（没登录、被提前停掉）本来就没有输出，照旧是 `bytes_total` 0、完整。
-
-**怎么避免**：要完整输出，就在会话结束后尽快读一次 `session.result`——第一次读的时候 Runtime 会把整份拷到自己这边，之后 Agent 上删不删都不影响。
+**怎么避免**：要完整输出，就在会话结束后尽快读一次 `session.result`。第一次读的时候 Runtime 会把整份拷到自己这边，之后 Agent 上删不删都不影响。

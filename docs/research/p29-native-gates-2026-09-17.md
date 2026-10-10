@@ -93,7 +93,7 @@ ccnm 这一段逐块转发，不把 267 MiB 的一行读进内存；**执行端�
 
 ### 4.3 写：单文件上限与磁盘写满
 
-**单文件上限**（`writelimit`）：23 MiB 的文件 base64 之后整行 30.67 MiB，写入成功；25 MiB 的文件整行 33.33 MiB，超过 `exec-serve` 的 32 MiB 单条上限，**会话直接结束**（`exec-serve` 记 `ClientTooLong`，退出码 0，锁 `released`，文件没写）。Codex 的 `apply_patch` 每次把整个文件放进一个 `fs/writeFile`，所以**原生链上 Codex 能写的单个文件约 24 MiB**；超过时 Codex 那边的传输随之断开，之后的命令应当报 P23 实测过的 `exec-server transport disconnected`——这一次写入本身在 Codex 里报什么，没有用真实 Codex 复现。这是 P22 的设计（exec-server 自己 64 MiB 超限时一声不吭断连，ccnm 在前面先停并说明原因），离线测试早就有；本阶段补上了用户能看见的表现，写进[排错手册](../troubleshooting.md#codex-会话里模型报-toolsexec_command-is-not-a-function或-exec-server-transport-disconnected)。
+**单文件上限**（`writelimit`）：23 MiB 的文件 base64 之后整行 30.67 MiB，写入成功；25 MiB 的文件整行 33.33 MiB，超过 `exec-serve` 的 32 MiB 单条上限，**会话直接结束**（`exec-serve` 记 `ClientTooLong`，退出码 0，锁 `released`，文件没写）。Codex 的 `apply_patch` 每次把整个文件放进一个 `fs/writeFile`，所以**原生链上 Codex 能写的单个文件约 24 MiB**；超过时 Codex 那边的传输随之断开，之后的命令应当报 P23 实测过的 `exec-server transport disconnected`——这一次写入本身在 Codex 里报什么，没有用真实 Codex 复现。这是 P22 的设计（exec-server 自己 64 MiB 超限时一声不吭断连，ccnm 在前面先停并说明原因），离线测试早就有；本阶段补上了用户能看见的表现，写进排错手册（那一节随 P86 删原生链时删了，原文在 v0.13.1 的 `docs/troubleshooting.md`）。
 
 **磁盘写满**（`diskfull`，5 轮）：工作区放在当前用户用 `hdiutil` 挂载的 16 MiB HFS+ 映像上（不需要 root，测完卸载删除）。
 

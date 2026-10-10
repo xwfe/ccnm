@@ -1,6 +1,6 @@
 # doctor 探 Codex 原生链（P27，2026-09-17）
 
-范围、验收编号和"Linux 沙箱前提为什么不进 runtime-audit"的决定见 [ROADMAP P27](../plan/ROADMAP.md)；这一行怎么读见[使用说明](../usage.md#codex-原生链那一行)。本页只记实现要点、验证结果和没覆盖的东西。
+范围、验收编号和"Linux 沙箱前提为什么不进 runtime-audit"的决定见 [ROADMAP P27](../plan/ROADMAP.md)；这一行怎么读见使用说明（那一行和这一节随 P86 删原生链时删了，原文在 v0.13.1 的 `docs/usage.md`）。本页只记实现要点、验证结果和没覆盖的东西。
 
 **一句话结论**：`codex_exec_server = true` 且 Agent 是 Codex 时，doctor 两侧的表多出 `Codex exec-server`（中文 `Codex 原生链`）一行，做的就是 `ccnm run` 起 Codex 前的那次空会话预检；经真实 `ccnm internal exec-serve` 和假执行端离线验证了 OK、写锁被占、版本不对、没配 `codex_bin` 四种结果。没上真机，没耗模型额度。
 

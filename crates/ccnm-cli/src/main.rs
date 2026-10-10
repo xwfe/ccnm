@@ -1662,7 +1662,7 @@ fn workspace_command(
                     e
                 } else {
                     ccnm_core::Error::config(format!(
-                        "there is no config yet, so a workspace has nowhere to go\nrun this first: ccnm init --agent <alias> --runtime <alias>\n({})",
+                        "there is no config yet, so a workspace has nowhere to go\nrun this first, on this machine: ccnm init --agent <alias of the Agent Node>\n({})",
                         e.message()
                     ))
                 }

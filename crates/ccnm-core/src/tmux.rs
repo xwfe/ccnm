@@ -104,7 +104,7 @@ pub fn locate_from_env() -> Option<PathBuf> {
 /// and the one command that fixes it.
 pub fn missing() -> Error {
     Error::dependency(
-        "tmux is not installed on the Agent Node, and an interactive session needs it to outlive the terminal that started it\non work: brew install tmux\n(`ccnm run <workspace> --print \"<prompt>\"` needs no tmux)",
+        "tmux is not installed on the Agent Node, and an interactive session needs it to outlive the terminal that started it\ninstall it on the Agent Node: brew install tmux (macOS) or sudo apt install tmux (Debian, Ubuntu)\n(`ccnm run <workspace> --print \"<prompt>\"` needs no tmux)",
     )
 }
 

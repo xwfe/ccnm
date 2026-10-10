@@ -479,11 +479,11 @@ pub enum ExternalAccess {
     /// deliberately indistinguishable from outside.
     #[default]
     Disabled,
-    /// The tools that cannot change anything: `workspace_info`,
-    /// `read_file`, `list_files`, `search_text`.
+    /// Only the tools that cannot change anything (seven of them; the
+    /// list is `WITHHELD_WITHOUT_WRITE` in `mcp::server`, by subtraction).
     Read,
-    /// All seven tools, holding the workspace's write guard for as long as
-    /// the connection lives.
+    /// Every tool, holding the workspace's write guard for as long as the
+    /// connection lives.
     Coding,
 }
 

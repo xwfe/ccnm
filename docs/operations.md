@@ -266,7 +266,7 @@ git config --global user.email "<email>"
 **怎么做：**
 
 - **以你自己的身份打开这棵树之前**（IDE、Claude Code、Codex），先把这一行列出的文件看一遍。
-- **别给这棵树加 git 的 `safe.directory`。** 你的 git 现在因属主不同拒绝它（`detected dubious ownership`），所以它的钩子和 `core.fsmonitor` 不会以你的身份跑。加了，执行账号写进 `.git/hooks` 的东西就会在你跑 `git status` 时执行。`.git` 因此不在这一行的清单里。
+- **别给这棵树加 git 的 `safe.directory`。** 执行账号不是你本人时，你的 git 因属主不同拒绝它（`detected dubious ownership`），所以它的钩子和 `core.fsmonitor` 不会以你的身份跑。加了，执行账号写进 `.git/hooks` 的东西就会在你跑 `git status` 时执行。`.git` 因此不在这一行的清单里。
 - **要硬挡**（Linux，Debian 13 实测）：由 root 递归设不可变标志。还不存在的条目执行账号能新建，所以要挡的话由 root 先建出空目录再设：
 
   ```bash
@@ -277,6 +277,8 @@ git config --global user.email "<email>"
   设完后，执行账号对这两个目录里的东西改不了、删不了、挪不走，也撤不掉这个标志。**一定要带 `-R`**：只给目录本身设，挡住的只是在目录里新建、删除、改名，目录里已有的文件照样能改（实测 `.vscode/tasks.json` 被改写成功）。代价是 git 要改这些文件时（切分支、pull）会失败（按标志的语义推断，没实测）。撤掉用 `sudo chattr -R -i <同样的路径>`。macOS 上对应的是 `chflags`，没实测，这里不写做法。
 
 **为什么不用 chmod 或 ACL**：项目目录必须归执行账号所有（见本节开头），属主自己就能改权限和 ACL，还能把整个条目挪走再建一个新的。同样的原因，doctor 不查"写不写得了"：这个模式下答案永远是"写得了"。
+
+**`runtime_user` 写的就是你自己的账号时**，这一行照样会出，但它提醒的事不存在：执行账号就是你，写进去的东西本来就以你的身份跑。想让它消失，就删掉 `runtime_user`（连同只在专用账号模式下有用的几个 `allow_*`），改用共用账号模式。
 
 **共用账号模式（没写 `runtime_user`）没有这一行**：命令本来就以你的身份跑，这些文件不额外给它什么。Runtime 是 P85 之前的版本时，这一行是"不查"。
 

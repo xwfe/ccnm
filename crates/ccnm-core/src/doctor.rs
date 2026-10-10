@@ -1150,7 +1150,7 @@ fn opener_config_row(report: &crate::runtime::AuditReport) -> Check {
     Check::warn(
         NAME,
         format!(
-            "{user} can change these, and they take effect as whoever opens the project: IDE tasks, Claude Code hooks and MCP servers, shell startup files\npresent now: {}\nbefore opening this tree as yourself in an IDE, Claude Code or Codex, read them first; chmod and ACLs do not stop {user}, whose project it is\nyour git refuses this tree as another account's repository, so its hooks do not run as you; keep it so: no safe.directory for it",
+            "{user} can change these, and they take effect as whoever opens the project: IDE tasks, Claude Code hooks and MCP servers, shell startup files\npresent now: {}\nbefore opening this tree as yourself in an IDE, Claude Code or Codex, read them first; chmod and ACLs do not stop {user}, whose project it is\nanother account's git refuses this tree (dubious ownership), so its hooks do not run as that account; keep it so: no safe.directory for it\nif {user} is your own account, none of this crosses an account boundary",
             present.join(", ")
         ),
     )
@@ -1946,6 +1946,14 @@ mod tests {
             "{row:?}"
         );
         assert!(row.detail.contains("safe.directory"), "{row:?}");
+        // It cannot know who opens the tree: on a Runtime whose runtime_user
+        // is the person's own account (the 2026-10-10 daily setup) "your git
+        // refuses it" was simply false.
+        assert!(!row.detail.contains("your git"), "{row:?}");
+        assert!(
+            row.detail.contains("if ccrun is your own account"),
+            "{row:?}"
+        );
         assert!(row.detail.contains("chmod"), "{row:?}");
         assert_eq!(row_label(Lang::Zh, NAME), "以你身份生效的文件");
 

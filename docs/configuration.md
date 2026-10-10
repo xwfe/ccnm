@@ -3,14 +3,14 @@
 ccnm 默认读取：
 
 ```text
-~/.config/ccnm/config.toml
+~/.config/ccnm/config.toml        # 设了 XDG_CONFIG_HOME 时是 $XDG_CONFIG_HOME/ccnm/config.toml
 ```
 
 也可以通过全局 `--config` 或环境变量 `CCNM_CONFIG` 指定其他文件。
 
 **每台机器有自己的一份，内容不一样。** 不要把同一份文件复制到两台机器上——里面的 `ssh` alias 是"从本机出发"的，复制过去就指错地方了。
 
-配置描述的是 **Node**、**workspace** 和 Agent Node 本机的 **Agent Instance**。Node 名是你自己起的标识符；`ccnm init` 默认用 `agent` 和 `runtime`。旧 `agent_node`/Claude 字段不改名，继续兼容。
+配置描述的是 **Node**、**workspace** 和 Agent Node 本机的 **Agent Instance**。Node 名是你自己起的标识符；`ccnm init` 默认用 `agent` 和 `runtime`。名字（node、workspace）只能用字母、数字、`_`、`-`，开头是字母或数字，写错了报 `name must be [A-Za-z0-9][A-Za-z0-9_-]*`；SSH 别名只能用字母、数字、`.`、`_`、`-`，不能以 `-` 开头，写错了报 `must match [A-Za-z0-9._-]+ and not start with '-'`。两种都是整份配置读不进来。
 
 ## Agent Instance 模型
 
@@ -42,7 +42,14 @@ provider = "codex"
 profile_ref = "default"
 ```
 
-default 按 provider 区分：Claude 为 Agent 的 `~/.claude`；Codex 保持 `~/.config/ccnm/agents/codex/`（尊重 Agent 的 XDG_CONFIG_HOME），不复用个人 `~/.codex`，不继承 CODEX_HOME 来改变身份。两个 default 不需要创建 profiles.toml。
+default 按 provider 区分：Claude 用 Agent 账号的 `~/.claude`；Codex 用 `~/.config/ccnm/agents/codex/`（设了 `XDG_CONFIG_HOME` 就在它下面），不复用你日常的 `~/.codex`，也不看 `CODEX_HOME`。所以 Codex 要对这个目录单独登录一次（用 0.154.0 这份 Codex）。目录要先建好、权限 0700，否则报 `dedicated Agent home must be private…`：
+
+```bash
+mkdir -p -m 700 ~/.config/ccnm/agents/codex
+CODEX_HOME=~/.config/ccnm/agents/codex codex login
+```
+
+两个 default 都不需要建 `profiles.toml`。Codex 实例还可以写 `model = "…"` 选模型（只有 Codex 认，Claude 写了会被拒），见[实例契约](agent-instance-config.md)。
 
 named profile 的路径只定义在 **Agent-local** `~/.config/ccnm/profiles.toml`，不放到 Runtime 配置或 instance binding 中：
 
@@ -54,24 +61,7 @@ directory = "/absolute/agent/private/claude-extra"
 
 这是路径 schema 示例，不代表目录已存在或已登录。文件必须归当前 Agent UID、不向组/其他用户授权（建议 0600）且非 symlink；通过 `profile_ref = "claude-extra"` 引用。profile 未定义、provider 不匹配、目录是相对路径/含 `..`、重复目录或覆盖 default 均不接受。新目录需要用户独立官方登录，ccnm 不创建、复制或链接 auth。
 
-workspace 中的 `agent` 是默认选择。公共命令可用同一 Node 上的 instance id 覆盖：
-
-```bash
-ccnm doctor demo --agent codex-main
-ccnm run demo --agent codex-main
-ccnm status demo --agent codex-main
-ccnm result demo --agent codex-main --session <ccnm-session-id>
-ccnm attach demo --agent codex-main --session <ccnm-session-id>
-ccnm stop demo --agent codex-main --session <ccnm-session-id>
-```
-
-`--agent` 只替换 instance id，不接受 `worker/codex-main`、`provider=codex`、路径、root 或原始官方 CLI 参数。Runtime 用自己的 workspace 配置固定 node/root；Agent 再从本机 registry 解析 provider/profile。legacy `agent_node` workspace 使用 `--agent` 会明确报错，不会静默改成 Claude 或 Codex。
-
-在 Agent-only 配置所在的机器上，`run`、`doctor` 和 MCP probe 会先去 Runtime 获取 workspace 权威信息；已存在 session 的 `attach/status/result/stop` 仍在 Agent 本机执行，这样 Runtime 链路暂时断开时终端管理行为不变。要强制校验 instance，请显式带 `--agent`；稳定自动化应再带 `--session`。
-
-迁移预览目前仅有库 API `configedit::Edit::preview_instance(workspace, &InstanceRef)`，返回候选 TOML，不修改 editor 或磁盘，没有自动迁移命令。已有自定义 `claude_config_dir`、非默认权限或跨 Node 迁移会拒绝机械转换，需先确定语义；其他 workspace 与注释保留。更多约束见 [实例契约](agent-instance-config.md)。
-
-Agent Instance 公共执行已接入现有 Controller/session/SSH MCP，Claude 和 Codex 两个方向都在授权双机上真机跑通，专用低权限执行身份的凭据隔离也已实测。仍未验证的是 egress/网络策略——因此本项目不声明任何出口边界。不要把“代码可执行”写成“已生产支持”，准确范围见[支持矩阵](support-matrix.md)。
+workspace 里的 `agent` 是默认选择，命令里可以用 `--agent <实例名>` 临时换成同一台 Agent 上的另一个实例，规则见[使用说明](usage.md#选择-agent-instance)。从 `agent_node` 改成 `agent` 的步骤见[运维：配置迁移](operations.md#配置迁移legacy--agent-instance)，更多约束见[实例契约](agent-instance-config.md)。验到哪一步见[支持矩阵](support-matrix.md)。
 
 ## 最小的两份配置
 
@@ -144,8 +134,8 @@ ssh = "agent-ssh-alias"
 漏写会报：
 
 ```text
-CCNM_E_CONFIG: workspaces.x.agent_node = "agent" is another machine,
-所以 [nodes.agent] 需要一个 ssh alias
+CCNM_E_CONFIG: workspaces.x.agent_node = "agent" is another machine, so
+[nodes.agent] needs an `ssh` alias this one can dial it with
 ```
 
 ## `runtime_node`（顶层）
@@ -186,7 +176,7 @@ codex_bin = "/opt/codex/bin/codex"   # 可选：exec_sandbox = "codex" 用的 Co
 
 `runtime_user` 说的是 **Agent 的 MCP transport 落到哪个账号上**，项目工具就以谁的身份执行。它不规定谁可以敲 `ccnm`——那是 Operator，通常就是你自己的账号。四种身份怎么分见[生产安全](production-safety.md)。
 
-**不写（默认，P78 起）就是共用账号**：Agent 登进来的是谁，命令就以谁的身份跑，通常就是你自己；sudo、admin、私钥、Agent 登录这些照查照显示（doctor 里是"注意"），但什么都不挡。**写了就是专用账号模式**：登进来的必须是这个账号，那些检查没通过就拒绝 `exec_command`（够得到 Agent 登录时整个会话不开），直到账号真的干净，或者用下面两个 `allow_*` 开关明确接受。要不要写、怎么建账号，见[生产安全：要不要建专用账号](production-safety.md#要不要建专用账号)。
+**不写（默认）就是共用账号**：Agent 登进来的是谁，命令就以谁的身份跑，通常就是你自己；sudo、admin、私钥、Agent 登录这些照查照显示（doctor 里是"注意"），但什么都不挡。**写了就是专用账号模式**：登进来的必须是这个账号，那些检查没通过就拒绝 `exec_command`（够得到 Agent 登录时整个会话不开），直到账号真的干净，或者用下面两个 `allow_*` 开关明确接受。要不要写、怎么建账号，见[生产安全：要不要建专用账号](production-safety.md#要不要建专用账号)。写了之后 doctor 还会多一行 `以你身份生效的文件`，见[运维手册](operations.md#专用账号写进项目的配置你打开时按你的身份生效)。
 
 一个 node 可以同时具备这些字段，也就是同时承担多个角色。
 
@@ -199,28 +189,25 @@ agent_node = "agent"
 runtime_node = "runtime"     # 可省略，默认就是 "runtime"
 root = "/absolute/project/root"
 claude_permission_mode = "acceptEdits"
-allow_unconfined_exec = false          # 默认值；只在写了 runtime_user（专用账号）时才用得上
+allow_unconfined_exec = false          # 默认值；写了 runtime_user 时才常用到，没写时只有以 root 运行才需要
 allow_unisolated_credentials = false   # 默认值；同上，开它之前先读下面那一节
 allow_unattended_exec = false          # 默认值：交互会话每条命令执行前问你一次；常用交互会话的项目建议改成 true，见下
 external_mcp = "disabled"    # 默认值，可省略
-# agent_tools 不写就是五项全开（P77 起），见下面 agent_tools 一节
+# agent_tools 不写就是五项全开，见下面 agent_tools 一节
 ```
 
 ### `agent_node`
 
-legacy Claude workspace 中运行 Agent 的 node。新 workspace 可改用：
+这个项目由哪台 Agent 跑，有两种写法，只能二选一：
 
-```toml
-agent = { node = "worker", instance = "claude-main" }
-```
-
-两种 selector 不能同时出现。`agent` 的 provider/profile 不在 Runtime 定义。
+- `agent_node = "agent"`：只用 Claude、用默认登录时的写法，`ccnm workspace add` 写出来的就是它。文档里叫它 legacy，但它没有被淘汰。
+- `agent = { node = "agent", instance = "codex-main" }`：要用 Codex，或者一台 Agent 上配了多个实例时用。实例本身（provider、登录目录）定义在 Agent 那台的配置里，见上面[Agent Instance 模型](#agent-instance-模型)。用这种写法时，那个 node 上不能再写 `claude_config_dir`，否则报 `instance selection conflicts with legacy claude_config_dir`。
 
 ### `runtime_node`
 
 存真实项目、执行 MCP tools 的 node。**注意这是 workspace 里的字段，跟顶层那个同名字段不是一回事**：这里说的是"这个项目在哪台机器上"，顶层说的是"我不存列表，去问谁"。
 
-把它写成和 Agent Node 相同会形成 colocated 配置模型，但当前执行入口明确拒绝：Claude 的 native 候选启动尚未真机验收，Codex colocated 未测。不要据此配置生产 workspace；见[支持矩阵](support-matrix.md)。
+它不能和 Agent 是同一个 node（一个账号同时当两边），会被拒。那种情况直接用 Claude Code / Codex 就好；同一台机器上两个账号各当一边是可以的。
 
 ### `root`
 
@@ -243,7 +230,7 @@ claude_permission_mode = "bypassPermissions"
 
 **代价说清楚**：`bypassPermissions` 是"什么都不问直接跑"。如果这个 workspace 同时开了 `allow_unisolated_credentials`，那就是**模型改文件、读你的 Agent 登录都不经你确认**——`exec_command` 那一问会是唯一还有人在场的环节。只在你自己的机器、你自己的项目上这么配。
 
-instance workspace（用 `agent` 而不是 `agent_node` 的）不接受这个字段，配了会被拒；instance 的策略在 Agent 端。
+用 `agent = {…}` 写法的 workspace 改不了权限模式，Claude 固定用 `acceptEdits`：只写 `"acceptEdits"` 不报错，写别的值报 `cannot configure instance policy through claude_permission_mode`。
 
 ### `allow_unconfined_exec`
 
@@ -257,30 +244,24 @@ allow_unconfined_exec = true
 
 没写 `runtime_user`（默认的共用账号）时用不上它：那些检查本来就不挡。唯一的例外是以 root 运行，那一条在两种模式下都挡，这个开关能放行——别这么做。
 
-**它waive不了凭据那一条**，那是下面那个开关的事。
+**它放不开凭据那一条**，那是下面那个开关的事。
 
 ### `allow_unisolated_credentials`
 
-**专用账号模式**下，跑这个 workspace 命令的账号能读到本机已知的 Agent 登录（`~/.claude`、`~/.codex` 之类）时，仍然允许打开（没写 `runtime_user` 时用不上：共用账号够得到登录也不拦，代价见[生产安全](production-safety.md#要不要建专用账号)）：
+**专用账号模式**下，跑这个 workspace 命令的账号能读到本机已知的 Agent 登录（`~/.claude`、`~/.codex` 之类）时，仍然允许打开：
 
 ```toml
-allow_unconfined_exec = true                 # 两个都要写
+allow_unconfined_exec = true                 # 受管会话两个都要写；只读的外部连接只要下面这一个
 allow_unisolated_credentials = true
 ```
 
-**先读一遍你接受了什么**：模型跑的每一条命令都能读到那份登录，而让它跑一条命令只需要一句 prompt——包括从它被要求读的文件里冒出来的那一句。这是这个项目唯一那条硬边界，放开之后没有别的东西在挡着。完整说明和代价见[生产安全](production-safety.md#凭据隔离那一条怎么放开代价是什么)。
+没写 `runtime_user` 时用不上：共用账号够得到登录也不拦。两个开关互不蕴含：前一个说"这个账号的系统权限比它该有的大"，这一个说"它能读我的 Agent 登录"。
 
-**两个开关互不蕴含。** `allow_unconfined_exec` 说的是"这个账号 OS 权限比它该有的大"，这一个说的是"它能读我的 Agent 登录"，是两件事，所以要分别写。
-
-**名字为什么是这个。** 它和 `allow_unconfined_exec` 同一个形状：两句都在说"那个性质不成立，也放行"，而且说的都是**性质**（confinement / isolation），不是机器。最早写成 `allow_agent_credentials_on_runtime`，读起来像还有个 `on_agent` 与之配对——并没有：**所有 workspace 字段都只从 Runtime 自己的配置里读**，承担风险的那台机器自己决定，调用方说了不算。
-
-ccnm 的反应：第一次用它启动会话时在终端上把风险讲一遍（**只讲一次**；关掉再打开算新决定，会再讲），`ccnm doctor` 里那几行永远显示为 **WARN 并注明是接受的**（不会变成 OK），每条命令结果里的 unconfined 说明也会写明这一条。
-
-**任何开关都放不开的两条**：执行身份未知，以及认证环境是继承来的（`ANTHROPIC_*` / `CLAUDE_*` 在 Runtime 服务环境里）。前者没人能说清是谁接受了什么，后者是把凭证直接塞给每一个子进程。
+**先读一遍你接受了什么**：模型跑的每一条命令都能读到那份登录，而让它跑一条命令只需要一句 prompt，包括从它被要求读的文件里冒出来的那一句。开了之后 doctor 里那几行一直是"注意"并写明是接受的。完整说明、代价，以及哪两条任何开关都放不开，见[生产安全](production-safety.md#凭据隔离那一条怎么放开代价是什么)。
 
 ### `allow_unattended_exec`
 
-交互式会话执行命令前不再问你。**平时用交互会话干活的 workspace，建议打开**——不开的话模型每跑一条命令（`cargo test`、`git status`、`ls`）你都得点一次"允许"：
+交互式会话执行命令、调用 `call_mcp_tool` 前不再问你。**平时用交互会话干活的 workspace，建议打开**，不开的话模型每跑一条命令（`cargo test`、`git status`、`ls`）你都得点一次"允许"：
 
 ```toml
 [workspaces.my-project]
@@ -295,16 +276,14 @@ allow_unattended_exec = true
 - **还剩什么挡着**：命令以执行账号的身份跑，那个账号能做的它都能做，做不了的它也做不了；读写文件的工具出不了 workspace 根目录。所以执行账号的权限越小，这个开关越放心（见[生产安全](production-safety.md)）。
 - **ccnm 会怎么提醒你**：第一次用它起会话时在终端上讲一次风险（只讲一次，关掉再打开算新决定）；`ccnm doctor` 里 `命令审批`（英文 `Command approval`）那一行一直是"注意"，永远不会变成 OK。这是故意的，不是没配好，结论照样是"可以用了"。
 - **只管交互会话**：`--print` 和 `ccnm mcp bridge` 不受影响——那两条路上本来就不问，因为两边都没人在等。
-- **skill 要求替它跑的命令也跟着跑**（P79）：开了之后，模型加载的 skill 里的 `` !`命令` `` 会在加载时执行，`hooks` 会登记并在之后的工具调用前后执行——它们和模型自己跑的命令一样没人看。不开时都不跑。见[使用说明](usage.md#项目自带的-skills)。
+- **skill 要求替它跑的命令也跟着跑**：开了之后，模型加载的 skill 里的 `` !`命令` `` 会在加载时执行，`hooks` 会登记并在之后的工具调用前后执行——它们和模型自己跑的命令一样没人看。不开时都不跑。见[使用说明](usage.md#项目自带的-skills)。
 - **怎么收回**：把这一行删掉或改成 `false`，之后新起的会话又会每条都问。
 
-**默认是会问的，而且任何权限模式都关不掉。** ccnm 给 `exec_command` 挂了 `anthropic/requiresUserInteraction`，Claude Code 在每一种权限模式下都认它——`bypassPermissions` 也一样。理由很直接：一个调用方能关掉的闸门不叫闸门。这个开关是**承担风险的那台机器**把它关掉的唯一入口。
+**默认是会问的，Claude Code 里任何权限模式都关不掉**，`bypassPermissions` 也一样（[为什么](troubleshooting.md#开了-bypasspermissionsexec_command-还是每次都问)）。这个开关是**承担风险的那台机器**把它关掉的唯一入口。会问的是 `exec_command` 和 `call_mcp_tool`（起 server 就是跑程序）；其余工具出不了 workspace 根目录，不问。
 
-只有 `exec_command` 会问。另外六个工具被路径策略框在 workspace 根目录里，这一个是别人机器上的一个 shell。
+**受管 Codex 会话也会问，但会话里的人可以自己关掉。** 上面那个键只有 Claude Code 认。Codex 那边，Agent 启动前先问 Runtime 哪些工具要人确认（就是挂了那个键的工具，所以这个开关照样由 Runtime 决定、对 Codex 一样生效），启动 Codex 时只给它们设 `approval_mode="prompt"`，其余工具仍是自动批准——全设成要确认不行，`--print` 那条路上 Codex 会把每次调用都拒掉（[实测](research/codex-provider-probe-2026-09-07.md)）。效果（Codex 0.154.0 实测，[记录](research/2026-10-07-p71-codex-asks-before-exec.md)）：每次 `exec_command` 前弹出 `Allow the ccnm MCP server to run tool "exec_command"?`，只有"允许 / 取消"，没有"本会话都允许"；取消的调用根本到不了 Runtime，模型收到 `user cancelled MCP tool call`。
 
-**受管 Codex 会话 P71 起也会问，但会话里的人可以自己关掉。** 上面那个键只有 Claude Code 认。Codex 那边，Agent 启动前先问 Runtime 哪些工具要人确认（就是挂了那个键的工具，所以这个开关照样由 Runtime 决定、对 Codex 一样生效），启动 Codex 时只给它们设 `approval_mode="prompt"`，其余工具仍是自动批准——全设成要确认不行，`--print` 那条路上 Codex 会把每次调用都拒掉（[实测](research/codex-provider-probe-2026-09-07.md)）。效果（Codex 0.154.0 零额度实测，[P71 记录](research/2026-10-07-p71-codex-asks-before-exec.md)）：每次 `exec_command` 前弹出 `Allow the ccnm MCP server to run tool "exec_command"?`，只有"允许 / 取消"，没有"本会话都允许"；取消的调用根本到不了 Runtime，模型收到 `user cancelled MCP tool call`。
-
-**和 Claude 不同的一点**：Codex 会话里的人用 `/permissions` 切到 Full Access 就不再问（实测），切到 Approve for me 就交给 Codex 自己的自动审查（真机上连 `rm -f` 都直接放行）。这是坐在终端前那个人的决定，ccnm 拦不住；Claude 那边任何权限模式都关不掉。切换只管当前会话：Codex 会把 Approve for me 记进 profile 的 `config.toml`，v0.11.1（P72）起 ccnm 启动时用命令行盖过它；**v0.11.0 及之前的 Agent 盖不住，之后的受管会话都不再问**（F27），怎么看出来、怎么去掉见[排错手册](troubleshooting.md#受管-codex-会话exec_command-每次都弹或者一次都不弹)。P71 之前的构建对 Codex 一律不问（2026-10-04 真机，[P62 续跑记录](research/2026-10-04-p62-resume-release.md) F21），所以 **Agent 那端要装 P71 或之后的构建**才生效。
+**和 Claude 不同的一点**：Codex 会话里的人用 `/permissions` 切到 Full Access 就不再问（实测），切到 Approve for me 就交给 Codex 自己的自动审查（真机上连 `rm -f` 都直接放行）。这是坐在终端前那个人的决定，ccnm 拦不住；Claude 那边任何权限模式都关不掉。切换只管当前会话：Codex 会把 Approve for me 记进 profile 的 `config.toml`，ccnm 下次启动时用命令行盖过它，新会话照样问。
 
 **它跟前两个开关不是一类东西：它不授权任何事。** 命令能做什么由 `exec_gate` 和 Runtime 执行身份决定，这个开关一点都动不了；它只决定中间还有没有人。
 
@@ -321,8 +300,8 @@ external_mcp = "read"        # disabled（默认）| read | coding
 | 值 | 给出去的东西 |
 | --- | --- |
 | `disabled` | 什么都没有。不写这一行就是它 |
-| `read` | 四个只读工具：`workspace_info` / `read_file` / `list_files` / `search_text` |
-| `coding` | 七工具，并且**持有这个工作树的写入互斥锁**，和受管会话抢同一把 |
+| `read` | 7 个只读工具：`workspace_info`、`read_file`、`list_files`、`search_text`、`load_skill`、`view_image`、`read_notebook` |
+| `coding` | 11 个（项目机器上有可转接的 MCP server 时 12 个），并且**持有这个工作树的写锁**，和受管会话抢同一把 |
 
 **不写就是关着的**：别人能 SSH 到 Runtime 账号，不等于能打开这台机器上每一个项目。客户端可以要求比这更少（`--mode read`），要求更多会被拒绝启动，不会静默降级。
 
@@ -330,17 +309,13 @@ external_mcp = "read"        # disabled（默认）| read | coding
 
 用法和限制见 [Remote Workspace MCP 契约](protocol/remote-workspace-mcp-v1.md)，验收范围见[支持矩阵](support-matrix.md)。契约于 2026-09-11 冻结。
 
-### `codex_exec_server`（已删除）
-
-**P86（2026-10-08）起没有这个开关了**：封存的 Codex 原生执行链连同它一起删掉。配置里还写着这一行（哪怕是 `false`），会解析失败、报 `CCNM_E_CONFIG`，消息里有 `unknown field `codex_exec_server``。把这一行删掉就行，Codex 会话照常走 MCP 七工具。它原来是什么、为什么删，见[双执行入口方案](plan/runtime-surfaces.md)第 12 节。
-
 ### `exec_sandbox`
 
 ```toml
 exec_sandbox = "codex"       # 默认 off
 ```
 
-**把这个 workspace 的每条 `exec_command` 包进 Codex 自带的 workspace-write 沙箱里跑**（P33）：命令只能写工作区根目录以内（`.git` 除外）、`$TMPDIR` 和 `/tmp`，不能连网；读不受限。Claude、Codex 的受管会话和外部 MCP 客户端（gld hub）的 coding 会话都生效，因为它们跑命令走的是同一个 `exec_command`。`--print`、`ccnm mcp bridge` 也一样。
+**把这个 workspace 的每条 `exec_command` 包进 Codex 自带的 workspace-write 沙箱里跑**：命令只能写工作区根目录以内（`.git` 除外）、`$TMPDIR` 和 `/tmp`，不能连网；读不受限。Claude、Codex 的受管会话和外部 MCP 客户端（gld hub）的 coding 会话都生效，因为它们跑命令走的是同一个 `exec_command`。`--print`、`ccnm mcp bridge` 也一样。
 
 **需要什么**：Runtime 节点写 [`codex_bin`](#node-的其他字段)（Codex 0.154.0）；Linux 上装 bubblewrap 并允许执行账号创建 user namespace（[运维手册](operations.md#runtime-node-的前置条件与项目工具链)）。开了却给不了——没 `codex_bin`、版本不对、找不到状态目录——会话启动就失败（`CCNM_E_CONFIG` / `CCNM_E_VERSION`）；启动时 ccnm 还会用这个沙箱跑一条 `sh -c 'exit 0'` 探一下，起不来（Linux 没装 bubblewrap、建不了 user namespace，或者 ccnm 的状态目录在 `/tmp` 下——Codex 拒绝在临时目录里建它的辅助程序）也在启动时拒（`CCNM_E_DEPENDENCY`，带 Codex 自己的报错）。**任何一种都不会退回不带沙箱地跑。**
 
@@ -358,13 +333,13 @@ exec_sandbox = "codex"       # 默认 off
 ### `agent_tools`
 
 ```toml
-# 不写这一行就是五项全开（P77 起的默认值）
-agent_tools = ["web_search", "mcp_servers"]                   # P77 之前的默认：只搜索和用 Agent 上的 MCP server
-agent_tools = ["web_search", "mcp_servers", "subagents", "tasks"] # 全开，但不抓网页
-agent_tools = []                                              # 全关，就是 P46 之前的样子
+# 不写这一行就是五项全开
+agent_tools = ["web_search", "mcp_servers"]                   # 只搜索、用 Agent 上的 MCP server
+agent_tools = ["web_search", "mcp_servers", "subagents", "tasks"] # 不抓网页，其余都开
+agent_tools = []                                              # 全关
 ```
 
-**远端受管会话能用 Agent 那边的哪些功能**（P46 加的，`mcp_servers` 是 P50 加的，P77 起默认全开）。读、改、搜项目和跑命令一律走 ccnm 的工具、在 Runtime 上执行；Claude Code / Codex 自带的文件、shell、notebook 和 skill 工具永远关着，这一行管不到它们。它管的是这些：
+**远端受管会话能用 Agent 那边的哪些功能**，默认全开。读、改、搜项目和跑命令一律走 ccnm 的工具、在 Runtime 上执行；Claude Code / Codex 自带的文件、shell、notebook 和 skill 工具永远关着，这一行管不到它们。它管的是这些：
 
 | 值 | 做什么 | Claude Code 里是 | Codex 里是 |
 | --- | --- | --- | --- |
@@ -376,7 +351,7 @@ agent_tools = []                                              # 全关，就是 
 
 开了的 Claude Code 工具会写进这个会话设置里的允许表（交互会话和 `--print` 用的是同一份），按 Claude Code 的规则不会再为它们问你；`--print` 下实测过，交互会话里没单独量过。
 
-**默认全开的代价，开会话前知道一下**（P77，用户 2026-10-07 的决定）：
+**默认全开的代价，开会话前知道一下**：
 
 - **`web_fetch` 是往外的通道。** 模型读过的项目内容能拼进 URL 发给任意网站，而让模型这么做只需要一段提示注入——藏在项目某个文件里、或者某条搜索结果里。项目不能接受的话，把它从这一行去掉（上面第二种写法）。`web_search` 只把搜索词发给 Anthropic / OpenAI 自己的搜索服务，面窄得多。
 - **`mcp_servers` 同理**：Agent 上装的远端 server 收得到模型发给它的任何东西，exa 还带一个抓网页的工具——等于换了个名字的 `web_fetch`。开了之后给哪些 server、本机进程类的给不给，是 Agent 那台机器自己的 [`[agent_mcp]`](#agent_mcp) 定的。
@@ -387,8 +362,6 @@ agent_tools = []                                              # 全关，就是 
 **会是什么样**：
 
 - 不写这一行等于五项全开；`[]` 全关；写了不认识的名字（比如 `todo`）整份配置读不进来，报错里列出能写的值；同一个名字写两遍算一个。
-- 以前写明了的值意思不变：`agent_tools = ["web_search"]` 只有搜索；`["web_search", "mcp_servers"]` 就是 P77 之前不写时的样子。
-- 两台机器的 ccnm 版本不一样时会话本来就起不来（报 `CCNM_E_VERSION`）。万一混着用：P77 起的 Runtime 默认会把五项写明发给 Agent，v0.8.0 及之前的 Agent 报 `unknown field agent_tools`，P46–P49 的构建报 `unknown variant mcp_servers`，升级 Agent 就好；反过来新 Agent 碰上旧 Runtime，旧 Runtime 不写这一行时仍按旧的默认（搜索 + MCP server）开，不会多开旧 Runtime 没同意过的功能。
 - print 模式（`ccnm run --print`、Machine API）没人能点"允许"，所以开了的工具必须写进允许表。实测不写的话，Claude Code 会自动拒绝 `WebSearch` 和 `WebFetch`。
 - Codex 不写 `model`（用 CLI 默认模型）时，`web_search` 开了也看不到效果：实测 0.154.0 和 0.155.1 在默认模型下三种取值发出的请求一字不差；指定 `gpt-5.1-codex` 这类模型才会带上搜索工具。
 - `WebFetch` 真正取网页之前，Claude Code 会先去 claude.ai 查这个域名安不安全。Agent 机器连不上 claude.ai 的话，每次都报 `Unable to verify if domain … is safe to fetch`。
@@ -431,7 +404,7 @@ enabled = true            # 默认值，可省略
 hidden = ["pdf", "pptx"]  # 这几个不交给会话，按会话里看到的名字
 ```
 
-**这台机器的账号装好的 skills 交不交给会话**（P48）。"装好的"指 `~/.claude/skills`、`~/.agents/skills`、`~/.codex/skills`、`~/.claude/commands` 里的；项目里的（`.claude/skills` 那些）一直都给，这一节管不到。**默认全开**，是用户 2026-09-22 的决定。
+**这台机器的账号装好的 skills 交不交给会话**。"装好的"指 `~/.claude/skills`、`~/.agents/skills`、`~/.codex/skills`、`~/.claude/commands` 里的；项目里的（`.claude/skills` 那些）一直都给，这一节管不到。**默认全开**。
 
 两台机器各写各的、各管各的，和 `[ui]` 一样不跨机器：
 
@@ -450,9 +423,8 @@ Agent 这边为什么不直接用 Claude Code / Codex 自己的 skills：实测�
 - 读附件只在这个 skill 自己的目录里：点开头的文件（`.env` 这类）、链到目录外面的一律拒绝，报 `CCNM_E_POLICY`；不是 UTF-8 的报 `CCNM_E_INVALID_ARGS`（Runtime 上的会附上路径，让模型用 `exec_command` 就地用）。
 - 一次最多回 64 KiB，长文件分段，每段末尾写明下一段从第几行开始。
 - 目录挤不下时：Claude Code 只保留每个工具说明的前 2048 个字符，先保项目 skill 的描述，装好的依次退成只有名字、最后只剩个数；不带名字调 `load_skill` 总能拿到全表。一共最多 100 个，超了先丢装好的。
-- 关掉（`enabled = false`）：Runtime 上关，`load_skill` 回到只有项目的；Agent 上关，只移除它的 skills 部分，P50 的 Agent MCP 仍开启且有可用 server 时，`ccnm_agent` 服务仍会启动。都从下一个会话开始算，开着的会话不变。
+- 关掉（`enabled = false`）：Runtime 上关，`load_skill` 回到只有项目的；Agent 上关，只移除它的 skills 部分，[`[agent_mcp]`](#agent_mcp) 开着且有可用 server 时，`ccnm_agent` 服务仍会启动。都从下一个会话开始算，开着的会话不变。
 - 这台 Runtime 的执行账号是专门建的 `ccrun` 时，它的 HOME 里一般什么都没装，这一节在 Runtime 上等于没有效果；要给它装，就装到 `~ccrun/.claude/skills` 这类目录里。
-- 旧版本的 ccnm 不认识这一节，读到它会整份配置报错（配置对未知字段是严格的），先升级再写。
 
 ## `[runtime_mcp]`
 
@@ -463,7 +435,7 @@ project = true         # 默认值：读项目根下的 .mcp.json
 hidden = ["computer"]  # 这几个不转，按名字
 ```
 
-**Runtime 上的 MCP server 转不转给会话**（P49）。只写在 Runtime Node 上、只管这台机器：会话里多一个工具 `call_mcp_tool`，经它用这台机器上的 server——项目 `.mcp.json` 里声明的，和执行账号给 Claude Code（`~/.claude.json`）或 Codex（`~/.codex/config.toml`）装的。**默认全开**，是用户 2026-09-22 的决定。
+**Runtime 上的 MCP server 转不转给会话**。只写在 Runtime Node 上、只管这台机器：会话里多一个工具 `call_mcp_tool`，经它用这台机器上的 server——项目 `.mcp.json` 里声明的，和执行账号给 Claude Code（`~/.claude.json`）或 Codex（`~/.codex/config.toml`）装的。**默认全开**。
 
 **会是什么样**：
 
@@ -472,11 +444,10 @@ hidden = ["computer"]  # 这几个不转，按名字
 - 项目的 `.mcp.json` 排最前、同名压过装好的（Claude Code 的规矩）。只转 stdio 的；HTTP 的列出来、写明"从 Agent 那边连"（Agent 上装的见 [`[agent_mcp]`](#agent_mcp)）。配置里自己关掉的（Codex 的 `enabled = false`、JSON 里的 `"disabled": true`）列出来、写明关着，不起。
 - server 配置里自己的 `env` 照传，token 也传；Agent 的登录变量（`ANTHROPIC_API_KEY` 这些）不传。`${VAR}` 查不到像凭据的变量名——ccnm 的执行门本来就不许 Runtime 的环境里有它们——这样的 server 标成"缺什么"，不起。
 - 结果文字超过 32 KiB 的，先交前 32 KiB，其余像命令输出一样用 `read_output` 接着读。
-- 正常收尾先关闭 server、再放写锁；闲 5 分钟也会回收连接，下次调用重起。关闭时 server 进程组里剩下的一起杀掉并确认，清不掉写锁就不放（P52）；离开进程组的后代 Linux 上会话结束时一并收掉（P84），macOS 上不在其内，见 [P52 记录](research/2026-09-25-p52-relay-group-cleanup.md)。
+- 正常收尾先关闭 server、再放写锁；闲 5 分钟也会回收连接，下次调用重起。关闭时 server 进程组里剩下的一起杀掉并确认，清不掉写锁就不放；server 派生出去、离开了进程组的后代，项目机器是 Linux 时一并收掉，是 macOS 时够不着（[细节](research/2026-09-25-p52-relay-group-cleanup.md)）。
 - `project = false`：只转执行账号装的，不读项目的 `.mcp.json`——给托管别人项目、不想让项目文件点名要跑什么程序的机器。`hidden` 里的在哪声明都不转。
 - 执行账号是专门建的 `ccrun` 时，它的 HOME 里一般什么都没装，转的就只有项目自己声明的。
 - 改了从下一个会话开始算；开着的会话的工具说明（列了哪些 server）不变，但每次调用都重新读配置。
-- 旧版本的 ccnm 不认识这一节，读到它会整份配置报错，先升级再写。
 
 ## `[agent_mcp]`
 
@@ -487,7 +458,7 @@ local = ["context7", "mcp-time"] # 本机进程类的 server，按名字给（�
 hidden = ["exa-search"]          # 这几个不给，哪一类都一样
 ```
 
-**Agent 机器上装好的 MCP server 给不给受管会话、给哪些**（P50）。只写在 Agent Node 上、只管这台机器。给了的话，会话里 `ccnm_agent` 那个小服务（P48 起它就交 Agent 上的 skills）多两个工具：`call_mcp_tool`（和项目那台机器上的同名、同样的用法：不带参数列 server，带 `server` 列它的工具，再带 `tool` 和 `arguments` 调用）和 `read_mcp_result`（读一次交不完的结果的后面部分）。读的是你给 Claude Code（`~/.claude.json` 顶层的 `mcpServers`）和 Codex（`~/.codex/config.toml`，或 `$CODEX_HOME` 下的）装的，同名时 Claude 的那份生效。
+**Agent 机器上装好的 MCP server 给不给受管会话、给哪些**。只写在 Agent Node 上、只管这台机器。给了的话，会话里 `ccnm_agent` 那个小服务（它也负责交 Agent 上的 skills）多两个工具：`call_mcp_tool`（和项目那台机器上的同名、同样的用法：不带参数列 server，带 `server` 列它的工具，再带 `tool` 和 `arguments` 调用）和 `read_mcp_result`（读一次交不完的结果的后面部分）。读的是你给 Claude Code（`~/.claude.json` 顶层的 `mcpServers`）和 Codex（`~/.codex/config.toml`，或 `$CODEX_HOME` 下的）装的，同名时 Claude 的那份生效。
 
 **分两类，默认不一样**：
 
@@ -502,14 +473,13 @@ hidden = ["exa-search"]          # 这几个不给，哪一类都一样
 
 - 要 workspace 也同意：Runtime 上的 `agent_tools` 里有 `mcp_servers`（默认有）。它和这一节都开着，远端会话才有这两个工具；这台机器上一个能给的 server 都没有时，工具也不出现。
 - 不带参数调 `call_mcp_tool`，每个 server 一行：能用的写"not started"或它的工具，不给的写明原因（本机的没点名、配置里关掉了、缺环境变量、老的 HTTP+SSE 传输）。
-- 结果文字超过 32 KiB 的，先交前 32 KiB（尽量断在换行后面），末尾写明 `read_mcp_result ref=… offset=…`；留在内存里 30 分钟，单条最多 16 MiB。实测 52 000 字节在 Claude Code、Codex 里都一个字节不少地读回来了。
+- 结果文字超过 32 KiB 的，先交前 32 KiB（尽量断在换行后面），末尾写明 `read_mcp_result ref=… offset=…`；留在内存里 30 分钟，单条最多 16 MiB，一个会话总共最多 64 MiB，会话结束就没了。实测 52 000 字节在 Claude Code、Codex 里都一个字节不少地读回来了。
 - HTTP 的经这台机器的 `curl` 连（没装 `curl` 的话报错说明）。地址和请求头（exa 的 key 就在地址里）写在只有你能读的临时文件里交给 `curl`，不出现在命令行上。要 OAuth 登录的 server 报"需要登录"：令牌在 Claude Code 那里，ccnm 拿不到。
 - 本机程序类的 server 拿到的环境：起 `ccnm_agent` 的客户端给它什么，它就拿什么，去掉 Agent 的登录变量（`ANTHROPIC_API_KEY`、`CODEX_HOME` 这些）和 `SSH_AUTH_SOCK`，再加配置里 `env` 写的。`GITHUB_TOKEN` 这类不去掉——你直接用 Claude Code 时它们也拿得到。
-- **配置里的 `${VAR}` 在受管会话里多半查不到你在 shell 里 export 的变量**：会话里的 Claude / Codex 是 Agent 上的 Controller（launchd 起的）经 tmux 带起来的，环境里只有 `HOME`、`PATH`、`SHELL`、`TMPDIR`、`USER` 这类，`~/.zshrc` 里 export 的不在（2026-09-23 在 fodelf 上看的）。Codex 更少：它交给 MCP server 的只有 `HOME`、`PATH`、`LC_CTYPE`、`__CF_USER_TEXT_ENCODING`（0.154.0、0.155.1 实测）。查不到的，清单里那个 server 写 `its config uses GITHUB_TOKEN, which this session's server does not have`，点名调用报 `CCNM_E_CONFIG`，不起。要在受管会话里用它，把值直接写进配置的 `env` 或地址；`${VAR:-默认值}` 查不到时用默认值，不会报缺。
-- 正常路径在会话结束或闲置 5 分钟时回收 server，下次调用重起；Host 强杀服务及派生后代的清理不能据此保证。Agent 和 Runtime relay 复用了关闭回调，Runtime 已复现的后代残留问题在 Agent 侧仍须专项复验。
+- **配置里的 `${VAR}` 在受管会话里多半查不到你在 shell 里 export 的变量**：会话里的 Claude / Codex 是 Agent 上的 Controller（launchd 起的）经 tmux 带起来的，环境里只有 `HOME`、`PATH`、`SHELL`、`TMPDIR`、`USER` 这类，`~/.zshrc` 里 export 的不在（2026-09-23 在一台 macOS Agent 上看的）。Codex 更少：它交给 MCP server 的只有 `HOME`、`PATH`、`LC_CTYPE`、`__CF_USER_TEXT_ENCODING`（0.154.0、0.155.1 实测）。查不到的，清单里那个 server 写 `its config uses GITHUB_TOKEN, which this session's server does not have`，点名调用报 `CCNM_E_CONFIG`，不起。要在受管会话里用它，把值直接写进配置的 `env` 或地址；`${VAR:-默认值}` 查不到时用默认值，不会报缺。
+- 会话结束或闲置 5 分钟时回收 server，下次调用重起。server 派生出去、离开了进程组的后代，在 Agent 机器上不管什么系统都不保证收掉（Linux 上那套回收只在项目机器一侧）；Host 被强杀时也一样。
 - `enabled = false`：这台机器的一个都不给。改了从下一个会话开始算。
 - 同一个名字两台机器上都有（比如都装了 context7）：两个都能用，模型看到的说明是"项目那台机器上的那个在项目旁边"。
-- 旧版本的 ccnm 不认识这一节，读到它会整份配置报错，先升级再写。
 
 为什么经 ccnm 转、而不是把这些 server 直接写进 Claude / Codex 的配置：实测直接写进去的话，超过约 50 000 字符的结果 Claude Code 会存到本机磁盘、只给模型 2 KB 预览要它用 `Read` 去读（受管会话没有 `Read`），Codex 只留 12 KB；每个 server 的全部工具也会进每一次请求（playwright 一家 21 KB）。实测和取舍见 [P50 记录](research/p50-agent-mcp-2026-09-22.md)。
 
@@ -520,13 +490,13 @@ ccnm init --agent <alias>       # 在项目所在的机器上
 ccnm init --runtime <alias>     # 在跑 Claude 的机器上
 
 ccnm workspace list
-ccnm workspace add <name> [path] [--agent-node <node>]
-ccnm workspace remove <name>
+ccnm workspace add [名字] [路径]    # 不给名字用目录名，不给路径用当前目录
+ccnm workspace remove <名字>
 ```
 
-`ws` 是 `workspace` 的别名。
+`ws` 是 `workspace` 的别名。`workspace add` 的其他选项：`--replace`（名字已存在时改指到这个目录，不加就报错）、`--permission-mode <模式>`（写 [`claude_permission_mode`](#claude_permission_mode)）、`--allow-unconfined-exec`（写 [`allow_unconfined_exec`](#allow_unconfined_exec)）、`--agent-node <node>`。
 
-`workspace add` 在项目所在的机器上跑，写的节点从这份配置里来（P69 起）：`runtime_node` 是 `this`（`this` 就叫 `runtime` 时不写，用默认值）；`agent_node` 是叫 `agent` 的那个节点，没有就是 `this` 以外唯一的那个，有好几个时必须用 `--agent-node` 指定，否则报错、什么都不写。P69 之前它总写 `agent`/`runtime`，节点另起名字的配置会被拒（[F24](research/2026-10-04-p62-resume-release.md#7-新发现)）。
+`workspace add` 在项目所在的机器上跑，写的节点从这份配置里来：`runtime_node` 是 `this`（`this` 就叫 `runtime` 时不写，用默认值）；`agent_node` 是叫 `agent` 的那个节点，没有就是 `this` 以外唯一的那个，有好几个时必须用 `--agent-node` 指定，否则报错、什么都不写。
 
 ccnm 用 `toml_edit` 增量修改这个文件，你写的注释不会被吃掉。写之前会整份 parse 一遍，不合法就一个字节都不写。
 
@@ -540,21 +510,3 @@ config 里不存任何 secret：
 Claude OAuth        由 Claude Code 自己管
 SSH private key     由 OpenSSH 管
 ```
-
-## 为什么不保留旧配置兼容层
-
-这些字段是在项目第一次发布之前移除的，没有兼容层：
-
-```text
-[hosts.*]        work_host        runtime_host
-ssh              ssh_from_work    ssh_from_runtime / ssh_from_agent
-```
-
-现在统一是：
-
-```text
-[nodes.*]        this             runtime_node（顶层）
-ssh              agent_node       runtime_node（workspace 内）
-```
-
-dogfood 阶段一次性做完破坏性迁移，比发布之后长期背兼容层便宜。

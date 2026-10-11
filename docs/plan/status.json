@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-10-11T10:05:00+09:00",
-  "current_task": "P87",
+  "last_updated": "2026-10-11T11:20:00+09:00",
+  "current_task": null,
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
     "source": "docs/research/codex-internal-wiring-2026-09-07.md",
@@ -4305,15 +4305,57 @@
     {
       "id": "P87",
       "title": "受管 Claude 会话：自动压缩提前到 30 万，并告诉它压缩时留什么",
-      "status": "in_progress",
+      "status": "completed",
       "depends_on": [
         "P85"
       ],
-      "owner": "claude-opus-5-5（Claude Code 桌面端会话）",
+      "owner": null,
       "started_at": "2026-10-11T10:05:00+09:00",
-      "last_updated": "2026-10-11T10:05:00+09:00",
-      "completed_criteria": [],
-      "evidence": [],
+      "last_updated": "2026-10-11T11:20:00+09:00",
+      "completed_criteria": [
+        "P87.1",
+        "P87.2",
+        "P87.3",
+        "P87.4"
+      ],
+      "evidence": [
+        {
+          "kind": "offline",
+          "criteria": [
+            "P87.1"
+          ],
+          "ref": "docs/research/2026-10-11-p87-auto-compact.md",
+          "commit": "303afd4",
+          "result": "夹具 docs/research/probes/p87-auto-compact.py：真实 Claude Code 在 tmux 里交互式运行接本机假模型（空 HOME、假 key、sandbox-exec 只放本机出站），连发三轮、每次回复报固定 context。本机 2.1.286 与 fodelf 2.1.296 各六项全部符合：旧设置报 30 万不压；新设置报 29 万第 3 轮压缩且压缩请求含 Additional Instructions 与 ccnm 指令全文、报 23 万不压；workspace 目录 settings.local.json 的 CLAUDE_CODE_AUTO_COMPACT_WINDOW=200000 报 19 万照样压（环境变量优先）；-p 下允许表加一个不认识的键、以及新设置本身，MCP 工具都照常执行。-p 测不出主动压缩（30–90 万不压，约 98 万撞上限才压），已写明。没测真实模型写出的总结质量。"
+        },
+        {
+          "kind": "offline",
+          "criteria": [
+            "P87.2"
+          ],
+          "ref": "docs/research/2026-10-11-p87-auto-compact.md",
+          "commit": "9107f9f",
+          "result": "policy.rs：远端会话 settings.json 加 autoCompactWindow: 300000 与不带 matcher 的 PreCompact command 钩子 printf '%s\\n' '<COMPACT_INSTRUCTIONS>'（只输出写死文字，不读 stdin/项目/模型输入；指令无单引号）。settings_compact_early_and_say_what_to_keep 在旧代码上红（autoCompactWindow 为 Null），新代码经 /bin/sh -c 真跑钩子逐字比对输出；session 测试原断言只有 permissions 一个键，本意不变改为恰好三个键；provider_compat 按惯例把有意改动加到期望值上，fixture 未重录。同地会话不变。"
+        },
+        {
+          "kind": "offline",
+          "criteria": [
+            "P87.3"
+          ],
+          "ref": "docs/configuration.md",
+          "commit": "303afd4",
+          "result": "配置说明新增「受管 Claude 会话的自动压缩」一节（详细说明只此一处）：默认值与理由、指令内容、实测触发点、换值用环境变量写在哪（workspace 目录或 ~/.claude/settings.json 的 env）、用户设置里的 autoCompactWindow 会被盖掉、项目 CLAUDE.md 的 Compact Instructions 受握手约 1200 字预算、Codex 不受影响。"
+        },
+        {
+          "kind": "offline",
+          "criteria": [
+            "P87.4"
+          ],
+          "ref": "docs/research/2026-10-11-p87-auto-compact.md",
+          "commit": "9107f9f",
+          "result": "本机 macOS arm64：cargo fmt --check、clippy --workspace --all-targets -D warnings、cargo test --workspace --no-fail-fast（20 个二进制 1074 passed / 0 failed；第一次跑出 session 那条断言失败，修正后重跑全绿）、scripts/ci_gates.py（计划、协议、Python 247 ran / 0 failed）、check_plan、git diff --check。没在 Linux 上跑 Rust 测试（改动只是设置文件内容，钩子测试用 /bin/sh）。"
+        }
+      ],
       "blockers": []
     }
   ],
@@ -4382,7 +4424,7 @@
     "【2026-10-08 P80 时看到 / 只记不修】Agent 上的 MCP 转发 ccnm_agent（P50）在受管 Codex 会话里同样没配 tool_timeout_sec，Codex 对它只等 300 秒。它的 call_mcp_tool 默认等 60 秒、起 server 30 秒，用户给 Agent 上某个 server 配的 tool_timeout_sec 接近或超过 300 秒时（还没起的 server 起它的时间也算在内），调用会被 Codex 先截断、不发取消，照样在 Agent 上跑完。值取决于用户配置、不归 ccnm 的常量管，P80 没修。依据 docs/research/2026-10-08-p80-codex-tool-timeout.md 第 6 节。"
   ],
   "handoff": {
-    "next_action": "**2026-10-11 认领 P87（进行中）。** 用户要求受管 Claude 会话的 settings.json 加 autoCompactWindow 默认 30 万，压缩时带合理指令、尽量少丢细节（可参考 /recap）。依据：10-10 xdo 会话按 API 价折合约 $69，70% 是 1M 窗口拖到 96.9 万才压缩造成的缓存读；Claude Code 只清理原生工具的旧结果，mcp__ccnm__* 一条不清。做法：settings.json 加该键和一个 printf 写死指令的 PreCompact 钩子；零额度测法是 tmux 交互式 + 假模型（-p 测不出主动压缩）。下一步：先写在旧代码上红的测试，再实现、跑夹具和门禁。\n\n之前的交接：\n**2026-10-10 发 v0.14.0、三台换装并零额度真机验证；current_task 为 null。** 用户 10-09 说\"推送发版，并三机安装\"。版本号 9b813d5 的 CI 在 macOS 红：P52 中立用例只等子进程活着就关会话，忙时它没写第一笔就被收掉（v0.13.1 同样 2/32，测试赌时序），6fbbb76 改成先等 child-tick 出现，CI run 37948964218 全绿后打 tag；release run 38011554382 四个文件齐全，macOS 包 6a757cf8…（二进制 fd36fb2c…）、Linux 包 bccb20c9…（二进制 f6806744…）。三台换装（本机、fodelf Controller pid 52660、hpsrv ccrun），四个日用 workspace doctor 可以用了（2 项不查）、退出 0。真机（docs/research/2026-10-09-release-0.14.0.md）：P84 在 hpsrv 用发布二进制对照 v0.13.1，两种 setsid 逃逸都收掉、写锁 released；中立客户端 54/0；受管会话起停正常、两端协商到 2026-07-28。P85 那一行查出措辞在 runtime_user 就是本人时不成立，发版后在 main 上改了（v0.14.0 里还是旧的，等下次发版）。压测时同批 A/B 曾显示新版更易超时，查明是拿 debug 构建比发布构建，release 对 release 24/24 对 24/24、耗时一样。\n\n之前的交接：\n**2026-10-09 P85 完成（离线 + hpsrv 上实测硬挡法），current_task 为 null。** 专用账号模式下 doctor 多一行\"以你身份生效的文件\"：执行账号报项目里现有的 .vscode/.claude/.mcp.json 等，有就是注意、没有是正常、旧 Runtime 不查，共用账号不出（ac8b7bd 代码，e99e32b 文档，记录 docs/research/2026-10-09-p85-opener-config.md）。用户原定\"查可写性\"，实施前核对属主能改 chmod/ACL、永远写得了，改为列出加给做法；Linux 硬挡要 chattr -R +i，不带 -R 挡不住目录里已有文件（实测）。同日用户定 P84 的 macOS 部分不做（02efd99）。都没推送、没发版：本地从 f69a648 起未推送的提交含 P86（不兼容，下次发版升 0.14.0）、P84、P85，推送和发版等用户点头。\n\n之前的交接：\n**2026-10-09 P84 完成（离线，Linux 在 hpsrv 上跑），current_task 为 null。** Linux 上 mcp-serve 是后代的 subreaper，命令里 setsid 出去的后代会话结束时收掉才交写锁（7625ac8 代码，534c561 文档，记录 docs/research/2026-10-09-p84-linux-orphans.md）。实施中查出按进程组判定会误杀中继 server，改为只认会话号。都没推送、没发版；连同 P86（不兼容，下次发版升 0.14.0）一起等用户定推送。剩下要用户定的：①P84 的 macOS 部分——nix 没有列子进程的接口，可选加 libproc 依赖、轮询 ps（尽力而为）或不做；②P85 专用账号模式下 doctor 查以人身份生效的文件可写性，细节待确认（Linux 上项目根可写就做不到按条目保护，macOS 可用 ACL deny delete，检测在专用账号模式下基本总会报注意）；③推送 f69a648 起本地的提交（含 P86、P84）。hpsrv 上 /home/ccrun/p84 是本轮临时目录，可删。",
+    "next_action": "**2026-10-11 P87 完成（离线 + 两版真实 Claude Code 零额度实测），current_task 为 null。** 远端受管 Claude 会话的 settings.json 加 autoCompactWindow: 300000 和一个 printf 写死指令的 PreCompact 钩子（9107f9f 代码，303afd4 文档与夹具，记录 docs/research/2026-10-11-p87-auto-compact.md）。起因：10-10 xdo 会话按 API 价约 $69，七成是 1M 窗口拖到 96.9 万才压缩造成的缓存读，Claude Code 又只清原生工具的旧结果。2.1.286/2.1.296 交互式实测：29 万压、23 万不压，压缩请求带 ccnm 指令，环境变量仍优先，不认识的键不影响允许表；-p 测不出主动压缩。注意：fodelf 四个 workspace 目录里 10-11 早些时候写的 settings.local.json（环境变量 20 万）仍在，装上新版后那四个项目实际是 20 万，要 30 万得删掉它们。没推送、没发版、没在 Linux 跑；Codex 会话未改。\n\n之前的交接：\n**2026-10-10 发 v0.14.0、三台换装并零额度真机验证；current_task 为 null。** 用户 10-09 说\"推送发版，并三机安装\"。版本号 9b813d5 的 CI 在 macOS 红：P52 中立用例只等子进程活着就关会话，忙时它没写第一笔就被收掉（v0.13.1 同样 2/32，测试赌时序），6fbbb76 改成先等 child-tick 出现，CI run 37948964218 全绿后打 tag；release run 38011554382 四个文件齐全，macOS 包 6a757cf8…（二进制 fd36fb2c…）、Linux 包 bccb20c9…（二进制 f6806744…）。三台换装（本机、fodelf Controller pid 52660、hpsrv ccrun），四个日用 workspace doctor 可以用了（2 项不查）、退出 0。真机（docs/research/2026-10-09-release-0.14.0.md）：P84 在 hpsrv 用发布二进制对照 v0.13.1，两种 setsid 逃逸都收掉、写锁 released；中立客户端 54/0；受管会话起停正常、两端协商到 2026-07-28。P85 那一行查出措辞在 runtime_user 就是本人时不成立，发版后在 main 上改了（v0.14.0 里还是旧的，等下次发版）。压测时同批 A/B 曾显示新版更易超时，查明是拿 debug 构建比发布构建，release 对 release 24/24 对 24/24、耗时一样。\n\n之前的交接：\n**2026-10-09 P85 完成（离线 + hpsrv 上实测硬挡法），current_task 为 null。** 专用账号模式下 doctor 多一行\"以你身份生效的文件\"：执行账号报项目里现有的 .vscode/.claude/.mcp.json 等，有就是注意、没有是正常、旧 Runtime 不查，共用账号不出（ac8b7bd 代码，e99e32b 文档，记录 docs/research/2026-10-09-p85-opener-config.md）。用户原定\"查可写性\"，实施前核对属主能改 chmod/ACL、永远写得了，改为列出加给做法；Linux 硬挡要 chattr -R +i，不带 -R 挡不住目录里已有文件（实测）。同日用户定 P84 的 macOS 部分不做（02efd99）。都没推送、没发版：本地从 f69a648 起未推送的提交含 P86（不兼容，下次发版升 0.14.0）、P84、P85，推送和发版等用户点头。\n\n之前的交接：\n**2026-10-09 P84 完成（离线，Linux 在 hpsrv 上跑），current_task 为 null。** Linux 上 mcp-serve 是后代的 subreaper，命令里 setsid 出去的后代会话结束时收掉才交写锁（7625ac8 代码，534c561 文档，记录 docs/research/2026-10-09-p84-linux-orphans.md）。实施中查出按进程组判定会误杀中继 server，改为只认会话号。都没推送、没发版；连同 P86（不兼容，下次发版升 0.14.0）一起等用户定推送。剩下要用户定的：①P84 的 macOS 部分——nix 没有列子进程的接口，可选加 libproc 依赖、轮询 ps（尽力而为）或不做；②P85 专用账号模式下 doctor 查以人身份生效的文件可写性，细节待确认（Linux 上项目根可写就做不到按条目保护，macOS 可用 ACL deny delete，检测在专用账号模式下基本总会报注意）；③推送 f69a648 起本地的提交（含 P86、P84）。hpsrv 上 /home/ccrun/p84 是本轮临时目录，可删。",
     "scope": "2026-10-08 用户要求：零额度复现 Codex 300 秒工具超时、选修法、补外部入口文档、跑门禁、更新状态、粒度提交、不推送。改动：crates/ccnm-core（provider/codex 的 TOOL_TIMEOUT 与启动参数、测试；mcp/hooks 的 MAX_TIMEOUT 改 pub(crate)；mcp/output 注释）、docs/protocol/remote-workspace-mcp-v1.md、docs/usage.md、docs/troubleshooting.md、docs/research 的 P80 记录与夹具、ROADMAP、status。没动任何机器、已装的 ccnm 与配置；Codex 0.154.0 包和源码只下到会话 scratchpad。",
     "planning_validation": {
       "at": "2026-09-08T21:22:43+09:00",

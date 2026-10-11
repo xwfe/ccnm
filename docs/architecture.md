@@ -184,6 +184,8 @@ Runtime Executor 身份
 
 出站 SSH 凭据算在边界里，是因为 Runtime Executor 有一把可用私钥，就等于 `exec_command` 能以它的名义连到别的机器。**现在没有任何一条 ccnm 路径要求它持有这样一把钥匙**：会话、诊断、MCP transport 全部是 Agent 连进来。这是 P7.4 的结果，并已在真机上复验：会话活着时执行身份的进程表里只有入站 sshd 与 `mcp-serve`，没有任何 ssh 客户端（[Batch E 记录](research/p7-batch-e-2026-09-10.md)）。细节见[生产安全](production-safety.md)与[双执行入口方案](plan/runtime-surfaces.md)。
 
+这句说的是 ccnm 不要求，不是执行账号手里没有。**默认的共用账号里，执行账号就是你（Operator）自己**，从项目机器发起会话要用的那把连 Agent 的钥匙它也拿得到，模型一条 `ssh` 就能连回 Agent Node（2026-10-11 实测，[记录](research/2026-10-11-reverse-ssh-to-agent.md)）。自测和堵法见[生产安全](production-safety.md#默认配置下项目机器能连回-ai-机器)。
+
 ## 历史术语
 
 旧设计/研究文档中：

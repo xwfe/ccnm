@@ -236,6 +236,8 @@ ccnm 不实现任何网络策略，**也不声明任何 egress 边界**。`exec_
 
 需要限制出站的，在 tailnet ACL、防火墙或 OS 网络策略上做，并且不要拿 `ccnm doctor` 的输出当依据：它查不到网络策略。另外注意 `No SSH keys` 那一行的语义是"Runtime Executor 名下没有 ccnm 出站需要的私钥/agent"，不是"这个账号出不去"。
 
+默认的共用账号下，"出得去"还包括连回 Agent Node，2026-10-11 在 macOS→macOS（v0.14.0）上实测过（[记录](research/2026-10-11-reverse-ssh-to-agent.md)）；自测和堵法见[生产安全](production-safety.md#默认配置下项目机器能连回-ai-机器)。
+
 ## P3 发布门禁结果
 
 四条门禁的实测结果，证据见 [Codex 方向](research/p3-public-codex-2026-09-08.md) 与 [Claude 方向](research/p3-public-claude-2026-09-09.md)：

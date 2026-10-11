@@ -13,6 +13,7 @@
 **不建（默认）是什么样**：Runtime 配置里没写 `runtime_user`，ccnm 把这个账号当成和你共用的。
 
 - 模型跑的命令能碰到这个账号能碰的一切：你的 SSH 私钥和 SSH agent、Git / 云服务凭据、别的仓库、它有的 sudo 或 admin、Docker socket——**如果你在这台机器上也登录过 Claude / Codex，还包括那份登录**。让模型跑一条命令只需要一句话，包括藏在它被要求读的文件里的那句。
+- **它还能连回跑 AI 的那台。** 快速开始要你让这个账号免密 SSH 到 AI 那台，模型一条 `ssh` 就过去了，AI 的登录和你在那台上的东西都在那里。自测和堵法见下面[默认配置下项目机器能连回 AI 机器](#默认配置下项目机器能连回-ai-机器)。
 - ccnm 照样把这些查一遍：`ccnm doctor` 里 `Runtime 执行身份`、`sudo 权限`、`admin 组`、`SSH 私钥`、`Claude 凭据` 这些行如实显示，有问题就是"注意"，**但什么都不挡**，结论照样是"可以用了"。
 - 仍然会拒绝的只有三种，和账号是谁无关：以 root 运行；说不清执行身份是谁；Runtime 的环境里继承了 `ANTHROPIC_*`、`CLAUDE_*` 这类 AI 认证变量（修法是别 export，见[凭证边界](#凭证边界)）。
 
@@ -29,7 +30,38 @@
 runtime_user = "ccrun"
 ```
 
-ccnm 就按专用账号查它：上面那些"注意"会变成"失败"，`exec_command` 被拒（够得到 Agent 登录时整个会话不开），直到账号真的干净；`allow_unconfined_exec`、`allow_unisolated_credentials` 两个开关也只在这个模式下有意义。怎么建、怎么配见本页后面几节，下一节讲为什么要分这几种身份。
+ccnm 就按专用账号查它：上面那些"注意"会变成"失败"，`exec_command` 被拒（够得到 Agent 登录时整个会话不开），直到账号真的干净；`allow_unconfined_exec`、`allow_unisolated_credentials` 两个开关也只在这个模式下有意义。怎么建、怎么配见本页后面几节，[四种身份](#四种身份别混成一个)讲为什么要分这几种身份。
+
+### 默认配置下项目机器能连回 AI 机器
+
+**先自测。** 在项目机器上，用替 AI 跑命令的那个账号（默认就是你自己）跑：
+
+```bash
+ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null <AI 那台的别名> true; echo $?
+```
+
+- 打出 `0`：连得回去，模型调 `exec_command` 跑同一条也是 0。2026-10-11 在作者的两台 Mac 上实测过（v0.14.0、默认配置，[记录](research/2026-10-11-reverse-ssh-to-agent.md)）。
+- 打出 `Permission denied` 再打 `255`：这个名字连不上。别名只是个名字，把它换成 `<你在 AI 那台的账号>@<它的 IP 或 tailnet 名字>` 再试一遍，都不是 0 才算连不上。
+- 后两个 `-o` 别省。没连过那台的账号（比如新建的 `ccrun`）不加它们会报 `Host key verification failed`，也是 255，看着像连不上，其实模型自己加上这两个参数就过去了。会打一行 `Warning: Permanently added …`，写进的是 `/dev/null`，不改你的 known_hosts。
+- 建了专用账号的，以它的身份跑：`sudo -u ccrun ssh …`。它的 `~/.ssh/config` 里没有你的别名，直接写 `<账号>@<地址>`。
+
+**为什么会这样**：[快速开始第 2 节](getting-started.md#2-配好双向-ssh)要你让项目机器上的账号免密 SSH 到 AI 那台（从项目机器发起会话要用），命令默认又正好以这个账号跑。ccnm 会去掉命令环境里的 `SSH_AUTH_SOCK`，但私钥文件和 `~/.ssh/config` 里的别名都还在，ssh 照样用得上。doctor 看不出这一条：`SSH 私钥` 那一行只看执行账号名下有没有私钥，不去试连。
+
+**两种堵法。默认不用建 `ccrun`，用第一种就行**；只有要在项目机器上用 `--print`、`ccnm rpc`，或者项目机器上你的账号里还有别的不想让模型碰的东西，才换第二种。
+
+| | 只从 AI 那台发起 | 建专用执行账号 |
+| --- | --- | --- |
+| 怎么做 | 在 **AI 那台**的 `~/.ssh/authorized_keys` 里删掉项目机器上你那把钥匙的公钥那一行，以后 ccnm 命令都在 AI 那台敲 | 建 `ccrun`，Runtime 配置写 `runtime_user`，Agent 改用它登进来（本页后面几节） |
+| 为什么管用 | 只从 AI 那台发起时，ccnm 从来不需要项目机器连回去。实测：项目机器那份配置里 AI 机的别名改成连不上的，`init`、`doctor`、开会话、`status`、`attach`、`ls`、`stop`、`log` 在 AI 那台照常 | 命令以 `ccrun` 跑，它名下没有能登 AI 那台的钥匙 |
+| 代价 | `--print`、`cleanup`、`ccnm rpc` 只能在项目机器上敲，这种部署下都用不了；在项目机器上敲 `ccnm my-project`、`attach`、`stop`、`doctor` 都报 `CCNM_E_AGENT_UNREACHABLE` | 要建账号、给它开项目目录的权限、在它名下装工具链 |
+
+只从 AI 那台发起时三件事要知道：
+
+- **删的是 AI 那台上的公钥。** 只在项目机器上把私钥挪走或改名不算数，同一个账号里的东西模型都翻得到（[换个目录藏私钥不算数](#换个目录藏私钥不算数)）。
+- **这把钥匙你别的机器也在用的话，删了它们也连不上 AI 那台。** 先确认它只给项目机器用。
+- **`ccnm init --agent` 会提示"下面这条必须不用输密码就能过：ssh <别名> true"**，这种部署下不用管它，别名照写就行，`init` 不去连。
+
+**两种都挡不住的情况：AI 那台不看钥匙就放行。** 典型是 Tailscale SSH，按 tailnet 身份授权，项目机器上换成哪个账号都一样（`ccrun` 那次见[网络出口](#网络出口)）。作者那台 AI 机器以前就是这样：命令里关掉私钥和 ssh-agent（`-o PubkeyAuthentication=no -o IdentityAgent=none`）照样是 0。2026-10-11 把 Tailscale SSH 关掉、改用系统 SSH 加钥匙之后，同一条命令变成 `Permission denied`、255，带钥匙的连法照常（[记录](research/2026-10-11-reverse-ssh-to-agent.md#9-关掉-fodelf-的-tailscale-ssh)）。所以两台之间别用 Tailscale SSH，连法和怎么关见[快速开始第 2 节](getting-started.md#2-配好双向-ssh)。光关掉它还不够，钥匙还在、照样连得回去；再用上面两种堵法之一，跑一遍自测打出非 0，才算堵上。
 
 ## 四种身份，别混成一个
 

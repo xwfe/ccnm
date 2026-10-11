@@ -19,7 +19,7 @@
 
 两台都可以是 macOS 或 Linux，任意搭配。每种搭配验到哪一步，见 [README 的表](../README.md#两台机器各干什么)。
 
-ccnm 不替你配 Tailscale、VPN、SSH 密钥或 `~/.ssh/config`，它只用已经能连通的 SSH 别名。
+ccnm 不替你配 Tailscale、VPN、SSH 密钥或 `~/.ssh/config`，它只用已经能连通的 SSH 别名。怎么配见[第 2 节](#2-配好双向-ssh)。
 
 ## 1. 两台都装 ccnm
 
@@ -41,9 +41,34 @@ install -m 755 ccnm ~/.local/bin/ccnm.new && mv ~/.local/bin/ccnm.new ~/.local/b
 
 Linux 的包要 glibc 2.39 以上（比如 Debian 13、Ubuntu 24.04），太旧时一运行就报 ``version `GLIBC_2.39' not found``。Mac 上用浏览器下载的包会被系统拦着不让运行，先执行 `xattr -d com.apple.quarantine ccnm`；用上面的 `curl` 下载不会。
 
-## 2. 先验证双向 SSH
+## 2. 配好双向 SSH
 
-在放项目的机器上：
+两台之间用**系统自带的 SSH 服务加钥匙**连。Tailscale、VPN 只负责让两台互相够得着，`HostName` 写它给的地址就行。**别开 Tailscale SSH**：它按 tailnet 身份放行、不看钥匙，模型在项目机器上一条 `ssh` 就能回到 AI 那台，删钥匙、建专用账号都挡不住（[实测记录](research/2026-10-11-reverse-ssh-to-agent.md)）。已经开了的，见下面[关掉 Tailscale SSH](#已经开了-tailscale-ssh先这样关)。
+
+**第一步，两台都打开 SSH 服务。** macOS：系统设置 → 通用 → 共享，打开"远程登录"。Linux（Debian / Ubuntu）：`sudo apt install openssh-server`。
+
+**第二步，每个方向一把钥匙。** 在发起连接的那台生成，把公钥放进对面那个账号（`ssh-copy-id` 第一次要输对面账号的密码）：
+
+```bash
+ssh-keygen -t ed25519 -f ~/.ssh/work -N ''
+ssh-copy-id -i ~/.ssh/work.pub me@192.0.2.10
+```
+
+`work`、`me`、`192.0.2.10` 换成你的。`-N ''` 是不设口令：ccnm 连 SSH 时没人替你输口令，设了口令又没交给 ssh-agent，连接直接失败。
+
+**第三步，在 `~/.ssh/config` 里给对面起个别名，写上用哪把钥匙**：
+
+```text
+Host work
+    HostName 192.0.2.10
+    User me
+    IdentityFile ~/.ssh/work
+    IdentitiesOnly yes
+```
+
+"别名"就是 `Host` 后面那个名字，ccnm 配置里写的都是它。`HostName` 用 Tailscale 时写那台的 `100.x` 地址或 MagicDNS 名字。**`IdentityFile` 别省**：钥匙不叫 `id_ed25519` 这类默认名字时，不写它 ssh 根本不会拿这把钥匙去试。
+
+**第四步，两头各验一次。** 在放项目的机器上：
 
 ```bash
 ssh -o BatchMode=yes <连 AI 那台的别名> true
@@ -57,18 +82,37 @@ ssh -o BatchMode=yes <连项目那台的别名> true
 
 成功的样子是什么都不打、马上返回。ccnm 连 SSH 时不允许弹任何提示：要输密码、私钥口令没交给 ssh-agent，都直接算失败，所以先在这里过一遍。常见失败：
 
-- `Permission denied (publickey)`：对面账号的 `~/.ssh/authorized_keys` 里没有你的公钥。
+- `Permission denied (publickey…)`：对面账号的 `~/.ssh/authorized_keys` 里没有这把公钥，或者别名里没写 `IdentityFile`。
 - `Host key verification failed`：第一次连这台，先不带 `-o BatchMode=yes` 手动连一次，确认主机指纹。
 
-"别名"就是 `~/.ssh/config` 里 `Host` 后面那个名字：
+### 已经开了 Tailscale SSH，先这样关
 
-```text
-Host work
-    HostName 192.0.2.10
-    User me
+**先确认那台的系统 SSH 认你的钥匙，不然关完就连不上了。** 借现在这条连接转到那台自己的 22 端口试一次（那台要有 `nc`，macOS 自带）：
+
+```bash
+ssh -o BatchMode=yes -o ProxyCommand="ssh <别名> nc 127.0.0.1 22" <别名> true; echo $?
 ```
 
+打出 `0` 再关。`Permission denied (publickey…)` 就先回第二、三步配好钥匙和 `IdentityFile`。作者那台就是这样：公钥早放进去了，别名里没写 `IdentityFile`，以前全靠 Tailscale SSH 不看钥匙才连得上。
+
+**然后在那台机器上关掉：**
+
+```bash
+tailscale set --ssh=false
+```
+
+从 Tailscale SSH 连进去的会话里跑，它会先拒：`You are connected using Tailscale SSH; this action will result in your session disconnecting.`，最后一行是 `aborted, no changes made`。要在这种会话里关就加 `--accept-risk=lose-ssh`，当前这条会话可能会断。关完从别的终端连一次，`ssh -v` 里能看到 `remote software version OpenSSH` 和 `using "publickey"` 就对了。2026-10-11 在 macOS 上用 Homebrew 装的 tailscaled 1.102.2 实测。
+
+关完还有两件事：
+
+- **以前靠 Tailscale SSH 免钥匙连这台的设备**，比如手机上的 SSH App、别的机器，也要按第二、三步配上钥匙。
+- **known_hosts 一般不用动**：作者那台上系统 SSH 和 Tailscale SSH 出示的是同一把主机钥匙。要是报 `REMOTE HOST IDENTIFICATION HAS CHANGED`，先在那台上 `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` 看指纹，对上了再 `ssh-keygen -R <地址>` 后重连。
+
+### 连过去的账号就是执行账号
+
 从跑 AI 的机器连过去的那个账号，就是替 AI 跑命令的账号（文档里叫执行账号）。用你自己的就行；想另建一个低权限账号，见[生产安全](production-safety.md#要不要建专用账号)。
+
+**两条合起来有个口子**：执行账号默认就是你自己，而第一条让你自己能免密连到 AI 那台，所以模型跑一条 `ssh` 也能连回去，AI 的登录就在那台上。介意的话，自测和两种堵法见[生产安全：默认配置下项目机器能连回 AI 机器](production-safety.md#默认配置下项目机器能连回-ai-机器)。
 
 ## 3. 初始化放项目的机器
 

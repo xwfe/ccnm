@@ -647,6 +647,12 @@ CCNM_E_INVALID_ARGS: no output kept for r-0193f2c8a1b74e05
 
 **怎么不再踩**：状态行就是答案，先读它。`stopped when its session ended` 是连接断了；`killed on its timeout` 是你给的 `timeout_ms` 到了；`stopped by stop_command` 是有人显式停的；`no longer running, and its exit status is unknown` 是跑它的 server 被强杀——那种情况它起的进程组**可能还在**，得上 Runtime 自己看。
 
+### `ccnm ls` 写"--print 运行中"、`ccnm status` 说没有在跑的会话，可交互会话明明开着
+
+**先确认会话在不在**：`ccnm log <项目>` 第一行是"运行中"，`ccnm attach <项目>` 能接上，就是在跑。`attach`、`stop`、`cleanup` 不受这个问题影响，照常用。
+
+**原因**：跑 AI 的那台装的 tmux 是 3.7c（`tmux -V`）。ccnm 列会话时用制表符分隔 `tmux list-sessions -F` 的各个字段，tmux 3.7c 会把输出里的制表符换成 `_`，ccnm 解析不出来，会话列表就成了空的。这时只剩项目机器上还在跑的 `mcp-serve`，所以被标成"--print 运行中"，"工具通不通"那一列也空着。v0.14.0 起就是这样，还没修（[发版记录](research/2026-10-11-release-0.15.0.md)第 4 节）。
+
 ### 受管 Claude 会话的上下文涨得快、额度掉得快
 
 **先看是哪块大**：会话里敲 `/context`。`Messages` 大是工具结果和对话本身；`MCP tools` 大是 Agent 机器上转过来的 MCP server 和 skills，把用不上的按名字藏掉（[`[agent_mcp]`](configuration.md#agent_mcp)、[`[machine_skills]`](configuration.md#machine_skills)）。

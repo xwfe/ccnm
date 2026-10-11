@@ -148,9 +148,9 @@ ccnm cleanup my-project                  # 看看会话留下了什么，再按�
 
 | | |
 | --- | --- |
-| 最新版本 | [v0.14.0](https://github.com/xwfe/ccnm/releases)（2026-10-09），每个版本改了什么写在 Releases 页 |
+| 最新版本 | [v0.15.0](https://github.com/xwfe/ccnm/releases)（2026-10-11），每个版本改了什么写在 Releases 页 |
 | 真机验过什么 | 按搭配见上面[两台机器各干什么](#两台机器各干什么)；哪些**没验过**逐条写在[支持矩阵](docs/support-matrix.md) |
-| 从旧版升到 v0.14.0 | 配置里还写着 `codex_exec_server` 的，删掉那一行，否则配置读不进来（[报错长这样](docs/troubleshooting.md#升级后-ccnm-报-unknown-field-codex_exec_server)）。另外两处新东西不用改配置：项目机器是 Linux 时，会话结束会收掉命令留下的后台进程；另建了执行账号时，doctor 多一行 `以你身份生效的文件` |
+| 从旧版升到 v0.15.0 | 不用改配置。新的行为：受管 Claude 会话到 30 万 token 左右就自动压缩，并告诉模型压缩时留什么（[为什么、怎么换值](docs/configuration.md#受管-claude-会话的自动压缩)）；你在 `~/.claude/settings.json` 里写的 `autoCompactWindow` 在受管会话里不再生效，要改值用环境变量。还在 v0.13.x 的，先删掉配置里的 `codex_exec_server`（v0.14.0 起读不进来，[报错长这样](docs/troubleshooting.md#升级后-ccnm-报-unknown-field-codex_exec_server)） |
 
 已知限制：
 

@@ -2,8 +2,8 @@
 
 ## 结论
 
-1. **默认配置下，模型一条 `exec_command` 就能连回 AI 机器。** 作者日用的两台 Mac、v0.14.0 发布二进制、Runtime 不写 `runtime_user`（P78 起的默认共用账号）：`exec_command` 里跑 `ssh -o BatchMode=yes fodelf true`，退出码 0。原因是两条默认凑在一起：[快速开始第 2 节](../getting-started.md#2-先验证双向-ssh)要你让项目机器上的账号免密 SSH 到 AI 机器；命令默认又正好以这个账号跑。AI 的登录和你在 AI 机器上的日常数据都在那台，[README](../../README.md#它解决什么问题) 说 ccnm 解决的"一句 prompt 就能把登录读出去"，在默认配置下没解决，影响面还从项目机器扩到了 AI 机器。
-2. **这对机器上，删钥匙也挡不住。** fodelf 的 22 端口是 Tailscale SSH，按 tailnet 身份放行：exec 里把私钥和 ssh-agent 都关掉（`-o PubkeyAuthentication=no -o IdentityAgent=none`）照样退出 0。同样的参数连普通 OpenSSH（本机的 sshd）是 `Permission denied`、255。这和 P7.5 在 `ccrun` 上撞到的是同一件事（[生产安全：网络出口](../production-safety.md#网络出口)），所以专用账号在这种部署下也挡不住。
+1. **默认配置下，模型一条 `exec_command` 就能连回 AI 机器。** 作者日用的两台 Mac、v0.14.0 发布二进制、Runtime 不写 `runtime_user`（P78 起的默认共用账号）：`exec_command` 里跑 `ssh -o BatchMode=yes fodelf true`，退出码 0。原因是两条默认凑在一起：[快速开始第 2 节](../getting-started.md#2-配好双向-ssh)要你让项目机器上的账号免密 SSH 到 AI 机器；命令默认又正好以这个账号跑。AI 的登录和你在 AI 机器上的日常数据都在那台，[README](../../README.md#它解决什么问题) 说 ccnm 解决的"一句 prompt 就能把登录读出去"，在默认配置下没解决，影响面还从项目机器扩到了 AI 机器。
+2. **这对机器上，删钥匙也挡不住。** fodelf 的 22 端口是 Tailscale SSH，按 tailnet 身份放行：exec 里把私钥和 ssh-agent 都关掉（`-o PubkeyAuthentication=no -o IdentityAgent=none`）照样退出 0。同样的参数连普通 OpenSSH（本机的 sshd）是 `Permission denied`、255。这和 P7.5 在 `ccrun` 上撞到的是同一件事（[生产安全：网络出口](../production-safety.md#网络出口)），所以专用账号在这种部署下也挡不住。同日按用户要求关掉了 fodelf 的 Tailscale SSH，之后不用钥匙就连不上了（第 9 节）。
 3. **只从 AI 机器发起时，ccnm 确实不需要项目机器连回 AI 机器。** 项目机器那份临时配置里把 AI 机的别名写成解析不了的名字，在 fodelf 上 `init`、`doctor`、`run --detached`、`status`、`attach`、`ls`、`stop`、`log` 全部正常，会话期间本机只有入站的 `mcp-serve`、没有任何发往 AI 机器的 ssh，结束后写锁 `released`。代价是 `--print`、`cleanup`、`ccnm rpc` 用不了，项目机器上的会话命令全部报 `CCNM_E_AGENT_UNREACHABLE`（第 4.2 节）。
 4. **doctor 看不出这个口子**：`SSH 私钥` 那一行只看执行账号名下有没有私钥，不去试连。
 
@@ -100,12 +100,50 @@ ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=no -o UserKnow
 - **项目机器一侧发起的命令**用 ssh ControlPath，状态目录放在会话临时目录里时 ControlPath 展开到 195 字节，超过 macOS 的 103，doctor 报 `CCNM_E_CONFIG: ControlPath … expands to 195 bytes`。第 4.2 节为此另用了一个短状态目录。只影响测试搭法。
 - fodelf 日用 `ccnm log ccnm` 里多了一条这次的探针会话（`ad40cf91`，被停止，1 分钟）。
 
-## 7. 用户的决定和还没定的
+## 7. 用户的决定
 
 **用户 2026-10-11 定：默认不需要 `ccrun`。** 共用账号仍是默认，快速开始仍按双向 SSH 写、`init --agent` 的提示不改；生产安全里两种堵法以"只从 AI 机器发起"为先，`ccrun` 只在要在项目机器上用 `--print`、`ccnm rpc`，或者项目机器上那个账号里还有别的不想让模型碰的东西时才建。同日四个记录提交已推送（`0180e3c..eaf8645`），随后按这个决定同步了 architecture、troubleshooting、support-matrix 各一处指向生产安全的说明。
 
-还没定的：作者自己这对机器，fodelf 上的 Tailscale SSH 让两种堵法都失效。要堵得在 fodelf 上关 Tailscale SSH 或改 tailnet ACL，属于动真实机器的 SSH 设置，没做。
+作者自己这对机器：fodelf 上的 Tailscale SSH 让两种堵法都失效。用户同日要求关掉它、以后不走 Tailscale SSH，过程见第 9 节。
 
 ## 8. 收尾
 
 fodelf 上 `/private/tmp/ccrp/` 和本机的短状态目录 `/private/tmp/ccrp-rt/` 已删；两边没有残留的 bridge、`mcp-serve`、tmux server。本机临时配置和驱动脚本在会话临时目录里，随会话清掉。
+
+## 9. 关掉 fodelf 的 Tailscale SSH
+
+用户同日说"关闭 fodelf tailscale ssh 进行测试，如果还能连接，那就关闭好了，以后就不通过 tailscale ssh 的方式了"。关掉之后要是连不上，就没法远程开回来，所以先预检、再带着自动回滚关。
+
+### 9.1 关之前的预检
+
+| 检查 | 结果 |
+| --- | --- |
+| fodelf 上的 tailscale | Homebrew 装的 tailscaled 1.102.2，root 跑；`tailscale debug prefs` 里 `"RunSSH": true` |
+| fodelf 自己的 22 端口（`nc 127.0.0.1 22`） | `SSH-2.0-OpenSSH_10.2`：系统的远程登录开着 |
+| 借现有连接转到 fodelf 的 sshd（`ProxyCommand="ssh fodelf nc 127.0.0.1 22"`，`HostKeyAlias` 设成 known_hosts 里记的 tailnet 地址，`StrictHostKeyChecking=yes`） | 主机钥匙**和 known_hosts 里那把一致**；认证 `Permission denied (publickey,password,keyboard-interactive)`，rc=255 |
+| 为什么不认 | 本机有 `~/.ssh/fodelf`，它的公钥就在 fodelf 的 `authorized_keys` 里（只比了指纹，2 条里对上 1 条）；但本机 `~/.ssh/config` 的 `Host fodelf` 没写 `IdentityFile`，ssh 只试默认名字的钥匙。以前能连全靠 Tailscale SSH 不看钥匙 |
+| 同一条预检加 `IdentityFile ~/.ssh/fodelf` | OpenSSH，主机钥匙一致，`using "publickey"`，rc=0 |
+
+### 9.2 改了什么
+
+- **本机 `~/.ssh/config`**：`Host fodelf` 里加一行 `IdentityFile ~/.ssh/fodelf`。原文件备份在 `~/.ssh/config.bak-2026-10-11-before-identityfile`。钥匙本身和两边的 `authorized_keys` 没动。
+- **fodelf**：`tailscale set --ssh=false --accept-risk=lose-ssh`。第一次没带 `--accept-risk`，CLI 发现命令来自 Tailscale SSH 会话就拒了（`You are connected using Tailscale SSH; this action will result in your session disconnecting.` … `aborted, no changes made`），什么都没改；权限不是问题，fodelf 账号就能改。
+- **回滚保险**：关的命令放在 fodelf 上一个单独的 tmux（`-L ccrp-revert`）里跑，同一个 tmux 里 5 分钟后没看到确认文件就 `tailscale set --ssh=true`。关掉后新连接成功，随即放确认文件、关掉那个 tmux。
+
+### 9.3 关之后
+
+| 检查 | 结果 |
+| --- | --- |
+| 本机新连 fodelf | `remote software version OpenSSH_10.2`，`using "publickey"`，rc=0 |
+| 不带钥匙（`-o PubkeyAuthentication=no -o IdentityAgent=none`） | `Permission denied`，rc=255 |
+| `ssh fodelf false` | rc=1。Tailscale SSH 下是 0（[排错手册](../troubleshooting.md#message-is-not-valid-for-protocol-1-ccnm-versions-probably-differ)"SSH 不传退出码"） |
+| fodelf 的 `RunSSH`、tailnet | `false`；`tailscale status` 照常在线 |
+| 日用 `ccnm doctor ccnm`（本机发起） | 可以用了（2 项不查）；`连 Agent 的 SSH`、`反向 SSH`、`Controller`、`远端 MCP 握手` 都正常 |
+| 第 2 节的四条 exec 探针重跑（同一份临时配置） | 直接连 rc=0（OpenSSH、`publickey`）；不用钥匙 rc=255 `Permission denied`；命令环境同前 |
+| 快速开始里写的预检命令照抄（`ssh -o BatchMode=yes -o ProxyCommand="ssh fodelf nc 127.0.0.1 22" fodelf true`） | rc=0。这次是关掉之后跑的，验的是命令写法；关之前跑的是 9.1 里加了 `HostKeyAlias` 等参数的同一条 |
+
+**结论**：这对机器上，项目机器能不能连回 fodelf，现在只看 `~/.ssh/fodelf` 这把钥匙。默认配置的口子还在（这是用户定的默认），但两种堵法现在都管用。
+
+**跟着变的**：以前靠 Tailscale SSH 免钥匙连 fodelf 的都不行了，比如 hpsrv 的 `bing`（以前不用钥匙就能以 `fodelf` 身份登进去）、手机上走 Tailscale SSH 的 SSH App，以及 tailnet ACL 放行的其他本地账号。要用就按[快速开始第 2 节](../getting-started.md#2-配好双向-ssh)配钥匙。快速开始原来的别名示例也少了 `IdentityFile` 这一行，已补上。
+
+**收尾**：fodelf 上的回滚 tmux、它的日志和确认文件、`/private/tmp/ccrp/` 都已删。

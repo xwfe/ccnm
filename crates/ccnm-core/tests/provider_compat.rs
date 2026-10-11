@@ -270,6 +270,28 @@ fn claude_behavior_matches_snapshot_except_documented_safety_and_colocated_fixes
             .unwrap()
             .retain(|name| !OPENED.iter().any(|opened| name == opened));
     }
+    // P87 compacts a remote session at a 300 000-token window instead of
+    // the model's 1M (measured: 1M let a session reach 969 000 tokens, and
+    // re-reading that context was 70% of its cost), and hands every
+    // compaction ccnm's instructions through a PreCompact hook. Permissions
+    // and flags are unchanged; a colocated session gets neither key.
+    for launch in expected["launches"].as_array_mut().unwrap() {
+        if launch.pointer("/spec/runtime").is_none_or(Value::is_null) {
+            continue;
+        }
+        let settings = launch["settings"].as_object_mut().unwrap();
+        settings.insert(
+            "autoCompactWindow".into(),
+            Value::from(claude::AUTO_COMPACT_WINDOW),
+        );
+        settings.insert(
+            "hooks".into(),
+            json!({"PreCompact": [{"hooks": [{
+                "type": "command",
+                "command": format!("printf '%s\\n' '{}'", claude::COMPACT_INSTRUCTIONS),
+            }]}]}),
+        );
+    }
     assert_eq!(actual, expected);
 }
 

@@ -105,6 +105,55 @@ pub fn mcp_config(cmd: &Cmd, agent_server: Option<&agent_skills::Recorded>) -> s
     serde_json::json!({ "mcpServers": servers })
 }
 
+/// The context size a remote session compacts at, instead of the model's
+/// own window (1M on Opus 5.5). Measured on a real session (P87): 1M let
+/// the context reach 969 000 tokens before the first compaction, and every
+/// request re-reads the whole context, so 70% of the session's cost was
+/// cache reads. Claude Code clears old results of its native tools on its
+/// own, but never of `mcp__ccnm__*` (2.1.286 bundle), so a remote session
+/// leans on compaction more than a native one. Lower means cheaper requests
+/// and more compactions, each losing detail; the user chose 300 000.
+/// `CLAUDE_CODE_AUTO_COMPACT_WINDOW` in the environment still wins over it.
+pub const AUTO_COMPACT_WINDOW: u32 = 300_000;
+
+/// What a compaction is told to keep, on top of Claude Code's own summary
+/// structure: the state a remote session cannot get back by itself after
+/// the summary (background commands are only reachable by `output_ref`,
+/// files only through the Runtime), and what can be fetched again and so
+/// should not be kept. The first line asks for what `/recap` gives.
+///
+/// Printed by the PreCompact hook between single quotes, so it must never
+/// contain one; the test runs the hook through a shell to hold that.
+pub const COMPACT_INSTRUCTIONS: &str = "\
+This session works on a remote ccnm workspace through the mcp__ccnm__ tools; nothing it changed lives on this machine. In the summary:
+1. Start with one line on what this session is doing and where it stands, the way /recap would put it.
+2. Keep the requests, decisions and limits the user gave (what they allowed, what they ruled out) close to their words, with any later corrections.
+3. List every file created, changed, moved or deleted, by workspace-relative path, with one line on what changed and why. List commits made (short hash and subject) and what is still uncommitted.
+4. For every test, build or check that still fails: the exact command, the failing names and the decisive error lines verbatim. One line for each that now passes.
+5. For every background command still running (exec_command with run_in_background): its output_ref, its command and what it is for, so it can still be read with read_output or stopped with stop_command. Name the skills loaded with load_skill.
+6. Keep approaches that were tried and dropped, one line each with the reason, so they are not tried again.
+7. Leave out file contents, long command output and search results; they can be fetched again. Name the files and line ranges that matter instead.
+8. End with the exact next step.
+After the summary, versions returned by earlier read_file calls are stale: read a file again before apply_patch changes it.";
+
+/// The PreCompact hook: Claude Code appends a hook's stdout to the summary
+/// prompt as "Additional Instructions" (2.1.296: "Exit code 0 - stdout
+/// appended as custom compact instructions"), for automatic compactions
+/// and `/compact` alike. It runs on this machine, the one holding the
+/// login, so it is ccnm's fixed text and nothing else: it reads neither
+/// its stdin (the compaction details) nor anything from the project.
+/// `printf` is a shell builtin, so no PATH is involved.
+fn compact_hook() -> serde_json::Value {
+    serde_json::json!({
+        "PreCompact": [{
+            "hooks": [{
+                "type": "command",
+                "command": format!("printf '%s\\n' '{COMPACT_INSTRUCTIONS}'"),
+            }]
+        }]
+    })
+}
+
 /// The `--settings` file: permission to call each ccnm tool and each
 /// enabled agent tool without a prompt (there is nobody to answer one in
 /// print mode), and the native file and shell tools plus the agent tools
@@ -127,6 +176,13 @@ pub fn mcp_config(cmd: &Cmd, agent_server: Option<&agent_skills::Recorded>) -> s
 /// `agent_server`: the permissions of the Agent's own server's tools, when
 /// the session has it -- `load_skill` (P48), `call_mcp_tool` and
 /// `read_mcp_result` (P50) -- allowed like ccnm's.
+///
+/// And when to compact and what to keep (P87): [`AUTO_COMPACT_WINDOW`] and
+/// the [`compact_hook`]. This file is Claude Code's `--settings`, which
+/// outranks the user's own settings files, so a user's own
+/// `autoCompactWindow` does not apply in a remote session; the environment
+/// variable does. A Claude Code that does not know the key ignores it
+/// (an unknown key was measured not to disturb the permissions).
 pub fn settings(
     remote: bool,
     agent_tools: &AgentTools,
@@ -149,7 +205,9 @@ pub fn settings(
         "permissions": {
             "allow": allow,
             "deny": deny,
-        }
+        },
+        "autoCompactWindow": AUTO_COMPACT_WINDOW,
+        "hooks": compact_hook(),
     })
 }
 

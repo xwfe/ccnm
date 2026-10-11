@@ -1243,8 +1243,13 @@ mod tests {
             .map(|a| a.as_str().unwrap())
             .collect();
         assert_eq!(deny[..NATIVE_TOOLS_DENIED.len()], NATIVE_TOOLS_DENIED);
-        // Nothing that would change how the user's Claude behaves elsewhere.
-        assert_eq!(s.as_object().unwrap().len(), 1, "{s}");
+        // Nothing that would change how the user's Claude behaves elsewhere:
+        // the file is this session's `--settings` and carries only the
+        // allow/deny lists and, since P87, when this session compacts and
+        // what it keeps. A new key here is a decision, not a side effect.
+        let mut keys: Vec<&str> = s.as_object().unwrap().keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(keys, ["autoCompactWindow", "hooks", "permissions"], "{s}");
     }
 
     #[test]

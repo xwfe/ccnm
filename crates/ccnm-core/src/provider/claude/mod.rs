@@ -28,7 +28,8 @@ pub const CREDENTIALS: super::CredentialMetadata = super::CredentialMetadata {
 mod policy;
 pub(crate) use policy::write_session_files;
 pub use policy::{
-    NATIVE_TOOLS_DENIED, mcp_config, settings, tool_names, tools_flag, transport_payload,
+    AUTO_COMPACT_WINDOW, COMPACT_INSTRUCTIONS, NATIVE_TOOLS_DENIED, mcp_config, settings,
+    tool_names, tools_flag, transport_payload,
 };
 
 use crate::error::{Error, ErrorCode, Result};
@@ -547,6 +548,48 @@ mod tests {
             settings(false, &chosen, &[]),
             serde_json::json!({ "permissions": {} })
         );
+    }
+
+    /// P87: a remote session compacts at a 300 000-token window instead of
+    /// the model's 1M, and every compaction, automatic or `/compact`, gets
+    /// ccnm's instructions through a PreCompact hook. The hook is run the
+    /// way Claude Code runs one, through a shell, and must print exactly
+    /// the text and nothing else. A colocated session gets neither.
+    #[test]
+    fn settings_compact_early_and_say_what_to_keep() {
+        let s = settings(true, &AgentTools::none(), &[]);
+        assert_eq!(s["autoCompactWindow"], 300_000);
+        let groups = s["hooks"]["PreCompact"]
+            .as_array()
+            .expect("a PreCompact hook");
+        assert_eq!(groups.len(), 1);
+        // No matcher: the hook runs for both triggers, manual and auto.
+        assert!(groups[0].get("matcher").is_none(), "{s}");
+        let hooks = groups[0]["hooks"].as_array().unwrap();
+        assert_eq!(hooks.len(), 1);
+        assert_eq!(hooks[0]["type"], "command");
+        let out = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg(hooks[0]["command"].as_str().unwrap())
+            .stdin(std::process::Stdio::null())
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{out:?}");
+        assert!(out.stderr.is_empty(), "{out:?}");
+        let text = String::from_utf8(out.stdout).unwrap();
+        for needed in [
+            "/recap",
+            "output_ref",
+            "load_skill",
+            "read_file",
+            "apply_patch",
+        ] {
+            assert!(text.contains(needed), "{needed} missing from:\n{text}");
+        }
+        assert_eq!(text, format!("{COMPACT_INSTRUCTIONS}\n"));
+        let colocated = settings(false, &AgentTools::none(), &[]);
+        assert!(colocated.get("autoCompactWindow").is_none(), "{colocated}");
+        assert!(colocated.get("hooks").is_none(), "{colocated}");
     }
 
     /// The real document from 2.1.260, so a field rename upstream shows up

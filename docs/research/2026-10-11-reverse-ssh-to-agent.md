@@ -7,7 +7,7 @@
 3. **只从 AI 机器发起时，ccnm 确实不需要项目机器连回 AI 机器。** 项目机器那份临时配置里把 AI 机的别名写成解析不了的名字，在 fodelf 上 `init`、`doctor`、`run --detached`、`status`、`attach`、`ls`、`stop`、`log` 全部正常，会话期间本机只有入站的 `mcp-serve`、没有任何发往 AI 机器的 ssh，结束后写锁 `released`。代价是 `--print`、`cleanup`、`ccnm rpc` 用不了，项目机器上的会话命令全部报 `CCNM_E_AGENT_UNREACHABLE`（第 4.2 节）。
 4. **doctor 看不出这个口子**：`SSH 私钥` 那一行只看执行账号名下有没有私钥，不去试连。
 
-默认值没改：要不要改是用户的事，见第 7 节。
+默认值没改：用户定默认不需要 `ccrun`，见第 7 节。
 
 ## 1. 拓扑和做法
 
@@ -100,10 +100,11 @@ ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=no -o UserKnow
 - **项目机器一侧发起的命令**用 ssh ControlPath，状态目录放在会话临时目录里时 ControlPath 展开到 195 字节，超过 macOS 的 103，doctor 报 `CCNM_E_CONFIG: ControlPath … expands to 195 bytes`。第 4.2 节为此另用了一个短状态目录。只影响测试搭法。
 - fodelf 日用 `ccnm log ccnm` 里多了一条这次的探针会话（`ad40cf91`，被停止，1 分钟）。
 
-## 7. 等用户定
+## 7. 用户的决定和还没定的
 
-- 默认要不要换：比如快速开始不再要求项目机器能连回 AI 机器、改成"只从 AI 机器发起"，或者把 `ccrun` 写回推荐路径。这会改快速开始的顺序和 `init` 的提示，还会让新用户默认没有 `--print`。这次只把口子、自测和两种堵法写进文档。
-- 作者自己这对机器：fodelf 上的 Tailscale SSH 让两种堵法都失效。要堵得在 fodelf 上关 Tailscale SSH 或改 tailnet ACL，属于动真实机器的 SSH 设置，没做。
+**用户 2026-10-11 定：默认不需要 `ccrun`。** 共用账号仍是默认，快速开始仍按双向 SSH 写、`init --agent` 的提示不改；生产安全里两种堵法以"只从 AI 机器发起"为先，`ccrun` 只在要在项目机器上用 `--print`、`ccnm rpc`，或者项目机器上那个账号里还有别的不想让模型碰的东西时才建。同日四个记录提交已推送（`0180e3c..eaf8645`），随后按这个决定同步了 architecture、troubleshooting、support-matrix 各一处指向生产安全的说明。
+
+还没定的：作者自己这对机器，fodelf 上的 Tailscale SSH 让两种堵法都失效。要堵得在 fodelf 上关 Tailscale SSH 或改 tailnet ACL，属于动真实机器的 SSH 设置，没做。
 
 ## 8. 收尾
 

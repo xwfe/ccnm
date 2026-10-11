@@ -1150,3 +1150,14 @@ P73 当时把"外部 MCP workspace 里执行账号的安全没人验"留作挡�
 - **P85.4** 文档：运维手册"项目目录"一节写怎么做；要硬挡的做法只写实测过的平台；调研第 3 条标已做；门禁通过。
 
 停止点：不拦写（`apply_patch` 仍只拒 `.git`，shell 本来就拦不住）；不查你本人 git 的 `safe.directory`；不替你改任何权限；不发版。
+
+### P87 — 受管 Claude 会话：自动压缩提前到 30 万，并告诉它压缩时留什么
+
+**依赖 P85。** 现象（2026-10-11，[记录](../research/2026-10-11-p87-auto-compact.md)）：用户 10-10 的 xdo 受管会话（Opus 5.5，4 小时 24 分，503 次请求）按 API 价折合约 $69，其中 70% 是缓存读——1M 窗口拖到 96.9 万 token 才第一次自动压缩，396 次请求的 context 超过 20 万。Claude Code 2.1.286 打包代码里，清理旧工具结果的两条路只认原生工具名，`mcp__ccnm__*` 的结果一条不清，所以受管会话比原生会话更依赖整段压缩。用户同日要求：ccnm 生成的 settings.json 加 `autoCompactWindow` 默认 30 万，压缩时带上合理的指令，让频繁压缩尽量少丢细节，可参考 `/recap`。
+
+- **P87.1** 测法与复现（零额度）：真实 Claude Code 在 tmux 里交互式运行，接本机假模型，每轮报固定的 context 大小，连发三轮，看有没有压缩。量出：不加设置时报 30 万不压缩；会话 settings.json 写 `autoCompactWindow: 300000` 后高于阈值压缩、低于不压；`PreCompact` 钩子的输出出现在压缩请求的 "Additional Instructions" 里；workspace 目录里 `.claude/settings.local.json` 的环境变量 `CLAUDE_CODE_AUTO_COMPACT_WINDOW` 仍然盖过这个默认值；设置文件多一个不认识的键时允许表照常生效（不认这个键的旧版 Claude 不出事）。`-p` 模式测不出主动压缩，写明原因。夹具放 `docs/research/probes/`。
+- **P87.2** 实现：远端会话的 settings.json 加 `autoCompactWindow: 300000` 和一个 `PreCompact` 钩子。钩子用 `printf` 原样输出 ccnm 写死的一段压缩指令，不读项目、模型或钩子输入里的任何东西。指令要求保留：开头一句"在做什么、做到哪"（照 `/recap`）、用户的要求和边界、改过的文件和提交、还没过的测试与关键报错原文、仍在跑的后台命令的 `output_ref`、已加载的 skill、放弃过的做法；不留文件全文和长输出；压缩后先 `read_file` 再 `apply_patch`。同地会话不变。先有在旧代码上红的测试；baseline 比对测试按惯例把这处有意改动加到期望值上。
+- **P87.3** 文档：配置说明写清默认值、为什么、指令内容、怎么改（环境变量优先级最高、写在哪；你自己 `~/.claude/settings.json` 里的 `autoCompactWindow` 会被盖掉）、项目 CLAUDE.md 里的 `## Compact Instructions` 也会被照做但受握手 2048 的预算（详细说明只放这一处）。
+- **P87.4** Rust、Python、计划门禁通过；研究记录与状态同步。
+
+停止点：不改 Codex 会话；不加 ccnm 配置键；不改 MCP 工具、说明和协议；不跑真实模型；不发版。

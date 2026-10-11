@@ -210,6 +210,8 @@ this is what copying it over with `scp` and no -p leaves behind
 顺带：这个特性也意味着**你自己在命令行上 `ssh work '任何会失败的命令'` 都会得到 `$? = 0`**，
 调试的时候别信那个退出码。
 
+两台之间本来也不该用 Tailscale SSH（它不看钥匙，见[快速开始第 2 节](getting-started.md#2-配好双向-ssh)）。作者那台 2026-10-11 关掉、改用系统 SSH 之后，`ssh <别名> false` 回的是 1。
+
 ### doctor 报 `reports ccnm <版本> like this machine, but it is not the same build`
 
 **症状**：两台机器 `ccnm --version` 一样，doctor 的 `Agent 的 ccnm` 或 `反向 SSH` 那一行却失败：
@@ -691,6 +693,14 @@ Machine API 那边看到的是同一件事的两种码：有进程正持有，`s
 - **项目机器是 macOS**：脱离了进程组的后代（`setsid`、守护进程）ccnm 够不着。还攥着命令输出的，写锁留着（上一节那种 `kept on purpose`）；连输出都放掉了的，写锁照常交出，它会在下一个会话旁边接着改文件。用 `ps -A -o pid,pgid,stat,command` 找到它（命令行里通常带着项目路径），以执行账号结束它。
 
 在这么干的是项目机器上的某个 MCP server（`call_mcp_tool`），而你又要求可靠交接时，在 Runtime 配置里用 `[runtime_mcp] hidden` 藏掉它（或 `enabled = false` 整个停用），结束旧会话后再核实一遍。不要删写锁强行恢复，不要按模糊的名字批量 kill。
+
+### 关掉 Tailscale SSH 之后报 `Permission denied (publickey,password,keyboard-interactive)`
+
+**症状**：以前 `ssh <别名>` 一直能连，在那台上 `tailscale set --ssh=false` 之后，同一个别名报这一句，doctor 里经这个别名连过去的那几行跟着失败。
+
+**原因**：Tailscale SSH 不看钥匙，所以别名配没配对钥匙一直看不出来；换成系统 SSH 之后才真的要钥匙。最常见的是公钥早放进对面了，别名里却没写 `IdentityFile`，钥匙又不叫 `id_ed25519` 这类默认名字，ssh 根本没拿它去试。作者那台就是这样。
+
+**怎么办**：在别名里加上 `IdentityFile ~/.ssh/<那把钥匙>`；公钥没放过的先 `ssh-copy-id`。做法见[快速开始第 2 节](getting-started.md#2-配好双向-ssh)。下次关之前先跑那里"先这样关"一节的预检，就不会关完才发现。
 
 ### doctor 报 `ssh <别名>: connect to host ... port 22: Operation timed out`
 

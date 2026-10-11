@@ -45,7 +45,7 @@ ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=no -o UserKnow
 - 后两个 `-o` 别省。没连过那台的账号（比如新建的 `ccrun`）不加它们会报 `Host key verification failed`，也是 255，看着像连不上，其实模型自己加上这两个参数就过去了。会打一行 `Warning: Permanently added …`，写进的是 `/dev/null`，不改你的 known_hosts。
 - 建了专用账号的，以它的身份跑：`sudo -u ccrun ssh …`。它的 `~/.ssh/config` 里没有你的别名，直接写 `<账号>@<地址>`。
 
-**为什么会这样**：[快速开始第 2 节](getting-started.md#2-先验证双向-ssh)要你让项目机器上的账号免密 SSH 到 AI 那台（从项目机器发起会话要用），命令默认又正好以这个账号跑。ccnm 会去掉命令环境里的 `SSH_AUTH_SOCK`，但私钥文件和 `~/.ssh/config` 里的别名都还在，ssh 照样用得上。doctor 看不出这一条：`SSH 私钥` 那一行只看执行账号名下有没有私钥，不去试连。
+**为什么会这样**：[快速开始第 2 节](getting-started.md#2-配好双向-ssh)要你让项目机器上的账号免密 SSH 到 AI 那台（从项目机器发起会话要用），命令默认又正好以这个账号跑。ccnm 会去掉命令环境里的 `SSH_AUTH_SOCK`，但私钥文件和 `~/.ssh/config` 里的别名都还在，ssh 照样用得上。doctor 看不出这一条：`SSH 私钥` 那一行只看执行账号名下有没有私钥，不去试连。
 
 **两种堵法。默认不用建 `ccrun`，用第一种就行**；只有要在项目机器上用 `--print`、`ccnm rpc`，或者项目机器上你的账号里还有别的不想让模型碰的东西，才换第二种。
 
@@ -61,7 +61,7 @@ ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=no -o UserKnow
 - **这把钥匙你别的机器也在用的话，删了它们也连不上 AI 那台。** 先确认它只给项目机器用。
 - **`ccnm init --agent` 会提示"下面这条必须不用输密码就能过：ssh <别名> true"**，这种部署下不用管它，别名照写就行，`init` 不去连。
 
-**两种都挡不住的情况：AI 那台不看钥匙就放行。** 作者那台 AI 机器的 22 端口是 Tailscale SSH，按 tailnet 身份授权：命令里关掉私钥和 ssh-agent（`-o PubkeyAuthentication=no -o IdentityAgent=none`）照样是 0，同样的参数连普通 OpenSSH 是 `Permission denied`。项目机器上换成哪个账号都一样（`ccrun` 那次见[网络出口](#网络出口)）。这种情况要在 AI 那台关掉 Tailscale SSH、改用普通 sshd 加钥匙，或者在 tailnet ACL 里不让项目机器 SSH 到 AI 那台。改完再跑一遍上面的自测，打出非 0 才算堵上。
+**两种都挡不住的情况：AI 那台不看钥匙就放行。** 典型是 Tailscale SSH，按 tailnet 身份授权，项目机器上换成哪个账号都一样（`ccrun` 那次见[网络出口](#网络出口)）。作者那台 AI 机器以前就是这样：命令里关掉私钥和 ssh-agent（`-o PubkeyAuthentication=no -o IdentityAgent=none`）照样是 0。2026-10-11 把 Tailscale SSH 关掉、改用系统 SSH 加钥匙之后，同一条命令变成 `Permission denied`、255，带钥匙的连法照常（[记录](research/2026-10-11-reverse-ssh-to-agent.md#9-关掉-fodelf-的-tailscale-ssh)）。所以两台之间别用 Tailscale SSH，连法和怎么关见[快速开始第 2 节](getting-started.md#2-配好双向-ssh)。光关掉它还不够，钥匙还在、照样连得回去；再用上面两种堵法之一，跑一遍自测打出非 0，才算堵上。
 
 ## 四种身份，别混成一个
 

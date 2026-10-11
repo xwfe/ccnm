@@ -54,6 +54,8 @@ ccnm attach my-project
 
 SSH 断开、终端关闭或笔记本暂时离线，不等于结束 session。只要 Agent Node 上的 tmux/session 还活着，就可以重新 attach。
 
+会话长了 Claude 会自动压缩 context。受管会话里 ccnm 把它提前到 30 万 token 左右，并告诉模型压缩时留什么；怎么换值见[配置说明](configuration.md#受管-claude-会话的自动压缩)，上下文涨得快怎么办见[排错手册](troubleshooting.md#受管-claude-会话的上下文涨得快额度掉得快)。
+
 ### 会话在 tmux 里，所以滚屏和复制跟你平时不一样
 
 交互式会话跑在 Agent Node 的 tmux 里，你的终端只看到一帧画面。**滚上去的内容不在你本地终端的回滚里**，在对面 tmux 的缓冲里——这就是为什么有人只能截图。

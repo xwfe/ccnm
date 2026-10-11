@@ -647,6 +647,22 @@ CCNM_E_INVALID_ARGS: no output kept for r-0193f2c8a1b74e05
 
 **怎么不再踩**：状态行就是答案，先读它。`stopped when its session ended` 是连接断了；`killed on its timeout` 是你给的 `timeout_ms` 到了；`stopped by stop_command` 是有人显式停的；`no longer running, and its exit status is unknown` 是跑它的 server 被强杀——那种情况它起的进程组**可能还在**，得上 Runtime 自己看。
 
+### 受管 Claude 会话的上下文涨得快、额度掉得快
+
+**先看是哪块大**：会话里敲 `/context`。`Messages` 大是工具结果和对话本身；`MCP tools` 大是 Agent 机器上转过来的 MCP server 和 skills，把用不上的按名字藏掉（[`[agent_mcp]`](configuration.md#agent_mcp)、[`[machine_skills]`](configuration.md#machine_skills)）。
+
+**能做的**，按省得多少排：
+
+1. **一件事开一个会话**，做完一段手动 `/compact 只留改了哪些文件、哪些测试还没过`。换任务就 `ccnm stop` 再开。
+2. **让项目文档好读**：状态、交接文档把"现在做到哪"写在最前面、写短，长记录挪走；项目 `CLAUDE.md` 里写"先搜到行号再按段读""测试命令自己收窄输出"这类规矩，压缩要求写在 `## Compact Instructions` 一节。注意受管会话里 `CLAUDE.md` 只能送到模型约 1200 字。
+3. **额度紧就关子代理**：每个子代理是一段独立的 context。在 workspace 上写 `agent_tools = ["web_search", "mcp_servers"]`（[`agent_tools`](configuration.md#agent_tools)）。
+
+**为什么受管会话更容易涨**：
+
+- **旧工具结果没人清**：Claude Code 会自己把 Read、Bash 这些原生工具的旧结果清掉，ccnm 工具（`mcp__ccnm__*`）的结果一条都不清，要等整段压缩。
+- **每次请求都重读整段 context**：v0.15.0 之前用 1M 窗口的模型要到约 97 万 token 才压缩。一次 4 小时的会话按 API 价算，七成花在这上面。
+- **v0.15.0 起提前了**：受管会话到 30 万左右就压缩，并告诉模型压缩时留什么。想换值、写在哪，见[配置说明](configuration.md#受管-claude-会话的自动压缩)。
+
 ### 合上笔记本睡一觉，第二天某个项目的工具连不上
 
 **症状**：同时开着几个项目，其他都好，唯独一个 `ccnm <workspace>` 起来之后 Claude 里 MCP 显示连接失败，`ccnm status` 那一行是 `TOOLS DOWN`。

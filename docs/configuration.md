@@ -483,6 +483,26 @@ hidden = ["exa-search"]          # 这几个不给，哪一类都一样
 
 为什么经 ccnm 转、而不是把这些 server 直接写进 Claude / Codex 的配置：实测直接写进去的话，超过约 50 000 字符的结果 Claude Code 会存到本机磁盘、只给模型 2 KB 预览要它用 `Read` 去读（受管会话没有 `Read`），Codex 只留 12 KB；每个 server 的全部工具也会进每一次请求（playwright 一家 21 KB）。实测和取舍见 [P50 记录](research/p50-agent-mcp-2026-09-22.md)。
 
+## 受管 Claude 会话的自动压缩
+
+这一节没有配置项：ccnm 给每个远端 Claude 会话写的设置文件里固定带两样东西。
+
+- **context 到 30 万 token 左右就自动压缩**（`autoCompactWindow: 300000`）。不设的话，Opus 5.5 这类 1M 窗口的模型要到约 97 万才压。每次请求都要把整段 context 从缓存里再读一遍，所以拖得越晚越贵：一次 4 小时的会话拖到 96.9 万才压，按 API 价算，缓存读占了七成花费（[P87 记录](research/2026-10-11-p87-auto-compact.md)）。受管会话比直接用 Claude Code 更吃这一点：Claude Code 会自己清掉 Read、Bash 这些原生工具的旧结果，ccnm 工具的结果它一条都不清。
+- **压缩时带一段 ccnm 的指令**，要求总结里：开头一句"在做什么、做到哪"（像 `/recap` 那样）；保留你提的要求和边界、改过的文件和提交、还没过的测试和关键报错原文、还在跑的后台命令的 `output_ref`、加载过的 skill、试过又放弃的做法；不留文件全文和长输出（随时能重新取）；压完先重新 `read_file` 再 `apply_patch`。原文是 `crates/ccnm-core/src/provider/claude/policy.rs` 里的 `COMPACT_INSTRUCTIONS`。它经一个 `PreCompact` 钩子交给 Claude Code，自动压缩和你手动敲 `/compact` 都会带上；`/compact` 后面你自己写的话照样生效，两段一起交给模型。
+
+实际触发点比窗口低一截：窗口 30 万时，实测报 29 万压、23 万不压；窗口 20 万时 18 万压、15 万不压。
+
+**想换个值**，用环境变量 `CLAUDE_CODE_AUTO_COMPACT_WINDOW`（10 万到 100 万），它比设置项优先。受管会话拿不到你在 shell 里 export 的变量，所以要写进 Agent 机器上某个设置文件的 `env`：
+
+- 只改一个项目：写在 `~/.local/state/ccnm/workspaces/<项目>/.claude/settings.local.json`，内容是 `{"env": {"CLAUDE_CODE_AUTO_COMPACT_WINDOW": "200000"}}`。这个目录是受管会话的工作目录，这里的设置只有 ccnm 会话会读到，你平时直接用 Claude Code 不受影响。`ccnm workspace remove <项目> --purge` 会连目录一起删掉它，重新加回这个项目后要再写一次。
+- 所有 Claude 会话（包括你直接用的）：写在 `~/.claude/settings.json` 的 `env` 里。
+
+别在 `~/.claude/settings.json` 里直接写 `autoCompactWindow`：ccnm 的设置文件是以 `--settings` 交给 Claude Code 的，优先级比你的高，写了在受管会话里不起作用。
+
+**项目自己的压缩要求**写在项目根 `CLAUDE.md` 里一节 `## Compact Instructions`，Claude Code 的总结提示会照着做。受管会话里 `CLAUDE.md` 是经 MCP 握手交给模型的，Claude Code 只留握手的前 2048 个 UTF-16 码元，扣掉 ccnm 自己那段，项目文件大约放得下 1200 个字符（中英文都按一个算），多出来的被截掉。所以这一节要写短、放在文件前面。
+
+Codex 会话不受这一节影响。不认 `autoCompactWindow` 的旧版 Claude Code 会忽略它：实测设置文件里多一个不认识的键，允许表照常生效。
+
 ## CLI 改配置
 
 ```bash

@@ -550,15 +550,16 @@ mod tests {
         );
     }
 
-    /// P87: a remote session compacts at a 300 000-token window instead of
-    /// the model's 1M, and every compaction, automatic or `/compact`, gets
-    /// ccnm's instructions through a PreCompact hook. The hook is run the
-    /// way Claude Code runs one, through a shell, and must print exactly
-    /// the text and nothing else. A colocated session gets neither.
+    /// P87: a remote session compacts at a 560 000-token window (P88; 300 000
+    /// in P87) instead of the model's 1M, and every compaction, automatic or
+    /// `/compact`, gets ccnm's instructions through a PreCompact hook. The
+    /// hook is run the way Claude Code runs one, through a shell, and must
+    /// print exactly the text and nothing else. A colocated session gets
+    /// neither.
     #[test]
     fn settings_compact_early_and_say_what_to_keep() {
         let s = settings(true, &AgentTools::none(), &[]);
-        assert_eq!(s["autoCompactWindow"], 300_000);
+        assert_eq!(s["autoCompactWindow"], 560_000);
         let groups = s["hooks"]["PreCompact"]
             .as_array()
             .expect("a PreCompact hook");
@@ -577,8 +578,16 @@ mod tests {
         assert!(out.status.success(), "{out:?}");
         assert!(out.stderr.is_empty(), "{out:?}");
         let text = String::from_utf8(out.stdout).unwrap();
+        // P88: what Claude Code's own summary prompt and its post-compaction
+        // message leave out for a remote session -- a status block up front,
+        // the code-snippet rule of its section 3 narrowed, the transcript
+        // path it points to being unreadable here, and the files to read
+        // first since it only restores those of its native Read.
         for needed in [
-            "/recap",
+            "Status",
+            "Files and Code Sections",
+            "transcript",
+            "read first",
             "output_ref",
             "load_skill",
             "read_file",

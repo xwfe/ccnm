@@ -270,8 +270,8 @@ fn claude_behavior_matches_snapshot_except_documented_safety_and_colocated_fixes
             .unwrap()
             .retain(|name| !OPENED.iter().any(|opened| name == opened));
     }
-    // P87 compacts a remote session at a 300 000-token window instead of
-    // the model's 1M (measured: 1M let a session reach 969 000 tokens, and
+    // P87 compacts a remote session at a smaller window than the model's 1M
+    // (560 000 since P88; measured: 1M let a session reach 969 000 tokens, and
     // re-reading that context was 70% of its cost), and hands every
     // compaction ccnm's instructions through a PreCompact hook. Permissions
     // and flags are unchanged; a colocated session gets neither key.

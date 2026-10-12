@@ -112,28 +112,40 @@ pub fn mcp_config(cmd: &Cmd, agent_server: Option<&agent_skills::Recorded>) -> s
 /// cache reads. Claude Code clears old results of its native tools on its
 /// own, but never of `mcp__ccnm__*` (2.1.286 bundle), so a remote session
 /// leans on compaction more than a native one. Lower means cheaper requests
-/// and more compactions, each losing detail; the user chose 300 000.
+/// and more compactions, each losing detail; the user chose 300 000 (P87),
+/// then 560 000 (P88). Claude Code compacts a little below it: at 560 000,
+/// a reported 550 000 compacted and 490 000 did not (2.1.286 and 2.1.296).
 /// `CLAUDE_CODE_AUTO_COMPACT_WINDOW` in the environment still wins over it.
-pub const AUTO_COMPACT_WINDOW: u32 = 300_000;
+pub const AUTO_COMPACT_WINDOW: u32 = 560_000;
 
 /// What a compaction is told to keep, on top of Claude Code's own summary
 /// structure: the state a remote session cannot get back by itself after
 /// the summary (background commands are only reachable by `output_ref`,
 /// files only through the Runtime), and what can be fetched again and so
-/// should not be kept. The first line asks for what `/recap` gives.
+/// should not be kept.
+///
+/// P88 fitted it to Claude Code's own prompt (2.1.286 bundle): its section
+/// "Files and Code Sections" asks for full code snippets, which item 3
+/// narrows instead of contradicting; after compaction it restores files
+/// and skills only for its native Read and Skill, so the summary names the
+/// files to read first and says to load skills again; and the message after
+/// the summary points at a transcript on this machine, which the
+/// `mcp__ccnm__` tools cannot read, hence the last line it asks for.
 ///
 /// Printed by the PreCompact hook between single quotes, so it must never
 /// contain one; the test runs the hook through a shell to hold that.
 pub const COMPACT_INSTRUCTIONS: &str = "\
-This session works on a remote ccnm workspace through the mcp__ccnm__ tools; nothing it changed lives on this machine. In the summary:
-1. Start with one line on what this session is doing and where it stands, the way /recap would put it.
-2. Keep the requests, decisions and limits the user gave (what they allowed, what they ruled out) close to their words, with any later corrections.
-3. List every file created, changed, moved or deleted, by workspace-relative path, with one line on what changed and why. List commits made (short hash and subject) and what is still uncommitted.
-4. For every test, build or check that still fails: the exact command, the failing names and the decisive error lines verbatim. One line for each that now passes.
-5. For every background command still running (exec_command with run_in_background): its output_ref, its command and what it is for, so it can still be read with read_output or stopped with stop_command. Name the skills loaded with load_skill.
-6. Keep approaches that were tried and dropped, one line each with the reason, so they are not tried again.
-7. Leave out file contents, long command output and search results; they can be fetched again. Name the files and line ranges that matter instead.
-8. End with the exact next step.
+This session works on a remote ccnm workspace through the mcp__ccnm__ tools; nothing it changed lives on this machine. After compaction the summary is all that is left: Claude Code restores no mcp__ccnm__ result and no load_skill text (it does that only for its own Read and Skill tools), and the transcript it points to afterwards is on this machine, which the mcp__ccnm__ tools cannot reach. Keep exact details in the summary. In it:
+1. Open with a Status block of at most five lines, before section 1: the goal; what is done; what is in progress; what is blocked or waiting on the user; the next action.
+2. Keep the requests, decisions and limits the user gave (what they allowed, what they ruled out) close to their words; where a later message changed an earlier one, say which one holds now.
+3. List every file created, changed, moved or deleted, by workspace-relative path, with one line on what changed and why. List commits made (short hash and subject) and what is still uncommitted. Under Files and Code Sections, quote code only where the next step depends on the exact lines (an edit in progress, a signature to match), with path and line numbers; the rest can be read again.
+4. For every test, build or check that still fails: the exact command, the failing names and the decisive error lines verbatim. One line for each that now passes. Name the command that checks the current work.
+5. Keep facts about the workspace that took effort to find: how to build, test and run it, paths, ports, versions, environment variables, and commands that did not work there and why.
+6. For every background command still running (exec_command with run_in_background): its output_ref, its command and what it is for, so it can still be read with read_output or stopped with stop_command.
+7. For each skill loaded with load_skill: its name and the rules from it that still apply. Its text is gone after compaction; load it again before following its steps.
+8. Keep approaches that were tried and dropped, one line each with the reason, so they are not tried again.
+9. Leave out file contents, long command output and search results. Instead name up to five files, with line ranges, to read first when work resumes.
+10. End with the exact next step as a tool call or command, then this line as written: The transcript path after this summary is on the machine running Claude Code; the mcp__ccnm__ tools cannot read it.
 After the summary, versions returned by earlier read_file calls are stale: read a file again before apply_patch changes it.";
 
 /// The PreCompact hook: Claude Code appends a hook's stdout to the summary

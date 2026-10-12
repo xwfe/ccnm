@@ -3233,7 +3233,7 @@ mod tests {
         fake.push(Output::exited(0, "tmux 3.7c\n")); // -V
         fake.push(Output::exited(
             0,
-            "ccnm-xshun\t1788496263\t1\t1\nccnm-other\t1788496264\t0\t1\n",
+            "ccnm-xshun|1788496263|1|1\nccnm-other|1788496264|0|1\n",
         ));
         fake.push(Output::exited(0, format!("CCNM_SESSION={id}\n")));
         // ps: the transport for that payload is running.
@@ -3475,7 +3475,7 @@ mod tests {
 
         let fake = FakeRunner::new();
         fake.push(Output::exited(0, "tmux 3.7c\n"));
-        fake.push(Output::exited(0, "ccnm-xshun\t1788496263\t0\t1\n"));
+        fake.push(Output::exited(0, "ccnm-xshun|1788496263|0|1\n"));
         fake.push(Output::exited(0, format!("CCNM_SESSION={id}\n")));
         // ps: everything else on the machine, but not that transport.
         fake.push(Output::exited(0, "/usr/bin/ssh -T home something else\n"));

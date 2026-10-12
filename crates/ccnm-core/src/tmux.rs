@@ -54,9 +54,13 @@ pub const PREFIX: &str = "ccnm-";
 /// The tmux session environment variable holding the ccnm session id.
 pub const SESSION_VAR: &str = "CCNM_SESSION";
 
-/// Field separator for `list-sessions -F`. A tab cannot appear in a
-/// session name (tmux replaces it) and none of the other fields are text.
-const SEP: char = '\t';
+/// Field separator for `list-sessions -F`. Printable on purpose: tmux 3.7c
+/// prints every control character in format output as `_` (a tab, `\x1f`,
+/// even in `display-message`), and with a tab here no line parsed, so
+/// `ccnm ls` and `ccnm status` showed no terminal while one was open (P89).
+/// `|` comes back as itself. A session name may contain it; [`parse_list`]
+/// takes the numeric fields from the end, so that cannot shift them.
+const SEP: char = '|';
 
 const TIMEOUT: Duration = Duration::from_secs(20);
 
@@ -372,11 +376,12 @@ impl Live {
 pub fn parse_list(text: &str) -> Vec<Live> {
     text.lines()
         .filter_map(|line| {
-            let mut f = line.split(SEP);
-            let name = f.next()?.to_string();
-            let created = f.next()?.parse().ok()?;
-            let attached = f.next()?.parse().ok()?;
+            // From the end: everything before the three numbers is the name.
+            let mut f = line.rsplitn(4, SEP);
             let windows = f.next()?.parse().ok()?;
+            let attached = f.next()?.parse().ok()?;
+            let created = f.next()?.parse().ok()?;
+            let name = f.next()?.to_string();
             Some(Live {
                 name,
                 created,
@@ -516,16 +521,30 @@ mod tests {
 
     #[test]
     fn list_output_parses_and_odd_lines_are_skipped() {
-        let text = "ccnm-xshun\t1788496263\t0\t1\nccnm-other\t1788496264\t2\t3\ngarbage\n";
+        let text = "ccnm-xshun|1788496263|0|1\nccnm-other|1788496264|2|3\ngarbage\n\
+                    someone|s|1788496265|1|1\n";
         let live = parse_list(text);
-        assert_eq!(live.len(), 2);
+        assert_eq!(live.len(), 3);
         assert_eq!(live[0].name, "ccnm-xshun");
         assert_eq!(live[0].created, 1_788_496_263);
         assert_eq!(live[0].attached, 0);
         assert_eq!(live[1].attached, 2);
         assert_eq!(live[1].windows, 3);
         assert_eq!(live[0].workspace(), Some("xshun"));
+        // Not a name ccnm makes, but someone can make it on this server.
+        assert_eq!(live[2].name, "someone|s");
+        assert_eq!(live[2].created, 1_788_496_265);
+        // What tmux 3.7c makes of a tab: one field, skipped, not misread.
+        assert!(parse_list("ccnm-xshun_1788496263_0_1\n").is_empty());
         assert!(parse_list("").is_empty());
+        // The command asks for exactly the fields, in the order, parsed here.
+        let line = Tmux::new("/usr/bin/tmux").list_cmd().display();
+        assert!(
+            line.contains(
+                "#{session_name}|#{session_created}|#{session_attached}|#{session_windows}"
+            ),
+            "{line}"
+        );
     }
 
     #[test]

@@ -252,7 +252,7 @@ fn status_for_one_instance_says_when_another_instance_has_the_workspace() {
     let asked = |agent: &str| {
         let runner = FakeRunner::new();
         runner.push(Output::exited(0, "tmux 3.7c\n")); // -V
-        runner.push(Output::exited(0, "ccnm-demo\t1788496263\t0\t1\n")); // list-sessions
+        runner.push(Output::exited(0, "ccnm-demo|1788496263|0|1\n")); // list-sessions
         runner.push(Output::exited(0, format!("CCNM_SESSION={id}\n")));
         runner.push(Output::exited(0, "/sbin/launchd\n")); // ps, for the transport
         work::status_checked(
@@ -837,6 +837,59 @@ fn a_workspace_stop_against_a_real_terminal_records_the_legacy_session() {
             .success()
     );
     assert!(session::read_outcome(&dir).unwrap().unwrap().stopped);
+}
+
+/// P89 with nothing faked: the parser was only ever fed synthetic text, and
+/// tmux 3.7c prints a tab in `list-sessions -F` output as `_`, so on the
+/// v0.15.0 machines `ccnm ls` and `ccnm status` listed no terminal while one
+/// was open. A real server, whatever tmux this machine has, must give the
+/// session back with its id.
+#[test]
+fn status_lists_a_live_terminal_on_a_real_tmux() {
+    let Some(real) = ccnm_core::tmux::locate_from_env() else {
+        assert!(
+            std::env::var_os("CI").is_none(),
+            "tmux is not installed on this runner"
+        );
+        eprintln!("skipped: no tmux on this machine");
+        return;
+    };
+    let own = OwnTmux::new(&real);
+    let f = Fixture::new();
+    let id = "00000000-0000-4000-8000-000000000891";
+    f.record(id, "demo", None, Mode::Interactive { prompt: None });
+    let started = own.run(&[
+        "new-session",
+        "-d",
+        "-s",
+        "ccnm-demo",
+        "-e",
+        &format!("CCNM_SESSION={id}"),
+        "sleep",
+        "60",
+    ]);
+    assert!(started.status.success(), "{started:?}");
+
+    let mut tools = f.tools(&ccnm_core::process::SystemRunner);
+    tools.tmux = Some(own.wrapper.clone());
+    let report = work::status_checked(
+        &StatusRequest {
+            protocol: ccnm_core::protocol::payload::PROTOCOL,
+            workspace: Some("demo".into()),
+            agent: None,
+            session: None,
+        },
+        &tools,
+    )
+    .unwrap();
+    let version = report.tmux.as_ref().map(String::as_str).unwrap_or("?");
+    assert_eq!(report.sessions.len(), 1, "tmux {version}: {report:?}");
+    let live = &report.sessions[0];
+    assert_eq!(live.tmux_session, "ccnm-demo");
+    assert_eq!(live.workspace.as_deref(), Some("demo"));
+    assert_eq!(live.session.as_deref(), Some(id));
+    assert_eq!(live.attached, 0);
+    assert!(live.created > 1_700_000_000, "{}", live.created);
 }
 
 /// The wait is bounded, and what it cannot confirm it still does not claim:

@@ -487,10 +487,10 @@ hidden = ["exa-search"]          # 这几个不给，哪一类都一样
 
 这一节没有配置项：ccnm 给每个远端 Claude 会话写的设置文件里固定带两样东西。
 
-- **context 到 30 万 token 左右就自动压缩**（`autoCompactWindow: 300000`）。不设的话，Opus 5.5 这类 1M 窗口的模型要到约 97 万才压。每次请求都要把整段 context 从缓存里再读一遍，所以拖得越晚越贵：一次 4 小时的会话拖到 96.9 万才压，按 API 价算，缓存读占了七成花费（[P87 记录](research/2026-10-11-p87-auto-compact.md)）。受管会话比直接用 Claude Code 更吃这一点：Claude Code 会自己清掉 Read、Bash 这些原生工具的旧结果，ccnm 工具的结果它一条都不清。
-- **压缩时带一段 ccnm 的指令**，要求总结里：开头一句"在做什么、做到哪"（像 `/recap` 那样）；保留你提的要求和边界、改过的文件和提交、还没过的测试和关键报错原文、还在跑的后台命令的 `output_ref`、加载过的 skill、试过又放弃的做法；不留文件全文和长输出（随时能重新取）；压完先重新 `read_file` 再 `apply_patch`。原文是 `crates/ccnm-core/src/provider/claude/policy.rs` 里的 `COMPACT_INSTRUCTIONS`。它经一个 `PreCompact` 钩子交给 Claude Code，自动压缩和你手动敲 `/compact` 都会带上；`/compact` 后面你自己写的话照样生效，两段一起交给模型。
+- **context 到 56 万 token 左右就自动压缩**（`autoCompactWindow: 560000`；v0.15.0 是 30 万）。不设的话，Opus 5.5 这类 1M 窗口的模型要到约 97 万才压。每次请求都要把整段 context 从缓存里再读一遍，所以拖得越晚越贵：一次 4 小时的会话拖到 96.9 万才压，按 API 价算缓存读花了 $48、占七成；照那次会话粗算，窗口 20 万时这一项约 $11–15，40 万时约 $20–25（[P87 记录](research/2026-10-11-p87-auto-compact.md)）。窗口越小越省，但压得越勤，每压一次丢一些细节；56 万是用户在两者之间定的。受管会话比直接用 Claude Code 更吃这一点：Claude Code 会自己清掉 Read、Bash 这些原生工具的旧结果，ccnm 工具的结果它一条都不清。
+- **压缩时带一段 ccnm 的指令**，补上 Claude Code 自带总结提示管不到受管会话的地方（[P88 记录](research/2026-10-12-p88-compact-560k.md)）：压完之后 Claude Code 只会把原生 Read 读过的文件、原生 Skill 的内容补回来，`read_file` 和 `load_skill` 的结果不补；它让模型"需要细节就去读完整转录"，那份转录在 Agent 机器上，受管会话读不到。所以指令要求总结自己够用：最前面几行 Status（目标、做完的、在做的、卡在哪、下一步）；保留你提的要求和边界（后来改过的写明哪条算数）、改过的文件和提交、还没过的测试和关键报错原文、花力气才查到的环境事实（怎么构建测试、端口、版本、哪些命令在那台机器上不行）、还在跑的后台命令的 `output_ref`、加载过的 skill 和它还在生效的规矩、试过又放弃的做法；代码只引用下一步要用的那几行，不留文件全文和长输出，改为点名至多五个压完先读的文件；最后写明转录路径读不到。压完先重新 `read_file` 再 `apply_patch`。原文是 `crates/ccnm-core/src/provider/claude/policy.rs` 里的 `COMPACT_INSTRUCTIONS`。它经一个 `PreCompact` 钩子交给 Claude Code，自动压缩和你手动敲 `/compact` 都会带上；`/compact` 后面你自己写的话照样生效，两段一起交给模型。
 
-实际触发点比窗口低一截：窗口 30 万时，实测报 29 万压、23 万不压；窗口 20 万时 18 万压、15 万不压。
+实际触发点比窗口低一截：窗口 56 万时，实测报 55 万压、49 万不压；窗口 30 万时 29 万压、23 万不压；窗口 20 万时 18 万压、15 万不压。模型自己的窗口比这个值小时（比如 20 万窗口的模型），按模型的来。
 
 **想换个值**，用环境变量 `CLAUDE_CODE_AUTO_COMPACT_WINDOW`（10 万到 100 万），它比设置项优先。受管会话拿不到你在 shell 里 export 的变量，所以要写进 Agent 机器上某个设置文件的 `env`：
 

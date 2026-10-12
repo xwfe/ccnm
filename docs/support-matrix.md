@@ -15,7 +15,7 @@
 | shell、搜索、图片与项目 skills | 已实现，有各自的离线测试和部分真实模型记录 | 每个入口/平台/Provider 都有同等级证据；不能再统一标为“只有离线证据” |
 | notebook | 已实现按 cell 读取与编辑，有读取的真实模型记录 | notebook 编辑、执行与可视化全链路均已实测 |
 | 后台命令 | 已实现启动、读取、等待、停止；本机离线回归 | 跨 MCP 断线存活、持久任务恢复或完整进程树清理；先前真实模型尝试未形成成功用例 |
-| 受管 Claude 会话的自动压缩（P87） | 远端会话默认到 30 万左右压缩，并经 `PreCompact` 钩子带 ccnm 的压缩指令；Claude Code 2.1.286、2.1.296 交互式接假模型零额度实测：29 万压、23 万不压，压缩请求带指令全文，环境变量 `CLAUDE_CODE_AUTO_COMPACT_WINDOW` 仍优先，不认识的设置键不影响允许表（[P87 记录](research/2026-10-11-p87-auto-compact.md)） | 真实模型照这段指令写出的总结够不够用；Codex 会话（没改）；`-p` 模式下的主动压缩（测不出来） |
+| 受管 Claude 会话的自动压缩（P87、P88） | 远端会话默认到 56 万左右压缩（P88，未发版；v0.15.0 是 30 万），并经 `PreCompact` 钩子带 ccnm 的压缩指令；Claude Code 2.1.286、2.1.296 交互式接假模型零额度实测：窗口 56 万时 55 万压、49 万不压（30 万时 29 万压、23 万不压），压缩请求带指令全文，压完那条消息指向的转录在 Agent 机器上，环境变量 `CLAUDE_CODE_AUTO_COMPACT_WINDOW` 仍优先，不认识的设置键不影响允许表（[P87 记录](research/2026-10-11-p87-auto-compact.md)、[P88 记录](research/2026-10-12-p88-compact-560k.md)） | 真实模型照这段指令写出的总结够不够用；Codex 会话（没改）；`-p` 模式下的主动压缩（测不出来） |
 | 机器级 skills（P48） | 两侧已实现；真实 Host + 假模型零额度探测 | 新机器级技能在真实模型的受管 SSH 全链路已验收 |
 | Runtime MCP relay（P49） | stdio 转接已实现，有本机测试及零额度 Host 证据；P52 已在 macOS/Linux 验证同组后代交权前清理与确认；Linux 上 P84 起离开进程组的后代也在交权前收掉（[P84 记录](research/2026-10-09-p84-linux-orphans.md)） | macOS 上脱离进程组后代的清理；Linux 上中继 server 自己 `setsid` 出去的后代走同一条路但没单独测；完整真实模型组合验收 |
 | Agent MCP relay（P50） | 已有真实 Claude + 双机 SSH + Agent DeepWiki 调用；Linux curl 及 OAuth 拒绝补验 | Codex 受管真模型、真实模型读取超过 32 KiB、本机 `local` 服务真机、OAuth 登录；不能再统一标为“只有零额度证据” |

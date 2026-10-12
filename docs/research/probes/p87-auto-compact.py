@@ -14,7 +14,8 @@ token，看有没有出现压缩（请求里出现总结指令，下一次请求
 
 会话设置按 crates/ccnm-core/src/provider/claude/policy.rs 拼：压缩指令从源码里的
 COMPACT_INSTRUCTIONS 常量读，形状与单元测试 settings_compact_early_and_say_what_to_keep
-锁定的一致。
+锁定的一致。P88 起还看压缩请求里是不是指令全文、压缩后那条消息带不带转录路径
+（受管会话读不到它，指令为此要求总结自给自足）。
 
 用法（macOS，要 tmux 和 sandbox-exec）：
   python3 docs/research/probes/p87-auto-compact.py <仓库外的新输出目录> \\
@@ -45,6 +46,7 @@ SANDBOX = """(version 1)
 """
 SUMMARY_MARK = "detailed summary of the conversation so far"
 CONTINUED_MARK = "being continued from a previous conversation"
+TRANSCRIPT_MARK = "read the full transcript at"
 TINY_SERVER = r'''
 import json, sys
 TOOLS = [{"name": "read_file", "description": "Read a file.",
@@ -252,13 +254,16 @@ def interactive(out, claude, name, settings, tokens, workspace_local=None):
         except OSError:
             pass
         model.server.shutdown()
-    summaries = [p for p in sorted(run.glob("request-*.json")) if SUMMARY_MARK in p.read_text()]
+    requests = [p.read_text() for p in sorted(run.glob("request-*.json"),
+                                               key=lambda p: int(p.stem.split("-")[1]))]
+    summaries = [t for t in requests if SUMMARY_MARK in t]
     extra = None
     if summaries:
-        text = summaries[0].read_text()
-        first = compact_instructions().splitlines()[0]
+        text = summaries[0]
+        continued = [t for t in requests if CONTINUED_MARK in t]
         extra = {"additional_instructions": "Additional Instructions:" in text,
-                 "ccnm_text": json.dumps(first)[1:-1] in text}
+                 "ccnm_full_text": json.dumps(compact_instructions())[1:-1] in text,
+                 "transcript_pointer_after": bool(continued) and TRANSCRIPT_MARK in continued[0]}
     return {"scenario": name, "reported_tokens": tokens, "requests": model.log,
             "compacted": any("SUMMARY" in r["kind"] for r in model.log),
             "continued": any("CONTINUED" in r["kind"] for r in model.log),
@@ -310,7 +315,7 @@ def main():
         version = subprocess.run([path, "--version"], capture_output=True, text=True).stdout.strip()
         host = out / name
         runs = [
-            interactive(host, path, "old-settings-300k", old, 300_000),
+            interactive(host, path, "old-settings-above", old, w - 10_000),
             interactive(host, path, "ccnm-above", new, w - 10_000),
             interactive(host, path, "ccnm-below", new, w - 70_000),
             interactive(host, path, "ccnm-env-200k-190k", new, 190_000,

@@ -148,9 +148,9 @@ ccnm cleanup my-project                  # 看看会话留下了什么，再按�
 
 | | |
 | --- | --- |
-| 最新版本 | [v0.15.0](https://github.com/xwfe/ccnm/releases)（2026-10-11），每个版本改了什么写在 Releases 页 |
+| 最新版本 | [v0.16.0](https://github.com/xwfe/ccnm/releases)（2026-10-12），每个版本改了什么写在 Releases 页 |
 | 真机验过什么 | 按搭配见上面[两台机器各干什么](#两台机器各干什么)；哪些**没验过**逐条写在[支持矩阵](docs/support-matrix.md) |
-| 从旧版升到 v0.15.0 | 不用改配置。新的行为：受管 Claude 会话到 30 万 token 左右就自动压缩，并告诉模型压缩时留什么（[为什么、怎么换值](docs/configuration.md#受管-claude-会话的自动压缩)）；你在 `~/.claude/settings.json` 里写的 `autoCompactWindow` 在受管会话里不再生效，要改值用环境变量。还在 v0.13.x 的，先删掉配置里的 `codex_exec_server`（v0.14.0 起读不进来，[报错长这样](docs/troubleshooting.md#升级后-ccnm-报-unknown-field-codex_exec_server)） |
+| 从旧版升到 v0.16.0 | 不用改配置。新的行为：受管 Claude 会话的自动压缩从 30 万左右推迟到 56 万左右，压缩时交给模型的指令重写了，压完更容易接着干（[为什么、怎么换值](docs/configuration.md#受管-claude-会话的自动压缩)）。从 v0.14.x 或更早升的：你在 `~/.claude/settings.json` 里写的 `autoCompactWindow` 在受管会话里不生效，要改值用环境变量。还在 v0.13.x 的，先删掉配置里的 `codex_exec_server`（v0.14.0 起读不进来，[报错长这样](docs/troubleshooting.md#升级后-ccnm-报-unknown-field-codex_exec_server)） |
 
 已知限制：
 

@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-10-15T21:55:00+09:00",
-  "current_task": "P93",
+  "last_updated": "2026-10-15T22:40:00+09:00",
+  "current_task": null,
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
     "source": "docs/research/codex-internal-wiring-2026-09-07.md",
@@ -4585,15 +4585,47 @@
     {
       "id": "P93",
       "title": "Claude Code 探测新协议后退回旧协议，受管会话照样拿得到工具",
-      "status": "in_progress",
+      "status": "completed",
       "depends_on": [
         "P92"
       ],
-      "owner": "claude-code/2d4cecc8",
+      "owner": null,
       "started_at": "2026-10-15T21:55:00+09:00",
-      "last_updated": "2026-10-15T21:55:00+09:00",
-      "completed_criteria": [],
-      "evidence": [],
+      "last_updated": "2026-10-15T22:40:00+09:00",
+      "completed_criteria": [
+        "P93.1",
+        "P93.2",
+        "P93.3"
+      ],
+      "evidence": [
+        {
+          "kind": "offline",
+          "criteria": [
+            "P93.1"
+          ],
+          "ref": "docs/research/2026-10-15-p93-discover-fallback.md",
+          "commit": "134a68a",
+          "result": "内存管道测试 a_client_that_probes_then_falls_back_still_gets_the_tools 在 rmcp 3.2.0 上红（tools/list 报 request _meta is missing or has malformed required fields，与 fodelf 21:02 日志一字不差），3.5.1 上绿；留在新协议上的 a_client_that_stays_on_the_new_protocol_gets_the_tools 新旧都绿。夹具 docs/research/probes/p93-discover-fallback.py 本机重放：已装 ccnm 0.16.1 对照 12 个工具、先探测报错、退出 1；新构建两行都是 12 个工具、退出 0。fodelf MCP 日志 83 个：09-30 起 31 次新协议连接 30 次 0.40–1.38 秒正常，只有 3.07 秒那次退回旧协议撞上。"
+        },
+        {
+          "kind": "offline",
+          "criteria": [
+            "P93.2"
+          ],
+          "ref": "Cargo.lock",
+          "commit": "5827f29",
+          "result": "rmcp/rmcp-macros 3.2.0 -> 3.5.1、process-wrap 9.1.0 -> 10.0.1，nix 仍共用 0.31.3；Cargo.toml 下限 3.5.1；ServerInfo 换成 ServerConfig。rmcp 客户端 ServiceExt::serve 仍走旧协议 initialize，转发不受影响。"
+        },
+        {
+          "kind": "offline",
+          "criteria": [
+            "P93.3"
+          ],
+          "ref": "docs/troubleshooting.md",
+          "commit": "620ccf8",
+          "result": "排错手册加\"有 ccnm 的说明却没有工具\"一条。本机 macOS arm64：cargo fmt --check、clippy --workspace --all-targets -D warnings 通过；cargo test --workspace --no-fail-fast 1087 passed / 0 failed；python3 scripts/ci_gates.py 247 ran / 0 skipped / 0 failed；cargo build 后 tests.test_remote_workspace_mcp 50 OK。没在 Linux 上跑，真机验证记在发版记录。"
+        }
+      ],
       "blockers": []
     }
   ],
@@ -4664,7 +4696,7 @@
     "【2026-10-08 P80 时看到 / 只记不修】Agent 上的 MCP 转发 ccnm_agent（P50）在受管 Codex 会话里同样没配 tool_timeout_sec，Codex 对它只等 300 秒。它的 call_mcp_tool 默认等 60 秒、起 server 30 秒，用户给 Agent 上某个 server 配的 tool_timeout_sec 接近或超过 300 秒时（还没起的 server 起它的时间也算在内），调用会被 Codex 先截断、不发取消，照样在 Agent 上跑完。值取决于用户配置、不归 ccnm 的常量管，P80 没修。依据 docs/research/2026-10-08-p80-codex-tool-timeout.md 第 6 节。"
   ],
   "handoff": {
-    "next_action": "**2026-10-15 立 P93 并认领。** 用户问 codingagent 会话为何总遇到 ccnm MCP 没起来：当天三次，14:39 是 runtime_user 拒绝（已删）、17:59 是本机 Wi-Fi 断网约 6.5 分钟、21:02 是 rmcp 3.2.0 的 bug（Claude Code 2.1.300 先发 server/discover，ccnm 起得慢它就退回旧协议 initialize，rmcp 已把连接定死成新协议，tools/list 全被拒）。用户同意把 rmcp 升到 3.5.1（改锁文件），并同意连同 P90–P92 推送、发版、三台换装。下一步：提交先红后绿的回归测试和升级。\n\n之前的交接：\n**2026-10-15 P90–P92 全部完成，current_task 为 null；都没推送、没发版、没换装。** 用户在 xdwmbp 上 ws add 后新 workspace 进去了用不了：本机写了 runtime_user = \"bing\"（专用账号模式）。用户同意后删了那一行（备份挪到 ~/ccnm-config.toml.bak-20261015，不放 ~/.config/ccnm/，那里的非 toml 文件会被算成凭据候选），临时 workspace 实测 ws add 默认两行 doctor \"可以用了\"；已有 6 个 workspace 里的 allow_* 没动。代码：P90 ws add --allow-unattended-exec（abe41ef、8e8c5b0）；P91 起会话前问 Runtime 的 runtime-audit，会话门或命令门不过就 CCNM_E_POLICY、什么都不建，每个新会话多 525–806 ms（ef15fa9、8914db4）；P92 ccnm <ws> -c 用 --resume <旧> --fork-session 续上一次说过话的交互会话（8593510、5a60d62、09386f3）。本机 Rust 1085/0、Python 247/0。用户开着的 ccnm codingagent 会话没碰。下一步等用户：要不要推送、发版、三台换装；换装后真机验 -c 和 P91 的拒绝。\n\n之前的交接：\n**2026-10-15 P91 完成，认领 P92。** 起会话前经同一别名问 Runtime 的 runtime-audit，会话门或命令门不过就以 CCNM_E_POLICY 拒绝、什么都不建（ef15fa9 代码，8914db4 文档）；本机 Rust 1079/0、Python 247/0。P92.1 实测已跑完（夹具 docs/research/probes/p92-resume.py 未提交，结果在 scratchpad）：2.1.286 上 --resume <旧 id> --fork-session --session-id <新 id> 交互界面认、请求带上次对话、新转录用新 id；不带 --fork-session 报 \"--session-id can only be used with --continue or --resume if --fork-session is also specified\"；旧 id 找不到报 \"No conversation found with session ID\"、退出码 1。下一步：写研究记录并提交夹具，再先红后绿实现 --continue。\n\n之前的交接：\n**2026-10-15 P90 完成，认领 P91。** ws add 加 --allow-unattended-exec（abe41ef 代码，8e8c5b0 文档），本机 Rust 1076/0。下一步：P91 在 work.rs 的 dial_runtime（只有 run 和交互 start 的预检用它）greet 之后加一次 internal runtime-audit，会话门或命令门不过就以 CCNM_E_POLICY 拒绝；先写在旧代码上红的测试。",
+    "next_action": "**2026-10-15 P93 完成，current_task 为 null。** rmcp 3.2.0 -> 3.5.1（5827f29），Claude Code 探测新协议后退回旧协议也拿得到工具；先红后绿的测试、真实二进制重放夹具、研究记录（134a68a）、排错手册（620ccf8）。本机 Rust 1087/0、Python 247/0。用户同意连同 P90–P92 推送、发 v0.17.0、三台换装；下一步：升版本号、推送、打 tag、等 release 构建，再换装并真机验 P93 重放、-c、P91 的放行路径。用户开着的会话不停，只换文件。\n\n之前的交接：\n**2026-10-15 立 P93 并认领。** 用户问 codingagent 会话为何总遇到 ccnm MCP 没起来：当天三次，14:39 是 runtime_user 拒绝（已删）、17:59 是本机 Wi-Fi 断网约 6.5 分钟、21:02 是 rmcp 3.2.0 的 bug（Claude Code 2.1.300 先发 server/discover，ccnm 起得慢它就退回旧协议 initialize，rmcp 已把连接定死成新协议，tools/list 全被拒）。用户同意把 rmcp 升到 3.5.1（改锁文件），并同意连同 P90–P92 推送、发版、三台换装。下一步：提交先红后绿的回归测试和升级。\n\n之前的交接：\n**2026-10-15 P90–P92 全部完成，current_task 为 null；都没推送、没发版、没换装。** 用户在 xdwmbp 上 ws add 后新 workspace 进去了用不了：本机写了 runtime_user = \"bing\"（专用账号模式）。用户同意后删了那一行（备份挪到 ~/ccnm-config.toml.bak-20261015，不放 ~/.config/ccnm/，那里的非 toml 文件会被算成凭据候选），临时 workspace 实测 ws add 默认两行 doctor \"可以用了\"；已有 6 个 workspace 里的 allow_* 没动。代码：P90 ws add --allow-unattended-exec（abe41ef、8e8c5b0）；P91 起会话前问 Runtime 的 runtime-audit，会话门或命令门不过就 CCNM_E_POLICY、什么都不建，每个新会话多 525–806 ms（ef15fa9、8914db4）；P92 ccnm <ws> -c 用 --resume <旧> --fork-session 续上一次说过话的交互会话（8593510、5a60d62、09386f3）。本机 Rust 1085/0、Python 247/0。用户开着的 ccnm codingagent 会话没碰。下一步等用户：要不要推送、发版、三台换装；换装后真机验 -c 和 P91 的拒绝。\n\n之前的交接：\n**2026-10-15 P91 完成，认领 P92。** 起会话前经同一别名问 Runtime 的 runtime-audit，会话门或命令门不过就以 CCNM_E_POLICY 拒绝、什么都不建（ef15fa9 代码，8914db4 文档）；本机 Rust 1079/0、Python 247/0。P92.1 实测已跑完（夹具 docs/research/probes/p92-resume.py 未提交，结果在 scratchpad）：2.1.286 上 --resume <旧 id> --fork-session --session-id <新 id> 交互界面认、请求带上次对话、新转录用新 id；不带 --fork-session 报 \"--session-id can only be used with --continue or --resume if --fork-session is also specified\"；旧 id 找不到报 \"No conversation found with session ID\"、退出码 1。下一步：写研究记录并提交夹具，再先红后绿实现 --continue。",
     "scope": "2026-10-08 用户要求：零额度复现 Codex 300 秒工具超时、选修法、补外部入口文档、跑门禁、更新状态、粒度提交、不推送。改动：crates/ccnm-core（provider/codex 的 TOOL_TIMEOUT 与启动参数、测试；mcp/hooks 的 MAX_TIMEOUT 改 pub(crate)；mcp/output 注释）、docs/protocol/remote-workspace-mcp-v1.md、docs/usage.md、docs/troubleshooting.md、docs/research 的 P80 记录与夹具、ROADMAP、status。没动任何机器、已装的 ccnm 与配置；Codex 0.154.0 包和源码只下到会话 scratchpad。",
     "planning_validation": {
       "at": "2026-09-08T21:22:43+09:00",

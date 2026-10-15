@@ -225,6 +225,10 @@ enum WorkspaceCommand {
         /// without runtime_user only running as root still needs it
         #[arg(long)]
         allow_unconfined_exec: bool,
+        /// Interactive sessions run commands without asking first; leave it
+        /// out and they ask before every one (see docs/configuration.md)
+        #[arg(long)]
+        allow_unattended_exec: bool,
         /// What Claude may do without asking
         #[arg(long, value_name = "MODE")]
         permission_mode: Option<String>,
@@ -615,6 +619,9 @@ fn zh_help(command: clap::Command) -> clap::Command {
                         })
                         .mut_arg("allow_unconfined_exec", |a| {
                             a.help("写了 runtime_user 时，那个账号没通过隔离检查也让 exec_command 跑（见 docs/production-safety.md）；没写 runtime_user 时只有以 root 运行才需要它")
+                        })
+                        .mut_arg("allow_unattended_exec", |a| {
+                            a.help("交互会话执行命令前不再问你；不加就每条命令问一次（见 docs/configuration.md）")
                         })
                         .mut_arg("permission_mode", |a| a.help("Claude 不用问就能做的事"))
                         .mut_arg("agent_node", |a| {
@@ -1593,6 +1600,7 @@ fn workspace_command(
             path: root,
             replace,
             allow_unconfined_exec,
+            allow_unattended_exec,
             permission_mode,
             agent_node,
         } => {
@@ -1656,6 +1664,9 @@ fn workspace_command(
             );
             if let Some(node) = &runtime_node {
                 edit.set_workspace_runtime_node(&name, node, &mut changes);
+            }
+            if *allow_unattended_exec {
+                edit.set_workspace_unattended_exec(&name, &mut changes);
             }
             edit.save(&changes).map_err(|e| {
                 if edit.existed() {

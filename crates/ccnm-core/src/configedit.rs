@@ -338,6 +338,28 @@ impl Edit {
         set_str(ws, "runtime_node", node, name, changes);
     }
 
+    /// Set `workspaces.<name>.allow_unattended_exec = true` on a workspace
+    /// [`set_workspace`](Self::set_workspace) wrote (P90).
+    ///
+    /// Only ever to `true`. An absent key is how the file says "ask before
+    /// every command", so `ws add` without the flag writes nothing rather
+    /// than a `false` that reads as if somebody had decided something; and
+    /// taking it back is deleting the line, as the docs say.
+    pub fn set_workspace_unattended_exec(&mut self, name: &str, changes: &mut Changes) {
+        let Some(ws) = self
+            .doc
+            .get_mut("workspaces")
+            .and_then(|w| w.get_mut(name))
+            .and_then(Item::as_table_mut)
+        else {
+            return;
+        };
+        if ws.get("allow_unattended_exec").and_then(Item::as_bool) != Some(true) {
+            ws["allow_unattended_exec"] = value(true);
+            changes.note(format!("workspaces.{name}.allow_unattended_exec = true"));
+        }
+    }
+
     /// Remove `workspaces.<name>`. Removing one that is not there is not
     /// an error: the file already says what was asked.
     pub fn remove_workspace(&mut self, name: &str, changes: &mut Changes) -> bool {

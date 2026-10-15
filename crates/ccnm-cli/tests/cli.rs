@@ -855,6 +855,69 @@ fn adding_a_workspace_before_init_says_to_init() {
     assert!(stderr(&out).contains("ccnm init"), "{}", stderr(&out));
 }
 
+/// P90. Everything a workspace usually wants in one `ws add`: before this
+/// flag `allow_unattended_exec` was the one setting that still had to be
+/// typed into the file by hand. Without it nothing is written, so a
+/// workspace still asks before every command unless somebody said not to.
+#[test]
+fn workspace_add_can_write_allow_unattended_exec() {
+    let dir = std::env::temp_dir().join(format!("ccnm-cli-add-unattended-{}", std::process::id()));
+    let _cleanup = TestDir::adopt(&dir);
+    let _ = std::fs::remove_dir_all(&dir);
+    let project = dir.join("proj");
+    std::fs::create_dir_all(&project).unwrap();
+    let config = dir.join("config.toml");
+    let fresh = "this = \"runtime\"\n[nodes.runtime]\n[nodes.agent]\nssh = \"w\"\n";
+    std::fs::write(&config, fresh).unwrap();
+    let add = |name: &str, extra: &[&str]| {
+        ccnm()
+            .args(["ws", "add", name])
+            .arg(&project)
+            .args(extra)
+            .arg("--replace")
+            .arg("--config")
+            .arg(&config)
+            .output()
+            .unwrap()
+    };
+
+    let out = add(
+        "proj",
+        &[
+            "--permission-mode",
+            "bypassPermissions",
+            "--allow-unattended-exec",
+        ],
+    );
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert!(
+        stdout(&out).contains("workspaces.proj.allow_unattended_exec = true"),
+        "{}",
+        stdout(&out)
+    );
+    let written = std::fs::read_to_string(&config).unwrap();
+    assert!(
+        written.contains("allow_unattended_exec = true"),
+        "{written}"
+    );
+    assert!(
+        written.contains("claude_permission_mode = \"bypassPermissions\""),
+        "{written}"
+    );
+
+    // Again, with the same flag: nothing to change, nothing rewritten.
+    let out = add("proj", &["--allow-unattended-exec"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert_eq!(std::fs::read_to_string(&config).unwrap(), written);
+
+    // Without it nothing is written: the default stays "ask".
+    std::fs::write(&config, fresh).unwrap();
+    let out = add("plain", &[]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let written = std::fs::read_to_string(&config).unwrap();
+    assert!(!written.contains("allow_unattended_exec"), "{written}");
+}
+
 /// F24. On the P62 Runtime the nodes were called hpsrv, fodelf and xdwmbp,
 /// and `workspace add` was refused there with nothing written: it always
 /// wrote `agent_node = "agent"` and left `runtime_node` at its default,

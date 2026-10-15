@@ -118,6 +118,7 @@ ccnm my-project             # 开始
 
 ```bash
 ccnm my-project                          # 开会话并接上
+ccnm my-project -c                       # 接着这个项目上一次的对话开（只支持 Claude）
 ccnm attach my-project                   # 接回已有会话（简写 ccnm a）
 ccnm ls                                  # 所有项目：在不在跑、跑了多久、工具通不通（在 AI 那台只看得到它上面的会话）
 ccnm log                                 # 跑过的会话，最新的在前

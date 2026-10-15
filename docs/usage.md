@@ -54,6 +54,30 @@ ccnm attach my-project
 
 SSH 断开、终端关闭或笔记本暂时离线，不等于结束 session。只要 Agent Node 上的 tmux/session 还活着，就可以重新 attach。
 
+### 接着上一次的对话开：`--continue`
+
+会话已经结束了（`ccnm stop`、Claude 里 `/exit`、机器重启），想接着上次聊到的地方干：
+
+```bash
+ccnm my-project -c
+# 等价完整写法
+ccnm run my-project --continue
+# 也可以带一句开场白，接上之后它就是第一条消息
+ccnm my-project -c "接着把剩下的测试修完"
+```
+
+起的是一个新会话（新 id），Claude 里带着上一次的全部对话。"上一次"是 AI 那台机器上这个项目最近一次**说过话**的交互会话，要求同一个 Agent、同一个项目目录。开了会话一句话没说就关掉的那次，Claude 不留记录，会被跳过；`--print` 跑的一问一答也不算。
+
+会碰到的几种情况：
+
+- 报 `CCNM_E_NOT_READY: workspace `my-project` has no earlier conversation on this Agent to continue`：这台 AI 机器上没有能接的对话。去掉 `-c` 开个新的就行。
+- 终端上说 `已经有会话在跑，--continue 没有另起，直接接上它`：会话本来就开着，它就是最新的对话，`-c` 什么都没做。
+- 报 `CCNM_E_INVALID_ARGS: --continue works with Claude only for now`：Codex 会话暂时不支持续接。
+- 报 `the argument '--continue' cannot be used with '--print <PROMPT>'`：`--print` 不留对话，没法接着，也没法被接着。
+- 报 `CCNM_E_VERSION`（`message is not valid for protocol …; ccnm versions probably differ`）：AI 那台的 ccnm 还是旧版本，不认识这个请求，两台换成同一个版本（[排错](troubleshooting.md#message-is-not-valid-for-protocol-1-ccnm-versions-probably-differ)）。
+
+为什么这么做、实测了什么，见[研究记录](research/2026-10-15-p92-resume.md)。
+
 会话长了 Claude 会自动压缩 context。受管会话里 ccnm 把它提前到 56 万 token 左右（v0.15.0 是 30 万），并告诉模型压缩时留什么；怎么换值见[配置说明](configuration.md#受管-claude-会话的自动压缩)，上下文涨得快怎么办见[排错手册](troubleshooting.md#受管-claude-会话的上下文涨得快额度掉得快)。
 
 ### 会话在 tmux 里，所以滚屏和复制跟你平时不一样

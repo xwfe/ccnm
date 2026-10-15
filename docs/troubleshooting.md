@@ -106,7 +106,7 @@ fix it on the Runtime Node, then check: ccnm doctor my-project
 
 开关写在**项目机器**（Runtime Node）的 `config.toml` 里，改完 `ccnm doctor <项目>` 看到"可以用了"再开会话。
 
-**为什么现在才报**：起新会话之前，AI 那台会经 SSH 问一次项目机器"这个会话你开不开、命令让不让跑"，项目机器说不就不起，原样带回它的理由。每个新会话为此多一次 SSH，实测 525–806 毫秒（5 次，xdwmbp ↔ fodelf）；已经在跑的会话直接接上，不问。**v0.16.1 及以前没有这一步**：会话照样起来，Claude 里却没有 ccnm 的工具（doctor 的 `Remote MCP handshake` 行失败），看着像网络断了，其实是项目机器在握手时拒了。
+**为什么现在才报**：起新会话之前，AI 那台会经 SSH 问一次项目机器"这个会话你开不开、命令让不让跑"，项目机器说不就不起，原样带回它的理由。每个新会话为此多建一次 SSH 连接：xdwmbp ↔ fodelf 在 10-15 量了两轮共 10 次，0.5–2.5 秒，几乎全是建连接的时间（问的那一步本身约 0.07 秒），网络差时更久；已经在跑的会话直接接上，不问。**v0.16.1 及以前没有这一步**：会话照样起来，Claude 里却没有 ccnm 的工具（doctor 的 `Remote MCP handshake` 行失败），看着像网络断了，其实是项目机器在握手时拒了。
 
 ### 升级后 `ccnm` 报 `unknown field `codex_exec_server``
 

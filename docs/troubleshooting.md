@@ -57,6 +57,19 @@ Claude 不会自己重连。
 
 **Codex 会话**显示的是 `TOOLS DOWN (exit Codex and use official resume with its exact session ID on the Agent Node)`。Codex 里没有 `/mcp` 重连。最简单的做法是 `ccnm stop <项目>` 再 `ccnm <项目>` 开一个新会话，代价是对话上下文不带过来。要接回原对话，必须用 ccnm 那个 Codex 目录（`CODEX_HOME=~/.config/ccnm/agents/codex`）和 ccnm 起会话时的那套参数；直接敲 `codex resume <id>` 用的是你日常的 `~/.codex`，没有 ccnm 的工具，Codex 自带的 shell 还开着，命令会跑在 AI 那台上，别这么做。
 
+### 会话里有 ccnm 的说明，工具却一个都没有（`request _meta is missing`）
+
+**症状**：受管 Claude 会话开着，模型一调 ccnm 的工具就报 `No such tool available: mcp__ccnm__exec_command`。AI 那台上 Claude 的 MCP 日志（macOS：`~/Library/Caches/claude-cli-nodejs/<会话工作目录压平>/mcp-logs-ccnm/`，文件名是 UTC 时间）里有：
+
+```text
+stdio server answered the server/discover probe after its bound, so it was only slow to start …
+Failed to fetch tools: request _meta is missing or has malformed required fields: io.modelcontextprotocol/protocolVersion, io.modelcontextprotocol/clientCapabilities
+```
+
+**修**：项目机器（Runtime）上的 ccnm 升到 v0.17.0 或以后，`mcp-serve` 跑在那台上。还没升时碰到了，在 Claude 里 `/mcp` → `ccnm` → `Reconnect`，这次连得快就好了。
+
+**其实是**：Claude Code 连 MCP server 时先发新协议（2026-07-28）的探测 `server/discover`，回答来得晚就退回旧协议的 `initialize`，之后的请求不带新协议要的 `_meta`。v0.16.1 及以前用的 rmcp 3.2.0 一收到探测就把这条连接定死成新协议，于是退回之后每次取工具都被拒，模型只看得到 ccnm 写在握手里的说明。会不会退回看 `mcp-serve` 经 ssh 起得多快：fodelf 上 09-30 起 31 次连接，30 次在 1.4 秒内、都正常，只有一次 3.07 秒撞上了。v0.17.0 起用的 rmcp 3.5.1 修了这一点，[记录](research/2026-10-15-p93-discover-fallback.md)。
+
 ### `ccnm run` 报 `CCNM_E_POLICY`，第二行却是 `MCP initialize failed over …`
 
 ```text

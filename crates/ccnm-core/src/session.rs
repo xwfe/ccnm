@@ -252,6 +252,13 @@ pub enum Mode {
     Interactive {
         #[serde(default)]
         prompt: Option<String>,
+        /// The earlier session whose conversation this one carries on
+        /// (`ccnm run --continue`, P92). Its id is Claude's too, since
+        /// every session starts with `--session-id` set to ccnm's own; the
+        /// Agent picked it from its own records and checked that Claude
+        /// kept a transcript of it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        continues: Option<String>,
     },
 }
 
@@ -1204,7 +1211,10 @@ mod tests {
     #[test]
     fn an_interactive_session_tells_the_far_side_somebody_is_there() {
         let mut spec = spec();
-        spec.mode = Mode::Interactive { prompt: None };
+        spec.mode = Mode::Interactive {
+            prompt: None,
+            continues: None,
+        };
         let config = mcp_config(&spec, &ssh()).unwrap();
         let wire = config["mcpServers"]["ccnm"]["args"]
             .as_array()

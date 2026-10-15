@@ -304,10 +304,23 @@ pub fn launch_cmd(bin: &Path, spec: &Spec, dir: &Dir) -> Cmd {
         // terminal session that a dropped connection interrupted is worth
         // being able to resume. An opening prompt, if there is one, goes
         // on argv — stdin belongs to the terminal.
-        Mode::Interactive { prompt: None } => cmd,
-        Mode::Interactive {
-            prompt: Some(prompt),
-        } => cmd.arg(prompt),
+        //
+        // Continuing an earlier conversation (P92) forks it: `--session-id`
+        // stays ccnm's own id, and Claude Code refuses that beside
+        // `--resume` unless `--fork-session` is there too (measured on
+        // 2.1.286, docs/research/2026-10-15-p92-resume.md). The prompt
+        // comes after `--fork-session`, a flag that takes no value, so it
+        // cannot be read as `--resume`'s.
+        Mode::Interactive { prompt, continues } => {
+            let cmd = match continues {
+                Some(earlier) => cmd.args(["--resume", earlier, "--fork-session"]),
+                None => cmd,
+            };
+            match prompt {
+                Some(prompt) => cmd.arg(prompt),
+                None => cmd,
+            }
+        }
     }
 }
 
@@ -476,6 +489,55 @@ mod tests {
         with_dir.provider_config_dir = Some(PathBuf::from("/x/claude"));
         let cmd = launch_cmd(Path::new("/c"), &with_dir, &dir);
         assert_eq!(cmd.env[0].0, "CLAUDE_CONFIG_DIR");
+    }
+
+    /// P92: a session that carries on an earlier conversation forks it
+    /// under its own id. Claude Code refuses `--session-id` beside
+    /// `--resume` without `--fork-session`, and an opening prompt right
+    /// after `--resume <id>` could be read as its value; after
+    /// `--fork-session` it is the opening message (both measured on
+    /// 2.1.286, docs/research/2026-10-15-p92-resume.md).
+    #[test]
+    fn a_continued_session_forks_the_earlier_conversation_under_its_own_id() {
+        let earlier = "7c1e2d3f-0b4c-4a5b-8c6d-7e8f9a0b1c2d";
+        let args = |mode: Mode| -> Vec<String> {
+            let cmd = launch_cmd(Path::new("/c"), &Spec { mode, ..spec() }, &Dir::at("/s"));
+            assert!(cmd.stdin.is_none(), "stdin belongs to the terminal");
+            cmd.args
+                .iter()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect()
+        };
+        let continued = args(Mode::Interactive {
+            prompt: Some("carry on".into()),
+            continues: Some(earlier.into()),
+        });
+        let at = continued.iter().position(|a| a == "--session-id").unwrap();
+        assert_eq!(
+            continued[at..],
+            [
+                "--session-id",
+                "0b4c7a1e-2d3f-4a5b-8c6d-7e8f9a0b1c2d",
+                "--resume",
+                earlier,
+                "--fork-session",
+                "carry on"
+            ]
+        );
+        // A fresh one says nothing about resuming.
+        let fresh = args(Mode::Interactive {
+            prompt: None,
+            continues: None,
+        });
+        assert!(
+            !fresh
+                .iter()
+                .any(|a| a == "--resume" || a == "--fork-session")
+        );
+        assert_eq!(
+            fresh.last().unwrap(),
+            "0b4c7a1e-2d3f-4a5b-8c6d-7e8f9a0b1c2d"
+        );
     }
 
     fn tools_arg(spec: &Spec) -> Option<String> {

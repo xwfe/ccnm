@@ -247,7 +247,10 @@ fn status_for_one_instance_says_when_another_instance_has_the_workspace() {
         id,
         "demo",
         Some(f.identity("codex-main", AgentProvider::Codex)),
-        Mode::Interactive { prompt: None },
+        Mode::Interactive {
+            prompt: None,
+            continues: None,
+        },
     );
     let asked = |agent: &str| {
         let runner = FakeRunner::new();
@@ -296,7 +299,10 @@ fn exact_stop_checks_identity_before_kill_and_records_confirmed_terminal_state()
         id,
         "demo",
         Some(f.identity("claude-main", AgentProvider::Claude)),
-        Mode::Interactive { prompt: None },
+        Mode::Interactive {
+            prompt: None,
+            continues: None,
+        },
     );
 
     let wrong = FakeRunner::new();
@@ -412,7 +418,10 @@ fn stopping_a_session_whose_terminal_vanished_records_its_terminal_outcome() {
         id,
         "demo",
         Some(f.identity("claude-main", AgentProvider::Claude)),
-        Mode::Interactive { prompt: None },
+        Mode::Interactive {
+            prompt: None,
+            continues: None,
+        },
     );
     assert!(session::read_outcome(&dir).unwrap().is_none());
     let runner = FakeRunner::new();
@@ -507,7 +516,10 @@ fn exact_stop_waits_for_the_runtime_transport_instead_of_looking_once() {
         id,
         "demo",
         Some(f.identity("claude-main", AgentProvider::Claude)),
-        Mode::Interactive { prompt: None },
+        Mode::Interactive {
+            prompt: None,
+            continues: None,
+        },
     );
     let runner = FakeRunner::new();
     runner.push(Output::exited(0, "")); // tmux has-session
@@ -546,7 +558,15 @@ fn workspace_stop() -> StopRequest {
 fn a_workspace_stop_records_the_legacy_session_its_terminal_names() {
     let f = Fixture::new();
     let id = "00000000-0000-4000-8000-000000000751";
-    let dir = f.record(id, "demo", None, Mode::Interactive { prompt: None });
+    let dir = f.record(
+        id,
+        "demo",
+        None,
+        Mode::Interactive {
+            prompt: None,
+            continues: None,
+        },
+    );
     let runner = FakeRunner::new();
     runner.push(Output::exited(0, format!("CCNM_SESSION={id}\n")));
     runner.push(Output::exited(0, "")); // tmux kill-session
@@ -573,7 +593,15 @@ fn a_workspace_stop_records_the_legacy_session_its_terminal_names() {
 fn an_unconfirmed_workspace_stop_names_the_session_that_finishes_it() {
     let f = Fixture::new();
     let id = "00000000-0000-4000-8000-000000000752";
-    let dir = f.record(id, "demo", None, Mode::Interactive { prompt: None });
+    let dir = f.record(
+        id,
+        "demo",
+        None,
+        Mode::Interactive {
+            prompt: None,
+            continues: None,
+        },
+    );
     let runner = FakeRunner::new();
     runner.push(Output::exited(0, format!("CCNM_SESSION={id}\n")));
     runner.push(Output::exited(0, "")); // tmux kill-session
@@ -615,7 +643,10 @@ fn a_workspace_stop_records_nothing_it_cannot_tie_to_a_legacy_session() {
         bound,
         "demo",
         Some(f.identity("claude-main", AgentProvider::Claude)),
-        Mode::Interactive { prompt: None },
+        Mode::Interactive {
+            prompt: None,
+            continues: None,
+        },
     );
     for named in [
         String::from("-CCNM_SESSION\n"),
@@ -712,7 +743,10 @@ fn exact_stop_against_a_real_terminal_waits_out_a_transport_that_lingers() {
         id,
         "demo",
         Some(f.identity("claude-main", AgentProvider::Claude)),
-        Mode::Interactive { prompt: None },
+        Mode::Interactive {
+            prompt: None,
+            continues: None,
+        },
     );
     backdate(&dir.meta(), 3 * 60 + 20);
     let payload = AgentProvider::Claude.transport_payload(&dir).unwrap();
@@ -813,7 +847,15 @@ fn a_workspace_stop_against_a_real_terminal_records_the_legacy_session() {
     let own = OwnTmux::new(&real);
     let f = Fixture::new();
     let id = "00000000-0000-4000-8000-000000000754";
-    let dir = f.record(id, "demo", None, Mode::Interactive { prompt: None });
+    let dir = f.record(
+        id,
+        "demo",
+        None,
+        Mode::Interactive {
+            prompt: None,
+            continues: None,
+        },
+    );
     let started = own.run(&[
         "new-session",
         "-d",
@@ -857,7 +899,15 @@ fn status_lists_a_live_terminal_on_a_real_tmux() {
     let own = OwnTmux::new(&real);
     let f = Fixture::new();
     let id = "00000000-0000-4000-8000-000000000891";
-    f.record(id, "demo", None, Mode::Interactive { prompt: None });
+    f.record(
+        id,
+        "demo",
+        None,
+        Mode::Interactive {
+            prompt: None,
+            continues: None,
+        },
+    );
     let started = own.run(&[
         "new-session",
         "-d",
@@ -904,7 +954,10 @@ fn exact_stop_gives_up_after_the_grace_and_never_confirms_what_it_cannot_see() {
         id,
         "demo",
         Some(f.identity("claude-main", AgentProvider::Claude)),
-        Mode::Interactive { prompt: None },
+        Mode::Interactive {
+            prompt: None,
+            continues: None,
+        },
     );
     let runner = FakeRunner::new();
     runner.push(Output::exited(0, ""));
@@ -932,7 +985,10 @@ fn exact_stop_gives_up_after_the_grace_and_never_confirms_what_it_cannot_see() {
         id,
         "demo",
         Some(f.identity("claude-main", AgentProvider::Claude)),
-        Mode::Interactive { prompt: None },
+        Mode::Interactive {
+            prompt: None,
+            continues: None,
+        },
     );
     let runner = FakeRunner::new();
     runner.push(Output::exited(0, ""));
@@ -960,7 +1016,10 @@ fn a_stopped_session_is_logged_as_stopped_with_how_long_it_ran() {
         id,
         "demo",
         Some(f.identity("claude-main", AgentProvider::Claude)),
-        Mode::Interactive { prompt: None },
+        Mode::Interactive {
+            prompt: None,
+            continues: None,
+        },
     );
     backdate(&dir.meta(), 7 * 60 + 20);
     let runner = FakeRunner::new();
@@ -988,7 +1047,10 @@ fn a_stop_confirmed_on_the_second_call_is_still_a_stop_at_the_time_it_was_asked(
         id,
         "demo",
         Some(f.identity("claude-main", AgentProvider::Claude)),
-        Mode::Interactive { prompt: None },
+        Mode::Interactive {
+            prompt: None,
+            continues: None,
+        },
     );
     backdate(&dir.meta(), 7 * 60 + 20);
     std::fs::write(dir.stopping(), b"requested\n").unwrap();
@@ -1040,7 +1102,10 @@ fn active_session_with_another_identity_is_never_reused_or_replaced() {
         id,
         "demo",
         Some(f.identity("claude-main", AgentProvider::Claude)),
-        Mode::Interactive { prompt: None },
+        Mode::Interactive {
+            prompt: None,
+            continues: None,
+        },
     );
     let runner = FakeRunner::new();
     runner.push(Output::exited(0, ""));
@@ -1056,6 +1121,7 @@ fn active_session_with_another_identity_is_never_reused_or_replaced() {
         permission_mode: Default::default(),
         prompt: None,
         agent_tools: Default::default(),
+        continue_last: false,
     };
     let error = work::start(&request, &f.tools(&runner)).unwrap_err();
     assert_eq!(error.code(), ErrorCode::NotReady);
@@ -1599,7 +1665,10 @@ fn agent_output_never_crosses_workspace_instance_or_mode() {
         &interactive,
         "demo",
         Some(f.identity("claude-main", AgentProvider::Claude)),
-        Mode::Interactive { prompt: None },
+        Mode::Interactive {
+            prompt: None,
+            continues: None,
+        },
     );
     session::record_terminal_failure(&idir, "done").unwrap();
     let err = work::output(

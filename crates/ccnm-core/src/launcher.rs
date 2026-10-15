@@ -153,14 +153,17 @@ pub fn start_interactive(
     env: &Env<'_>,
     prompt: Option<&str>,
 ) -> Result<StartReport> {
-    start_interactive_with_agent(resolved, env, prompt, None)
+    start_interactive_with_agent(resolved, env, prompt, None, false)
 }
 
+/// `continue_last` is `--continue` (P92): the Agent picks the conversation,
+/// since the records and the transcripts are both on its side.
 pub fn start_interactive_with_agent(
     resolved: &Resolved<'_>,
     env: &Env<'_>,
     prompt: Option<&str>,
     agent: Option<&str>,
+    continue_last: bool,
 ) -> Result<StartReport> {
     let ssh = agent_ssh(resolved, env)?;
     let selected = resolved.agent_reference(agent)?;
@@ -179,6 +182,7 @@ pub fn start_interactive_with_agent(
         permission_mode: AgentProvider::current().permission_mode(resolved.workspace),
         prompt: prompt.map(str::to_string),
         agent_tools: resolved.workspace.agent_tools.clone(),
+        continue_last,
     };
     let report: StartReport = ssh.call_ccnm(
         env.runner,
@@ -790,6 +794,7 @@ mod tests {
             replaced: None,
             controller: None,
             context: None,
+            continues: None,
         })
         .unwrap()
     }
@@ -1047,7 +1052,8 @@ mod tests {
         assert_eq!(
             spec.mode,
             Mode::Interactive {
-                prompt: Some("fix the failing test".into())
+                prompt: Some("fix the failing test".into()),
+                continues: None,
             }
         );
     }

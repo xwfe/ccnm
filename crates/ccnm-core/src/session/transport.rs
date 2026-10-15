@@ -140,7 +140,10 @@ mod tests {
             }),
             provider_config_dir: None,
             permission_mode: PermissionMode::default(),
-            mode: Mode::Interactive { prompt: None },
+            mode: Mode::Interactive {
+                prompt: None,
+                continues: None,
+            },
             timeout_secs: 600,
             cwd: PathBuf::from("/Users/fodelf/.local/state/ccnm/workspaces/fixture"),
             agent_tools: Default::default(),

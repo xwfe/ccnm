@@ -184,6 +184,13 @@ pub struct StartRequest {
         skip_serializing_if = "crate::config::AgentTools::is_omitted"
     )]
     pub agent_tools: crate::config::AgentTools,
+    /// Carry on this workspace's latest conversation rather than open an
+    /// empty one (`ccnm run --continue`, P92). The Agent picks which: only
+    /// it has the session records and Claude's transcripts. Left out when
+    /// false, so an Agent too old to know it refuses the field by name
+    /// instead of quietly starting a new conversation.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub continue_last: bool,
 }
 
 impl Protocol for StartRequest {
@@ -238,6 +245,10 @@ pub struct StartReport {
     /// first second or so of a session's life.
     #[serde(default)]
     pub context: Option<crate::session::Context>,
+    /// The earlier session whose conversation this one carries on, when it
+    /// was started with `--continue` (P92).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continues: Option<String>,
 }
 
 impl Protocol for StartReport {
@@ -281,6 +292,16 @@ impl StartReport {
         }
         if let Some(id) = &self.session {
             lines.push(format!("{}{id}", label("id")));
+        }
+        if let Some(earlier) = &self.continues {
+            lines.push(format!(
+                "{}{}",
+                label(lang.pick("接着", "continues")),
+                lang.pick(
+                    format!("会话 {earlier} 的对话"),
+                    format!("the conversation of session {earlier}"),
+                )
+            ));
         }
         if let Some(ctx) = &self.controller {
             lines.push(format!(
@@ -865,4 +886,61 @@ pub struct HistoryEntry {
     pub state: SessionState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outcome: Option<Outcome>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn start(continue_last: bool) -> StartRequest {
+        StartRequest {
+            protocol: crate::protocol::PROTOCOL,
+            provider: Default::default(),
+            agent: None,
+            workspace: "xshun".into(),
+            root: PathBuf::from("/Users/bing/xshun"),
+            runtime_node: "runtime".into(),
+            provider_config_dir: None,
+            permission_mode: PermissionMode::default(),
+            prompt: None,
+            agent_tools: Default::default(),
+            continue_last,
+        }
+    }
+
+    /// P92: a start that does not ask to continue reads exactly as it did
+    /// before the field existed, so an older Agent still takes it; one that
+    /// does is refused by that Agent by name (`deny_unknown_fields`) rather
+    /// than quietly opening an empty conversation.
+    #[test]
+    fn continue_last_is_on_the_wire_only_when_asked() {
+        let plain = serde_json::to_value(start(false)).unwrap();
+        assert!(plain.get("continue_last").is_none(), "{plain}");
+        let asked = serde_json::to_value(start(true)).unwrap();
+        assert_eq!(asked["continue_last"], true);
+
+        // The field set as v0.16.1 had it.
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        #[allow(dead_code)]
+        struct Before {
+            protocol: u32,
+            #[serde(default)]
+            provider: Option<serde_json::Value>,
+            #[serde(default)]
+            agent: Option<serde_json::Value>,
+            workspace: String,
+            root: PathBuf,
+            runtime_node: String,
+            claude_config_dir: Option<PathBuf>,
+            permission_mode: PermissionMode,
+            #[serde(default)]
+            prompt: Option<String>,
+            #[serde(default)]
+            agent_tools: Option<serde_json::Value>,
+        }
+        serde_json::from_value::<Before>(plain).expect("an older Agent reads it");
+        let refused = serde_json::from_value::<Before>(asked).err().unwrap();
+        assert!(refused.to_string().contains("continue_last"), "{refused}");
+    }
 }

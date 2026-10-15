@@ -515,6 +515,11 @@ pub fn start(req: &StartRequest, tools: &Tools<'_>) -> Result<StartReport> {
         tools,
     )?;
     require_remote_topology(&req.runtime_node, &selected, tools)?;
+    if req.continue_last && selected.provider != AgentProvider::Claude {
+        return Err(Error::invalid_args(
+            "--continue works with Claude only for now; a Codex session starts a new conversation",
+        ));
+    }
     let tmux = tools.tmux()?;
     let name = tmux::session_name(&req.workspace);
     tmux::check_name(&name)?;
@@ -582,11 +587,91 @@ pub fn start(req: &StartRequest, tools: &Tools<'_>) -> Result<StartReport> {
             replaced: None,
             controller: None,
             context,
+            continues: None,
         });
     }
 
+    // From this machine's own records, before anything is dialled or
+    // created: nothing to continue is found out here, not as a terminal
+    // that closes the moment it is attached to.
+    let continues = if req.continue_last {
+        Some(previous_conversation(req, &selected, tools)?)
+    } else {
+        None
+    };
     let (ctx, ssh, ask_before) = preflight(req, &selected, tools)?;
-    start_fresh(req, &selected, tools, name, ctx, ssh, ask_before)
+    start_fresh(req, &selected, tools, name, ctx, ssh, ask_before, continues)
+}
+
+/// The conversation `--continue` carries on (P92): the newest interactive
+/// session this machine ran for the workspace -- same Agent, same
+/// instance, same project root -- that Claude kept a transcript of.
+///
+/// The transcript decides. Claude Code writes one only once something has
+/// been said, so a session opened and closed in silence has a record here
+/// and nothing to resume: `claude --resume` on it prints "No conversation
+/// found with session ID" and exits 1 (2.1.286,
+/// docs/research/2026-10-15-p92-resume.md), and whoever attaches sees the
+/// terminal close.
+fn previous_conversation(
+    req: &StartRequest,
+    selected: &SelectedAgent,
+    tools: &Tools<'_>,
+) -> Result<String> {
+    // Where this session's Claude keeps its state: the instance profile or
+    // `claude_config_dir` when there is one (CLAUDE_CONFIG_DIR), else
+    // Claude's own default.
+    let claude_home = match &selected.profile_dir {
+        Some(dir) => dir.clone(),
+        None => paths::home_dir()?.join(".claude"),
+    };
+    latest_kept_conversation(&tools.state, &claude_home, req, selected).ok_or_else(|| {
+        Error::new(
+            ErrorCode::NotReady,
+            format!(
+                "workspace `{w}` has no earlier conversation on this Agent to continue: only an interactive session in which something was said leaves one\nstart a new one: ccnm {w}",
+                w = req.workspace
+            ),
+        )
+    })
+}
+
+fn latest_kept_conversation(
+    state: &Path,
+    claude_home: &Path,
+    req: &StartRequest,
+    selected: &SelectedAgent,
+) -> Option<String> {
+    let mut sessions: Vec<(u64, String)> = std::fs::read_dir(paths::sessions_dir(state))
+        .ok()?
+        .flatten()
+        .filter_map(|entry| {
+            let dir = session::Dir::at(entry.path());
+            let spec = session::load(&dir).ok()?;
+            (spec.workspace == req.workspace
+                && spec.mode.is_interactive()
+                && spec.provider() == selected.provider
+                && spec.agent_identity == selected.identity
+                && spec.root == req.root)
+                .then(|| (started_at(&dir), spec.id))
+        })
+        .collect();
+    sessions.sort_by_key(|(at, _)| std::cmp::Reverse(*at));
+    sessions
+        .into_iter()
+        .map(|(_, id)| id)
+        .find(|id| transcript_kept(claude_home, id))
+}
+
+/// Claude keeps a conversation as `projects/<its cwd, flattened>/<id>.jsonl`
+/// under its config directory. How it flattens the cwd is Claude's own
+/// business, so every project directory is looked in; the id is a UUID, so
+/// a file by that name can only be this session's.
+fn transcript_kept(claude_home: &Path, id: &str) -> bool {
+    std::fs::read_dir(claude_home.join("projects")).is_ok_and(|dirs| {
+        dirs.flatten()
+            .any(|dir| dir.path().join(format!("{id}.jsonl")).is_file())
+    })
 }
 
 fn require_remote_topology(
@@ -754,6 +839,7 @@ fn preflight(
 }
 
 /// Create the session and have the controller start it.
+#[allow(clippy::too_many_arguments)]
 fn start_fresh(
     req: &StartRequest,
     selected: &SelectedAgent,
@@ -762,6 +848,7 @@ fn start_fresh(
     ctx: controller::Context,
     ssh: Option<Ssh>,
     ask_before: Vec<String>,
+    continues: Option<String>,
 ) -> Result<StartReport> {
     let runtime = tools.runtime_link(&req.runtime_node)?;
     let cwd = if runtime.is_none() {
@@ -793,6 +880,7 @@ fn start_fresh(
         permission_mode: req.permission_mode,
         mode: Mode::Interactive {
             prompt: req.prompt.clone(),
+            continues: continues.clone(),
         },
         // Not used interactively: nothing kills this session on a clock.
         timeout_secs: 0,
@@ -843,6 +931,7 @@ fn start_fresh(
         // The supervisor writes this from inside tmux a moment from now;
         // `ccnm status` is where it shows up.
         context: wait_for_context(&dir),
+        continues,
     })
 }
 
@@ -1654,7 +1743,7 @@ pub fn history(req: &HistoryRequest, tools: &Tools<'_>) -> Result<HistoryReport>
             }
             let (mode, prompt) = match &spec.mode {
                 Mode::Print { prompt } => ("print", Some(prompt.as_str())),
-                Mode::Interactive { prompt } => ("interactive", prompt.as_deref()),
+                Mode::Interactive { prompt, .. } => ("interactive", prompt.as_deref()),
             };
             HistoryEntry {
                 session: spec.id.clone(),
@@ -3065,7 +3154,10 @@ mod tests {
             }),
             provider_config_dir: None,
             permission_mode: crate::config::PermissionMode::default(),
-            mode: Mode::Interactive { prompt: None },
+            mode: Mode::Interactive {
+                prompt: None,
+                continues: None,
+            },
             timeout_secs: 0,
             cwd: dir.to_path_buf(),
             agent_tools: Default::default(),
@@ -3162,7 +3254,156 @@ mod tests {
             permission_mode: crate::config::PermissionMode::default(),
             prompt: None,
             agent_tools: Default::default(),
+            continue_last: false,
         }
+    }
+
+    /// A session record this Agent kept, started `at` seconds after the
+    /// epoch, and -- when `said` -- the transcript Claude keeps once
+    /// something has been said in it.
+    fn kept(
+        state: &Path,
+        claude_home: &Path,
+        at: u64,
+        workspace: &str,
+        root: &str,
+        mode: Mode,
+        said: bool,
+    ) -> String {
+        let id = session::new_id();
+        let dir = session::Dir::at(paths::session_dir(state, &id));
+        std::fs::create_dir_all(dir.path()).unwrap();
+        let spec = Spec {
+            runtime_node: None,
+            agent_identity: None,
+            provider: AgentProvider::Claude,
+            protocol: PROTOCOL,
+            id: id.clone(),
+            workspace: workspace.into(),
+            root: PathBuf::from(root),
+            runtime: Some(RuntimeLink {
+                alias: "to-runtime".into(),
+                ccnm_bin: "/opt/runtime/ccnm".into(),
+            }),
+            provider_config_dir: None,
+            permission_mode: Default::default(),
+            mode,
+            timeout_secs: 0,
+            cwd: state.join("workspaces").join(workspace),
+            agent_tools: Default::default(),
+            ask_before: Vec::new(),
+        };
+        std::fs::write(dir.meta(), serde_json::to_string(&spec).unwrap()).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(dir.meta())
+            .unwrap()
+            .set_modified(std::time::UNIX_EPOCH + Duration::from_secs(at))
+            .unwrap();
+        if said {
+            let project = claude_home.join("projects/-flattened-cwd");
+            std::fs::create_dir_all(&project).unwrap();
+            std::fs::write(project.join(format!("{id}.jsonl")), "{}\n").unwrap();
+        }
+        id
+    }
+
+    /// P92: what `--continue` picks up -- the newest interactive session
+    /// of this workspace, at this root, that Claude kept a transcript of.
+    #[test]
+    fn continue_picks_the_newest_conversation_claude_kept() {
+        let dir = temp("continue-pick");
+        let (state, home) = (dir.join("state"), dir.join("claude-home"));
+        let chat = || Mode::Interactive {
+            prompt: None,
+            continues: None,
+        };
+        let root = "/Users/bing/xshun";
+        let older = kept(&state, &home, 100, "xshun", root, chat(), true);
+        let wanted = kept(&state, &home, 200, "xshun", root, chat(), true);
+        // Opened and closed without a word: a record, and nothing to resume.
+        kept(&state, &home, 300, "xshun", root, chat(), false);
+        // A print run, another root, another workspace: all newer, none ours.
+        kept(
+            &state,
+            &home,
+            400,
+            "xshun",
+            root,
+            Mode::Print { prompt: "x".into() },
+            true,
+        );
+        kept(
+            &state,
+            &home,
+            500,
+            "xshun",
+            "/Users/bing/moved",
+            chat(),
+            true,
+        );
+        kept(&state, &home, 600, "other", root, chat(), true);
+
+        let claude = SelectedAgent {
+            provider: AgentProvider::Claude,
+            identity: None,
+            profile_dir: None,
+        };
+        let found = latest_kept_conversation(&state, &home, &start_request(), &claude);
+        assert_eq!(found.as_deref(), Some(wanted.as_str()), "not {older}");
+    }
+
+    /// Nothing to continue is said before anything is dialled or created:
+    /// no session directory, no controller, and the way to start afresh.
+    #[test]
+    fn continue_with_no_conversation_kept_starts_nothing() {
+        let dir = temp("continue-none");
+        let home = dir.join("claude-home");
+        kept(
+            &dir,
+            &home,
+            100,
+            "xshun",
+            "/Users/bing/xshun",
+            Mode::Interactive {
+                prompt: None,
+                continues: None,
+            },
+            false,
+        );
+        let fake = FakeRunner::new();
+        fake.push(Output::exited(1, "")); // has-session: nothing running
+        let req = StartRequest {
+            provider_config_dir: Some(home),
+            continue_last: true,
+            ..start_request()
+        };
+        let err = start(&req, &tmux_tools(&fake, &dir, "continue-none")).unwrap_err();
+        assert_eq!(err.code(), ErrorCode::NotReady, "{err}");
+        assert!(err.message().contains("ccnm xshun"), "{err}");
+        assert_eq!(fake.calls().len(), 1, "only has-session was asked");
+        assert_eq!(
+            std::fs::read_dir(paths::sessions_dir(&dir))
+                .unwrap()
+                .count(),
+            1,
+            "no session beyond the one that was there"
+        );
+    }
+
+    #[test]
+    fn continue_is_refused_for_codex_before_anything_runs() {
+        let dir = temp("continue-codex");
+        let fake = FakeRunner::new();
+        let req = StartRequest {
+            provider: AgentProvider::Codex,
+            continue_last: true,
+            ..start_request()
+        };
+        let err = start(&req, &tmux_tools(&fake, &dir, "continue-codex")).unwrap_err();
+        assert_eq!(err.code(), ErrorCode::InvalidArgs, "{err}");
+        assert!(err.message().contains("Claude only"), "{err}");
+        assert!(fake.calls().is_empty());
     }
 
     fn tmux_tools<'a>(fake: &'a FakeRunner, dir: &Path, test: &str) -> Tools<'a> {
@@ -3256,7 +3497,10 @@ mod tests {
             }),
             provider_config_dir: None,
             permission_mode: crate::config::PermissionMode::default(),
-            mode: Mode::Interactive { prompt: None },
+            mode: Mode::Interactive {
+                prompt: None,
+                continues: None,
+            },
             timeout_secs: 0,
             cwd: dir.to_path_buf(),
             agent_tools: Default::default(),
@@ -3532,7 +3776,10 @@ mod tests {
         std::thread::sleep(Duration::from_millis(1100));
         write_session(
             "33333333-3333-4333-8333-333333333333",
-            Mode::Interactive { prompt: None },
+            Mode::Interactive {
+                prompt: None,
+                continues: None,
+            },
             None,
         );
 

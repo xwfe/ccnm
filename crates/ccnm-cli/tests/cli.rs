@@ -1365,6 +1365,7 @@ fn sitting_at_home_detached_starts_the_session_and_keeps_the_terminal_here() {
         replaced: None,
         controller: None,
         context: None,
+        continues: None,
     })
     .unwrap();
     let nothing_running = serde_json::to_string(&StatusReport {
@@ -1891,6 +1892,24 @@ fn run_refuses_a_prompt_in_two_places_at_once() {
     assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
     assert!(
         stderr(&out).contains("cannot be used with"),
+        "{}",
+        stderr(&out)
+    );
+}
+
+/// P92: `ccnm <ws> -c` is `ccnm run <ws> --continue`, and a `--print` run
+/// has no conversation to carry on (it keeps no transcript), so asking for
+/// both is caught before anything is dialled.
+#[test]
+fn continue_reaches_run_and_is_not_for_print() {
+    let out = ccnm()
+        .args(["xshun", "-c", "--print", "hello", "--config"])
+        .arg(fixture("config-valid.toml"))
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("'--continue' cannot be used with '--print <PROMPT>'"),
         "{}",
         stderr(&out)
     );

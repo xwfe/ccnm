@@ -239,6 +239,7 @@ fn public_default_and_explicit_instance_selection_use_v3_without_private_paths()
         replaced: None,
         controller: Some(context),
         context: None,
+        continues: None,
     };
     let run_json = f.0.join("run.json");
     let start_json = f.0.join("start.json");

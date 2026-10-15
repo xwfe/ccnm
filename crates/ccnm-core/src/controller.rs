@@ -1230,7 +1230,13 @@ mod tests {
     /// Claude can read its credentials in.
     #[test]
     fn an_interactive_session_is_started_through_tmux_with_the_supervisor_inside() {
-        let dir = session_dir("interactive", session::Mode::Interactive { prompt: None });
+        let dir = session_dir(
+            "interactive",
+            session::Mode::Interactive {
+                prompt: None,
+                continues: None,
+            },
+        );
         let fake = FakeRunner::new();
         fake.push(Output::exited(1, "")); // has-session: not running
         fake.push(Output::exited(0, "")); // new-session
@@ -1303,7 +1309,13 @@ mod tests {
     /// resolve by guessing.
     #[test]
     fn a_second_interactive_session_for_the_same_workspace_is_refused() {
-        let dir = session_dir("second", session::Mode::Interactive { prompt: None });
+        let dir = session_dir(
+            "second",
+            session::Mode::Interactive {
+                prompt: None,
+                continues: None,
+            },
+        );
         let fake = FakeRunner::new();
         fake.push(Output::exited(0, "")); // has-session: already there
         let req = Request::new(RequestBody::Start {
@@ -1322,7 +1334,13 @@ mod tests {
 
     #[test]
     fn without_tmux_an_interactive_session_says_how_to_get_it() {
-        let dir = session_dir("notmux", session::Mode::Interactive { prompt: None });
+        let dir = session_dir(
+            "notmux",
+            session::Mode::Interactive {
+                prompt: None,
+                continues: None,
+            },
+        );
         let fake = FakeRunner::new();
         let mut tools = tools(&fake, true);
         tools.tmux = None;

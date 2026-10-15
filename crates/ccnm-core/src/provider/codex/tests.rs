@@ -64,7 +64,10 @@ fn the_tools_the_runtime_marks_ask_in_an_interactive_session_only() {
             .collect()
     };
     let interactive = launch(
-        Mode::Interactive { prompt: None },
+        Mode::Interactive {
+            prompt: None,
+            continues: None,
+        },
         &["exec_command", "call_mcp_tool", "x\"=1,y", "exec_command"],
     );
     assert_eq!(
@@ -91,7 +94,16 @@ fn the_tools_the_runtime_marks_ask_in_an_interactive_session_only() {
 
     // A record from before P71, or a workspace with allow_unattended_exec:
     // the launch is what it always was.
-    assert!(prompts(&launch(Mode::Interactive { prompt: None }, &[])).is_empty());
+    assert!(
+        prompts(&launch(
+            Mode::Interactive {
+                prompt: None,
+                continues: None
+            },
+            &[]
+        ))
+        .is_empty()
+    );
 }
 
 /// P80: without `tool_timeout_sec` Codex 0.154.0 gives up on a call after
@@ -107,7 +119,10 @@ fn codex_waits_out_the_longest_call_ccnm_lets_one_take() {
         Mode::Print {
             prompt: "hi".into(),
         },
-        Mode::Interactive { prompt: None },
+        Mode::Interactive {
+            prompt: None,
+            continues: None,
+        },
     ] {
         let args = strings(
             &build_launch_cmd(
@@ -175,7 +190,13 @@ fn an_interactive_session_does_not_let_the_profile_choose_who_approves() {
     };
     let pinned = vec![("-c".to_string(), "approvals_reviewer=\"user\"".to_string())];
     for ask in [&["exec_command"][..], &[]] {
-        let interactive = launch(Mode::Interactive { prompt: None }, ask);
+        let interactive = launch(
+            Mode::Interactive {
+                prompt: None,
+                continues: None,
+            },
+            ask,
+        );
         assert_eq!(reviewer(&interactive), pinned, "{interactive:?}");
     }
     // `codex exec` runs with --ignore-user-config, so the profile cannot
@@ -326,7 +347,10 @@ fn web_search_follows_the_workspace_and_nothing_else_does() {
     let print = spec(Mode::Print {
         prompt: "hi".into(),
     });
-    let interactive = spec(Mode::Interactive { prompt: None });
+    let interactive = spec(Mode::Interactive {
+        prompt: None,
+        continues: None,
+    });
     for base in [print, interactive] {
         let default = launch(&base);
         assert!(
@@ -637,8 +661,12 @@ fn launch_modes_use_measured_flags_without_sending_home_to_runtime() {
         },
         Mode::Interactive {
             prompt: Some("opening".into()),
+            continues: None,
         },
-        Mode::Interactive { prompt: None },
+        Mode::Interactive {
+            prompt: None,
+            continues: None,
+        },
     ] {
         let spec = spec(mode);
         let cmd = build_launch_cmd(
@@ -663,6 +691,7 @@ fn launch_modes_use_measured_flags_without_sending_home_to_runtime() {
             assert!(!cmd.args.iter().any(|a| a == "exec"));
             if let Mode::Interactive {
                 prompt: Some(prompt),
+                ..
             } = &spec.mode
             {
                 assert_eq!(cmd.args[cmd.args.len() - 2], "--");

@@ -52,9 +52,13 @@ fn snapshot() -> Value {
         session::Mode::Print {
             prompt: "-a 'quoted'\n中文".into(),
         },
-        session::Mode::Interactive { prompt: None },
+        session::Mode::Interactive {
+            prompt: None,
+            continues: None,
+        },
         session::Mode::Interactive {
             prompt: Some("-a 'quoted'\n中文".into()),
+            continues: None,
         },
     ];
     let launches: Vec<Value> = [true, false]

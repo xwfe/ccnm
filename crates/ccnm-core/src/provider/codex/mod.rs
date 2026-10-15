@@ -494,9 +494,20 @@ pub(crate) fn build_launch_cmd(
     match &spec.mode {
         Mode::Print { prompt } => cmd = cmd.arg("-").stdin(prompt.as_bytes().to_vec()),
         Mode::Interactive {
+            continues: Some(_), ..
+        } => {
+            return Err(Error::invalid_args(
+                "a Codex session cannot continue an earlier conversation yet (P92 is Claude only)",
+            ));
+        }
+        Mode::Interactive {
             prompt: Some(prompt),
+            continues: None,
         } => cmd = cmd.arg("--").arg(prompt),
-        Mode::Interactive { prompt: None } => {}
+        Mode::Interactive {
+            prompt: None,
+            continues: None,
+        } => {}
     }
     Ok(cmd)
 }

@@ -12,7 +12,7 @@ use ccnm_core::protocol::hello::{self, HelloRequest};
 use ccnm_core::protocol::payload;
 use ccnm_core::protocol::probe::ProbeRequest;
 use ccnm_core::protocol::run::{
-    AttachRequest, HistoryRequest, PurgeRequest, ResultRequest, RunReport, RunRequest,
+    AttachRequest, HistoryRequest, PurgeRequest, ResultRequest, RunReport, RunRequest, StartReport,
     StartRequest, StatusRequest, StopRequest,
 };
 use ccnm_core::provider::AgentProvider;
@@ -109,6 +109,10 @@ enum Command {
         /// Start the session but do not attach to it
         #[arg(long, conflicts_with = "print")]
         detached: bool,
+        /// Carry on this workspace's latest conversation instead of opening
+        /// an empty one (Claude only)
+        #[arg(short = 'c', long = "continue", conflicts_with = "print")]
+        continue_last: bool,
     },
     /// Attach this terminal to a workspace's running session
     #[command(visible_alias = "a")]
@@ -662,6 +666,9 @@ fn zh_help(command: clap::Command) -> clap::Command {
                 })
                 .mut_arg("timeout", |a| a.help("多少秒之后杀掉 Agent（只对 --print 有效）"))
                 .mut_arg("detached", |a| a.help("把会话起起来，但不接上去"))
+                .mut_arg("continue_last", |a| {
+                    a.help("接着这个项目上一次的对话开，而不是开一个空的（只支持 Claude）")
+                })
         })
         .mut_subcommand("attach", |c| {
             workspace_args(c.about("把这个终端接到某个 workspace 正在跑的会话上"))
@@ -858,6 +865,7 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
             print,
             timeout,
             detached,
+            continue_last,
         } => {
             let config = Config::load(&config_path()?)?;
             // Sitting at the Agent Node: this config knows how to reach the
@@ -888,8 +896,10 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
                     lang,
                 );
                 let tools = agent_tools(config_path().ok().as_deref())?;
-                let report = work::start(&start_request(&authority, opening), &tools)?;
+                let report =
+                    work::start(&start_request(&authority, opening, *continue_last), &tools)?;
                 eprintln!("{}", report.summary_in(lang));
+                say_not_continued(&report, *continue_last, workspace, lang);
                 if *detached {
                     eprintln!(
                         "\n{}",
@@ -926,8 +936,10 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
                 &env,
                 opening.as_deref(),
                 agent.as_deref(),
+                *continue_last,
             )?;
             eprintln!("{}", rep.summary_in(lang));
+            say_not_continued(&rep, *continue_last, workspace, lang);
             if *detached {
                 eprintln!(
                     "\n{}",
@@ -2055,9 +2067,27 @@ fn attach_request(
 ///
 /// Every field is the Runtime's answer, unedited: this side supplies only
 /// the opening prompt, which is the one thing the Runtime never sees.
+/// `--continue` on a workspace whose session is already up attaches to
+/// that one, as `ccnm run` always does: it is the latest conversation. Said
+/// so, because nothing was continued and the person asked for something.
+fn say_not_continued(report: &StartReport, asked: bool, workspace: &str, lang: Lang) {
+    if asked && report.already_running {
+        eprintln!(
+            "\n{}",
+            lang.pick(
+                format!("{workspace} 已经有会话在跑，--continue 没有另起，直接接上它"),
+                format!(
+                    "{workspace} already has a session running; --continue started nothing and attaches to that one"
+                ),
+            )
+        );
+    }
+}
+
 fn start_request(
     authority: &ccnm_core::runtime::ResolveReport,
     prompt: Option<String>,
+    continue_last: bool,
 ) -> StartRequest {
     StartRequest {
         protocol: if authority.agent.is_some() {
@@ -2074,6 +2104,7 @@ fn start_request(
         permission_mode: authority.permission_mode,
         prompt,
         agent_tools: authority.agent_tools.clone(),
+        continue_last,
     }
 }
 

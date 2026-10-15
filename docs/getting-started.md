@@ -204,11 +204,17 @@ ccnm my-project
 
 在跑 AI 的那台敲同一条命令也行：它先问项目机器这个名字对应哪个目录，再在本机起会话、接上。`--print`（一问一答）例外，只能在项目机器上敲，在 AI 那台敲会报 `--print has to be run where the projects are; ssh there and run it`。
 
-日常命令和会话里 AI 能做什么，见[使用说明](usage.md)。
+会话关了以后想接着上次聊到的地方干，用 `ccnm my-project -c`（只支持 Claude，[说明](usage.md#接着上一次的对话开--continue)）。日常命令和会话里 AI 能做什么，见[使用说明](usage.md)。
 
 ### 不想每条命令都点确认
 
-交互会话默认每跑一条命令都会停下来问你一次。平时就用交互会话的项目，建议在**放项目的机器**的 `config.toml` 里，`ccnm workspace add` 写出来的那个 `[workspaces.my-project]` 下面加一行：
+交互会话默认每跑一条命令都会停下来问你一次。平时就用交互会话的项目，建议加项目时就带上（v0.17.0 起）：
+
+```bash
+ccnm workspace add my-project --allow-unattended-exec
+```
+
+已经加过的项目，在**放项目的机器**的 `config.toml` 里，`ccnm workspace add` 写出来的那个 `[workspaces.my-project]` 下面加一行：
 
 ```toml
 allow_unattended_exec = true

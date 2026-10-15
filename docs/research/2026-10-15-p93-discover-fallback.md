@@ -54,6 +54,8 @@ no tools in {"error":{"code":-32602,"message":"request _meta is missing or has m
 
 另一条 `a_client_that_stays_on_the_new_protocol_gets_the_tools` 走 discover → 带 `_meta` 的 `tools/list`，3.2.0 和 3.5.1 上都绿，防止升级丢了平时正常跑的那条路。
 
+**中立客户端**：`tests/test_remote_workspace_mcp.py` 的 `test_a_host_that_probes_then_falls_back_to_initialize_still_gets_the_tools` 按同样的顺序走外部 MCP 入口，不引用 ccnm 的任何代码。用 `CCNM_BIN` 指向 GitHub 上 v0.16.1 的 macOS 发布包（包 sha256 `171c4d1a…`，与当时的发版记录一致）时报 `RpcError: [-32602] request _meta is missing or has malformed required fields: …`；对 v0.17.0 通过。
+
 **夹具**：[p93-discover-fallback.py](probes/p93-discover-fallback.py) 用真实二进制按同样的顺序重放（本机直接起，或 `--ssh` 经 ssh 起，和受管会话一样）。本机结果：
 
 | 二进制 | 对照（直接 `initialize`） | 先探测再退回 | 退出码 |
@@ -72,4 +74,4 @@ no tools in {"error":{"code":-32602,"message":"request _meta is missing or has m
 
 - **心跳的 ping**：ccnm 的 `mcp-serve` 空闲时每 30 秒向客户端发一个 ping，用来发现写不出去的半开连接。新协议下 Claude Code 2.1.300 不接受服务端主动发来的请求，日志里约每 60 秒一条 `Dropped inbound request 'ping': not servable on this connection's protocol era`。14:45 那个会话跑了 3 小时 27 分、446 次工具调用都正常；半开检测靠的是"写不出去"，不靠回答，所以仍然有效。只是日志噪音，没改。
 - Claude 的探测等待时限没量具体值，只从日志知道在 1.38–3.07 秒之间。
-- 真机上的验证（换装后经 ssh 重放）记在发版记录里。
+- 真机验证已在换装后做了：fodelf 经 ssh 重放，换装前退出 1、换装后 0，见[发版记录](2026-10-15-release-0.17.0.md)第 4 节。

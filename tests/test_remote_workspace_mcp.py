@@ -207,6 +207,20 @@ agent_node = "agent"
             self.assertNotIn("ttlMs", listed, method)
             self.assertNotIn("cacheScope", listed, method)
 
+    def test_a_host_that_probes_then_falls_back_to_initialize_still_gets_the_tools(self):
+        """P93：Host 先发 server/discover，回答来得晚就改发 initialize，之后的请求不带 _meta。
+
+        Claude Code 2.1.300 在 server 起得慢时就这么做（出事那次经 ssh 起了 3.07 秒）。回答过
+        探测的服务端，也得按 initialize 协商出的旧版本服务这条连接。v0.16.1 及以前在这里每次
+        取工具都回 -32602 `request _meta is missing or has malformed required fields`。
+        """
+        client = McpClient(self.argv("demo", "read", "neutral-fallback"), self.env())
+        self.addCleanup(client.close)
+        client.discover()
+        self.assertEqual(client.initialize("2025-11-25")["protocolVersion"], "2025-11-25")
+        self.assertTrue(client.instructions.startswith("CCNM remote workspace"), client.instructions)
+        self.assertEqual(client.tool_names(), READ_TOOLS)
+
     def test_a_read_session_offers_exactly_the_read_tools(self):
         client = self.client("demo", "read", "neutral-read")
         self.assertEqual(client.tool_names(), READ_TOOLS)

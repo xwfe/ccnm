@@ -610,7 +610,7 @@ rows: 3
 - **Host 关掉 bridge（EOF 或 SIGTERM）**：没有子进程要回收——bridge 做完本机检查就 `exec` 成那条 ssh，所以这个进程**就是** transport。EOF 和信号直接落在 ssh 上，远端 server 随之结束，锁随进程释放。**留不下孤儿 transport**，因为没有第二个进程可留。
 - **SSH 断了**：bridge 把这条连接当作结束，退出；**不自动重连**。重连意味着换一个远端 session，而调用方手里的 `output_ref` 属于旧 session——静默重连会让它们指向不存在的东西。
 - **bridge 自己崩了**：同一件事——崩的就是那条 ssh，远端 server 读到 EOF 后结束。
-- **连接半开（对面没了，Runtime 这边不知道）**：远端 server 空闲时**每 30 秒主动发一次 MCP `ping`**（MCP 规范允许任一方发）。Host 在就回一个空结果；Host 那头的连接已经不存在时，这一写会被对方内核 RST，sshd 退出，server 读到 EOF，照正常路径结束、锁变 `released`。**ping 没回应不会断开**——对面只是睡着的话 TCP 还活着，断了反而害人重连；只有写失败才结束。Host 必须按 MCP 规范回应 `ping`，至少不能因为收到它就关连接：实测 Claude Code 2.1.269 / 2.1.272 都回 `{"result":{}}`，工具调用进行中收到也一样；Codex 用的 rmcp 客户端在 SDK 源码里自动回应。
+- **连接半开（对面没了，Runtime 这边不知道）**：远端 server 空闲时**每 30 秒主动发一次 MCP `ping`**（MCP 规范允许任一方发）。Host 在就回一个空结果；Host 那头的连接已经不存在时，这一写会被对方内核 RST，sshd 退出，server 读到 EOF，照正常路径结束、锁变 `released`。**ping 没回应不会断开**——对面只是睡着的话 TCP 还活着，断了反而害人重连；只有写失败才结束。Host 必须按 MCP 规范回应 `ping`，至少不能因为收到它就关连接：实测 Claude Code 2.1.269 / 2.1.272 都回 `{"result":{}}`，工具调用进行中收到也一样；Codex 用的 rmcp 客户端在 SDK 源码里自动回应。**按 2026-07-28 协商的连接上，Claude Code 2.1.300 不回这个 ping**：它的 MCP 日志写 `Dropped inbound request 'ping': not servable on this connection's protocol era`，30 秒后远端 server 发 `notifications/cancelled` 收掉这次请求，日志里约每 60 秒多一条。连接照常用（2026-10-15 fodelf 上一个 3 小时 27 分的会话 446 次工具调用都正常），半开检测也不受影响，因为它只看写不写得出去。
 - **MCP 的 `notifications/cancelled`**：转发给远端。被取消的是一次还没回答的 `exec_command` 时，远端停掉这条命令（TERM，2 秒后 KILL 整个进程组）；取消在命令开始之前到达时，命令不会启动。取消是通知、没有回应，所以契约不承诺"发出取消 = 命令已停"。**被取消的是一次带 `wait_ms` 的 `read_output` 时，停的只是这次等待**，命令照跑。已经返回了的后台命令不受取消影响，用 `stop_command` 停。（P41 之前取消不停命令，命令照跑到结束或超时，最长 10 分钟。）
 - **连接结束时还有命令在跑**：远端 server 先停掉它们（同上），再放写入互斥、退出。P41 之前是等它们自己跑完——一个 8 秒的命令让 server 在断开后又占了 8.0 秒写入互斥，最长可到 10 分钟。
 - **bridge 绝不影响 Managed session。** 它只管自己这一条 SSH 和这一个远端进程；不去枚举、不去清理别人的 session，哪怕它们属于同一个 workspace。
@@ -665,21 +665,27 @@ rows: 3
 
 | 版本 | 谁和谁之间 | 现在是什么 |
 | --- | --- | --- |
-| MCP 协议版本 | Host ↔ 远端 server | 用 `initialize` 开场的 Host：服务端默认 `2025-11-25`（SDK 的 LATEST）；用 `server/discover` 开场的 Host（Claude Code 2.1.292 起的默认）：按每条请求自带的版本，可以是 `2026-07-28`，见下文 |
+| MCP 协议版本 | Host ↔ 远端 server | 用 `initialize` 开场的 Host：服务端默认 `2025-11-25`（rmcp 的 `LATEST_WITH_INITIALIZE`；3.5.0 起它的 `LATEST` 指的是没有 `initialize` 的 `2026-07-28`）；用 `server/discover` 开场的 Host（Claude Code 2.1.292 起的默认）：按每条请求自带的版本，可以是 `2026-07-28`，见下文 |
 | ccnm 内部 open 协议 | bridge ↔ 远端 ccnm | 整数，当前是 4；不匹配 fail-closed |
 | ccnm 版本 | 两端的二进制 | 两端不必逐位相同，但内部协议必须谈得拢 |
 
-**MCP 版本协商的实际行为**（rmcp 3.2.0 实测代码路径，不是猜）：客户端要一个服务端认识的旧版本（早于 `2026-07-28` 的那几个：`2024-11-05` / `2025-03-26` / `2025-06-18` / `2025-11-25`），服务端就照它回；否则回服务端自己最新的旧版本。只有当服务端一个带 `initialize` 握手的版本都不支持时才会回 `-32022`——ccnm 不会走到那一步。**所以不要写"版本不匹配会报错"这种话**，实际是安静地协商到一个共同版本。
+**MCP 版本协商的实际行为**（rmcp 的 `negotiate_protocol_version`，3.2.0 和 3.5.1 一样；v0.16.1 与 v0.17.0 实测：要 `2025-06-18` 回 `2025-06-18`，要 `2026-07-28` 或不存在的 `2099-01-01` 都回 `2025-11-25`）：客户端要一个服务端认识的旧版本（早于 `2026-07-28` 的那几个：`2024-11-05` / `2025-03-26` / `2025-06-18` / `2025-11-25`），服务端就照它回；否则回服务端自己最新的旧版本。只有当服务端一个带 `initialize` 握手的版本都不支持时才会回 `-32022`——ccnm 不会走到那一步。**所以不要写"版本不匹配会报错"这种话**，实际是安静地协商到一个共同版本。
 
 **2026-07-28 的开场方式**（P81，2026-10-08 用真实 Claude Code 二进制零额度实测，[记录](../research/2026-10-08-p81-mcp-2026-07-28.md)）：
 
 - **怎么开场**：Claude Code 2.1.292 起默认不发 `initialize`，第一条是 `server/discover`。之后每条请求的 `_meta` 都自带三项：`io.modelcontextprotocol/protocolVersion`、`clientInfo`、`clientCapabilities`；缺了任何一项，rmcp 回 `-32602`。
-- **ccnm 怎么回**：rmcp 3.2.0 回答 `supportedVersions`（含 `2026-07-28`）和本 workspace 的 instructions，之后按 2026-07-28 服务。
+- **ccnm 怎么回**：回答 `supportedVersions`（含 `2026-07-28`）和本 workspace 的 instructions，之后按 2026-07-28 服务。
 - **实测结果**：2.1.293 默认、2.1.293 设 `MCP_PROTOCOL_NEGOTIATION=legacy`（退回 `initialize`）、2.1.286 三种都一样：
   - 拿到全部工具，调用成功；
   - instructions 交给了模型（这两版 Claude Code 都把它放在一条消息里，不在 system 字段）；
   - `MCP_TOOL_TIMEOUT` 超时后 `notifications/cancelled` 送达，命令随即被停。
 - **不用改配置**：Host 换到哪种开场，都不需要改 ccnm 这边的配置。
+
+**先探测、再退回 `initialize`**（P93，v0.17.0 起，[记录](../research/2026-10-15-p93-discover-fallback.md)）：Claude Code 发出 `server/discover` 后，回答来得比它愿意等的晚，就改发 `initialize`，协商到旧版本，之后的请求不带 `_meta`。它的 MCP 日志写 `stdio server answered the server/discover probe after its bound, so it was only slow to start…`。2026-10-15 在 fodelf 上 2.1.300 碰到过一次，那次远端 server 经 ssh 起了 3.07 秒；同一台上平时 0.4–1.4 秒，不退回。
+
+- **v0.17.0 起**（rmcp 3.5.1）：`server/discover` 只当探测，回答它但不定协议；等到 `initialize`，或第一条带齐 `_meta` 的其他请求，才定这条连接按哪一版服务。退回的 Host 照旧协议拿到全部工具。
+- **v0.16.1 及以前**（rmcp 3.2.0）：一回答探测就把连接定死成 2026-07-28，`initialize` 照常回答，之后每条不带 `_meta` 的请求都回 `-32602 request _meta is missing or has malformed required fields`。Host 手里只有 instructions、没有工具，模型调用时报 `No such tool available`。
+- 工具、参数、结果、错误码都没变，不升 `ccnm.workspace-mcp/2`。Rust 的内存管道测试和中立客户端 `test_a_host_that_probes_then_falls_back_to_initialize_still_gets_the_tools` 都按这个顺序验，后者对 v0.16.1 的发布包红、对 v0.17.0 绿。
 
 **列表的缓存提示（P81 起）**：协商到 `2026-07-28` 或更新的版本时，`tools/list` 和 `prompts/list` 的结果带上规范（`server/utilities/caching`）要求的 `ttlMs` 和 `cacheScope`；更早的版本不带这两个字段。Agent 机器上的 `ccnm_agent` 两个列表取同样的值。
 

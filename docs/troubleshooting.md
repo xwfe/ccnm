@@ -42,7 +42,7 @@ ccnm-xshun  xshun  detached  TOOLS DOWN (in Claude: /mcp -> ccnm -> Reconnect)  
 
 **症状**：Claude 还能聊天，但一让它读文件就开始瞎猜，或者去调它自己机器上的 Bash
 （会被拒，那是第二道锁）。原因是那条 MCP ssh 断了——网断太久、Agent Node睡了、有人 kill 了它。
-Claude 不会自己重连。
+Claude 只在断开的当下重试一次，网还没恢复就不再试：2026-10-15 项目机器的 Wi-Fi 断了 6.5 分钟，那次重试报 `ssh: connect to host … port 22: Operation timed out`，之后再没连过。
 
 **修**：在 Claude 里敲
 
@@ -69,6 +69,14 @@ Failed to fetch tools: request _meta is missing or has malformed required fields
 **修**：项目机器（Runtime）上的 ccnm 升到 v0.17.0 或以后，`mcp-serve` 跑在那台上。还没升时碰到了，在 Claude 里 `/mcp` → `ccnm` → `Reconnect`，这次连得快就好了。
 
 **其实是**：Claude Code 连 MCP server 时先发新协议（2026-07-28）的探测 `server/discover`，回答来得晚就退回旧协议的 `initialize`，之后的请求不带新协议要的 `_meta`。v0.16.1 及以前用的 rmcp 3.2.0 一收到探测就把这条连接定死成新协议，于是退回之后每次取工具都被拒，模型只看得到 ccnm 写在握手里的说明。会不会退回看 `mcp-serve` 经 ssh 起得多快：fodelf 上 09-30 起 31 次连接，30 次在 1.4 秒内、都正常，只有一次 3.07 秒撞上了。v0.17.0 起用的 rmcp 3.5.1 修了这一点，[记录](research/2026-10-15-p93-discover-fallback.md)。
+
+### Claude 的 MCP 日志里每分钟一条 `Dropped inbound request 'ping'`
+
+```text
+Dropped inbound request 'ping': not servable on this connection's protocol era
+```
+
+**不用管。** 项目机器上的 `mcp-serve` 空闲时每 30 秒给 Claude 发一个 ping，用来发现半开的连接；Claude Code 2.1.300 按新协议（2026-07-28）连上时不回它，就记这么一条。工具照常用，半开检测也照常有效，因为它只看写不写得出去，不看有没有回答。为什么这么设计，见[协议文档 6.2 节](protocol/remote-workspace-mcp-v1.md#62-断线中断崩溃)。
 
 ### `ccnm run` 报 `CCNM_E_POLICY`，第二行却是 `MCP initialize failed over …`
 

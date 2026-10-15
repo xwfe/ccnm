@@ -229,7 +229,8 @@ impl Tools<'_> {
     }
 
     /// The transport to the Runtime Node, and the version/root handshake
-    /// that has to succeed before a session is created against it.
+    /// and the Runtime's own yes (P91) that have to come back before a
+    /// session is created against it.
     ///
     /// Colocated workspaces have neither: the project is right here, so
     /// there is no far side to agree with.
@@ -247,6 +248,21 @@ impl Tools<'_> {
             .with_ccnm_bin(&link.ccnm_bin)
             .for_provider(provider);
         greet(&ssh, workspace, root, self)?;
+        // After the version check, so both ends agree on what the report
+        // says; `Master::Off` for the same reason `greet` uses it. One more
+        // ssh handshake per new session (P91), paid here rather than as a
+        // session with no tools.
+        let audit: crate::runtime::AuditReport = ssh.call_ccnm(
+            self.runner,
+            Master::Off,
+            &["internal", "runtime-audit"],
+            &crate::runtime::AuditRequest::new(workspace),
+            Duration::from_secs(30),
+            ErrorCode::RuntimeUnreachable,
+        )?;
+        if let Some(refused) = runtime_refusal(workspace, &audit) {
+            return Err(refused);
+        }
         Ok(Some(ssh))
     }
 }
@@ -2398,6 +2414,32 @@ fn provider_runtime_preflight(
     Ok(report.asks_user)
 }
 
+/// Would the Runtime turn this session down? Asked before anything is
+/// built (P91), as the account the session's tools will run as.
+///
+/// Both gates, decided the way the Runtime decides them. The session gate
+/// is `Server::new`'s: closed, Claude comes up with none of ccnm's tools,
+/// because the refusal only arrives as a failed MCP `initialize` -- what
+/// xdwmbp did on 2026-10-15 to a workspace `ws add` had just written. The
+/// command gate is `exec_command`'s: closed, the session opens and every
+/// command the model tries is refused. Neither is a session that runs, so
+/// neither is started; the text is the Runtime's own, which names the
+/// switch that would open it, or says that none does.
+fn runtime_refusal(workspace: &str, report: &crate::runtime::AuditReport) -> Option<Error> {
+    let accepted = report.accepted();
+    let refused = if !report.audit.agent_boundary_clear(accepted) {
+        crate::safety::Refused::Session
+    } else if !report.audit.exec_allowed(accepted) {
+        crate::safety::Refused::ExecCommand
+    } else {
+        return None;
+    };
+    Some(Error::policy(format!(
+        "not starting a session for `{workspace}`: its Runtime would refuse it\n{}\nfix it on the Runtime Node, then check: ccnm doctor {workspace}",
+        report.audit.refusal(accepted, refused)
+    )))
+}
+
 fn agent_readiness(selected: &SelectedAgent, tools: &Tools<'_>) -> Result<()> {
     let report = match selected.identity.as_ref() {
         Some(identity) => {
@@ -2515,11 +2557,29 @@ mod tests {
     /// What the Runtime Executor answers about itself, over the same
     /// reverse ssh the hello used.
     fn audit_json() -> String {
-        serde_json::to_string(&crate::runtime::AuditReport {
+        serde_json::to_string(&audit_report(&[], false, false)).unwrap()
+    }
+
+    /// A dedicated account (`runtime_user` set) with one failed check, and
+    /// the two switches as the Runtime's own config has them.
+    fn audit_report(
+        failed: &[&str],
+        unconfined: bool,
+        unisolated: bool,
+    ) -> crate::runtime::AuditReport {
+        crate::runtime::AuditReport {
             protocol: crate::runtime::OPEN_PROTOCOL,
             audit: crate::safety::Audit {
                 user: "ccrun".into(),
-                findings: vec![],
+                findings: failed
+                    .iter()
+                    .map(|check| crate::safety::Finding {
+                        check: (*check).into(),
+                        severity: crate::safety::Severity::Fail,
+                        detail: "synthetic".into(),
+                        fix: Some("synthetic fix".into()),
+                    })
+                    .collect(),
                 shared_account: false,
             },
             root: crate::runtime::RootStatus {
@@ -2528,12 +2588,140 @@ mod tests {
                 owned: true,
                 git: crate::runtime::GitStatus::Usable,
             },
-            allow_unconfined_exec: false,
-            allow_unisolated_credentials: false,
+            allow_unconfined_exec: unconfined,
+            allow_unisolated_credentials: unisolated,
             allow_unattended_exec: false,
             opener_config: Some(Vec::new()),
-        })
-        .unwrap()
+        }
+    }
+
+    /// A controller in a login session that answers exactly one request,
+    /// the context every start asks for first. Anything after that would
+    /// find nobody listening.
+    fn login_controller(test: &str) -> (PathBuf, std::thread::JoinHandle<()>) {
+        let socket = PathBuf::from(format!("/tmp/ccnm-wl-{test}-{}.sock", std::process::id()));
+        let _ = std::fs::remove_file(&socket);
+        let listener = crate::controller::Listener::bind(&socket).unwrap();
+        let served = std::thread::spawn(move || {
+            let inner = FakeRunner::new();
+            inner.push(Output::exited(0, "Aqua\n"));
+            let tools = crate::controller::Tools {
+                local: None,
+                config: crate::Config::default(),
+                config_path: None,
+                runner: &inner,
+                agents: crate::provider::AgentBinaries::with_claude(Some(PathBuf::from(
+                    "/opt/homebrew/bin/claude",
+                ))),
+                tmux: Some(PathBuf::from("/opt/homebrew/bin/tmux")),
+                exe: PathBuf::from("/x/ccnm"),
+                host: crate::controller::Host::MacOs,
+            };
+            listener.serve_one(&tools).unwrap();
+        });
+        (socket, served)
+    }
+
+    /// P91: which gate a Runtime's own audit would close, decided the way
+    /// `Server::new` and `exec_command` decide it.
+    #[test]
+    fn the_runtime_audit_decides_whether_a_session_starts() {
+        let open = |failed: &[&str], unconfined, unisolated| {
+            runtime_refusal("xshun", &audit_report(failed, unconfined, unisolated))
+        };
+        assert!(open(&[], false, false).is_none(), "a clean account");
+        assert!(
+            open(&["Not an admin"], true, false).is_none(),
+            "unconfined, and accepted"
+        );
+        assert!(
+            open(&["No Claude credential", "Not an admin"], true, true).is_none(),
+            "both accepted"
+        );
+
+        // The login is reachable and nobody accepted it: the session gate.
+        let err = open(&["No Claude credential"], true, false).expect("refused");
+        assert_eq!(err.code(), ErrorCode::Policy);
+        assert!(err.message().contains("no session is served"), "{err}");
+        assert!(
+            err.message().contains("allow_unisolated_credentials"),
+            "{err}"
+        );
+        assert!(err.message().contains("ccnm doctor xshun"), "{err}");
+
+        // The session would open with every command refused.
+        let err = open(&["Not an admin"], false, false).expect("refused");
+        assert_eq!(err.code(), ErrorCode::Policy);
+        assert!(err.message().contains("exec_command is refused"), "{err}");
+        assert!(err.message().contains("allow_unconfined_exec"), "{err}");
+
+        // No switch waives these two, so none is offered.
+        let err = open(&["Runtime identity known"], true, true).expect("refused");
+        assert!(err.message().contains("No workspace switch"), "{err}");
+    }
+
+    /// P91. A Runtime that would refuse this workspace's MCP session -- here
+    /// a dedicated account that can read the Agent's login, without
+    /// `allow_unisolated_credentials` -- used to be found out after Claude
+    /// was up, as a session with none of ccnm's tools in it. Now nothing
+    /// is started, and the error is the Runtime's own.
+    #[test]
+    fn start_is_refused_when_the_runtime_would_refuse_the_session() {
+        let dir = temp("start-audit");
+        let (socket, served) = login_controller("start-audit");
+        let fake = FakeRunner::new();
+        fake.push(Output::exited(1, "")); // has-session: nothing running
+        fake.push(Output::exited(0, hello_json(true)));
+        fake.push(Output::exited(
+            0,
+            serde_json::to_string(&audit_report(&["No Claude credential"], true, false)).unwrap(),
+        ));
+        let mut tools = tmux_tools(&fake, &dir, "start-audit");
+        tools.controller = socket;
+        let err = start(&start_request(), &tools).unwrap_err();
+        served.join().unwrap();
+        assert_eq!(err.code(), ErrorCode::Policy, "{err}");
+        assert!(
+            err.message().contains("allow_unisolated_credentials"),
+            "{err}"
+        );
+        assert!(!dir.join("sessions").exists(), "no session may be created");
+        let asked = fake.calls()[2].display();
+        assert!(
+            asked.contains("-T to-runtime /opt/runtime/ccnm internal runtime-audit --payload"),
+            "{asked}"
+        );
+    }
+
+    /// P91, the other gate, on the `--print` path: the session would open,
+    /// but an unconfined dedicated account without `allow_unconfined_exec`
+    /// has every `exec_command` refused. A run that cannot run a command is
+    /// not started either.
+    #[test]
+    fn run_is_refused_when_the_runtime_would_refuse_every_command() {
+        let dir = temp("run-audit");
+        let (socket, served) = login_controller("run-audit");
+        let fake = FakeRunner::new();
+        fake.push(Output::exited(0, hello_json(true)));
+        fake.push(Output::exited(
+            0,
+            serde_json::to_string(&audit_report(&["Not an admin"], false, false)).unwrap(),
+        ));
+        let tools = Tools {
+            local: None,
+            config: agent_config(),
+            runner: &fake,
+            state: dir.to_path_buf(),
+            control_dir: control(&dir),
+            agents: crate::provider::AgentBinaries::with_claude(None),
+            tmux: None,
+            controller: socket,
+        };
+        let err = run(&run_request("fix it"), &tools).unwrap_err();
+        served.join().unwrap();
+        assert_eq!(err.code(), ErrorCode::Policy, "{err}");
+        assert!(err.message().contains("allow_unconfined_exec"), "{err}");
+        assert!(!dir.join("sessions").exists(), "no session may be created");
     }
 
     fn request() -> ProbeRequest {
@@ -3610,6 +3798,7 @@ mod tests {
         });
         let runner = FakeRunner::new();
         runner.push(Output::exited(0, hello_json(true)));
+        runner.push(Output::exited(0, audit_json()));
         let tools = Tools {
             config: agent_config(),
             local: None,
@@ -3683,9 +3872,10 @@ mod tests {
         });
 
         // The version-and-root handshake `run` makes before it builds a
-        // session.
+        // session, and the Runtime's audit after it (P91).
         let caller = FakeRunner::new();
         caller.push(Output::exited(0, hello_json(true)));
+        caller.push(Output::exited(0, audit_json()));
         let tools = Tools {
             local: None,
             config: agent_config(),

@@ -811,6 +811,30 @@ mod tests {
         .unwrap()
     }
 
+    /// The Runtime's audit of itself (P91): a confined account, so the
+    /// session gate and the command gate are both open.
+    fn audit_json() -> String {
+        serde_json::to_string(&crate::runtime::AuditReport {
+            protocol: crate::runtime::OPEN_PROTOCOL,
+            audit: crate::safety::Audit {
+                user: "ccrun".into(),
+                findings: vec![],
+                shared_account: false,
+            },
+            root: crate::runtime::RootStatus {
+                present: true,
+                is_dir: true,
+                owned: true,
+                git: crate::runtime::GitStatus::Usable,
+            },
+            allow_unconfined_exec: false,
+            allow_unisolated_credentials: false,
+            allow_unattended_exec: false,
+            opener_config: Some(Vec::new()),
+        })
+        .unwrap()
+    }
+
     /// The whole loop, home to work and back.
     ///
     /// `ccnm xshun` typed at home tells the Agent Node the alias it
@@ -924,6 +948,7 @@ mod tests {
         let agent_runner = FakeRunner::new();
         agent_runner.push(Output::exited(1, "")); // has-session: nothing up yet
         agent_runner.push(Output::exited(0, hello_json())); // the handshake home
+        agent_runner.push(Output::exited(0, audit_json())); // and the Runtime's yes
         let tools = work::Tools {
             local: None,
             config: agent_config(),
@@ -947,6 +972,11 @@ mod tests {
         assert!(
             greeting.contains("-T to-runtime /opt/runtime/ccnm internal hello"),
             "hop 2 dials the runtime by the agent's own alias, running its ccnm: {greeting}"
+        );
+        let audit = agent_runner.calls()[2].display();
+        assert!(
+            audit.contains("-T to-runtime /opt/runtime/ccnm internal runtime-audit"),
+            "and asks the same Runtime whether it would serve the session: {audit}"
         );
 
         // ---- hop 3: the session reaches back ------------------------
@@ -1125,6 +1155,7 @@ mod tests {
 
         let agent_runner = FakeRunner::new();
         agent_runner.push(Output::exited(0, hello_json())); // the handshake home
+        agent_runner.push(Output::exited(0, audit_json())); // and the Runtime's yes
         let tools = work::Tools {
             local: None,
             config: agent_config(),

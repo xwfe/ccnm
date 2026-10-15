@@ -483,7 +483,7 @@ fn bound_print_run(f: &Fixture, supervisor: &str, timeout_secs: u64) -> BoundRun
     std::fs::write(
         &fake_ssh,
         format!(
-            "#!/bin/sh\nfor last do :; done\ncase \"$*\" in *'internal hello'*) sub=hello ;; *'internal mcp-serve'*) sub=mcp-serve ;; *) exit 97 ;; esac\nexec /usr/bin/env -i PATH=/usr/bin:/bin HOME='{home}' XDG_STATE_HOME='{state}' CCNM_CONFIG='{config}' '{ccnm}' internal \"$sub\" --payload \"$last\"\n",
+            "#!/bin/sh\nfor last do :; done\ncase \"$*\" in *'internal hello'*) sub=hello ;; *'internal runtime-audit'*) sub=runtime-audit ;; *'internal mcp-serve'*) sub=mcp-serve ;; *) exit 97 ;; esac\nexec /usr/bin/env -i PATH=/usr/bin:/bin HOME='{home}' XDG_STATE_HOME='{state}' CCNM_CONFIG='{config}' '{ccnm}' internal \"$sub\" --payload \"$last\"\n",
             home = runtime_home.display(),
             state = runtime_state.display(),
             config = runtime_config.display(),
@@ -776,7 +776,7 @@ impl BusyRuntime {
         std::fs::write(
             &fake_ssh,
             format!(
-                "#!/bin/sh\nfor last do :; done\ncase \"$*\" in *'internal hello'*) sub=hello ;; *'internal runtime-resolve'*) sub=runtime-resolve ;; *'internal mcp-serve'*) sub=mcp-serve ;; *) exit 97 ;; esac\nexec /usr/bin/env -i PATH=/usr/bin:/bin HOME='{home}' XDG_STATE_HOME='{state}' CCNM_CONFIG='{config}' '{ccnm}' internal \"$sub\" --payload \"$last\"\n",
+                "#!/bin/sh\nfor last do :; done\ncase \"$*\" in *'internal hello'*) sub=hello ;; *'internal runtime-audit'*) sub=runtime-audit ;; *'internal runtime-resolve'*) sub=runtime-resolve ;; *'internal mcp-serve'*) sub=mcp-serve ;; *) exit 97 ;; esac\nexec /usr/bin/env -i PATH=/usr/bin:/bin HOME='{home}' XDG_STATE_HOME='{state}' CCNM_CONFIG='{config}' '{ccnm}' internal \"$sub\" --payload \"$last\"\n",
                 home = runtime_home.display(),
                 state = runtime_state.display(),
                 config = runtime_config.display(),

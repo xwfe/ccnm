@@ -30,7 +30,7 @@ use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{
     CallToolResult, GetPromptRequestParams, GetPromptResponse, GetPromptResult, Implementation,
-    ListPromptsResult, Prompt, PromptMessage, Role, ServerCapabilities, ServerInfo,
+    ListPromptsResult, Prompt, PromptMessage, Role, ServerCapabilities, ServerConfig,
 };
 use rmcp::{ErrorData, ServerHandler, ServiceExt, tool, tool_handler, tool_router};
 use serde::{Deserialize, Serialize};
@@ -469,8 +469,8 @@ impl ServerHandler for AgentSkills {
         Ok(GetPromptResult::new(vec![PromptMessage::new_text(Role::User, text)]).into())
     }
 
-    fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(if self.machine.is_some() {
+    fn get_info(&self) -> ServerConfig {
+        ServerConfig::new(if self.machine.is_some() {
             ServerCapabilities::builder()
                 .enable_tools()
                 .enable_prompts()

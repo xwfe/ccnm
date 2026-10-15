@@ -35,7 +35,7 @@ use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{
     CallToolResult, ContentBlock, GetPromptRequestParams, GetPromptResponse, GetPromptResult,
     Implementation, ListPromptsResult, Prompt, PromptArgument, PromptMessage, Role,
-    ServerCapabilities, ServerInfo,
+    ServerCapabilities, ServerConfig,
 };
 use rmcp::{ErrorData, ServerHandler, ServiceExt, tool, tool_handler, tool_router};
 use serde::{Deserialize, Serialize};
@@ -1658,8 +1658,8 @@ impl ServerHandler for Server {
         Ok(GetPromptResult::new(vec![PromptMessage::new_text(Role::User, loaded.text)]).into())
     }
 
-    fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(
+    fn get_info(&self) -> ServerConfig {
+        ServerConfig::new(
             ServerCapabilities::builder()
                 .enable_tools()
                 .enable_prompts()
@@ -1974,34 +1974,147 @@ mod tests {
         TestDir::adopt(dir)
     }
 
-    /// A client on in-memory pipes that has finished `initialize`: what it
-    /// writes the server reads, and the server's lines come back on `from`.
-    async fn initialized_client(
-        test: &str,
-        heartbeat: Duration,
-    ) -> (
+    type Pipes = (
         tokio::task::JoinHandle<CcnmResult<()>>,
         tokio::io::DuplexStream,
         tokio::io::Lines<tokio::io::BufReader<tokio::io::DuplexStream>>,
         TestDir,
-    ) {
-        use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
+    );
+
+    /// A server on in-memory pipes that nobody has spoken to yet: what the
+    /// client writes on `to` the server reads, and the server's lines come
+    /// back on `from`.
+    fn serving(test: &str, heartbeat: Duration) -> Pipes {
+        use tokio::io::AsyncBufReadExt as _;
         let root = temp(test);
         let server = fixture_server(&ServePayload::new("x", root.to_path_buf(), "s")).unwrap();
         // Two pipes, not one duplex, so that dropping the reading end
         // leaves the server's stdin open -- a real pipe's EPIPE on write
         // with no EOF on read. (`simplex` halves share one buffer and
         // never report the reader gone.)
-        let (server_in, mut to) = tokio::io::duplex(1 << 16);
+        let (server_in, to) = tokio::io::duplex(1 << 16);
         let (from, server_out) = tokio::io::duplex(1 << 16);
         let task = tokio::spawn(serve_until_gone(server, (server_in, server_out), heartbeat));
+        (task, to, tokio::io::BufReader::new(from).lines(), root)
+    }
+
+    /// Send one JSON-RPC message and, for a request, wait for its answer,
+    /// skipping whatever else the server says in between.
+    async fn call(
+        to: &mut tokio::io::DuplexStream,
+        from: &mut tokio::io::Lines<tokio::io::BufReader<tokio::io::DuplexStream>>,
+        message: serde_json::Value,
+    ) -> Option<serde_json::Value> {
+        use tokio::io::AsyncWriteExt as _;
+        to.write_all(format!("{message}\n").as_bytes())
+            .await
+            .unwrap();
+        let id = message.get("id")?;
+        loop {
+            let line = tokio::time::timeout(Duration::from_secs(10), from.next_line())
+                .await
+                .expect("the server answers")
+                .unwrap()
+                .expect("the server is still there");
+            let answer: serde_json::Value = serde_json::from_str(&line).unwrap();
+            if answer.get("id") == Some(id) && answer.get("method").is_none() {
+                return Some(answer);
+            }
+        }
+    }
+
+    /// What a 2026-07-28 client puts in every request's `_meta`.
+    fn modern_meta() -> serde_json::Value {
+        serde_json::json!({
+            "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+            "io.modelcontextprotocol/clientCapabilities": {},
+            "io.modelcontextprotocol/clientInfo": {"name": "t", "version": "0"},
+        })
+    }
+
+    fn tool_names(answer: &serde_json::Value) -> Vec<String> {
+        let tools = answer["result"]["tools"]
+            .as_array()
+            .unwrap_or_else(|| panic!("no tools in {answer}"));
+        tools
+            .iter()
+            .map(|t| t["name"].as_str().unwrap().to_owned())
+            .collect()
+    }
+
+    /// Claude Code 2.1.300 probes the 2026-07-28 protocol with
+    /// `server/discover` first. When the answer comes later than it is
+    /// willing to wait -- mcp-serve took 3.07 s over ssh that time -- it
+    /// falls back to a legacy `initialize` and sends no `_meta` from then
+    /// on. rmcp 3.2.0 had already locked the connection to the new protocol
+    /// on the probe, so every `tools/list` was refused for missing `_meta`
+    /// and the session had ccnm's instructions but none of its tools
+    /// (fodelf, 2026-10-15 21:02).
+    #[tokio::test]
+    async fn a_client_that_probes_then_falls_back_still_gets_the_tools() {
+        let (task, mut to, mut from, _root) = serving("fallback", HEARTBEAT);
+        let probe = serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "server/discover",
+            "params": {"_meta": modern_meta()}});
+        call(&mut to, &mut from, probe).await.unwrap();
+        let init = serde_json::json!({"jsonrpc": "2.0", "id": 2, "method": "initialize",
+            "params": {"protocolVersion": "2025-11-25", "capabilities": {},
+                       "clientInfo": {"name": "t", "version": "0"}}});
+        let init = call(&mut to, &mut from, init).await.unwrap();
+        assert_eq!(init["result"]["protocolVersion"], "2025-11-25", "{init}");
+        let initialized =
+            serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"});
+        call(&mut to, &mut from, initialized).await;
+        let list =
+            serde_json::json!({"jsonrpc": "2.0", "id": 3, "method": "tools/list", "params": {}});
+        let list = call(&mut to, &mut from, list).await.unwrap();
+        assert!(
+            tool_names(&list).iter().any(|t| t == "exec_command"),
+            "{list}"
+        );
+        drop(to);
+        tokio::time::timeout(Duration::from_secs(10), task)
+            .await
+            .expect("stdin EOF ends it")
+            .unwrap()
+            .unwrap();
+    }
+
+    /// The other answer to the same probe: the client stays on 2026-07-28
+    /// and carries `_meta` on every request. This is how the long
+    /// sessions of 2026-10-15 ran, and an rmcp upgrade must not lose it.
+    #[tokio::test]
+    async fn a_client_that_stays_on_the_new_protocol_gets_the_tools() {
+        let (task, mut to, mut from, _root) = serving("modern", HEARTBEAT);
+        let probe = serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "server/discover",
+            "params": {"_meta": modern_meta()}});
+        let found = call(&mut to, &mut from, probe).await.unwrap();
+        let versions = found["result"]["supportedVersions"].to_string();
+        assert!(versions.contains("2026-07-28"), "{found}");
+        let list = serde_json::json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list",
+            "params": {"_meta": modern_meta()}});
+        let list = call(&mut to, &mut from, list).await.unwrap();
+        assert!(
+            tool_names(&list).iter().any(|t| t == "exec_command"),
+            "{list}"
+        );
+        drop(to);
+        tokio::time::timeout(Duration::from_secs(10), task)
+            .await
+            .expect("stdin EOF ends it")
+            .unwrap()
+            .unwrap();
+    }
+
+    /// A client on in-memory pipes that has finished `initialize`.
+    async fn initialized_client(test: &str, heartbeat: Duration) -> Pipes {
+        use tokio::io::AsyncWriteExt as _;
+        let (task, mut to, mut from, root) = serving(test, heartbeat);
         to.write_all(
             br#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}
 "#,
         )
         .await
         .unwrap();
-        let mut from = tokio::io::BufReader::new(from).lines();
         let answer = from.next_line().await.unwrap().unwrap();
         assert!(answer.contains(r#""id":1"#), "{answer}");
         to.write_all(b"{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n")

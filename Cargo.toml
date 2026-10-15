@@ -57,8 +57,10 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 uuid = { version = "1", features = ["v4"] }
 # MCP: the official Rust SDK, trimmed to stdio server + child-process
 # client. It needs tokio; nothing outside crates/ccnm-core/src/mcp is
-# async.
-rmcp = { version = "3.2", default-features = false, features = [
+# async. At least 3.5.1: before it a `server/discover` probe locked the
+# connection to the 2026-07-28 protocol, and a client that then fell back
+# to `initialize` got no tools at all (P93).
+rmcp = { version = "3.5.1", default-features = false, features = [
     "server",
     "macros",
     "transport-io",

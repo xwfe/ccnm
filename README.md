@@ -149,9 +149,9 @@ ccnm cleanup my-project                  # 看看会话留下了什么，再按�
 
 | | |
 | --- | --- |
-| 最新版本 | [v0.16.1](https://github.com/xwfe/ccnm/releases)（2026-10-12），每个版本改了什么写在 Releases 页 |
+| 最新版本 | [v0.17.0](https://github.com/xwfe/ccnm/releases)（2026-10-15），每个版本改了什么写在 Releases 页 |
 | 真机验过什么 | 按搭配见上面[两台机器各干什么](#两台机器各干什么)；哪些**没验过**逐条写在[支持矩阵](docs/support-matrix.md) |
-| 从旧版升到 v0.16.1 | 不用改配置。v0.16.1 修好了 tmux 3.7c 下 `ccnm ls`、`ccnm status` 看不见交互会话（[排错手册](docs/troubleshooting.md#ccnm-ls-写--print-运行中ccnm-status-说没有在跑的会话可交互会话明明开着)）。从 v0.15.x 升的，v0.16.0 的新行为：受管 Claude 会话的自动压缩从 30 万左右推迟到 56 万左右，压缩时交给模型的指令重写了，压完更容易接着干（[为什么、怎么换值](docs/configuration.md#受管-claude-会话的自动压缩)）。从 v0.14.x 或更早升的：你在 `~/.claude/settings.json` 里写的 `autoCompactWindow` 在受管会话里不生效，要改值用环境变量。还在 v0.13.x 的，先删掉配置里的 `codex_exec_server`（v0.14.0 起读不进来，[报错长这样](docs/troubleshooting.md#升级后-ccnm-报-unknown-field-codex_exec_server)） |
+| 从旧版升到 v0.17.0 | 不用改配置。v0.17.0：修好了偶尔出现的"会话里有 ccnm 的说明、却一个工具都没有"（Claude Code 探测新协议时 ccnm 起得慢，它退回旧协议就撞上，[排错手册](docs/troubleshooting.md#会话里有-ccnm-的说明工具却一个都没有request-_meta-is-missing)）；项目机器不肯开这个会话时，`ccnm <项目>` 直接报错、不再起一个没有工具的会话（[排错手册](docs/troubleshooting.md#ccnm-项目-起不来报-its-runtime-would-refuse-it)），每个新会话因此多一次 SSH，约 0.5–0.8 秒；新增 `ccnm <项目> -c` 接着上一次的对话开（[使用说明](docs/usage.md#接着上一次的对话开--continue)）、`ccnm ws add --allow-unattended-exec`。从 v0.16.0 或更早升的：tmux 3.7c 下 `ccnm ls`、`ccnm status` 看不见交互会话，v0.16.1 修好了（[排错手册](docs/troubleshooting.md#ccnm-ls-写--print-运行中ccnm-status-说没有在跑的会话可交互会话明明开着)）。从 v0.15.x 升的，v0.16.0 的新行为：受管 Claude 会话的自动压缩从 30 万左右推迟到 56 万左右，压缩时交给模型的指令重写了，压完更容易接着干（[为什么、怎么换值](docs/configuration.md#受管-claude-会话的自动压缩)）。从 v0.14.x 或更早升的：你在 `~/.claude/settings.json` 里写的 `autoCompactWindow` 在受管会话里不生效，要改值用环境变量。还在 v0.13.x 的，先删掉配置里的 `codex_exec_server`（v0.14.0 起读不进来，[报错长这样](docs/troubleshooting.md#升级后-ccnm-报-unknown-field-codex_exec_server)） |
 
 已知限制：
 

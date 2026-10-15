@@ -418,7 +418,7 @@ exec_command            FAIL  refused until the runtime account is confined
 Remote MCP handshake    FAIL  CCNM_E_POLICY: MCP initialize failed over `…`: connection closed: initialize response
 ```
 
-v0.16.1 之后，这时 `ccnm <项目>` 不会再起会话，直接报[上面那条 `its Runtime would refuse it`](#ccnm-项目-起不来报-its-runtime-would-refuse-it)。
+v0.17.0 起，这时 `ccnm <项目>` 不会再起会话，直接报[上面那条 `its Runtime would refuse it`](#ccnm-项目-起不来报-its-runtime-would-refuse-it)。
 
 **其实是**：跑项目命令的那个账号家里有 `~/.claude` / `~/.codex`，而 Runtime 配置里写了 `runtime_user`（专用账号模式），所以它在 `initialize` 之前就拒了。**`allow_unconfined_exec` 救不了**，那个开关只管账号权限过大那一类。不写 `runtime_user`（共用账号）时这一行只是"注意"，不拦。
 

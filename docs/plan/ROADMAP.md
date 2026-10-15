@@ -1212,3 +1212,13 @@ P73 当时把"外部 MCP workspace 里执行账号的安全没人验"留作挡�
 - **P92.4** 文档：使用说明、命令帮助（中英）；Rust、Python、计划门禁通过；研究记录与状态同步。
 
 停止点：不改 Codex；不改 `--print`；不跑真实模型；不推送、不发版。
+
+### P93 — Claude Code 探测新协议后退回旧协议，受管会话照样拿得到工具
+
+**依赖 P92。** 现象（2026-10-15 21:02，fodelf 上的 codingagent 会话）：会话里有 ccnm 写在握手里的说明，模型一调工具就报 `No such tool available: mcp__ccnm__exec_command`；fodelf 上 Claude 的 MCP 日志写 `Failed to fetch tools: request _meta is missing or has malformed required fields`。原因：当天 14:40 自动升级的 Claude Code 2.1.300 连 MCP server 时先发 2026-07-28 协议的 `server/discover`，那次 `mcp-serve` 经 ssh 起了 3.07 秒（平时约 0.55 秒），超过它愿意等的时间，就退回旧协议的 `initialize`，之后的请求不带 `_meta`；而 rmcp 3.2.0 一收到 discover 就把这条连接定死成"每个请求都要带新协议的 `_meta`"。rmcp 3.5.1（2026-10-05，#1248）修了。用户同日同意升级（要改锁文件）。
+
+- **P93.1** 复现：在内存管道上按 discover → 旧协议 initialize → 不带 `_meta` 的 tools/list 跟 ccnm 的 server 说话，rmcp 3.2.0 上红、报错与真机一字不差；另加一条留在新协议上的（discover → 带 `_meta` 的 tools/list），新旧版本都该绿，防升级丢了当天正常跑的那条路。真实二进制再用夹具重放一遍。
+- **P93.2** 修：rmcp 升到 3.5.1（锁文件只动 rmcp、rmcp-macros 和 process-wrap 9.1.0→10.0.1，nix 仍是同一个 0.31.3），Cargo.toml 的下限改成 3.5.1 并写明原因；换掉 3.4.0 起弃用的 `ServerInfo` 别名。
+- **P93.3** 文档与门禁：排错手册加这一条（哪个版本前有、碰到了怎么办）；研究记录写清当天三次"MCP 没起来"各是什么原因；Rust、Python、计划门禁和中立 MCP 客户端测试通过。
+
+停止点：不改心跳（新协议连接上 Claude 2.1.300 会丢掉 ccnm 每 30 秒发的 ping，它的日志里每分钟多一条，只是噪音，另议）；不改转发其他 MCP server 时的客户端握手（rmcp 客户端默认仍走旧协议 `initialize`）；发版、换装另记。

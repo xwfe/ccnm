@@ -1182,3 +1182,33 @@ P73 当时把"外部 MCP workspace 里执行账号的安全没人验"留作挡�
 - **P89.3** 文档与门禁：排错手册那一条改成"v0.16.0 及以前的现象、哪个版本起修好"；`observed_gaps` 那条标已修；Rust、Python、计划门禁通过。
 
 停止点：不改 tmux 的其他调用和会话命名；不推送、不发版。
+
+### P90 — `ccnm ws add` 加 `--allow-unattended-exec`
+
+**依赖 P89。** 用户 2026-10-15 要求：`ws add` 生成的 workspace 缺用户常用的设置，加完还得手改 `config.toml`。其中 `allow_unconfined_exec`、`allow_unisolated_credentials` 是因为 xdwmbp 写了 `runtime_user = "bing"`（专用账号模式）才需要，删掉那行就不用（当日已删、doctor 实测 `ws add` 默认两行可以用了）；`claude_permission_mode` 已有 `--permission-mode`；剩下 `allow_unattended_exec` 没有对应参数。
+
+- **P90.1** `ccnm ws add --allow-unattended-exec` 写 `allow_unattended_exec = true`，不加就不写（默认仍是每条命令问一次）；中英文帮助；测试先在旧代码上红（参数不认识）。
+- **P90.2** 文档：配置说明里 `ws add` 选项那一行、使用说明"不想一条条确认"一节给出这条命令；Rust、Python、计划门禁通过。
+
+停止点：不改默认值；不加 `allow_unisolated_credentials` 的参数（只在专用账号模式下用，开之前要读那一节，保持手写）；不推送、不发版。
+
+### P91 — 受管会话起之前问 Runtime 开不开、命令让不让跑，不行就不起
+
+**依赖 P90。** 现象（2026-10-15 xdwmbp）：写了 `runtime_user = "bing"` 时，`ws add` 新加的 workspace 没有两个 `allow_*`，`ccnm <ws>` 照样把 Claude 起来了，但 Runtime 在 MCP 握手时以 `CCNM_E_POLICY` 拒绝，会话里没有 ccnm 的工具，等于进去了反而用不了。原因：legacy Claude（`agent_node` 写法）起会话前只 `greet`（版本和项目目录），完整握手预检只有 Codex 和 instance 才做；命令那道门（`allow_unconfined_exec`）哪种 Agent 都要到第一次 `exec_command` 才知道。用户定：不能正常运行就直接报错，拒绝启动。
+
+- **P91.1** Agent 起受管会话（交互和 `--print`，所有 Agent）前，在 `greet` 之后经同一个 Runtime 别名问 `internal runtime-audit`（doctor 用的那个），按 Runtime 自己的审计和开关判定：会话那道门不过、或命令那道门不过，都以 `CCNM_E_POLICY` 拒绝，原文用 Runtime 自己拒绝时的那段话，并指向 `ccnm doctor <ws>`。已经在跑的会话照旧直接接上，不问。
+- **P91.2** 测试先在旧代码上红：会话门、命令门各一条，拒绝且什么都没建（没有会话目录、没叫 controller）；两道门都过时照常起；已在跑时不问。
+- **P91.3** 文档：排错手册加"会话起不来、报 CCNM_E_POLICY"一条（原来的"进去了没有工具"改成哪个版本前的现象），配置说明 `runtime_user` 与两个 `allow_*` 写清会话起不来而不是进去后才拒；Rust、Python、计划门禁通过。
+
+停止点：写锁被占不在这次预检里（那是运行时状态，不是配置，Codex 和 instance 的握手预检照旧能查到）；不改 Runtime 侧任何一道门的判定；不改 Remote Workspace MCP；不推送、不发版。
+
+### P92 — `ccnm <ws> --continue`：接着这个项目上一次的对话开会话
+
+**依赖 P91。** 用户 2026-10-15 要求：加个参数，能直接接着上次的会话继续。现在每次 `ccnm <ws>` 都是新对话；ccnm 用 `--session-id` 把 Claude 的会话 id 定成 ccnm 自己的 id，所以续接要在不破坏这一条的前提下做。
+
+- **P92.1** 零额度实测（假模型，夹具放 `docs/research/probes/`）：本机 Claude Code 2.1.286 上，`--resume <上次 id> --fork-session --session-id <新 id>` 在交互界面里认不认、发给模型的请求带不带上次的对话、新转录是不是新 id；不带 `--fork-session` 时报什么；上次的 id 找不到时报什么、退出码多少。
+- **P92.2** 实现：`ccnm run` / `ccnm <ws>` 加 `--continue`（`-c`），只用于交互会话，与 `--print` 互斥（开场 prompt 照常可带）。Agent 在本机会话记录里找这个 workspace 最近一次交互会话（同一 Agent、同一身份、同一项目根目录），用它的 id 续；找不到就报错、什么都不建；已经有会话在跑就直接接上并说明。Codex 暂不支持，报错写明。
+- **P92.3** 测试先在旧代码上红：Claude 的启动参数；找上次会话时跳过 `--print`、别的根目录、别的身份；找不到时不建会话目录、不叫 controller。
+- **P92.4** 文档：使用说明、命令帮助（中英）；Rust、Python、计划门禁通过；研究记录与状态同步。
+
+停止点：不改 Codex；不改 `--print`；不跑真实模型；不推送、不发版。

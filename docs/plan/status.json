@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-10-12T16:35:00+09:00",
-  "current_task": null,
+  "last_updated": "2026-10-15T16:00:00+09:00",
+  "current_task": "P90",
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
     "source": "docs/research/codex-internal-wiring-2026-09-07.md",
@@ -4459,6 +4459,48 @@
         }
       ],
       "blockers": []
+    },
+    {
+      "id": "P90",
+      "title": "ccnm ws add 加 --allow-unattended-exec",
+      "status": "in_progress",
+      "depends_on": [
+        "P89"
+      ],
+      "owner": "claude-opus-5-5",
+      "started_at": "2026-10-15T16:00:00+09:00",
+      "last_updated": "2026-10-15T16:00:00+09:00",
+      "completed_criteria": [],
+      "evidence": [],
+      "blockers": []
+    },
+    {
+      "id": "P91",
+      "title": "受管会话起之前问 Runtime 开不开、命令让不让跑，不行就不起",
+      "status": "pending",
+      "depends_on": [
+        "P90"
+      ],
+      "owner": null,
+      "started_at": null,
+      "last_updated": "2026-10-15T16:00:00+09:00",
+      "completed_criteria": [],
+      "evidence": [],
+      "blockers": []
+    },
+    {
+      "id": "P92",
+      "title": "ccnm <ws> --continue：接着这个项目上一次的对话开会话",
+      "status": "pending",
+      "depends_on": [
+        "P91"
+      ],
+      "owner": null,
+      "started_at": null,
+      "last_updated": "2026-10-15T16:00:00+09:00",
+      "completed_criteria": [],
+      "evidence": [],
+      "blockers": []
     }
   ],
   "observed_gaps": [
@@ -4528,7 +4570,7 @@
     "【2026-10-08 P80 时看到 / 只记不修】Agent 上的 MCP 转发 ccnm_agent（P50）在受管 Codex 会话里同样没配 tool_timeout_sec，Codex 对它只等 300 秒。它的 call_mcp_tool 默认等 60 秒、起 server 30 秒，用户给 Agent 上某个 server 配的 tool_timeout_sec 接近或超过 300 秒时（还没起的 server 起它的时间也算在内），调用会被 Codex 先截断、不发取消，照样在 Agent 上跑完。值取决于用户配置、不归 ccnm 的常量管，P80 没修。依据 docs/research/2026-10-08-p80-codex-tool-timeout.md 第 6 节。"
   ],
   "handoff": {
-    "next_action": "**2026-10-12 发 v0.16.1、三台换装并真机验证 P89；current_task 为 null。** 用户说\"推送发版，三机安装\"。版本号 2e9c9ff，本机门禁全过（Rust 1075/0、Python 247/0），推送 b23d4f6..2e9c9ff，CI run 38216054140 一次全绿（两平台真实 tmux 测试都跑了）后打 tag；release run 38216854230 四个文件齐全，macOS 包 171c4d1a…（二进制 38e20ef8…）、Linux 包 990fd91b…（二进制 33d45cfa…）。三台换装（本机、fodelf Controller pid 66051、hpsrv ccrun）；用户的 xdo 会话（v0.15.0 起开着）仍没停只换文件，xdo doctor 仍报 write guard busy，其余三个可以用了。真机拿这个 xdo 会话前后对照：之前 ls 写 --print 运行中、status 说没在跑，之后都列出它（1 个终端、工具通）。记录 docs/research/2026-10-12-release-0.16.1.md。\n\n之前的交接：\n**2026-10-12 P89 完成（离线 + 真实 tmux 3.7c 测试），current_task 为 null。** tmux 3.7c 把 list-sessions -F 输出里的制表符换成 _，ccnm ls/status 看不见交互会话；改为 | 分隔、从行尾拆数字字段（4b1f72e 代码，9ed679d 排错手册）。新测试起真实 tmux 走 status_checked，旧代码上红（sessions: []）、新代码绿；三处旧格式假输出一并改掉。本机 Rust 1075/0、Python 247/0。没推送、没发版：列会话在 Agent 机器上做，fodelf 仍是 v0.16.0，真机上要发版换装后才看得到。\n\n之前的交接：\n**2026-10-12 发 v0.16.0、三台换装并零额度真机验证；current_task 为 null。** 用户说\"推送发版，三机安装\"。版本号 0b6bdbb，本机门禁全过（Rust 1074/0、Python 247/0），推送 57ab3b4..0b6bdbb，CI run 38211750545 一次全绿后打 tag；release run 38212395870 四个文件齐全，macOS 包 df48c20d…（二进制 cdf1cdb7…）、Linux 包 79987a19…（二进制 b2080cc6…）。三台换装（本机、fodelf Controller pid 42536、hpsrv ccrun）。换装时用户的 xdo 受管会话正在用（fodelf tmux ccnm-xdo attached、claude 29337，本机 mcp-serve 23001），按授权范围没停它，只换文件；换完它还在。所以 xdo 的 doctor 报 write guard busy（写锁 held 78e84d44 xdo pid 23001），新设置从 xdo 下一个会话起生效；ccnm、xshun、gld doctor 可以用了（2 项不查）。真机（docs/research/2026-10-12-release-0.16.0.md）：受管会话 settings.json autoCompactWindow 560000，钩子在 fodelf 上的输出与源码逐字节一致，/context 显示 Auto-compact window: 560k tokens，起停正常。没验真实模型写出的总结；tmux 3.7c 会话列表问题仍未修。\n\n之前的交接：\n**2026-10-12 P88 完成（离线 + 两版真实 Claude Code 零额度实测），current_task 为 null。** 受管 Claude 会话的压缩窗口 30 万改 56 万，压缩指令按 Claude Code 自带总结提示重写（7363989 代码，30ad5c6 文档与夹具，记录 docs/research/2026-10-12-p88-compact-560k.md）。新指令补的：最前面 Status 块；第 3 节只引用下一步要用的代码行（旧指令与自带的完整代码片段要求矛盾）；压完不补回 read_file/load_skill，所以点名先读的文件、skill 要重新加载；压完那条消息指向的转录在 Agent 机器上、受管会话读不到，总结要自给自足并在末尾写明；留环境事实和验证命令。2.1.286/2.1.296 实测：55 万压、49 万不压，压缩请求带指令全文。没推送、没发版、没在 Linux 跑、没测真实模型写出的总结；本地 main 比 origin 多 4 个提交。日用三台仍是 v0.15.0（30 万），要生效得发版换装，等用户定。",
+    "next_action": "**2026-10-15 立 P90–P92 并认领 P90。** 用户在 xdwmbp 上 ws add 之后发现生成的配置缺东西、新 workspace 进去了用不了。查明：本机写了 runtime_user = \"bing\"（专用账号模式），bing 过不了隔离检查，所以每个 workspace 要两个 allow_* 才开得了；用户同意后已删那一行（备份 ~/.config/ccnm/config.toml.bak-20261015），临时 workspace 实测 ws add 默认两行 doctor \"可以用了\"。用户要求三件事都做、粒度提交、同步文档：P90 ws add 加 --allow-unattended-exec；P91 起会话前问 Runtime，不能用就拒绝启动；P92 ccnm <ws> --continue 续上次对话。下一步：P90 先写在旧代码上红的测试。\n\n之前的交接：\n**2026-10-12 发 v0.16.1、三台换装并真机验证 P89；current_task 为 null。** 用户说\"推送发版，三机安装\"。版本号 2e9c9ff，本机门禁全过（Rust 1075/0、Python 247/0），推送 b23d4f6..2e9c9ff，CI run 38216054140 一次全绿（两平台真实 tmux 测试都跑了）后打 tag；release run 38216854230 四个文件齐全，macOS 包 171c4d1a…（二进制 38e20ef8…）、Linux 包 990fd91b…（二进制 33d45cfa…）。三台换装（本机、fodelf Controller pid 66051、hpsrv ccrun）；用户的 xdo 会话（v0.15.0 起开着）仍没停只换文件，xdo doctor 仍报 write guard busy，其余三个可以用了。真机拿这个 xdo 会话前后对照：之前 ls 写 --print 运行中、status 说没在跑，之后都列出它（1 个终端、工具通）。记录 docs/research/2026-10-12-release-0.16.1.md。\n\n之前的交接：\n**2026-10-12 P89 完成（离线 + 真实 tmux 3.7c 测试），current_task 为 null。** tmux 3.7c 把 list-sessions -F 输出里的制表符换成 _，ccnm ls/status 看不见交互会话；改为 | 分隔、从行尾拆数字字段（4b1f72e 代码，9ed679d 排错手册）。新测试起真实 tmux 走 status_checked，旧代码上红（sessions: []）、新代码绿；三处旧格式假输出一并改掉。本机 Rust 1075/0、Python 247/0。没推送、没发版：列会话在 Agent 机器上做，fodelf 仍是 v0.16.0，真机上要发版换装后才看得到。\n\n之前的交接：\n**2026-10-12 发 v0.16.0、三台换装并零额度真机验证；current_task 为 null。** 用户说\"推送发版，三机安装\"。版本号 0b6bdbb，本机门禁全过（Rust 1074/0、Python 247/0），推送 57ab3b4..0b6bdbb，CI run 38211750545 一次全绿后打 tag；release run 38212395870 四个文件齐全，macOS 包 df48c20d…（二进制 cdf1cdb7…）、Linux 包 79987a19…（二进制 b2080cc6…）。三台换装（本机、fodelf Controller pid 42536、hpsrv ccrun）。换装时用户的 xdo 受管会话正在用（fodelf tmux ccnm-xdo attached、claude 29337，本机 mcp-serve 23001），按授权范围没停它，只换文件；换完它还在。所以 xdo 的 doctor 报 write guard busy（写锁 held 78e84d44 xdo pid 23001），新设置从 xdo 下一个会话起生效；ccnm、xshun、gld doctor 可以用了（2 项不查）。真机（docs/research/2026-10-12-release-0.16.0.md）：受管会话 settings.json autoCompactWindow 560000，钩子在 fodelf 上的输出与源码逐字节一致，/context 显示 Auto-compact window: 560k tokens，起停正常。没验真实模型写出的总结；tmux 3.7c 会话列表问题仍未修。",
     "scope": "2026-10-08 用户要求：零额度复现 Codex 300 秒工具超时、选修法、补外部入口文档、跑门禁、更新状态、粒度提交、不推送。改动：crates/ccnm-core（provider/codex 的 TOOL_TIMEOUT 与启动参数、测试；mcp/hooks 的 MAX_TIMEOUT 改 pub(crate)；mcp/output 注释）、docs/protocol/remote-workspace-mcp-v1.md、docs/usage.md、docs/troubleshooting.md、docs/research 的 P80 记录与夹具、ROADMAP、status。没动任何机器、已装的 ccnm 与配置；Codex 0.154.0 包和源码只下到会话 scratchpad。",
     "planning_validation": {
       "at": "2026-09-08T21:22:43+09:00",

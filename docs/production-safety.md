@@ -30,7 +30,7 @@
 runtime_user = "ccrun"
 ```
 
-ccnm 就按专用账号查它：上面那些"注意"会变成"失败"，`exec_command` 被拒（够得到 Agent 登录时整个会话不开），直到账号真的干净；`allow_unconfined_exec`、`allow_unisolated_credentials` 两个开关也只在这个模式下有意义。怎么建、怎么配见本页后面几节，[四种身份](#四种身份别混成一个)讲为什么要分这几种身份。
+ccnm 就按专用账号查它：上面那些"注意"会变成"失败"，`exec_command` 被拒（够得到 Agent 登录时整个会话不开；受管会话在起之前就报，见[排错](troubleshooting.md#ccnm-项目-起不来报-its-runtime-would-refuse-it)），直到账号真的干净；`allow_unconfined_exec`、`allow_unisolated_credentials` 两个开关也只在这个模式下有意义。怎么建、怎么配见本页后面几节，[四种身份](#四种身份别混成一个)讲为什么要分这几种身份。
 
 ### 默认配置下项目机器能连回 AI 机器
 

@@ -176,7 +176,7 @@ codex_bin = "/opt/codex/bin/codex"   # 可选：exec_sandbox = "codex" 用的 Co
 
 `runtime_user` 说的是 **Agent 的 MCP transport 落到哪个账号上**，项目工具就以谁的身份执行。它不规定谁可以敲 `ccnm`——那是 Operator，通常就是你自己的账号。四种身份怎么分见[生产安全](production-safety.md)。
 
-**不写（默认）就是共用账号**：Agent 登进来的是谁，命令就以谁的身份跑，通常就是你自己；sudo、admin、私钥、Agent 登录这些照查照显示（doctor 里是"注意"），但什么都不挡。**写了就是专用账号模式**：登进来的必须是这个账号，那些检查没通过就拒绝 `exec_command`（够得到 Agent 登录时整个会话不开），直到账号真的干净，或者用下面两个 `allow_*` 开关明确接受。要不要写、怎么建账号，见[生产安全：要不要建专用账号](production-safety.md#要不要建专用账号)。写了之后 doctor 还会多一行 `以你身份生效的文件`，见[运维手册](operations.md#专用账号写进项目的配置你打开时按你的身份生效)。
+**不写（默认）就是共用账号**：Agent 登进来的是谁，命令就以谁的身份跑，通常就是你自己；sudo、admin、私钥、Agent 登录这些照查照显示（doctor 里是"注意"），但什么都不挡。**写了就是专用账号模式**：登进来的必须是这个账号，那些检查没通过就拒绝 `exec_command`（够得到 Agent 登录时整个会话不开），直到账号真的干净，或者用下面两个 `allow_*` 开关明确接受。受管会话（`ccnm <项目>`、`--print`）会被拒的，起之前就报错、不起，不会进去了才发现没工具，见[排错](troubleshooting.md#ccnm-项目-起不来报-its-runtime-would-refuse-it)。所以那台机器就是你自己的、命令就该以你的账号跑时，**别写 `runtime_user`**：写了它，你自己的账号过不了隔离检查，每个 workspace 都得补两个 `allow_*` 才开得了。要不要写、怎么建账号，见[生产安全：要不要建专用账号](production-safety.md#要不要建专用账号)。写了之后 doctor 还会多一行 `以你身份生效的文件`，见[运维手册](operations.md#专用账号写进项目的配置你打开时按你的身份生效)。
 
 一个 node 可以同时具备这些字段，也就是同时承担多个角色。
 

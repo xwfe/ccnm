@@ -70,6 +70,31 @@ workspace write guard is busy; another session still owns this working tree
 
 真连不上（ssh 超时、拒绝连接、认证失败）报的是 `CCNM_E_RUNTIME_UNREACHABLE`（退出码 21）。
 
+### `ccnm <项目>` 起不来，报 `its Runtime would refuse it`
+
+```text
+CCNM_E_POLICY:
+not starting a session for `my-project`: its Runtime would refuse it
+the runtime is running as bing and does not hold the Agent boundary, so no session is served here:
+  - No Claude credential: the Runtime identity can access a known Agent credential file or container (private paths withheld)
+    fix: …
+This identity can reach a known Agent login. To accept that for one workspace -- … -- set allow_unisolated_credentials = true on it in config.toml. …
+See docs/production-safety.md.
+fix it on the Runtime Node, then check: ccnm doctor my-project
+```
+
+**先看项目机器的 `config.toml` 里有没有写 `runtime_user`。** 绝大多数时候是写了它（专用账号模式），而替 AI 跑命令的账号就是你自己，过不了隔离检查。那台机器就是你自己的、命令本来就该以你的账号跑，删掉 `runtime_user` 那一行就好：没写它时这些检查只显示"注意"，不拦，`ccnm ws add` 默认写出来的 workspace 直接能用。
+
+真要专用账号时，看第二行说的是哪道门：
+
+- `does not hold the Agent boundary, so no session is served here`：**会话那道门**，跑命令的账号读得到 Agent 的登录。三条路见[`No Claude credential` 把整个会话挡在门外](#no-claude-credential-把整个会话挡在门外)。
+- `is not confined, so exec_command is refused`：**命令那道门**，会话开得了，但模型跑的每条命令都会被拒。把账号收紧（见[生产安全](production-safety.md)），或者先在那个 workspace 上写 `allow_unconfined_exec = true`，账号配好了再删。
+- 末尾写着 `No workspace switch waives this`：执行身份说不清，或者环境里带着认证变量，哪个开关都放不开，见[生产安全](production-safety.md#凭据隔离那一条怎么放开代价是什么)。
+
+开关写在**项目机器**（Runtime Node）的 `config.toml` 里，改完 `ccnm doctor <项目>` 看到"可以用了"再开会话。
+
+**为什么现在才报**：起新会话之前，AI 那台会经 SSH 问一次项目机器"这个会话你开不开、命令让不让跑"，项目机器说不就不起，原样带回它的理由。每个新会话为此多一次 SSH，实测 525–806 毫秒（5 次，xdwmbp ↔ fodelf）；已经在跑的会话直接接上，不问。**v0.16.1 及以前没有这一步**：会话照样起来，Claude 里却没有 ccnm 的工具（doctor 的 `Remote MCP handshake` 行失败），看着像网络断了，其实是项目机器在握手时拒了。
+
 ### 升级后 `ccnm` 报 `unknown field `codex_exec_server``
 
 ```text
@@ -379,6 +404,8 @@ No Claude credential    FAIL  the Runtime identity can access a known Agent cred
 exec_command            FAIL  refused until the runtime account is confined
 Remote MCP handshake    FAIL  CCNM_E_POLICY: MCP initialize failed over `…`: connection closed: initialize response
 ```
+
+v0.16.1 之后，这时 `ccnm <项目>` 不会再起会话，直接报[上面那条 `its Runtime would refuse it`](#ccnm-项目-起不来报-its-runtime-would-refuse-it)。
 
 **其实是**：跑项目命令的那个账号家里有 `~/.claude` / `~/.codex`，而 Runtime 配置里写了 `runtime_user`（专用账号模式），所以它在 `initialize` 之前就拒了。**`allow_unconfined_exec` 救不了**，那个开关只管账号权限过大那一类。不写 `runtime_user`（共用账号）时这一行只是"注意"，不拦。
 

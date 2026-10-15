@@ -118,7 +118,7 @@ Runtime Node
 
 ### 2. `agent -> runtime`
 
-坐在跑 Agent 的那台机器上发起。它不存 workspace 列表（顶层 `runtime_node` 就是这个意思），所以**先问 Runtime 这个 workspace 是什么**（`internal runtime-resolve`，只读，不启动任何东西），拿到 root、runtime node、instance 引用和 permission mode 之后，**在本机把会话起起来**，再本地 attach。已有 session 的 `attach/status/result/stop` 一直在 Agent 本机执行，避免 Runtime 短暂离线时连终端也无法管理。
+坐在跑 Agent 的那台机器上发起。它不存 workspace 列表（顶层 `runtime_node` 就是这个意思），所以**先问 Runtime 这个 workspace 是什么**（`internal runtime-resolve`，只读，不启动任何东西），拿到 root、runtime node、instance 引用和 permission mode 之后，再问一次这个会话 Runtime 开不开（见下面[开会话之前](#开会话之前先问-runtime-开不开p91)），**在本机把会话起起来**，再本地 attach。已有 session 的 `attach/status/result/stop` 一直在 Agent 本机执行，避免 Runtime 短暂离线时连终端也无法管理。
 
 诊断走同一条规矩：`ccnm doctor` 在这台机器上查 Controller、官方 CLI、登录和 tmux，向 Runtime 只发两个只读问题（`runtime-resolve` 与 `runtime-audit`），MCP transport 也由这台主动开；`ccnm mcp probe` 同理。**没有任何一条路径要求 Runtime 反过来连 Agent。** `--local` 在这台机器上直接拒绝——项目不在这儿，测本地 Runtime 无从谈起。
 
@@ -245,6 +245,12 @@ Runtime MCP 初始化再用自己的配置重算 binding；legacy payload 不能
 身份核对分工明确：**Runtime 只认它拥有的那一半——workspace 的 Agent Node**，外加拓扑和 provider 能力。instance/provider/profile 是 Agent 本机的事实，而 `ccnm run --agent` 本来就允许在同一个 node 上换 instance，所以 Runtime 不重复校验 instance，由 Agent 自己的 registry 接受或拒绝。
 
 **resolve 不是 capability token。** 从解析到真正 `mcp-serve` 打开之间有竞态，所以打开时 binding、安全审计、root canonicalize 和写入 guard 全部重做一遍。
+
+### 开会话之前先问 Runtime 开不开（P91）
+
+Agent 在建会话目录、叫 Controller 之前，经同一个 Runtime 别名先发 `internal hello`（两边是不是同一个构建、项目根在不在），再发 `internal runtime-audit`（doctor 问的也是它）。Runtime 用执行账号自己的审计和这个 workspace 的开关回答两道门：会话门（执行账号碰不碰得到 Agent 的登录）和命令门（`exec_command` 让不让跑）。哪道不过，Agent 就以 `CCNM_E_POLICY` 停下，带回 Runtime 自己拒绝时的那段原文，什么都不建。交互和 `--print`、Claude 和 Codex、legacy 和 instance 都走这一步；已经在跑的会话直接接上，不问。
+
+**为什么要这一步**：legacy Claude 会话以前只问 `hello`，Runtime 要到 MCP 握手才拒，表现是会话起来了、Claude 里却没有 ccnm 的工具；命令门哪种会话都要到第一次 `exec_command` 才知道。**它同样不是 capability token**：`mcp-serve` 打开时照样全部重做。写锁占没占不在这一步查，那是运行时状态，Codex 和 instance 会话起之前的完整握手预检照旧会查到。**代价**是每个新会话多建一次 ssh 连接：审计本身约 0.07 秒，建连接在 xdwmbp ↔ fodelf 上量到 0.5–2.5 秒，看网络（[v0.17.0 记录](research/2026-10-15-release-0.17.0.md)第 4 节）。
 
 两种 wire 靠 `protocol` 数字区分，没有第三条路也没有回退：本 build 不认识的数字直接 `CCNM_E_VERSION`。旧 build 拿到 protocol 4 也一样——它缺 `root` 又多 `agent`，解码就失败。
 

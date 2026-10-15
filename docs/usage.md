@@ -256,6 +256,8 @@ Agent Instance 建议同时带 `--agent <instance-id>`；不带 session 的“�
 allow_unattended_exec = true
 ```
 
+加 workspace 时可以顺手写上：`ccnm ws add my-project --allow-unattended-exec`。
+
 新起的会话就不再问了。开了之后少了什么、还剩什么挡着、怎么收回，见[配置说明](configuration.md#allow_unattended_exec)。
 
 另一条路是 `--print`，两者的区别：

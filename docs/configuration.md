@@ -514,7 +514,13 @@ ccnm workspace add [名字] [路径]    # 不给名字用目录名，不给路�
 ccnm workspace remove <名字>
 ```
 
-`ws` 是 `workspace` 的别名。`workspace add` 的其他选项：`--replace`（名字已存在时改指到这个目录，不加就报错）、`--permission-mode <模式>`（写 [`claude_permission_mode`](#claude_permission_mode)）、`--allow-unconfined-exec`（写 [`allow_unconfined_exec`](#allow_unconfined_exec)）、`--agent-node <node>`。
+`ws` 是 `workspace` 的别名。`workspace add` 的其他选项：`--replace`（名字已存在时改指到这个目录，不加就报错）、`--permission-mode <模式>`（写 [`claude_permission_mode`](#claude_permission_mode)）、`--allow-unconfined-exec`（写 [`allow_unconfined_exec`](#allow_unconfined_exec)）、`--allow-unattended-exec`（写 [`allow_unattended_exec`](#allow_unattended_exec) `= true`，不加就不写、默认每条命令问一次）、`--agent-node <node>`。`allow_unisolated_credentials` 没有对应选项：只在写了 `runtime_user` 的专用账号模式下用得上，开之前要读那一节，所以只能手写。
+
+自己的机器、自己的账号（没写 `runtime_user`）时，一条命令写全常用设置：
+
+```bash
+ccnm ws add my-project --permission-mode bypassPermissions --allow-unattended-exec
+```
 
 `workspace add` 在项目所在的机器上跑，写的节点从这份配置里来：`runtime_node` 是 `this`（`this` 就叫 `runtime` 时不写，用默认值）；`agent_node` 是叫 `agent` 的那个节点，没有就是 `this` 以外唯一的那个，有好几个时必须用 `--agent-node` 指定，否则报错、什么都不写。
 

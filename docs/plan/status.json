@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-10-16T22:45:00+09:00",
-  "current_task": null,
+  "last_updated": "2026-10-16T23:10:00+09:00",
+  "current_task": "P99",
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
     "source": "docs/research/codex-internal-wiring-2026-09-07.md",
@@ -4754,6 +4754,18 @@
           "result": "顶层 ccnm add 与 ccnm ws add 共用 AddArgs，中文帮助共用 zh_add_args。add_target：两个参数照旧；一个参数不是合法名字（config::is_valid_name，新公开）就当目录、名字取目录名；是合法名字而当前目录下有同名子目录时报 CCNM_E_INVALID_ARGS 并给 ccnm add ./名字 与 ccnm add 名字 . 两种写法、配置不变；其余照旧当名字、目录取当前目录。name_from 把 . 换成 -、去掉开头的非字母数字（my.proj → my-proj）。没定义的 workspace、init 结尾、ws list 为空时的提示改成 ccnm add。新测试 add_takes_a_project_path_and_names_it_after_the_directory 在旧代码上红（CCNM_E_CONFIG workspace 'add' is not defined … ccnm ws add add），新代码绿；原有 ws add 的 5 条测试不改照过，一条断言旧提示原文的测试按新提示改。真实二进制试过 ccnm --help 列出 add、ccnm add --help 中文、绝对路径、. 、同名子目录报错。入门、README、配置说明改用 ccnm add（af64153）。本机 macOS arm64：cargo fmt --check、clippy -D warnings；cargo test --workspace --no-fail-fast 1101 passed / 0 failed；python3 scripts/ci_gates.py 248 ran / 0 skipped / 0 failed；check_plan、git diff --check。没在 Linux 上跑；没推送、没发版。"
         }
       ],
+      "blockers": []
+    },
+    {
+      "id": "P99",
+      "title": "ccnm remove（简写 rm）和 add 配对，两个 list 的帮助互相指路",
+      "status": "in_progress",
+      "depends_on": ["P97"],
+      "owner": "claude-code-opus-5-5",
+      "started_at": "2026-10-16T23:10:00+09:00",
+      "last_updated": "2026-10-16T23:10:00+09:00",
+      "completed_criteria": [],
+      "evidence": [],
       "blockers": []
     }
   ],

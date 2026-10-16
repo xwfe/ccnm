@@ -731,7 +731,9 @@ pub struct LiveSession {
 }
 
 impl LiveSession {
-    /// What to say about this session in one line.
+    /// The session in one diagnostic line, for doctor's `Terminal session`
+    /// row: tmux name, launchd domain and all. Not what `ccnm status`
+    /// prints any more (P95); that is [`crate::overview::session_rows`].
     pub fn describe(&self) -> String {
         let attached = match self.attached {
             0 => "detached".to_string(),
@@ -739,7 +741,7 @@ impl LiveSession {
         };
         let tools = match self.tools {
             Some(true) => "tools connected",
-            Some(false) => self.provider.tools_down_hint(),
+            Some(false) => self.provider.tools_down_hint(Lang::En),
             None => "tools unknown",
         };
         format!(
@@ -760,15 +762,27 @@ impl StatusReport {
     }
 
     pub fn render_in(&self, lang: Lang) -> String {
+        self.render_at(lang, crate::overview::now_secs())
+    }
+
+    /// `ccnm status <ws>`, in the same block `ccnm status` prints for each
+    /// project (P95). `now` is a parameter so a test can pin how long a
+    /// session has been running.
+    ///
+    /// It used to open with the Agent's tmux version and give each session
+    /// one English line of tmux session name, launchd domain and Keychain
+    /// state. A tmux that cannot be asked is still said, first: then "no
+    /// live sessions" would be a claim nobody checked, and is left out.
+    pub fn render_at(&self, lang: Lang, now: u64) -> String {
         let mut out = match &self.tmux {
-            Ok(v) => lang.pick(
-                format!("Agent Node 上的 tmux {v}\n"),
-                format!("tmux {v} on the Agent Node\n"),
+            Ok(_) => String::new(),
+            Err(e) => lang.pick(
+                format!("问不到 Agent Node 上的 tmux：{}\n", e.message),
+                format!("cannot ask tmux on the Agent Node: {}\n", e.message),
             ),
-            Err(e) => format!("tmux: {}\n", e.message),
         };
         let asked = self.agent_identity.as_ref().map(|id| id.instance.as_str());
-        if self.sessions.is_empty() {
+        if self.sessions.is_empty() && self.tmux.is_ok() {
             // Worth reading twice before trusting: this counts tmux
             // sessions on the Agent Node, and a `--print` run is not one
             // of them even though it holds the workspace's write guard.
@@ -786,9 +800,23 @@ impl StatusReport {
                 )),
             }
         }
+        // Grouped by workspace, in the order the Agent listed them: one
+        // when a workspace was named, every one with `--all`.
+        let mut names: Vec<&str> = Vec::new();
         for s in &self.sessions {
-            out.push_str(&s.describe());
-            out.push('\n');
+            let name = s.workspace.as_deref().unwrap_or("-");
+            if !names.contains(&name) {
+                names.push(name);
+            }
+        }
+        for name in names {
+            let rows: Vec<Vec<String>> = self
+                .sessions
+                .iter()
+                .filter(|s| s.workspace.as_deref().unwrap_or("-") == name)
+                .flat_map(|s| crate::overview::session_rows(s, now, lang))
+                .collect();
+            out.push_str(&format!("{name}\n{}", crate::overview::block(&rows)));
         }
         for other in &self.other_instances {
             out.push_str(&lang.pick(
@@ -798,16 +826,19 @@ impl StatusReport {
                 ),
             ));
         }
+        // `--session`: the full id, since that is what was typed, and the
+        // state in words rather than its Rust name.
         for record in &self.records {
-            out.push_str(&format!(
-                "{}  {}  {:?}  {}\n",
-                record.session,
-                record.workspace,
-                record.state,
-                record
-                    .agent_identity
-                    .as_ref()
-                    .map_or("legacy".to_string(), |id| id.instance.clone()),
+            let state = crate::overview::state_word(record.state, lang);
+            let instance = record.agent_identity.as_ref().map_or(String::new(), |id| {
+                lang.pick(
+                    format!("（实例 {}）", id.instance),
+                    format!(" (instance {})", id.instance),
+                )
+            });
+            out.push_str(&lang.pick(
+                format!("会话 {}：{state}{instance}\n", record.session),
+                format!("session {}: {state}{instance}\n", record.session),
             ));
         }
         out
@@ -970,5 +1001,66 @@ mod tests {
         let blocked = started(false, None, false).summary_in(Lang::Zh);
         assert_eq!(blocked.lines().count(), 2, "{blocked}");
         assert!(blocked.contains("钥匙串"), "{blocked}");
+    }
+
+    /// P95: `ccnm status <ws>` is the block `ccnm status` prints for the
+    /// project, not a tmux version line and an English row of tmux session
+    /// name and launchd domain; `--session` says the state in words.
+    #[test]
+    fn a_workspace_status_reads_like_the_overview() {
+        let id = "d13df3ae-8716-4874-bee3-9399c1f34561";
+        let report = StatusReport {
+            protocol: crate::protocol::PROTOCOL,
+            agent_identity: None,
+            tmux: Ok("3.7c".into()),
+            sessions: vec![LiveSession {
+                provider: Default::default(),
+                agent_identity: None,
+                tmux_session: "ccnm-keex".into(),
+                workspace: Some("keex".into()),
+                session: Some(id.into()),
+                created: 1_000,
+                attached: 0,
+                context: Some(crate::session::Context {
+                    manager: Some("Aqua".into()),
+                    keychain: Some(true),
+                }),
+                tools: Some(true),
+            }],
+            records: vec![SessionRecord {
+                session: id.into(),
+                workspace: "keex".into(),
+                provider: Default::default(),
+                agent_identity: None,
+                state: SessionState::Running,
+                provider_session_id: None,
+                outcome: None,
+            }],
+            other_instances: vec![],
+        };
+        assert_eq!(
+            report.render_at(Lang::Zh, 1_000 + 3_700),
+            format!(
+                "keex\n  会话     d13df3ae 运行中，已运行 1 小时 1 分，没有终端接着\n  工具              通\n会话 {id}：运行中\n"
+            )
+        );
+        let en = report.render_at(Lang::En, 1_000 + 3_700);
+        for noise in ["ccnm-keex", "Aqua", "keychain", "tmux", "Running", "legacy"] {
+            assert!(!en.contains(noise), "{noise} in:\n{en}");
+        }
+        assert!(en.contains("running for 1h 1m, detached"), "{en}");
+
+        // No tmux, no claim that nothing is running.
+        let unasked = StatusReport {
+            tmux: Err(crate::error::ErrorReport::new(
+                crate::ErrorCode::Dependency,
+                "tmux is not installed",
+            )),
+            sessions: vec![],
+            records: vec![],
+            ..report
+        };
+        let said = unasked.render_at(Lang::Zh, 0);
+        assert_eq!(said, "问不到 Agent Node 上的 tmux：tmux is not installed\n");
     }
 }

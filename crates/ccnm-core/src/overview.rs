@@ -87,8 +87,33 @@ pub struct LeftGuard {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentView {
     pub alias: Option<String>,
-    /// `tmux -V` there, or why the Agent could not be asked.
+    /// The node's name in the config, which is what the person calls that
+    /// machine; `None` on the Agent Node itself.
+    pub node: Option<String>,
+    /// `tmux -V` there, or why the Agent could not be asked: the message
+    /// alone, without the `CCNM_E_*` line, because it is printed inside a
+    /// sentence.
     pub tmux: std::result::Result<String, String>,
+}
+
+impl AgentView {
+    fn name(&self, lang: Lang) -> &str {
+        self.node
+            .as_deref()
+            .or(self.alias.as_deref())
+            .unwrap_or_else(|| lang.pick("这台机器", "this machine"))
+    }
+}
+
+/// An error message as one line: it goes inside a sentence, and a line
+/// break there used to leave the sentence's closing words alone on the
+/// next line (P95).
+fn one_line(text: &str) -> String {
+    text.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -123,14 +148,17 @@ pub fn collect(config: &Config, env: &Env<'_>, state: &Path) -> Overview {
             let report = launcher::status_selected(&resolved, env, true, None, None);
             tmux_versions.push(AgentView {
                 alias: Some(alias.clone()),
+                node: Some(resolved.agent_node().to_string()),
                 tmux: match &report {
                     Ok(rep) => rep.tmux.clone().map_err(|e| e.message),
-                    Err(e) => Err(e.to_string()),
+                    Err(e) => Err(e.message().to_string()),
                 },
             });
             agents.insert(
                 alias.clone(),
-                report.map(|rep| rep.sessions).map_err(|e| e.to_string()),
+                report
+                    .map(|rep| rep.sessions)
+                    .map_err(|e| e.message().to_string()),
             );
         }
         let sessions: Vec<LiveSession> = alias
@@ -212,6 +240,7 @@ pub fn from_agent_status(report: &crate::protocol::run::StatusReport) -> Overvie
     Overview {
         agents: vec![AgentView {
             alias: None,
+            node: None,
             tmux: report.tmux.clone().map_err(|e| e.message),
         }],
         workspaces: by_name
@@ -409,9 +438,10 @@ pub fn render_guard(
     let report = match answer {
         Ok(report) => report,
         Err(e) => {
+            let why = one_line(e.message());
             return lang.pick(
-                format!("写锁  问不到 Runtime（{e}）——这不等于空闲\n"),
-                format!("guard  could not ask the Runtime ({e}); that does not mean free\n"),
+                format!("写锁  问不到 Runtime，这不等于空闲。原因：{why}\n"),
+                format!("guard  could not ask the Runtime, which does not mean free: {why}\n"),
             );
         }
     };
@@ -554,7 +584,7 @@ fn short(id: &str) -> &str {
     id.get(..8).unwrap_or(id)
 }
 
-fn state_word(state: SessionState, lang: Lang) -> &'static str {
+pub(crate) fn state_word(state: SessionState, lang: Lang) -> &'static str {
     match state {
         SessionState::Starting => lang.pick("启动中", "starting"),
         SessionState::Running => lang.pick("运行中", "running"),
@@ -597,6 +627,63 @@ pub(crate) fn table(rows: &[Vec<String>]) -> String {
     out
 }
 
+/// One live session as rows of the block `ccnm status` prints, the same
+/// whether it was asked about every project or about one: what it is
+/// doing, whether its tools work, and the Keychain only when it is in the
+/// way.
+///
+/// Not the tmux session name or the launchd domain (P95). `ccnm status
+/// <ws>` used to print both on every call -- `ccnm-keex ... (Aqua,
+/// keychain reachable)` -- and they mean something only to whoever is
+/// chasing a problem, who has `ccnm doctor` for it.
+pub(crate) fn session_rows(s: &LiveSession, now: u64, lang: Lang) -> Vec<Vec<String>> {
+    let up = span(now.saturating_sub(s.created), lang);
+    let terminals = match s.attached {
+        0 => lang.pick("没有终端接着".to_string(), "detached".to_string()),
+        n => lang.pick(format!("{n} 个终端接着"), format!("{n} attached")),
+    };
+    let mut rows = vec![
+        vec![
+            lang.pick("会话", "session").into(),
+            s.session.as_deref().map(short).unwrap_or("-").into(),
+            lang.pick(
+                format!("运行中，已运行 {up}，{terminals}"),
+                format!("running for {up}, {terminals}"),
+            ),
+        ],
+        vec![
+            lang.pick("工具", "tools").into(),
+            String::new(),
+            match s.tools {
+                Some(true) => lang.pick("通", "connected").into(),
+                Some(false) => s.provider.tools_down_hint(lang).into(),
+                None => lang.pick("说不清", "unknown").into(),
+            },
+        ],
+    ];
+    if s.context.as_ref().and_then(|c| c.keychain) == Some(false) {
+        let cli = s.provider.cli_name();
+        rows.push(vec![
+            lang.pick("注意", "note").into(),
+            String::new(),
+            lang.pick(
+                format!("{cli} 在那边读不到 macOS 钥匙串，可能会让你重新登录"),
+                format!("{cli} cannot reach the macOS Keychain there and may ask you to log in"),
+            ),
+        ]);
+    }
+    rows
+}
+
+/// Rows in fixed columns rather than [`table`]: every workspace's block
+/// should line up with the next one's. "Runtime" and an 8-character id are
+/// the widest cells either column ever holds.
+pub(crate) fn block(rows: &[Vec<String>]) -> String {
+    rows.iter()
+        .map(|row| format!("  {} {} {}\n", pad(&row[0], 8), pad(&row[1], 8), row[2]))
+        .collect()
+}
+
 impl WorkspaceView {
     fn orphans(&self) -> impl Iterator<Item = &ServerView> {
         self.servers
@@ -604,7 +691,9 @@ impl WorkspaceView {
             .filter(|v| matches!(v.verdict, Verdict::Ended(_)))
     }
 
-    fn state_cell(&self, lang: Lang) -> String {
+    /// `unasked`: its Agent could not be asked, so no session listed means
+    /// nothing. It read "idle" there, which was a claim nobody had checked.
+    fn state_cell(&self, lang: Lang, unasked: bool) -> String {
         if let Some(s) = self.sessions.first() {
             let terminals = match s.attached {
                 0 => lang.pick("没有终端接着".to_string(), "detached".to_string()),
@@ -614,6 +703,9 @@ impl WorkspaceView {
         }
         if self.servers.iter().any(|v| v.verdict == Verdict::Running) {
             return lang.pick("--print 运行中", "--print running").into();
+        }
+        if unasked {
+            return lang.pick("问不到", "unknown").into();
         }
         lang.pick("没在跑", "idle").into()
     }
@@ -645,7 +737,7 @@ impl Overview {
         for ws in &self.workspaces {
             rows.push(vec![
                 ws.name.clone(),
-                ws.state_cell(lang),
+                ws.state_cell(lang, self.unasked(ws)),
                 ws.sessions
                     .first()
                     .map(|s| span(self.now.saturating_sub(s.created), lang))
@@ -665,18 +757,31 @@ impl Overview {
         out
     }
 
+    /// Whether the Agent this workspace runs on could not be asked.
+    fn unasked(&self, ws: &WorkspaceView) -> bool {
+        self.agents
+            .iter()
+            .any(|agent| agent.alias == ws.agent && agent.tmux.is_err())
+    }
+
+    /// The Agents that could not be asked, one line each.
+    fn unasked_lines(&self, lang: Lang) -> Vec<String> {
+        self.agents
+            .iter()
+            .filter_map(|agent| {
+                let why = one_line(agent.tmux.as_ref().err()?);
+                let name = agent.name(lang);
+                Some(lang.pick(
+                    format!("问不到 {name} 上的会话：{why}"),
+                    format!("cannot ask {name} about its sessions: {why}"),
+                ))
+            })
+            .collect()
+    }
+
     /// One sentence per thing that needs a person.
     fn notes(&self, lang: Lang) -> Vec<String> {
-        let mut notes = Vec::new();
-        for agent in &self.agents {
-            if let Err(e) = &agent.tmux {
-                let alias = agent.alias.as_deref().unwrap_or("Agent Node");
-                notes.push(lang.pick(
-                    format!("问不到 {alias} 上的会话：{e}"),
-                    format!("cannot ask {alias} about its sessions: {e}"),
-                ));
-            }
-        }
+        let mut notes = self.unasked_lines(lang);
         for ws in &self.workspaces {
             let name = &ws.name;
             for orphan in ws.orphans() {
@@ -715,30 +820,30 @@ impl Overview {
     }
 
     /// `ccnm status` with no workspace: everything known, per workspace.
+    ///
+    /// An Agent that answered gets no line of its own: its tmux version
+    /// opened every call, and `ccnm doctor` is where versions are checked
+    /// (P95). One that did not is said first, because every block under it
+    /// is then partly unknown.
     pub fn render_status(&self, lang: Lang) -> String {
-        let mut out = String::new();
-        for agent in &self.agents {
-            let alias = agent.alias.as_deref().unwrap_or("");
-            match &agent.tmux {
-                Ok(v) => out.push_str(&lang.pick(
-                    format!("Agent Node {alias}：tmux {v}\n"),
-                    format!("Agent Node {alias}: tmux {v}\n"),
-                )),
-                Err(e) => out.push_str(&lang.pick(
-                    format!("Agent Node {alias}：问不到（{e}）\n"),
-                    format!("Agent Node {alias}: unreachable ({e})\n"),
-                )),
-            }
-        }
+        let mut out: String = self
+            .unasked_lines(lang)
+            .into_iter()
+            .map(|line| line + "\n")
+            .collect();
         if self.workspaces.is_empty() {
-            out.push_str(lang.pick("没有在跑的会话\n", "no live sessions\n"));
+            if self.agents.iter().all(|agent| agent.tmux.is_ok()) {
+                out.push_str(lang.pick("没有在跑的会话\n", "no live sessions\n"));
+            }
             return out;
         }
         // Busy ones first: that is what someone running this is looking for.
         let mut order: Vec<&WorkspaceView> = self.workspaces.iter().collect();
         order.sort_by_key(|ws| ws.sessions.is_empty() && ws.servers.is_empty());
         for ws in order {
-            out.push('\n');
+            if !out.is_empty() {
+                out.push('\n');
+            }
             out.push_str(&self.render_workspace(ws, lang));
         }
         out
@@ -753,39 +858,20 @@ impl Overview {
             Some(root) => format!("{}  {}\n", ws.name, root.display()),
             None => format!("{}\n", ws.name),
         };
-        let mut rows: Vec<Vec<String>> = Vec::new();
-        for s in &ws.sessions {
-            let up = span(self.now.saturating_sub(s.created), lang);
-            let terminals = match s.attached {
-                0 => lang.pick("没有终端接着".to_string(), "detached".to_string()),
-                n => lang.pick(format!("{n} 个终端接着"), format!("{n} attached")),
-            };
-            rows.push(vec![
-                lang.pick("会话", "session").into(),
-                s.session.as_deref().map(short).unwrap_or("-").into(),
-                lang.pick(
-                    format!("运行中，已运行 {up}，{terminals}"),
-                    format!("running for {up}, {terminals}"),
-                ),
-            ]);
-            rows.push(vec![
-                lang.pick("工具", "tools").into(),
-                String::new(),
-                match s.tools {
-                    Some(true) => lang.pick("通", "connected").into(),
-                    Some(false) => lang.pick(
-                        "断了——在 Claude 里：/mcp → ccnm → Reconnect".to_string(),
-                        s.provider.tools_down_hint().to_string(),
-                    ),
-                    None => lang.pick("说不清", "unknown").into(),
-                },
-            ]);
-        }
+        let mut rows: Vec<Vec<String>> = ws
+            .sessions
+            .iter()
+            .flat_map(|s| session_rows(s, self.now, lang))
+            .collect();
         if ws.sessions.is_empty() {
             rows.push(vec![
                 lang.pick("会话", "session").into(),
                 String::new(),
-                lang.pick("没在跑", "none").into(),
+                if self.unasked(ws) {
+                    lang.pick("问不到", "unknown").into()
+                } else {
+                    lang.pick("没在跑", "none").into()
+                },
             ]);
         }
         for view in &ws.servers {
@@ -829,17 +915,7 @@ impl Overview {
                 ),
             ]);
         }
-        // Fixed columns rather than `table`: every workspace's block should
-        // line up with the next one's. "Runtime" and an 8-character id are
-        // the widest cells either column ever holds.
-        for row in &rows {
-            out.push_str(&format!(
-                "  {} {} {}\n",
-                pad(&row[0], 8),
-                pad(&row[1], 8),
-                row[2]
-            ));
-        }
+        out.push_str(&block(&rows));
         for orphan in ws.orphans() {
             let s = &orphan.server;
             if s.parent_is_sshd {
@@ -1090,6 +1166,7 @@ mod tests {
         let overview = Overview {
             agents: vec![AgentView {
                 alias: Some("fodelf".into()),
+                node: Some("fodelf".into()),
                 tmux: Ok("3.7c".into()),
             }],
             workspaces: vec![
@@ -1133,6 +1210,88 @@ mod tests {
         assert!(status.contains("kill 28397"), "{status}");
         // The busy workspace comes first, although it sorts after by name.
         assert!(status.find("gld").unwrap() < status.find("ccnm ").unwrap());
+        // An Agent that answered is not a line of its own (P95).
+        assert!(!status.contains("3.7c"), "{status}");
+        assert!(status.starts_with("gld  /p/gld\n"), "{status}");
+    }
+
+    /// P95: an Agent that could not be asked leaves its workspaces unknown,
+    /// not idle -- `ccnm ls` said `idle` while the network to the machine
+    /// running the session was down -- and says so in one line, by the
+    /// node's name, without the `CCNM_E_*` line breaking the sentence.
+    #[test]
+    fn an_agent_that_cannot_be_asked_leaves_its_workspaces_unknown() {
+        let overview = Overview {
+            agents: vec![AgentView {
+                alias: Some("fodelf-ts".into()),
+                node: Some("fodelf".into()),
+                tmux: Err(
+                    "ssh fodelf-ts: ssh: connect to host 100.79.121.33 port 22: Operation timed out"
+                        .into(),
+                ),
+            }],
+            workspaces: vec![WorkspaceView {
+                name: "keex".into(),
+                root: Some("/p/keex".into()),
+                root_present: true,
+                agent: Some("fodelf-ts".into()),
+                sessions: vec![],
+                servers: vec![],
+                guard_left_held: None,
+            }],
+            now: 1_000,
+        };
+        for lang in [Lang::Zh, Lang::En] {
+            let list = overview.render_list(lang);
+            let row = list.lines().find(|l| l.starts_with("keex")).unwrap();
+            assert!(row.contains(lang.pick("问不到", "unknown")), "{list}");
+            assert!(!row.contains(lang.pick("没在跑", "idle")), "{list}");
+            let note = list.lines().find(|l| l.starts_with("! ")).unwrap();
+            assert!(
+                note.contains("fodelf ") || note.contains("fodelf："),
+                "{list}"
+            );
+            assert!(note.ends_with("Operation timed out"), "{list}");
+
+            let status = overview.render_status(lang);
+            assert!(status.starts_with(&note[2..]), "{status}");
+            assert!(status.contains(lang.pick("问不到", "unknown")), "{status}");
+            assert!(!status.contains(lang.pick("没在跑", "none")), "{status}");
+        }
+    }
+
+    /// P95: `ccnm status` and `ccnm status <ws>` describe a session in the
+    /// same rows, and those rows leave out the tmux session name and the
+    /// launchd domain. The Keychain gets a row only when it is in the way,
+    /// and a Codex session whose tools are down is not told to type a
+    /// Claude command.
+    #[test]
+    fn a_session_is_described_without_tmux_names_or_launchd_domains() {
+        let mut s = live("keex", "d13df3ae-8716-4874-bee3-9399c1f34561", Some(true));
+        s.attached = 0;
+        s.context = Some(crate::session::Context {
+            manager: Some("Aqua".into()),
+            keychain: Some(true),
+        });
+        let said = block(&session_rows(&s, 1_000 + 3_700, Lang::Zh));
+        assert_eq!(
+            said,
+            "  会话     d13df3ae 运行中，已运行 1 小时 1 分，没有终端接着\n  工具              通\n"
+        );
+
+        s.context = Some(crate::session::Context {
+            manager: Some("Background".into()),
+            keychain: Some(false),
+        });
+        let blocked = block(&session_rows(&s, 1_000, Lang::Zh));
+        assert!(blocked.contains("钥匙串"), "{blocked}");
+        assert!(!blocked.contains("Background"), "{blocked}");
+
+        s.provider = crate::provider::AgentProvider::Codex;
+        s.tools = Some(false);
+        let codex = block(&session_rows(&s, 1_000, Lang::Zh));
+        assert!(codex.contains("退出 Codex"), "{codex}");
+        assert!(!codex.contains("/mcp"), "{codex}");
     }
 
     /// 每种写锁状态各说各的，问不到的时候说问不到——哪一种都不能读成"空闲"（AU-03）。

@@ -1561,6 +1561,114 @@ fn losing_the_agent_after_the_terminal_says_which_machine_and_how_back_in() {
     assert!(!err.contains("CCNM_E_AGENT_UNREACHABLE"), "{err}");
 }
 
+/// P95: `ccnm status <ws>` and `ccnm ls` on the machine with the projects,
+/// through the real binary. `status` opened with the Agent's tmux version,
+/// gave the session as an English row of tmux session name and launchd
+/// domain, and -- for every workspace `ccnm ws add` writes -- ended in two
+/// lines of CCNM_E_CONFIG about a write guard it can never ask. With the
+/// Agent unreachable, `ls` called the workspace idle, which nobody had
+/// checked, and broke its note over two lines at the error code.
+#[test]
+fn status_and_ls_say_what_the_person_needs_and_nothing_untrue() {
+    use ccnm_core::protocol::PROTOCOL;
+    use ccnm_core::protocol::run::{LiveSession, StatusReport};
+
+    let dir = std::env::temp_dir().join(format!("ccnm-cli-{}-p95-status", std::process::id()));
+    let _cleanup = TestDir::adopt(&dir);
+    let _ = std::fs::remove_dir_all(&dir);
+    let root = dir.join("root");
+    std::fs::create_dir_all(&root).unwrap();
+    let config = dir.join("config.toml");
+    std::fs::write(
+        &config,
+        format!(
+            "version = 1\nthis = \"runtime\"\n[nodes.fodelf]\nssh = \"ccnm-test-nowhere.invalid\"\n[nodes.runtime]\n[workspaces.keex]\nagent_node = \"fodelf\"\nroot = \"{}\"\n",
+            root.display()
+        ),
+    )
+    .unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let running = serde_json::to_string(&StatusReport {
+        protocol: PROTOCOL,
+        agent_identity: None,
+        tmux: Ok("3.7c".into()),
+        sessions: vec![LiveSession {
+            provider: Default::default(),
+            agent_identity: None,
+            tmux_session: "ccnm-keex".into(),
+            workspace: Some("keex".into()),
+            session: Some("d13df3ae-8716-4874-bee3-9399c1f34561".into()),
+            created: now - 3_700,
+            attached: 0,
+            context: Some(ccnm_core::session::Context {
+                manager: Some("Aqua".into()),
+                keychain: Some(true),
+            }),
+            tools: Some(true),
+        }],
+        records: vec![],
+        other_instances: vec![],
+    })
+    .unwrap();
+    let ssh = FakeSsh::install(
+        &dir,
+        &format!("  *'internal agent-status'*) printf '%s\\n' '{running}' ;;"),
+    );
+    let state = short_state("p95-status");
+    let run = |lang: &str, args: &[&str]| {
+        let out = ccnm()
+            .env("PATH", ssh.path())
+            .env("XDG_STATE_HOME", &state)
+            .env("CCNM_LANG", lang)
+            .args(args)
+            .arg("--config")
+            .arg(&config)
+            .output()
+            .unwrap();
+        (
+            out.status.code(),
+            format!("{}{}", stdout(&out), stderr(&out)),
+        )
+    };
+
+    for lang in ["zh", "en"] {
+        let (code, said) = run(lang, &["status", "keex"]);
+        assert_eq!(code, Some(0), "{said}");
+        assert!(said.starts_with("keex\n"), "{said}");
+        assert!(said.contains("d13df3ae"), "{said}");
+        for noise in [
+            "ccnm-keex",
+            "Aqua",
+            "keychain",
+            "3.7c",
+            "CCNM_E_CONFIG",
+            "instance binding",
+        ] {
+            assert!(!said.contains(noise), "{noise} in:\n{said}");
+        }
+    }
+
+    // The network to the Agent goes.
+    FakeSsh::install(
+        &dir,
+        "  *) echo 'ssh: connect to host 100.79.121.33 port 22: Operation timed out' >&2; exit 255 ;;",
+    );
+    let (code, said) = run("en", &["ls"]);
+    assert_eq!(code, Some(0), "{said}");
+    let row = said.lines().find(|l| l.starts_with("keex")).unwrap();
+    assert!(row.contains("unknown") && !row.contains("idle"), "{said}");
+    let note = said.lines().find(|l| l.starts_with("! ")).unwrap();
+    assert!(
+        note.starts_with("! cannot ask fodelf about its sessions: "),
+        "{said}"
+    );
+    assert!(note.ends_with("Operation timed out"), "{said}");
+    assert!(!said.contains("CCNM_E_AGENT_UNREACHABLE"), "{said}");
+}
+
 /// Direction two, through the real binary: `ccnm <ws>` typed at the work
 /// machine, with the Runtime Node scripted.
 ///

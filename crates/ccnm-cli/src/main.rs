@@ -1024,14 +1024,22 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
             // What the Agent's session list cannot show: a --print run, or
             // an external client, holding the tree (P60). Asked of the
             // Runtime Executor, whose state directory the guard is in.
-            print!(
-                "{}",
-                ccnm_core::overview::render_guard(
-                    &launcher::observe_guard(&resolved, &env, agent.as_deref()),
-                    ccnm_core::overview::utc_offset(&SystemRunner),
-                    lang,
-                )
-            );
+            //
+            // Only for a workspace bound to an Agent instance: the question
+            // goes to that instance, and one written as a bare `agent_node`
+            // -- every workspace `ccnm ws add` makes -- has none to ask. It
+            // printed two lines of CCNM_E_CONFIG there on every call, about
+            // something that will never change (P95).
+            if resolved.agent_reference(agent.as_deref())?.is_some() {
+                print!(
+                    "{}",
+                    ccnm_core::overview::render_guard(
+                        &launcher::observe_guard(&resolved, &env, agent.as_deref()),
+                        ccnm_core::overview::utc_offset(&SystemRunner),
+                        lang,
+                    )
+                );
+            }
             Ok(0)
         }
         Command::List => {

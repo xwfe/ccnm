@@ -94,8 +94,7 @@ AI 登录只在这里       ◀──────────── 结果 ─�
 
 ```bash
 ccnm init --agent <连 AI 那台用的 ssh 别名>
-cd /path/to/project
-ccnm workspace add my-project
+ccnm add /path/to/my-project      # 项目名取目录名：my-project
 ```
 
 在 **AI 那台**上：

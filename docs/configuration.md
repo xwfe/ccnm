@@ -509,12 +509,13 @@ Codex 会话不受这一节影响。不认 `autoCompactWindow` 的旧版 Claude 
 ccnm init --agent <alias>       # 在项目所在的机器上
 ccnm init --runtime <alias>     # 在跑 Claude 的机器上
 
+ccnm add <项目目录>              # 名字取目录名
+ccnm add [名字] [路径]            # 不给名字用目录名，不给路径用当前目录
 ccnm workspace list
-ccnm workspace add [名字] [路径]    # 不给名字用目录名，不给路径用当前目录
 ccnm workspace remove <名字>
 ```
 
-`ws` 是 `workspace` 的别名。`workspace add` 的其他选项：`--replace`（名字已存在时改指到这个目录，不加就报错）、`--permission-mode <模式>`（写 [`claude_permission_mode`](#claude_permission_mode)）、`--allow-unconfined-exec`（写 [`allow_unconfined_exec`](#allow_unconfined_exec)）、`--allow-unattended-exec`（写 [`allow_unattended_exec`](#allow_unattended_exec) `= true`，不加就不写、默认每条命令问一次）、`--agent-node <node>`。`allow_unisolated_credentials` 没有对应选项：只在写了 `runtime_user` 的专用账号模式下用得上，开之前要读那一节，所以只能手写。
+`ccnm add` 和 `ccnm workspace add`（`ws` 是 `workspace` 的别名）是同一个命令。只给一个参数时：不像名字（`.`、`./x`、`~/x`、带 `/` 的）就当项目目录；像名字就当名字、项目取当前目录，但当前目录下正好有同名子目录时报错、让你写清楚（`./名字` 或 `名字 .`）。从目录名取名字时 `.` 换成 `-`。其他选项：`--replace`（名字已存在时改指到这个目录，不加就报错）、`--permission-mode <模式>`（写 [`claude_permission_mode`](#claude_permission_mode)）、`--allow-unconfined-exec`（写 [`allow_unconfined_exec`](#allow_unconfined_exec)）、`--allow-unattended-exec`（写 [`allow_unattended_exec`](#allow_unattended_exec) `= true`，不加就不写、默认每条命令问一次）、`--agent-node <node>`。`allow_unisolated_credentials` 没有对应选项：只在写了 `runtime_user` 的专用账号模式下用得上，开之前要读那一节，所以只能手写。
 
 自己的机器、自己的账号（没写 `runtime_user`）时，一条命令写全常用设置：
 

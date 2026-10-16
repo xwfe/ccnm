@@ -118,13 +118,14 @@ tailscale set --ssh=false
 
 ```bash
 ccnm init --agent <连 AI 那台的别名>
-cd /path/to/project
-ccnm workspace add my-project
+ccnm add /path/to/my-project
 ```
 
 **两台各初始化一次，每次只给一个别名。** 给哪个参数，同时也说明了这台机器是谁：放项目的机器给 `--agent`（指向对面跑 AI 的那台），跑 AI 的机器给 `--runtime`。两个一起给会被拒。
 
-`workspace add` 后面的名字就是以后命令里写的项目名，只能用字母、数字、`_` 和 `-`，开头是字母或数字。不写名字就用目录名，目录名里有 `.`、空格或中文时会报 `name must be [A-Za-z0-9][A-Za-z0-9_-]*`，自己给个名字就行。
+`ccnm add <项目目录>` 用目录名当项目名，以后命令里就写它（上面就是 `my-project`）。项目名只能用字母、数字、`_` 和 `-`，开头是字母或数字；目录名里的 `.` 会换成 `-`（`my.proj` → `my-proj`），全是中文这类取不出名字的会报错，自己起一个：`ccnm add <名字> <项目目录>`。已经 `cd` 在项目里的话，`ccnm add .` 也行。
+
+只写一个词（比如 `ccnm add shun`）时，它是名字、项目是当前目录——这是 v0.17.0 及以前 `ccnm ws add shun` 的意思。当前目录下正好也有个 `shun` 目录时 ccnm 不猜，报错并给出两种写法：加那个目录写 `ccnm add ./shun`，把当前目录叫 shun 写 `ccnm add shun .`。`ccnm add` 和 `ccnm ws add` 是同一个命令（v0.17.0 及以前只有后者，而且只给路径会被当成名字报错）。
 
 配置写在 `~/.config/ccnm/config.toml`（用 `--config` 或环境变量 `CCNM_CONFIG` 可以换），这台写出来的长这样：
 
@@ -211,10 +212,10 @@ ccnm my-project
 交互会话默认每跑一条命令都会停下来问你一次。平时就用交互会话的项目，建议加项目时就带上（v0.17.0 起）：
 
 ```bash
-ccnm workspace add my-project --allow-unattended-exec
+ccnm add /path/to/my-project --allow-unattended-exec
 ```
 
-已经加过的项目，在**放项目的机器**的 `config.toml` 里，`ccnm workspace add` 写出来的那个 `[workspaces.my-project]` 下面加一行：
+已经加过的项目，在**放项目的机器**的 `config.toml` 里，`ccnm add` 写出来的那个 `[workspaces.my-project]` 下面加一行：
 
 ```toml
 allow_unattended_exec = true

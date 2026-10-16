@@ -1118,14 +1118,7 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
                     assigned: false,
                 };
                 let rep = work::stop(&req, &agent_tools(config_path().ok().as_deref())?)?;
-                println!(
-                    "{}",
-                    if rep.killed {
-                        format!("stopped {}", rep.tmux_session)
-                    } else {
-                        format!("no session for {workspace}")
-                    }
-                );
+                println!("{}", stopped(rep.killed, workspace, lang));
                 return Ok(0);
             }
             let resolved = config.workspace(workspace)?;
@@ -1135,21 +1128,7 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
                 agent.as_deref(),
                 session.as_deref(),
             )?;
-            let session = &rep.tmux_session;
-            if rep.killed {
-                println!(
-                    "{}",
-                    lang.pick(format!("停了 {session}"), format!("stopped {session}"))
-                );
-            } else {
-                println!(
-                    "{}",
-                    lang.pick(
-                        format!("没什么可停的：{session} 本来就没在跑"),
-                        format!("nothing to stop: {session} was not running"),
-                    )
-                );
-            }
+            println!("{}", stopped(rep.killed, workspace, lang));
             Ok(0)
         }
         Command::Cleanup { workspace, apply } => {
@@ -1783,13 +1762,7 @@ fn remove_workspace(path: &std::path::Path, name: &str, purge: bool, lang: Lang)
         && let Ok(resolved) = config.workspace(name)
     {
         match launcher::stop(&resolved, &launch_env()?) {
-            Ok(rep) if rep.killed => {
-                let session = &rep.tmux_session;
-                println!(
-                    "{}",
-                    lang.pick(format!("停了 {session}"), format!("stopped {session}"))
-                );
-            }
+            Ok(rep) if rep.killed => println!("{}", stopped(true, name, lang)),
             Ok(_) => {}
             Err(e) => eprintln!(
                 "{}",
@@ -1842,6 +1815,24 @@ fn remove_workspace(path: &std::path::Path, name: &str, purge: bool, lang: Lang)
     edit.save(&changes)?;
     report_changes(&changes, path, lang);
     Ok(0)
+}
+
+/// What `ccnm stop` did, by the workspace's name, whichever machine it was
+/// typed on (P95). It named the tmux session, `ccnm-keex`, which is a name
+/// nobody types; and on the Agent Node it was English whatever the
+/// language.
+fn stopped(killed: bool, workspace: &str, lang: Lang) -> String {
+    if killed {
+        lang.pick(
+            format!("停了 {workspace} 的会话"),
+            format!("stopped the {workspace} session"),
+        )
+    } else {
+        lang.pick(
+            format!("{workspace} 没有在跑的会话，没什么可停的"),
+            format!("nothing to stop: no {workspace} session was running"),
+        )
+    }
 }
 
 /// A workspace name from the directory's own name.
@@ -2398,33 +2389,66 @@ fn restore_terminal(attach: &ccnm_core::process::Captured) {
 /// only when Claude ran to completion and did not report an error itself.
 fn print_run_report(rep: &RunReport, agent_node: &str, lang: Lang) -> Result<i32> {
     println!("{}", rep.summary_in(lang));
-    match &rep.result {
+    print_what_it_said(
+        rep.result.as_ref(),
+        &rep.stdout_tail,
+        &rep.stderr_tail,
+        &rep.session_dir,
+        agent_node,
+        lang,
+    );
+    let ok = rep.outcome.ok() && rep.result.as_ref().is_some_and(|r| !r.is_error());
+    Ok(if ok { 0 } else { 1 })
+}
+
+/// Under the summary of a `--print` run or `ccnm result`: the answer, what
+/// went wrong, and where the rest is kept. The headings are in the
+/// person's language too (P95); they were English in both.
+fn print_what_it_said(
+    result: Option<&ccnm_core::provider::AgentResult>,
+    stdout_tail: &str,
+    stderr_tail: &str,
+    session_dir: &Path,
+    agent_node: &str,
+    lang: Lang,
+) {
+    match result {
         Some(r) => {
-            println!("\n--- result ---");
+            println!("\n{}", lang.pick("--- 结果 ---", "--- result ---"));
             println!("{}", r.text().unwrap_or("").trim_end());
             if !r.permission_denials().is_empty() {
-                eprintln!("\npermission denials:");
+                eprintln!("\n{}", lang.pick("被拒的权限：", "permission denials:"));
                 for d in r.permission_denials() {
                     eprintln!("  {d}");
                 }
             }
         }
-        None if !rep.stdout_tail.is_empty() => {
-            println!("\n--- stdout (tail) ---\n{}", rep.stdout_tail.trim_end());
+        None if !stdout_tail.is_empty() => {
+            println!(
+                "\n{}\n{}",
+                lang.pick("--- 标准输出（末尾）---", "--- stdout (tail) ---"),
+                stdout_tail.trim_end()
+            );
         }
         None => {}
     }
-    if !rep.stderr_tail.trim().is_empty() {
-        eprintln!("\n--- stderr (tail) ---\n{}", rep.stderr_tail.trim_end());
+    if !stderr_tail.trim().is_empty() {
+        eprintln!(
+            "\n{}\n{}",
+            lang.pick("--- 标准错误（末尾）---", "--- stderr (tail) ---"),
+            stderr_tail.trim_end()
+        );
     }
     // By the node's own name. It said "on work" for every node, which was a
     // name from before nodes had names (F18).
+    let dir = session_dir.display();
     eprintln!(
-        "\nsession directory on {agent_node}: {}",
-        rep.session_dir.display()
+        "\n{}",
+        lang.pick(
+            format!("会话目录在 {agent_node} 上：{dir}"),
+            format!("session directory on {agent_node}: {dir}"),
+        )
     );
-    let ok = rep.outcome.ok() && rep.result.as_ref().is_some_and(|r| !r.is_error());
-    Ok(if ok { 0 } else { 1 })
 }
 
 /// What `ccnm result` prints, from whichever machine asked.
@@ -2443,24 +2467,13 @@ fn print_result_report(
     lang: Lang,
 ) -> Result<i32> {
     println!("{}", rep.summary_in(lang));
-    match &rep.result {
-        Some(r) => {
-            println!("\n--- result ---");
-            println!("{}", r.text().unwrap_or("").trim_end());
-        }
-        None if !rep.stdout_tail.is_empty() => {
-            println!("\n--- stdout (tail) ---\n{}", rep.stdout_tail.trim_end());
-        }
-        None => {}
-    }
-    if !rep.stderr_tail.trim().is_empty() {
-        eprintln!("\n--- stderr (tail) ---\n{}", rep.stderr_tail.trim_end());
-    }
-    // By the node's own name. It said "on work" for every node, which was a
-    // name from before nodes had names (F18).
-    eprintln!(
-        "\nsession directory on {agent_node}: {}",
-        rep.session_dir.display()
+    print_what_it_said(
+        rep.result.as_ref(),
+        &rep.stdout_tail,
+        &rep.stderr_tail,
+        &rep.session_dir,
+        agent_node,
+        lang,
     );
     Ok(0)
 }

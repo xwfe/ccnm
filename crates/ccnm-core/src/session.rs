@@ -658,16 +658,39 @@ impl Outcome {
     }
 
     pub fn describe(&self) -> String {
+        self.describe_in(crate::Lang::En)
+    }
+
+    /// How it ended, in `lang`. The English is what the logs and the
+    /// tests have always read; the Chinese is what `ccnm result` and
+    /// `--print` say to a person (P95), who saw `exited 0 in 8.2 s` there
+    /// whatever language they had picked.
+    pub fn describe_in(&self, lang: crate::Lang) -> String {
         let secs = self.duration_ms as f64 / 1000.0;
         if self.stopped {
-            return format!("stopped by ccnm after {secs:.1} s");
+            return lang.pick(
+                format!("被 ccnm 停了，跑了 {secs:.1} 秒"),
+                format!("stopped by ccnm after {secs:.1} s"),
+            );
         }
         match (&self.error, self.timed_out, self.exit_code) {
-            (Some(e), _, _) => format!("could not start: {e}"),
-            (None, true, _) => format!("killed after {secs:.1} s (timeout)"),
-            (None, false, Some(0)) => format!("exited 0 in {secs:.1} s"),
-            (None, false, Some(code)) => format!("exited {code} in {secs:.1} s"),
-            (None, false, None) => format!("killed by a signal after {secs:.1} s"),
+            (Some(e), _, _) => lang.pick(format!("没起来：{e}"), format!("could not start: {e}")),
+            (None, true, _) => lang.pick(
+                format!("超时被杀，跑了 {secs:.1} 秒"),
+                format!("killed after {secs:.1} s (timeout)"),
+            ),
+            (None, false, Some(0)) => lang.pick(
+                format!("跑完了，{secs:.1} 秒"),
+                format!("exited 0 in {secs:.1} s"),
+            ),
+            (None, false, Some(code)) => lang.pick(
+                format!("退出码 {code}，跑了 {secs:.1} 秒"),
+                format!("exited {code} in {secs:.1} s"),
+            ),
+            (None, false, None) => lang.pick(
+                format!("被信号杀掉，跑了 {secs:.1} 秒"),
+                format!("killed by a signal after {secs:.1} s"),
+            ),
         }
     }
 }

@@ -127,27 +127,55 @@ impl RunReport {
         self.summary_in(Lang::En)
     }
 
+    /// One line (P95): which session, how it ended, and the numbers worth
+    /// reading. It was three labelled lines, the last an English run of
+    /// token counts in both languages.
     pub fn summary_in(&self, lang: Lang) -> String {
-        let mut lines = vec![
-            format!("{}{}", label(lang.pick("会话", "session")), self.session),
-            // The provider's own name is the label here, and it is never
-            // translated: `claude` and `codex` are the binaries.
-            format!(
-                "{}{}",
-                label(self.provider.cli_name()),
-                self.outcome.describe()
-            ),
-        ];
-        let run = label(lang.pick("结果", "run"));
-        match &self.result {
-            Some(r) => lines.push(format!("{run}{}", r.summary())),
-            None => lines.push(format!(
-                "{run}{}",
-                lang.pick("stdout 上没有结果文档", "no result document on stdout")
-            )),
-        }
-        lines.join("\n")
+        let how = how_it_went(
+            self.provider,
+            Some(&self.outcome),
+            self.result.as_ref(),
+            lang,
+        );
+        lang.pick(
+            format!("会话 {}：{how}", self.session),
+            format!("session {}: {how}", self.session),
+        )
     }
+}
+
+/// `claude <how it ended>, <turns, cost>`, for [`RunReport`] and
+/// [`ResultReport`] alike. The provider's name is never translated:
+/// `claude` and `codex` are the binaries.
+fn how_it_went(
+    provider: crate::provider::AgentProvider,
+    outcome: Option<&Outcome>,
+    result: Option<&crate::provider::AgentResult>,
+    lang: Lang,
+) -> String {
+    let cli = provider.cli_name();
+    let mut parts = vec![match outcome {
+        Some(outcome) => format!("{cli} {}", outcome.describe_in(lang)),
+        None => lang.pick(format!("{cli} 还在跑"), format!("{cli} still running")),
+    }];
+    match result {
+        Some(r) => {
+            parts.push(r.brief(lang));
+            if r.is_error() {
+                parts.push(lang.pick(
+                    format!("{cli} 自己报了错，见下面"),
+                    format!("{cli} reported an error, below"),
+                ));
+            }
+        }
+        // Still running has no result yet, and saying so would be noise.
+        None if outcome.is_some() => parts.push(
+            lang.pick("没有拿到结果文档", "no result document on stdout")
+                .to_string(),
+        ),
+        None => {}
+    }
+    parts.join(lang.pick("，", ", "))
 }
 
 /// `ccnm internal agent-start`: bring up an interactive session, or say that
@@ -305,16 +333,6 @@ impl StartReport {
         }
         lines.join("\n")
     }
-}
-
-/// A report's left-hand label, padded to a fixed column by display width.
-///
-/// The labels used to be written with the spaces counted by hand, which
-/// only works while every label is ASCII: `会话` is two characters and
-/// four columns, so a hand-counted `会话      ` would be two columns too
-/// wide and every value after it would sit in a different place.
-fn label(text: &str) -> String {
-    crate::lang::pad(text, 10)
 }
 
 /// `ccnm internal attach`: hand this terminal to the workspace's session.
@@ -577,28 +595,25 @@ impl ResultReport {
         self.summary_in(Lang::En)
     }
 
+    /// The same one line as [`RunReport::summary_in`], with which kind of
+    /// session it was: `ccnm result` without `--session` picks the latest,
+    /// and that is not always the `--print` run someone had in mind.
     pub fn summary_in(&self, lang: Lang) -> String {
-        let state = match &self.outcome {
-            None => lang.pick("还在跑", "still running").to_string(),
-            Some(o) => o.describe(),
+        let how = how_it_went(
+            self.provider,
+            self.outcome.as_ref(),
+            self.result.as_ref(),
+            lang,
+        );
+        let mode = match self.mode.as_str() {
+            "print" => "--print",
+            "interactive" => lang.pick("交互", "interactive"),
+            other => other,
         };
-        let mut lines = vec![
-            format!(
-                "{}{} ({})",
-                label(lang.pick("会话", "session")),
-                self.session,
-                self.mode
-            ),
-            format!("{}{state}", label(self.provider.cli_name())),
-        ];
-        if let Some(r) = &self.result {
-            lines.push(format!(
-                "{}{}",
-                label(lang.pick("结果", "run")),
-                r.summary()
-            ));
-        }
-        lines.join("\n")
+        lang.pick(
+            format!("会话 {}（{mode}）：{how}", self.session),
+            format!("session {} ({mode}): {how}", self.session),
+        )
     }
 }
 
@@ -1001,6 +1016,45 @@ mod tests {
         let blocked = started(false, None, false).summary_in(Lang::Zh);
         assert_eq!(blocked.lines().count(), 2, "{blocked}");
         assert!(blocked.contains("钥匙串"), "{blocked}");
+    }
+
+    /// P95: what a `--print` run and `ccnm result` open with is one line in
+    /// the person's language -- how it ended, turns, cost -- not three
+    /// labelled lines ending in an English run of token counts.
+    #[test]
+    fn a_print_summary_is_one_line_in_the_persons_language() {
+        let run: RunReport = serde_json::from_str(
+            r#"{"protocol":1,"session":"7c1d9f60-0a11-4c22-9d33-8e44f5566a78","session_dir":"/s/7c1d","controller":{"hello":{"protocol":1,"ccnm_version":"x","user":"u","platform":"macos/aarch64","exe":null,"root":null},"pid":1,"manager":{"Ok":"Aqua"}},"pid":2,"outcome":{"exit_code":0,"timed_out":false,"duration_ms":8200,"error":null},"result":{"is_error":false,"result":"done","num_turns":3,"duration_ms":8100,"duration_api_ms":6900,"total_cost_usd":0.0412,"usage":{"input_tokens":12,"output_tokens":340,"cache_creation_input_tokens":5100,"cache_read_input_tokens":20400}},"stdout_tail":"","stderr_tail":""}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            run.summary_in(Lang::Zh),
+            "会话 7c1d9f60-0a11-4c22-9d33-8e44f5566a78：claude 跑完了，8.2 秒，3 轮，$0.04"
+        );
+        assert_eq!(
+            run.summary(),
+            "session 7c1d9f60-0a11-4c22-9d33-8e44f5566a78: claude exited 0 in 8.2 s, 3 turns, $0.04"
+        );
+
+        let still: ResultReport = serde_json::from_str(
+            r#"{"protocol":1,"session":"99a6a118","session_dir":"/s/99a6","mode":"print","started":1,"outcome":null,"result":null,"stdout_tail":"","stderr_tail":""}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            still.summary_in(Lang::Zh),
+            "会话 99a6a118（--print）：claude 还在跑"
+        );
+
+        let refused: ResultReport = serde_json::from_str(
+            r#"{"protocol":1,"session":"99a6a118","session_dir":"/s/99a6","mode":"interactive","started":1,"outcome":{"exit_code":1,"timed_out":false,"duration_ms":3000},"result":{"is_error":true,"result":"no","num_turns":1,"permission_denials":[{"tool_name":"Bash"},{"tool_name":"Edit"}]},"stdout_tail":"","stderr_tail":""}"#,
+        )
+        .unwrap();
+        let said = refused.summary_in(Lang::Zh);
+        assert_eq!(
+            said,
+            "会话 99a6a118（交互）：claude 退出码 1，跑了 3.0 秒，1 轮，2 次权限被拒，claude 自己报了错，见下面"
+        );
+        assert!(!refused.summary().contains("tokens"));
     }
 
     /// P95: `ccnm status <ws>` is the block `ccnm status` prints for the

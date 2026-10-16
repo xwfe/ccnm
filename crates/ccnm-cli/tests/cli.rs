@@ -1093,9 +1093,14 @@ fn on_the_work_machine_attach_status_and_stop_stay_local() {
         );
         // Positive half, because "no alias in the output" is also true of
         // a config error. Each verb has to have reached its *local*
-        // answer: tmux replied, or said it is not installed.
+        // answer: tmux replied, or said it is not installed. `status` says
+        // tmux replied as "no live sessions" -- the tmux version line it
+        // used to open with went in P95.
         assert!(
-            (said.contains(workspace) || said.contains("tmux")) && !said.contains("not defined"),
+            (said.contains(workspace)
+                || said.contains("tmux")
+                || (verb == "status" && said.contains("no live sessions")))
+                && !said.contains("not defined"),
             "`{verb}` did not answer from this machine: {said}"
         );
         // 0 nothing to report, 3 nothing running, 35 no tmux here. 10
@@ -1667,6 +1672,88 @@ fn status_and_ls_say_what_the_person_needs_and_nothing_untrue() {
     );
     assert!(note.ends_with("Operation timed out"), "{said}");
     assert!(!said.contains("CCNM_E_AGENT_UNREACHABLE"), "{said}");
+}
+
+/// P95: `ccnm stop` and a `--print` run, in Chinese, through the real
+/// binary. `stop` named the tmux session (`停了 ccnm-keex`) and on the Agent
+/// Node was English whatever the language; `--print` opened with
+/// `claude    exited 0 in 8.2 s` and a line of token counts, and its
+/// headings were English in both.
+#[test]
+fn stop_and_print_speak_the_persons_language() {
+    let dir = std::env::temp_dir().join(format!("ccnm-cli-{}-p95-stop", std::process::id()));
+    let _cleanup = TestDir::adopt(&dir);
+    let _ = std::fs::remove_dir_all(&dir);
+    let root = dir.join("root");
+    std::fs::create_dir_all(&root).unwrap();
+    let config = dir.join("config.toml");
+    std::fs::write(
+        &config,
+        format!(
+            "version = 1\nthis = \"runtime\"\n[nodes.fodelf]\nssh = \"ccnm-test-nowhere.invalid\"\n[nodes.runtime]\n[workspaces.keex]\nagent_node = \"fodelf\"\nroot = \"{}\"\nallow_unconfined_exec = true\n",
+            root.display()
+        ),
+    )
+    .unwrap();
+    let report = r#"{"protocol":1,"session":"7c1d9f60-0a11-4c22-9d33-8e44f5566a78","session_dir":"/agent/state/ccnm/sessions/7c1d","controller":{"hello":{"protocol":1,"ccnm_version":"x","user":"u","platform":"macos/aarch64","exe":null,"root":null},"pid":1,"manager":{"Ok":"Aqua"}},"pid":2,"outcome":{"exit_code":0,"timed_out":false,"duration_ms":8200,"error":null},"result":{"is_error":false,"result":"3 files changed","num_turns":3,"total_cost_usd":0.0412,"usage":{"input_tokens":12,"output_tokens":340}},"stdout_tail":"","stderr_tail":""}"#;
+    let ssh = FakeSsh::install(
+        &dir,
+        &format!(
+            "  *'internal agent-stop'*) printf '%s\\n' '{{\"protocol\":1,\"tmux_session\":\"ccnm-keex\",\"killed\":true}}' ;;\n  *'internal agent-run'*) printf '%s\\n' '{report}' ;;"
+        ),
+    );
+    let state = short_state("p95-stop");
+    let zh = |args: &[&str], config: &Path| {
+        let out = ccnm()
+            .env("PATH", ssh.path())
+            .env("XDG_STATE_HOME", &state)
+            .env("CCNM_LANG", "zh")
+            .args(args)
+            .arg("--config")
+            .arg(config)
+            .output()
+            .unwrap();
+        (
+            out.status.code(),
+            format!("{}{}", stdout(&out), stderr(&out)),
+        )
+    };
+
+    let (code, said) = zh(&["stop", "keex"], &config);
+    assert_eq!((code, said.as_str()), (Some(0), "停了 keex 的会话\n"));
+
+    let (code, said) = zh(&["run", "keex", "--print", "hi"], &config);
+    assert_eq!(code, Some(0), "{said}");
+    assert!(
+        said.starts_with(
+            "会话 7c1d9f60-0a11-4c22-9d33-8e44f5566a78：claude 跑完了，8.2 秒，3 轮，$0.04\n"
+        ),
+        "{said}"
+    );
+    assert!(said.contains("--- 结果 ---\n3 files changed"), "{said}");
+    assert!(
+        said.contains("会话目录在 fodelf 上：/agent/state/ccnm/sessions/7c1d"),
+        "{said}"
+    );
+    for noise in ["tokens", "exited", "session directory", "--- result ---"] {
+        assert!(!said.contains(noise), "{noise} in:\n{said}");
+    }
+
+    // On the Agent Node it answers from its own tmux; nothing is running
+    // for a name nobody uses. Without tmux (35) there is nothing to read.
+    let (code, said) = zh(
+        &["stop", "ccnm-test-no-such-workspace"],
+        &fixture("config-agent-side.toml"),
+    );
+    if code != Some(35) {
+        assert_eq!(
+            (code, said.as_str()),
+            (
+                Some(0),
+                "ccnm-test-no-such-workspace 没有在跑的会话，没什么可停的\n"
+            )
+        );
+    }
 }
 
 /// Direction two, through the real binary: `ccnm <ws>` typed at the work

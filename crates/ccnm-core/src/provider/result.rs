@@ -74,6 +74,33 @@ impl AgentResult {
             Self::Codex(r) => r.summary(),
         }
     }
+
+    /// The few numbers a person reads after a run (P95): turns, the cost
+    /// when the provider reports one, and permission denials only when
+    /// there were any. [`summary`](Self::summary) has the token breakdown
+    /// and API time; they stay in the result document in the session
+    /// directory, which is where anyone who needs them looks.
+    pub fn brief(&self, lang: crate::Lang) -> String {
+        let (turns, denied) = match self {
+            Self::Claude(r) => (r.num_turns, r.permission_denials.len()),
+            Self::Codex(r) => (r.num_turns, r.permission_denials.len()),
+        };
+        let plural = |n: usize| if n == 1 { "" } else { "s" };
+        let mut parts = vec![lang.pick(
+            format!("{turns} 轮"),
+            format!("{turns} turn{}", plural(turns as usize)),
+        )];
+        if let Some(cost) = self.total_cost_usd() {
+            parts.push(format!("${cost:.2}"));
+        }
+        if denied > 0 {
+            parts.push(lang.pick(
+                format!("{denied} 次权限被拒"),
+                format!("{denied} permission denial{}", plural(denied)),
+            ));
+        }
+        parts.join(lang.pick("，", ", "))
+    }
 }
 impl Serialize for AgentResult {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {

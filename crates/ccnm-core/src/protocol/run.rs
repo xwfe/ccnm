@@ -746,6 +746,17 @@ pub struct LiveSession {
 }
 
 impl LiveSession {
+    /// [`AgentProvider::tools_down_hint`](crate::provider::AgentProvider::tools_down_hint)
+    /// for this session, naming its own workspace. A session from a build
+    /// that did not record one gets a placeholder rather than a wrong name.
+    pub fn tools_down_hint(&self, lang: Lang) -> String {
+        let workspace = self
+            .workspace
+            .as_deref()
+            .unwrap_or(lang.pick("<项目>", "<workspace>"));
+        self.provider.tools_down_hint(workspace, lang)
+    }
+
     /// The session in one diagnostic line, for doctor's `Terminal session`
     /// row: tmux name, launchd domain and all. Not what `ccnm status`
     /// prints any more (P95); that is [`crate::overview::session_rows`].
@@ -754,9 +765,11 @@ impl LiveSession {
             0 => "detached".to_string(),
             n => format!("{n} attached"),
         };
+        // Just the state: doctor says the way back on its own line (P96),
+        // and it used to be said twice, once here in brackets.
         let tools = match self.tools {
             Some(true) => "tools connected",
-            Some(false) => self.provider.tools_down_hint(Lang::En),
+            Some(false) => "TOOLS DOWN",
             None => "tools unknown",
         };
         format!(

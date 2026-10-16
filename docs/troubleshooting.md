@@ -61,7 +61,7 @@ Claude 只在断开的当下重试一次，网还没恢复就不再试：2026-10
 `ccnm status <ws>` 和 `ccnm doctor <ws>` 都会明说这个状态——**看着正常的会话是不会显示
 这行的**，所以看到了就是真断了。
 
-**Codex 会话**显示的是"断了——退出 Codex，在 Agent Node 上用官方 resume 带上它的会话 id 接回去"（英文 `TOOLS DOWN (exit Codex and use official resume with its exact session ID on the Agent Node)`；v0.17.0 及以前 `ccnm ls` 对 Codex 会话也说去 Claude 里 `/mcp`，那是错的）。Codex 里没有 `/mcp` 重连。最简单的做法是 `ccnm stop <项目>` 再 `ccnm <项目>` 开一个新会话，代价是对话上下文不带过来。要接回原对话，必须用 ccnm 那个 Codex 目录（`CODEX_HOME=~/.config/ccnm/agents/codex`）和 ccnm 起会话时的那套参数；直接敲 `codex resume <id>` 用的是你日常的 `~/.codex`，没有 ccnm 的工具，Codex 自带的 shell 还开着，命令会跑在 AI 那台上，别这么做。
+**Codex 会话**显示的是"断了——Codex 里没法重连：ccnm stop <项目> 再 ccnm <项目> 开新会话，对话不带过来"（英文 `TOOLS DOWN (Codex cannot reconnect: ccnm stop <workspace>, then ccnm <workspace> for a new session; …)`），`ccnm doctor` 的终端会话那一行也是这句。Codex 里没有 `/mcp` 重连，照这句做就行，代价是对话上下文不带过来。（v0.17.0 及以前 `ccnm ls` 对 Codex 会话也说去 Claude 里 `/mcp`；P95 改过一版说"用官方 resume 接回去"，照做会掉进下面说的坑，P96 改成了现在这句。）要接回原对话，必须用 ccnm 那个 Codex 目录（`CODEX_HOME=~/.config/ccnm/agents/codex`）和 ccnm 起会话时的那套参数；直接敲 `codex resume <id>` 用的是你日常的 `~/.codex`，没有 ccnm 的工具，Codex 自带的 shell 还开着，命令会跑在 AI 那台上，别这么做。
 
 ### 会话里有 ccnm 的说明，工具却一个都没有（`request _meta is missing`）
 

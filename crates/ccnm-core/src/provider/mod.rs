@@ -98,15 +98,34 @@ impl AgentProvider {
     /// What a session whose tools are gone should be told. The English
     /// keeps `TOOLS DOWN`: that is the heading people search
     /// docs/troubleshooting.md for.
-    pub fn tools_down_hint(self, lang: crate::Lang) -> &'static str {
+    pub fn tools_down_hint(self, workspace: &str, lang: crate::Lang) -> String {
+        let back = self.way_back(workspace, lang);
+        lang.pick(format!("断了——{back}"), format!("TOOLS DOWN ({back})"))
+    }
+
+    /// How a session of this provider gets its tools back, as something a
+    /// person can type without it going wrong.
+    ///
+    /// Codex has no `/mcp` reconnect, so the way back ccnm supports is a
+    /// new session. Not "resume it": a bare `codex resume <id>` (P95's
+    /// wording) opens the everyday `~/.codex`, without ccnm's tools and
+    /// with Codex's own shell on, so commands run on the AI machine (P96).
+    /// Resuming inside ccnm's profile is in docs/troubleshooting.md.
+    pub fn way_back(self, workspace: &str, lang: crate::Lang) -> String {
         match self {
-            Self::Claude => lang.pick(
-                "断了——在 Claude 里：/mcp → ccnm → Reconnect",
-                "TOOLS DOWN (in Claude: /mcp -> ccnm -> Reconnect)",
-            ),
+            Self::Claude => lang
+                .pick(
+                    "在 Claude 里：/mcp → ccnm → Reconnect",
+                    "in Claude: /mcp -> ccnm -> Reconnect",
+                )
+                .to_string(),
             Self::Codex => lang.pick(
-                "断了——退出 Codex，在 Agent Node 上用官方 resume 带上它的会话 id 接回去",
-                "TOOLS DOWN (exit Codex and use official resume with its exact session ID on the Agent Node)",
+                format!(
+                    "Codex 里没法重连：ccnm stop {workspace} 再 ccnm {workspace} 开新会话，对话不带过来"
+                ),
+                format!(
+                    "Codex cannot reconnect: ccnm stop {workspace}, then ccnm {workspace} for a new session; the conversation does not carry over"
+                ),
             ),
         }
     }

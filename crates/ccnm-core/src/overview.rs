@@ -656,7 +656,7 @@ pub(crate) fn session_rows(s: &LiveSession, now: u64, lang: Lang) -> Vec<Vec<Str
             String::new(),
             match s.tools {
                 Some(true) => lang.pick("通", "connected").into(),
-                Some(false) => s.provider.tools_down_hint(lang).into(),
+                Some(false) => s.tools_down_hint(lang),
                 None => lang.pick("说不清", "unknown").into(),
             },
         ],
@@ -812,7 +812,7 @@ impl Overview {
             if let Some(s) = ws.sessions.first().filter(|s| s.tools == Some(false))
                 && ws.orphans().next().is_none()
             {
-                let hint = s.provider.tools_down_hint(lang);
+                let hint = s.tools_down_hint(lang);
                 notes.push(lang.pick(format!("{name}：工具{hint}"), format!("{name}: {hint}")));
             }
         }
@@ -1280,9 +1280,15 @@ mod tests {
             }],
             now: 1_000,
         };
+        // P96: and not to a bare `codex resume`, which lands in the
+        // everyday ~/.codex with no ccnm tools.
+        let status = overview(codex.clone()).render_status(Lang::Zh);
         let said = overview(codex).render_list(Lang::Zh);
-        assert!(said.contains("! gld：工具断了——退出 Codex"), "{said}");
-        assert!(!said.contains("/mcp"), "{said}");
+        for text in [&said, &status] {
+            assert!(text.contains("ccnm stop gld 再 ccnm gld"), "{text}");
+            assert!(!text.contains("/mcp"), "{text}");
+            assert!(!text.contains("resume"), "{text}");
+        }
         let said = overview(live("gld", "95d6516e", Some(false))).render_list(Lang::Zh);
         assert!(
             said.contains("! gld：工具断了——在 Claude 里：/mcp → ccnm → Reconnect"),
@@ -1320,8 +1326,10 @@ mod tests {
         s.provider = crate::provider::AgentProvider::Codex;
         s.tools = Some(false);
         let codex = block(&session_rows(&s, 1_000, Lang::Zh));
-        assert!(codex.contains("退出 Codex"), "{codex}");
+        // P96: the way back ccnm supports, not a bare `codex resume`.
+        assert!(codex.contains("ccnm stop keex 再 ccnm keex"), "{codex}");
         assert!(!codex.contains("/mcp"), "{codex}");
+        assert!(!codex.contains("resume"), "{codex}");
     }
 
     /// 每种写锁状态各说各的，问不到的时候说问不到——哪一种都不能读成"空闲"（AU-03）。

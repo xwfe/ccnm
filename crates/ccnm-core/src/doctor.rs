@@ -997,8 +997,9 @@ fn terminal_row(r: &Subject<'_>, rep: &ProbeReport) -> Check {
         Some(live) if live.tools == Some(false) => Check::warn(
             NAME,
             format!(
-                "tmux {version}, {}\nthe session has lost its tools; in Claude: /mcp -> ccnm -> Reconnect",
-                live.describe()
+                "tmux {version}, {}\nthe session has lost its tools; {}",
+                live.describe(),
+                live.provider.way_back(r.workspace, crate::Lang::En)
             ),
         ),
         Some(live) => Check::ok(NAME, format!("tmux {version}, {}", live.describe())),
@@ -2801,6 +2802,45 @@ mod tests {
         let bad = project_instructions(&r);
         assert_eq!(bad.status, Status::Warn);
         assert!(bad.detail.contains("CLAUDE.md"), "{bad:?}");
+    }
+
+    /// P96: a session whose tools are gone is told its own provider's way
+    /// back. The row used to say "in Claude: /mcp" for every session, and
+    /// the Codex hint before that pointed at a bare `codex resume`.
+    #[test]
+    fn a_dead_transport_names_its_own_providers_way_back() {
+        use crate::provider::AgentProvider;
+        for (name, provider, wanted, unwanted) in [
+            (
+                "dead-claude",
+                AgentProvider::Claude,
+                "/mcp -> ccnm -> Reconnect",
+                "ccnm stop",
+            ),
+            (
+                "dead-codex",
+                AgentProvider::Codex,
+                "ccnm stop xshun, then ccnm xshun",
+                "/mcp",
+            ),
+        ] {
+            let (dir, config) = setup(name, true, true);
+            let mut probe = good_probe();
+            let session = &mut probe.terminal.as_mut().unwrap().sessions[0];
+            session.tools = Some(false);
+            session.provider = provider;
+            let fake = FakeRunner::new();
+            fake.push(Output::exited(0, format!("ccnm {}\n", crate::VERSION)));
+            fake.push(Output::exited(0, "hostname workmac\nuser me\n"));
+            fake.push(Output::exited(0, serde_json::to_string(&probe).unwrap()));
+
+            let report = run(&config, Some("xshun"), &env(&fake, &dir));
+            let terminal = row(&report, "Terminal session");
+            assert_eq!(terminal.status, Status::Warn, "{}", terminal.detail);
+            assert!(terminal.detail.contains(wanted), "{}", terminal.detail);
+            assert!(!terminal.detail.contains(unwanted), "{}", terminal.detail);
+            assert!(!terminal.detail.contains("resume"), "{}", terminal.detail);
+        }
     }
 
     #[test]

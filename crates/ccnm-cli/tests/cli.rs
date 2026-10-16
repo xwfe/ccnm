@@ -1488,6 +1488,79 @@ fn sitting_at_home_detached_starts_the_session_and_keeps_the_terminal_here() {
     );
 }
 
+/// P94: the terminal came back and the Agent Node cannot be reached to say
+/// what became of the session -- the 2026-10-16 `ccnm keex -c`, whose last
+/// line was the bare ssh error. It now names the machine and the way back
+/// in, keeps the ssh error as the reason, and the start summary above it is
+/// one line instead of a page of pids.
+#[test]
+fn losing_the_agent_after_the_terminal_says_which_machine_and_how_back_in() {
+    use ccnm_core::protocol::PROTOCOL;
+    use ccnm_core::protocol::run::StartReport;
+
+    let dir = std::env::temp_dir().join(format!("ccnm-cli-{}-lost-agent", std::process::id()));
+    let _cleanup = TestDir::adopt(&dir);
+    let _ = std::fs::remove_dir_all(&dir);
+    let root = dir.join("root");
+    std::fs::create_dir_all(&root).unwrap();
+    let config = dir.join("config.toml");
+    std::fs::write(
+        &config,
+        format!(
+            "version = 1\nthis = \"runtime\"\n[nodes.fodelf]\nssh = \"ccnm-test-nowhere.invalid\"\n[nodes.runtime]\n[workspaces.keex]\nagent_node = \"fodelf\"\nroot = \"{}\"\nallow_unconfined_exec = true\n",
+            root.display()
+        ),
+    )
+    .unwrap();
+    let started = serde_json::to_string(&StartReport {
+        agent_identity: None,
+        provider: Default::default(),
+        protocol: PROTOCOL,
+        session: Some("d13df3ae-8716-4874-bee3-9399c1f34561".into()),
+        session_dir: None,
+        tmux_session: "ccnm-keex".into(),
+        server_pid: 83949,
+        already_running: false,
+        replaced: None,
+        controller: None,
+        context: None,
+        continues: Some("99a6a118-fa6e-4918-9cfd-4b846e7d1322".into()),
+    })
+    .unwrap();
+    let ssh = FakeSsh::install(
+        &dir,
+        &format!(
+            "  *'internal agent-start'*) printf '%s\\n' '{started}' ;;\n  *'internal attach'*) exit 0 ;;\n  *'internal agent-status'*) echo 'ssh: connect to host 100.79.121.33 port 22: Operation timed out' >&2; exit 255 ;;"
+        ),
+    );
+    let state = short_state("lost-agent");
+    let out = ccnm()
+        .env("PATH", ssh.path())
+        .env("XDG_STATE_HOME", &state)
+        .args(["keex", "--config"])
+        .arg(&config)
+        .output()
+        .unwrap();
+    let err = stderr(&out);
+    assert_eq!(out.status.code(), Some(0), "the session's own exit: {err}");
+    assert!(
+        err.contains("session started, carrying on the last conversation"),
+        "{err}"
+    );
+    for noise in ["83949", "d13df3ae", "tmux server pid"] {
+        assert!(!err.contains(noise), "{noise} in:\n{err}");
+    }
+    assert!(
+        err.contains("cannot reach fodelf") && err.contains("ccnm attach keex"),
+        "{err}"
+    );
+    assert!(
+        err.contains("reason: ") && err.contains("Operation timed out"),
+        "{err}"
+    );
+    assert!(!err.contains("CCNM_E_AGENT_UNREACHABLE"), "{err}");
+}
+
 /// Direction two, through the real binary: `ccnm <ws>` typed at the work
 /// machine, with the Runtime Node scripted.
 ///

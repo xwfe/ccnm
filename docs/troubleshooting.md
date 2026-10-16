@@ -797,6 +797,10 @@ Tailscale 掉线时对面照样连不上。2026-09-16 真机上就是这样：�
 配置真写错的样子不一样：`ssh -G` 里 `hostname` 是个解析不了的名字，`ping` 直接报
 `cannot resolve`，而且**每次都失败**，不会自己好。
 
+从会话里出来时看到 `连不上 <机器>，查不到会话还在不在`、下一行 `原因：` 是同一个超时，
+也是同一回事：会话在那台机器的 tmux 里，断网不会把它关掉，网络通了 `ccnm attach <workspace>`
+回去。（v0.17.0 及以前这句话是 `说不好会话还在不在跑：CCNM_E_AGENT_UNREACHABLE`。）
+
 ### Linux 上 `ccnm run` 报 `workspace root … is not a directory on this machine`，目录明明在
 
 **先看是不是路径真写错了**（或者那里是个文件）：这句话现在只在 ccnm 确实看到"不在"时才说。

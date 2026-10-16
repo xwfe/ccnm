@@ -71,7 +71,7 @@ ccnm my-project -c "接着把剩下的测试修完"
 会碰到的几种情况：
 
 - 报 `CCNM_E_NOT_READY: workspace `my-project` has no earlier conversation on this Agent to continue`：这台 AI 机器上没有能接的对话。去掉 `-c` 开个新的就行。
-- 终端上说 `已经有会话在跑，--continue 没有另起，直接接上它`：会话本来就开着，它就是最新的对话，`-c` 什么都没做。
+- 终端上说 `会话本来就在跑` 和 `-c 没有另起新会话`（v0.17.0 是一句 `已经有会话在跑，--continue 没有另起，直接接上它`）：会话本来就开着，它就是最新的对话，`-c` 什么都没做。真想从头开，先 `ccnm stop my-project`。
 - 报 `CCNM_E_INVALID_ARGS: --continue works with Claude only for now`：Codex 会话暂时不支持续接。
 - 报 `the argument '--continue' cannot be used with '--print <PROMPT>'`：`--print` 不留对话，没法接着，也没法被接着。
 - 报 `CCNM_E_VERSION`（`message is not valid for protocol …; ccnm versions probably differ`）：AI 那台的 ccnm 还是旧版本，不认识这个请求，两台换成同一个版本（[排错](troubleshooting.md#message-is-not-valid-for-protocol-1-ccnm-versions-probably-differ)）。

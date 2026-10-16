@@ -119,6 +119,10 @@ impl Protocol for RunReport {
 impl RunReport {
     /// What worked and what it cost, in the order someone reading a
     /// terminal wants them.
+    ///
+    /// The session id stays (`ccnm result --session` takes it); which
+    /// controller started it does not (P94) -- `ccnm doctor` shows the
+    /// controller, and nobody reading an answer was looking for its pid.
     pub fn summary(&self) -> String {
         self.summary_in(Lang::En)
     }
@@ -126,12 +130,6 @@ impl RunReport {
     pub fn summary_in(&self, lang: Lang) -> String {
         let mut lines = vec![
             format!("{}{}", label(lang.pick("会话", "session")), self.session),
-            format!(
-                "{}{}{}",
-                label(lang.pick("起于", "started")),
-                lang.pick("", "by "),
-                self.controller.describe()
-            ),
             // The provider's own name is the label here, and it is never
             // translated: `claude` and `codex` are the binaries.
             format!(
@@ -265,58 +263,44 @@ impl StartReport {
         self.summary_in(Lang::En)
     }
 
+    /// What the person about to be put into the session needs: did it
+    /// start, is it the conversation they asked for, and anything that
+    /// will go wrong in front of them.
+    ///
+    /// Not the tmux server pid, the session id, the controller or where the
+    /// session runs (P94). Those were printed on every start and read by
+    /// nobody; `ccnm status` shows where it runs, `ccnm log` the id and
+    /// `ccnm doctor` the controller. A Keychain the session cannot reach is
+    /// the exception, said because it is the one that makes the next screen
+    /// a login prompt.
     pub fn summary_in(&self, lang: Lang) -> String {
-        let what = if self.already_running {
-            lang.pick("本来就在跑", "already running")
-        } else {
-            lang.pick("起好了", "started")
-        };
-        let mut lines = vec![format!(
-            "{}{} ({what}, tmux server pid {})",
-            label(lang.pick("会话", "session")),
-            self.tmux_session,
-            self.server_pid
-        )];
+        let mut lines = vec![
+            match (self.already_running, &self.continues) {
+                (true, _) => lang.pick("会话本来就在跑", "session already running"),
+                (false, Some(_)) => lang.pick(
+                    "会话起好了，接着上次的对话",
+                    "session started, carrying on the last conversation",
+                ),
+                (false, None) => lang.pick("会话起好了", "session started"),
+            }
+            .to_string(),
+        ];
         if let Some(old) = &self.replaced {
             let old = old.display();
-            lines.push(format!(
-                "{}{}",
-                label(lang.pick("替掉了", "replaced")),
-                lang.pick(
-                    format!("一个在 {old} 里干活的会话 —— 这个 workspace 已经不指那儿了"),
-                    format!(
-                        "a session working in {old} -- this workspace does not point there any more"
-                    ),
-                )
+            lines.push(lang.pick(
+                format!("替掉了在 {old} 里的旧会话：这个 workspace 已经不指那儿了"),
+                format!(
+                    "replaced a session working in {old}: this workspace does not point there any more"
+                ),
             ));
         }
-        if let Some(id) = &self.session {
-            lines.push(format!("{}{id}", label("id")));
-        }
-        if let Some(earlier) = &self.continues {
-            lines.push(format!(
-                "{}{}",
-                label(lang.pick("接着", "continues")),
-                lang.pick(
-                    format!("会话 {earlier} 的对话"),
-                    format!("the conversation of session {earlier}"),
-                )
-            ));
-        }
-        if let Some(ctx) = &self.controller {
-            lines.push(format!(
-                "{}{}{}",
-                label(lang.pick("起于", "started")),
-                lang.pick("", "by "),
-                ctx.describe()
-            ));
-        }
-        if let Some(context) = &self.context {
-            lines.push(format!(
-                "{} {} {}",
-                self.provider.cli_name(),
-                lang.pick("在", "in"),
-                context.describe()
+        if self.context.as_ref().and_then(|c| c.keychain) == Some(false) {
+            let cli = self.provider.cli_name();
+            lines.push(lang.pick(
+                format!("注意：{cli} 在那边读不到 macOS 钥匙串，可能会让你重新登录"),
+                format!(
+                    "note: {cli} cannot reach the macOS Keychain there and may ask you to log in"
+                ),
             ));
         }
         lines.join("\n")
@@ -942,5 +926,49 @@ mod tests {
         serde_json::from_value::<Before>(plain).expect("an older Agent reads it");
         let refused = serde_json::from_value::<Before>(asked).err().unwrap();
         assert!(refused.to_string().contains("continue_last"), "{refused}");
+    }
+
+    fn started(already_running: bool, continues: Option<&str>, keychain: bool) -> StartReport {
+        StartReport {
+            protocol: crate::protocol::PROTOCOL,
+            provider: Default::default(),
+            agent_identity: None,
+            session: Some("d13df3ae-8716".into()),
+            session_dir: None,
+            tmux_session: "ccnm-keex".into(),
+            server_pid: 83949,
+            already_running,
+            replaced: None,
+            controller: None,
+            context: Some(crate::session::Context {
+                manager: Some("Background".into()),
+                keychain: Some(keychain),
+            }),
+            continues: continues.map(str::to_string),
+        }
+    }
+
+    /// P94: one line saying what happened, not the five lines of pids and
+    /// launchd domains it used to be. The Keychain gets a line only when
+    /// the session cannot reach it.
+    #[test]
+    fn a_start_says_what_happened_in_one_line() {
+        let carried = started(false, Some("99a6a118"), true).summary_in(Lang::Zh);
+        assert_eq!(carried, "会话起好了，接着上次的对话");
+        assert_eq!(
+            started(false, None, true).summary_in(Lang::Zh),
+            "会话起好了"
+        );
+        assert_eq!(
+            started(true, Some("99a6a118"), true).summary(),
+            "session already running"
+        );
+        for noise in ["83949", "d13df3ae", "99a6a118", "Background", "ccnm-keex"] {
+            assert!(!carried.contains(noise), "{noise} in {carried}");
+        }
+
+        let blocked = started(false, None, false).summary_in(Lang::Zh);
+        assert_eq!(blocked.lines().count(), 2, "{blocked}");
+        assert!(blocked.contains("钥匙串"), "{blocked}");
     }
 }

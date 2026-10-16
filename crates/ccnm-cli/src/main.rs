@@ -2071,14 +2071,14 @@ fn attach_request(
 /// that one, as `ccnm run` always does: it is the latest conversation. Said
 /// so, because nothing was continued and the person asked for something.
 fn say_not_continued(report: &StartReport, asked: bool, workspace: &str, lang: Lang) {
+    // Right under "session already running" in the summary, so it only adds
+    // what that line does not say (P94).
     if asked && report.already_running {
         eprintln!(
-            "\n{}",
+            "{}",
             lang.pick(
-                format!("{workspace} 已经有会话在跑，--continue 没有另起，直接接上它"),
-                format!(
-                    "{workspace} already has a session running; --continue started nothing and attaches to that one"
-                ),
+                format!("-c 没有另起新会话；要新开先 ccnm stop {workspace}"),
+                format!("-c started nothing new; to start fresh, ccnm stop {workspace} first"),
             )
         );
     }
@@ -2329,6 +2329,26 @@ fn attach_selected(
             );
         }
         Ok(_) => eprintln!("\n{}", lang.pick("会话结束了", "the session has ended")),
+        // The usual way this lookup fails: the network to the Agent Node
+        // went, which is often also why the terminal came back. Say which
+        // machine and what to do next; printed bare, the ssh error read as
+        // ccnm having broken something (P94).
+        Err(e) if e.code() == ccnm_core::error::ErrorCode::AgentUnreachable => {
+            let node = resolved.agent_node();
+            eprintln!(
+                "\n{}\n{}",
+                lang.pick(
+                    format!("连不上 {node}，查不到会话还在不在。网络通了再接：ccnm attach {workspace}"),
+                    format!(
+                        "cannot reach {node} to see whether the session is still running; once the network is back: ccnm attach {workspace}"
+                    ),
+                ),
+                lang.pick(
+                    format!("原因：{}", e.message()),
+                    format!("reason: {}", e.message())
+                ),
+            );
+        }
         // The session's own exit code is worth more than a failure to look
         // it up afterwards.
         Err(e) => eprintln!(

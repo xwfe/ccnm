@@ -511,9 +511,11 @@ ccnm init --runtime <alias>     # 在跑 Claude 的机器上
 
 ccnm add <项目目录>              # 名字取目录名
 ccnm add [名字] [路径]            # 不给名字用目录名，不给路径用当前目录
-ccnm workspace list
-ccnm workspace remove <名字>
+ccnm ws ls                       # 配置里有哪些项目、目录在哪；只读本机配置，不联网
+ccnm rm <名字>                    # 先停它的会话，再从配置里去掉；项目目录不碰
 ```
+
+`ccnm rm`（全称 `ccnm remove`）和 `ccnm ws rm` 是同一个命令（v0.17.0 及以前只有后者，敲 `ccnm rm` 会被当成打开一个叫 `rm` 的项目）。加 `--purge` 连 ccnm 为它存的会话记录一起删，见[运维手册](operations.md#想立刻腾地方ccnm-cleanup)。`ccnm ws ls` 和 `ccnm ls` 不是一回事：后者要问 AI 那台，说的是会话在不在跑、工具通不通。
 
 `ccnm add` 和 `ccnm workspace add`（`ws` 是 `workspace` 的别名）是同一个命令。只给一个参数时：不像名字（`.`、`./x`、`~/x`、带 `/` 的）就当项目目录；像名字就当名字、项目取当前目录，但当前目录下正好有同名子目录时报错、让你写清楚（`./名字` 或 `名字 .`）。从目录名取名字时 `.` 换成 `-`。其他选项：`--replace`（名字已存在时改指到这个目录，不加就报错）、`--permission-mode <模式>`（写 [`claude_permission_mode`](#claude_permission_mode)）、`--allow-unconfined-exec`（写 [`allow_unconfined_exec`](#allow_unconfined_exec)）、`--allow-unattended-exec`（写 [`allow_unattended_exec`](#allow_unattended_exec) `= true`，不加就不写、默认每条命令问一次）、`--agent-node <node>`。`allow_unisolated_credentials` 没有对应选项：只在写了 `runtime_user` 的专用账号模式下用得上，开之前要读那一节，所以只能手写。
 

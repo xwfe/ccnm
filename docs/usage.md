@@ -199,9 +199,12 @@ xdo    运行中 · 1 个终端  1 小时 2 分  通
 | `ccnm log` | `ccnm logs` |
 | `ccnm doctor` | `ccnm dr` |
 | `ccnm result` | `ccnm res` |
+| `ccnm remove` | `ccnm rm` |
 | `ccnm workspace` / `list` / `remove` | `ccnm ws` / `ls` / `rm` |
 
-`ccnm <名字>` 等于 `ccnm run <名字>`，但子命令和简写优先：workspace 如果恰好叫 `ls`、`st`、`a` 这类名字，就只能写全 `ccnm run ls`。
+`ccnm add`、`ccnm rm` 分别就是 `ccnm ws add`、`ccnm ws rm`；**`ccnm ls` 却不是 `ccnm ws ls`**：`ccnm ls` 问 AI 那台会话在不在跑，`ccnm ws ls` 只读本机配置，列出项目名和目录、不联网。
+
+`ccnm <名字>` 等于 `ccnm run <名字>`，但子命令和简写优先：workspace 如果恰好叫 `ls`、`st`、`a`、`add`、`rm` 这类名字，就只能写全 `ccnm run ls`。
 
 ### 单个项目
 

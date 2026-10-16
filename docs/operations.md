@@ -350,7 +350,7 @@ ccnm cleanup demo --apply <预览打印的令牌>   # 照清单删
 要连 workspace 一起清：
 
 ```bash
-ccnm workspace remove demo --purge     # 先停会话，再清 ccnm 为它保存的东西，最后从配置里去掉
+ccnm rm demo --purge     # 先停会话，再清 ccnm 为它保存的东西，最后从配置里去掉（就是 ccnm workspace remove）
 ```
 
 `--purge` 走的是同一个清理服务，`--purge` 本身就算确认，不再要令牌；另外还会删 Agent 上这个 workspace 的 CLI 工作目录。区别在最后一步：**只要有任何东西没清掉（包括上面"会留下的"），workspace 就留在配置里、退出码 3**，因为配置是以后唯一还能找到那些东西的入口。处理完再跑一次；只想忘掉 workspace、数据留着不管，去掉 `--purge`。

@@ -48,7 +48,7 @@ xshun
 
 **症状**：Claude 还能聊天，但一让它读文件就开始瞎猜，或者去调它自己机器上的 Bash
 （会被拒，那是第二道锁）。原因是那条 MCP ssh 断了——网断太久、Agent Node睡了、有人 kill 了它。
-断网多久算"太久"：两台都是 macOS 时，约 100–200 秒（2026-10-16 实测，[记录](research/2026-10-16-outage-experiment-plan.md#8-结果)）；短于一分半钟的一般不会断。Claude 只在断开的当下重试一次，网还没恢复就不再试：2026-10-15 项目机器的 Wi-Fi 断了 6.5 分钟，那次重试报 `ssh: connect to host … port 22: Operation timed out`，之后再没连过。
+断网多久算"太久"：两台都是 macOS 时，约 100–200 秒（2026-10-16 实测，[记录](research/2026-10-16-outage-experiment-plan.md#8-结果)）；短于一分半钟的一般不会断。Claude 只在断开的当下重试一次，网还没恢复就不再试：2026-10-15 项目机器的 Wi-Fi 断了 6.5 分钟，那次重试报 `ssh: connect to host … port 22: Operation timed out`，之后再没连过。ccnm 自己也不会接回来（2026-10-16 评估过、定了不做：接回来就是换一个远端会话，模型手里旧的输出引用全部作废，[协议 6.2 节](protocol/remote-workspace-mcp-v1.md#62-断线中断崩溃)），所以网好了也得照下面手动接，干等不会好。
 
 **修**：在 Claude 里敲
 

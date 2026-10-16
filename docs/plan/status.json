@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-10-15T22:44:00+09:00",
-  "current_task": null,
+  "last_updated": "2026-10-16T12:16:00+09:00",
+  "current_task": "P94",
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
     "source": "docs/research/codex-internal-wiring-2026-09-07.md",
@@ -4634,6 +4634,18 @@
           "result": "补中立客户端 test_a_host_that_probes_then_falls_back_to_initialize_still_gets_the_tools（不引用 ccnm 代码）：CCNM_BIN 指向 GitHub 上 v0.16.1 macOS 发布包（171c4d1a…）时报 RpcError -32602 request _meta is missing…，对 v0.17.0 通过；整个模块 51 OK，ci_gates.py Python 248/0。协议文档第 9 节写第三种开场与 rmcp 3.5.1 的协商（v0.16.1、v0.17.0 实测 initialize 要 2026-07-28 或 2099-01-01 都回 2025-11-25），6.2 节写 Claude Code 2.1.300 在新协议连接上不回服务端 ping；check_protocol.py 通过。架构、入门、使用、支持矩阵、排错同步。"
         }
       ],
+      "blockers": []
+    },
+    {
+      "id": "P94",
+      "title": "起会话时的提示说人话：开关提醒两行、会话摘要一行、连不上时说下一步",
+      "status": "in_progress",
+      "depends_on": ["P93"],
+      "owner": "claude-code-opus-5-5",
+      "started_at": "2026-10-16T12:16:00+09:00",
+      "last_updated": "2026-10-16T12:16:00+09:00",
+      "completed_criteria": [],
+      "evidence": [],
       "blockers": []
     }
   ],

@@ -1246,3 +1246,12 @@ P73 当时把"外部 MCP workspace 里执行账号的安全没人验"留作挡�
 - **P95.7** 文档里贴了旧输出的地方同步（使用说明、运维手册、排错手册、入门）；每处改动有测试，CLI 测试在旧代码上先红；Rust、Python、计划门禁通过。
 
 停止点：不动机器读的输出（`ccnm rpc`、MCP 文本、错误码名、协议字段）；doctor 的诊断行不砍；不改 P94 已改的起会话提示和 `safety.rs`（main 上另有未提交的改动）；不推送、不发版。
+
+### P96 — 工具断了时，Codex 会话的提示给一条照做不出错的路
+
+**依赖 P95。** 2026-10-16 评审 MCP 断网恢复方案时发现：P95 给 Codex 会话的"工具断了"提示是"退出 Codex，用官方 resume 带上会话 id 接回去"，而直接敲 `codex resume <id>` 用的是日常 `~/.codex`，没有 ccnm 的工具、Codex 自带 shell 开着，命令会跑在 AI 那台上（排错手册已写明别这么做）。doctor 的终端会话行在工具断了时还写死 Claude 的 `/mcp` 重连。用户同日定：先修这两处。
+
+- **P96.1** Codex 会话的提示改成 ccnm 支持的安全做法：`ccnm stop <项目>` 再 `ccnm <项目>` 开新会话，写明对话不带过来；Claude 不变。status、ls、doctor 用同一句，按会话自己的 Agent 给。
+- **P96.2** 测试先在旧代码上红：Codex 会话的 status/ls 提示不含 resume、含 `ccnm stop <项目>`；doctor 那行按 provider 给，Codex 会话不出现 `/mcp`。排错手册那一段同步；Rust、Python、计划门禁通过。
+
+停止点：不做 Codex 续接、不改连接保活和恢复机制（那是 MCP 断网恢复方案的事）；不推送、不发版。

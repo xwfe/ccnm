@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-10-16T14:30:00+09:00",
-  "current_task": null,
+  "last_updated": "2026-10-16T16:30:00+09:00",
+  "current_task": "P96",
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
     "source": "docs/research/codex-internal-wiring-2026-09-07.md",
@@ -4707,6 +4707,18 @@
           "result": "文档同步：使用说明（写锁行只有实例写法才有、ls 样例）、运维手册、排错手册（TOOLS DOWN 样例、doctor 表怎么读、ssh 超时那节）、入门，各处注明 v0.17.0 及以前的旧样子。用 scratchpad 的收集脚本（真实二进制 + 假 ssh，不连真机）对改前改后各跑一遍 ls/status/stop/attach/log/result/--print/init/ws add/常见报错的中英输出核对。本机 macOS arm64：cargo fmt --check、clippy --workspace --all-targets -D warnings 通过；cargo test --workspace --no-fail-fast 1099 passed / 0 failed；python3 scripts/ci_gates.py 248 ran / 0 failed；check_plan、git diff --check 通过。没在 Linux 上跑，没在真机上看（要发版换装）。"
         }
       ],
+      "blockers": []
+    },
+    {
+      "id": "P96",
+      "title": "工具断了时，Codex 会话的提示给一条照做不出错的路",
+      "status": "in_progress",
+      "depends_on": ["P95"],
+      "owner": "claude-code-opus-5-5",
+      "started_at": "2026-10-16T16:30:00+09:00",
+      "last_updated": "2026-10-16T16:30:00+09:00",
+      "completed_criteria": [],
+      "evidence": [],
       "blockers": []
     }
   ],

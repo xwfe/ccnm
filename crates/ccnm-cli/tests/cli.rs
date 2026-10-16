@@ -859,6 +859,70 @@ fn adding_a_workspace_before_init_says_to_init() {
 /// flag `allow_unattended_exec` was the one setting that still had to be
 /// typed into the file by hand. Without it nothing is written, so a
 /// workspace still asks before every command unless somebody said not to.
+/// P97: `ccnm add <path>` adds the project at that path under its
+/// directory's name. A path used to be taken as the name and refused, and
+/// `ccnm add` itself opened a workspace called `add`.
+#[test]
+fn add_takes_a_project_path_and_names_it_after_the_directory() {
+    let dir = std::env::temp_dir().join(format!("ccnm-cli-add-path-{}", std::process::id()));
+    let _cleanup = TestDir::adopt(&dir);
+    let _ = std::fs::remove_dir_all(&dir);
+    let code = dir.join("code");
+    for sub in ["shun", "my.proj", "plain"] {
+        std::fs::create_dir_all(code.join(sub)).unwrap();
+    }
+    let config = dir.join("config.toml");
+    std::fs::write(
+        &config,
+        "this = \"runtime\"\n[nodes.runtime]\n[nodes.agent]\nssh = \"w\"\n",
+    )
+    .unwrap();
+    let add = |cwd: &Path, args: &[&str]| {
+        ccnm()
+            .current_dir(cwd)
+            .arg("add")
+            .args(args)
+            .arg("--config")
+            .arg(&config)
+            .output()
+            .unwrap()
+    };
+    let workspaces = || ccnm_core::Config::load(&config).unwrap().workspaces;
+    let canonical = |p: PathBuf| p.canonicalize().unwrap();
+
+    // An absolute path: the name is the directory's.
+    let shun = code.join("shun");
+    let out = add(&dir, &[shun.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert_eq!(workspaces()["shun"].root, canonical(shun));
+
+    // A relative one, and a directory name that is not a valid name as it
+    // stands.
+    let out = add(&code, &["./my.proj"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert_eq!(
+        workspaces()["my-proj"].root,
+        canonical(code.join("my.proj"))
+    );
+
+    // A bare word that is both a fine name and a directory right here:
+    // either reading is plausible, so nothing is written and both
+    // spellings are offered.
+    let before = std::fs::read_to_string(&config).unwrap();
+    let out = add(&code, &["plain"]);
+    let err = stderr(&out);
+    assert_ne!(out.status.code(), Some(0), "{err}");
+    assert!(err.contains("ccnm add ./plain"), "{err}");
+    assert!(err.contains("ccnm add plain ."), "{err}");
+    assert_eq!(std::fs::read_to_string(&config).unwrap(), before);
+
+    // A word with no such directory is a name for the current one, as
+    // `ccnm ws add <name>` has always meant.
+    let out = add(&code.join("plain"), &["web"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert_eq!(workspaces()["web"].root, canonical(code.join("plain")));
+}
+
 #[test]
 fn workspace_add_can_write_allow_unattended_exec() {
     let dir = std::env::temp_dir().join(format!("ccnm-cli-add-unattended-{}", std::process::id()));
@@ -1839,7 +1903,7 @@ fn everyday_errors_say_what_happened_and_what_to_type() {
     assert_eq!(code, Some(10), "{err}");
     assert_eq!(
         err,
-        "CCNM_E_CONFIG:\n这台机器的配置里没有 workspace「nope」，有的是：keex\n是新项目的话：cd 到项目目录里，跑 ccnm ws add nope\n"
+        "CCNM_E_CONFIG:\n这台机器的配置里没有 workspace「nope」，有的是：keex\n是新项目的话：ccnm add nope <项目目录>\n"
     );
 
     let (code, err) = zh(&["stop", "keex"], &config);

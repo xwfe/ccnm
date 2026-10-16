@@ -872,10 +872,10 @@ impl Config {
                     )),
                     None => Error::config(lang.pick(
                         format!(
-                            "这台机器的配置里一个 workspace 都没有\n要加：cd 到项目目录里，跑 ccnm ws add {name}"
+                            "这台机器的配置里一个 workspace 都没有\n要加：ccnm add {name} <项目目录>"
                         ),
                         format!(
-                            "workspace '{name}' is not defined (no workspaces in config)\nto add it: cd to the project and run ccnm ws add {name}"
+                            "workspace '{name}' is not defined (no workspaces in config)\nto add it: ccnm add {name} <project directory>"
                         ),
                     )),
                 }
@@ -888,10 +888,10 @@ impl Config {
                     .join(", ");
                 Error::config(lang.pick(
                     format!(
-                        "这台机器的配置里没有 workspace「{name}」，有的是：{defined}\n是新项目的话：cd 到项目目录里，跑 ccnm ws add {name}"
+                        "这台机器的配置里没有 workspace「{name}」，有的是：{defined}\n是新项目的话：ccnm add {name} <项目目录>"
                     ),
                     format!(
-                        "workspace '{name}' is not defined; defined: {defined}\nif it is a new project: cd to it and run ccnm ws add {name}"
+                        "workspace '{name}' is not defined; defined: {defined}\nif it is a new project: ccnm add {name} <project directory>"
                     ),
                 ))
             }
@@ -1078,16 +1078,22 @@ impl Config {
 /// Names end up in tmux session names, session ids and state paths, so
 /// keep them to characters that are safe everywhere.
 fn check_name(at: &str, name: &str, problems: &mut Vec<String>) {
-    let ok = !name.is_empty()
-        && name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-        && name.starts_with(|c: char| c.is_ascii_alphanumeric());
-    if !ok {
+    if !is_valid_name(name) {
         problems.push(format!(
             "{at}: name must be [A-Za-z0-9][A-Za-z0-9_-]*, got \"{name}\""
         ));
     }
+}
+
+/// `[A-Za-z0-9][A-Za-z0-9_-]*`: what a workspace or node may be called.
+/// Public because `ccnm add` tells a name from a path by it (P97): nothing
+/// with a `/` or a leading `.` or `~` can be a name.
+pub fn is_valid_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        && name.starts_with(|c: char| c.is_ascii_alphanumeric())
 }
 
 /// SSH aliases and share names travel through ssh command lines.

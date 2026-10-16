@@ -69,6 +69,9 @@ enum Command {
         #[arg(long, value_name = "ALIAS")]
         runtime: Option<String>,
     },
+    /// Add a project on this machine: `ccnm add <path>`, named after its
+    /// directory. The same command as `ccnm ws add`
+    Add(AddArgs),
     /// Add, list and remove workspaces without editing the config by hand
     #[command(visible_alias = "ws")]
     Workspace {
@@ -212,35 +215,41 @@ enum Command {
     },
 }
 
+/// `ccnm add` and `ccnm ws add`: one command under two names (P97).
+#[derive(clap::Args, Clone)]
+struct AddArgs {
+    /// What to call it; this is the name every other command takes.
+    /// Defaults to the directory's own name. Given alone and not a name
+    /// (`.`, `./x`, `~/x`, anything with a `/`), it is the project
+    /// directory instead
+    name: Option<String>,
+    /// The project directory. Defaults to the current one
+    path: Option<PathBuf>,
+    /// Point an existing name at this directory instead of refusing
+    #[arg(long)]
+    replace: bool,
+    /// With runtime_user set, let exec_command run even though that
+    /// account fails the isolation checks (see docs/production-safety.md);
+    /// without runtime_user only running as root still needs it
+    #[arg(long)]
+    allow_unconfined_exec: bool,
+    /// Interactive sessions run commands without asking first; leave it
+    /// out and they ask before every one (see docs/configuration.md)
+    #[arg(long)]
+    allow_unattended_exec: bool,
+    /// What Claude may do without asking
+    #[arg(long, value_name = "MODE")]
+    permission_mode: Option<String>,
+    /// The node that runs this workspace's Agent. Needed only when the
+    /// config has more than one candidate and none is called `agent`
+    #[arg(long, value_name = "NODE")]
+    agent_node: Option<String>,
+}
+
 #[derive(Subcommand)]
 enum WorkspaceCommand {
     /// Point a name at a project directory on this machine
-    Add {
-        /// What to call it; this is the name every other command takes.
-        /// Defaults to the directory's own name
-        name: Option<String>,
-        /// The project directory. Defaults to the current one
-        path: Option<PathBuf>,
-        /// Point an existing name at this directory instead of refusing
-        #[arg(long)]
-        replace: bool,
-        /// With runtime_user set, let exec_command run even though that
-        /// account fails the isolation checks (see docs/production-safety.md);
-        /// without runtime_user only running as root still needs it
-        #[arg(long)]
-        allow_unconfined_exec: bool,
-        /// Interactive sessions run commands without asking first; leave it
-        /// out and they ask before every one (see docs/configuration.md)
-        #[arg(long)]
-        allow_unattended_exec: bool,
-        /// What Claude may do without asking
-        #[arg(long, value_name = "MODE")]
-        permission_mode: Option<String>,
-        /// The node that runs this workspace's Agent. Needed only when the
-        /// config has more than one candidate and none is called `agent`
-        #[arg(long, value_name = "NODE")]
-        agent_node: Option<String>,
-    },
+    Add(AddArgs),
     /// Every workspace in the config, and whether its directory is here
     #[command(visible_alias = "ls")]
     List,
@@ -557,6 +566,29 @@ fn ui_lang(cli: &Cli) -> Result<Lang> {
     }
 }
 
+/// The arguments `ccnm add` and `ccnm ws add` share, in Chinese: one copy,
+/// so the two help pages cannot drift apart.
+fn zh_add_args(command: clap::Command) -> clap::Command {
+    command
+        .mut_arg("name", |a| {
+            a.help("叫它什么；之后每条命令都用这个名字。不给就用目录自己的名字。只给一个、又不像名字（`.`、`./x`、`~/x`、带 `/` 的）时，它就是项目目录")
+        })
+        .mut_arg("path", |a| a.help("项目目录。不给就是当前目录"))
+        .mut_arg("replace", |a| {
+            a.help("名字已经存在时，改指到这个目录，而不是报错")
+        })
+        .mut_arg("allow_unconfined_exec", |a| {
+            a.help("写了 runtime_user 时，那个账号没通过隔离检查也让 exec_command 跑（见 docs/production-safety.md）；没写 runtime_user 时只有以 root 运行才需要它")
+        })
+        .mut_arg("allow_unattended_exec", |a| {
+            a.help("交互会话执行命令前不再问你；不加就每条命令问一次（见 docs/configuration.md）")
+        })
+        .mut_arg("permission_mode", |a| a.help("Claude 不用问就能做的事"))
+        .mut_arg("agent_node", |a| {
+            a.help("哪个节点跑这个 workspace 的 Agent。配置里有不止一个候选、又没有叫 agent 的时候才需要给")
+        })
+}
+
 /// The same command tree with Chinese descriptions.
 ///
 /// A table rather than a second set of doc comments on [`Cli`]: doc
@@ -610,27 +642,13 @@ fn zh_help(command: clap::Command) -> clap::Command {
                     a.help("这台机器跑 agent；ALIAS 是它找到 Runtime Node 的那个别名")
                 })
         })
+        .mut_subcommand("add", |c| {
+            zh_add_args(c).about("加一个这台机器上的项目：ccnm add <项目目录>，名字取目录名。和 ccnm ws add 是同一个命令")
+        })
         .mut_subcommand("workspace", |c| {
             c.about("加、列、删 workspace，不用手改配置文件")
                 .mut_subcommand("add", |c| {
-                    c.about("把一个名字指到这台机器上的某个项目目录")
-                        .mut_arg("name", |a| {
-                            a.help("叫它什么；之后每条命令都用这个名字。不给就用目录自己的名字")
-                        })
-                        .mut_arg("path", |a| a.help("项目目录。不给就是当前目录"))
-                        .mut_arg("replace", |a| {
-                            a.help("名字已经存在时，改指到这个目录，而不是报错")
-                        })
-                        .mut_arg("allow_unconfined_exec", |a| {
-                            a.help("写了 runtime_user 时，那个账号没通过隔离检查也让 exec_command 跑（见 docs/production-safety.md）；没写 runtime_user 时只有以 root 运行才需要它")
-                        })
-                        .mut_arg("allow_unattended_exec", |a| {
-                            a.help("交互会话执行命令前不再问你；不加就每条命令问一次（见 docs/configuration.md）")
-                        })
-                        .mut_arg("permission_mode", |a| a.help("Claude 不用问就能做的事"))
-                        .mut_arg("agent_node", |a| {
-                            a.help("哪个节点跑这个 workspace 的 Agent。配置里有不止一个候选、又没有叫 agent 的时候才需要给")
-                        })
+                    zh_add_args(c).about("把一个名字指到这台机器上的某个项目目录")
                 })
                 .mut_subcommand("list", |c| {
                     c.about("配置里有哪些 workspace，以及它们的目录在不在这台机器上")
@@ -830,6 +848,9 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
     match &cli.command {
         Command::Init { agent, runtime } => {
             init(&config_path()?, agent.as_deref(), runtime.as_deref(), lang)
+        }
+        Command::Add(args) => {
+            workspace_command(&config_path()?, &WorkspaceCommand::Add(args.clone()), lang)
         }
         Command::Workspace { command } => workspace_command(&config_path()?, command, lang),
         Command::Doctor { workspace, agent } => {
@@ -1569,11 +1590,14 @@ fn init(
         println!(
             "{}",
             lang.pick(
-                "接着：cd 到这台机器上的一个项目里，然后",
-                "next: cd to a project on this machine and run",
+                "接着：把这台机器上的项目加进来，名字取目录名",
+                "next: add a project on this machine; it is named after its directory",
             )
         );
-        println!("  ccnm workspace add <name>");
+        println!(
+            "  ccnm add {}",
+            lang.pick("<项目目录>", "<project directory>")
+        );
     }
     // ssh has to work before anything else can; say so plainly rather than
     // testing it here, where a slow or absent network would turn `init`
@@ -1618,7 +1642,7 @@ fn workspace_command(
     lang: Lang,
 ) -> Result<i32> {
     match command {
-        WorkspaceCommand::Add {
+        WorkspaceCommand::Add(AddArgs {
             name,
             path: root,
             replace,
@@ -1626,11 +1650,13 @@ fn workspace_command(
             allow_unattended_exec,
             permission_mode,
             agent_node,
-        } => {
-            let root = match root {
-                Some(path) => path.clone(),
-                None => std::env::current_dir()?,
-            };
+        }) => {
+            let (name, root) = add_target(
+                name.as_deref(),
+                root.as_deref(),
+                &std::env::current_dir()?,
+                lang,
+            )?;
             // Canonical, because a workspace root is compared against what
             // a running session was started with, and `.`, `~/x/../x` and
             // a symlinked path are all the same directory with three
@@ -1675,7 +1701,7 @@ fn workspace_command(
                 }
             };
             let name = match name {
-                Some(name) => name.clone(),
+                Some(name) => name,
                 None => name_from(&root, lang)?,
             };
             check_collisions(path, &name, &root, *replace, lang)?;
@@ -1753,8 +1779,8 @@ fn workspace_command(
                 println!(
                     "{}",
                     lang.pick(
-                        "加一个：cd 到项目目录里，然后 `ccnm workspace add <name>`",
-                        "add one: cd to a project and run `ccnm workspace add <name>`",
+                        "加一个：`ccnm add <项目目录>`，名字取目录名",
+                        "add one: `ccnm add <project directory>`, named after the directory",
                     )
                 );
                 return Ok(0);
@@ -1878,19 +1904,64 @@ fn stopped(killed: bool, workspace: &str, lang: Lang) -> String {
 /// Refused rather than mangled when the directory has no usable ASCII in
 /// it: a project called `我的项目` would come out as an empty name or some
 /// stub of one, and a name people type all day should be one they chose.
+///
+/// A `.` becomes `-` and a leading `-`, `_` or `.` is dropped (P97):
+/// `my.proj` is `my-proj`. `safe_name` keeps dots, so such a directory
+/// used to produce a name the config then refused.
 fn name_from(root: &std::path::Path, lang: Lang) -> Result<String> {
     let raw = root
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let name = paths::safe_name(&raw, "");
+    let name = paths::safe_name(&raw, "").replace('.', "-");
+    let name = name.trim_start_matches(|c: char| !c.is_ascii_alphanumeric());
     if name.is_empty() {
+        let root = root.display();
         return Err(ccnm_core::Error::invalid_args(lang.pick(
-            format!("{raw:?} 做不了 workspace 名字（只能用英文字母、数字、- 和 _），自己起一个：ccnm ws add <名字>"),
-            format!("cannot make a workspace name out of {raw:?}; give one: ccnm ws add <name>"),
+            format!("{raw:?} 做不了 workspace 名字（只能用英文字母、数字、- 和 _），自己起一个：ccnm add <名字> {root}"),
+            format!("cannot make a workspace name out of {raw:?}; give one: ccnm add <name> {root}"),
         )));
     }
-    Ok(name)
+    Ok(name.to_string())
+}
+
+/// Which name and which directory `ccnm add` was given (P97).
+///
+/// Two arguments are a name and a directory, as they always were. One is
+/// a directory when it cannot be a name -- names are
+/// `[A-Za-z0-9][A-Za-z0-9_-]*`, so `.`, `./x`, `~/x` and anything with a
+/// `/` never are -- and the name then comes from the directory. Every
+/// spelling that worked before means what it meant.
+///
+/// One word that is a fine name *and* a directory right here is refused:
+/// `cd ~/code && ccnm add shun` means the project, `cd ~/code/foo && ccnm
+/// add foo` in a repository with a `foo/` package means the current
+/// directory, and guessing either way points the name at the wrong place
+/// without a word.
+fn add_target(
+    name: Option<&str>,
+    path: Option<&std::path::Path>,
+    cwd: &std::path::Path,
+    lang: Lang,
+) -> Result<(Option<String>, PathBuf)> {
+    match (name, path) {
+        (Some(name), Some(path)) => Ok((Some(name.to_string()), path.to_path_buf())),
+        (Some(word), None) if !ccnm_core::config::is_valid_name(word) => {
+            Ok((None, PathBuf::from(word)))
+        }
+        (Some(word), None) if cwd.join(word).is_dir() => {
+            Err(ccnm_core::Error::invalid_args(lang.pick(
+                format!(
+                    "「{word}」能当名字，当前目录下又正好有个 {word} 目录，说清楚要哪个：\n  加那个目录：ccnm add ./{word}\n  把当前目录叫 {word}：ccnm add {word} ."
+                ),
+                format!(
+                    "\"{word}\" could be a name, and there is also a directory {word} right here; say which:\n  add that directory: ccnm add ./{word}\n  call the current directory {word}: ccnm add {word} ."
+                ),
+            )))
+        }
+        (None, Some(path)) => Ok((None, path.to_path_buf())),
+        (name, None) => Ok((name.map(str::to_string), cwd.to_path_buf())),
+    }
 }
 
 /// Two ways a new workspace can collide with one already in the config,

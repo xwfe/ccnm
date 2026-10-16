@@ -1093,9 +1093,14 @@ fn on_the_work_machine_attach_status_and_stop_stay_local() {
         );
         // Positive half, because "no alias in the output" is also true of
         // a config error. Each verb has to have reached its *local*
-        // answer: tmux replied, or said it is not installed.
+        // answer: tmux replied, or said it is not installed. `status` says
+        // tmux replied as "no live sessions" -- the tmux version line it
+        // used to open with went in P95.
         assert!(
-            (said.contains(workspace) || said.contains("tmux")) && !said.contains("not defined"),
+            (said.contains(workspace)
+                || said.contains("tmux")
+                || (verb == "status" && said.contains("no live sessions")))
+                && !said.contains("not defined"),
             "`{verb}` did not answer from this machine: {said}"
         );
         // 0 nothing to report, 3 nothing running, 35 no tmux here. 10
@@ -1559,6 +1564,297 @@ fn losing_the_agent_after_the_terminal_says_which_machine_and_how_back_in() {
         "{err}"
     );
     assert!(!err.contains("CCNM_E_AGENT_UNREACHABLE"), "{err}");
+}
+
+/// P95: `ccnm status <ws>` and `ccnm ls` on the machine with the projects,
+/// through the real binary. `status` opened with the Agent's tmux version,
+/// gave the session as an English row of tmux session name and launchd
+/// domain, and -- for every workspace `ccnm ws add` writes -- ended in two
+/// lines of CCNM_E_CONFIG about a write guard it can never ask. With the
+/// Agent unreachable, `ls` called the workspace idle, which nobody had
+/// checked, and broke its note over two lines at the error code.
+#[test]
+fn status_and_ls_say_what_the_person_needs_and_nothing_untrue() {
+    use ccnm_core::protocol::PROTOCOL;
+    use ccnm_core::protocol::run::{LiveSession, StatusReport};
+
+    let dir = std::env::temp_dir().join(format!("ccnm-cli-{}-p95-status", std::process::id()));
+    let _cleanup = TestDir::adopt(&dir);
+    let _ = std::fs::remove_dir_all(&dir);
+    let root = dir.join("root");
+    std::fs::create_dir_all(&root).unwrap();
+    let config = dir.join("config.toml");
+    std::fs::write(
+        &config,
+        format!(
+            "version = 1\nthis = \"runtime\"\n[nodes.fodelf]\nssh = \"ccnm-test-nowhere.invalid\"\n[nodes.runtime]\n[workspaces.keex]\nagent_node = \"fodelf\"\nroot = \"{}\"\n",
+            root.display()
+        ),
+    )
+    .unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let running = serde_json::to_string(&StatusReport {
+        protocol: PROTOCOL,
+        agent_identity: None,
+        tmux: Ok("3.7c".into()),
+        sessions: vec![LiveSession {
+            provider: Default::default(),
+            agent_identity: None,
+            tmux_session: "ccnm-keex".into(),
+            workspace: Some("keex".into()),
+            session: Some("d13df3ae-8716-4874-bee3-9399c1f34561".into()),
+            created: now - 3_700,
+            attached: 0,
+            context: Some(ccnm_core::session::Context {
+                manager: Some("Aqua".into()),
+                keychain: Some(true),
+            }),
+            tools: Some(true),
+        }],
+        records: vec![],
+        other_instances: vec![],
+    })
+    .unwrap();
+    let ssh = FakeSsh::install(
+        &dir,
+        &format!("  *'internal agent-status'*) printf '%s\\n' '{running}' ;;"),
+    );
+    let state = short_state("p95-status");
+    let run = |lang: &str, args: &[&str]| {
+        let out = ccnm()
+            .env("PATH", ssh.path())
+            .env("XDG_STATE_HOME", &state)
+            .env("CCNM_LANG", lang)
+            .args(args)
+            .arg("--config")
+            .arg(&config)
+            .output()
+            .unwrap();
+        (
+            out.status.code(),
+            format!("{}{}", stdout(&out), stderr(&out)),
+        )
+    };
+
+    for lang in ["zh", "en"] {
+        let (code, said) = run(lang, &["status", "keex"]);
+        assert_eq!(code, Some(0), "{said}");
+        assert!(said.starts_with("keex\n"), "{said}");
+        assert!(said.contains("d13df3ae"), "{said}");
+        for noise in [
+            "ccnm-keex",
+            "Aqua",
+            "keychain",
+            "3.7c",
+            "CCNM_E_CONFIG",
+            "instance binding",
+        ] {
+            assert!(!said.contains(noise), "{noise} in:\n{said}");
+        }
+    }
+
+    // The network to the Agent goes.
+    FakeSsh::install(
+        &dir,
+        "  *) echo 'ssh: connect to host 100.79.121.33 port 22: Operation timed out' >&2; exit 255 ;;",
+    );
+    let (code, said) = run("en", &["ls"]);
+    assert_eq!(code, Some(0), "{said}");
+    let row = said.lines().find(|l| l.starts_with("keex")).unwrap();
+    assert!(row.contains("unknown") && !row.contains("idle"), "{said}");
+    let note = said.lines().find(|l| l.starts_with("! ")).unwrap();
+    assert!(
+        note.starts_with("! cannot ask fodelf about its sessions: "),
+        "{said}"
+    );
+    assert!(note.ends_with("Operation timed out"), "{said}");
+    assert!(!said.contains("CCNM_E_AGENT_UNREACHABLE"), "{said}");
+}
+
+/// P95: `ccnm stop` and a `--print` run, in Chinese, through the real
+/// binary. `stop` named the tmux session (`停了 ccnm-keex`) and on the Agent
+/// Node was English whatever the language; `--print` opened with
+/// `claude    exited 0 in 8.2 s` and a line of token counts, and its
+/// headings were English in both.
+#[test]
+fn stop_and_print_speak_the_persons_language() {
+    let dir = std::env::temp_dir().join(format!("ccnm-cli-{}-p95-stop", std::process::id()));
+    let _cleanup = TestDir::adopt(&dir);
+    let _ = std::fs::remove_dir_all(&dir);
+    let root = dir.join("root");
+    std::fs::create_dir_all(&root).unwrap();
+    let config = dir.join("config.toml");
+    std::fs::write(
+        &config,
+        format!(
+            "version = 1\nthis = \"runtime\"\n[nodes.fodelf]\nssh = \"ccnm-test-nowhere.invalid\"\n[nodes.runtime]\n[workspaces.keex]\nagent_node = \"fodelf\"\nroot = \"{}\"\nallow_unconfined_exec = true\n",
+            root.display()
+        ),
+    )
+    .unwrap();
+    let report = r#"{"protocol":1,"session":"7c1d9f60-0a11-4c22-9d33-8e44f5566a78","session_dir":"/agent/state/ccnm/sessions/7c1d","controller":{"hello":{"protocol":1,"ccnm_version":"x","user":"u","platform":"macos/aarch64","exe":null,"root":null},"pid":1,"manager":{"Ok":"Aqua"}},"pid":2,"outcome":{"exit_code":0,"timed_out":false,"duration_ms":8200,"error":null},"result":{"is_error":false,"result":"3 files changed","num_turns":3,"total_cost_usd":0.0412,"usage":{"input_tokens":12,"output_tokens":340}},"stdout_tail":"","stderr_tail":""}"#;
+    let ssh = FakeSsh::install(
+        &dir,
+        &format!(
+            "  *'internal agent-stop'*) printf '%s\\n' '{{\"protocol\":1,\"tmux_session\":\"ccnm-keex\",\"killed\":true}}' ;;\n  *'internal agent-run'*) printf '%s\\n' '{report}' ;;"
+        ),
+    );
+    let state = short_state("p95-stop");
+    let zh = |args: &[&str], config: &Path| {
+        let out = ccnm()
+            .env("PATH", ssh.path())
+            .env("XDG_STATE_HOME", &state)
+            .env("CCNM_LANG", "zh")
+            .args(args)
+            .arg("--config")
+            .arg(config)
+            .output()
+            .unwrap();
+        (
+            out.status.code(),
+            format!("{}{}", stdout(&out), stderr(&out)),
+        )
+    };
+
+    let (code, said) = zh(&["stop", "keex"], &config);
+    assert_eq!((code, said.as_str()), (Some(0), "停了 keex 的会话\n"));
+
+    let (code, said) = zh(&["run", "keex", "--print", "hi"], &config);
+    assert_eq!(code, Some(0), "{said}");
+    assert!(
+        said.starts_with(
+            "会话 7c1d9f60-0a11-4c22-9d33-8e44f5566a78：claude 跑完了，8.2 秒，3 轮，$0.04\n"
+        ),
+        "{said}"
+    );
+    assert!(said.contains("--- 结果 ---\n3 files changed"), "{said}");
+    assert!(
+        said.contains("会话目录在 fodelf 上：/agent/state/ccnm/sessions/7c1d"),
+        "{said}"
+    );
+    for noise in ["tokens", "exited", "session directory", "--- result ---"] {
+        assert!(!said.contains(noise), "{noise} in:\n{said}");
+    }
+
+    // On the Agent Node it answers from its own tmux; nothing is running
+    // for a name nobody uses. Without tmux (35) there is nothing to read.
+    let (code, said) = zh(
+        &["stop", "ccnm-test-no-such-workspace"],
+        &fixture("config-agent-side.toml"),
+    );
+    if code != Some(35) {
+        assert_eq!(
+            (code, said.as_str()),
+            (
+                Some(0),
+                "ccnm-test-no-such-workspace 没有在跑的会话，没什么可停的\n"
+            )
+        );
+    }
+}
+
+/// P95: the errors people meet in the first week, in Chinese, each saying
+/// what happened and what to type. They were English whatever the
+/// language; the missing-config one described the two `init` flags as
+/// `here are the projects, that is where Claude runs`; `ws add` before
+/// `init` trailed four lines of schema rules in parentheses; and a stop
+/// that could not reach the Agent printed the code and the bare ssh error.
+/// The code line stays first in every one of them.
+#[test]
+fn everyday_errors_say_what_happened_and_what_to_type() {
+    let dir = std::env::temp_dir().join(format!("ccnm-cli-{}-p95-errors", std::process::id()));
+    let _cleanup = TestDir::adopt(&dir);
+    let _ = std::fs::remove_dir_all(&dir);
+    let root = dir.join("keex");
+    std::fs::create_dir_all(&root).unwrap();
+    let ssh = FakeSsh::install(
+        &dir,
+        "  *) echo 'ssh: connect to host 100.79.121.33 port 22: Operation timed out' >&2; exit 255 ;;",
+    );
+    let state = short_state("p95-errors");
+    let zh = |args: &[&str], config: &Path| {
+        let out = ccnm()
+            .current_dir(&root)
+            .env("PATH", ssh.path())
+            .env("XDG_STATE_HOME", &state)
+            .env("CCNM_LANG", "zh")
+            .args(args)
+            .arg("--config")
+            .arg(config)
+            .output()
+            .unwrap();
+        (out.status.code(), stderr(&out))
+    };
+
+    let missing = dir.join("missing.toml");
+    let (code, err) = zh(&["status"], &missing);
+    assert_eq!(code, Some(10), "{err}");
+    assert!(
+        err.starts_with(&format!(
+            "CCNM_E_CONFIG:\n还没有配置文件：{}\n",
+            missing.display()
+        )),
+        "{err}"
+    );
+    assert!(
+        err.contains("项目在这台：ccnm init --agent <跑 AI 那台的 ssh 别名>"),
+        "{err}"
+    );
+
+    let (code, err) = zh(&["ws", "add"], &missing);
+    assert_eq!(code, Some(10), "{err}");
+    assert_eq!(
+        err,
+        "CCNM_E_CONFIG:\n还没有配置文件，workspace 没地方写\n先在这台机器上跑：ccnm init --agent <跑 AI 那台的 ssh 别名>\n"
+    );
+
+    let config = dir.join("config.toml");
+    let (code, err) = zh(&["init", "--agent", "ccnm-test-nowhere.invalid"], &config);
+    assert_eq!(code, Some(0), "{err}");
+    let (code, err) = zh(&["ws", "add"], &config);
+    assert_eq!(code, Some(0), "{err}");
+
+    let (code, err) = zh(&["ws", "add", "other"], &config);
+    assert_eq!(code, Some(34), "{err}");
+    assert!(err.contains("已经是 workspace「keex」了"), "{err}");
+    assert!(err.contains("直接用：  ccnm keex"), "{err}");
+
+    let elsewhere = dir.join("elsewhere/keex");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    let (code, err) = zh(
+        &["ws", "add", "keex", &elsewhere.to_string_lossy()],
+        &config,
+    );
+    assert_eq!(code, Some(34), "{err}");
+    assert!(err.contains("workspace「keex」已经指向"), "{err}");
+    assert!(
+        err.contains("ccnm ws add keex --replace   （就是要改指过来）"),
+        "{err}"
+    );
+
+    let (code, err) = zh(&["status", "nope"], &config);
+    assert_eq!(code, Some(10), "{err}");
+    assert_eq!(
+        err,
+        "CCNM_E_CONFIG:\n这台机器的配置里没有 workspace「nope」，有的是：keex\n是新项目的话：cd 到项目目录里，跑 ccnm ws add nope\n"
+    );
+
+    let (code, err) = zh(&["stop", "keex"], &config);
+    assert_eq!(code, Some(20), "{err}");
+    let lines: Vec<&str> = err.lines().collect();
+    assert_eq!(lines.len(), 3, "{err}");
+    assert_eq!(lines[0], "CCNM_E_AGENT_UNREACHABLE:");
+    assert_eq!(
+        lines[1],
+        "连不上 agent，没能停掉会话。网络通了再跑一次；先试这条通不通：ssh ccnm-test-nowhere.invalid true"
+    );
+    assert!(
+        lines[2].starts_with("原因：") && lines[2].ends_with("Operation timed out"),
+        "{err}"
+    );
 }
 
 /// Direction two, through the real binary: `ccnm <ws>` typed at the work

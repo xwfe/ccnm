@@ -95,12 +95,19 @@ impl AgentProvider {
             Self::Codex => "codex",
         }
     }
-    pub const fn tools_down_hint(self) -> &'static str {
+    /// What a session whose tools are gone should be told. The English
+    /// keeps `TOOLS DOWN`: that is the heading people search
+    /// docs/troubleshooting.md for.
+    pub fn tools_down_hint(self, lang: crate::Lang) -> &'static str {
         match self {
-            Self::Claude => "TOOLS DOWN (in Claude: /mcp -> ccnm -> Reconnect)",
-            Self::Codex => {
-                "TOOLS DOWN (exit Codex and use official resume with its exact session ID on the Agent Node)"
-            }
+            Self::Claude => lang.pick(
+                "断了——在 Claude 里：/mcp → ccnm → Reconnect",
+                "TOOLS DOWN (in Claude: /mcp -> ccnm -> Reconnect)",
+            ),
+            Self::Codex => lang.pick(
+                "断了——退出 Codex，在 Agent Node 上用官方 resume 带上它的会话 id 接回去",
+                "TOOLS DOWN (exit Codex and use official resume with its exact session ID on the Agent Node)",
+            ),
         }
     }
 

@@ -867,7 +867,7 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
             detached,
             continue_last,
         } => {
-            let config = Config::load(&config_path()?)?;
+            let config = Config::load_in(&config_path()?, lang)?;
             // Sitting at the Agent Node: this config knows how to reach the
             // Runtime and nothing about workspaces. So ask the Runtime what
             // this workspace is, and start the session here -- Claude runs
@@ -912,7 +912,7 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
                 }
                 return work::attach(&attach_request(workspace, selected, None), &tools);
             }
-            let resolved = config.workspace(workspace)?;
+            let resolved = config.workspace_in(workspace, lang)?;
             warn_accepted_risk(
                 workspace,
                 resolved.workspace.allow_unisolated_credentials,
@@ -957,7 +957,7 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
             agent,
             session,
         } => {
-            let config = Config::load(&config_path()?)?;
+            let config = Config::load_in(&config_path()?, lang)?;
             if agent_side(&config, workspace).is_some() {
                 return work::attach(
                     &attach_request(
@@ -968,7 +968,7 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
                     &agent_tools(config_path().ok().as_deref())?,
                 );
             }
-            let resolved = config.workspace(workspace)?;
+            let resolved = config.workspace_in(workspace, lang)?;
             attach_selected(
                 &resolved,
                 &launch_env()?,
@@ -984,7 +984,7 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
             session,
             all,
         } => {
-            let config = Config::load(&config_path()?)?;
+            let config = Config::load_in(&config_path()?, lang)?;
             let Some(workspace) = workspace else {
                 print!(
                     "{}",
@@ -1011,7 +1011,7 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
                 );
                 return Ok(0);
             }
-            let resolved = config.workspace(workspace)?;
+            let resolved = config.workspace_in(workspace, lang)?;
             let env = launch_env()?;
             let rep = launcher::status_selected(
                 &resolved,
@@ -1019,23 +1019,39 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
                 *all,
                 agent.as_deref(),
                 session.as_deref(),
-            )?;
+            )
+            .map_err(|e| {
+                unreachable_said(
+                    e,
+                    &resolved,
+                    ("查不到会话", "the sessions there cannot be seen"),
+                    lang,
+                )
+            })?;
             print!("{}", rep.render_in(lang));
             // What the Agent's session list cannot show: a --print run, or
             // an external client, holding the tree (P60). Asked of the
             // Runtime Executor, whose state directory the guard is in.
-            print!(
-                "{}",
-                ccnm_core::overview::render_guard(
-                    &launcher::observe_guard(&resolved, &env, agent.as_deref()),
-                    ccnm_core::overview::utc_offset(&SystemRunner),
-                    lang,
-                )
-            );
+            //
+            // Only for a workspace bound to an Agent instance: the question
+            // goes to that instance, and one written as a bare `agent_node`
+            // -- every workspace `ccnm ws add` makes -- has none to ask. It
+            // printed two lines of CCNM_E_CONFIG there on every call, about
+            // something that will never change (P95).
+            if resolved.agent_reference(agent.as_deref())?.is_some() {
+                print!(
+                    "{}",
+                    ccnm_core::overview::render_guard(
+                        &launcher::observe_guard(&resolved, &env, agent.as_deref()),
+                        ccnm_core::overview::utc_offset(&SystemRunner),
+                        lang,
+                    )
+                );
+            }
             Ok(0)
         }
         Command::List => {
-            let config = Config::load(&config_path()?)?;
+            let config = Config::load_in(&config_path()?, lang)?;
             print!(
                 "{}",
                 overview(&config, config_path()?.as_path())?.render_list(lang)
@@ -1043,8 +1059,8 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
             Ok(0)
         }
         Command::Log { workspace, limit } => {
-            let config = Config::load(&config_path()?)?;
-            let entries = session_history(&config, workspace.as_deref(), *limit)?;
+            let config = Config::load_in(&config_path()?, lang)?;
+            let entries = session_history(&config, workspace.as_deref(), *limit, lang)?;
             print!(
                 "{}",
                 ccnm_core::overview::render_history(
@@ -1061,7 +1077,7 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
             agent,
             session,
         } => {
-            let config = Config::load(&config_path()?)?;
+            let config = Config::load_in(&config_path()?, lang)?;
             if agent_side(&config, workspace).is_some() {
                 let selected = local_instance_ref(&config, agent.as_deref())?;
                 let req = ResultRequest {
@@ -1081,13 +1097,21 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
                     lang,
                 );
             }
-            let resolved = config.workspace(workspace)?;
+            let resolved = config.workspace_in(workspace, lang)?;
             let rep = launcher::result_selected(
                 &resolved,
                 &launch_env()?,
                 session.as_deref(),
                 agent.as_deref(),
-            )?;
+            )
+            .map_err(|e| {
+                unreachable_said(
+                    e,
+                    &resolved,
+                    ("取不到结果", "the result cannot be fetched"),
+                    lang,
+                )
+            })?;
             print_result_report(&rep, resolved.agent_node(), lang)
         }
         Command::Stop {
@@ -1095,7 +1119,7 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
             agent,
             session,
         } => {
-            let config = Config::load(&config_path()?)?;
+            let config = Config::load_in(&config_path()?, lang)?;
             if agent_side(&config, workspace).is_some() {
                 let selected = local_instance_ref(&config, agent.as_deref())?;
                 let req = StopRequest {
@@ -1110,43 +1134,30 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
                     assigned: false,
                 };
                 let rep = work::stop(&req, &agent_tools(config_path().ok().as_deref())?)?;
-                println!(
-                    "{}",
-                    if rep.killed {
-                        format!("stopped {}", rep.tmux_session)
-                    } else {
-                        format!("no session for {workspace}")
-                    }
-                );
+                println!("{}", stopped(rep.killed, workspace, lang));
                 return Ok(0);
             }
-            let resolved = config.workspace(workspace)?;
+            let resolved = config.workspace_in(workspace, lang)?;
             let rep = launcher::stop_selected(
                 &resolved,
                 &launch_env()?,
                 agent.as_deref(),
                 session.as_deref(),
-            )?;
-            let session = &rep.tmux_session;
-            if rep.killed {
-                println!(
-                    "{}",
-                    lang.pick(format!("停了 {session}"), format!("stopped {session}"))
-                );
-            } else {
-                println!(
-                    "{}",
-                    lang.pick(
-                        format!("没什么可停的：{session} 本来就没在跑"),
-                        format!("nothing to stop: {session} was not running"),
-                    )
-                );
-            }
+            )
+            .map_err(|e| {
+                unreachable_said(
+                    e,
+                    &resolved,
+                    ("没能停掉会话", "the session was not stopped"),
+                    lang,
+                )
+            })?;
+            println!("{}", stopped(rep.killed, workspace, lang));
             Ok(0)
         }
         Command::Cleanup { workspace, apply } => {
-            let config = Config::load(&config_path()?)?;
-            let resolved = config.workspace(workspace)?;
+            let config = Config::load_in(&config_path()?, lang)?;
+            let resolved = config.workspace_in(workspace, lang)?;
             let (env, state) = (launch_env()?, paths::state_dir()?);
             match apply {
                 None => {
@@ -1637,33 +1648,42 @@ fn workspace_command(
                 Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
                     unseen = true;
                     spelled_out(&root).ok_or_else(|| {
+                        let root = root.display();
                         ccnm_core::Error::new(
                             ccnm_core::ErrorCode::WrongWorkspace,
-                            format!(
-                                "{} cannot be resolved from this account (Permission denied), and as written it is not an absolute path without `.` or `..`\ngive the full path the Runtime account uses for the project",
-                                root.display()
+                            lang.pick(
+                                format!(
+                                    "这个账号看不了 {root}（Permission denied），而它又不是不带 `.`、`..` 的绝对路径，没法照写登记\n给出执行账号用的项目完整路径"
+                                ),
+                                format!(
+                                    "{root} cannot be resolved from this account (Permission denied), and as written it is not an absolute path without `.` or `..`\ngive the full path the Runtime account uses for the project"
+                                ),
                             ),
                         )
                     })?
                 }
                 Err(e) => {
+                    let root = root.display();
                     return Err(ccnm_core::Error::new(
                         ccnm_core::ErrorCode::WrongWorkspace,
-                        format!("{} is not a directory on this machine", root.display()),
+                        lang.pick(
+                            format!("这台机器上没有 {root} 这个目录"),
+                            format!("{root} is not a directory on this machine"),
+                        ),
                     )
                     .with_source(e));
                 }
             };
             let name = match name {
                 Some(name) => name.clone(),
-                None => name_from(&root)?,
+                None => name_from(&root, lang)?,
             };
-            check_collisions(path, &name, &root, *replace)?;
+            check_collisions(path, &name, &root, *replace, lang)?;
             let mode = permission_mode
                 .as_deref()
                 .map(parse_permission_mode)
                 .transpose()?;
-            let (agent_node, runtime_node) = workspace_nodes(path, agent_node.as_deref())?;
+            let (agent_node, runtime_node) = workspace_nodes(path, agent_node.as_deref(), lang)?;
             let mut edit = configedit::Edit::open(path)?;
             let mut changes = configedit::Changes::default();
             edit.set_workspace(
@@ -1680,13 +1700,18 @@ fn workspace_command(
             if *allow_unattended_exec {
                 edit.set_workspace_unattended_exec(&name, &mut changes);
             }
+            // With no file, the save fails validation in the same
+            // predictable way every time (no `this`, no nodes). Those lines
+            // used to follow in parentheses and buried the one instruction
+            // that fixes all of them (P95). Anything else -- a directory it
+            // cannot write -- is passed on as it is.
             edit.save(&changes).map_err(|e| {
-                if edit.existed() {
+                if edit.existed() || e.code() != ccnm_core::ErrorCode::Config {
                     e
                 } else {
-                    ccnm_core::Error::config(format!(
-                        "there is no config yet, so a workspace has nowhere to go\nrun this first, on this machine: ccnm init --agent <alias of the Agent Node>\n({})",
-                        e.message()
+                    ccnm_core::Error::config(lang.pick(
+                        "还没有配置文件，workspace 没地方写\n先在这台机器上跑：ccnm init --agent <跑 AI 那台的 ssh 别名>",
+                        "there is no config yet, so a workspace has nowhere to go\nrun this first, on this machine: ccnm init --agent <ssh alias of the machine running the AI>",
                     ))
                 }
             })?;
@@ -1715,7 +1740,7 @@ fn workspace_command(
             Ok(0)
         }
         WorkspaceCommand::List => {
-            let config = Config::load(path)?;
+            let config = Config::load_in(path, lang)?;
             if config.workspaces.is_empty() {
                 let path = path.display();
                 println!(
@@ -1775,13 +1800,7 @@ fn remove_workspace(path: &std::path::Path, name: &str, purge: bool, lang: Lang)
         && let Ok(resolved) = config.workspace(name)
     {
         match launcher::stop(&resolved, &launch_env()?) {
-            Ok(rep) if rep.killed => {
-                let session = &rep.tmux_session;
-                println!(
-                    "{}",
-                    lang.pick(format!("停了 {session}"), format!("stopped {session}"))
-                );
-            }
+            Ok(rep) if rep.killed => println!("{}", stopped(true, name, lang)),
             Ok(_) => {}
             Err(e) => eprintln!(
                 "{}",
@@ -1836,20 +1855,39 @@ fn remove_workspace(path: &std::path::Path, name: &str, purge: bool, lang: Lang)
     Ok(0)
 }
 
+/// What `ccnm stop` did, by the workspace's name, whichever machine it was
+/// typed on (P95). It named the tmux session, `ccnm-keex`, which is a name
+/// nobody types; and on the Agent Node it was English whatever the
+/// language.
+fn stopped(killed: bool, workspace: &str, lang: Lang) -> String {
+    if killed {
+        lang.pick(
+            format!("停了 {workspace} 的会话"),
+            format!("stopped the {workspace} session"),
+        )
+    } else {
+        lang.pick(
+            format!("{workspace} 没有在跑的会话，没什么可停的"),
+            format!("nothing to stop: no {workspace} session was running"),
+        )
+    }
+}
+
 /// A workspace name from the directory's own name.
 ///
 /// Refused rather than mangled when the directory has no usable ASCII in
 /// it: a project called `我的项目` would come out as an empty name or some
 /// stub of one, and a name people type all day should be one they chose.
-fn name_from(root: &std::path::Path) -> Result<String> {
+fn name_from(root: &std::path::Path, lang: Lang) -> Result<String> {
     let raw = root
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
     let name = paths::safe_name(&raw, "");
     if name.is_empty() {
-        return Err(ccnm_core::Error::invalid_args(format!(
-            "cannot make a workspace name out of {raw:?}; give one: ccnm ws add <name>"
+        return Err(ccnm_core::Error::invalid_args(lang.pick(
+            format!("{raw:?} 做不了 workspace 名字（只能用英文字母、数字、- 和 _），自己起一个：ccnm ws add <名字>"),
+            format!("cannot make a workspace name out of {raw:?}; give one: ccnm ws add <name>"),
         )));
     }
     Ok(name)
@@ -1882,6 +1920,7 @@ fn name_from(root: &std::path::Path) -> Result<String> {
 fn workspace_nodes(
     config_path: &std::path::Path,
     asked: Option<&str>,
+    lang: Lang,
 ) -> Result<(String, Option<String>)> {
     // No config yet, or one that will not load: the old defaults, and
     // `save` says what is wrong, as it always has.
@@ -1906,15 +1945,26 @@ fn workspace_nodes(
         .collect();
     match others.as_slice() {
         [only] => Ok((only.to_string(), runtime)),
-        [] => Err(ccnm_core::Error::config(format!(
-            "{} has no node besides this one to run the Agent\nadd one first: ccnm init --agent <alias>",
-            config_path.display()
-        ))),
-        several => Err(ccnm_core::Error::invalid_args(format!(
-            "{} has more than one node that could run this workspace's Agent: {}\nsay which: --agent-node <node>",
-            config_path.display(),
-            several.join(", ")
-        ))),
+        [] => {
+            let path = config_path.display();
+            Err(ccnm_core::Error::config(lang.pick(
+                format!(
+                    "{path} 里除了这台，没有别的机器能跑 AI\n先加一台：ccnm init --agent <跑 AI 那台的 ssh 别名>"
+                ),
+                format!(
+                    "{path} has no node besides this one to run the Agent\nadd one first: ccnm init --agent <alias>"
+                ),
+            )))
+        }
+        several => {
+            let (path, several) = (config_path.display(), several.join(", "));
+            Err(ccnm_core::Error::invalid_args(lang.pick(
+                format!("{path} 里有好几台机器能跑这个 workspace 的 AI：{several}\n指定一台：--agent-node <节点名>"),
+                format!(
+                    "{path} has more than one node that could run this workspace's Agent: {several}\nsay which: --agent-node <node>"
+                ),
+            )))
+        }
     }
 }
 
@@ -1923,6 +1973,7 @@ fn check_collisions(
     name: &str,
     root: &std::path::Path,
     replace: bool,
+    lang: Lang,
 ) -> Result<()> {
     // A config that will not load has bigger problems, and `save` reports
     // them; there is nothing to compare against here.
@@ -1935,9 +1986,14 @@ fn check_collisions(
         .iter()
         .find(|(other, ws)| ws.root == root && other.as_str() != name)
     {
-        return Err(ccnm_core::Error::invalid_args(format!(
-            "{} is already the workspace `{other}`\nuse it:            ccnm {other}\nor rename it:      ccnm ws remove {other} && ccnm ws add {name}\ntwo names for one project means two Claudes editing the same files",
-            root.display()
+        let root = root.display();
+        return Err(ccnm_core::Error::invalid_args(lang.pick(
+            format!(
+                "{root} 已经是 workspace「{other}」了：一个项目两个名字，就是两个 AI 同时改同一批文件\n直接用：  ccnm {other}\n要改名：  ccnm ws remove {other} && ccnm ws add {name}"
+            ),
+            format!(
+                "{root} is already the workspace `{other}`\nuse it:            ccnm {other}\nor rename it:      ccnm ws remove {other} && ccnm ws add {name}\ntwo names for one project means two Claudes editing the same files"
+            ),
         )));
     }
 
@@ -1947,12 +2003,18 @@ fn check_collisions(
     if existing.root == root || replace {
         return Ok(());
     }
-    Err(ccnm_core::Error::invalid_args(format!(
-        "workspace `{name}` already points at {}\nthis would point it at {} instead, and end any session running against the old one\npick one:\n  ccnm ws add {} {}   (a different name for this project)\n  ccnm ws add {name} --replace   (repoint the existing one)",
+    let (old, new, other) = (
         existing.root.display(),
         root.display(),
         suggested_name(name, root),
-        root.display(),
+    );
+    Err(ccnm_core::Error::invalid_args(lang.pick(
+        format!(
+            "workspace「{name}」已经指向 {old}，这次会改指 {new}，还会停掉在旧目录里跑的会话\n二选一：\n  ccnm ws add {other} {new}   （这个项目换个名字）\n  ccnm ws add {name} --replace   （就是要改指过来）"
+        ),
+        format!(
+            "workspace `{name}` already points at {old}\nthis would point it at {new} instead, and end any session running against the old one\npick one:\n  ccnm ws add {other} {new}   (a different name for this project)\n  ccnm ws add {name} --replace   (repoint the existing one)"
+        ),
     )))
 }
 
@@ -2230,6 +2292,7 @@ fn session_history(
     config: &Config,
     workspace: Option<&str>,
     limit: u32,
+    lang: Lang,
 ) -> Result<Vec<ccnm_core::protocol::run::HistoryEntry>> {
     let req = HistoryRequest {
         protocol: ccnm_core::protocol::payload::PROTOCOL,
@@ -2241,7 +2304,7 @@ fn session_history(
     }
     let env = launch_env()?;
     let names: Vec<&str> = match workspace {
-        Some(name) => vec![config.workspace(name)?.name],
+        Some(name) => vec![config.workspace_in(name, lang)?.name],
         None => config.workspaces.keys().map(String::as_str).collect(),
     };
     let mut asked = std::collections::BTreeSet::new();
@@ -2252,7 +2315,15 @@ fn session_history(
             continue;
         };
         if asked.insert(alias.to_string()) {
-            entries.extend(launcher::history(&resolved, &env, workspace, limit)?.sessions);
+            let history = launcher::history(&resolved, &env, workspace, limit).map_err(|e| {
+                unreachable_said(
+                    e,
+                    &resolved,
+                    ("取不到会话记录", "the session records cannot be fetched"),
+                    lang,
+                )
+            })?;
+            entries.extend(history.sessions);
         }
     }
     // An Agent Node can serve other Runtimes too; this lists what this
@@ -2261,6 +2332,38 @@ fn session_history(
     entries.sort_by_key(|e| std::cmp::Reverse(e.started));
     entries.truncate(limit as usize);
     Ok(entries)
+}
+
+/// An Agent Node that ssh could not reach, said as which machine, what did
+/// not happen and what to try (P95) -- the way P94 says it after the
+/// terminal comes back. `status`, `stop`, `result` and `log` printed the
+/// code and the bare ssh error, which read as ccnm having broken. The code
+/// line stays first: scripts and the troubleshooting guide go by it.
+fn unreachable_said(
+    e: Error,
+    resolved: &ccnm_core::config::Resolved<'_>,
+    what: (&str, &str),
+    lang: Lang,
+) -> Error {
+    if e.code() != ccnm_core::ErrorCode::AgentUnreachable {
+        return e;
+    }
+    let node = resolved.agent_node();
+    let alias = resolved.agent_ssh().unwrap_or(node);
+    let why = e.message().lines().collect::<Vec<_>>().join("; ");
+    Error::new(
+        ccnm_core::ErrorCode::AgentUnreachable,
+        lang.pick(
+            format!(
+                "连不上 {node}，{}。网络通了再跑一次；先试这条通不通：ssh {alias} true\n原因：{why}",
+                what.0
+            ),
+            format!(
+                "cannot reach {node}, so {}. Run it again once the network is back; this should work first: ssh {alias} true\nreason: {why}",
+                what.1
+            ),
+        ),
+    )
 }
 
 /// The Agent Node's own view of the world.
@@ -2390,33 +2493,66 @@ fn restore_terminal(attach: &ccnm_core::process::Captured) {
 /// only when Claude ran to completion and did not report an error itself.
 fn print_run_report(rep: &RunReport, agent_node: &str, lang: Lang) -> Result<i32> {
     println!("{}", rep.summary_in(lang));
-    match &rep.result {
+    print_what_it_said(
+        rep.result.as_ref(),
+        &rep.stdout_tail,
+        &rep.stderr_tail,
+        &rep.session_dir,
+        agent_node,
+        lang,
+    );
+    let ok = rep.outcome.ok() && rep.result.as_ref().is_some_and(|r| !r.is_error());
+    Ok(if ok { 0 } else { 1 })
+}
+
+/// Under the summary of a `--print` run or `ccnm result`: the answer, what
+/// went wrong, and where the rest is kept. The headings are in the
+/// person's language too (P95); they were English in both.
+fn print_what_it_said(
+    result: Option<&ccnm_core::provider::AgentResult>,
+    stdout_tail: &str,
+    stderr_tail: &str,
+    session_dir: &Path,
+    agent_node: &str,
+    lang: Lang,
+) {
+    match result {
         Some(r) => {
-            println!("\n--- result ---");
+            println!("\n{}", lang.pick("--- 结果 ---", "--- result ---"));
             println!("{}", r.text().unwrap_or("").trim_end());
             if !r.permission_denials().is_empty() {
-                eprintln!("\npermission denials:");
+                eprintln!("\n{}", lang.pick("被拒的权限：", "permission denials:"));
                 for d in r.permission_denials() {
                     eprintln!("  {d}");
                 }
             }
         }
-        None if !rep.stdout_tail.is_empty() => {
-            println!("\n--- stdout (tail) ---\n{}", rep.stdout_tail.trim_end());
+        None if !stdout_tail.is_empty() => {
+            println!(
+                "\n{}\n{}",
+                lang.pick("--- 标准输出（末尾）---", "--- stdout (tail) ---"),
+                stdout_tail.trim_end()
+            );
         }
         None => {}
     }
-    if !rep.stderr_tail.trim().is_empty() {
-        eprintln!("\n--- stderr (tail) ---\n{}", rep.stderr_tail.trim_end());
+    if !stderr_tail.trim().is_empty() {
+        eprintln!(
+            "\n{}\n{}",
+            lang.pick("--- 标准错误（末尾）---", "--- stderr (tail) ---"),
+            stderr_tail.trim_end()
+        );
     }
     // By the node's own name. It said "on work" for every node, which was a
     // name from before nodes had names (F18).
+    let dir = session_dir.display();
     eprintln!(
-        "\nsession directory on {agent_node}: {}",
-        rep.session_dir.display()
+        "\n{}",
+        lang.pick(
+            format!("会话目录在 {agent_node} 上：{dir}"),
+            format!("session directory on {agent_node}: {dir}"),
+        )
     );
-    let ok = rep.outcome.ok() && rep.result.as_ref().is_some_and(|r| !r.is_error());
-    Ok(if ok { 0 } else { 1 })
 }
 
 /// What `ccnm result` prints, from whichever machine asked.
@@ -2435,24 +2571,13 @@ fn print_result_report(
     lang: Lang,
 ) -> Result<i32> {
     println!("{}", rep.summary_in(lang));
-    match &rep.result {
-        Some(r) => {
-            println!("\n--- result ---");
-            println!("{}", r.text().unwrap_or("").trim_end());
-        }
-        None if !rep.stdout_tail.is_empty() => {
-            println!("\n--- stdout (tail) ---\n{}", rep.stdout_tail.trim_end());
-        }
-        None => {}
-    }
-    if !rep.stderr_tail.trim().is_empty() {
-        eprintln!("\n--- stderr (tail) ---\n{}", rep.stderr_tail.trim_end());
-    }
-    // By the node's own name. It said "on work" for every node, which was a
-    // name from before nodes had names (F18).
-    eprintln!(
-        "\nsession directory on {agent_node}: {}",
-        rep.session_dir.display()
+    print_what_it_said(
+        rep.result.as_ref(),
+        &rep.stdout_tail,
+        &rep.stderr_tail,
+        &rep.session_dir,
+        agent_node,
+        lang,
     );
     Ok(0)
 }

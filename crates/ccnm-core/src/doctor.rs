@@ -166,6 +166,11 @@ impl Check {
     }
 }
 
+/// Where the table is explained, as a path in the ccnm repository: the
+/// form the user chose over a versioned GitHub URL, which was too long to
+/// read (P94, P95). A test checks the heading is there.
+const READING: &str = "docs/troubleshooting.md#doctor-的表怎么读";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Report {
     /// What was examined: a workspace name, or "config" when none was given.
@@ -255,6 +260,22 @@ impl Report {
         let skipped = self.count(|s| matches!(s, Status::Skip));
         let noted = self.count(|s| matches!(s, Status::Note));
         out.push('\n');
+        // Above the verdict, not under it: "the last line starts with
+        // READY" is how the docs tell people to read this, and how scripts
+        // do.
+        if let Some(first) = self.first_to_fix() {
+            let (row, status) = (row_label(lang, first.name), first.status.label_in(lang));
+            let _ = writeln!(
+                out,
+                "{}",
+                lang.pick(
+                    format!("先看第一个「{status}」的那行：{row}。表怎么读：ccnm 仓库/{READING}"),
+                    format!(
+                        "start with the first {status} row: {row}. How to read this table: ccnm repo/{READING}"
+                    ),
+                )
+            );
+        }
         if self.ready() && noted == 0 {
             out.push_str(lang.pick("可以用了\n", "READY\n"));
         } else if self.ready() {
@@ -274,6 +295,18 @@ impl Report {
             let _ = writeln!(out, "NOT READY ({failed} failed, {skipped} not checked)");
         }
         out
+    }
+
+    /// The row a NOT READY verdict hangs on: the first FAIL, else the first
+    /// row that was not checked. Pointed at with the verdict (P95), because
+    /// "1 failed, 10 not checked" says how much is wrong and not where to
+    /// start -- and the ten unchecked rows are usually that one failure's
+    /// consequence.
+    fn first_to_fix(&self) -> Option<&Check> {
+        self.checks
+            .iter()
+            .find(|c| matches!(c.status, Status::Fail(_)))
+            .or_else(|| self.checks.iter().find(|c| c.status.blocks()))
     }
 
     fn count(&self, pred: impl Fn(&Status) -> bool) -> usize {
@@ -3404,6 +3437,63 @@ mod tests {
             report
                 .render_in(Lang::Zh)
                 .ends_with("还不能用（0 项失败，1 项没查）\n")
+        );
+    }
+
+    /// P95: NOT READY says which row to start with -- the first failure,
+    /// which the unchecked rows usually follow from -- and where the table
+    /// is explained, right above the verdict so the verdict stays the last
+    /// line. READY says nothing more. The section the hint points at has to
+    /// exist; renaming its heading breaks this test, not every printout.
+    #[test]
+    fn not_ready_says_which_row_to_start_with() {
+        let report = Report {
+            subject: "keex".into(),
+            checks: vec![
+                Check::ok("Config", "/c"),
+                Check::fail_with("Agent SSH", ErrorCode::AgentUnreachable, "timed out"),
+                Check::skip("Agent ccnm", "not checked: Agent SSH failed"),
+            ],
+        };
+        let zh = report.render_in(Lang::Zh);
+        assert!(
+            zh.ends_with(
+                "\n先看第一个「失败」的那行：连 Agent 的 SSH。表怎么读：ccnm 仓库/docs/troubleshooting.md#doctor-的表怎么读\n还不能用（1 项失败，1 项没查）\n"
+            ),
+            "{zh}"
+        );
+        let en = report.render();
+        assert!(
+            en.contains("start with the first FAIL row: Agent SSH. How to read this table: ccnm repo/docs/troubleshooting.md#"),
+            "{en}"
+        );
+        assert!(
+            en.ends_with("NOT READY (1 failed, 1 not checked)\n"),
+            "{en}"
+        );
+
+        let unchecked = report_of(&[Status::Ok, Status::Skip]);
+        assert!(
+            unchecked
+                .render_in(Lang::Zh)
+                .contains("先看第一个「没查」的那行")
+        );
+        let ready = report_of(&[Status::Ok, Status::Note]);
+        assert!(!ready.render_in(Lang::Zh).contains("先看"));
+
+        let docs = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/troubleshooting.md"),
+        )
+        .unwrap();
+        let (file, anchor) = READING.split_once('#').unwrap();
+        assert_eq!(file, "docs/troubleshooting.md");
+        // GitHub's anchor for a heading: lower-cased, spaces to dashes.
+        assert!(
+            docs.lines().any(|l| l
+                .strip_prefix("### ")
+                .map(|h| h.to_lowercase().replace(' ', "-"))
+                == Some(anchor.to_string())),
+            "no heading for #{anchor} in {file}"
         );
     }
 

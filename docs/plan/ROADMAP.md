@@ -1232,3 +1232,17 @@ P73 当时把"外部 MCP workspace 里执行账号的安全没人验"留作挡�
 - **P94.3** 退出终端后查会话状态连不上 Agent 时，说"连不上哪台、网络通了怎么接回去"，原始报错单独一行。文档里描述这段提示的地方同步；Rust、Python、计划门禁通过。
 
 停止点：只改这条起会话路径上的提示；`ccnm doctor`、`ccnm status`、错误码与机器读的输出（`ccnm rpc`、MCP 文本）不动；不推送、不发版。
+
+### P95 — 日常命令的输出说人话：status、ls、stop、result 和常见报错
+
+**依赖 P94。** P94 只收了起会话那一条路径。2026-10-16 按同一标准——一行说发生了什么、一行说下一步；长解释进文档、终端只给链接；tmux 会话名、pid、launchd 域、keychain 这类诊断默认不打——审了 `ls`、`status`、`stop`、`attach`、`log`、`result`、`ws add`、`init` 和 `doctor` 的结论行，用真实二进制配假 ssh 跑出中英两种输出。清单当天经用户确认：全部照改；没绑 Agent 实例的 workspace 不打写锁行；文档链接用仓库里的短路径（`ccnm 仓库/docs/…#…`，和 main 上 P94 正在改的写法一致），不用带版本的 GitHub 地址。`log`、`ws list`、`init` 已经够短，不改；`attach` 只有 P94 改过的那句。
+
+- **P95.1** `ccnm status <ws>`：和 `ccnm status` 用同一块——会话短 id、跑了多久、几个终端、工具通不通，读不到钥匙串才多一行；不打 tmux 会话名、`Aqua`、`keychain reachable`；tmux 版本只在问不到时说；`--session` 那行状态用中文词、不打 `legacy`。没绑 Agent 实例（`ccnm ws add` 写的 `agent_node`）的 workspace 不打写锁行，原来每次两行 `CCNM_E_CONFIG … needs an Agent instance binding`。
+- **P95.2** `ccnm ls` / `ccnm status`：Agent 问不到时项目状态写"问不到"，原来写"没在跑"/`idle`；提示一行"问不到 <节点> 上的会话：<原因>"，不再在错误码处断成两行；Agent 答了就不再单打一行 tmux 版本。工具断了的提示按会话的 Agent 给，Codex 会话原来也叫人去 Claude 里 `/mcp`。
+- **P95.3** `ccnm stop`：说项目名（"停了 keex 的会话"），不说 tmux 会话名；Agent 那台上的 `stop` 原来只有英文，补中文；`ws remove` 顺带停会话时同一句。
+- **P95.4** `ccnm result` / `ccnm run --print`：摘要一行——会话 id、怎么结束的、几轮、花了多少，权限被拒和 Agent 自己报错只在有时说；token 明细和 API 耗时不打（结果文档在会话目录里）；`--- result ---`、`session directory on` 等标题中英都有。英文措辞不变。
+- **P95.5** 常见报错中英都有、说清下一步：没有配置文件、不认识的 workspace、`ws add` 前没 `init`（去掉括号里那几行配置校验原文）、`ws add` 撞名与路径问题；`status`/`stop`/`log`/`result` 连不上 Agent 时说连不上哪台、哪件事没做成、先试哪条 ssh，ssh 原文放"原因"一行。错误码那一行不动；`Config::load`、`workspace` 给 rpc 和内部命令的仍是英文。
+- **P95.6** `ccnm doctor` 还不能用时，结论上面一行点名先看哪行（第一个"失败"，没有就第一个"没查"），并给 `ccnm 仓库/docs/troubleshooting.md#doctor-的表怎么读`，测试守着标题在。结论仍是最后一行；诊断行一行不砍。
+- **P95.7** 文档里贴了旧输出的地方同步（使用说明、运维手册、排错手册、入门）；每处改动有测试，CLI 测试在旧代码上先红；Rust、Python、计划门禁通过。
+
+停止点：不动机器读的输出（`ccnm rpc`、MCP 文本、错误码名、协议字段）；doctor 的诊断行不砍；不改 P94 已改的起会话提示和 `safety.rs`（main 上另有未提交的改动）；不推送、不发版。

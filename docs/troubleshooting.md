@@ -28,6 +28,8 @@
 
 状态词：`正常`=OK、`注意`=WARN、`不查`=NOTE、`没查`=SKIP、`失败`=FAIL。结论行 `可以用了`=READY、`还不能用`=NOT READY。
 
+**还不能用时从哪看起**：结论上面一行会点名，`先看第一个「失败」的那行：<行名>`，没有失败就点第一个"没查"。一张表常是一个"失败"带出一串"没查"——比如 `连 Agent 的 SSH` 失败，后面十行都写 `not checked: Agent SSH failed`——修好点名的那行再跑一次，后面的多半自己就好了。（v0.17.0 及以前只有结论，没有这一行。）
+
 **`不查` 和 `没查` 差一个字，意思不一样。** `不查` 是 doctor 在这种配置下本来就不查的行：网络隔离（ccnm 管不着，要你自己在 Runtime 上配）、本机工具策略（只有真开着的会话才说得清）、没有 Agent 的 workspace 里那些 Agent 行、你看不进执行账号家目录时的 `Runtime 上的项目`（同一张表的 `workspace 根目录` 会由执行账号回答）。不管两台机器状态如何它都是这个结果，所以**不挡结论**，结论行会写"可以用了（N 项不查……）"。`没查` 是该查、这次没查成：对面没回答、对面构建太旧没报、前面一步失败了。这时结论是"还不能用"、退出码 3，按那一行的说明处理。
 
 **没有 Agent、只给外部 MCP 用的 workspace**，`Runtime 安全` 和 `exec_command` 两行是 `不查`。这两行的结论属于替 AI 跑命令的执行账号，不属于敲 doctor 的人；没有 Agent 也就没有探测把它带回来。它不是没人管：外部客户端经 `ccnm mcp bridge` 连上来时，服务端以执行账号自己核对，不过就以 `CCNM_E_POLICY` 拒绝并写明原因。
@@ -37,8 +39,12 @@
 ### `TOOLS DOWN` —— 会话看着在跑，模型却什么都够不着
 
 ```text
-ccnm-xshun  xshun  detached  TOOLS DOWN (in Claude: /mcp -> ccnm -> Reconnect)  (...)
+xshun
+  会话     4f2a9c1e 运行中，已运行 2 小时 5 分，没有终端接着
+  工具              断了——在 Claude 里：/mcp → ccnm → Reconnect
 ```
+
+这是 `ccnm status xshun` 的样子；`--lang en` 下那一格是 `TOOLS DOWN (in Claude: /mcp -> ccnm -> Reconnect)`，`ccnm ls` 底下的提示也是同一句。（v0.17.0 及以前 `ccnm status <ws>` 是一行英文：`ccnm-xshun  xshun  detached  TOOLS DOWN (…)  (Aqua, keychain reachable)`。）
 
 **症状**：Claude 还能聊天，但一让它读文件就开始瞎猜，或者去调它自己机器上的 Bash
 （会被拒，那是第二道锁）。原因是那条 MCP ssh 断了——网断太久、Agent Node睡了、有人 kill 了它。
@@ -55,7 +61,7 @@ Claude 只在断开的当下重试一次，网还没恢复就不再试：2026-10
 `ccnm status <ws>` 和 `ccnm doctor <ws>` 都会明说这个状态——**看着正常的会话是不会显示
 这行的**，所以看到了就是真断了。
 
-**Codex 会话**显示的是 `TOOLS DOWN (exit Codex and use official resume with its exact session ID on the Agent Node)`。Codex 里没有 `/mcp` 重连。最简单的做法是 `ccnm stop <项目>` 再 `ccnm <项目>` 开一个新会话，代价是对话上下文不带过来。要接回原对话，必须用 ccnm 那个 Codex 目录（`CODEX_HOME=~/.config/ccnm/agents/codex`）和 ccnm 起会话时的那套参数；直接敲 `codex resume <id>` 用的是你日常的 `~/.codex`，没有 ccnm 的工具，Codex 自带的 shell 还开着，命令会跑在 AI 那台上，别这么做。
+**Codex 会话**显示的是"断了——退出 Codex，在 Agent Node 上用官方 resume 带上它的会话 id 接回去"（英文 `TOOLS DOWN (exit Codex and use official resume with its exact session ID on the Agent Node)`；v0.17.0 及以前 `ccnm ls` 对 Codex 会话也说去 Claude 里 `/mcp`，那是错的）。Codex 里没有 `/mcp` 重连。最简单的做法是 `ccnm stop <项目>` 再 `ccnm <项目>` 开一个新会话，代价是对话上下文不带过来。要接回原对话，必须用 ccnm 那个 Codex 目录（`CODEX_HOME=~/.config/ccnm/agents/codex`）和 ccnm 起会话时的那套参数；直接敲 `codex resume <id>` 用的是你日常的 `~/.codex`，没有 ccnm 的工具，Codex 自带的 shell 还开着，命令会跑在 AI 那台上，别这么做。
 
 ### 会话里有 ccnm 的说明，工具却一个都没有（`request _meta is missing`）
 
@@ -721,7 +727,7 @@ CCNM_E_INVALID_ARGS: no output kept for r-0193f2c8a1b74e05
 
 ### 合上笔记本睡一觉，第二天某个项目的工具连不上
 
-**症状**：同时开着几个项目，其他都好，唯独一个 `ccnm <workspace>` 起来之后 Claude 里 MCP 显示连接失败，`ccnm status` 那一行是 `TOOLS DOWN`。
+**症状**：同时开着几个项目，其他都好，唯独一个 `ccnm <workspace>` 起来之后 Claude 里 MCP 显示连接失败，`ccnm status` 里它的工具那一行是"断了"（英文 `TOOLS DOWN`）。
 
 **其实是**：那个项目**昨天那个会话**的 Runtime 端 `mcp-serve` 还活着，占着写锁，新会话被拒成 busy。它没退，是因为连接成了半开：Runtime（笔记本）睡着时，Agent 那头的 ssh 等不到回应就关了，关闭的包在睡眠中丢了；醒来后 Runtime 的 sshd 还以为连接在（`lsof` 显示 `ESTABLISHED`），而 `mcp-serve` 没人调用就从不往外写，也就永远发现不了。**不是 ccnm 不支持多个项目**——每个项目一把锁，互不影响。
 
@@ -800,6 +806,8 @@ Tailscale 掉线时对面照样连不上。2026-09-16 真机上就是这样：�
 从会话里出来时看到 `连不上 <机器>，查不到会话还在不在`、下一行 `原因：` 是同一个超时，
 也是同一回事：会话在那台机器的 tmux 里，断网不会把它关掉，网络通了 `ccnm attach <workspace>`
 回去。（v0.17.0 及以前这句话是 `说不好会话还在不在跑：CCNM_E_AGENT_UNREACHABLE`。）
+
+`ccnm status <workspace>`、`stop`、`log`、`result` 碰上同样的超时，报错第二行是 `连不上 <机器>，<哪件事没做成>。网络通了再跑一次；先试这条通不通：ssh <别名> true`，第三行 `原因：` 是 ssh 原文，同样先按上面查网络。`stop` 报这个时会话**没停**。`ccnm ls` 和不带项目名的 `ccnm status` 不报错，把那台机器上的项目状态写成"问不到"。（v0.17.0 及以前报错只有错误码加 ssh 原文；`ls` 写的是"没在跑"，那是没问到就下的结论。）
 
 ### Linux 上 `ccnm run` 报 `workspace root … is not a directory on this machine`，目录明明在
 

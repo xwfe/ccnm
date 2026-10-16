@@ -372,7 +372,7 @@ ccnm stop demo --agent codex-main --session <id>  # 精确停一个
 
   另外，`--session <id>` 指到一个这台机器上没有记录的 id，仍然报 `no session <id> on this machine`：不知道那个会话，和知道它已经结束，是两件事。
 
-- **`status` 的会话列表看不见 `ccnm run --print` 的会话。** 它只报 Agent Node 上的 tmux 会话，非交互的 print 运行不在其中——会话正跑着，`status` 照样说 `no live sessions`。要判断有没有人在写，看同一条命令输出最后的**写锁**那一行（在 Runtime Node 上跑 `ccnm status <workspace>` 才有），它由 Runtime 执行账号自己回答，print 运行和外部 MCP 客户端占着锁都看得见：
+- **`status` 的会话列表看不见 `ccnm run --print` 的会话。** 它只报 Agent Node 上的 tmux 会话，非交互的 print 运行不在其中——会话正跑着，`status` 照样说 `no live sessions`。要判断有没有人在写，看同一条命令输出最后的**写锁**那一行（在 Runtime Node 上跑 `ccnm status <workspace>` 才有，而且只有写成 `agent = { node = …, instance = … }` 的 workspace 才有，见[使用说明](usage.md#单个项目)），它由 Runtime 执行账号自己回答，print 运行和外部 MCP 客户端占着锁都看得见：
 
   ```text
   写锁  被占：会话 402638ca 正持有（09-29 13:40）

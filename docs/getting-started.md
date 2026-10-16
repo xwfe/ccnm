@@ -200,7 +200,7 @@ ccnm my-project
 - **"是否信任这个目录"**：选信任。问的是 ccnm 在跑 AI 那台上给这个项目建的空占位目录（`~/.local/state/ccnm/workspaces/<项目名>`），不是你的项目。Claude 默认选中的是 "No, exit"，要先按一次下箭头，直接回车会话就退出了。
 - **Claude Code 问"要不要把 auto mode 设成默认权限模式"**：选 "No"。选 "Yes" 改的是那个账号上 Claude Code 的全局默认，你在那台机器上直接用 Claude 时也会跟着变；ccnm 起会话时自己指定权限模式，用不着它。
 
-用 `--detached` 起的会话要先 `ccnm attach my-project` 答完这几句，工具才连得上；答完之前 `ccnm status` 显示 `TOOLS DOWN`。
+用 `--detached` 起的会话要先 `ccnm attach my-project` 答完这几句，工具才连得上；答完之前 `ccnm status` 里工具那一行是"断了"（英文 `TOOLS DOWN`）。
 
 在跑 AI 的那台敲同一条命令也行：它先问项目机器这个名字对应哪个目录，再在本机起会话、接上。`--print`（一问一答）例外，只能在项目机器上敲，在 AI 那台敲会报 `--print has to be run where the projects are; ssh there and run it`。
 

@@ -805,12 +805,25 @@ impl Config {
 
     /// Read, parse and validate the file at `path`.
     pub fn load(path: &Path) -> Result<Config> {
+        Config::load_in(path, crate::Lang::En)
+    }
+
+    /// [`load`](Self::load), with a missing file -- the first thing a new
+    /// machine meets -- explained in `lang` (P95). The English used to say
+    /// `here are the projects, that is where Claude runs`, which took two
+    /// readings to tell which flag was for which machine.
+    pub fn load_in(path: &Path, lang: crate::Lang) -> Result<Config> {
         tracing::debug!(path = %path.display(), "loading config");
         let text = std::fs::read_to_string(path).map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
-                Error::config(format!(
-                    "config not found: {}\nwrite it with one command, on the machine you are on:\n  ccnm init --agent <alias>      here are the projects, that is where Claude runs\n  ccnm init --runtime <alias>    here runs Claude, that is where the projects are",
-                    path.display()
+                let path = path.display();
+                Error::config(lang.pick(
+                    format!(
+                        "还没有配置文件：{path}\n先在这台机器上写一个，二选一：\n  项目在这台：ccnm init --agent <跑 AI 那台的 ssh 别名>\n  AI 在这台：  ccnm init --runtime <放项目那台的 ssh 别名>"
+                    ),
+                    format!(
+                        "config not found: {path}\nwrite one on this machine, whichever fits:\n  the projects are here:  ccnm init --agent <ssh alias of the machine running the AI>\n  the AI runs here:       ccnm init --runtime <ssh alias of the machine with the projects>"
+                    ),
                 ))
             } else {
                 Error::config(format!("cannot read config {}", path.display())).with_source(e)
@@ -830,6 +843,13 @@ impl Config {
 
     /// Look up a workspace by name together with its nodes.
     pub fn workspace<'a>(&'a self, name: &'a str) -> Result<Resolved<'a>> {
+        self.workspace_in(name, crate::Lang::En)
+    }
+
+    /// [`workspace`](Self::workspace), with a name this config does not
+    /// define said in `lang`, and how to add it (P95): a typo and a project
+    /// not added yet are the two ways people get here.
+    pub fn workspace_in<'a>(&'a self, name: &'a str, lang: crate::Lang) -> Result<Resolved<'a>> {
         let workspace = self.workspaces.get(name).ok_or_else(|| {
             if self.workspaces.is_empty() {
                 // A config with no workspaces and one way home is the
@@ -842,18 +862,37 @@ impl Config {
                 // locally; what reaches it is `doctor <ws>` and
                 // `mcp probe`, which need the definition.
                 match self.runtime_from_agent() {
-                    Some((runtime, _)) => Error::config(format!(
-                        "workspace '{name}' is not defined on this node, and this node keeps no workspace list -- the projects are on Runtime Node {runtime}\nrun the commands that need the definition there:  ssh {runtime} ccnm doctor {name}"
+                    Some((runtime, _)) => Error::config(lang.pick(
+                        format!(
+                            "这台是 Agent Node，不存 workspace 列表，{name} 定义在 Runtime Node {runtime} 上\n要用到定义的命令去那边跑：ssh {runtime} ccnm doctor {name}"
+                        ),
+                        format!(
+                            "workspace '{name}' is not defined on this node, and this node keeps no workspace list -- the projects are on Runtime Node {runtime}\nrun the commands that need the definition there:  ssh {runtime} ccnm doctor {name}"
+                        ),
                     )),
-                    None => Error::config(format!(
-                        "workspace '{name}' is not defined (no workspaces in config)"
+                    None => Error::config(lang.pick(
+                        format!(
+                            "这台机器的配置里一个 workspace 都没有\n要加：cd 到项目目录里，跑 ccnm ws add {name}"
+                        ),
+                        format!(
+                            "workspace '{name}' is not defined (no workspaces in config)\nto add it: cd to the project and run ccnm ws add {name}"
+                        ),
                     )),
                 }
             } else {
-                let defined: Vec<&str> = self.workspaces.keys().map(String::as_str).collect();
-                Error::config(format!(
-                    "workspace '{name}' is not defined; defined: {}",
-                    defined.join(", ")
+                let defined = self
+                    .workspaces
+                    .keys()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                Error::config(lang.pick(
+                    format!(
+                        "这台机器的配置里没有 workspace「{name}」，有的是：{defined}\n是新项目的话：cd 到项目目录里，跑 ccnm ws add {name}"
+                    ),
+                    format!(
+                        "workspace '{name}' is not defined; defined: {defined}\nif it is a new project: cd to it and run ccnm ws add {name}"
+                    ),
                 ))
             }
         })?;

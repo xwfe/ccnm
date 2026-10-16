@@ -169,7 +169,7 @@ ccnm   没在跑
 gld    运行中 · 1 个终端  59 分钟      断了
 xdo    运行中 · 1 个终端  1 小时 2 分  通
 
-! gld：工具断了。在 Claude 里 /mcp → ccnm → Reconnect
+! gld：工具断了——在 Claude 里：/mcp → ccnm → Reconnect
 详情：ccnm status
 ```
 
@@ -228,7 +228,7 @@ ccnm attach my-project --agent codex-main --session <ccnm-session-id>
 ccnm stop my-project --agent codex-main --session <ccnm-session-id>
 ```
 
-在 Runtime Node 上跑 `ccnm status my-project`，最后一行是这个项目的写锁：空闲、被谁占着、故意留着，还是说不清。它经 Agent 问 Runtime 执行账号，所以 `--print` 运行和外部 MCP 客户端占着锁也看得见；它只看不拿锁，"空闲"也不代表替你占住了。各种说法怎么处理见[运维手册](operations.md#写入-guard-残留)。
+在 Runtime Node 上跑 `ccnm status my-project`，最后一行是这个项目的写锁：空闲、被谁占着、故意留着，还是说不清。它经 Agent 问 Runtime 执行账号，所以 `--print` 运行和外部 MCP 客户端占着锁也看得见；它只看不拿锁，"空闲"也不代表替你占住了。各种说法怎么处理见[运维手册](operations.md#写入-guard-残留)。**只有写成 `agent = { node = …, instance = … }` 的 workspace 有这一行**：问写锁要经过那个实例，`ccnm ws add` 写出来的 `agent_node = "…"` 没有实例可问，所以不打（v0.17.0 及以前会打两行 `CCNM_E_CONFIG … needs an Agent instance binding`，不是出错了）。改成实例写法见[配置迁移](operations.md#配置迁移legacy--agent-instance)。
 
 ccnm session id 与 Claude/Codex 自己的 thread/resume id 是两类值，不能互换。精确操作会校验 session 的 workspace 和 Agent identity。状态区分 `starting`、`running`、`completed`、`failed`、`stopping`、`unknown`；不能证明进程已经结束时不会猜成 failed。
 

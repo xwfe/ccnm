@@ -855,10 +855,6 @@ fn adding_a_workspace_before_init_says_to_init() {
     assert!(stderr(&out).contains("ccnm init"), "{}", stderr(&out));
 }
 
-/// P90. Everything a workspace usually wants in one `ws add`: before this
-/// flag `allow_unattended_exec` was the one setting that still had to be
-/// typed into the file by hand. Without it nothing is written, so a
-/// workspace still asks before every command unless somebody said not to.
 /// P97: `ccnm add <path>` adds the project at that path under its
 /// directory's name. A path used to be taken as the name and refused, and
 /// `ccnm add` itself opened a workspace called `add`.
@@ -923,6 +919,10 @@ fn add_takes_a_project_path_and_names_it_after_the_directory() {
     assert_eq!(workspaces()["web"].root, canonical(code.join("plain")));
 }
 
+/// P90. Everything a workspace usually wants in one `ws add`: before this
+/// flag `allow_unattended_exec` was the one setting that still had to be
+/// typed into the file by hand. Without it nothing is written, so a
+/// workspace still asks before every command unless somebody said not to.
 #[test]
 fn workspace_add_can_write_allow_unattended_exec() {
     let dir = std::env::temp_dir().join(format!("ccnm-cli-add-unattended-{}", std::process::id()));

@@ -1822,6 +1822,19 @@ fn everyday_errors_say_what_happened_and_what_to_type() {
     assert!(err.contains("已经是 workspace「keex」了"), "{err}");
     assert!(err.contains("直接用：  ccnm keex"), "{err}");
 
+    let elsewhere = dir.join("elsewhere/keex");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    let (code, err) = zh(
+        &["ws", "add", "keex", &elsewhere.to_string_lossy()],
+        &config,
+    );
+    assert_eq!(code, Some(34), "{err}");
+    assert!(err.contains("workspace「keex」已经指向"), "{err}");
+    assert!(
+        err.contains("ccnm ws add keex --replace   （就是要改指过来）"),
+        "{err}"
+    );
+
     let (code, err) = zh(&["status", "nope"], &config);
     assert_eq!(code, Some(10), "{err}");
     assert_eq!(

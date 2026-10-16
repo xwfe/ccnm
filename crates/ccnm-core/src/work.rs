@@ -3702,17 +3702,30 @@ mod tests {
             rep.sessions[1].tools, None,
             "a question that could not be put is unknown, never a guessed no"
         );
-        let text = rep.render();
+        // doctor's `Terminal session` row still says all of it in one line.
+        assert_eq!(
+            rep.sessions[0].describe(),
+            "ccnm-xshun  xshun  1 attached  tools connected  (Background, keychain reachable)"
+        );
+        assert_eq!(
+            rep.sessions[1].describe(),
+            "ccnm-other  other  detached  tools unknown  (context unknown)"
+        );
+        // What `ccnm status` prints for a person leaves the tmux session
+        // names and the launchd domain out (P95).
+        let text = rep.render_at(crate::Lang::En, 1_788_496_263 + 60);
         assert!(
-            text.contains(
-                "ccnm-xshun  xshun  1 attached  tools connected  (Background, keychain reachable)"
-            ),
+            text.contains("xshun\n  session  ")
+                && text.contains("1 attached\n  tools             connected\n"),
             "{text}"
         );
         assert!(
-            text.contains("ccnm-other  other  detached  tools unknown  (context unknown)"),
+            text.contains("other\n") && text.contains("detached\n  tools             unknown\n"),
             "{text}"
         );
+        for noise in ["ccnm-xshun", "ccnm-other", "Background", "keychain"] {
+            assert!(!text.contains(noise), "{noise} in:\n{text}");
+        }
     }
 
     /// The interruption `--print` cannot survive: the ssh carrying the

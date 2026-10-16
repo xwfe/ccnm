@@ -221,35 +221,69 @@ pub fn warn_accepted_once_in(
     accepted: Accepted,
     lang: crate::Lang,
 ) -> Option<String> {
-    let said: Vec<String> = RISKS
+    let mut said: Vec<String> = RISKS
         .iter()
         .filter_map(|risk| say_once(state_dir, workspace, (risk.set)(accepted), risk, lang))
         .collect();
-    (!said.is_empty()).then(|| said.join("\n\n"))
+    if said.is_empty() {
+        return None;
+    }
+    said.push(lang.pick(
+        format!("只提醒这一次，之后 `ccnm doctor {workspace}` 里一直看得到。"),
+        format!("Said once; `ccnm doctor {workspace}` keeps showing it."),
+    ));
+    Some(said.join("\n"))
 }
 
 /// One accepted risk: its marker file, whether this workspace set it, and
 /// what to say the first time it does.
+///
+/// Two lines and a link, not the whole argument (P94). The first version
+/// printed about fifteen lines per switch, and the person it was for
+/// stopped reading by the third; the full cost is already written once in
+/// docs/configuration.md, which is where the link goes.
 struct Risk {
+    /// Also the heading in docs/configuration.md the link points at; a
+    /// test checks the heading is there.
+    switch: &'static str,
     marker: &'static str,
     set: fn(Accepted) -> bool,
-    text: fn(&str, crate::Lang) -> String,
+    /// What it means, in one clause, (zh, en).
+    means: (&'static str, &'static str),
 }
 
 /// Every risk that announces itself. Adding a switch means adding a row
 /// here, not another copy of the marker logic.
 const RISKS: [Risk; 2] = [
     Risk {
+        switch: "allow_unisolated_credentials",
         marker: "agent-credentials",
         set: |a| a.unisolated_credentials,
-        text: credentials_text,
+        means: (
+            "模型跑的命令能读到 Agent 的登录凭据",
+            "commands the model runs can read the Agent's login",
+        ),
     },
     Risk {
+        switch: "allow_unattended_exec",
         marker: "unattended-exec",
         set: |a| a.unattended_exec,
-        text: unattended_text,
+        means: (
+            "模型跑命令前不再问你",
+            "the model runs commands without asking you",
+        ),
     },
 ];
+
+/// Where a switch is explained, in the docs of the version that is
+/// printing it: a link to `main` would describe a newer ccnm, and break
+/// for good the day the heading is renamed.
+fn doc_link(switch: &str) -> String {
+    format!(
+        "https://github.com/xwfe/ccnm/blob/v{}/docs/configuration.md#{switch}",
+        crate::VERSION
+    )
+}
 
 fn say_once(
     state_dir: &Path,
@@ -272,81 +306,17 @@ fn say_once(
         let _ = std::fs::create_dir_all(parent);
     }
     let _ = std::fs::write(&marker, b"said\n");
-    Some((risk.text)(workspace, lang))
-}
-
-fn credentials_text(workspace: &str, lang: crate::Lang) -> String {
-    lang.pick(
+    let (switch, link) = (risk.switch, doc_link(risk.switch));
+    Some(lang.pick(
         format!(
-            "!! ccnm：workspace「{workspace}」开了 allow_unisolated_credentials。\n\
-             \n\
-             在 Runtime Node 上跑这个 workspace 命令的那个账号，能读到那台机器上\n\
-             的 Agent 登录凭据。模型跑的每一条命令也一样能读——而让它跑一条命令\n\
-             只需要一句 prompt，包括藏在某个它被要求读的文件里的 prompt。\n\
-             \n\
-             这道分隔是 ccnm 唯一不肯让步的东西。这个 workspace 已经接受了失去它，\n\
-             再没有别的东西挡在中间。\n\
-             \n\
-             想收回：在 Runtime Node 的 config.toml 里，把 [workspaces.{workspace}]\n\
-             下面的 allow_unisolated_credentials 删掉。\n\
-             \n\
-             这话只说一次。`ccnm doctor {workspace}` 里一直看得到。"
+            "!! {workspace} 开了 {switch}：{}。\n   代价和怎么关：{link}",
+            risk.means.0
         ),
         format!(
-            "!! ccnm: workspace \"{workspace}\" has allow_unisolated_credentials set.\n\
-             \n\
-             The account that runs this workspace's commands on the Runtime Node can\n\
-             read a known Agent login on that machine. So can every command the model\n\
-             runs -- and a prompt is all it takes to make it run one, including a\n\
-             prompt that arrives in a file it was asked to read.\n\
-             \n\
-             That separation is the one thing ccnm otherwise refuses to bend. This\n\
-             workspace has accepted losing it. Nothing else is standing in the way.\n\
-             \n\
-             To take it back: remove allow_unisolated_credentials from\n\
-             [workspaces.{workspace}] in the Runtime Node's config.toml.\n\
-             \n\
-             Said once. `ccnm doctor {workspace}` keeps showing it."
+            "!! {workspace} has {switch} set: {}.\n   What it costs, how to turn it off: {link}",
+            risk.means.1
         ),
-    )
-}
-
-fn unattended_text(workspace: &str, lang: crate::Lang) -> String {
-    lang.pick(
-        format!(
-            "!! ccnm：workspace「{workspace}」开了 allow_unattended_exec。\n\
-             \n\
-             这里的交互式会话，跑命令之前不再问你了。每一条 exec_command 都直接\n\
-             过，在 Runtime Node 上，以 runtime 那个账号的身份——而让模型跑一条\n\
-             命令只需要一句 prompt，包括藏在某个它被要求读的文件里的 prompt。\n\
-             \n\
-             那一问是最后一道有人在场的关卡。剩下的还是原来那些：runtime 账号自己\n\
-             的系统权限，以及工具够不出去的 workspace 根目录。\n\
-             \n\
-             想收回：在 Runtime Node 的 config.toml 里，把 [workspaces.{workspace}]\n\
-             下面的 allow_unattended_exec 删掉。\n\
-             \n\
-             这话只说一次。`ccnm doctor {workspace}` 里一直看得到。"
-        ),
-        format!(
-            "!! ccnm: workspace \"{workspace}\" has allow_unattended_exec set.\n\
-             \n\
-             Interactive sessions here no longer ask you before running a command.\n\
-             Every exec_command goes straight through, on the Runtime Node, as the\n\
-             account that runtime runs as -- and a prompt is all it takes to make the\n\
-             model run one, including a prompt that arrives in a file it was asked to\n\
-             read.\n\
-             \n\
-             That question was the last step with a person in it. What still stands is\n\
-             what always stood: the runtime account's own OS permissions, and the\n\
-             workspace root the tools cannot reach past.\n\
-             \n\
-             To take it back: remove allow_unattended_exec from\n\
-             [workspaces.{workspace}] in the Runtime Node's config.toml.\n\
-             \n\
-             Said once. `ccnm doctor {workspace}` keeps showing it."
-        ),
-    )
+    ))
 }
 
 /// Which of the two gates turned somebody down.
@@ -1385,6 +1355,37 @@ mod tests {
         assert!(warn_accepted_once(&state, "xdo", Accepted::unconfined(true)).is_none());
         assert!(warn_accepted_once(&state, "xdo", on).is_some());
         std::fs::remove_dir_all(&state).unwrap();
+    }
+
+    /// P94: both switches on is five lines, not thirty, and each one
+    /// points at a section that exists. The link carries this build's
+    /// version, so the heading has to be there by the time it is tagged;
+    /// renaming it breaks this test rather than every printed link.
+    #[test]
+    fn the_announcement_is_short_and_links_to_its_section() {
+        let state =
+            TestDir::adopt(std::env::temp_dir().join(format!("ccnm-p94-{}", uuid::Uuid::new_v4())));
+        let both = Accepted {
+            unconfined_exec: true,
+            unisolated_credentials: true,
+            unattended_exec: true,
+        };
+        let docs = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/configuration.md"),
+        )
+        .unwrap();
+        for lang in [crate::Lang::Zh, crate::Lang::En] {
+            let _ = std::fs::remove_dir_all(state.join("accepted-risks"));
+            let said = warn_accepted_once_in(&state, "keex", both, lang).unwrap();
+            assert_eq!(said.lines().count(), 5, "{said}");
+            assert!(said.contains("ccnm doctor keex"), "{said}");
+            for risk in &RISKS {
+                assert!(said.contains(&doc_link(risk.switch)), "{said}");
+                let heading = format!("### `{}`", risk.switch);
+                assert!(docs.contains(&heading), "{heading} is gone from the docs");
+            }
+        }
+        assert!(doc_link("x").contains(&format!("/blob/v{}/", crate::VERSION)));
     }
 
     #[test]

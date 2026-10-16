@@ -919,6 +919,109 @@ fn add_takes_a_project_path_and_names_it_after_the_directory() {
     assert_eq!(workspaces()["web"].root, canonical(code.join("plain")));
 }
 
+/// P99: `ccnm remove` (`ccnm rm`) is `ccnm ws remove` itself, the pair to
+/// `ccnm add`. Before it, `ccnm rm keex` fell through to the default
+/// subcommand and tried to open a workspace called `rm`, and the error
+/// then suggested `ccnm add rm`.
+#[test]
+fn remove_at_the_top_is_ws_remove() {
+    let dir = std::env::temp_dir().join(format!("ccnm-cli-{}-p99-remove", std::process::id()));
+    let _cleanup = TestDir::adopt(&dir);
+    let _ = std::fs::remove_dir_all(&dir);
+    for name in ["keex", "shun"] {
+        std::fs::create_dir_all(dir.join(name)).unwrap();
+    }
+    let body = format!(
+        "version = 1\nthis = \"runtime\"\n[nodes.fodelf]\nssh = \"ccnm-test-nowhere.invalid\"\n[nodes.runtime]\n[workspaces.keex]\nagent_node = \"fodelf\"\nroot = \"{0}/keex\"\n[workspaces.shun]\nagent_node = \"fodelf\"\nroot = \"{0}/shun\"\n",
+        dir.display()
+    );
+    let ssh = FakeSsh::install(
+        &dir,
+        "  *'internal agent-stop'*) printf '%s\\n' '{\"protocol\":1,\"tmux_session\":\"ccnm-keex\",\"killed\":true}' ;;",
+    );
+    let state = short_state("p99-remove");
+    // Exit code and everything printed, with the config's own path taken
+    // out so two copies of the config can be compared.
+    let remove = |args: &[&str], config: &Path| {
+        let out = ccnm()
+            .env("PATH", ssh.path())
+            .env("XDG_STATE_HOME", &state)
+            .env("CCNM_LANG", "zh")
+            .args(args)
+            .arg("--config")
+            .arg(config)
+            .output()
+            .unwrap();
+        let mut said = format!("{}{}", stdout(&out), stderr(&out));
+        for form in [config.to_path_buf(), config.canonicalize().unwrap()] {
+            said = said.replace(&form.display().to_string(), "<config>");
+        }
+        (out.status.code(), said)
+    };
+    let stopped_first = || {
+        ssh.calls()
+            .iter()
+            .any(|call| call.join(" ").contains("internal agent-stop"))
+    };
+
+    // What `ws rm` does is what the top-level command has to match.
+    let by_ws = dir.join("by-ws.toml");
+    std::fs::write(&by_ws, &body).unwrap();
+    let expected = remove(&["ws", "rm", "keex"], &by_ws);
+    assert_eq!(expected.0, Some(0), "{}", expected.1);
+    assert!(expected.1.contains("停了 keex 的会话"), "{}", expected.1);
+    assert!(stopped_first(), "{:?}", ssh.calls());
+    let left = std::fs::read_to_string(&by_ws).unwrap();
+    assert!(!left.contains("[workspaces.keex]"), "{left}");
+    assert!(left.contains("[workspaces.shun]"), "{left}");
+
+    for spelling in ["rm", "remove"] {
+        let config = dir.join(format!("{spelling}.toml"));
+        std::fs::write(&config, &body).unwrap();
+        ssh.forget();
+        assert_eq!(
+            remove(&[spelling, "keex"], &config),
+            expected,
+            "ccnm {spelling}"
+        );
+        assert!(stopped_first(), "ccnm {spelling}: {:?}", ssh.calls());
+        assert_eq!(
+            std::fs::read_to_string(&config).unwrap(),
+            left,
+            "ccnm {spelling}"
+        );
+    }
+}
+
+/// P99: `ccnm ls` and `ccnm ws ls` read like one command under two names,
+/// the way `ccnm add` and `ccnm ws add` are, but one asks the Agent what
+/// is running and the other only reads this machine's config. Each says
+/// where the other is, in both languages, on the line people scan.
+#[test]
+fn the_two_lists_point_at_each_other() {
+    // The description clap prints next to `list` on a help page.
+    fn list_line(lang: &str, args: &[&str]) -> String {
+        let out = ccnm()
+            .args(["--lang", lang])
+            .args(args)
+            .arg("--help")
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", stderr(&out));
+        let page = stdout(&out);
+        page.lines()
+            .find(|line| line.split_whitespace().next() == Some("list"))
+            .unwrap_or_else(|| panic!("no list line in:\n{page}"))
+            .to_string()
+    }
+    for lang in ["zh", "en"] {
+        let top = list_line(lang, &[]);
+        assert!(top.contains("ccnm ws ls"), "{lang}: {top}");
+        let ws = list_line(lang, &["ws"]);
+        assert!(ws.contains("ccnm ls"), "{lang}: {ws}");
+    }
+}
+
 /// P90. Everything a workspace usually wants in one `ws add`: before this
 /// flag `allow_unattended_exec` was the one setting that still had to be
 /// typed into the file by hand. Without it nothing is written, so a
@@ -2077,6 +2180,7 @@ fn short_aliases_are_subcommands_not_workspace_names() {
     for (alias, command) in [
         ("st", "status"),
         ("ls", "list"),
+        ("rm", "remove"),
         ("a", "attach"),
         ("dr", "doctor"),
         ("logs", "log"),

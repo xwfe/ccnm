@@ -72,6 +72,10 @@ enum Command {
     /// Add a project on this machine: `ccnm add <path>`, named after its
     /// directory. The same command as `ccnm ws add`
     Add(AddArgs),
+    /// Forget a project: `ccnm rm <name>`. Ends its session first if one
+    /// is running. The same command as `ccnm ws rm`
+    #[command(visible_alias = "rm")]
+    Remove(RemoveArgs),
     /// Add, list and remove workspaces without editing the config by hand
     #[command(visible_alias = "ws")]
     Workspace {
@@ -147,7 +151,8 @@ enum Command {
         all: bool,
     },
     /// Every managed project, one line each: running or not, for how long,
-    /// whether its tools are connected
+    /// whether its tools are connected (asks the Agent). Where each one's
+    /// directory is: `ccnm ws ls`
     #[command(visible_alias = "ls")]
     List,
     /// Past and present sessions, newest first
@@ -246,22 +251,29 @@ struct AddArgs {
     agent_node: Option<String>,
 }
 
+/// `ccnm remove` and `ccnm ws remove`: one command under two names (P99).
+#[derive(clap::Args, Clone)]
+struct RemoveArgs {
+    /// Workspace name from config.toml
+    name: String,
+    /// Also delete what ccnm kept for it on the Agent Node
+    /// (session records and its Claude working directory)
+    #[arg(long)]
+    purge: bool,
+}
+
 #[derive(Subcommand)]
 enum WorkspaceCommand {
     /// Point a name at a project directory on this machine
     Add(AddArgs),
-    /// Every workspace in the config, and whether its directory is here
+    /// Every workspace in the config, and whether its directory is here.
+    /// Reads only this machine's config, no network; whether each is
+    /// running: `ccnm ls`
     #[command(visible_alias = "ls")]
     List,
     /// Forget a workspace. Ends its session first if one is running
     #[command(visible_alias = "rm")]
-    Remove {
-        name: String,
-        /// Also delete what ccnm kept for it on the Agent Node
-        /// (session records and its Claude working directory)
-        #[arg(long)]
-        purge: bool,
-    },
+    Remove(RemoveArgs),
 }
 
 #[derive(Subcommand)]
@@ -589,6 +601,14 @@ fn zh_add_args(command: clap::Command) -> clap::Command {
         })
 }
 
+fn zh_remove_args(command: clap::Command) -> clap::Command {
+    command
+        .mut_arg("name", |a| a.help("config.toml 里的 workspace 名字"))
+        .mut_arg("purge", |a| {
+            a.help("连 ccnm 给它存的东西一起删：会话记录和官方 CLI 的工作目录。项目本身永远不碰")
+        })
+}
+
 /// The same command tree with Chinese descriptions.
 ///
 /// A table rather than a second set of doc comments on [`Cli`]: doc
@@ -645,19 +665,19 @@ fn zh_help(command: clap::Command) -> clap::Command {
         .mut_subcommand("add", |c| {
             zh_add_args(c).about("加一个这台机器上的项目：ccnm add <项目目录>，名字取目录名。和 ccnm ws add 是同一个命令")
         })
+        .mut_subcommand("remove", |c| {
+            zh_remove_args(c).about("删掉一个项目：ccnm rm <名字>。它要是还有会话在跑，先停掉。和 ccnm ws rm 是同一个命令")
+        })
         .mut_subcommand("workspace", |c| {
             c.about("加、列、删 workspace，不用手改配置文件")
                 .mut_subcommand("add", |c| {
                     zh_add_args(c).about("把一个名字指到这台机器上的某个项目目录")
                 })
                 .mut_subcommand("list", |c| {
-                    c.about("配置里有哪些 workspace，以及它们的目录在不在这台机器上")
+                    c.about("配置里有哪些 workspace，以及它们的目录在不在这台机器上。只读本机配置、不联网；在不在跑看 ccnm ls")
                 })
                 .mut_subcommand("remove", |c| {
-                    c.about("删掉一个 workspace。它要是还有会话在跑，先停掉")
-                        .mut_arg("purge", |a| {
-                            a.help("连 ccnm 给它存的东西一起删：会话记录和官方 CLI 的工作目录。项目本身永远不碰")
-                        })
+                    zh_remove_args(c).about("删掉一个 workspace。它要是还有会话在跑，先停掉")
                 })
         })
         .mut_subcommand("doctor", |c| {
@@ -699,7 +719,7 @@ fn zh_help(command: clap::Command) -> clap::Command {
                 .mut_arg("all", |a| a.help("那台机器上每一个 ccnm 会话，不只是这个 workspace 的"))
         })
         .mut_subcommand("list", |c| {
-            c.about("所有项目一项一行：在不在跑、跑了多久、工具通不通")
+            c.about("所有项目一项一行：在不在跑、跑了多久、工具通不通（要问 Agent）。目录在哪看 ccnm ws ls")
         })
         .mut_subcommand("log", |c| {
             c.about("跑过的和正在跑的会话，最新的在前")
@@ -852,6 +872,11 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
         Command::Add(args) => {
             workspace_command(&config_path()?, &WorkspaceCommand::Add(args.clone()), lang)
         }
+        Command::Remove(args) => workspace_command(
+            &config_path()?,
+            &WorkspaceCommand::Remove(args.clone()),
+            lang,
+        ),
         Command::Workspace { command } => workspace_command(&config_path()?, command, lang),
         Command::Doctor { workspace, agent } => {
             let path = config_path()?;
@@ -1803,7 +1828,9 @@ fn workspace_command(
             }
             Ok(0)
         }
-        WorkspaceCommand::Remove { name, purge } => remove_workspace(path, name, *purge, lang),
+        WorkspaceCommand::Remove(RemoveArgs { name, purge }) => {
+            remove_workspace(path, name, *purge, lang)
+        }
     }
 }
 
@@ -1853,8 +1880,8 @@ fn remove_workspace(path: &std::path::Path, name: &str, purge: bool, lang: Lang)
                 eprintln!(
                     "{}",
                     lang.pick(
-                        format!("{why}\n{name} 还留在配置里：还有东西没清掉，删了配置就再也找不到它们。处理完再跑一次 `ccnm workspace remove {name} --purge`；只想忘掉这个 workspace、不清数据，就去掉 --purge"),
-                        format!("{why}\n{name} stays in the config: something was not removed, and without the config nothing could find it again. Fix that and run `ccnm workspace remove {name} --purge` again, or drop --purge to forget the workspace and leave the data"),
+                        format!("{why}\n{name} 还留在配置里：还有东西没清掉，删了配置就再也找不到它们。处理完再跑一次 `ccnm rm {name} --purge`；只想忘掉这个 workspace、不清数据，就去掉 --purge"),
+                        format!("{why}\n{name} stays in the config: something was not removed, and without the config nothing could find it again. Fix that and run `ccnm rm {name} --purge` again, or drop --purge to forget the workspace and leave the data"),
                     )
                     .trim_start()
                 );

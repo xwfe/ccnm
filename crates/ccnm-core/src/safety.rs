@@ -275,14 +275,12 @@ const RISKS: [Risk; 2] = [
     },
 ];
 
-/// Where a switch is explained, in the docs of the version that is
-/// printing it: a link to `main` would describe a newer ccnm, and break
-/// for good the day the heading is renamed.
+/// Where a switch is explained, as a path in the ccnm repository rather
+/// than a full URL: the user found a GitHub address with a version tag in
+/// it too long to read (P94), and the path is what they would look for
+/// anyway.
 fn doc_link(switch: &str) -> String {
-    format!(
-        "https://github.com/xwfe/ccnm/blob/v{}/docs/configuration.md#{switch}",
-        crate::VERSION
-    )
+    format!("docs/configuration.md#{switch}")
 }
 
 fn say_once(
@@ -309,11 +307,11 @@ fn say_once(
     let (switch, link) = (risk.switch, doc_link(risk.switch));
     Some(lang.pick(
         format!(
-            "!! {workspace} 开了 {switch}：{}。\n   代价和怎么关：{link}",
+            "!! {workspace} 开了 {switch}：{}。\n   代价和怎么关：ccnm 仓库/{link}",
             risk.means.0
         ),
         format!(
-            "!! {workspace} has {switch} set: {}.\n   What it costs, how to turn it off: {link}",
+            "!! {workspace} has {switch} set: {}.\n   What it costs, how to turn it off: ccnm repo/{link}",
             risk.means.1
         ),
     ))
@@ -1358,9 +1356,9 @@ mod tests {
     }
 
     /// P94: both switches on is five lines, not thirty, and each one
-    /// points at a section that exists. The link carries this build's
-    /// version, so the heading has to be there by the time it is tagged;
-    /// renaming it breaks this test rather than every printed link.
+    /// points at a section that exists, by its path in the repository.
+    /// Renaming the heading breaks this test rather than every printed
+    /// pointer.
     #[test]
     fn the_announcement_is_short_and_links_to_its_section() {
         let state =
@@ -1379,13 +1377,14 @@ mod tests {
             let said = warn_accepted_once_in(&state, "keex", both, lang).unwrap();
             assert_eq!(said.lines().count(), 5, "{said}");
             assert!(said.contains("ccnm doctor keex"), "{said}");
+            assert!(!said.contains("https://"), "a path, not a URL: {said}");
             for risk in &RISKS {
-                assert!(said.contains(&doc_link(risk.switch)), "{said}");
+                let path = format!("docs/configuration.md#{}", risk.switch);
+                assert!(said.contains(&path), "{said}");
                 let heading = format!("### `{}`", risk.switch);
                 assert!(docs.contains(&heading), "{heading} is gone from the docs");
             }
         }
-        assert!(doc_link("x").contains(&format!("/blob/v{}/", crate::VERSION)));
     }
 
     #[test]

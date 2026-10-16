@@ -218,9 +218,13 @@ impl Ssh {
             // dead, against 45 seconds for a control command. The
             // asymmetry is deliberate: a doctor probe should fail fast,
             // but this connection *is* the session's tools, and losing it
-            // costs the person a `/mcp` reconnect. A laptop that slept for
-            // two minutes, a Wi-Fi handover, a router reboot -- the TCP
-            // survives all of those and so should the session.
+            // costs the person a `/mcp` reconnect. A blip of under about a
+            // minute and a half survives. A longer outage does not, and
+            // raising this does not change that: both ends keep sending
+            // (this keepalive, the Runtime's ping every 30 s), and macOS
+            // gives up retransmitting after 100-200 s -- measured with a
+            // 60-minute keepalive dying alongside this one
+            // (docs/research/2026-10-16-outage-experiment-plan.md).
             "ServerAliveInterval=15",
             "ServerAliveCountMax=20",
         ]

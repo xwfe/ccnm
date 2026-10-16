@@ -1756,6 +1756,94 @@ fn stop_and_print_speak_the_persons_language() {
     }
 }
 
+/// P95: the errors people meet in the first week, in Chinese, each saying
+/// what happened and what to type. They were English whatever the
+/// language; the missing-config one described the two `init` flags as
+/// `here are the projects, that is where Claude runs`; `ws add` before
+/// `init` trailed four lines of schema rules in parentheses; and a stop
+/// that could not reach the Agent printed the code and the bare ssh error.
+/// The code line stays first in every one of them.
+#[test]
+fn everyday_errors_say_what_happened_and_what_to_type() {
+    let dir = std::env::temp_dir().join(format!("ccnm-cli-{}-p95-errors", std::process::id()));
+    let _cleanup = TestDir::adopt(&dir);
+    let _ = std::fs::remove_dir_all(&dir);
+    let root = dir.join("keex");
+    std::fs::create_dir_all(&root).unwrap();
+    let ssh = FakeSsh::install(
+        &dir,
+        "  *) echo 'ssh: connect to host 100.79.121.33 port 22: Operation timed out' >&2; exit 255 ;;",
+    );
+    let state = short_state("p95-errors");
+    let zh = |args: &[&str], config: &Path| {
+        let out = ccnm()
+            .current_dir(&root)
+            .env("PATH", ssh.path())
+            .env("XDG_STATE_HOME", &state)
+            .env("CCNM_LANG", "zh")
+            .args(args)
+            .arg("--config")
+            .arg(config)
+            .output()
+            .unwrap();
+        (out.status.code(), stderr(&out))
+    };
+
+    let missing = dir.join("missing.toml");
+    let (code, err) = zh(&["status"], &missing);
+    assert_eq!(code, Some(10), "{err}");
+    assert!(
+        err.starts_with(&format!(
+            "CCNM_E_CONFIG:\n还没有配置文件：{}\n",
+            missing.display()
+        )),
+        "{err}"
+    );
+    assert!(
+        err.contains("项目在这台：ccnm init --agent <跑 AI 那台的 ssh 别名>"),
+        "{err}"
+    );
+
+    let (code, err) = zh(&["ws", "add"], &missing);
+    assert_eq!(code, Some(10), "{err}");
+    assert_eq!(
+        err,
+        "CCNM_E_CONFIG:\n还没有配置文件，workspace 没地方写\n先在这台机器上跑：ccnm init --agent <跑 AI 那台的 ssh 别名>\n"
+    );
+
+    let config = dir.join("config.toml");
+    let (code, err) = zh(&["init", "--agent", "ccnm-test-nowhere.invalid"], &config);
+    assert_eq!(code, Some(0), "{err}");
+    let (code, err) = zh(&["ws", "add"], &config);
+    assert_eq!(code, Some(0), "{err}");
+
+    let (code, err) = zh(&["ws", "add", "other"], &config);
+    assert_eq!(code, Some(34), "{err}");
+    assert!(err.contains("已经是 workspace「keex」了"), "{err}");
+    assert!(err.contains("直接用：  ccnm keex"), "{err}");
+
+    let (code, err) = zh(&["status", "nope"], &config);
+    assert_eq!(code, Some(10), "{err}");
+    assert_eq!(
+        err,
+        "CCNM_E_CONFIG:\n这台机器的配置里没有 workspace「nope」，有的是：keex\n是新项目的话：cd 到项目目录里，跑 ccnm ws add nope\n"
+    );
+
+    let (code, err) = zh(&["stop", "keex"], &config);
+    assert_eq!(code, Some(20), "{err}");
+    let lines: Vec<&str> = err.lines().collect();
+    assert_eq!(lines.len(), 3, "{err}");
+    assert_eq!(lines[0], "CCNM_E_AGENT_UNREACHABLE:");
+    assert_eq!(
+        lines[1],
+        "连不上 agent，没能停掉会话。网络通了再跑一次；先试这条通不通：ssh ccnm-test-nowhere.invalid true"
+    );
+    assert!(
+        lines[2].starts_with("原因：") && lines[2].ends_with("Operation timed out"),
+        "{err}"
+    );
+}
+
 /// Direction two, through the real binary: `ccnm <ws>` typed at the work
 /// machine, with the Runtime Node scripted.
 ///

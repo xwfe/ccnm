@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-10-16T12:16:00+09:00",
-  "current_task": "P94",
+  "last_updated": "2026-10-16T12:40:00+09:00",
+  "current_task": null,
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
     "source": "docs/research/codex-internal-wiring-2026-09-07.md",
@@ -4639,13 +4639,33 @@
     {
       "id": "P94",
       "title": "起会话时的提示说人话：开关提醒两行、会话摘要一行、连不上时说下一步",
-      "status": "in_progress",
+      "status": "completed",
       "depends_on": ["P93"],
-      "owner": "claude-code-opus-5-5",
+      "owner": null,
       "started_at": "2026-10-16T12:16:00+09:00",
-      "last_updated": "2026-10-16T12:16:00+09:00",
-      "completed_criteria": [],
-      "evidence": [],
+      "last_updated": "2026-10-16T12:40:00+09:00",
+      "completed_criteria": ["P94.1", "P94.2", "P94.3"],
+      "evidence": [
+        {
+          "kind": "offline",
+          "criteria": [
+            "P94.1"
+          ],
+          "ref": "crates/ccnm-core/src/safety.rs",
+          "commit": "314fe41",
+          "result": "两个开关都开时提醒从约 30 行变 5 行：每个开关一行（开了什么、意味着什么）+ 一行链到 https://github.com/xwfe/ccnm/blob/v<版本>/docs/configuration.md#<开关>，末尾一句只提醒这一次、ccnm doctor 里一直看得到。gh api 取 v0.17.0 渲染后的 configuration.md，user-content-allow_unisolated_credentials 与 user-content-allow_unattended_exec 两个锚点都在。新测试 the_announcement_is_short_and_links_to_its_section（中英各断言 5 行、两条链接、标题在文档里存在）；只说一次、关了再开再说的两条旧测试不改照过。真实二进制配临时配置跑 ccnm keex -c：第一次打 5 行，第二次不再打。"
+        },
+        {
+          "kind": "offline",
+          "criteria": [
+            "P94.2",
+            "P94.3"
+          ],
+          "ref": "crates/ccnm-cli/tests/cli.rs",
+          "commit": "c8f9363",
+          "result": "StartReport 摘要只剩一行（会话起好了 / 起好了，接着上次的对话 / 本来就在跑），替掉旧会话、Keychain 读不到时各多一行；RunReport 去掉起于哪个 Controller，会话 id 保留。-c 碰上已在跑时补一句 -c 没有另起新会话、要新开先 ccnm stop。退出终端后查状态报 AgentUnreachable 时打两行：连不上 <Agent 节点名>，网络通了 ccnm attach <ws>；原因：<ssh 原文>。新测试 losing_the_agent_after_the_terminal_says_which_machine_and_how_back_in 用假 ssh（agent-status 超时、退出 255）走真实二进制，旧代码上红（输出与用户 10-16 贴的一致：tmux server pid、continues 那行、CCNM_E_AGENT_UNREACHABLE），新代码绿；a_start_says_what_happened_in_one_line 锁摘要。文档：production-safety 第 1 条、usage 的 -c 情况、troubleshooting 超时一条补新提示。本机 macOS arm64：cargo fmt --check、clippy --workspace --all-targets -D warnings 通过；cargo test --workspace --no-fail-fast 1090 passed / 0 failed；python3 scripts/ci_gates.py 248 ran / 0 skipped / 0 failed；check_plan、git diff --check。没在 Linux 上跑，没在真机上看（要发版换装）。"
+        }
+      ],
       "blockers": []
     }
   ],
@@ -4716,7 +4736,7 @@
     "【2026-10-08 P80 时看到 / 只记不修】Agent 上的 MCP 转发 ccnm_agent（P50）在受管 Codex 会话里同样没配 tool_timeout_sec，Codex 对它只等 300 秒。它的 call_mcp_tool 默认等 60 秒、起 server 30 秒，用户给 Agent 上某个 server 配的 tool_timeout_sec 接近或超过 300 秒时（还没起的 server 起它的时间也算在内），调用会被 Codex 先截断、不发取消，照样在 Agent 上跑完。值取决于用户配置、不归 ccnm 的常量管，P80 没修。依据 docs/research/2026-10-08-p80-codex-tool-timeout.md 第 6 节。"
   ],
   "handoff": {
-    "next_action": "**2026-10-15 v0.17.0 之后补文档，current_task 仍为 null。** 用户要求同步完善文档。P93 漏了协议冻结要求的中立客户端测试，已补（v0.16.1 发布包上红、v0.17.0 上绿）；协议文档第 9 节写\"先探测再退回 initialize\"和 rmcp 3.5.1 的协商，6.2 节写 Claude Code 2.1.300 在新协议连接上不回 ping；架构文档加\"开会话之前先问 Runtime 开不开（P91）\"；入门文档加 ws add --allow-unattended-exec 与 -c；支持矩阵加 P91、P92、MCP 开场三行；排错手册补断网只重试一次、ping 日志噪音；P92/P93 研究记录按真机结果更新。Python 248/0。没排定下一阶段。\n\n之前的交接：\n**2026-10-15 发 v0.17.0、三台换装（P90–P93），current_task 为 null。** tag v0.17.0 -> 0836654，CI run 38739608817 与发布 run 38740792680 全绿，macOS 包 b28151db…（二进制 fc768740…）、Linux 包 d42b2842…（bb0f0d77…）。本机、fodelf（Controller pid 51487）、hpsrv ccrun 都是 0.17.0，六个日用 workspace doctor 可以用了；用户 10-13 起的 xdo 会话没停、只换文件。真机零额度：P93 经 ssh 重放换装前退出 1、换装后 0；P92 -c 接上 036b54ef 的对话；P91 临时写回 runtime_user（已按备份恢复，cmp 一致）时会话门、命令门各拒一次、没建会话。每个新会话多建一次 ssh，今晚 0.8–2.5 秒（下午 0.5–0.8 秒），文档已按实测改。记录 docs/research/2026-10-15-release-0.17.0.md。没排定下一阶段；没做的：心跳 ping 在新协议下是日志噪音、真实模型下的 -c。\n\n之前的交接：\n**2026-10-15 P93 完成，current_task 为 null。** rmcp 3.2.0 -> 3.5.1（5827f29），Claude Code 探测新协议后退回旧协议也拿得到工具；先红后绿的测试、真实二进制重放夹具、研究记录（134a68a）、排错手册（620ccf8）。本机 Rust 1087/0、Python 247/0。用户同意连同 P90–P92 推送、发 v0.17.0、三台换装；下一步：升版本号、推送、打 tag、等 release 构建，再换装并真机验 P93 重放、-c、P91 的放行路径。用户开着的会话不停，只换文件。\n\n之前的交接：\n**2026-10-15 立 P93 并认领。** 用户问 codingagent 会话为何总遇到 ccnm MCP 没起来：当天三次，14:39 是 runtime_user 拒绝（已删）、17:59 是本机 Wi-Fi 断网约 6.5 分钟、21:02 是 rmcp 3.2.0 的 bug（Claude Code 2.1.300 先发 server/discover，ccnm 起得慢它就退回旧协议 initialize，rmcp 已把连接定死成新协议，tools/list 全被拒）。用户同意把 rmcp 升到 3.5.1（改锁文件），并同意连同 P90–P92 推送、发版、三台换装。下一步：提交先红后绿的回归测试和升级。",
+    "next_action": "**2026-10-16 P94 完成，current_task 为 null。** 用户反馈 ccnm keex -c 的输出太长不想读。开关提醒每个两行加文档链接（链到本版本 tag 下 configuration.md 对应小节，链接标题有测试守着）；起会话摘要只说起没起好、是否接着上次的对话，tmux pid、会话 id、Controller、Aqua/keychain 不再默认打印（status/log/doctor 里有），Keychain 读不到才提醒；退出终端后连不上 Agent 时说连不上哪台、网络通了 ccnm attach 回去，原始 ssh 报错单独一行。Rust 1090/0、Python 248/0。没推送、没发版，真机上要换装后才看得到。只改了起会话这条路径；ccnm doctor、status、ls 等其他命令的输出没审，要不要同样收一遍等用户定。\n\n之前的交接：\n**2026-10-15 v0.17.0 之后补文档，current_task 仍为 null。** 用户要求同步完善文档。P93 漏了协议冻结要求的中立客户端测试，已补（v0.16.1 发布包上红、v0.17.0 上绿）；协议文档第 9 节写\"先探测再退回 initialize\"和 rmcp 3.5.1 的协商，6.2 节写 Claude Code 2.1.300 在新协议连接上不回 ping；架构文档加\"开会话之前先问 Runtime 开不开（P91）\"；入门文档加 ws add --allow-unattended-exec 与 -c；支持矩阵加 P91、P92、MCP 开场三行；排错手册补断网只重试一次、ping 日志噪音；P92/P93 研究记录按真机结果更新。Python 248/0。没排定下一阶段。\n\n之前的交接：\n**2026-10-15 发 v0.17.0、三台换装（P90–P93），current_task 为 null。** tag v0.17.0 -> 0836654，CI run 38739608817 与发布 run 38740792680 全绿，macOS 包 b28151db…（二进制 fc768740…）、Linux 包 d42b2842…（bb0f0d77…）。本机、fodelf（Controller pid 51487）、hpsrv ccrun 都是 0.17.0，六个日用 workspace doctor 可以用了；用户 10-13 起的 xdo 会话没停、只换文件。真机零额度：P93 经 ssh 重放换装前退出 1、换装后 0；P92 -c 接上 036b54ef 的对话；P91 临时写回 runtime_user（已按备份恢复，cmp 一致）时会话门、命令门各拒一次、没建会话。每个新会话多建一次 ssh，今晚 0.8–2.5 秒（下午 0.5–0.8 秒），文档已按实测改。记录 docs/research/2026-10-15-release-0.17.0.md。没排定下一阶段；没做的：心跳 ping 在新协议下是日志噪音、真实模型下的 -c。\n\n之前的交接：\n**2026-10-15 P93 完成，current_task 为 null。** rmcp 3.2.0 -> 3.5.1（5827f29），Claude Code 探测新协议后退回旧协议也拿得到工具；先红后绿的测试、真实二进制重放夹具、研究记录（134a68a）、排错手册（620ccf8）。本机 Rust 1087/0、Python 247/0。用户同意连同 P90–P92 推送、发 v0.17.0、三台换装；下一步：升版本号、推送、打 tag、等 release 构建，再换装并真机验 P93 重放、-c、P91 的放行路径。用户开着的会话不停，只换文件。",
     "scope": "2026-10-08 用户要求：零额度复现 Codex 300 秒工具超时、选修法、补外部入口文档、跑门禁、更新状态、粒度提交、不推送。改动：crates/ccnm-core（provider/codex 的 TOOL_TIMEOUT 与启动参数、测试；mcp/hooks 的 MAX_TIMEOUT 改 pub(crate)；mcp/output 注释）、docs/protocol/remote-workspace-mcp-v1.md、docs/usage.md、docs/troubleshooting.md、docs/research 的 P80 记录与夹具、ROADMAP、status。没动任何机器、已装的 ccnm 与配置；Codex 0.154.0 包和源码只下到会话 scratchpad。",
     "planning_validation": {
       "at": "2026-09-08T21:22:43+09:00",

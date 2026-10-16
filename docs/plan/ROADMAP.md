@@ -1232,3 +1232,17 @@ P73 当时把"外部 MCP workspace 里执行账号的安全没人验"留作挡�
 - **P94.3** 退出终端后查会话状态连不上 Agent 时，说"连不上哪台、网络通了怎么接回去"，原始报错单独一行。文档里描述这段提示的地方同步；Rust、Python、计划门禁通过。
 
 停止点：只改这条起会话路径上的提示；`ccnm doctor`、`ccnm status`、错误码与机器读的输出（`ccnm rpc`、MCP 文本）不动；不推送、不发版。
+
+### P95 — 日常命令的输出说人话：status、ls、stop、result 和常见报错
+
+**依赖 P94。** P94 只收了起会话那一条路径。2026-10-16 按同一标准——一行说发生了什么、一行说下一步；长解释进文档、终端只给链接；tmux 会话名、pid、launchd 域、keychain 这类诊断默认不打——审了 `ls`、`status`、`stop`、`attach`、`log`、`result`、`ws add`、`init` 和 `doctor` 的结论行，用真实二进制配假 ssh 跑出中英两种输出。下面的清单待用户确认，确认后按确认结果改写本节。
+
+- **P95.1** `ccnm status <ws>`：会话一行改成和 `ccnm status` 一样的"会话 <短 id> 运行中，已运行多久，几个终端 / 工具 通不通"，不打 tmux 会话名、`Aqua`、`keychain reachable`，读不到钥匙串才提醒；tmux 版本只在出错时打；`--session` 那行的状态用中文词、不打 `legacy`。`ws add` 写出来的 workspace（没绑 Agent 实例）每次都打两行 `CCNM_E_CONFIG … needs an Agent instance binding` 的写锁行，改掉。
+- **P95.2** `ccnm ls` / `ccnm status`：Agent 问不到时，状态写"问不到"而不是"没在跑"（现在是错的）；提示改成一行"连不上 <节点>，原因：<ssh 原文>"，不再把错误码和 ssh 原文拆成两行；tmux 版本那行只在出错时打。
+- **P95.3** `ccnm stop`：说项目名不说 tmux 会话名；Agent 那台上的 `stop` 现在只有英文，补中文。
+- **P95.4** `ccnm result` / `ccnm run --print` 的摘要：退出情况、轮数、耗时、费用用中文说成一行，token 明细不打，权限被拒只在有时打；`--- result ---`、`session directory on` 等标题中英都有。
+- **P95.5** 常见报错：没有配置文件、不认识的 workspace、`ws add` 前没 `init`、`ws add` 撞名、`status`/`stop`/`log`/`result` 连不上 Agent，各说清发生了什么和下一步，中英都有；错误码那一行不动。
+- **P95.6** `ccnm doctor` 还不能用时，结论下面多一行：先看哪一行，表怎么读给文档链接。诊断行一行不砍。
+- **P95.7** 文档里贴了旧输出的地方同步；每处改动有测试（尽量在旧代码上先红）；Rust、Python、计划门禁通过。
+
+停止点：不动机器读的输出（`ccnm rpc`、MCP 文本、错误码名、协议字段）；doctor 的诊断行不砍；不推送、不发版。

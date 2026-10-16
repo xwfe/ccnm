@@ -807,13 +807,13 @@ impl Overview {
                     ),
                 });
             }
-            if ws.sessions.first().is_some_and(|s| s.tools == Some(false))
+            // The provider's own way back: a Codex session was told to type
+            // a Claude command here (P95).
+            if let Some(s) = ws.sessions.first().filter(|s| s.tools == Some(false))
                 && ws.orphans().next().is_none()
             {
-                notes.push(lang.pick(
-                    format!("{name}：工具断了。在 Claude 里 /mcp → ccnm → Reconnect"),
-                    format!("{name}: tools are down. In Claude: /mcp -> ccnm -> Reconnect"),
-                ));
+                let hint = s.provider.tools_down_hint(lang);
+                notes.push(lang.pick(format!("{name}：工具{hint}"), format!("{name}: {hint}")));
             }
         }
         notes
@@ -1258,6 +1258,36 @@ mod tests {
             assert!(status.contains(lang.pick("问不到", "unknown")), "{status}");
             assert!(!status.contains(lang.pick("没在跑", "none")), "{status}");
         }
+    }
+
+    /// P95: `ccnm ls` tells a session whose tools are down how to get them
+    /// back in its own provider's terms; a Codex one was told to type
+    /// `/mcp` in Claude.
+    #[test]
+    fn the_list_says_how_each_provider_gets_its_tools_back() {
+        let mut codex = live("gld", "95d6516e", Some(false));
+        codex.provider = crate::provider::AgentProvider::Codex;
+        let overview = |session: LiveSession| Overview {
+            agents: vec![],
+            workspaces: vec![WorkspaceView {
+                name: "gld".into(),
+                root: None,
+                root_present: true,
+                agent: None,
+                sessions: vec![session],
+                servers: vec![],
+                guard_left_held: None,
+            }],
+            now: 1_000,
+        };
+        let said = overview(codex).render_list(Lang::Zh);
+        assert!(said.contains("! gld：工具断了——退出 Codex"), "{said}");
+        assert!(!said.contains("/mcp"), "{said}");
+        let said = overview(live("gld", "95d6516e", Some(false))).render_list(Lang::Zh);
+        assert!(
+            said.contains("! gld：工具断了——在 Claude 里：/mcp → ccnm → Reconnect"),
+            "{said}"
+        );
     }
 
     /// P95: `ccnm status` and `ccnm status <ws>` describe a session in the

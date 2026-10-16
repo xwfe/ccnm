@@ -169,7 +169,7 @@ ccnm   没在跑
 gld    运行中 · 1 个终端  59 分钟      断了
 xdo    运行中 · 1 个终端  1 小时 2 分  通
 
-! gld：工具断了。在 Claude 里 /mcp → ccnm → Reconnect
+! gld：工具断了——在 Claude 里：/mcp → ccnm → Reconnect
 详情：ccnm status
 ```
 

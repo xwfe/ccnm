@@ -148,11 +148,15 @@ pub fn read_output(session_dir: &Path, args: &ReadOutputArgs) -> Result<OutputPa
         )));
     }
 
+    // Read from up to three bytes before `offset`, to see whether it is
+    // inside a character, and three past the page, so that moving the
+    // start forward still leaves a page of `limit` bytes.
+    let back = offset.min(MAX_CONTINUATION as u64);
     let mut file = std::fs::File::open(&path)
         .map_err(|e| Error::internal("cannot open retained output").with_source(e))?;
-    file.seek(SeekFrom::Start(offset))
+    file.seek(SeekFrom::Start(offset - back))
         .map_err(|e| Error::internal("cannot seek retained output").with_source(e))?;
-    let mut buf = vec![0u8; limit];
+    let mut buf = vec![0u8; back as usize + MAX_CONTINUATION + limit];
     let mut filled = 0usize;
     while filled < buf.len() {
         match file.read(&mut buf[filled..]) {
@@ -162,31 +166,41 @@ pub fn read_output(session_dir: &Path, args: &ReadOutputArgs) -> Result<OutputPa
         }
     }
     buf.truncate(filled);
+    let (before, rest) = buf.split_at((back as usize).min(filled));
 
-    // Cut the tail back to a character boundary so the next offset starts
-    // on one too. Without this, paging a file with any non-ASCII in it
-    // puts a replacement character at every page seam.
     let mut notes: Vec<String> = Vec::new();
-    let at_end = offset + filled as u64 >= total_bytes;
-    // A running command may be halfway through writing a character.
+    let skip = inside_character(before, rest);
+    let start = offset + skip as u64;
+    if skip > 0 {
+        notes.push(format!(
+            "offset {offset} is inside a character; this page starts at offset {start}, where the next one begins"
+        ));
+    }
+    let page = &rest[skip..rest.len().min(skip + limit)];
+
+    let at_end = start + page.len() as u64 >= total_bytes;
+    // A finished stream is shown to its last byte. Anywhere else, a
+    // character the page cuts in half -- or a running command is halfway
+    // through writing -- is left whole for the next read, so every page
+    // seam is a character boundary and the next offset is never inside one.
     let end = if at_end && !running {
-        filled
+        page.len()
     } else {
-        boundary_before(&buf)
+        page.len() - unfinished_tail(page)
     };
-    if end == 0 && filled > 0 && !(at_end && running) {
+    if end == 0 && !page.is_empty() && !(at_end && running) {
         return Err(Error::invalid_args(format!(
             "limit {limit} is too small to hold one character at this offset"
         )));
     }
-    let text = match std::str::from_utf8(&buf[..end]) {
+    let text = match std::str::from_utf8(&page[..end]) {
         Ok(text) => text.to_string(),
         Err(_) => {
             notes.push("this stream is not valid UTF-8; invalid bytes were replaced".into());
-            String::from_utf8_lossy(&buf[..end]).into_owned()
+            String::from_utf8_lossy(&page[..end]).into_owned()
         }
     };
-    let next = offset + end as u64;
+    let next = start + end as u64;
     let eof = next >= total_bytes && !running;
 
     let footer = if eof {
@@ -216,7 +230,7 @@ pub fn read_output(session_dir: &Path, args: &ReadOutputArgs) -> Result<OutputPa
         text: rendered,
         output_ref: reference,
         stream,
-        offset,
+        offset: start,
         bytes: text.len(),
         total_bytes,
         next_offset: (!eof).then_some(next),
@@ -243,12 +257,68 @@ pub(crate) fn validate_ref(raw: &str) -> Result<String> {
     Ok(reference.to_string())
 }
 
-/// The largest prefix of `buf` that is a whole number of UTF-8
-/// characters, looking back at most four bytes.
-fn boundary_before(buf: &[u8]) -> usize {
-    match std::str::from_utf8(buf) {
-        Ok(_) => buf.len(),
-        Err(e) => e.valid_up_to(),
+/// The most continuation bytes a UTF-8 character has.
+const MAX_CONTINUATION: usize = 3;
+
+fn is_continuation(byte: u8) -> bool {
+    byte & 0xc0 == 0x80
+}
+
+/// How many bytes a character starting with `lead` has; 0 for a byte no
+/// character starts with.
+fn width(lead: u8) -> usize {
+    match lead {
+        0x00..=0x7f => 1,
+        0xc2..=0xdf => 2,
+        0xe0..=0xef => 3,
+        0xf0..=0xf4 => 4,
+        _ => 0,
+    }
+}
+
+/// How many bytes of `after` to skip so a page starts on a character:
+/// non-zero only when the offset between `before` and `after` is inside a
+/// character whose lead byte is in `before`.
+///
+/// Before P103 the page started where it was asked to. Inside a character
+/// its first byte is a continuation byte, and the tail check below found no
+/// valid prefix at all and refused a 4000-byte page as too small. A
+/// continuation byte with no lead within reach is skipped by nothing: it is
+/// a bad byte, and the page shows it as U+FFFD rather than dropping it.
+fn inside_character(before: &[u8], after: &[u8]) -> usize {
+    if !after.first().copied().is_some_and(is_continuation) {
+        return 0;
+    }
+    for (distance, &byte) in before.iter().rev().enumerate().map(|(i, b)| (i + 1, b)) {
+        if is_continuation(byte) {
+            continue;
+        }
+        let missing = width(byte).saturating_sub(distance);
+        return after
+            .iter()
+            .take(missing)
+            .take_while(|b| is_continuation(**b))
+            .count();
+    }
+    0
+}
+
+/// Bytes at the end of `page` that begin a character without finishing
+/// it: the ones to leave for the next read.
+///
+/// Only a true prefix counts. Before P103 this was "everything from the
+/// first invalid byte on", so one byte that was not UTF-8 ended every page
+/// before it and the next page, starting on it, had nothing to show.
+fn unfinished_tail(page: &[u8]) -> usize {
+    let lead = page
+        .iter()
+        .rev()
+        .take(MAX_CONTINUATION)
+        .position(|b| !is_continuation(*b))
+        .map(|from_end| page.len() - 1 - from_end);
+    match lead.map(|at| (at, std::str::from_utf8(&page[at..]))) {
+        Some((at, Err(e))) if e.valid_up_to() == 0 && e.error_len().is_none() => page.len() - at,
+        _ => 0,
     }
 }
 
@@ -392,16 +462,225 @@ mod tests {
     fn a_limit_too_small_for_one_character_says_so() {
         let body = "中".repeat(10).into_bytes();
         let (dir, r) = session("tiny", &body, b"");
-        let e = fails(
+        // From a character's start, and from inside one: the page then
+        // starts at the next character, which still does not fit.
+        for (limit, offset) in [(2, 0), (1, 0), (2, 1)] {
+            let e = fails(
+                &dir,
+                ReadOutputArgs {
+                    output_ref: r.clone(),
+                    limit: Some(limit),
+                    offset: Some(offset),
+                    ..Default::default()
+                },
+            );
+            assert_eq!(e.code(), ErrorCode::InvalidArgs);
+            assert!(e.message().contains("too small"), "{limit}@{offset}: {e}");
+        }
+        // Three bytes do hold one.
+        assert_eq!(
+            read(
+                &dir,
+                ReadOutputArgs {
+                    output_ref: r,
+                    limit: Some(3),
+                    offset: Some(1),
+                    ..Default::default()
+                },
+            )
+            .bytes,
+            3
+        );
+    }
+
+    /// The P103 defect, first half. A model reading the tail works out an
+    /// offset from `total_bytes`, and with any CJK or `✓` in the output it
+    /// lands inside a character about two times in three. The first byte
+    /// read was then a continuation byte, the "largest valid prefix" was
+    /// empty, and a 4000-byte page was refused as too small.
+    #[test]
+    fn an_offset_inside_a_character_starts_at_the_next_one() {
+        let body = "中".repeat(3000).into_bytes();
+        let (dir, r) = session("midchar", &body, b"");
+        let page = read(
             &dir,
             ReadOutputArgs {
                 output_ref: r,
-                limit: Some(2),
+                offset: Some(4000),
+                limit: Some(4000),
                 ..Default::default()
             },
         );
-        assert_eq!(e.code(), ErrorCode::InvalidArgs);
-        assert!(e.message().contains("too small"), "{e}");
+        // 4000 is one byte into the character at 3999.
+        assert_eq!(page.offset, 4002);
+        assert_eq!(page.bytes, 3999);
+        assert_eq!(page.next_offset, Some(8001));
+        assert!(
+            page.notes
+                .iter()
+                .any(|n| n.contains("offset 4000 is inside a character")
+                    && n.contains("starts at offset 4002")),
+            "{:?}",
+            page.notes
+        );
+        assert!(
+            page.text.contains("[offset 4000 is inside"),
+            "{}",
+            page.text
+        );
+    }
+
+    /// Every offset of a stream with one-, two-, three- and four-byte
+    /// characters: the page starts at the first character boundary at or
+    /// after it and holds exactly the text from there.
+    #[test]
+    fn any_offset_reads_from_the_next_character_boundary() {
+        let s = "a\u{e9}中😀z ✓ done\n";
+        let (dir, r) = session("everyoffset", s.as_bytes(), b"");
+        for requested in 0..=s.len() {
+            let page = read(
+                &dir,
+                ReadOutputArgs {
+                    output_ref: r.clone(),
+                    offset: Some(requested as u64),
+                    ..Default::default()
+                },
+            );
+            let start = (requested..=s.len())
+                .find(|&i| s.is_char_boundary(i))
+                .unwrap();
+            assert_eq!(page.offset, start as u64, "offset {requested}");
+            assert_eq!(&page.text[..page.bytes], &s[start..], "offset {requested}");
+            assert!(
+                page.notes.iter().all(|n| !n.contains("UTF-8")),
+                "offset {requested}: {:?}",
+                page.notes
+            );
+            assert_eq!(
+                page.notes.iter().any(|n| n.contains("inside a character")),
+                start != requested,
+                "offset {requested}: {:?}",
+                page.notes
+            );
+        }
+    }
+
+    /// The P103 defect, second half. One byte that is not UTF-8 in the
+    /// middle of a long output: the page ended just before it, the next
+    /// page started on it, and from there every page was refused.
+    #[test]
+    fn an_invalid_byte_does_not_stop_the_paging() {
+        let mut body = Vec::new();
+        for n in 0..300 {
+            body.extend_from_slice(format!("行 {n}\n").as_bytes());
+        }
+        body.push(0xff);
+        for n in 0..300 {
+            body.extend_from_slice(format!("✓ {n}\n").as_bytes());
+        }
+        let (dir, r) = session("invalid", &body, b"");
+        for limit in [64u32, 1000, 1024] {
+            let mut offset = 0u64;
+            let mut text = String::new();
+            let mut flagged = false;
+            let mut pages = 0;
+            loop {
+                let page = read(
+                    &dir,
+                    ReadOutputArgs {
+                        output_ref: r.clone(),
+                        offset: Some(offset),
+                        limit: Some(limit),
+                        ..Default::default()
+                    },
+                );
+                // Following next_offset never lands inside a character.
+                assert_eq!(page.offset, offset, "limit {limit}");
+                text.push_str(&page.text[..page.bytes]);
+                flagged |= page.notes.iter().any(|n| n.contains("not valid UTF-8"));
+                pages += 1;
+                assert!(pages < 1000, "limit {limit}: no progress");
+                match page.next_offset {
+                    Some(next) => {
+                        assert!(next > offset, "limit {limit}: stuck at {offset}");
+                        offset = next;
+                    }
+                    None => break,
+                }
+            }
+            // Every byte once, in order, the bad one as U+FFFD.
+            assert_eq!(text, String::from_utf8_lossy(&body), "limit {limit}");
+            assert!(flagged, "limit {limit}: the replacement went unmentioned");
+        }
+    }
+
+    /// Moving forward is for an offset inside a *valid* character. A
+    /// continuation byte with no lead before it is just a bad byte, and
+    /// skipping it would lose it without a word.
+    #[test]
+    fn a_stray_continuation_byte_is_not_taken_for_the_middle_of_a_character() {
+        let mut body = b"a\x80".to_vec();
+        body.extend_from_slice(&[b'b'; 100]);
+        let (dir, r) = session("stray", &body, b"");
+        let page = read(
+            &dir,
+            ReadOutputArgs {
+                output_ref: r,
+                offset: Some(1),
+                limit: Some(10),
+                ..Default::default()
+            },
+        );
+        assert_eq!(page.offset, 1);
+        assert_eq!(&page.text[..page.bytes], "\u{fffd}bbbbbbbbb");
+        assert_eq!(page.next_offset, Some(11));
+        assert!(
+            page.notes.iter().any(|n| n.contains("not valid UTF-8")),
+            "{:?}",
+            page.notes
+        );
+        assert!(
+            page.notes.iter().all(|n| !n.contains("inside a character")),
+            "{:?}",
+            page.notes
+        );
+    }
+
+    /// A command still running may be halfway through writing a character:
+    /// that one is left for the next read, while a bad byte before it is
+    /// replaced, not a wall.
+    #[test]
+    fn a_running_command_s_unfinished_character_waits_for_the_next_read() {
+        let mut body = b"a\xffb\n".to_vec();
+        body.extend_from_slice(&"中".as_bytes()[..2]);
+        let (dir, r) = session("running", &body, b"");
+        let run = dir.join(&r);
+        jobs::Status::started("x", None).write(&run).unwrap();
+        let running = std::fs::File::create(run.join("running")).unwrap();
+        running.lock().unwrap();
+
+        let page = read(
+            &dir,
+            ReadOutputArgs {
+                output_ref: r.clone(),
+                ..Default::default()
+            },
+        );
+        assert!(page.running, "{}", page.text);
+        assert_eq!(&page.text[..page.bytes], "a\u{fffd}b\n");
+        assert_eq!(page.next_offset, Some(4));
+        // Nothing whole to read yet is "so far", not "too small".
+        let page = read(
+            &dir,
+            ReadOutputArgs {
+                output_ref: r,
+                offset: Some(4),
+                ..Default::default()
+            },
+        );
+        assert_eq!(page.bytes, 0);
+        assert_eq!(page.next_offset, Some(4));
+        drop(running);
     }
 
     #[test]

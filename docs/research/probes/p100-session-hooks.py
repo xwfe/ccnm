@@ -14,12 +14,17 @@
 sandbox-exec 只放本机出站，启动参数照 ccnm 的 launch_cmd，放在单独的 tmux server 里。钩子是
 一个记下 stdin、往 stdout 打标记的小脚本，不是 ccnm 自己的钩子——这里量的是 Claude Code。
 
+加 `--ccnm <ccnm 二进制>` 时另跑一轮：把真的 `ccnm internal session-hook` 挂在 SessionStart 和
+Stop 上（会话目录是临时的），看 P101/P102 的记录、压缩计数、交接和 `/clear` 之后带过去的话，
+是不是都进了真 Claude Code 发给模型的请求。
+
 用法（macOS，要 tmux 和 sandbox-exec）：
   python3 docs/research/probes/p100-session-hooks.py <仓库外的新输出目录> \\
-      --claude cc-300=/path/to/2.1.300/claude
+      --claude cc-300=/path/to/2.1.300/claude [--ccnm target/debug/ccnm]
 """
 
 import argparse
+import base64
 import json
 import os
 import shlex
@@ -161,6 +166,13 @@ class FakeModel:
         self.port = self.server.server_address[1]
 
 
+def ccnm_hook(ccnm, session_dir):
+    """The command ccnm's settings.json runs (crates/ccnm-core/src/session/hook.rs)."""
+    wire = json.dumps({"protocol": 1, "session_dir": str(session_dir)}, separators=(",", ":"))
+    payload = base64.urlsafe_b64encode(wire.encode()).rstrip(b"=").decode()
+    return f"{shlex.quote(ccnm)} internal session-hook --payload {payload}"
+
+
 class Probe:
     def __init__(self, out, claude):
         self.out, self.claude = out, claude
@@ -200,11 +212,11 @@ class Probe:
         self.tmux = ["tmux", "-S", self.sock, "-f", "/dev/null"]
         self.steps = []
 
-    def argv(self, extra):
+    def argv(self, extra, settings="settings.json"):
         return ["sandbox-exec", "-f", str(self.out / "no-egress.sb"), self.claude,
                 "--model", "claude-opus-5-5", "--tools", "",
                 "--mcp-config", str(self.out / "mcp.json"), "--strict-mcp-config",
-                "--settings", str(self.out / "settings.json"),
+                "--settings", str(self.out / settings),
                 "--setting-sources", "user,project,local", "--permission-mode", "default"] + extra
 
     def env(self):
@@ -213,10 +225,10 @@ class Probe:
                 "DISABLE_TELEMETRY": "1", "DISABLE_ERROR_REPORTING": "1", "DISABLE_AUTOUPDATER": "1",
                 "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"}
 
-    def start(self, name, extra):
+    def start(self, name, extra, settings="settings.json"):
         inner = "cd " + shlex.quote(str(self.cwd)) + " && env -i " + \
             " ".join(f"{k}={shlex.quote(v)}" for k, v in self.env().items()) + " " + \
-            " ".join(shlex.quote(a) for a in self.argv(extra)) + "; echo P100-EXIT=$?; sleep 600"
+            " ".join(shlex.quote(a) for a in self.argv(extra, settings)) + "; echo P100-EXIT=$?; sleep 600"
         subprocess.run(self.tmux + ["new-session", "-d", "-s", name, "-x", "160", "-y", "45", inner],
                        check=True)
         time.sleep(10)
@@ -401,10 +413,90 @@ class Probe:
                                       if "projects" in str(p))}
 
 
+class CcnmProbe(Probe):
+    """The same Claude Code, with ccnm's own session hook beside the logger."""
+
+    def __init__(self, out, claude, ccnm):
+        super().__init__(out, claude)
+        self.first_dir, self.fork_dir = out / "session-a", out / "session-b"
+        base = (out / "settings.json").read_text()
+        for path, settings in [(self.first_dir, "settings.json"), (self.fork_dir, "settings-fork.json")]:
+            path.mkdir()
+            doc = json.loads(base)
+            for event in ["SessionStart", "Stop"]:
+                doc["hooks"][event].append(
+                    {"hooks": [{"type": "command", "command": ccnm_hook(ccnm, path)}]})
+            (out / settings).write_text(json.dumps(doc))
+
+    @staticmethod
+    def kept(path):
+        f = path / "conversations.json"
+        return json.loads(f.read_text()) if f.exists() else None
+
+    def say(self, name, text, timeout=60):
+        before = len(self.model.requests)
+        self.keys(name, text)
+        self.wait_requests(before, timeout)
+        return before
+
+    def run(self):
+        s1, s3 = str(uuid.uuid4()), str(uuid.uuid4())
+        name = "probe"
+        a, b = self.first_dir, self.fork_dir
+        try:
+            self.start(name, ["--session-id", s1])
+            since = self.say(name, "hello one")
+            self.step("startup", kept=self.kept(a),
+                      how_to_hand_off_in=self.requests_with("ccnm: when the user wants to move on"))
+            for n, said in [(1, "compacted once"), (2, "compacted 2 times"), (3, "compacted 3 times")]:
+                self.say(name, "/compact")
+                time.sleep(2)
+                since = self.say(name, f"after compact {n}")
+                self.step(f"compact-{n}", kept=self.kept(a), said_in=self.requests_with(said, since),
+                          do_not_wait_in=self.requests_with("Do not wait for the task", since))
+            self.say(name, "write the HANDOFF now")
+            handoff = a / "handoff.md"
+            self.step("handoff", kept_handoff=handoff.read_text() if handoff.exists() else None)
+            self.say(name, "/clear", 10)
+            time.sleep(3)
+            since = self.say(name, "first after clear")
+            self.step("clear", kept=self.kept(a), handoff_left=handoff.exists(),
+                      carried_in=self.requests_with("the user typed /clear", since),
+                      handoff_text_in=self.requests_with("Goal: P100 probe", since))
+            cleared = self.kept(a)["ids"][-1]
+            self.say(name, "/compact")
+            time.sleep(2)
+            self.say(name, "after compact on the cleared one")
+            count = self.kept(a)["compactions"]
+            self.keys(name, "/exit")
+            time.sleep(5)
+            subprocess.run(self.tmux + ["kill-session", "-t", name], capture_output=True)
+
+            # What work::start_fresh does for `--continue`: seed the count.
+            (b / "conversations.json").write_text(json.dumps({"ids": [], "compactions": count}))
+            self.start("probe2", ["--session-id", s3, "--resume", cleared, "--fork-session"],
+                       "settings-fork.json")
+            self.say("probe2", "/compact")
+            time.sleep(2)
+            since = self.say("probe2", "after compact on the fork")
+            self.step("fork", seeded=count, kept=self.kept(b),
+                      said_in=self.requests_with(f"compacted {count + 1} time", since),
+                      pane=self.pane("probe2", "c-fork"))
+        finally:
+            subprocess.run(self.tmux + ["kill-server"], capture_output=True)
+            try:
+                os.unlink(self.sock)
+            except OSError:
+                pass
+            self.model.server.shutdown()
+        return {"session": s1, "fork": s3, "steps": self.steps}
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("out")
     parser.add_argument("--claude", action="append", required=True, help="name=path")
+    parser.add_argument("--ccnm", help="a ccnm binary: also run its session hook in real Claude Code")
     args = parser.parse_args()
     out = Path(args.out).resolve()
     out.mkdir(parents=True)
@@ -413,6 +505,10 @@ def main():
         name, path = spec.split("=", 1)
         version = subprocess.run([path, "--version"], capture_output=True, text=True).stdout.strip()
         summary[name] = {"version": version, **Probe(out / name, path).run()}
+        if args.ccnm:
+            ccnm = str(Path(args.ccnm).resolve())
+            summary[f"{name}-ccnm"] = {"version": version,
+                                       **CcnmProbe(out / f"{name}-ccnm", path, ccnm).run()}
     (out / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n")
 
 

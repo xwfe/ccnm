@@ -804,6 +804,11 @@ pub struct LiveSession {
     /// model still answers, and every tool it has is gone.
     #[serde(default)]
     pub tools: Option<bool>,
+    /// How often the session's current conversation has been compacted,
+    /// when it has been (P102): the person sees how long the window has
+    /// been going on summaries, not only the model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compactions: Option<u32>,
 }
 
 impl LiveSession {
@@ -1155,6 +1160,7 @@ mod tests {
                     keychain: Some(true),
                 }),
                 tools: Some(true),
+                compactions: None,
             }],
             records: vec![SessionRecord {
                 session: id.into(),

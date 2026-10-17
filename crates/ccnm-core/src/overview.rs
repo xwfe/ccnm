@@ -642,13 +642,25 @@ pub(crate) fn session_rows(s: &LiveSession, now: u64, lang: Lang) -> Vec<Vec<Str
         0 => lang.pick("没有终端接着".to_string(), "detached".to_string()),
         n => lang.pick(format!("{n} 个终端接着"), format!("{n} attached")),
     };
+    // P102: a window that has run on summaries for a while is worth
+    // seeing from outside it too.
+    let compacted = match s.compactions {
+        Some(1) => lang
+            .pick("，这段对话压缩过 1 次", ", conversation compacted once")
+            .into(),
+        Some(n) if n > 1 => lang.pick(
+            format!("，这段对话压缩过 {n} 次"),
+            format!(", conversation compacted {n} times"),
+        ),
+        _ => String::new(),
+    };
     let mut rows = vec![
         vec![
             lang.pick("会话", "session").into(),
             s.session.as_deref().map(short).unwrap_or("-").into(),
             lang.pick(
-                format!("运行中，已运行 {up}，{terminals}"),
-                format!("running for {up}, {terminals}"),
+                format!("运行中，已运行 {up}，{terminals}{compacted}"),
+                format!("running for {up}, {terminals}{compacted}"),
             ),
         ],
         vec![
@@ -1069,6 +1081,7 @@ mod tests {
             attached: 1,
             context: None,
             tools,
+            compactions: None,
         }
     }
 
@@ -1314,6 +1327,22 @@ mod tests {
             said,
             "  会话     d13df3ae 运行中，已运行 1 小时 1 分，没有终端接着\n  工具              通\n"
         );
+        // P102: how long the window has run on summaries, when it has.
+        s.compactions = Some(3);
+        let said = block(&session_rows(&s, 1_000 + 3_700, Lang::Zh));
+        assert!(
+            said.contains("没有终端接着，这段对话压缩过 3 次\n"),
+            "{said}"
+        );
+        let said = block(&session_rows(&s, 1_000 + 3_700, Lang::En));
+        assert!(
+            said.contains("detached, conversation compacted 3 times\n"),
+            "{said}"
+        );
+        s.compactions = Some(1);
+        let said = block(&session_rows(&s, 1_000 + 3_700, Lang::En));
+        assert!(said.contains("conversation compacted once\n"), "{said}");
+        s.compactions = None;
 
         s.context = Some(crate::session::Context {
             manager: Some("Background".into()),

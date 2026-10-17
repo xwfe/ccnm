@@ -1861,6 +1861,7 @@ fn status_and_ls_say_what_the_person_needs_and_nothing_untrue() {
                 keychain: Some(true),
             }),
             tools: Some(true),
+            compactions: None,
         }],
         records: vec![],
         other_instances: vec![],

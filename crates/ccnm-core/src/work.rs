@@ -2003,6 +2003,11 @@ fn live_sessions(
                 attached: live.attached,
                 context,
                 tools: tools_up,
+                compactions: dir
+                    .as_ref()
+                    .and_then(session::hook::read)
+                    .map(|kept| kept.compactions)
+                    .filter(|n| *n > 0),
             }
         })
         .collect()
@@ -4164,6 +4169,13 @@ mod tests {
             r#"{"mcpServers":{"ccnm":{"command":"/usr/bin/ssh","args":["-T","home","ccnm","internal","mcp-serve","--payload","eyJwIjoxfQ"]}}}"#,
         )
         .unwrap();
+        // What the session hook kept (P102): this conversation was
+        // compacted three times.
+        std::fs::write(
+            session_dir.conversations(),
+            format!(r#"{{"ids":["{id}"],"compactions":3}}"#),
+        )
+        .unwrap();
 
         let fake = FakeRunner::new();
         fake.push(Output::exited(0, "tmux 3.7c\n")); // -V
@@ -4200,6 +4212,11 @@ mod tests {
             "Background, keychain reachable"
         );
         assert_eq!(rep.sessions[0].tools, Some(true));
+        assert_eq!(rep.sessions[0].compactions, Some(3));
+        assert_eq!(
+            rep.sessions[1].compactions, None,
+            "nothing kept, nothing said"
+        );
         assert_eq!(rep.sessions[1].session.as_deref(), Some("no-such-session"));
         assert_eq!(rep.sessions[1].context, None);
         assert_eq!(
@@ -4220,7 +4237,9 @@ mod tests {
         let text = rep.render_at(crate::Lang::En, 1_788_496_263 + 60);
         assert!(
             text.contains("xshun\n  session  ")
-                && text.contains("1 attached\n  tools             connected\n"),
+                && text.contains(
+                    "1 attached, conversation compacted 3 times\n  tools             connected\n"
+                ),
             "{text}"
         );
         assert!(

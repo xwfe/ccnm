@@ -2115,6 +2115,7 @@ mod tests {
                         keychain: Some(true),
                     }),
                     tools: Some(true),
+                    compactions: None,
                 }],
             }),
         }

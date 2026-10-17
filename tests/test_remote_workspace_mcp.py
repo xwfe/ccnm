@@ -694,6 +694,31 @@ agent_node = "agent"
                     self.search_lines(client, {**base, **extra, "include_hidden": True}), [".env"]
                 )
 
+    def test_search_text_searches_one_named_file(self):
+        """P104：path 可以是一个文件（原生 Grep 收文件）；能搜什么和 read_file 能读什么一致，
+        .git 永远不搜——包括经符号链接（以前 path 是指向 .git 的链接目录时会把 .git 的内容发回来）。"""
+        (self.root / "src").mkdir()
+        (self.root / "src" / "a.rs").write_text("needle\nneedle needle\n", encoding="utf-8")
+        (self.root / "src" / "b.rs").write_text("needle\n", encoding="utf-8")
+        (self.root / ".env").write_text("needle=1\n", encoding="utf-8")
+        (self.root / ".git").mkdir()
+        (self.root / ".git" / "config").write_text("needle\n", encoding="utf-8")
+        (self.root / "gitdir").symlink_to(".git")
+        client = self.client("demo", "read", "neutral-search-file")
+        self.assertEqual(
+            self.search_lines(client, {"query": "needle", "path": "src/a.rs", "output_mode": "count"}),
+            ["src/a.rs:2"],
+        )
+        # 点了名的 dotfile 照搜，不用 include_hidden。
+        self.assertEqual(
+            self.search_lines(client, {"query": "needle", "path": ".env", "output_mode": "files_with_matches"}),
+            [".env"],
+        )
+        for path in (".git/config", ".git", "gitdir"):
+            with self.subTest(path=path):
+                got = result_text(client.call_tool("search_text", {"query": "needle", "path": path}))
+                self.assertTrue(got.startswith("CCNM_E_POLICY:"), got)
+
     def version_of(self, client: McpClient, path: str) -> str:
         footer = result_text(client.call_tool("read_file", {"path": path})).rsplit("; version ", 1)
         self.assertEqual(len(footer), 2, footer)

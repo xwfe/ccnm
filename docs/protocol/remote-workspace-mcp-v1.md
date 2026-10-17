@@ -22,6 +22,7 @@
 > 2026-10-07（P79）**skill 要求替它跑的命令，在命令不问人的会话里会跑了**：`load_skill`（和 `prompts/get`）加载一个带 `` !`命令` `` 的 skill 时，在 Runtime 上执行这些命令、把输出填进正文；带 `hooks` 的 skill 加载后，它的 `PreToolUse` / `PostToolUse` 钩子在本会话余下的时间里围着这个 server 的工具跑，`PreToolUse` 可以拦下一次调用（`isError`，`CCNM_E_POLICY`），钩子说的话附在结果末尾的一个文本块里。只在命令本来就不问人的会话里这样：受管会话开了 `allow_unattended_exec` 或是 `--print`，以及 bridge 的 coding 模式；`read` 模式和要问人的交互会话里跟以前一样不跑。`allowed-tools`、`model`、`context: fork` 不再笼统地说"不起作用"，改成各自一行写明怎样。工具、参数、错误码都没变。见第 5.1 节。
 > 2026-10-09（P84）**Linux 上，会话结束时离开了进程组的后代也会被收掉**：Runtime 的 server 一启动就把自己设成后代的 subreaper（`PR_SET_CHILD_SUBREAPER`），命令里 `setsid` 出去的进程在它的命令退出后转到 server 名下。会话结束时，server 把这些进程连同各自的进程组一起 TERM，2 秒后 KILL，确认都没了才放写锁；再过 5 秒还在的，和 P43 一样不交写权，并点名剩下的 pid（第 7 节）。攥着管道的那种因此也不再让 server 白等 10 秒。macOS 没有 subreaper，行为不变。没有加工具、参数或错误码。server 被 `SIGKILL` 时它起的进程仍然没人收：收养它们的正是被杀的那个进程。实测与覆盖范围见 [P84 记录](../research/2026-10-09-p84-linux-orphans.md)。
 > 2026-10-17（P103）**修了 `read_output` 的一处缺陷**：offset 落在多字节字符中间，或者输出中间夹着一个不是 UTF-8 的字节时，它报 `limit N is too small to hold one character at this offset`——N 是几千，远够装一个字符；后一种情况读到那个字节之后每一页都这样，永远读不过去（fodelf 上 10-08 起 10 次）。现在 offset 落在一个字符中间时，这一页从下一个字符开头读（最多往后挪 3 字节），结果里多一行 `[offset N is inside a character; this page starts at offset M, …]`，`structuredContent` 的 `offset` 报实际的 M；坏字节换成 U+FFFD、带原有那行 `this stream is not valid UTF-8`，照常翻页。按 `next_offset` 往下读的调用方不会落进字符中间，结果和以前一样。offset 仍是字节偏移、仍然稳定，上限、默认值和错误码都没变；"limit 太小"只在 limit 真装不下一个字符（1–3 字节）时报。**这是修缺陷，不是改语义**，不升版本。
+> 2026-10-17（P104）**`search_text` 的 `path` 可以是一个文件**：模型照原生 Grep 传文件，以前一律报 `is not a directory`（fodelf 上 10-08 起 51 次），规则见第 5.2 节。`path` 是目录或不给的调用只有一处变了：`path` 写的或解析之后落在 `.git` 里（含指向 `.git` 的符号链接）时报 `CCNM_E_POLICY`。以前 `path: ".git"` 回答"没匹配"，而 `path` 是指向 `.git` 的符号链接目录时，`.git` 里的内容换了个路径名发给了模型——这违反工具说明里一直写着的 ".git never"，是修缺口，结果只会变少。`tools/list` 里 `search_text` 的说明有意改了一句：原句说 `.gitignore` 排除的文件永远不搜，点名的文件不再如此；两份 `tools-list-*.json` 已同步。
 
 面向的读者是**已经在本机跑着 Claude Code / Codex / 别的 MCP Host，但项目在另一台机器上的人**。它给你的不是一条裸 SSH 通道，而是一个绑定了 workspace 的远程项目工具集。
 
@@ -349,6 +350,18 @@ transport 的认证边界是 **OpenSSH identity + 它落到的那个 Runtime OS 
 | `include_hidden` | 布尔，默认 `false` | 也搜 dotfile 和点开头的目录。`.git` 不管怎么设都不搜 |
 
 计数按"匹配的行"算，和 `rg --count` 一样：一行里出现两次算一行，一个跨行匹配算一次。
+
+**`path` 可以是一个文件（P104，2026-10-17 加）**：照原生 Grep，`path` 是普通文件时只搜这个文件，结果里的路径和 `structuredContent.path` 都是它。能搜什么和 `read_file` 能读什么一致：
+
+| `path` 指向 | 结果 |
+| --- | --- |
+| 普通文本文件，包括 dotfile、被 `.gitignore` 排除的文件 | 搜它——点了名就搜，不用写 `include_hidden` |
+| workspace 里的符号链接 | 跟到目标去搜；指出 workspace 的报 `CCNM_E_POLICY`，和 `read_file` 是同一套路径策略 |
+| `.git`、`.git` 里的东西，或解析之后落进 `.git` 的（如 `gitdir -> .git`），文件和目录都算 | `CCNM_E_POLICY` |
+| 头 8 KiB 里有 NUL 的文件 | `CCNM_E_INVALID_ARGS`，说它是二进制（和 `read_file` 同一条线） |
+| fifo、socket、设备 | `CCNM_E_INVALID_ARGS` |
+
+给了 `glob` 或 `type` 时，它们对单个文件不起作用，结果里多一行 `path names one file, so glob was not used`（rg 对点名的文件本来就不看它们，原生 Grep 也就不看）。8 KiB 之后才有 NUL 的文件照搜，rg 把 NUL 当换行接着读，结果里写明 NUL 在哪个 offset。为什么这些要 ccnm 自己先查：rg 对命令行上点名的路径不看 `.gitignore`、隐藏文件规则和 glob，还跟符号链接，二进制也整份读，实测见 [P103–P104 记录](../research/2026-10-17-p103-p104-read-output-and-search-file.md)第 3 节。
 
 和原生 Grep 不一样的地方：默认仍是 `content`（原生默认只列文件，但冻结时这里就是内容，改默认值要升版本）；dotfile 默认不搜（原生默认搜，只排除版本库目录）；没有分开的 `-A` / `-B`、`head_limit` / `offset` 分页和只输出匹配部分的 `-o`。
 

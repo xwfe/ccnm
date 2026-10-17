@@ -342,7 +342,7 @@ fn native_views(tool: &str, args: &Map<String, Json>, root: &Path) -> Vec<View> 
 }
 
 /// A shell word that means the same thing when pasted into bash.
-fn shell_quote(word: &str) -> String {
+pub(crate) fn shell_quote(word: &str) -> String {
     if !word.is_empty()
         && word
             .chars()

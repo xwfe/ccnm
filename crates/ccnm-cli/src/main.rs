@@ -445,6 +445,13 @@ enum InternalCommand {
         #[arg(long)]
         payload: String,
     },
+    /// A remote Claude session's SessionStart and Stop hook: keeps which
+    /// conversation is current, counts compactions, carries a handoff over
+    /// /clear (P101, P102). Started by Claude Code, on this machine
+    SessionHook {
+        #[arg(long)]
+        payload: String,
+    },
     /// Carry one accepted Machine API run to its end; started by `ccnm rpc`
     ///
     /// The session's owner (P63): a process of its own, so the run does
@@ -1352,6 +1359,24 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
             InternalCommand::AgentTransport { payload } => {
                 let req: session::transport::Request = payload::decode(payload)?;
                 session::transport::exec(&req)?;
+                Ok(0)
+            }
+            // Exit 0 and say nothing on any failure: a hook that fails puts
+            // its stderr in front of the person, and none of this is worth
+            // that (session::hook).
+            InternalCommand::SessionHook { payload } => {
+                use std::io::Read as _;
+                let mut input = String::new();
+                let read = std::io::stdin()
+                    .take(16 * 1024 * 1024)
+                    .read_to_string(&mut input);
+                if let (Ok(_), Ok(req)) = (read, payload::decode::<session::hook::Request>(payload))
+                {
+                    let said = session::hook::handle(&session::Dir::at(&req.session_dir), &input);
+                    if !said.is_empty() {
+                        println!("{said}");
+                    }
+                }
                 Ok(0)
             }
             InternalCommand::AgentSkills { payload } => {

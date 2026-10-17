@@ -589,7 +589,7 @@ mod tests {
                 .collect()
         };
         let chosen = AgentTools::of(&[AgentTool::WebSearch, AgentTool::Tasks]);
-        let s = settings(true, &chosen, &[]);
+        let s = settings(true, &chosen, &[], None);
         let (allow, deny) = (list(&s, "allow"), list(&s, "deny"));
         assert_eq!(
             allow[crate::session::MCP_TOOLS.len()..],
@@ -608,7 +608,7 @@ mod tests {
         );
         // A colocated session keeps Claude's own settings untouched.
         assert_eq!(
-            settings(false, &chosen, &[]),
+            settings(false, &chosen, &[], None),
             serde_json::json!({ "permissions": {} })
         );
     }
@@ -621,7 +621,7 @@ mod tests {
     /// neither.
     #[test]
     fn settings_compact_early_and_say_what_to_keep() {
-        let s = settings(true, &AgentTools::none(), &[]);
+        let s = settings(true, &AgentTools::none(), &[], None);
         assert_eq!(s["autoCompactWindow"], 560_000);
         let groups = s["hooks"]["PreCompact"]
             .as_array()
@@ -659,7 +659,7 @@ mod tests {
             assert!(text.contains(needed), "{needed} missing from:\n{text}");
         }
         assert_eq!(text, format!("{COMPACT_INSTRUCTIONS}\n"));
-        let colocated = settings(false, &AgentTools::none(), &[]);
+        let colocated = settings(false, &AgentTools::none(), &[], None);
         assert!(colocated.get("autoCompactWindow").is_none(), "{colocated}");
         assert!(colocated.get("hooks").is_none(), "{colocated}");
     }

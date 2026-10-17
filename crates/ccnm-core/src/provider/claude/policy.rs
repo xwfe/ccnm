@@ -195,10 +195,18 @@ fn compact_hook() -> serde_json::Value {
 /// `autoCompactWindow` does not apply in a remote session; the environment
 /// variable does. A Claude Code that does not know the key ignores it
 /// (an unknown key was measured not to disturb the permissions).
+///
+/// `session_hook`: for an interactive session, the
+/// [`crate::session::hook`] command, run on `SessionStart` and `Stop`
+/// (P101, P102). Hooks listed here run alongside the user's own; a Claude
+/// Code with hooks turned off by the user or a managed policy just runs
+/// none of them, and `--continue` then falls back to the session's first
+/// conversation.
 pub fn settings(
     remote: bool,
     agent_tools: &AgentTools,
     agent_server: &[String],
+    session_hook: Option<&str>,
 ) -> serde_json::Value {
     if !remote {
         return serde_json::json!({ "permissions": {} });
@@ -213,13 +221,23 @@ pub fn settings(
         .into_iter()
         .chain(names(agent_tools, false))
         .collect();
+    let mut hooks = compact_hook();
+    if let Some(command) = session_hook {
+        // No matcher: every source of SessionStart (startup, clear,
+        // compact, fork, resume) and every Stop.
+        let run = serde_json::json!([{
+            "hooks": [{ "type": "command", "command": command }]
+        }]);
+        hooks["SessionStart"] = run.clone();
+        hooks["Stop"] = run;
+    }
     serde_json::json!({
         "permissions": {
             "allow": allow,
             "deny": deny,
         },
         "autoCompactWindow": AUTO_COMPACT_WINDOW,
-        "hooks": compact_hook(),
+        "hooks": hooks,
     })
 }
 
@@ -228,6 +246,7 @@ pub(crate) fn write_session_files(
     transport: Option<&Cmd>,
     agent_tools: &AgentTools,
     agent_server: Option<&agent_skills::Recorded>,
+    session_hook: Option<&str>,
 ) -> Result<()> {
     if let Some(cmd) = transport {
         std::fs::write(dir.mcp_config(), pretty(&mcp_config(cmd, agent_server))?)?;
@@ -237,7 +256,12 @@ pub(crate) fn write_session_files(
         .unwrap_or_default();
     std::fs::write(
         dir.settings(),
-        pretty(&settings(transport.is_some(), agent_tools, &permissions))?,
+        pretty(&settings(
+            transport.is_some(),
+            agent_tools,
+            &permissions,
+            session_hook.filter(|_| transport.is_some()),
+        ))?,
     )?;
     Ok(())
 }

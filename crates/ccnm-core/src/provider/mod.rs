@@ -304,9 +304,12 @@ impl AgentProvider {
         transport: Option<&Cmd>,
         agent_tools: &crate::config::AgentTools,
         agent_server: Option<&crate::mcp::agent_skills::Recorded>,
+        session_hook: Option<&str>,
     ) -> Result<()> {
         match self {
-            Self::Claude => claude::write_session_files(dir, transport, agent_tools, agent_server),
+            Self::Claude => {
+                claude::write_session_files(dir, transport, agent_tools, agent_server, session_hook)
+            }
             Self::Codex => Ok(()),
         }
     }

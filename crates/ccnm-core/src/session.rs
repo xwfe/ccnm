@@ -6,6 +6,8 @@
 //! ├── session.json     the Spec: everything needed to start it
 //! ├── mcp.json         --mcp-config: the one ssh transport to the Runtime Node
 //! ├── settings.json    --settings: which tools run without a prompt, and which are denied
+//! ├── conversations.json  Claude's conversation ids and compactions, from its hooks
+//! ├── handoff.md       the handoff the last conversation ended with, until /clear
 //! ├── stdout           Claude's stdout (in print mode, the JSON result)
 //! ├── stderr           Claude's stderr
 //! ├── supervisor.log   the supervisor's own diagnostics
@@ -34,6 +36,7 @@
 //! controller nothing once started. The rule: the session's lifetime is
 //! Claude's, not any outer process's.
 
+pub mod hook;
 pub mod transport;
 pub mod view;
 
@@ -426,6 +429,18 @@ impl Dir {
     pub fn context(&self) -> PathBuf {
         self.0.join("context")
     }
+
+    /// Claude's conversations in this session and how often the current
+    /// one was compacted, kept by [`hook`] (P101, P102).
+    pub fn conversations(&self) -> PathBuf {
+        self.0.join("conversations.json")
+    }
+
+    /// The handoff the last conversation ended with, until `/clear` hands
+    /// it to the next one (P102).
+    pub fn handoff(&self) -> PathBuf {
+        self.0.join("handoff.md")
+    }
 }
 
 /// Two facts about the place Claude is running, measured there rather
@@ -571,11 +586,17 @@ pub fn create(
     if let Some(recorded) = &agent_server {
         fs::write(dir.agent_skills(), pretty(recorded)?)?;
     }
+    // Only someone at a terminal clears, continues or hands off; a
+    // `--print` run is one answer and keeps no conversation.
+    let session_hook = matches!(spec.mode, Mode::Interactive { .. })
+        .then(|| hook::command(&exe, &dir))
+        .transpose()?;
     spec.provider().write_session_files(
         &dir,
         transport.as_ref(),
         &spec.agent_tools,
         agent_server.as_ref(),
+        session_hook.as_deref(),
     )?;
     Ok(dir)
 }
@@ -625,7 +646,7 @@ fn mcp_transport(spec: &Spec, ssh: &Ssh) -> Result<process::Cmd> {
 
 /// Compatibility helper for the current provider's session policy.
 pub fn settings(remote: bool, agent_tools: &crate::config::AgentTools) -> serde_json::Value {
-    crate::provider::claude::settings(remote, agent_tools, &[])
+    crate::provider::claude::settings(remote, agent_tools, &[], None)
 }
 
 /// How a session ended. Written by the supervisor as the last thing it
@@ -1316,6 +1337,61 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.message().contains("already exists"), "{err}");
+    }
+
+    /// P101/P102: an interactive remote session runs the session hook on
+    /// SessionStart and Stop, by this binary's absolute path and with this
+    /// session's directory in the payload; the PreCompact instructions stay
+    /// as they were. A `--print` run gets no session hook: nobody clears,
+    /// continues or hands off one answer.
+    #[test]
+    fn an_interactive_session_runs_the_session_hook_and_a_print_run_does_not() {
+        let hooks = |dir: &Dir| -> serde_json::Value {
+            let text = fs::read_to_string(dir.settings()).unwrap();
+            serde_json::from_str::<serde_json::Value>(&text).unwrap()["hooks"].clone()
+        };
+        let state = temp("session-hook");
+        let mut chat = spec();
+        chat.mode = Mode::Interactive {
+            prompt: None,
+            continues: None,
+        };
+        let dir = create(
+            &state,
+            &chat,
+            Some(&ssh()),
+            &Default::default(),
+            &Default::default(),
+        )
+        .unwrap();
+        let on = hooks(&dir);
+        assert!(on["PreCompact"].is_array(), "{on}");
+        for event in ["SessionStart", "Stop"] {
+            let command = on[event][0]["hooks"][0]["command"].as_str().unwrap();
+            let exe = std::env::current_exe().unwrap();
+            assert!(
+                command.starts_with(&crate::mcp::hooks::shell_quote(&exe.to_string_lossy())),
+                "{command}"
+            );
+            let wire = command.rsplit(' ').next().unwrap();
+            let req: hook::Request = payload::decode(wire).unwrap();
+            assert_eq!(req.session_dir, dir.path(), "{event}");
+        }
+
+        let mut print = spec();
+        print.id = "6f3f0f62-7a43-4c55-9d43-1e4b2b8b2a11".into();
+        let dir = create(
+            &state,
+            &print,
+            Some(&ssh()),
+            &Default::default(),
+            &Default::default(),
+        )
+        .unwrap();
+        let off = hooks(&dir);
+        assert!(off["PreCompact"].is_array(), "{off}");
+        assert!(off.get("SessionStart").is_none(), "{off}");
+        assert!(off.get("Stop").is_none(), "{off}");
     }
 
     /// A remote session gets the server that offers this machine's

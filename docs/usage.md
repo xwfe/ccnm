@@ -408,7 +408,7 @@ call_mcp_tool
 主要行为：
 
 - `read_file`、`list_files`、`search_text` 都出不了项目目录；`list_files` 在 git 仓库里按 `.gitignore` 过滤，不是 git 仓库时跳过 `node_modules`、`target`、`dist`、`build`、`venv`、`vendor`；
-- `search_text` 默认返回匹配行，也能只列文件（`output_mode: "files_with_matches"`）、按文件计数（`"count"`）、跨行匹配（`multiline`）、按文件类型过滤（`type: "rust"`）；dotfile 要写 `include_hidden: true` 才搜，`.git` 永远不搜；
+- `search_text` 默认返回匹配行，也能只列文件（`output_mode: "files_with_matches"`）、按文件计数（`"count"`）、跨行匹配（`multiline`）、按文件类型过滤（`type: "rust"`）；`path` 可以是目录，也可以是一个文件。搜目录时 dotfile 要写 `include_hidden: true` 才搜、`.gitignore` 排除的不搜；点名的文件只要 `read_file` 读得到就搜（二进制除外）；`.git` 永远不搜，经符号链接也不行；
 - `apply_patch` 是结构化写入路径：`add` 新建，`update` 精确替换片段，`write` 整体替换一个已存在的文件，`edit_notebook` 替换、插入、删除 Jupyter cell，`delete`、`move`；改已有文件都要带 `read_file`（或 `read_notebook`）给的版本号，一次调用里的所有文件要么全改、要么都不改；
 - `read_notebook` 按 cell 显示 Jupyter notebook：每个 cell 的 id、类型、源码，代码 cell 后面跟着输出，输出里的图作为图片。改 cell 用 `apply_patch` 的 `edit_notebook`，参数和 Claude Code 的 NotebookEdit 同名，见[协议第 5.4 节](protocol/remote-workspace-mcp-v1.md#54-read_notebook-与-edit_notebookjupyter-notebook-按-cell-读写p40-新增)。不执行 cell——要跑用 `exec_command` 调 `jupyter nbconvert --execute`；
 - `exec_command` 二选一：`cmd` 给程序和参数（argv，不经过 shell），`shell` 给一行命令、用 `bash -c` 跑（Runtime 上要有 bash，没有会报 `CCNM_E_DEPENDENCY`）。两种写法的权限和确认完全一样。默认最多跑 120 秒，`timeout_ms` 最大 600000（10 分钟），更久的用下面的后台命令；结果先给一段预览（默认 4 KiB，`preview_bytes` 最大 16 KiB）；

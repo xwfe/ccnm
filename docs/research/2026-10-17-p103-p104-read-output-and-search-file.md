@@ -75,3 +75,17 @@
 | 给了 `glob` 或 `type` | 不用，结果里写一行说明 | rg 对点名的文件本来就不管它们（原生 Grep 同样不管）；ccnm 自己按 glob 过滤会让同一个调用在原生和 ccnm 上结果不同 |
 
 `path` 是目录时只多了 `.git` 那一条拒绝，其余不变。
+
+### 3.3 实现与验证
+
+- `search.rs`：`Plan::new` 遇到 `path` 先走 `resolve_scope`——`path::resolve_read`（和 `read_file` 同一个函数）之后，按写的路径和解析后的路径各查一次有没有 `.git` 这一段，有就 `CCNM_E_POLICY`；目录照旧；不是普通文件的拒；普通文件用 `read.rs` 的 `peek` 读头 8 KiB 查 NUL（`read_file` 用的就是它）。文件模式下 `glob`、`type` 置空并记一行说明；argv 里不带 `--no-hidden`/`--hidden`、`--glob '!.*'`、`--glob '!.git'`——rg 对点名的文件本来就不看，留着只会让将来某个看它们的 rg 把点名的 dotfile 变成"没匹配"。8 KiB 之后才有 NUL 时，rg 的 `end` 事件带 `binary_offset`，结果里写 `the file has a NUL byte at offset N; ripgrep searched on past it, …`，不再套用搜目录时那句"没搜过第一个 NUL"。没匹配时页脚说 `in <文件>`。
+- `tools/list` 里 `search_text` 的说明改了一句（原句说 `.gitignore` 排除的文件永远不搜，点名的文件不再如此），`path` 参数的说明从"Directory to search"改成"File or directory to search"。两份 `tools-list-*.json` 按新说明同步，`external_mcp` 的逐字比对过。
+- 单元测试新增七条，**在旧代码上全红**：给文件三种输出模式和没匹配的页脚；点名的 dotfile、被忽略的文件、workspace 里的符号链接能搜；`gitdir`、`gitdir/config`、`gitlink`、`.git/config`、`.git`、`./.git/` 全是 `CCNM_E_POLICY` 且消息里没有绝对路径（**旧代码在 `gitdir` 上返回了 1 条匹配**，就是 `.git/config` 的内容）；二进制（报 NUL 在 6）和 fifo 被拒；10000 字节之后的 NUL 照搜并写明 offset 10000；`glob`/`type` 各种组合的那行说明；文件模式的 argv。原来"`README.md` 报 `CCNM_E_INVALID_ARGS`"那条断言是旧行为，删掉，`README.md` 改由第一条测试按文件搜。
+- 中立 MCP 客户端加一条：只读会话里 `path: "src/a.rs"` 计数、`path: ".env"` 不写 `include_hidden` 也搜到、`.git/config`、`.git`、`gitdir` 报 `CCNM_E_POLICY`。**拿旧 `search.rs` 编出的二进制跑，它报 `CCNM_E_INVALID_ARGS: src/a.rs is not a directory; search_text searches a tree`**——和 fodelf 日志里那句一样；新二进制上过。
+
+## 4. 没验的
+
+- 只在本机 macOS arm64、rg 15.2.0 上跑过；Linux、别的 rg 版本没跑。rg 对点名文件的处理是这次的实测前提，换版本时夹具 `probes/p104-rg-explicit-file.py` 可以直接复跑。
+- 没上真机：fodelf、hpsrv 还是 v0.18.0，没换装（要授权）；真实模型会不会因此少撞这两条报错没看。
+- `inside_character` 只看字节的形状：一个前导字节后面跟着形状对的续字节就当一个字符，不再细查过长编码、代理区这类"形状对、值不合法"的序列——从这种序列中间读，会跳过它剩下的最多 3 个字节（它们本来也只会显示成 U+FFFD）。
+- 没推送、没发版。

@@ -161,3 +161,5 @@ python3 docs/research/probes/p100-session-hooks.py <仓库外的新目录> \
 
 - `read_output` 的 offset 落在字符中间、或输出中间有非 UTF-8 字节时报"limit 太小"（2.4 节，10 次）：缺陷，修法是 offset 落在字符中间时挪到下一个字符开头、页尾只切掉没写完的最后一个字符。
 - `search_text` 的 `path` 收单个文件（2.4 节，51 次）：照原生 Grep。要在冻结协议里记一笔加法。
+
+这两条同日排成 P103、P104 并做完，见 [P103–P104 记录](2026-10-17-p103-p104-read-output-and-search-file.md)。

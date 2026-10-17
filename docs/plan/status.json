@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-10-17T05:00:00+09:00",
-  "current_task": null,
+  "last_updated": "2026-10-17T14:00:00+09:00",
+  "current_task": "P100",
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
     "source": "docs/research/codex-internal-wiring-2026-09-07.md",
@@ -2542,21 +2542,35 @@
       "id": "P51",
       "title": "v0.9.0 完成度、生命周期与文档审计",
       "status": "completed",
-      "depends_on": ["P50"],
+      "depends_on": [
+        "P50"
+      ],
       "owner": null,
       "started_at": "2026-09-23T14:45:00+09:00",
       "last_updated": "2026-09-23T15:14:02+09:00",
-      "completed_criteria": ["P51.1", "P51.2", "P51.3", "P51.4"],
+      "completed_criteria": [
+        "P51.1",
+        "P51.2",
+        "P51.3",
+        "P51.4"
+      ],
       "evidence": [
         {
           "kind": "review",
-          "criteria": ["P51.1", "P51.2", "P51.3"],
+          "criteria": [
+            "P51.1",
+            "P51.2",
+            "P51.3"
+          ],
           "ref": "docs/research/2026-09-23-lifecycle-and-docs-audit.md",
           "result": "起点 main/7f0e018 干净，Cargo 0.9.0，50 个历史阶段已完成。核对实现、契约与阶段证据，新增生命周期职责矩阵和导航，同步 README 与当前架构、安全、使用、配置、运维、排错、支持矩阵、协议说明和开发流程；保留历史证据。已复现 C51-01（Runtime relay 正常退出后同组子进程继续写、guard released、第二 writer 进入），仅披露未修复；登记 P52 pending。另列 CI 缺 Python/计划/协议门禁等后续项。"
         },
         {
           "kind": "offline",
-          "criteria": ["P51.1", "P51.4"],
+          "criteria": [
+            "P51.1",
+            "P51.4"
+          ],
           "ref": "docs/research/2026-09-23-lifecycle-and-docs-audit.md",
           "result": "macOS 26.6.2 arm64、rustc 1.98.0。cargo build/test --workspace --offline --locked 通过，Rust 935 项（全量测试退出 0，另用 --list 核对数目）；fmt 与严格 clippy 通过；Python 全量 209 passed 无 skip，文档调整后复跑仍通过；check_plan、check_protocol（38+29 fixtures）、git diff --check 通过。隔离探针输出 defect_reproduced=true 且 owned_child_cleaned=true；不是产品通过验收。未改 Rust、依赖、fixture 或 CI；不部署、不运行真实模型、不复验远端、不推送。"
         }
@@ -2567,22 +2581,39 @@
       "id": "P52",
       "title": "MCP relay 可靠收尾与写权交接",
       "status": "completed",
-      "depends_on": ["P51"],
+      "depends_on": [
+        "P51"
+      ],
       "owner": null,
       "started_at": "2026-09-25T00:08:00+09:00",
       "last_updated": "2026-09-25T01:20:20+09:00",
-      "completed_criteria": ["P52.1", "P52.2", "P52.3", "P52.4"],
+      "completed_criteria": [
+        "P52.1",
+        "P52.2",
+        "P52.3",
+        "P52.4"
+      ],
       "evidence": [
         {
           "kind": "offline",
-          "criteria": ["P52.1", "P52.2", "P52.3", "P52.4"],
+          "criteria": [
+            "P52.1",
+            "P52.2",
+            "P52.3",
+            "P52.4"
+          ],
           "ref": "docs/research/2026-09-25-p52-relay-group-cleanup.md",
           "commit": "818bed6",
           "result": "macOS 26.6.2 arm64、rustc 1.98.0。Runtime relay 与 Agent 本机 MCP 的 stdio server 改由 /bin/cat 锚进程持有进程组，任何关闭都整组 SIGKILL 并用 /bin/ps 确认，清不掉或查不了记残留，Runtime 写锁因此 abandoned 而非 released。新中立客户端回归在旧代码（stash crates/ 后重编）上失败于关闭后子进程仍在运行，新代码上通过；把 Stop 改回旧行为时 EOF、外部强杀、闲置/超时 3 条 Rust 测试失败。fmt、严格 clippy 通过；cargo test --workspace 946 passed / 0 failed，--test-threads=64 全过，relay 与 Agent MCP 的 20 条测试 64 线程连跑 5 轮全过；Python 全套 210 passed 无 skip；check_protocol 38+29 fixtures、test_check_protocol 24 passed。未覆盖：Linux；离开进程组的后代（测试钉住为边界）；真实二进制里组清不掉导致 abandoned 的端到端（需系统权限造不可杀进程）；OS 沙箱里的 server；ccnm 自身被 SIGKILL。未推送、未部署、未运行真实模型。"
         },
         {
           "kind": "real_nodes",
-          "criteria": ["P52.1", "P52.2", "P52.3", "P52.4"],
+          "criteria": [
+            "P52.1",
+            "P52.2",
+            "P52.3",
+            "P52.4"
+          ],
           "ref": "docs/research/2026-09-25-p52-relay-group-cleanup.md",
           "result": "用户本轮授权：hpsrv（Debian 13 / x86_64，内核 6.12.101）以 ccrun（uid 1002）身份跑，临时目录跑完即删，不装包、不改系统、不替换已装的 ccnm 0.8.0。本机交叉编译 x86_64-unknown-linux-musl（rustc 1.98.0；发布件是 ubuntu 原生 glibc 构建，此处不同）的 3b18d56 与修复前 ae06327 两个 ccnm 及 ccnm-core 单测程序。relay、Agent MCP、left_behind、写锁 28 条通过，relay 与 Agent MCP 20 条 64 线程 3 轮全过；新构建跑 tests/test_remote_workspace_mcp.py 45 条全过、探针 defect_reproduced=false；旧构建使新回归失败于关闭后子进程仍在运行，探针 defect_reproduced=true（C51-01 首次在 Linux 复现）。/bin/cat 在，/bin/kill、/bin/ps 来自 procps，ps 输出格式与 macOS 相同。未跑 Linux 上的 Rust 全量测试。清理：删 /home/ccrun/ccnm-p52-check 与 /root 上传包，无 ccrun 残留进程和 /tmp 测试目录；本机移除临时 musl 目标与交叉编译产物。"
         }
@@ -2593,22 +2624,37 @@
       "id": "P53",
       "title": "Python、计划与协议 CI 门禁",
       "status": "completed",
-      "depends_on": ["P52"],
+      "depends_on": [
+        "P52"
+      ],
       "owner": null,
       "started_at": "2026-09-25T01:25:00+09:00",
       "last_updated": "2026-09-25T10:32:05+09:00",
-      "completed_criteria": ["P53.1", "P53.2", "P53.3", "P53.4"],
+      "completed_criteria": [
+        "P53.1",
+        "P53.2",
+        "P53.3",
+        "P53.4"
+      ],
       "evidence": [
         {
           "kind": "offline",
-          "criteria": ["P53.1", "P53.2", "P53.3", "P53.4"],
+          "criteria": [
+            "P53.1",
+            "P53.2",
+            "P53.3",
+            "P53.4"
+          ],
           "ref": "docs/research/2026-09-25-p53-ci-gates.md",
           "commit": "650c705",
           "result": "macOS 26.6.2 arm64。新增 scripts/ci_gates.py：自行 cargo build -p ccnm-cli 并把 cargo 报告的 ccnm 交给 CCNM_BIN，跑 check_plan、check_protocol 与 tests/ 全部；skip、失败、出错、零条、二进制不是 ccnm 都退出非零，GitHub 上另出注解。ci.yml 两个平台 job 在 Rust 测试后调用；release.yml 两个平台 job 放在门禁步骤内、先于构建和上传，publish needs 两者；macOS CI job 加 45 分钟、两个 release job 加 60 分钟超时。漏洞量化：无 target/ 的副本用旧命令 210 条中 95 条跳过仍 OK、退出 0。tests/test_ci_gates.py 9 条（策略 7 条对临时目录跑真实脚本；工作流 2 条改前红、改后绿），PyYAML 独立核对结构一致。本机 ci_gates.py 通过：219 ran、0 skipped、0 failed。开发文档与 AGENTS.md 同步。"
         },
         {
           "kind": "offline",
-          "criteria": ["P53.2", "P53.3"],
+          "criteria": [
+            "P53.2",
+            "P53.3"
+          ],
           "ref": "docs/research/2026-09-25-p53-ci-gates.md",
           "commit": "7bc09a8",
           "result": "用户授权推送 main（7f0e018..7bc09a8，不打 tag）。GitHub Actions ci.yml run 36081836169 三个 job 全绿：test（macos-latest）的 Plan, protocol and Python gates 步骤 success 71 秒，linux-runtime（ubuntu-24.04）同一步 success 27 秒，msrv success。步骤结论经匿名 API 读取；日志需登录，线上测试条数未读到，按脚本判法成功即无 skip/失败/出错。线上只有通过的一次，失败阻断为本机与配置证据；release.yml 需推 tag 才运行，本阶段未推，首次线上执行将是下一次发版。"
@@ -4640,11 +4686,17 @@
       "id": "P94",
       "title": "起会话时的提示说人话：开关提醒两行、会话摘要一行、连不上时说下一步",
       "status": "completed",
-      "depends_on": ["P93"],
+      "depends_on": [
+        "P93"
+      ],
       "owner": null,
       "started_at": "2026-10-16T12:16:00+09:00",
       "last_updated": "2026-10-16T12:40:00+09:00",
-      "completed_criteria": ["P94.1", "P94.2", "P94.3"],
+      "completed_criteria": [
+        "P94.1",
+        "P94.2",
+        "P94.3"
+      ],
       "evidence": [
         {
           "kind": "offline",
@@ -4672,36 +4724,57 @@
       "id": "P95",
       "title": "日常命令的输出说人话：status、ls、stop、result 和常见报错",
       "status": "completed",
-      "depends_on": ["P94"],
+      "depends_on": [
+        "P94"
+      ],
       "owner": null,
       "started_at": "2026-10-16T13:10:00+09:00",
       "last_updated": "2026-10-16T14:30:00+09:00",
-      "completed_criteria": ["P95.1", "P95.2", "P95.3", "P95.4", "P95.5", "P95.6", "P95.7"],
+      "completed_criteria": [
+        "P95.1",
+        "P95.2",
+        "P95.3",
+        "P95.4",
+        "P95.5",
+        "P95.6",
+        "P95.7"
+      ],
       "evidence": [
         {
           "kind": "offline",
-          "criteria": ["P95.1", "P95.2"],
+          "criteria": [
+            "P95.1",
+            "P95.2"
+          ],
           "ref": "crates/ccnm-core/src/overview.rs",
           "commit": "38e7e5b",
           "result": "ccnm status <ws> 与 ccnm status 共用 overview::session_rows/block：会话短 id、已运行多久、几个终端、工具通不通，钥匙串读不到才多一行；不打 tmux 会话名、Aqua、keychain reachable；tmux 版本只在问不到时说；--session 那行用中文状态词、不打 legacy。没绑 Agent 实例的 workspace 不打写锁行（原来每次两行 CCNM_E_CONFIG … needs an Agent instance binding）。Agent 问不到时 ls 写问不到/unknown（原来 idle/没在跑），提示一行按节点名、不再在错误码处断行。工具断了按 provider 给提示（59e0e29：ls 对 Codex 会话原来也叫人去 Claude 里 /mcp）。新 CLI 测试 status_and_ls_say_what_the_person_needs_and_nothing_untrue 用假 ssh 走真实二进制，在旧代码上红（status keex 仍是旧格式）、新代码绿；单测 an_agent_that_cannot_be_asked_leaves_its_workspaces_unknown、a_session_is_described_without_tmux_names_or_launchd_domains、a_workspace_status_reads_like_the_overview、the_list_says_how_each_provider_gets_its_tools_back（旧写法上红）。doctor 的终端会话行仍用 LiveSession::describe，c208201 把 work::tests 里断言旧渲染的那条改成断言 describe 加新块。"
         },
         {
           "kind": "offline",
-          "criteria": ["P95.3", "P95.4"],
+          "criteria": [
+            "P95.3",
+            "P95.4"
+          ],
           "ref": "crates/ccnm-cli/tests/cli.rs",
           "commit": "00e2d72",
           "result": "stop 两台和 ws remove 共用一句：停了 keex 的会话 / keex 没有在跑的会话，没什么可停的（原来说 tmux 会话名 ccnm-keex，Agent 端只有英文）。--print 与 result 摘要一行：会话 id、Outcome::describe_in 的中文结局、AgentResult::brief 的轮数与费用，权限被拒和 Agent 自报错只在有时说；token 明细与 API 耗时不打；--- 结果 ---、会话目录在 <节点> 上 等标题中英都有，英文措辞不变。新 CLI 测试 stop_and_print_speak_the_persons_language 在旧代码上红（停了 ccnm-keex）、新代码绿；单测 a_print_summary_is_one_line_in_the_persons_language。"
         },
         {
           "kind": "offline",
-          "criteria": ["P95.5", "P95.6"],
+          "criteria": [
+            "P95.5",
+            "P95.6"
+          ],
           "ref": "crates/ccnm-cli/src/main.rs",
           "commit": "895294e",
           "result": "Config::load_in / workspace_in 给中英文案（load、workspace 仍是英文，rpc 与内部命令不变）：没有配置文件说两个 init 哪个给哪台；不认识的 workspace 说新项目怎么 ws add；ws add 前没 init 去掉括号里的配置校验原文；ws add 撞名、路径、节点选择补中文。status/stop/log/result 连不上 Agent 时第二行说连不上哪台、哪件事没做成、先试 ssh <别名> true，第三行原因放 ssh 原文，错误码行不动。doctor 不能用时结论上面一行点名第一个失败（没有就第一个没查）的行，并给 ccnm 仓库/docs/troubleshooting.md#doctor-的表怎么读（用户选的短路径），单测守着标题在；结论仍是最后一行。新 CLI 测试 everyday_errors_say_what_happened_and_what_to_type 在旧代码上红（没有配置文件那条还是英文）、新代码绿；单测 not_ready_says_which_row_to_start_with。"
         },
         {
           "kind": "offline",
-          "criteria": ["P95.7"],
+          "criteria": [
+            "P95.7"
+          ],
           "ref": "docs/troubleshooting.md",
           "commit": "15d0c2a",
           "result": "文档同步：使用说明（写锁行只有实例写法才有、ls 样例）、运维手册、排错手册（TOOLS DOWN 样例、doctor 表怎么读、ssh 超时那节）、入门，各处注明 v0.17.0 及以前的旧样子。用 scratchpad 的收集脚本（真实二进制 + 假 ssh，不连真机）对改前改后各跑一遍 ls/status/stop/attach/log/result/--print/init/ws add/常见报错的中英输出核对。本机 macOS arm64：cargo fmt --check、clippy --workspace --all-targets -D warnings 通过；cargo test --workspace --no-fail-fast 1099 passed / 0 failed；python3 scripts/ci_gates.py 248 ran / 0 failed；check_plan、git diff --check 通过。没在 Linux 上跑，没在真机上看（要发版换装）。"
@@ -4713,11 +4786,16 @@
       "id": "P96",
       "title": "工具断了时，Codex 会话的提示给一条照做不出错的路",
       "status": "completed",
-      "depends_on": ["P95"],
+      "depends_on": [
+        "P95"
+      ],
       "owner": null,
       "started_at": "2026-10-16T16:30:00+09:00",
       "last_updated": "2026-10-16T17:10:00+09:00",
-      "completed_criteria": ["P96.1", "P96.2"],
+      "completed_criteria": [
+        "P96.1",
+        "P96.2"
+      ],
       "evidence": [
         {
           "kind": "offline",
@@ -4736,11 +4814,17 @@
       "id": "P97",
       "title": "ccnm add <项目路径>：直接给路径加项目，名字取目录名",
       "status": "completed",
-      "depends_on": ["P96"],
+      "depends_on": [
+        "P96"
+      ],
       "owner": null,
       "started_at": "2026-10-16T17:40:00+09:00",
       "last_updated": "2026-10-16T18:30:00+09:00",
-      "completed_criteria": ["P97.1", "P97.2", "P97.3"],
+      "completed_criteria": [
+        "P97.1",
+        "P97.2",
+        "P97.3"
+      ],
       "evidence": [
         {
           "kind": "offline",
@@ -4760,11 +4844,17 @@
       "id": "P99",
       "title": "ccnm remove（简写 rm）和 add 配对，两个 list 的帮助互相指路",
       "status": "completed",
-      "depends_on": ["P97"],
+      "depends_on": [
+        "P97"
+      ],
       "owner": null,
       "started_at": "2026-10-16T23:10:00+09:00",
       "last_updated": "2026-10-16T23:40:00+09:00",
-      "completed_criteria": ["P99.1", "P99.2", "P99.3"],
+      "completed_criteria": [
+        "P99.1",
+        "P99.2",
+        "P99.3"
+      ],
       "evidence": [
         {
           "kind": "offline",
@@ -4778,6 +4868,48 @@
           "result": "顶层 ccnm remove（visible_alias rm）与 ccnm ws remove 共用 RemoveArgs（名字、--purge），走同一个 remove_workspace：先停会话再改配置；中文帮助共用 zh_remove_args。--purge 没清完时的提示从 ccnm workspace remove <名字> --purge 改成 ccnm rm <名字> --purge（两种写法都是同一个命令）。ccnm ls 的帮助补\"（要问 Agent）。目录在哪看 ccnm ws ls\"，ccnm ws ls 的补\"只读本机配置、不联网；在不在跑看 ccnm ls\"，中英都有。三条测试在旧代码上红：short_aliases_are_subcommands_not_workspace_names 加了 rm → remove（旧代码 unrecognized subcommand 'rm'）；remove_at_the_top_is_ws_remove 用假 ssh 对同一份配置分别跑 ws rm、rm、remove，退出码、输出（去掉配置路径）和删完的配置三者一样、都先发了 internal agent-stop（旧代码 ccnm rm keex 报 CCNM_E_CONFIG 没有 workspace「rm」…ccnm add rm <项目目录>，退出码 10）；the_two_lists_point_at_each_other 查 ccnm --help 和 ccnm ws --help 里 list 那一行中英都指向对方。真实二进制看过 ccnm --help、ccnm ws --help、ccnm rm --help 中英输出。顺带把 P97 夹错位置的 P90 测试说明挪回去（30781ae，只挪注释）。配置说明、运维手册、使用说明改用 ccnm rm，简写表补 remove/rm，写明 ccnm ls 不是 ws ls（c084c62）。本机 macOS arm64：cargo fmt --check、clippy -D warnings；cargo test --workspace --no-fail-fast 1103 passed / 0 failed；python3 scripts/ci_gates.py 248 ran / 0 skipped / 0 failed；check_plan、git diff --check。没在 Linux 上跑；没推送、没发版。"
         }
       ],
+      "blockers": []
+    },
+    {
+      "id": "P100",
+      "title": "进正在跑的会话时工具断了，先替人接上；接不上就报错、不进去",
+      "status": "in_progress",
+      "depends_on": [
+        "P99"
+      ],
+      "owner": "claude-opus-5-5 / 会话 aeb995f2",
+      "started_at": "2026-10-17T14:00:00+09:00",
+      "last_updated": "2026-10-17T14:00:00+09:00",
+      "completed_criteria": [],
+      "evidence": [],
+      "blockers": []
+    },
+    {
+      "id": "P101",
+      "title": "-c 接的是这个项目最新的那段对话：跟上会话里 /clear 换的对话",
+      "status": "pending",
+      "depends_on": [
+        "P100"
+      ],
+      "owner": null,
+      "started_at": null,
+      "last_updated": "2026-10-17T14:00:00+09:00",
+      "completed_criteria": [],
+      "evidence": [],
+      "blockers": []
+    },
+    {
+      "id": "P102",
+      "title": "长对话交接：压缩之后提醒模型在合适的时候建议开新对话，交接自动带过去",
+      "status": "pending",
+      "depends_on": [
+        "P101"
+      ],
+      "owner": null,
+      "started_at": null,
+      "last_updated": "2026-10-17T14:00:00+09:00",
+      "completed_criteria": [],
+      "evidence": [],
       "blockers": []
     }
   ],
@@ -4849,7 +4981,7 @@
     "【2026-10-08 P80 时看到 / 只记不修】Agent 上的 MCP 转发 ccnm_agent（P50）在受管 Codex 会话里同样没配 tool_timeout_sec，Codex 对它只等 300 秒。它的 call_mcp_tool 默认等 60 秒、起 server 30 秒，用户给 Agent 上某个 server 配的 tool_timeout_sec 接近或超过 300 秒时（还没起的 server 起它的时间也算在内），调用会被 Codex 先截断、不发取消，照样在 Agent 上跑完。值取决于用户配置、不归 ccnm 的常量管，P80 没修。依据 docs/research/2026-10-08-p80-codex-tool-timeout.md 第 6 节。"
   ],
   "handoff": {
-    "next_action": "**2026-10-17 发了 v0.18.0、三台换好，current_task 为 null。** 用户说发 0.17.1，按 0.17.0 的规则（加了命令就升次版本号）问过后改发 0.18.0：P94–P97、P99。版本号提交 02641aa，CI 38946371678 绿，tag v0.18.0（tag 对象），release 38948504477 四个产物齐全、正文就是 tag 说明。本机、fodelf（Controller pid 17800）是 db87040f…，hpsrv ccrun 是 fdbd285c…；会话没停只换文件，换装时本机没有 mcp-serve，四个会话的工具早就断了，Reconnect 后用的是新版。八个 workspace 的 doctor 都是\"可以用了（2 项不查）\"（xdo 第一次撞上网络断开，重跑过）。记录在 docs/research/2026-10-16-release-0.18.0.md。全部已推送。\n\n之前的交接：\n**2026-10-16 P99 完成，current_task 为 null。** 用户问 ccnm add 有了 remove 呢、ccnm ls 和 ws ls 是不是重了：加了顶层 ccnm remove（简写 rm），就是 ws rm 本身；两个 list 不合并（ccnm ls 经 Agent 问运行状态，ws ls 只读本机配置），帮助各补一句指向对方。Rust 1103/0、Python 248/0。P99 没推送（origin 在 ed6265e，CI 38911419714 全绿；main 领先 5 个提交），没发版；本机装的还是 v0.17.0，没有 add 和 rm。\n\n之前的交接：\n**2026-10-16 收尾：分支、worktree 清完，文档补了三处，current_task 为 null。** P94/P95 用过的 worktree 分支 claude/adoring-goodall-f12a7c 早已合进 main、没有未提交改动，连同那个 worktree（只剩 target/）删掉，对应会话已归档；现在本仓库只有 main 一个分支、一个工作目录。文档：ROADMAP 末尾按撤销规则登记 P98 退役编号和原提交（下一个阶段从 P99 起）；ROADMAP 开头去掉过时的\"P50 之后没有已排期的阶段\"；排错手册写明工具断了 ccnm 不会自己接回来。P96、P97、断网实验和这几处文档都没推送（origin 在 bd9ae9f，main 领先 21 个提交），没发版；推不推、发不发版等用户定。\n\n之前的交接：\n**2026-10-16 撤掉 P98，current_task 为 null。** 用户定自动重连意义不大：P98 的两个计划提交已 revert（没写过代码），用户放的断网恢复方案草稿已删，引用它的地方改成不指向它。断网实验记录留着（排错手册和 ssh.rs 注释引用它的结论）。P96、P97、断网实验都没推送（origin 在 bd9ae9f），没发版。",
+    "next_action": "**2026-10-17 排了 P100–P102、认领 P100。** 用户要求：进项目时工具断了 ccnm 主动接上、接不上就报错；压缩多次或一件事做完时主动交接到新窗口；另问还有什么该优化。查 fodelf 实况时另发现 -c 接的是会话开头那段对话而不是 /clear 之后最新那段（P101）。零额度夹具 docs/research/probes/p100-session-hooks.py 已量通 Claude Code 2.1.300 的 /mcp reconnect、SessionStart/Stop 钩子。下一步：实现 P100.2。\n\n之前的交接：\n**2026-10-17 发了 v0.18.0、三台换好，current_task 为 null。** 用户说发 0.17.1，按 0.17.0 的规则（加了命令就升次版本号）问过后改发 0.18.0：P94–P97、P99。版本号提交 02641aa，CI 38946371678 绿，tag v0.18.0（tag 对象），release 38948504477 四个产物齐全、正文就是 tag 说明。本机、fodelf（Controller pid 17800）是 db87040f…，hpsrv ccrun 是 fdbd285c…；会话没停只换文件，换装时本机没有 mcp-serve，四个会话的工具早就断了，Reconnect 后用的是新版。八个 workspace 的 doctor 都是\"可以用了（2 项不查）\"（xdo 第一次撞上网络断开，重跑过）。记录在 docs/research/2026-10-16-release-0.18.0.md。全部已推送。\n\n之前的交接：\n**2026-10-16 P99 完成，current_task 为 null。** 用户问 ccnm add 有了 remove 呢、ccnm ls 和 ws ls 是不是重了：加了顶层 ccnm remove（简写 rm），就是 ws rm 本身；两个 list 不合并（ccnm ls 经 Agent 问运行状态，ws ls 只读本机配置），帮助各补一句指向对方。Rust 1103/0、Python 248/0。P99 没推送（origin 在 ed6265e，CI 38911419714 全绿；main 领先 5 个提交），没发版；本机装的还是 v0.17.0，没有 add 和 rm。\n\n之前的交接：\n**2026-10-16 收尾：分支、worktree 清完，文档补了三处，current_task 为 null。** P94/P95 用过的 worktree 分支 claude/adoring-goodall-f12a7c 早已合进 main、没有未提交改动，连同那个 worktree（只剩 target/）删掉，对应会话已归档；现在本仓库只有 main 一个分支、一个工作目录。文档：ROADMAP 末尾按撤销规则登记 P98 退役编号和原提交（下一个阶段从 P99 起）；ROADMAP 开头去掉过时的\"P50 之后没有已排期的阶段\"；排错手册写明工具断了 ccnm 不会自己接回来。P96、P97、断网实验和这几处文档都没推送（origin 在 bd9ae9f，main 领先 21 个提交），没发版；推不推、发不发版等用户定。",
     "scope": "2026-10-08 用户要求：零额度复现 Codex 300 秒工具超时、选修法、补外部入口文档、跑门禁、更新状态、粒度提交、不推送。改动：crates/ccnm-core（provider/codex 的 TOOL_TIMEOUT 与启动参数、测试；mcp/hooks 的 MAX_TIMEOUT 改 pub(crate)；mcp/output 注释）、docs/protocol/remote-workspace-mcp-v1.md、docs/usage.md、docs/troubleshooting.md、docs/research 的 P80 记录与夹具、ROADMAP、status。没动任何机器、已装的 ccnm 与配置；Codex 0.154.0 包和源码只下到会话 scratchpad。",
     "planning_validation": {
       "at": "2026-09-08T21:22:43+09:00",

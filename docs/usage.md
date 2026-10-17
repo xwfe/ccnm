@@ -54,6 +54,8 @@ ccnm attach my-project
 
 SSH 断开、终端关闭或笔记本暂时离线，不等于结束 session。只要 Agent Node 上的 tmux/session 还活着，就可以重新 attach。
 
+会话本来就在跑、工具却断了（多半是中间断过网）时，`ccnm my-project` 和 `-c` 会先替你在会话里敲 `/mcp reconnect ccnm` 接上再让你进去；接不上就报错、不让你进去，写明原因和退路（v0.18.0 及以前不查，直接让你进去）。各种原因怎么办见[排错手册](troubleshooting.md#tools-down--会话看着在跑模型却什么都够不着)。`ccnm attach my-project` 不管这些，直接进。
+
 ### 接着上一次的对话开：`--continue`
 
 会话已经结束了（`ccnm stop`、Claude 里 `/exit`、机器重启），想接着上次聊到的地方干：

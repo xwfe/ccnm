@@ -48,15 +48,39 @@ xshun
 
 **症状**：Claude 还能聊天，但一让它读文件就开始瞎猜，或者去调它自己机器上的 Bash
 （会被拒，那是第二道锁）。原因是那条 MCP ssh 断了——网断太久、Agent Node睡了、有人 kill 了它。
-断网多久算"太久"：两台都是 macOS 时，约 100–200 秒（2026-10-16 实测，[记录](research/2026-10-16-outage-experiment-plan.md#8-结果)）；短于一分半钟的一般不会断。Claude 只在断开的当下重试一次，网还没恢复就不再试：2026-10-15 项目机器的 Wi-Fi 断了 6.5 分钟，那次重试报 `ssh: connect to host … port 22: Operation timed out`，之后再没连过。ccnm 自己也不会接回来（2026-10-16 评估过、定了不做：接回来就是换一个远端会话，模型手里旧的输出引用全部作废，[协议 6.2 节](protocol/remote-workspace-mcp-v1.md#62-断线中断崩溃)），所以网好了也得照下面手动接，干等不会好。
+断网多久算"太久"：两台都是 macOS 时，约 100–200 秒（2026-10-16 实测，[记录](research/2026-10-16-outage-experiment-plan.md#8-结果)）；短于一分半钟的一般不会断。Claude 只在断开的当下重试一次，网还没恢复就不再试：2026-10-15 项目机器的 Wi-Fi 断了 6.5 分钟，那次重试报 `ssh: connect to host … port 22: Operation timed out`，之后再没连过。会话开着的时候 ccnm 也不会自己接回来（2026-10-16 评估过、定了不做：接回来就是换一个远端会话，模型手里旧的输出引用全部作废，[协议 6.2 节](protocol/remote-workspace-mcp-v1.md#62-断线中断崩溃)），所以人在会话里时，网好了得照下面手动接，干等不会好。
 
 **修**：在 Claude 里敲
 
 ```text
-/mcp  →  选 ccnm  →  Reconnect
+/mcp reconnect ccnm
 ```
 
-会话、上下文、正在做的事全都留着，只是把通道接回来。
+或者 `/mcp` → 选 `ccnm` → `Reconnect`，两个一样。会话、上下文、正在做的事全都留着，只是把通道接回来；断之前拿到的 `output_ref` 读不了了。
+
+**从外面进会话时 ccnm 替你接**（v0.18.0 及以前没有这一步，直接让你进去）：`ccnm <项目>`、`ccnm <项目> -c` 遇到会话本来就在跑、工具又断了，先问一次项目机器（同起新会话前那次：版本、项目目录、肯不肯开），问得通就往会话里替你敲上面那条命令、回车，最多等 20 秒，接上了再让你进去，终端上多一行 `工具断了，已替你接上（/mcp reconnect ccnm）`。只在你进来那一刻做这一次，不是会话跑着时的自动重连。
+
+接不上时**不让你进去**，报错写原因和退路：
+
+```text
+会话本来就在跑
+这个会话的工具断了，ccnm 没能替你接上，所以没让你进去。
+原因：ssh: connect to host xdwmbp port 22: Operation timed out
+网络或项目机器好了再 ccnm keex；不管工具先进去看：ccnm attach keex
+```
+
+| 原因那一行 | 是什么 | 怎么办 |
+| --- | --- | --- |
+| ssh 连不上（`Operation timed out`、`Connection refused`），退出码 21 | AI 那台现在够不着项目机器 | 网络好了再 `ccnm <项目>` |
+| `CCNM_E_VERSION` 那类"不是同一个版本"，退出码 11 | 两台 ccnm 版本不一样 | 两台换成同一版本 |
+| 项目机器不肯开（`CCNM_E_POLICY`），退出码 33 | 同[起会话前就被拒](#ccnm-项目-起不来报-its-runtime-would-refuse-it) | 按那一节改 |
+| `Failed to reconnect to ccnm`，退出码 3 | 项目机器刚才答了，但这次连接被拒——多半是刚断网不久，旧连接还占着写锁 | 等半分钟到一两分钟再试；还不行看[写锁被占](#mcp-初始化报-workspace-write-guard-is-busy-或-unknown) |
+| `were not back within 20 s`，退出码 3 | 敲了命令，20 秒没接上 | 再试一次，或 `ccnm attach <项目>` 进去看 `/mcp` 里写什么 |
+| Codex 会话那句，退出码 3 | Codex 没法重连正在跑的会话 | `ccnm stop <项目>` 再 `ccnm <项目>` 开新会话，对话不带过来 |
+
+输入框里有你没发出去的字（或者开着权限确认、菜单这类界面）时，ccnm 不敲——敲进去会拼在你的草稿后面，回车还可能替你答了那个问题。这时照常让你进去，并提示 `进去后敲：/mcp reconnect ccnm`。开着 vim 模式时同理不敲；停在 NORMAL 模式、界面上又没有 `-- INSERT --` 提示的那种 ccnm 看不出来，敲进去的字会被当成 vim 命令，碰到了就进去 `Esc` 掉、自己敲。
+
+`ccnm attach <项目>` 不做这些，直接进，是"不管工具先进去"的退路。新起的会话也不做：起之前已经问过项目机器（P91），起来时连不上的情况见下面几节。
 
 `ccnm status <ws>` 和 `ccnm doctor <ws>` 都会明说这个状态——**看着正常的会话是不会显示
 这行的**，所以看到了就是真断了。

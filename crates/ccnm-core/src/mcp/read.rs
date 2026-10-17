@@ -561,8 +561,9 @@ fn render(
 
 /// The head of the file, to look for a NUL in -- cheaper and more reliable
 /// than guessing from the extension, and it is what `git` does -- and for an
-/// image signature.
-fn peek(file: &mut File) -> Result<Vec<u8>> {
+/// image signature. `search_text` reads a named file's head with it too, so
+/// the two tools draw the binary line in the same place.
+pub(crate) fn peek(file: &mut File) -> Result<Vec<u8>> {
     let mut head = Vec::new();
     file.take(BINARY_PEEK_BYTES)
         .read_to_end(&mut head)
@@ -573,7 +574,7 @@ fn peek(file: &mut File) -> Result<Vec<u8>> {
 /// A failed open is almost always the caller's problem, not a bug: the
 /// file went away between `stat` and `open`, or it is not readable by the
 /// runtime user. Anything else keeps `CCNM_E_INTERNAL` so it stays visible.
-fn open_error(rel: &str, err: std::io::Error) -> Error {
+pub(crate) fn open_error(rel: &str, err: std::io::Error) -> Error {
     let code = match err.kind() {
         std::io::ErrorKind::NotFound | std::io::ErrorKind::PermissionDenied => {
             ErrorCode::InvalidArgs

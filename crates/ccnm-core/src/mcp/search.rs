@@ -65,6 +65,18 @@
 //!
 //! A glob that starts with `!` is an exclusion. It lets nothing in, so it
 //! cannot step past `.gitignore`, and it still goes to rg as `--glob`.
+//!
+//! # A path that names one file (P104)
+//!
+//! rg searches whatever is named on its command line. `.gitignore`,
+//! `--no-hidden`, the exclusion globs and `--type` only filter what it
+//! meets while walking, and a named symlink is followed (rg 15.2.0, P104
+//! record). So for a file ccnm decides what may be searched, by
+//! `read_file`'s rules: the same path policy, so a dotfile or an ignored
+//! file named outright is searched; `.git` never, checked after symlinks
+//! are resolved; a NUL in the first 8 KiB refused as binary, because rg
+//! would read a named binary to the end. The walking filters are left off
+//! the argv, and a caller's glob or type is reported as not used.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -77,6 +89,7 @@ use serde_json::Value;
 use crate::error::{Error, ErrorCode, Result};
 use crate::mcp::glob::Glob;
 use crate::mcp::path;
+use crate::mcp::read;
 use crate::mcp::truncate_bytes;
 use crate::process::{Cmd, Flow, stream_lines};
 
@@ -109,7 +122,8 @@ const RG_TIMEOUT: Duration = Duration::from_secs(60);
 pub struct SearchTextArgs {
     /// What to look for. A literal string unless `regex` is true.
     pub query: String,
-    /// Directory to search, relative to the workspace root. Default: the root.
+    /// File or directory to search, relative to the workspace root.
+    /// Default: the root.
     #[serde(default)]
     pub path: Option<String>,
     /// Only search files matching this glob, e.g. `**/*.rs`.
@@ -193,7 +207,7 @@ pub struct SearchResult {
     #[serde(skip)]
     pub text: String,
     pub query: String,
-    /// The directory that was searched; `.` for the workspace root.
+    /// The file or directory that was searched; `.` for the workspace root.
     pub path: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub glob: Option<String>,
@@ -234,7 +248,12 @@ pub fn search_text(root: &Path, args: &SearchTextArgs) -> Result<SearchResult> {
 struct Plan {
     root: PathBuf,
     query: String,
-    rel_dir: String,
+    /// What to search, relative to the root; empty for the root itself.
+    rel: String,
+    /// `rel` names one file rather than a tree.
+    file: bool,
+    /// Said in the answer before rg has said anything.
+    notes: Vec<String>,
     glob: Option<Glob>,
     regex: bool,
     case_sensitive: bool,
@@ -278,23 +297,36 @@ impl Plan {
             Some(name) => Some(name.to_string()),
         };
 
-        let rel_dir = match args.path.as_deref().map(str::trim) {
-            None | Some("") | Some(".") | Some("./") => String::new(),
-            Some(raw) => {
-                let resolved = path::resolve_read(root, raw)?;
-                if !resolved.abs().is_dir() {
-                    return Err(Error::invalid_args(format!(
-                        "{} is not a directory; search_text searches a tree",
-                        resolved.rel()
-                    )));
-                }
-                resolved.rel().to_string()
+        let (rel, file) = match args.path.as_deref().map(str::trim) {
+            None | Some("") | Some(".") | Some("./") => (String::new(), false),
+            Some(raw) => resolve_scope(root, raw)?,
+        };
+        // rg would not apply them to a named file either; ccnm's own glob
+        // filter would, and then the same call would answer differently
+        // here than in the native Grep.
+        let mut notes = Vec::new();
+        let (glob, file_type) = if file {
+            let unused: Vec<&str> = [("glob", glob.is_some()), ("type", file_type.is_some())]
+                .into_iter()
+                .filter_map(|(name, given)| given.then_some(name))
+                .collect();
+            if !unused.is_empty() {
+                notes.push(format!(
+                    "path names one file, so {} {} not used",
+                    unused.join(" and "),
+                    if unused.len() == 1 { "was" } else { "were" }
+                ));
             }
+            (None, None)
+        } else {
+            (glob, file_type)
         };
         Ok(Plan {
             root: root.to_path_buf(),
             query: args.query.clone(),
-            rel_dir,
+            rel,
+            file,
+            notes,
             glob,
             regex: args.regex.unwrap_or(false),
             case_sensitive: args.case_sensitive.unwrap_or(true),
@@ -314,11 +346,16 @@ impl Plan {
             .args(["--json", "--no-config", "--no-follow"])
             .cwd(&self.root)
             .timeout(RG_TIMEOUT);
-        cmd = cmd.arg(if self.include_hidden {
-            "--hidden"
-        } else {
-            "--no-hidden"
-        });
+        // For a named file the walking filters mean nothing to rg, and a
+        // later rg that did apply them could turn a named dotfile into "no
+        // matches"; `resolve_scope` has already decided the file may be searched.
+        if !self.file {
+            cmd = cmd.arg(if self.include_hidden {
+                "--hidden"
+            } else {
+                "--no-hidden"
+            });
+        }
         cmd = cmd.arg(if self.case_sensitive {
             "--case-sensitive"
         } else {
@@ -362,27 +399,58 @@ impl Plan {
         // that type past `--no-hidden` (`src/.x.rs`), and these exclusions
         // are what stop it. Before P38 the caller's `**` came after them and
         // walked back into `.github/` and `.git/`.
-        if !self.include_hidden {
-            cmd = cmd.args(["--glob", "!.*"]);
+        if !self.file {
+            if !self.include_hidden {
+                cmd = cmd.args(["--glob", "!.*"]);
+            }
+            cmd = cmd.args(["--glob", "!.git"]);
         }
-        cmd = cmd.args(["--glob", "!.git"]);
         // `--` first: a query of `-i` is a query, not a flag.
         cmd.arg("--")
             .arg(&self.query)
-            .arg(if self.rel_dir.is_empty() {
-                "./"
-            } else {
-                &self.rel_dir
-            })
+            .arg(if self.rel.is_empty() { "./" } else { &self.rel })
     }
 
     fn scope(&self) -> &str {
-        if self.rel_dir.is_empty() {
-            "."
-        } else {
-            &self.rel_dir
-        }
+        if self.rel.is_empty() { "." } else { &self.rel }
     }
+}
+
+/// Where a caller's `path` points, and whether that is one file. A file
+/// gets here what rg will not do for it (module docs, P104): `.git` is
+/// refused even through a symlink, and so are what `read_file` refuses --
+/// anything but a regular file, and a NUL in the first 8 KiB.
+fn resolve_scope(root: &Path, raw: &str) -> Result<(String, bool)> {
+    let resolved = path::resolve_read(root, raw)?;
+    let rel = resolved.rel().to_string();
+    // Resolved too, not only as written: before P104 a `gitdir -> .git`
+    // given as the directory sent `.git/config` back as `gitdir/config`,
+    // which the check on rg's output cannot tell from any other path.
+    let in_git = |p: &Path| p.components().any(|c| c.as_os_str() == ".git");
+    let resolved_rel = resolved.abs().strip_prefix(root).unwrap_or(Path::new(""));
+    if in_git(Path::new(&rel)) || in_git(resolved_rel) {
+        return Err(Error::policy(format!(
+            "{rel} is or leads into .git; search_text never searches a git database"
+        )));
+    }
+    let meta = std::fs::metadata(resolved.abs())
+        .map_err(|e| Error::invalid_args(format!("cannot stat {rel}")).with_source(e))?;
+    if meta.is_dir() {
+        return Ok((rel, false));
+    }
+    // Before the open: opening a fifo waits for a writer forever.
+    if !meta.is_file() {
+        return Err(Error::invalid_args(format!(
+            "{rel} is not a regular file (fifo, socket or device); ccnm will not open it"
+        )));
+    }
+    let mut file = std::fs::File::open(resolved.abs()).map_err(|e| read::open_error(&rel, e))?;
+    if let Some(offset) = read::peek(&mut file)?.iter().position(|b| *b == 0) {
+        return Err(Error::invalid_args(format!(
+            "{rel} looks like a binary file (NUL byte at offset {offset}); search_text only searches text"
+        )));
+    }
+    Ok((rel, true))
 }
 
 /// The throwaway rg type a caller's glob is narrowed with. Any name rg
@@ -410,6 +478,8 @@ struct Collector {
     filter: Option<Glob>,
     max_results: usize,
     scope: String,
+    /// The search is of one named file.
+    file: bool,
     /// `path -> lines`, in the order rg found them. Content mode only.
     groups: Vec<(String, Vec<Line>)>,
     hits: Vec<Hit>,
@@ -430,12 +500,13 @@ impl Collector {
             filter: plan.glob.clone().filter(|glob| !is_exclusion(glob)),
             max_results: plan.max_results as usize,
             scope: plan.scope().to_string(),
+            file: plan.file,
             groups: Vec::new(),
             hits: Vec::new(),
             listed: Vec::new(),
             bytes: 0,
             truncated_by: None,
-            notes: BTreeSet::new(),
+            notes: plan.notes.iter().cloned().collect(),
             full: false,
         }
     }
@@ -462,10 +533,21 @@ impl Collector {
                 Flow::Continue
             }
             "end" => {
-                if !data.get("binary_offset").unwrap_or(&Value::Null).is_null() {
-                    self.notes.insert(
-                        "some files are binary and were not searched past the first NUL".into(),
-                    );
+                let binary = data.get("binary_offset").unwrap_or(&Value::Null);
+                if !binary.is_null() {
+                    // Walking, rg stops a file at its first NUL. A named
+                    // file it reads to the end, NUL bytes as line breaks;
+                    // only a NUL past the 8 KiB `resolve_scope` checks gets
+                    // this far.
+                    let note = match (self.file, binary.as_u64()) {
+                        (true, Some(offset)) => format!(
+                            "the file has a NUL byte at offset {offset}; ripgrep searched on past it, reading NUL bytes as line breaks"
+                        ),
+                        _ => {
+                            "some files are binary and were not searched past the first NUL".into()
+                        }
+                    };
+                    self.notes.insert(note);
                 }
                 Flow::Continue
             }
@@ -687,7 +769,12 @@ impl Collector {
             "max_results files"
         };
         let footer = if matches == 0 {
-            format!("[no matches for {} under {}]", plan.query, self.scope)
+            format!(
+                "[no matches for {} {} {}]",
+                plan.query,
+                if self.file { "in" } else { "under" },
+                self.scope
+            )
         } else {
             match self.truncated_by {
                 Some(Truncation::MaxResults) => format!(
@@ -1309,6 +1396,248 @@ mod tests {
         );
     }
 
+    /// P104: the model passes a file the way it would to the native Grep.
+    /// Before, this was "is not a directory; search_text searches a tree"
+    /// -- 51 times in the fodelf logs from 10-08 to 10-17.
+    #[test]
+    fn a_file_path_searches_just_that_file() {
+        let root = workspace("onefile");
+        let in_main = |output_mode: OutputMode| {
+            search(
+                &root,
+                &SearchTextArgs {
+                    path: Some("./src/main.rs".into()),
+                    context_lines: Some(0),
+                    output_mode: Some(output_mode),
+                    ..args("needle")
+                },
+            )
+        };
+        let content = in_main(OutputMode::Content);
+        assert_eq!(content.path, "src/main.rs");
+        assert_eq!(
+            content.text,
+            "src/main.rs\n2:    let needle = 1;\n3:    println!(\"{needle}\");\n[2 matches in 1 file]"
+        );
+        assert_eq!(
+            in_main(OutputMode::FilesWithMatches).text,
+            "src/main.rs\n[1 file with matches]"
+        );
+        assert_eq!(
+            in_main(OutputMode::Count).text,
+            "src/main.rs:2\n[2 matches in 1 file]"
+        );
+        let none = search(
+            &root,
+            &SearchTextArgs {
+                path: Some("README.md".into()),
+                ..args("needle")
+            },
+        );
+        assert_eq!(none.text, "[no matches for needle in README.md]");
+    }
+
+    /// What read_file reads, search_text searches when it is named: a
+    /// dotfile, a file .gitignore rules out, a symlink inside the
+    /// workspace. rg searches a named file whatever its filters say (P104
+    /// record, section 3.1), and here that is the answer wanted.
+    #[test]
+    fn a_named_dotfile_or_ignored_file_is_searched() {
+        let root = workspace("named");
+        std::os::unix::fs::symlink("src/main.rs", root.join("link.rs")).unwrap();
+        for (path, matches) in [(".hidden", 1), ("ignored/x.rs", 1), ("link.rs", 2)] {
+            let r = search(
+                &root,
+                &SearchTextArgs {
+                    path: Some(path.into()),
+                    ..args("needle")
+                },
+            );
+            assert_eq!(r.matches, matches, "{path}: {}", r.text);
+            assert!(
+                r.hits.iter().all(|h| h.path == path),
+                "{path}: {:?}",
+                r.hits
+            );
+            assert!(r.notes.is_empty(), "{path}: {:?}", r.notes);
+        }
+    }
+
+    /// `.git` is never searched, whatever the path looks like. `gitdir` is
+    /// the hole the P104 measurements found: rg walks a named symlink to
+    /// `.git`, and what it reports, `gitdir/config`, has no `.git` segment
+    /// for the check on the way out to catch.
+    #[test]
+    fn nothing_in_git_is_searched_even_through_a_symlink() {
+        let root = workspace("gitnamed");
+        std::os::unix::fs::symlink(".git", root.join("gitdir")).unwrap();
+        std::os::unix::fs::symlink(".git/config", root.join("gitlink")).unwrap();
+        for path in [
+            "gitdir",
+            "gitdir/config",
+            "gitlink",
+            ".git/config",
+            ".git",
+            "./.git/",
+        ] {
+            let e = err(
+                &root,
+                &SearchTextArgs {
+                    path: Some(path.into()),
+                    ..args("needle")
+                },
+            );
+            assert_eq!(e.code(), ErrorCode::Policy, "{path}: {e}");
+            assert!(e.message().contains(".git"), "{path}: {e}");
+            assert!(
+                !e.message().contains(&root.display().to_string()),
+                "{path}: {e}"
+            );
+        }
+    }
+
+    /// Named, rg searches a binary file to the end with NUL bytes read as
+    /// line breaks and sends what follows them (P104 record), and opening
+    /// a fifo waits for a writer forever. Both are refused the way read_file
+    /// refuses them, before rg runs.
+    #[test]
+    fn a_named_binary_file_or_fifo_is_refused() {
+        let root = workspace("namedbinary");
+        let mut blob = b"needle".to_vec();
+        blob.extend_from_slice(&[0u8; 64]);
+        blob.extend_from_slice(b"needle secret");
+        fs::write(root.join("blob.bin"), blob).unwrap();
+        let e = err(
+            &root,
+            &SearchTextArgs {
+                path: Some("blob.bin".into()),
+                ..args("needle")
+            },
+        );
+        assert_eq!(e.code(), ErrorCode::InvalidArgs, "{e}");
+        assert!(
+            e.message().contains("binary file (NUL byte at offset 6)"),
+            "{e}"
+        );
+
+        let made = std::process::Command::new("mkfifo")
+            .arg(root.join("pipe"))
+            .status()
+            .unwrap();
+        assert!(made.success());
+        let e = err(
+            &root,
+            &SearchTextArgs {
+                path: Some("pipe".into()),
+                ..args("needle")
+            },
+        );
+        assert_eq!(e.code(), ErrorCode::InvalidArgs, "{e}");
+        assert!(e.message().contains("not a regular file"), "{e}");
+    }
+
+    /// The NUL check reads the first 8 KiB, as read_file's does. Past that
+    /// rg searches on, and the result says so instead of the "not searched
+    /// past the first NUL" a tree search says.
+    #[test]
+    fn a_nul_past_the_first_8_kib_of_a_named_file_is_mentioned() {
+        let root = workspace("latenul");
+        let mut body = "text\n".repeat(2000).into_bytes();
+        body.extend_from_slice(b"\0needle after\n");
+        fs::write(root.join("late.txt"), &body).unwrap();
+        let r = search(
+            &root,
+            &SearchTextArgs {
+                path: Some("late.txt".into()),
+                ..args("needle")
+            },
+        );
+        assert_eq!(r.matches, 1, "{}", r.text);
+        assert!(
+            r.notes
+                .iter()
+                .any(|n| n.contains("NUL byte at offset 10000")),
+            "{:?}",
+            r.notes
+        );
+    }
+
+    /// rg applies neither glob nor type to a named file, and the native
+    /// Grep that hands them to rg therefore does not either. ccnm filters by
+    /// the glob itself, so without this the same call would answer
+    /// differently here. Said, not obeyed.
+    #[test]
+    fn glob_and_type_do_not_apply_to_a_named_file() {
+        let root = workspace("namedglob");
+        for (glob, file_type, note) in [
+            (
+                Some("*.py"),
+                None,
+                "path names one file, so glob was not used",
+            ),
+            (
+                Some("!*.rs"),
+                None,
+                "path names one file, so glob was not used",
+            ),
+            (
+                None,
+                Some("py"),
+                "path names one file, so type was not used",
+            ),
+            (
+                Some("*.py"),
+                Some("py"),
+                "path names one file, so glob and type were not used",
+            ),
+        ] {
+            let r = search(
+                &root,
+                &SearchTextArgs {
+                    path: Some("src/main.rs".into()),
+                    glob: glob.map(str::to_string),
+                    file_type: file_type.map(str::to_string),
+                    ..args("needle")
+                },
+            );
+            assert_eq!(r.matches, 2, "{glob:?} {file_type:?}: {}", r.text);
+            assert_eq!(r.notes, [note], "{glob:?} {file_type:?}");
+        }
+    }
+
+    #[test]
+    fn a_named_file_is_one_argument_without_the_tree_filters() {
+        let root = workspace("argvfile");
+        let plan = Plan::new(
+            &root,
+            &SearchTextArgs {
+                path: Some("src/main.rs".into()),
+                glob: Some("*.py".into()),
+                file_type: Some("py".into()),
+                ..args("-x")
+            },
+        )
+        .unwrap();
+        let argv: Vec<String> = plan
+            .command(Path::new("/opt/homebrew/bin/rg"))
+            .args
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        for present in ["--json", "--no-config", "--no-follow", "--fixed-strings"] {
+            assert!(argv.contains(&present.to_string()), "{present}: {argv:?}");
+        }
+        // Walking filters mean nothing to rg for a named file. Leaving them
+        // out keeps a later rg that did honor them from turning a named
+        // dotfile into "no matches"; ccnm has already checked the file.
+        assert!(
+            argv.iter()
+                .all(|a| !a.contains("hidden") && !a.starts_with("--type") && a != "--glob"),
+            "{argv:?}"
+        );
+        assert_eq!(argv[argv.len() - 3..], ["--", "-x", "src/main.rs"]);
+    }
+
     #[test]
     fn the_path_policy_is_the_same_one_the_other_tools_use() {
         let root = workspace("policy");
@@ -1317,7 +1646,6 @@ mod tests {
             ("/etc", ErrorCode::Policy),
             ("~/", ErrorCode::Policy),
             ("nope", ErrorCode::InvalidArgs),
-            ("README.md", ErrorCode::InvalidArgs),
         ] {
             let e = err(
                 &root,

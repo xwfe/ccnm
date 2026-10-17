@@ -349,7 +349,16 @@ impl Plan {
         // For a named file the walking filters mean nothing to rg, and a
         // later rg that did apply them could turn a named dotfile into "no
         // matches"; `resolve_scope` has already decided the file may be searched.
-        if !self.file {
+        //
+        // `--no-mmap` so a NUL past the first 8 KiB is a line break on every
+        // platform. On Linux rg memory-maps a named file and leaves the NUL
+        // in the line, which `line` then skips as binary; read through a
+        // buffer it converts the NUL, as it always does on macOS. Measured
+        // on rg 14.1.1 (Debian 13): line 2001 with the NUL by default, line
+        // 2002 without it under `--no-mmap`; the CI Linux job caught it.
+        if self.file {
+            cmd = cmd.arg("--no-mmap");
+        } else {
             cmd = cmd.arg(if self.include_hidden {
                 "--hidden"
             } else {
@@ -1624,7 +1633,13 @@ mod tests {
             .iter()
             .map(|a| a.to_string_lossy().into_owned())
             .collect();
-        for present in ["--json", "--no-config", "--no-follow", "--fixed-strings"] {
+        for present in [
+            "--json",
+            "--no-config",
+            "--no-follow",
+            "--fixed-strings",
+            "--no-mmap",
+        ] {
             assert!(argv.contains(&present.to_string()), "{present}: {argv:?}");
         }
         // Walking filters mean nothing to rg for a named file. Leaving them

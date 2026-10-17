@@ -83,9 +83,22 @@
 - 单元测试新增七条，**在旧代码上全红**：给文件三种输出模式和没匹配的页脚；点名的 dotfile、被忽略的文件、workspace 里的符号链接能搜；`gitdir`、`gitdir/config`、`gitlink`、`.git/config`、`.git`、`./.git/` 全是 `CCNM_E_POLICY` 且消息里没有绝对路径（**旧代码在 `gitdir` 上返回了 1 条匹配**，就是 `.git/config` 的内容）；二进制（报 NUL 在 6）和 fifo 被拒；10000 字节之后的 NUL 照搜并写明 offset 10000；`glob`/`type` 各种组合的那行说明；文件模式的 argv。原来"`README.md` 报 `CCNM_E_INVALID_ARGS`"那条断言是旧行为，删掉，`README.md` 改由第一条测试按文件搜。
 - 中立 MCP 客户端加一条：只读会话里 `path: "src/a.rs"` 计数、`path: ".env"` 不写 `include_hidden` 也搜到、`.git/config`、`.git`、`gitdir` 报 `CCNM_E_POLICY`。**拿旧 `search.rs` 编出的二进制跑，它报 `CCNM_E_INVALID_ARGS: src/a.rs is not a directory; search_text searches a tree`**——和 fodelf 日志里那句一样；新二进制上过。
 
+### 3.4 合并后 CI 的 Linux job 查出：Linux 上 rg 用 mmap 读点名的文件（2026-10-17）
+
+v0.19.0 的版本号提交推上去后，CI 的 `linux-runtime` 在 `a_nul_past_the_first_8_kib_of_a_named_file_is_mentioned` 上红：8 KiB 之后才有 NUL 的点名文件，结果是 0 条匹配，外加 `a matching line contains binary data and was skipped`。
+
+起先以为是 rg 版本不同（CI 和 hpsrv 用 apt 装的是 14.x，本机 15.2.0）。同一个夹具在 hpsrv 的 rg 14.1.1 上跑，21 种情况里只有"点名的二进制文件"这一行不同，NUL 留在了行里。可本机换上 rg 14.1.1 的 macOS 版（GitHub release，sha256 核过）跑旧测试，照样是绿的。分别加 `--mmap` / `--no-mmap` 才看清楚：
+
+| | 默认 | `--mmap` | `--no-mmap` |
+| --- | --- | --- | --- |
+| macOS rg 14.1.1 / 15.2.0 | 第 2002 行（NUL 当换行） | 2002 | 2002 |
+| Linux rg 14.1.1（hpsrv） | **第 2001 行，NUL 在行首** | 2001 | 2002 |
+
+rg 搜命令行上点名的单个文件时，Linux 上默认用内存映射。把 NUL 换成换行只发生在带缓冲读的那条路上，映射进来的内容改不了，NUL 就留在了行里。macOS 上 rg 不用 mmap。修法：`path` 是文件时给 rg 加 `--no-mmap`，两个平台都把 NUL 当换行，协议文档里那句"rg 把 NUL 当换行接着读"在 Linux 上也成立；参数测试守着这个参数在。搜目录时 rg 本来就不用 mmap，不加。
+
 ## 4. 没验的
 
-- 只在本机 macOS arm64、rg 15.2.0 上跑过；Linux、别的 rg 版本没跑。rg 对点名文件的处理是这次的实测前提，换版本时夹具 `probes/p104-rg-explicit-file.py` 可以直接复跑。
+- Rust 测试只在本机 macOS arm64 上跑过；Linux 上靠 CI 的 Linux job，和 hpsrv 上直接跑 rg 14.1.1 的对照（3.4 节）。rg 对点名文件的处理是这次的实测前提，换版本时夹具 `probes/p104-rg-explicit-file.py` 可以直接复跑（`python3 -I - /usr/bin/rg < 夹具` 也能经 ssh 在别的机器上跑）。
 - 没上真机：fodelf、hpsrv 还是 v0.18.0，没换装（要授权）；真实模型会不会因此少撞这两条报错没看。
 - `inside_character` 只看字节的形状：一个前导字节后面跟着形状对的续字节就当一个字符，不再细查过长编码、代理区这类"形状对、值不合法"的序列——从这种序列中间读，会跳过它剩下的最多 3 个字节（它们本来也只会显示成 U+FFFD）。
 - 没推送、没发版。

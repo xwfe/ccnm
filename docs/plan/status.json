@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-10-17T14:00:00+09:00",
-  "current_task": "P100",
+  "last_updated": "2026-10-17T14:30:00+09:00",
+  "current_task": "P101",
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
     "source": "docs/research/codex-internal-wiring-2026-09-07.md",
@@ -4873,27 +4873,53 @@
     {
       "id": "P100",
       "title": "进正在跑的会话时工具断了，先替人接上；接不上就报错、不进去",
-      "status": "in_progress",
+      "status": "completed",
       "depends_on": [
         "P99"
       ],
-      "owner": "claude-opus-5-5 / 会话 aeb995f2",
+      "owner": null,
       "started_at": "2026-10-17T14:00:00+09:00",
-      "last_updated": "2026-10-17T14:00:00+09:00",
-      "completed_criteria": [],
-      "evidence": [],
+      "last_updated": "2026-10-17T14:30:00+09:00",
+      "completed_criteria": [
+        "P100.1",
+        "P100.2",
+        "P100.3",
+        "P100.4"
+      ],
+      "evidence": [
+        {
+          "kind": "offline",
+          "criteria": [
+            "P100.1"
+          ],
+          "ref": "docs/research/2026-10-17-p100-p102-session-entry-and-handoff.md",
+          "commit": "ec18a38",
+          "result": "零额度夹具 docs/research/probes/p100-session-hooks.py：本机 Claude Code 2.1.300 + 假模型 + 单独 tmux。杀掉冒充 ccnm 的 stdio server 且让它一启动就退出后，tmux send-keys -l '/mcp reconnect ccnm'、0.5 秒后 Enter：还连不上时界面 ⎿ Failed to reconnect to ccnm；放开后 0.86–0.89 秒 server 起来、界面 ⎿ Successfully reconnected to ccnm、下一次请求带回 mcp__ccnm__read_file；模型正答着（底栏 esc to interrupt）时敲也当场执行。空闲且空是两条 ─ 横线夹着的 ❯+不换行空格，草稿是 ❯ <字>，正忙时输入框照样空。两轮结果在研究记录第 3.1 节。"
+        },
+        {
+          "kind": "offline",
+          "criteria": [
+            "P100.2",
+            "P100.3",
+            "P100.4"
+          ],
+          "ref": "crates/ccnm-core/src/work.rs",
+          "commit": "23a89e1",
+          "result": "work::start 的已在跑分支：会话是远端、传输进程不在（transport_alive=false）时，Claude 先 dial_runtime（greet+runtime-audit），再 capture-pane 认输入框（provider/claude/tui.rs，85106d5），空才 send-keys 敲 /mcp reconnect ccnm、隔 500 ms 回车，每 250 ms 看一次、最多 80 次：新增 Failed 行即失败，传输在且新增 Successfully 行或连续 20 次在即接上；Codex 直接失败。结果放 StartReport.tools（Reconnected/NotTyped/Failed(ErrorReport)），CLI 两条路径在摘要后按 refusal() 说原因与 ccnm attach 退路、用失败本身的退出码返回、不 attach。测试：work 六条（接上并核对 hello/audit/capture/send-keys 顺序；工具通时只跑一次 ps；Runtime 连不上报 RuntimeUnreachable 且不敲；草稿不敲；Claude 说失败与等不到都拒；Codex 不问不敲、中文提示含 ccnm stop 与 ccnm attach），tui 六条（含夹具抓的六张真实 2.1.300 截屏 tests/fixtures/claude-tui-2.1.300/），CLI 一条 a_running_session_whose_tools_stay_down_is_not_entered（假 ssh 回 Failed：退出码 21、没调 internal attach；把两处 refusal 换成 None 后它红：退出码 0）。文档：排错手册工具断了一节（原因表、不敲的情况）、使用说明两句（d0d5026）。本机 macOS arm64：fmt、clippy -D warnings；cargo test --workspace --no-fail-fast 1116 passed / 0 failed；python3 -B scripts/ci_gates.py 248 ran / 0 skipped / 0 failed；check_plan、git diff --check。没在真机上进过断了工具的会话（要换装 fodelf，未授权）；没在 Linux 上跑；没推送、没发版。"
+        }
+      ],
       "blockers": []
     },
     {
       "id": "P101",
       "title": "-c 接的是这个项目最新的那段对话：跟上会话里 /clear 换的对话",
-      "status": "pending",
+      "status": "in_progress",
       "depends_on": [
         "P100"
       ],
-      "owner": null,
-      "started_at": null,
-      "last_updated": "2026-10-17T14:00:00+09:00",
+      "owner": "claude-opus-5-5 / 会话 aeb995f2",
+      "started_at": "2026-10-17T14:30:00+09:00",
+      "last_updated": "2026-10-17T14:30:00+09:00",
       "completed_criteria": [],
       "evidence": [],
       "blockers": []
@@ -4981,7 +5007,7 @@
     "【2026-10-08 P80 时看到 / 只记不修】Agent 上的 MCP 转发 ccnm_agent（P50）在受管 Codex 会话里同样没配 tool_timeout_sec，Codex 对它只等 300 秒。它的 call_mcp_tool 默认等 60 秒、起 server 30 秒，用户给 Agent 上某个 server 配的 tool_timeout_sec 接近或超过 300 秒时（还没起的 server 起它的时间也算在内），调用会被 Codex 先截断、不发取消，照样在 Agent 上跑完。值取决于用户配置、不归 ccnm 的常量管，P80 没修。依据 docs/research/2026-10-08-p80-codex-tool-timeout.md 第 6 节。"
   ],
   "handoff": {
-    "next_action": "**2026-10-17 排了 P100–P102、认领 P100。** 用户要求：进项目时工具断了 ccnm 主动接上、接不上就报错；压缩多次或一件事做完时主动交接到新窗口；另问还有什么该优化。查 fodelf 实况时另发现 -c 接的是会话开头那段对话而不是 /clear 之后最新那段（P101）。零额度夹具 docs/research/probes/p100-session-hooks.py 已量通 Claude Code 2.1.300 的 /mcp reconnect、SessionStart/Stop 钩子。下一步：实现 P100.2。\n\n之前的交接：\n**2026-10-17 发了 v0.18.0、三台换好，current_task 为 null。** 用户说发 0.17.1，按 0.17.0 的规则（加了命令就升次版本号）问过后改发 0.18.0：P94–P97、P99。版本号提交 02641aa，CI 38946371678 绿，tag v0.18.0（tag 对象），release 38948504477 四个产物齐全、正文就是 tag 说明。本机、fodelf（Controller pid 17800）是 db87040f…，hpsrv ccrun 是 fdbd285c…；会话没停只换文件，换装时本机没有 mcp-serve，四个会话的工具早就断了，Reconnect 后用的是新版。八个 workspace 的 doctor 都是\"可以用了（2 项不查）\"（xdo 第一次撞上网络断开，重跑过）。记录在 docs/research/2026-10-16-release-0.18.0.md。全部已推送。\n\n之前的交接：\n**2026-10-16 P99 完成，current_task 为 null。** 用户问 ccnm add 有了 remove 呢、ccnm ls 和 ws ls 是不是重了：加了顶层 ccnm remove（简写 rm），就是 ws rm 本身；两个 list 不合并（ccnm ls 经 Agent 问运行状态，ws ls 只读本机配置），帮助各补一句指向对方。Rust 1103/0、Python 248/0。P99 没推送（origin 在 ed6265e，CI 38911419714 全绿；main 领先 5 个提交），没发版；本机装的还是 v0.17.0，没有 add 和 rm。\n\n之前的交接：\n**2026-10-16 收尾：分支、worktree 清完，文档补了三处，current_task 为 null。** P94/P95 用过的 worktree 分支 claude/adoring-goodall-f12a7c 早已合进 main、没有未提交改动，连同那个 worktree（只剩 target/）删掉，对应会话已归档；现在本仓库只有 main 一个分支、一个工作目录。文档：ROADMAP 末尾按撤销规则登记 P98 退役编号和原提交（下一个阶段从 P99 起）；ROADMAP 开头去掉过时的\"P50 之后没有已排期的阶段\"；排错手册写明工具断了 ccnm 不会自己接回来。P96、P97、断网实验和这几处文档都没推送（origin 在 bd9ae9f，main 领先 21 个提交），没发版；推不推、发不发版等用户定。",
+    "next_action": "**2026-10-17 P100 完成，认领 P101。** 进正在跑、工具断了的会话时 ccnm 先问 Runtime、再往空输入框敲 /mcp reconnect ccnm，接不上不让进、说原因和 ccnm attach 退路。Rust 1116/0、Python 248/0；没上真机、没推送。下一步：P101.2，settings.json 加 SessionStart 钩子 ccnm internal session-hook，记 Claude 此刻的对话 id，-c 从最后一段往前找留了转录的。\n\n之前的交接：\n**2026-10-17 排了 P100–P102、认领 P100。** 用户要求：进项目时工具断了 ccnm 主动接上、接不上就报错；压缩多次或一件事做完时主动交接到新窗口；另问还有什么该优化。查 fodelf 实况时另发现 -c 接的是会话开头那段对话而不是 /clear 之后最新那段（P101）。零额度夹具 docs/research/probes/p100-session-hooks.py 已量通 Claude Code 2.1.300 的 /mcp reconnect、SessionStart/Stop 钩子。下一步：实现 P100.2。\n\n之前的交接：\n**2026-10-17 发了 v0.18.0、三台换好，current_task 为 null。** 用户说发 0.17.1，按 0.17.0 的规则（加了命令就升次版本号）问过后改发 0.18.0：P94–P97、P99。版本号提交 02641aa，CI 38946371678 绿，tag v0.18.0（tag 对象），release 38948504477 四个产物齐全、正文就是 tag 说明。本机、fodelf（Controller pid 17800）是 db87040f…，hpsrv ccrun 是 fdbd285c…；会话没停只换文件，换装时本机没有 mcp-serve，四个会话的工具早就断了，Reconnect 后用的是新版。八个 workspace 的 doctor 都是\"可以用了（2 项不查）\"（xdo 第一次撞上网络断开，重跑过）。记录在 docs/research/2026-10-16-release-0.18.0.md。全部已推送。\n\n之前的交接：\n**2026-10-16 P99 完成，current_task 为 null。** 用户问 ccnm add 有了 remove 呢、ccnm ls 和 ws ls 是不是重了：加了顶层 ccnm remove（简写 rm），就是 ws rm 本身；两个 list 不合并（ccnm ls 经 Agent 问运行状态，ws ls 只读本机配置），帮助各补一句指向对方。Rust 1103/0、Python 248/0。P99 没推送（origin 在 ed6265e，CI 38911419714 全绿；main 领先 5 个提交），没发版；本机装的还是 v0.17.0，没有 add 和 rm。",
     "scope": "2026-10-08 用户要求：零额度复现 Codex 300 秒工具超时、选修法、补外部入口文档、跑门禁、更新状态、粒度提交、不推送。改动：crates/ccnm-core（provider/codex 的 TOOL_TIMEOUT 与启动参数、测试；mcp/hooks 的 MAX_TIMEOUT 改 pub(crate)；mcp/output 注释）、docs/protocol/remote-workspace-mcp-v1.md、docs/usage.md、docs/troubleshooting.md、docs/research 的 P80 记录与夹具、ROADMAP、status。没动任何机器、已装的 ccnm 与配置；Codex 0.154.0 包和源码只下到会话 scratchpad。",
     "planning_validation": {
       "at": "2026-09-08T21:22:43+09:00",

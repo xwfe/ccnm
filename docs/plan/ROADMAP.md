@@ -1320,6 +1320,27 @@ P73 当时把"外部 MCP workspace 里执行账号的安全没人验"留作挡�
 
 停止点：不替人 `/clear`、不自动开新会话；交接只在同一个终端里 `/clear` 时带过去（`ccnm stop` 之后新开的会话不带，要接上一段用 `-c`）；不改 Codex；次数不做成配置项；不跑真实模型；不推送、不发版。
 
+### P103 — `read_output` 不再误报"limit 太小"：offset 落在字符中间、输出里夹着非 UTF-8 字节都能读
+
+**依赖 P102。** 现象（2026-10-17 统计 fodelf 上 10-08 起全部 ccnm MCP 日志，[记录第 2.4 节](../research/2026-10-17-p100-p102-session-entry-and-handoff.md)）：模型调 `read_output` 有 10 次撞上 `limit N is too small to hold one character at this offset`，N 是 4000–7000——一页装几千个字符绰绰有余，这是缺陷。原因在 `crates/ccnm-core/src/mcp/output.rs` 的 `boundary_before`：它用 `from_utf8(…).valid_up_to()` 找页尾，而这个值是**第一个**不合法字节的位置，不是"末尾没写完的那个字符"的位置。两种触发：① offset 落在多字节字符中间（模型常拿 `total_bytes` 减出 offset 读尾部，输出里有中文、`✓` 时就会落进去），第一个字节就是续字节，整页变 0 字节；② 输出中间有一个非 UTF-8 字节，读到那里之后每一页都报这个错，永远读不过去。
+
+- **P103.1** 修法：offset 落在一个字符中间时往后挪到下一个字符开头（最多 3 字节），页里写一句实际从哪读，`offset` 字段报实际值；页尾只切掉最后一个没写完的字符；页中间不合法的字节换成 U+FFFD、带已有那条"不是合法 UTF-8"的说明，翻页照常往前走；"limit 太小"只在 limit 真的装不下一个字符时报。
+- **P103.2** 测试先在旧代码上红：offset 落在中文字符中间时读得出、报实际 offset；中间夹一个非 UTF-8 字节的长输出能按 `next_offset` 一页页读完、每个字节只读一次；单独一个续字节不被当成"字符中间"跳掉；limit 1–2 对三字节字符仍报太小。原有分页测试不改照过。
+- **P103.3** 协议：核对 `docs/protocol/remote-workspace-mcp-v1.md` 里 `read_output` 的 offset 约定（字节偏移、稳定），在开头"冻结之后"记一笔缺陷修复（不是改语义）；跑 `check_protocol.py`、`tests.test_check_protocol`、`external_mcp`、中立客户端；Rust、Python、计划门禁通过；使用说明同步。
+
+停止点：offset 仍是字节偏移，上限和默认值不变；不改 `exec_command` 的预览；不推送、不发版。
+
+### P104 — `search_text` 的 `path` 可以是一个文件
+
+**依赖 P103。** 同一份统计里最多的一条：`search_text` 51 次报 `<path> is not a directory; search_text searches a tree`——模型传了一个文件，而它照着用的原生 Grep 是收文件的。现在 `crates/ccnm-core/src/mcp/search.rs` 的 `Plan::new` 只认目录。照原生：`path` 是文件时只搜这个文件。
+
+- **P104.1** 实测本机 rg 15.2.0：显式给一个文件时，`.gitignore`、`--no-hidden`、`--glob '!.*'`、`--glob '!.git'`、`--type`（含 ccnm 给 glob 缩范围用的 `--type-add`）、排除用的 glob 都不管它，`--no-follow` 也不管（符号链接照跟）；显式给的二进制文件按"NUL 当换行"整份搜，`--json` 照发 NUL 之后的匹配；显式给一个指向 `.git` 的符号链接目录时会搜进 `.git`。写进研究记录。
+- **P104.2** 实现：`path` 是普通文件时只搜它，范围和 `read_file` 一致——同一套路径策略，dotfile、被 `.gitignore` 排除的文件点了名就搜，符号链接只在 workspace 里跟；`.git` 里的永远不搜：路径本身或解析之后落在 `.git` 里（含经符号链接）的文件和目录都报 `CCNM_E_POLICY`；不是普通文件也不是目录（fifo 等）报 `CCNM_E_INVALID_ARGS`；头 8 KiB 有 NUL 的当二进制拒绝（和 `read_file` 同一条线）；`glob`、`type` 对单个文件不起作用，结果里写明没用上；结果的 `path` 是这个文件。
+- **P104.3** 测试先在旧代码上红：给文件能搜，三种输出模式都行；点名的 dotfile、被忽略的文件能搜；`.git` 里的文件、指向 `.git` 的符号链接（文件和目录）被拒；二进制、fifo 被拒；`glob`/`type` 那句说明。原来"给 README.md 报错"那条断言按有意改动改掉。
+- **P104.4** 协议：第 5.2 节写 `path` 收文件和上面这些规则，开头"冻结之后"记一笔加法；`tools/list` 里 `search_text` 的说明如果改，fixture 按有意改动同步并写明原因；中立客户端测试加文件路径；门禁同 P103；使用说明同步。
+
+停止点：`path` 是目录时行为不变（只多了 `.git` 那条拒绝）；不加 `-A`/`-B`、`head_limit` 等其余原生参数；不推送、不发版。
+
 ## 已撤销的自动重连阶段（2026-10-16）
 
 以下不是活动阶段，也不计入完成数：

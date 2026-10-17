@@ -17,6 +17,7 @@ import base64
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -693,6 +694,31 @@ agent_node = "agent"
                     self.search_lines(client, {**base, **extra, "include_hidden": True}), [".env"]
                 )
 
+    def test_search_text_searches_one_named_file(self):
+        """P104：path 可以是一个文件（原生 Grep 收文件）；能搜什么和 read_file 能读什么一致，
+        .git 永远不搜——包括经符号链接（以前 path 是指向 .git 的链接目录时会把 .git 的内容发回来）。"""
+        (self.root / "src").mkdir()
+        (self.root / "src" / "a.rs").write_text("needle\nneedle needle\n", encoding="utf-8")
+        (self.root / "src" / "b.rs").write_text("needle\n", encoding="utf-8")
+        (self.root / ".env").write_text("needle=1\n", encoding="utf-8")
+        (self.root / ".git").mkdir()
+        (self.root / ".git" / "config").write_text("needle\n", encoding="utf-8")
+        (self.root / "gitdir").symlink_to(".git")
+        client = self.client("demo", "read", "neutral-search-file")
+        self.assertEqual(
+            self.search_lines(client, {"query": "needle", "path": "src/a.rs", "output_mode": "count"}),
+            ["src/a.rs:2"],
+        )
+        # 点了名的 dotfile 照搜，不用 include_hidden。
+        self.assertEqual(
+            self.search_lines(client, {"query": "needle", "path": ".env", "output_mode": "files_with_matches"}),
+            [".env"],
+        )
+        for path in (".git/config", ".git", "gitdir"):
+            with self.subTest(path=path):
+                got = result_text(client.call_tool("search_text", {"query": "needle", "path": path}))
+                self.assertTrue(got.startswith("CCNM_E_POLICY:"), got)
+
     def version_of(self, client: McpClient, path: str) -> str:
         footer = result_text(client.call_tool("read_file", {"path": path})).rsplit("; version ", 1)
         self.assertEqual(len(footer), 2, footer)
@@ -730,6 +756,33 @@ agent_node = "agent"
             with self.subTest(arguments=arguments):
                 got = client.call_tool("exec_command", arguments)
                 self.assertTrue(result_text(got).startswith("CCNM_E_INVALID_ARGS:"), result_text(got))
+
+    def test_read_output_from_inside_a_character_and_past_a_bad_byte(self):
+        """P103：offset 落在多字节字符中间、或输出中间夹着一个不是 UTF-8 的字节，
+        以前报 limit N is too small to hold one character（N 是几千），后一种之后每页都这样。"""
+        self.write_config("coding", unconfined=True)
+        client = self.client("demo", "coding", "neutral-read-output-utf8")
+        # 2000 个"中"（每个 3 字节）、一个 0xff、再 2000 个"中"，共 12001 字节。
+        ran = result_text(
+            client.call_tool("exec_command", {"shell": "printf '%.0s中' $(seq 2000); printf '\\377'; printf '%.0s中' $(seq 2000)"})
+        )
+        ref = re.search(r"output_ref (r-[0-9a-f]{16})", ran).group(1)
+
+        page = result_text(client.call_tool("read_output", {"output_ref": ref, "offset": 4000, "limit": 4000}))
+        self.assertTrue(page.startswith("中"), page[:200])
+        self.assertIn("[offset 4000 is inside a character; this page starts at offset 4002", page)
+
+        offset, text = 0, ""
+        for _ in range(10):
+            page = result_text(client.call_tool("read_output", {"output_ref": ref, "offset": offset, "limit": 4000}))
+            body, footer = page.split("\n[", 1) if not page.startswith("[") else ("", page[1:])
+            text += body
+            if footer.startswith("end of stdout at 12001 bytes]"):
+                break
+            offset = int(re.search(r"continue with offset=(\d+)\]", footer).group(1))
+        else:
+            self.fail("十页还没读完")
+        self.assertEqual(text, "中" * 2000 + "�" + "中" * 2000)
 
     # -- view_image（P39） --
 

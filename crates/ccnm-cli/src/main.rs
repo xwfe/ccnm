@@ -946,6 +946,10 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
                     work::start(&start_request(&authority, opening, *continue_last), &tools)?;
                 eprintln!("{}", report.summary_in(lang));
                 say_not_continued(&report, *continue_last, workspace, lang);
+                if let Some((why, code)) = report.refusal(workspace, lang) {
+                    eprintln!("{why}");
+                    return Ok(code);
+                }
                 if *detached {
                     eprintln!(
                         "\n{}",
@@ -986,6 +990,10 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
             )?;
             eprintln!("{}", rep.summary_in(lang));
             say_not_continued(&rep, *continue_last, workspace, lang);
+            if let Some((why, code)) = rep.refusal(workspace, lang) {
+                eprintln!("{why}");
+                return Ok(code);
+            }
             if *detached {
                 eprintln!(
                     "\n{}",

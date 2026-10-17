@@ -16,7 +16,7 @@ use crate::controller;
 use crate::error::{Error, ErrorCode, ErrorReport, Reported, Result};
 use crate::mcp;
 use crate::paths;
-use crate::process::ProcessRunner;
+use crate::process::{Output, ProcessRunner};
 use crate::protocol::PROTOCOL;
 use crate::protocol::hello::{self, HelloReport, HelloRequest};
 use crate::protocol::mcp::{ProbeReport as McpProbeReport, ServePayload};
@@ -26,7 +26,7 @@ use crate::protocol::run::{
     AgentGuardReport, AgentGuardRequest, AttachRequest, HistoryEntry, HistoryReport,
     HistoryRequest, OutputReport, OutputRequest, OwnerOnAgent, PurgeRequest, ResultReport,
     ResultRequest, RunReport, RunRequest, SessionRecord, SessionState, StartReport, StartRequest,
-    StatusReport, StatusRequest, StopReport, StopRequest,
+    StatusReport, StatusRequest, StopReport, StopRequest, ToolsOnEntry,
 };
 use crate::protocol::{self};
 use crate::provider::{AgentProvider, AgentReport, AgentResult, Ask};
@@ -574,6 +574,18 @@ pub fn start(req: &StartRequest, tools: &Tools<'_>) -> Result<StartReport> {
         let context = dir
             .as_ref()
             .and_then(|path| session::read_context(&session::Dir::at(path)));
+        let entry = match (&existing, &dir) {
+            (Some(spec), Some(path)) => tools_on_entry(
+                req,
+                spec,
+                &session::Dir::at(path),
+                &tmux,
+                &name,
+                tools,
+                &ENTRY_PATIENCE,
+            ),
+            _ => None,
+        };
         return Ok(StartReport {
             agent_identity: selected.identity.clone(),
 
@@ -588,6 +600,7 @@ pub fn start(req: &StartRequest, tools: &Tools<'_>) -> Result<StartReport> {
             controller: None,
             context,
             continues: None,
+            tools: entry,
         });
     }
 
@@ -601,6 +614,140 @@ pub fn start(req: &StartRequest, tools: &Tools<'_>) -> Result<StartReport> {
     };
     let (ctx, ssh, ask_before) = preflight(req, &selected, tools)?;
     start_fresh(req, &selected, tools, name, ctx, ssh, ask_before, continues)
+}
+
+/// How long entering a session waits on a reconnect (P100).
+struct Patience {
+    /// Between typing the command and pressing Enter (see
+    /// [`tmux::Tmux::enter_cmd`]).
+    keys_gap: Duration,
+    poll: Duration,
+    /// Polls before giving up: 80 × 250 ms is 20 s, about what Claude Code
+    /// itself gives a connection that is not answering (`ConnectTimeout=10`
+    /// on the ssh, then the MCP handshake).
+    rounds: u32,
+    /// Polls the transport has to stay up to count as connected when the
+    /// screen did not say so: 20 × 250 ms is 5 s. A Runtime that refuses
+    /// the session ends the ssh within about a second of it starting, and
+    /// one that took 3.07 s to start was measured once (P93).
+    steady: u32,
+}
+
+const ENTRY_PATIENCE: Patience = Patience {
+    keys_gap: Duration::from_millis(500),
+    poll: Duration::from_millis(250),
+    rounds: 80,
+    steady: 20,
+};
+
+/// Somebody is about to be put into a running session (P100). If its tools
+/// are down, bring them back first, the way they would by hand:
+/// `/mcp reconnect ccnm` typed into Claude Code.
+///
+/// This is not the reconnect that was decided against (P98): nothing runs
+/// while the session does. It happens once, at the moment a person
+/// arrives, and does exactly what they would have had to do -- so it is a
+/// new remote session, and output references from before are gone, the same
+/// as by hand.
+///
+/// Before typing, the Runtime is asked the questions a new session asks
+/// (version, project, would it serve this session): typing at a machine
+/// that is not there only puts a failure on the screen. And nothing is typed
+/// into an input box that is not empty -- somebody's unsent words, or a
+/// question that the keys would answer.
+fn tools_on_entry(
+    req: &StartRequest,
+    spec: &Spec,
+    dir: &session::Dir,
+    tmux: &tmux::Tmux,
+    name: &str,
+    tools: &Tools<'_>,
+    patience: &Patience,
+) -> Option<ToolsOnEntry> {
+    use crate::provider::claude::tui;
+    if spec.runtime.is_none() || transport_alive(dir, tools) != Some(false) {
+        return None;
+    }
+    if spec.provider() != AgentProvider::Claude {
+        // Codex has no way to reconnect a running session; the person is
+        // told the way back (P96) rather than put into it.
+        return Some(ToolsOnEntry::Failed(
+            Error::new(ErrorCode::NotReady, "Codex cannot reconnect its tools").into(),
+        ));
+    }
+    if let Err(error) = tools.dial_runtime(
+        &req.runtime_node,
+        &req.workspace,
+        &spec.root,
+        spec.provider(),
+    ) {
+        return Some(ToolsOnEntry::Failed(error.into()));
+    }
+    let screen = |tools: &Tools<'_>| {
+        tools
+            .runner
+            .run(&tmux.capture_cmd(name))
+            .ok()
+            .filter(Output::success)
+            .map(|out| out.stdout_lossy())
+    };
+    let Some(before) = screen(tools) else {
+        return Some(ToolsOnEntry::NotTyped);
+    };
+    if tui::input_box(&before) != tui::InputBox::Empty {
+        return Some(ToolsOnEntry::NotTyped);
+    }
+    let seen = tui::reconnect_answers(&before);
+    let typed = tools
+        .runner
+        .run(&tmux.type_cmd(name, &tui::reconnect_command()))
+        .is_ok_and(|out| out.success())
+        && {
+            std::thread::sleep(patience.keys_gap);
+            tools
+                .runner
+                .run(&tmux.enter_cmd(name))
+                .is_ok_and(|out| out.success())
+        };
+    if !typed {
+        return Some(ToolsOnEntry::Failed(
+            Error::internal("could not type into the session's terminal").into(),
+        ));
+    }
+    let mut up_for = 0;
+    for _ in 0..patience.rounds {
+        std::thread::sleep(patience.poll);
+        let up = transport_alive(dir, tools) == Some(true);
+        up_for = if up { up_for + 1 } else { 0 };
+        let now = screen(tools).map_or(seen, |text| tui::reconnect_answers(&text));
+        if now.failed > seen.failed {
+            return Some(ToolsOnEntry::Failed(
+                Error::new(
+                    ErrorCode::NotReady,
+                    format!(
+                        "Claude Code answered `{}` with: Failed to reconnect to {}",
+                        tui::reconnect_command(),
+                        crate::mcp::server::SERVER_NAME
+                    ),
+                )
+                .into(),
+            ));
+        }
+        if up && (now.succeeded > seen.succeeded || up_for >= patience.steady) {
+            return Some(ToolsOnEntry::Reconnected);
+        }
+    }
+    Some(ToolsOnEntry::Failed(
+        Error::new(
+            ErrorCode::NotReady,
+            format!(
+                "typed `{}`, and the tools were not back within {} s",
+                tui::reconnect_command(),
+                (patience.poll * patience.rounds).as_secs()
+            ),
+        )
+        .into(),
+    ))
 }
 
 /// The conversation `--continue` carries on (P92): the newest interactive
@@ -932,6 +1079,7 @@ fn start_fresh(
         // `ccnm status` is where it shows up.
         context: wait_for_context(&dir),
         continues,
+        tools: None,
     })
 }
 
@@ -3457,6 +3605,254 @@ mod tests {
             "{}",
             rep.summary()
         );
+    }
+
+    const LIVE: &str = "0b4c7a1e-2d3f-4a5b-8c6d-7e8f9a0b1c2d";
+
+    /// A live remote session of `xshun` this Agent started, its record on
+    /// disk, and what `ps` shows while its transport is up.
+    fn live_remote(dir: &Path, provider: AgentProvider) -> (session::Dir, String) {
+        let sdir = session::Dir::at(paths::session_dir(dir, LIVE));
+        std::fs::create_dir_all(sdir.path()).unwrap();
+        let spec = Spec {
+            runtime_node: None,
+            agent_identity: None,
+            provider,
+            protocol: provider.control_protocol(),
+            id: LIVE.into(),
+            workspace: "xshun".into(),
+            root: PathBuf::from("/Users/bing/xshun"),
+            runtime: Some(RuntimeLink {
+                alias: "to-runtime".into(),
+                ccnm_bin: "/opt/runtime/ccnm".into(),
+            }),
+            provider_config_dir: None,
+            permission_mode: crate::config::PermissionMode::default(),
+            mode: Mode::Interactive {
+                prompt: None,
+                continues: None,
+            },
+            timeout_secs: 0,
+            cwd: dir.join("workspaces/xshun"),
+            agent_tools: Default::default(),
+            ask_before: Vec::new(),
+        };
+        std::fs::write(sdir.meta(), serde_json::to_string(&spec).unwrap()).unwrap();
+        let wire = provider
+            .transport_payload(&sdir)
+            .expect("a transport payload");
+        let ps = format!(
+            "/usr/bin/ssh -T to-runtime /opt/runtime/ccnm internal mcp-serve --payload {wire}\n"
+        );
+        (sdir, ps)
+    }
+
+    /// Claude Code 2.1.300's screen bottom, as `capture-pane -p` gives it
+    /// (docs/research/probes/p100-session-hooks.py).
+    fn claude_screen(above: &str, input: &str) -> String {
+        let rule = "─".repeat(40);
+        format!(
+            "{above}\n{rule}\n❯\u{a0}{input}\n{rule}\n  ⏸ manual mode on · ? for shortcuts · ← for agents\n"
+        )
+    }
+
+    const NO_WAIT: Patience = Patience {
+        keys_gap: Duration::ZERO,
+        poll: Duration::ZERO,
+        rounds: 3,
+        steady: 2,
+    };
+
+    fn entry(dir: &Path, fake: &FakeRunner, test: &str) -> Option<ToolsOnEntry> {
+        let sdir = session::Dir::at(paths::session_dir(dir, LIVE));
+        let spec = session::load(&sdir).unwrap();
+        let tools = tmux_tools(fake, dir, test);
+        tools_on_entry(
+            &start_request(),
+            &spec,
+            &sdir,
+            &tools.tmux().unwrap(),
+            "ccnm-xshun",
+            &tools,
+            &NO_WAIT,
+        )
+    }
+
+    fn ran(fake: &FakeRunner) -> Vec<String> {
+        fake.calls().iter().map(Cmd::display).collect()
+    }
+
+    /// P100. Entering a session whose tools went down while nobody was
+    /// there: the Runtime is asked first, then `/mcp reconnect ccnm` is typed
+    /// into the empty input box and Enter pressed, and the person is put in
+    /// once the transport is back and Claude Code said so.
+    #[test]
+    fn entering_a_session_whose_tools_are_down_reconnects_them() {
+        let dir = temp("entry-reconnect");
+        let (_, up) = live_remote(&dir, AgentProvider::Claude);
+        let fake = FakeRunner::new();
+        fake.push(Output::exited(0, "")); // has-session: live
+        fake.push(Output::exited(0, format!("CCNM_SESSION={LIVE}\n")));
+        fake.push(Output::exited(0, "/bin/zsh\n")); // ps: no transport
+        fake.push(Output::exited(0, hello_json(true)));
+        fake.push(Output::exited(0, audit_json()));
+        fake.push(Output::exited(0, claude_screen("⏺ reply 0", "")));
+        fake.push(Output::exited(0, "")); // send-keys -l
+        fake.push(Output::exited(0, "")); // send-keys Enter
+        fake.push(Output::exited(0, up)); // ps: back
+        fake.push(Output::exited(
+            0,
+            claude_screen(
+                "❯ /mcp reconnect ccnm\n  ⎿  Successfully reconnected to ccnm",
+                "",
+            ),
+        ));
+        fake.push(Output::exited(0, "4242\n")); // display-message
+
+        let rep = start(
+            &start_request(),
+            &tmux_tools(&fake, &dir, "entry-reconnect"),
+        )
+        .unwrap();
+        assert!(rep.already_running);
+        assert_eq!(rep.tools, Some(ToolsOnEntry::Reconnected));
+        assert!(rep.summary().contains("reconnected"), "{}", rep.summary());
+        assert!(rep.refusal("xshun", crate::Lang::En).is_none());
+        let ran = ran(&fake);
+        assert!(ran[3].contains("internal hello"), "{ran:?}");
+        assert!(ran[4].contains("internal runtime-audit"), "{ran:?}");
+        assert!(ran[5].ends_with("capture-pane -p -t ccnm-xshun"), "{ran:?}");
+        assert!(
+            ran[6].ends_with("send-keys -t ccnm-xshun -l /mcp reconnect ccnm"),
+            "{ran:?}"
+        );
+        assert!(ran[7].ends_with("send-keys -t ccnm-xshun Enter"), "{ran:?}");
+    }
+
+    /// The common case costs one `ps`: no Runtime, no screen, no keys.
+    #[test]
+    fn tools_that_are_up_are_left_alone() {
+        let dir = temp("entry-up");
+        let (_, up) = live_remote(&dir, AgentProvider::Claude);
+        let fake = FakeRunner::new();
+        fake.push(Output::exited(0, up));
+        assert_eq!(entry(&dir, &fake, "entry-up"), None);
+        assert_eq!(fake.calls().len(), 1, "{:?}", ran(&fake));
+    }
+
+    /// A Runtime that cannot be reached is not typed at: the person is told
+    /// why, with the code the same failure has when starting a session.
+    #[test]
+    fn an_unreachable_runtime_is_reported_and_nothing_is_typed() {
+        let dir = temp("entry-unreachable");
+        live_remote(&dir, AgentProvider::Claude);
+        let fake = FakeRunner::new();
+        fake.push(Output::exited(0, "/bin/zsh\n"));
+        let mut gone = Output::exited(255, "");
+        gone.stderr = b"ssh: connect to host xdwmbp port 22: Operation timed out\n".to_vec();
+        fake.push(gone);
+        let Some(ToolsOnEntry::Failed(why)) = entry(&dir, &fake, "entry-unreachable") else {
+            panic!("{:?}", ran(&fake));
+        };
+        assert_eq!(why.code(), ErrorCode::RuntimeUnreachable, "{why}");
+        assert!(why.message.contains("Operation timed out"), "{why}");
+        assert!(!ran(&fake).iter().any(|c| c.contains("send-keys")));
+    }
+
+    /// Somebody's unsent words stay as they were, and nothing is added to
+    /// them; they are told what to type once they are in.
+    #[test]
+    fn a_draft_in_the_input_box_is_not_typed_into() {
+        let dir = temp("entry-draft");
+        live_remote(&dir, AgentProvider::Claude);
+        let fake = FakeRunner::new();
+        fake.push(Output::exited(0, "/bin/zsh\n"));
+        fake.push(Output::exited(0, hello_json(true)));
+        fake.push(Output::exited(0, audit_json()));
+        fake.push(Output::exited(
+            0,
+            claude_screen("⏺ reply 0", "half a thought"),
+        ));
+        assert_eq!(
+            entry(&dir, &fake, "entry-draft"),
+            Some(ToolsOnEntry::NotTyped)
+        );
+        assert!(!ran(&fake).iter().any(|c| c.contains("send-keys")));
+    }
+
+    /// Claude Code's own answer decides, and so does running out of time.
+    #[test]
+    fn a_reconnect_that_fails_or_never_answers_is_refused() {
+        let dir = temp("entry-failed");
+        live_remote(&dir, AgentProvider::Claude);
+        let typed = |fake: &FakeRunner| {
+            fake.push(Output::exited(0, "/bin/zsh\n"));
+            fake.push(Output::exited(0, hello_json(true)));
+            fake.push(Output::exited(0, audit_json()));
+            fake.push(Output::exited(0, claude_screen("⏺ reply 0", "")));
+            fake.push(Output::exited(0, ""));
+            fake.push(Output::exited(0, ""));
+        };
+        let fake = FakeRunner::new();
+        typed(&fake);
+        fake.push(Output::exited(0, "/bin/zsh\n"));
+        fake.push(Output::exited(
+            0,
+            claude_screen(
+                "❯ /mcp reconnect ccnm\n  ⎿  Failed to reconnect to ccnm",
+                "",
+            ),
+        ));
+        let Some(ToolsOnEntry::Failed(why)) = entry(&dir, &fake, "entry-failed") else {
+            panic!("{:?}", ran(&fake));
+        };
+        assert!(why.message.contains("Failed to reconnect to ccnm"), "{why}");
+
+        let fake = FakeRunner::new();
+        typed(&fake);
+        for _ in 0..NO_WAIT.rounds {
+            fake.push(Output::exited(0, "/bin/zsh\n"));
+            fake.push(Output::exited(
+                0,
+                claude_screen("❯ /mcp reconnect ccnm", ""),
+            ));
+        }
+        let Some(ToolsOnEntry::Failed(why)) = entry(&dir, &fake, "entry-failed") else {
+            panic!("{:?}", ran(&fake));
+        };
+        assert!(why.message.contains("were not back"), "{why}");
+    }
+
+    /// Codex cannot reconnect a running session; nothing is asked or typed,
+    /// and the refusal is P96's way back.
+    #[test]
+    fn a_codex_session_with_its_tools_down_is_refused() {
+        let dir = temp("entry-codex");
+        live_remote(&dir, AgentProvider::Codex);
+        let fake = FakeRunner::new();
+        fake.push(Output::exited(0, "/bin/zsh\n"));
+        let found = entry(&dir, &fake, "entry-codex");
+        assert!(matches!(found, Some(ToolsOnEntry::Failed(_))), "{found:?}");
+        assert_eq!(fake.calls().len(), 1, "{:?}", ran(&fake));
+        let rep = StartReport {
+            protocol: PROTOCOL,
+            provider: AgentProvider::Codex,
+            agent_identity: None,
+            session: Some(LIVE.into()),
+            session_dir: None,
+            tmux_session: "ccnm-xshun".into(),
+            server_pid: 1,
+            already_running: true,
+            replaced: None,
+            controller: None,
+            context: None,
+            continues: None,
+            tools: found,
+        };
+        let (text, code) = rep.refusal("xshun", crate::Lang::Zh).unwrap();
+        assert!(text.contains("ccnm stop xshun"), "{text}");
+        assert!(text.contains("ccnm attach xshun"), "{text}");
+        assert_eq!(code, ErrorCode::NotReady.exit_code());
     }
 
     /// With nothing running, starting one needs the controller, and the

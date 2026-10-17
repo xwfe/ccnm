@@ -275,6 +275,26 @@ pub struct StartReport {
     /// was started with `--continue` (P92).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub continues: Option<String>,
+    /// What entering a session that was already running did about its
+    /// tools (P100). Absent when they were up, or nobody could tell.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tools: Option<ToolsOnEntry>,
+}
+
+/// A running session's tools were down when somebody came to enter it
+/// (P100), and this is what was done about it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolsOnEntry {
+    /// `/mcp reconnect ccnm` was typed and they came back.
+    Reconnected,
+    /// Nothing was typed: the input box held something unsent, or was not
+    /// one ccnm recognises. The person types it once they are in.
+    NotTyped,
+    /// They could not be brought back, and the person is not put into a
+    /// session that cannot reach the project. Why, as the error that
+    /// stopped it.
+    Failed(crate::error::ErrorReport),
 }
 
 impl Protocol for StartReport {
@@ -331,7 +351,48 @@ impl StartReport {
                 ),
             ));
         }
+        let reconnect = crate::provider::claude::tui::reconnect_command();
+        match &self.tools {
+            Some(ToolsOnEntry::Reconnected) => lines.push(lang.pick(
+                format!("工具断了，已替你接上（{reconnect}）"),
+                format!("its tools were down; reconnected them ({reconnect})"),
+            )),
+            Some(ToolsOnEntry::NotTyped) => lines.push(lang.pick(
+                format!(
+                    "工具断了，输入框里有没发出去的字（或开着别的界面），没替你敲；进去后敲：{reconnect}"
+                ),
+                format!(
+                    "its tools are down, and the input box holds something unsent (or another view is open), so nothing was typed; once in, type: {reconnect}"
+                ),
+            )),
+            // Said by [`Self::refusal`], with what to do instead.
+            Some(ToolsOnEntry::Failed(_)) | None => {}
+        }
         lines.join("\n")
+    }
+
+    /// The session is running but its tools are down and stayed down
+    /// (P100): what to tell the person instead of putting them into it, and
+    /// the exit code. `None` when there is nothing to refuse.
+    pub fn refusal(&self, workspace: &str, lang: Lang) -> Option<(String, i32)> {
+        let Some(ToolsOnEntry::Failed(why)) = &self.tools else {
+            return None;
+        };
+        let reason = match self.provider {
+            // Nothing was tried: Codex has no way to reconnect a running
+            // session, so the reason is the way back.
+            crate::provider::AgentProvider::Codex => self.provider.way_back(workspace, lang),
+            crate::provider::AgentProvider::Claude => why.message.clone(),
+        };
+        let text = lang.pick(
+            format!(
+                "这个会话的工具断了，ccnm 没能替你接上，所以没让你进去。\n原因：{reason}\n网络或项目机器好了再 ccnm {workspace}；不管工具先进去看：ccnm attach {workspace}"
+            ),
+            format!(
+                "this session's tools are down and ccnm could not reconnect them, so you were not put into it.\nreason: {reason}\nonce the network or the project machine is back: ccnm {workspace}; to look at it anyway: ccnm attach {workspace}"
+            ),
+        );
+        Some((text, why.code().exit_code()))
     }
 }
 
@@ -1004,6 +1065,7 @@ mod tests {
                 keychain: Some(keychain),
             }),
             continues: continues.map(str::to_string),
+            tools: None,
         }
     }
 

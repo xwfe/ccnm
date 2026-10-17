@@ -795,6 +795,7 @@ mod tests {
             controller: None,
             context: None,
             continues: None,
+            tools: None,
         })
         .unwrap()
     }

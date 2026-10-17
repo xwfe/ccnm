@@ -1538,6 +1538,7 @@ fn sitting_at_home_detached_starts_the_session_and_keeps_the_terminal_here() {
         controller: None,
         context: None,
         continues: None,
+        tools: None,
     })
     .unwrap();
     let nothing_running = serde_json::to_string(&StatusReport {
@@ -1697,6 +1698,7 @@ fn losing_the_agent_after_the_terminal_says_which_machine_and_how_back_in() {
         controller: None,
         context: None,
         continues: Some("99a6a118-fa6e-4918-9cfd-4b846e7d1322".into()),
+        tools: None,
     })
     .unwrap();
     let ssh = FakeSsh::install(
@@ -1731,6 +1733,85 @@ fn losing_the_agent_after_the_terminal_says_which_machine_and_how_back_in() {
         "{err}"
     );
     assert!(!err.contains("CCNM_E_AGENT_UNREACHABLE"), "{err}");
+}
+
+/// P100: the session is running, its tools went down, and the Agent could
+/// not bring them back (here: the Runtime does not answer). The person is
+/// told why and how to get in anyway, with the failure's own exit code, and
+/// is not put into a session that cannot reach the project. Before P100 the
+/// report had no such field and `ccnm keex` attached regardless.
+#[test]
+fn a_running_session_whose_tools_stay_down_is_not_entered() {
+    use ccnm_core::error::{ErrorCode, ErrorReport};
+    use ccnm_core::protocol::PROTOCOL;
+    use ccnm_core::protocol::run::{StartReport, ToolsOnEntry};
+
+    let dir = std::env::temp_dir().join(format!("ccnm-cli-{}-p100-entry", std::process::id()));
+    let _cleanup = TestDir::adopt(&dir);
+    let _ = std::fs::remove_dir_all(&dir);
+    let root = dir.join("root");
+    std::fs::create_dir_all(&root).unwrap();
+    let config = dir.join("config.toml");
+    std::fs::write(
+        &config,
+        format!(
+            "version = 1\nthis = \"runtime\"\n[nodes.fodelf]\nssh = \"ccnm-test-nowhere.invalid\"\n[nodes.runtime]\n[workspaces.keex]\nagent_node = \"fodelf\"\nroot = \"{}\"\nallow_unconfined_exec = true\n",
+            root.display()
+        ),
+    )
+    .unwrap();
+    let started = serde_json::to_string(&StartReport {
+        agent_identity: None,
+        provider: Default::default(),
+        protocol: PROTOCOL,
+        session: Some("d13df3ae-8716-4874-bee3-9399c1f34561".into()),
+        session_dir: None,
+        tmux_session: "ccnm-keex".into(),
+        server_pid: 83949,
+        already_running: true,
+        replaced: None,
+        controller: None,
+        context: None,
+        continues: None,
+        tools: Some(ToolsOnEntry::Failed(ErrorReport::new(
+            ErrorCode::RuntimeUnreachable,
+            "ssh: connect to host xdwmbp port 22: Operation timed out",
+        ))),
+    })
+    .unwrap();
+    let attached = dir.join("attached");
+    let ssh = FakeSsh::install(
+        &dir,
+        &format!(
+            "  *'internal agent-start'*) printf '%s\\n' '{started}' ;;\n  *'internal attach'*) : > '{}'; exit 0 ;;",
+            attached.display()
+        ),
+    );
+    let state = short_state("p100-entry");
+    let out = ccnm()
+        .env("PATH", ssh.path())
+        .env("XDG_STATE_HOME", &state)
+        .args(["keex", "--config"])
+        .arg(&config)
+        .output()
+        .unwrap();
+    let err = stderr(&out);
+    assert_eq!(
+        out.status.code(),
+        Some(ErrorCode::RuntimeUnreachable.exit_code()),
+        "{err}"
+    );
+    assert!(
+        !attached.exists(),
+        "put into a session with no tools:\n{err}"
+    );
+    assert!(err.contains("session already running"), "{err}");
+    assert!(err.contains("could not reconnect them"), "{err}");
+    assert!(
+        err.contains("reason: ssh: connect to host xdwmbp port 22: Operation timed out"),
+        "{err}"
+    );
+    assert!(err.contains("ccnm attach keex"), "{err}");
 }
 
 /// P95: `ccnm status <ws>` and `ccnm ls` on the machine with the projects,

@@ -750,21 +750,36 @@ fn tools_on_entry(
     ))
 }
 
-/// The conversation `--continue` carries on (P92): the newest interactive
-/// session this machine ran for the workspace -- same Agent, same
-/// instance, same project root -- that Claude kept a transcript of.
+/// What `--continue` carries on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Earlier {
+    /// Claude's id for the conversation, what `--resume` is given.
+    conversation: String,
+    /// How often it had been compacted, when that was kept (P102): the new
+    /// session's count starts there.
+    compactions: u32,
+}
+
+/// The conversation `--continue` carries on (P92): the last conversation
+/// of the newest interactive session this machine ran for the workspace --
+/// same Agent, same instance, same project root -- that Claude kept a
+/// transcript of.
+///
+/// The last conversation, not the first (P101): every `/clear` starts a new
+/// one with a new id, and the session hook writes each down as it begins.
+/// Sessions from before that have only their first, ccnm's own id.
 ///
 /// The transcript decides. Claude Code writes one only once something has
-/// been said, so a session opened and closed in silence has a record here
-/// and nothing to resume: `claude --resume` on it prints "No conversation
-/// found with session ID" and exits 1 (2.1.286,
-/// docs/research/2026-10-15-p92-resume.md), and whoever attaches sees the
-/// terminal close.
+/// been said, so a session opened and closed in silence -- or a `/clear`
+/// followed by nothing -- has a record here and nothing to resume:
+/// `claude --resume` on it prints "No conversation found with session ID"
+/// and exits 1 (2.1.286, docs/research/2026-10-15-p92-resume.md), and
+/// whoever attaches sees the terminal close.
 fn previous_conversation(
     req: &StartRequest,
     selected: &SelectedAgent,
     tools: &Tools<'_>,
-) -> Result<String> {
+) -> Result<Earlier> {
     // Where this session's Claude keeps its state: the instance profile or
     // `claude_config_dir` when there is one (CLAUDE_CONFIG_DIR), else
     // Claude's own default.
@@ -788,7 +803,7 @@ fn latest_kept_conversation(
     claude_home: &Path,
     req: &StartRequest,
     selected: &SelectedAgent,
-) -> Option<String> {
+) -> Option<Earlier> {
     let mut sessions: Vec<(u64, String)> = std::fs::read_dir(paths::sessions_dir(state))
         .ok()?
         .flatten()
@@ -804,10 +819,28 @@ fn latest_kept_conversation(
         })
         .collect();
     sessions.sort_by_key(|(at, _)| std::cmp::Reverse(*at));
-    sessions
-        .into_iter()
-        .map(|(_, id)| id)
-        .find(|id| transcript_kept(claude_home, id))
+    sessions.into_iter().find_map(|(_, id)| {
+        let kept = session::hook::read(&session::Dir::at(paths::session_dir(state, &id)))
+            .unwrap_or_default();
+        let last = kept.ids.last().cloned();
+        let mut newest_first: Vec<String> = kept.ids.into_iter().rev().collect();
+        if !newest_first.contains(&id) {
+            newest_first.push(id);
+        }
+        newest_first
+            .into_iter()
+            .find(|conversation| transcript_kept(claude_home, conversation))
+            .map(|conversation| Earlier {
+                // The count is the last conversation's; an earlier one
+                // starts again from nothing known.
+                compactions: if Some(&conversation) == last.as_ref() {
+                    kept.compactions
+                } else {
+                    0
+                },
+                conversation,
+            })
+    })
 }
 
 /// Claude keeps a conversation as `projects/<its cwd, flattened>/<id>.jsonl`
@@ -995,7 +1028,7 @@ fn start_fresh(
     ctx: controller::Context,
     ssh: Option<Ssh>,
     ask_before: Vec<String>,
-    continues: Option<String>,
+    continues: Option<Earlier>,
 ) -> Result<StartReport> {
     let runtime = tools.runtime_link(&req.runtime_node)?;
     let cwd = if runtime.is_none() {
@@ -1027,7 +1060,7 @@ fn start_fresh(
         permission_mode: req.permission_mode,
         mode: Mode::Interactive {
             prompt: req.prompt.clone(),
-            continues: continues.clone(),
+            continues: continues.as_ref().map(|e| e.conversation.clone()),
         },
         // Not used interactively: nothing kills this session on a clock.
         timeout_secs: 0,
@@ -1048,6 +1081,10 @@ fn start_fresh(
         &tools.config.machine_skills,
         &tools.config.agent_mcp,
     )?;
+    if let Some(earlier) = continues.as_ref().filter(|e| e.compactions > 0) {
+        // Not worth failing a start over: without it the count starts at 0.
+        let _ = session::hook::seed(&dir, earlier.compactions);
+    }
     let server_pid = match controller::start_for_identity(
         &tools.controller,
         dir.path(),
@@ -1078,7 +1115,7 @@ fn start_fresh(
         // The supervisor writes this from inside tmux a moment from now;
         // `ccnm status` is where it shows up.
         context: wait_for_context(&dir),
-        continues,
+        continues: continues.map(|e| e.conversation),
         tools: None,
     })
 }
@@ -3497,8 +3534,79 @@ mod tests {
             identity: None,
             profile_dir: None,
         };
-        let found = latest_kept_conversation(&state, &home, &start_request(), &claude);
+        let found = latest_kept_conversation(&state, &home, &start_request(), &claude)
+            .map(|e| e.conversation);
         assert_eq!(found.as_deref(), Some(wanted.as_str()), "not {older}");
+    }
+
+    /// P101, the 2026-10-17 codingagent case: a session that was `/clear`ed
+    /// is carried on from its last conversation, not from the one ccnm
+    /// started it with. A `/clear` followed by nothing left no transcript,
+    /// so the one before it is the last that can be resumed; the session
+    /// hook's compaction count belongs to the last conversation only.
+    #[test]
+    fn continue_follows_clear_to_the_last_conversation() {
+        let dir = temp("continue-clear");
+        let (state, home) = (dir.join("state"), dir.join("claude-home"));
+        let chat = || Mode::Interactive {
+            prompt: None,
+            continues: None,
+        };
+        let started = kept(
+            &state,
+            &home,
+            100,
+            "xshun",
+            "/Users/bing/xshun",
+            chat(),
+            true,
+        );
+        let transcript = |id: &str| {
+            std::fs::write(
+                home.join("projects/-flattened-cwd")
+                    .join(format!("{id}.jsonl")),
+                "{}\n",
+            )
+            .unwrap()
+        };
+        let (after_clear, last_said, silent) =
+            (session::new_id(), session::new_id(), session::new_id());
+        transcript(&after_clear);
+        transcript(&last_said);
+        let sdir = session::Dir::at(paths::session_dir(&state, &started));
+        let write = |ids: &[&str], compactions: u32| {
+            std::fs::write(
+                sdir.conversations(),
+                serde_json::json!({ "ids": ids, "compactions": compactions }).to_string(),
+            )
+            .unwrap()
+        };
+        let claude = SelectedAgent {
+            provider: AgentProvider::Claude,
+            identity: None,
+            profile_dir: None,
+        };
+        let pick = || latest_kept_conversation(&state, &home, &start_request(), &claude);
+
+        write(&[&started, &after_clear, &last_said], 2);
+        assert_eq!(
+            pick(),
+            Some(Earlier {
+                conversation: last_said.clone(),
+                compactions: 2
+            }),
+            "not the first conversation, {started}"
+        );
+
+        write(&[&started, &after_clear, &last_said, &silent], 0);
+        assert_eq!(
+            pick(),
+            Some(Earlier {
+                conversation: last_said.clone(),
+                compactions: 0
+            }),
+            "the silent one after the last /clear has nothing to resume"
+        );
     }
 
     /// Nothing to continue is said before anything is dialled or created:

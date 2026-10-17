@@ -11,6 +11,7 @@ pub use super::types::{
     AgentReport as ClaudeReport, Ask, AuthStatus, RunResult as PrintResult, Usage,
 };
 pub mod context;
+pub mod tui;
 
 pub const CREDENTIALS: super::CredentialMetadata = super::CredentialMetadata {
     env_prefixes: &["ANTHROPIC_", "CLAUDE_"],

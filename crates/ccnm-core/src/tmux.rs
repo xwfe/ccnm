@@ -336,6 +336,27 @@ impl Tmux {
         self.base().args(["kill-session", "-t", name])
     }
 
+    /// What the session's screen shows right now, as plain text: the
+    /// visible lines only, no colours, no scrollback.
+    pub fn capture_cmd(&self, name: &str) -> Cmd {
+        self.base().args(["capture-pane", "-p", "-t", name])
+    }
+
+    /// Type `text` into the session as if someone had, without pressing
+    /// Enter. `-l` so that a word like `Enter` or `C-c` in it is typed, not
+    /// sent as that key.
+    pub fn type_cmd(&self, name: &str, text: &str) -> Cmd {
+        self.base().args(["send-keys", "-t", name, "-l", text])
+    }
+
+    /// Press Enter in the session. A separate call from [`Self::type_cmd`],
+    /// and a moment after it: a terminal program that sees text and Enter
+    /// arrive together can take the lot for a paste, and a pasted Enter is
+    /// a newline, not a submit.
+    pub fn enter_cmd(&self, name: &str) -> Cmd {
+        self.base().args(["send-keys", "-t", name, "Enter"])
+    }
+
     /// The server's own pid, which is the evidence that a session is
     /// backed by a process rather than by a name in a list.
     pub fn server_pid_cmd(&self) -> Cmd {

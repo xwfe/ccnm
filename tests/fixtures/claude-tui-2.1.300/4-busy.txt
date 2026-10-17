@@ -1,0 +1,45 @@
+
+ ▐▛███▛█   Claude Code v2.1.300
+▝▜██████▀  Opus 5.5 · API Usage Billing
+ ▝▝   ▝▝   /Users/me/.local/state/ccnm/workspaces/xshun
+
+
+❯ hello one
+
+⏺ reply 0
+
+✻ Sautéed for 0s · done 1:52 PM
+
+❯ SLOW one
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+✽ Flibbertigibbeting…
+  ⎿  Tip: Start with small features or bug fixes, tell Claude to propose a plan, and verify its suggested edits
+                                                                                                                                  Ctrl+Y to paste deleted text
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏸ manual mode on · esc to interrupt · ← for agents

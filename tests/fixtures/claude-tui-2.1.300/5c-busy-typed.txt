@@ -1,0 +1,45 @@
+
+ ▐▛███▛█   Claude Code v2.1.300
+▝▜██████▀  Opus 5.5 · API Usage Billing
+ ▝▝   ▝▝   /Users/me/.local/state/ccnm/workspaces/xshun
+
+
+❯ hello one
+
+⏺ reply 0
+
+✻ Sautéed for 0s · done 1:52 PM
+
+❯ SLOW one
+
+⏺ reply 1
+
+✻ Baked for 8s · done 1:52 PM
+
+❯ /mcp reconnect ccnm
+  ⎿  Failed to reconnect to ccnm
+
+❯ SLOW two
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+✶ Ebbing…
+  ⎿  Tip: Use /memory to view and manage Claude memory
+                                                                                                                              Successfully reconnected to ccnm
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏸ manual mode on · esc to interrupt · ← for agents

@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-10-17T16:50:00+09:00",
+  "last_updated": "2026-10-17T18:30:00+09:00",
   "current_task": null,
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
@@ -4879,7 +4879,7 @@
       ],
       "owner": null,
       "started_at": "2026-10-17T14:00:00+09:00",
-      "last_updated": "2026-10-17T14:30:00+09:00",
+      "last_updated": "2026-10-17T18:30:00+09:00",
       "completed_criteria": [
         "P100.1",
         "P100.2",
@@ -4906,6 +4906,25 @@
           "ref": "crates/ccnm-core/src/work.rs",
           "commit": "23a89e1",
           "result": "work::start 的已在跑分支：会话是远端、传输进程不在（transport_alive=false）时，Claude 先 dial_runtime（greet+runtime-audit），再 capture-pane 认输入框（provider/claude/tui.rs，85106d5），空才 send-keys 敲 /mcp reconnect ccnm、隔 500 ms 回车，每 250 ms 看一次、最多 80 次：新增 Failed 行即失败，传输在且新增 Successfully 行或连续 20 次在即接上；Codex 直接失败。结果放 StartReport.tools（Reconnected/NotTyped/Failed(ErrorReport)），CLI 两条路径在摘要后按 refusal() 说原因与 ccnm attach 退路、用失败本身的退出码返回、不 attach。测试：work 六条（接上并核对 hello/audit/capture/send-keys 顺序；工具通时只跑一次 ps；Runtime 连不上报 RuntimeUnreachable 且不敲；草稿不敲；Claude 说失败与等不到都拒；Codex 不问不敲、中文提示含 ccnm stop 与 ccnm attach），tui 六条（含夹具抓的六张真实 2.1.300 截屏 tests/fixtures/claude-tui-2.1.300/），CLI 一条 a_running_session_whose_tools_stay_down_is_not_entered（假 ssh 回 Failed：退出码 21、没调 internal attach；把两处 refusal 换成 None 后它红：退出码 0）。文档：排错手册工具断了一节（原因表、不敲的情况）、使用说明两句（d0d5026）。本机 macOS arm64：fmt、clippy -D warnings；cargo test --workspace --no-fail-fast 1116 passed / 0 failed；python3 -B scripts/ci_gates.py 248 ran / 0 skipped / 0 failed；check_plan、git diff --check。没在真机上进过断了工具的会话（要换装 fodelf，未授权）；没在 Linux 上跑；没推送、没发版。"
+        },
+        {
+          "kind": "offline",
+          "criteria": [
+            "P100.2",
+            "P100.3"
+          ],
+          "ref": "docs/research/2026-10-17-release-0.19.0.md",
+          "commit": "e246464",
+          "result": "v0.19.0 真机验证时发现：一句话没说过的会话，空输入框里是暗色的 ❯ Try \"…\" 提示，capture-pane -p 的纯文本里和草稿一样，于是不敲。改用 capture-pane -e，❯ 后只有暗色字算空、正常粗细才算草稿；样本 tests/fixtures/claude-tui-2.1.302/ 两张真实带色截屏（去掉了状态栏额度用量）；只看纯文本的旧判断下新测试红。本机 Rust 1140/0、ci_gates 250/0；随 v0.19.1 发布。"
+        },
+        {
+          "kind": "real_nodes",
+          "criteria": [
+            "P100.2"
+          ],
+          "ref": "docs/research/2026-10-17-release-0.19.0.md",
+          "commit": "bed79da",
+          "result": "v0.19.0/v0.19.1 换装后（本机 Runtime/Operator → fodelf Agent，Claude Code 2.1.302），在 ccnm 项目的测试会话里用脚本杀这个会话 Claude 名下的传输进程断工具（ccnm status 显示断了），再从本机 ccnm run ccnm --detached：接上（4 秒，提示已替你接上、退出 0、status 变通、界面 Successfully reconnected to ccnm）；输入框有草稿时不敲（提示进去后敲、草稿原样）；断线脚本连跑 40 秒时报错不进（退出 3，原因 Failed to reconnect to ccnm）；v0.19.1 上全新会话的暗色提示照样接上（5 秒）。零额度。没在用户真在用的会话里验。"
         }
       ],
       "blockers": []
@@ -4919,7 +4938,7 @@
       ],
       "owner": null,
       "started_at": "2026-10-17T14:30:00+09:00",
-      "last_updated": "2026-10-17T15:10:00+09:00",
+      "last_updated": "2026-10-17T18:30:00+09:00",
       "completed_criteria": [
         "P101.1",
         "P101.2",
@@ -4946,6 +4965,15 @@
           "ref": "crates/ccnm-core/src/session/hook.rs",
           "commit": "29565c4",
           "result": "db1e955：交互远端会话 settings.json 的 SessionStart/Stop 挂 <ccnm 绝对路径> internal session-hook --payload <会话目录>（--print 不挂），SessionStart 把 UUID 形状的 session_id 依次记进 conversations.json，坏 JSON、非 UUID 不写不报、出错退出 0 不打印；命令经 /bin/sh 原样解出（路径带空格和单引号）。29565c4：-c 在最近那次合格会话里从最后记下的 id 往前找第一个留了转录的，没记录的旧会话照旧用 ccnm id；新测试 continue_follows_clear_to_the_last_conversation 用旧选法（只认 ccnm id）时红：拿到第一段。夹具 --ccnm 真二进制端到端（9fe6203）：/clear 后 ids 追加新 id。文档 9579bd5：使用说明 -c 一节。本机 macOS arm64：cargo fmt --check、clippy -D warnings、cargo +1.89 check --locked；cargo test --workspace --no-fail-fast 1126 passed / 0 failed；python3 -B scripts/ci_gates.py 248 ran / 0 skipped / 0 failed；check_plan、git diff --check。没在 Linux 上跑；没上真机（没换装 fodelf）；没跑真实模型；没推送、没发版。"
+        },
+        {
+          "kind": "real_nodes",
+          "criteria": [
+            "P101.2"
+          ],
+          "ref": "docs/research/2026-10-17-release-0.19.0.md",
+          "commit": "9ebacc8",
+          "result": "v0.19.0 换装后在 fodelf：测试会话启动时 SessionStart 钩子记下 424e2f6a…；/context 后 /clear、/context，conversations.json 变成 424e2f6a…、79529e40…；ccnm stop 后 ccnm run ccnm --detached -c，新会话参数 --session-id ce89ec84… --resume 79529e40… --fork-session（接 /clear 之后那段）；同一 ps 里用户 10-17 08:56 用 v0.18.0 起的 codingagent 会话是 --resume 5daf6e98…，即当时接错的那段。零额度。"
         }
       ],
       "blockers": []
@@ -4959,7 +4987,7 @@
       ],
       "owner": null,
       "started_at": "2026-10-17T14:35:00+09:00",
-      "last_updated": "2026-10-17T15:10:00+09:00",
+      "last_updated": "2026-10-17T18:30:00+09:00",
       "completed_criteria": [
         "P102.1",
         "P102.2",
@@ -4988,6 +5016,15 @@
           "ref": "docs/research/2026-10-17-p100-p102-session-entry-and-handoff.md",
           "commit": "df73e38",
           "result": "db1e955 session::hook：startup/fork/clear 说怎么写交接（单独一行 [ccnm handoff] 起头，/clear 后带过去，只认最后一条回复）；compact 次数 +1 并说第几次，HAND_OFF_AFTER=3 起要模型到能停的地方就交接；Stop 有交接就存 handoff.md（32 KiB 截断），没有就删旧的；clear 时交出并删掉、次数归 0；fork 沿用 -c 起会话时 hook::seed 种下的次数（29565c4）。df73e38：LiveSession.compactions，ccnm status 会话那行压缩过时多说「这段对话压缩过 N 次」。单元测试八条（记 id、坏输入、计数与第 3 次的话、fork 接着数、交接只给一次、只认最后一条、长交接按字符截断、命令过 shell）+ settings 一条（交互挂、print 不挂、payload 解回会话目录）+ status 两处。真二进制端到端（9fe6203，研究记录 5.2 节）：Claude Code 2.1.300 + 假模型 + target/debug/ccnm，三次 /compact 后请求里依次有 compacted once / 2 times / 3 times、Do not wait 只在第 3 次，交接存下，/clear 后新对话第一条请求带交接原文且 handoff.md 已删、ids 追加、次数 0，种下 1 的 fork /compact 后说 compacted 2 times。文档 9579bd5（使用说明长对话一节、配置说明、支持矩阵）、ff6a2f9（研究记录）。没测自动压缩（只用 /compact）、真实模型照不照做。本机 macOS arm64：cargo fmt --check、clippy -D warnings、cargo +1.89 check --locked；cargo test --workspace --no-fail-fast 1126 passed / 0 failed；python3 -B scripts/ci_gates.py 248 ran / 0 skipped / 0 failed；check_plan、git diff --check。没在 Linux 上跑；没上真机（没换装 fodelf）；没跑真实模型；没推送、没发版。"
+        },
+        {
+          "kind": "real_nodes",
+          "criteria": [
+            "P102.2"
+          ],
+          "ref": "docs/research/2026-10-17-release-0.19.0.md",
+          "commit": "9ebacc8",
+          "result": "v0.19.0 换装后在 fodelf：交互会话 settings.json 有 PreCompact（printf）、SessionStart、Stop（/Users/fodelf/.local/bin/ccnm internal session-hook --payload …）；往 -c 会话目录预写 handoff.md（代替模型的最后一条回复），/clear、/context 后 handoff.md 被取走、conversations.json 追加新 id、新对话转录里有 SessionStart:clear 的 hook_success 附件，含 the user typed /clear 与交接原文。没调模型：Stop 收到真回复、压缩计数、模型何时建议换对话都没在真机上验。"
         }
       ],
       "blockers": []
@@ -5001,7 +5038,7 @@
       ],
       "owner": null,
       "started_at": "2026-10-17T15:20:00+09:00",
-      "last_updated": "2026-10-17T16:10:00+09:00",
+      "last_updated": "2026-10-17T18:30:00+09:00",
       "completed_criteria": [
         "P103.1",
         "P103.2",
@@ -5026,6 +5063,16 @@
           "ref": "docs/protocol/remote-workspace-mcp-v1.md",
           "commit": "ff847c5",
           "result": "协议开头冻结之后列表记一笔缺陷修复（offset 约定、上限、错误码不变，不升版本）；核对过第 5.5、8 节：只说字节偏移、稳定，没写过字符中间怎么办。中立客户端 tests/test_remote_workspace_mcp.py 加 test_read_output_from_inside_a_character_and_past_a_bad_byte（exec_command 写 12001 字节：2000 个中、一个 0xff、2000 个中；从 4000 读、按 next_offset 每页 4000 读完）：拿旧 output.rs 编出的二进制跑报 CCNM_E_INVALID_ARGS: limit 4000 is too small to hold one character at this offset（和 fodelf 日志同一句），新二进制过。门禁（本机 macOS arm64，ff847c5）：check_protocol.py 通过（46 + 31 个 fixture）；tests.test_check_protocol 24/0；cargo test -p ccnm-cli --test external_mcp 32/0；cargo build 后 tests.test_remote_workspace_mcp 52/0；cargo fmt --check、clippy --workspace --all-targets -D warnings 通过；cargo test --workspace --no-fail-fast 1131 passed / 0 failed；python3 -B scripts/ci_gates.py 249 ran / 0 skipped / 0 failed（含计划、协议检查）。使用说明里只有一句'大输出由 read_output 分页读取'，没写到字符边界，不用改。没在 Linux 上跑；没上真机（没换装）；没推送、没发版。"
+        },
+        {
+          "kind": "real_nodes",
+          "criteria": [
+            "P103.1",
+            "P103.2"
+          ],
+          "ref": "docs/research/2026-10-17-release-0.19.0.md",
+          "commit": "9ebacc8",
+          "result": "hpsrv（Debian 13 x86_64）上以 ccrun 身份用 v0.19.0 发布的 Linux 二进制跑中立 MCP 客户端（v0.19.0 的 tests 等用 git archive 传过去）：53 条全过，含 test_read_output_from_inside_a_character_and_past_a_bad_byte。"
         }
       ],
       "blockers": []
@@ -5039,7 +5086,7 @@
       ],
       "owner": null,
       "started_at": "2026-10-17T16:10:00+09:00",
-      "last_updated": "2026-10-17T16:50:00+09:00",
+      "last_updated": "2026-10-17T18:30:00+09:00",
       "completed_criteria": [
         "P104.1",
         "P104.2",
@@ -5073,6 +5120,27 @@
           "ref": "docs/research/2026-10-17-p103-p104-read-output-and-search-file.md",
           "commit": "a18df7c",
           "result": "协议第 5.2 节写 path 收文件的规则表，开头冻结之后记加法（连同 .git 符号链接缺口和说明改的那句）；使用说明、支持矩阵同步（e9ef7b7）。中立客户端 test_search_text_searches_one_named_file：旧 search.rs 编出的二进制上报 CCNM_E_INVALID_ARGS: src/a.rs is not a directory; search_text searches a tree（和 fodelf 日志同一句），新二进制过。门禁（本机 macOS arm64，代码在 e9ef7b7，之后只改文档）：check_protocol.py 通过；tests.test_check_protocol 通过；tests.test_remote_workspace_mcp 53/0；cargo fmt --check、clippy --workspace --all-targets -D warnings、cargo +1.89 check --locked 通过；cargo test --workspace --no-fail-fast 1138 passed / 0 failed；python3 -B scripts/ci_gates.py 250 ran / 0 skipped / 0 failed（含计划、协议检查）；跑完 $TMPDIR 无 ccnm-search-*/ccnm-output-* 残留。没在 Linux 上跑、没换别的 rg 版本；没上真机（fodelf、hpsrv 仍是 v0.18.0）；没跑真实模型；没推送、没发版。"
+        },
+        {
+          "kind": "offline",
+          "criteria": [
+            "P104.1",
+            "P104.2",
+            "P104.3"
+          ],
+          "ref": "docs/research/2026-10-17-release-0.19.0.md",
+          "commit": "9ebacc8",
+          "result": "合并后 CI 的 Linux job 红在 a_nul_past_the_first_8_kib_of_a_named_file_is_mentioned：Linux 上 rg 用 mmap 读点名的单个文件，NUL 留在行里被当二进制跳过。hpsrv rg 14.1.1 默认与 --mmap 报第 2001 行、--no-mmap 报第 2002 行；macOS 上 rg 14.1.1 与 15.2.0 三种都是 2002；P104 夹具 21 种情况里 15.2.0 与 14.1.1 只有这一行不同。点名文件时加 --no-mmap，参数测试守着；CI run 39012809086 三个 job 全绿。记录见 docs/research/2026-10-17-p103-p104-read-output-and-search-file.md 第 3.4 节。"
+        },
+        {
+          "kind": "real_nodes",
+          "criteria": [
+            "P104.2",
+            "P104.3"
+          ],
+          "ref": "docs/research/2026-10-17-release-0.19.0.md",
+          "commit": "9ebacc8",
+          "result": "hpsrv 上用 v0.19.0 发布的 Linux 二进制跑中立 MCP 客户端 53 条全过，含 test_search_text_searches_one_named_file。"
         }
       ],
       "blockers": []
@@ -5146,7 +5214,7 @@
     "【2026-10-08 P80 时看到 / 只记不修】Agent 上的 MCP 转发 ccnm_agent（P50）在受管 Codex 会话里同样没配 tool_timeout_sec，Codex 对它只等 300 秒。它的 call_mcp_tool 默认等 60 秒、起 server 30 秒，用户给 Agent 上某个 server 配的 tool_timeout_sec 接近或超过 300 秒时（还没起的 server 起它的时间也算在内），调用会被 Codex 先截断、不发取消，照样在 Agent 上跑完。值取决于用户配置、不归 ccnm 的常量管，P80 没修。依据 docs/research/2026-10-08-p80-codex-tool-timeout.md 第 6 节。"
   ],
   "handoff": {
-    "next_action": "**2026-10-17 P103、P104 完成，current_task 为 null。** 按 P100–P102 研究记录第 2.4、6 节排的两个阶段。P103：read_output 的 offset 落在字符中间时挪到下一个字符开头并写明、页尾只切没写完的字符、坏字节换 U+FFFD 照常翻页，修掉 limit N is too small 的误报（fodelf 10 次）。P104：search_text 的 path 可以是一个文件，范围和 read_file 一致（点名的 dotfile、被忽略的文件照搜，二进制、fifo 拒，glob/type 不用并写明）；实测 rg 15.2.0 对点名的路径不看任何排除规则，顺带堵上 path 指向 .git 的符号链接目录会把 .git 内容发回来的缺口。tools/list 里 search_text 的说明有意改了一句、fixture 已同步。两边旧二进制都在中立客户端上复现了 fodelf 日志里那句报错。Rust 1138/0、Python 250/0；只在 macOS arm64 上，没上 Linux、没上真机、没推送、没发版。记录 docs/research/2026-10-17-p103-p104-read-output-and-search-file.md。\n\n之前的交接：\n**2026-10-17 P103 完成，认领 P104。** read_output 的 offset 落在字符中间时挪到下一个字符开头、页尾只切没写完的字符、坏字节换 U+FFFD 照常翻页；旧二进制在中立客户端上复现 fodelf 那句 limit 4000 is too small。Rust 1131/0、Python 249/0；没推送。P104.1 实测完：rg 对点名的文件不看任何排除规则，另有 path 指向 .git 的符号链接目录会泄出 .git 内容的现有缺口。下一步：P104.3 先写红测试（文件路径、.git 拒绝含符号链接、二进制/fifo、glob/type 说明），再改 search.rs 的 Plan。\n\n之前的交接：\n**2026-10-17 排了 P103、P104，认领 P103。** 按 P100–P102 研究记录第 2.4、6 节：read_output 的 offset 落在字符中间或输出里夹着非 UTF-8 字节时误报 limit 太小（10 次，缺陷）；search_text 的 path 收单个文件（51 次，冻结协议的加法）。下一步：P103.2 先写在旧代码上红的测试，再改 output.rs 的页头页尾。\n\n之前的交接：\n**2026-10-17 P100–P102 完成，current_task 为 null。** 用户要求：进项目时工具断了 ccnm 主动接上、接不上就报错；压缩多次或一件事做完时主动交接到新窗口；另问还有什么该优化。P100：进正在跑、工具断了的 Claude 会话时先问 Runtime，输入框空就敲 /mcp reconnect ccnm，接不上不让进、给 ccnm attach 退路。P101：查 fodelf 转录发现 -c 接的是会话开头那段对话（用户常 /clear），新加的 SessionStart/Stop 会话钩子记下每段对话 id，-c 接最后那段。P102：同一钩子数压缩次数、第 3 次起让模型到能停处交接、[ccnm handoff] 交接 /clear 后带进新对话，ccnm status 显示次数；ccnm 不替人 /clear。Rust 1126/0、Python 248/0；Claude Code 2.1.300 假模型 + 真 ccnm 二进制零额度端到端过；没上真机、没跑真实模型、没推送、没发版。另做的建议（研究记录第 6 节）：read_output 的 offset 落在字符中间报 limit 太小（缺陷，10 次）、search_text 收单个文件（51 次）。",
+    "next_action": "**2026-10-17 晚发了 v0.19.0 和 v0.19.1、三台换好，current_task 为 null。** 用户说审完合并 P103/P104 分支、清理分支和 worktree、发版换装做真机验证：分支 --no-ff 合进 main（66b5805），分支与 worktree 已删；v0.19.0 推上去后 CI Linux 红在 P104（rg 在 Linux 上 mmap 读点名文件，加 --no-mmap 修，9ebacc8），tag 打在修好之后；真机零额度验过 P100（接上、草稿不敲、接不上不进）、P101（-c 接 /clear 之后那段）、P102（/clear 带交接），hpsrv 上发布的 Linux 二进制跑中立客户端 53/53；验证中发现全新会话的暗色提示被当草稿（e246464 修），补发 v0.19.1（bed79da）。三台：本机与 fodelf 544593d4…（Controller pid 10130），hpsrv ccrun 277645f3…。没调模型。全部已推送。记录 docs/research/2026-10-17-release-0.19.0.md。\n\n之前的交接：\n**2026-10-17 P103、P104 完成，current_task 为 null。** 按 P100–P102 研究记录第 2.4、6 节排的两个阶段。P103：read_output 的 offset 落在字符中间时挪到下一个字符开头并写明、页尾只切没写完的字符、坏字节换 U+FFFD 照常翻页，修掉 limit N is too small 的误报（fodelf 10 次）。P104：search_text 的 path 可以是一个文件，范围和 read_file 一致（点名的 dotfile、被忽略的文件照搜，二进制、fifo 拒，glob/type 不用并写明）；实测 rg 15.2.0 对点名的路径不看任何排除规则，顺带堵上 path 指向 .git 的符号链接目录会把 .git 内容发回来的缺口。tools/list 里 search_text 的说明有意改了一句、fixture 已同步。两边旧二进制都在中立客户端上复现了 fodelf 日志里那句报错。Rust 1138/0、Python 250/0；只在 macOS arm64 上，没上 Linux、没上真机、没推送、没发版。记录 docs/research/2026-10-17-p103-p104-read-output-and-search-file.md。\n\n之前的交接：\n**2026-10-17 P103 完成，认领 P104。** read_output 的 offset 落在字符中间时挪到下一个字符开头、页尾只切没写完的字符、坏字节换 U+FFFD 照常翻页；旧二进制在中立客户端上复现 fodelf 那句 limit 4000 is too small。Rust 1131/0、Python 249/0；没推送。P104.1 实测完：rg 对点名的文件不看任何排除规则，另有 path 指向 .git 的符号链接目录会泄出 .git 内容的现有缺口。下一步：P104.3 先写红测试（文件路径、.git 拒绝含符号链接、二进制/fifo、glob/type 说明），再改 search.rs 的 Plan。\n\n之前的交接：\n**2026-10-17 排了 P103、P104，认领 P103。** 按 P100–P102 研究记录第 2.4、6 节：read_output 的 offset 落在字符中间或输出里夹着非 UTF-8 字节时误报 limit 太小（10 次，缺陷）；search_text 的 path 收单个文件（51 次，冻结协议的加法）。下一步：P103.2 先写在旧代码上红的测试，再改 output.rs 的页头页尾。",
     "scope": "2026-10-08 用户要求：零额度复现 Codex 300 秒工具超时、选修法、补外部入口文档、跑门禁、更新状态、粒度提交、不推送。改动：crates/ccnm-core（provider/codex 的 TOOL_TIMEOUT 与启动参数、测试；mcp/hooks 的 MAX_TIMEOUT 改 pub(crate)；mcp/output 注释）、docs/protocol/remote-workspace-mcp-v1.md、docs/usage.md、docs/troubleshooting.md、docs/research 的 P80 记录与夹具、ROADMAP、status。没动任何机器、已装的 ccnm 与配置；Codex 0.154.0 包和源码只下到会话 scratchpad。",
     "planning_validation": {
       "at": "2026-09-08T21:22:43+09:00",

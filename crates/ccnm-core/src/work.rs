@@ -3834,7 +3834,10 @@ mod tests {
         let ran = ran(&fake);
         assert!(ran[3].contains("internal hello"), "{ran:?}");
         assert!(ran[4].contains("internal runtime-audit"), "{ran:?}");
-        assert!(ran[5].ends_with("capture-pane -p -t ccnm-xshun"), "{ran:?}");
+        assert!(
+            ran[5].ends_with("capture-pane -p -e -t ccnm-xshun"),
+            "{ran:?}"
+        );
         assert!(
             ran[6].ends_with("send-keys -t ccnm-xshun -l /mcp reconnect ccnm"),
             "{ran:?}"

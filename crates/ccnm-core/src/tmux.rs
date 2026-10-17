@@ -336,10 +336,11 @@ impl Tmux {
         self.base().args(["kill-session", "-t", name])
     }
 
-    /// What the session's screen shows right now, as plain text: the
-    /// visible lines only, no colours, no scrollback.
+    /// What the session's screen shows right now: the visible lines only,
+    /// no scrollback, with their colour codes (`-e`) -- a suggestion drawn
+    /// dim and somebody's words differ only in those.
     pub fn capture_cmd(&self, name: &str) -> Cmd {
-        self.base().args(["capture-pane", "-p", "-t", name])
+        self.base().args(["capture-pane", "-p", "-e", "-t", name])
     }
 
     /// Type `text` into the session as if someone had, without pressing

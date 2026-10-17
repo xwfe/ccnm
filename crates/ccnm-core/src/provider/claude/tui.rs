@@ -3,9 +3,16 @@
 //! down (P100).
 //!
 //! Everything here was measured on Claude Code 2.1.300 with
-//! `tmux capture-pane -p` (docs/research/probes/p100-session-hooks.py). The
-//! screen is Claude Code's, not a contract, so every reading fails towards
-//! "do not type": a layout ccnm does not recognise is left for the person.
+//! `tmux capture-pane -p` (docs/research/probes/p100-session-hooks.py), and
+//! the placeholder on 2.1.302 with `-e` on fodelf (v0.19.0 release check).
+//! The screen is Claude Code's, not a contract, so every reading fails
+//! towards "do not type": a layout ccnm does not recognise is left for the
+//! person.
+//!
+//! The screen comes with its colour codes (`capture-pane -e`), for one
+//! reason: a session nobody has said anything in shows a suggestion in the
+//! empty input box -- `❯ Try "write a test for <filepath>"` -- drawn dim.
+//! As plain text it is indistinguishable from somebody's unsent words.
 
 use crate::mcp::server::SERVER_NAME;
 
@@ -35,37 +42,122 @@ pub enum InputBox {
 ///
 /// Claude Code 2.1.300 draws it as one line starting `❯` (and a no-break
 /// space) with a rule of `─` right above and right below; the status lines
-/// come after. Vim mode's `-- INSERT --` / `-- VISUAL --` means the keys
-/// would not necessarily be text, so that is unknown too.
+/// come after. Text in it that is all drawn dim is the suggestion an empty
+/// box shows, not something typed. Vim mode's `-- INSERT --` /
+/// `-- VISUAL --` means the keys would not necessarily be text, so that is
+/// unknown too.
 pub fn input_box(screen: &str) -> InputBox {
-    let lines: Vec<&str> = screen.lines().map(str::trim_end).collect();
+    let lines: Vec<Line> = screen.lines().map(Line::read).collect();
     if lines
         .iter()
-        .any(|line| line.contains("-- INSERT --") || line.contains("-- VISUAL --"))
+        .any(|line| line.plain.contains("-- INSERT --") || line.plain.contains("-- VISUAL --"))
     {
         return InputBox::Unknown;
     }
-    let is_rule = |line: &str| {
-        let line = line.trim();
+    let is_rule = |line: &Line| {
+        let line = line.plain.trim();
         !line.is_empty() && line.chars().all(|c| c == '─')
     };
     let Some(at) = lines
         .iter()
-        .rposition(|line| line.trim_start().starts_with('❯'))
+        .rposition(|line| line.plain.trim_start().starts_with('❯'))
     else {
         return InputBox::Unknown;
     };
-    let framed =
-        at > 0 && is_rule(lines[at - 1]) && lines.get(at + 1).is_some_and(|line| is_rule(line));
+    let framed = at > 0 && is_rule(&lines[at - 1]) && lines.get(at + 1).is_some_and(is_rule);
     if !framed {
         return InputBox::Unknown;
     }
-    let typed = lines[at].trim_start().trim_start_matches('❯');
-    if typed.trim().is_empty() {
-        InputBox::Empty
-    } else {
+    let after_prompt = |text: &str| -> bool {
+        text.split_once('❯')
+            .is_some_and(|(_, typed)| !typed.trim().is_empty())
+    };
+    // Typed text is drawn in the normal weight; a box whose only text is
+    // dim holds the suggestion and nothing of anyone's.
+    if after_prompt(&lines[at].bright) {
         InputBox::Holding
+    } else {
+        InputBox::Empty
     }
+}
+
+/// One screen line from `capture-pane -e`: the text, and the part of it not
+/// drawn dim. Escape sequences are dropped; a screen without any (`-p`
+/// alone, as the P100 fixtures are) reads as all bright.
+struct Line {
+    plain: String,
+    bright: String,
+}
+
+impl Line {
+    fn read(raw: &str) -> Line {
+        let (mut plain, mut bright, mut dim) = (String::new(), String::new(), false);
+        let mut chars = raw.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c != '\x1b' {
+                plain.push(c);
+                if !dim {
+                    bright.push(c);
+                }
+                continue;
+            }
+            match chars.next() {
+                // CSI: parameters up to a final byte; only SGR (`m`) matters.
+                Some('[') => {
+                    let mut params = String::new();
+                    for p in chars.by_ref() {
+                        if ('\x40'..='\x7e').contains(&p) {
+                            if p == 'm' {
+                                dim = sgr_dim(&params, dim);
+                            }
+                            break;
+                        }
+                        params.push(p);
+                    }
+                }
+                // OSC (a hyperlink, say): up to BEL or ESC \.
+                Some(']') => {
+                    while let Some(p) = chars.next() {
+                        if p == '\x07' || (p == '\x1b' && chars.next_if_eq(&'\\').is_some()) {
+                            break;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        Line {
+            plain: plain.trim_end().to_string(),
+            bright,
+        }
+    }
+}
+
+/// Whether text is dim after one SGR sequence: `2` turns it on, `22`, `0`
+/// and an empty list off. The numbers inside a colour (`38;5;244`,
+/// `48;2;r;g;b`) are values, not attributes, and are skipped.
+fn sgr_dim(params: &str, mut dim: bool) -> bool {
+    if params.is_empty() {
+        return false;
+    }
+    let mut it = params.split(';');
+    while let Some(p) = it.next() {
+        match p {
+            "" | "0" | "22" => dim = false,
+            "2" => dim = true,
+            "38" | "48" | "58" => match it.next() {
+                Some("5") => {
+                    it.next();
+                }
+                Some("2") => {
+                    it.nth(2);
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+    dim
 }
 
 /// How many times the screen shows Claude Code's answer to a reconnect,
@@ -81,10 +173,14 @@ pub struct ReconnectAnswers {
 /// (2.1.300). The success can be cut short: typed while the model was
 /// answering, it showed on the right edge as `Successfully reconnected`.
 pub fn reconnect_answers(screen: &str) -> ReconnectAnswers {
+    let text: String = screen
+        .lines()
+        .map(|line| Line::read(line).plain + "\n")
+        .collect();
     let failed = format!("Failed to reconnect to {SERVER_NAME}");
     ReconnectAnswers {
-        succeeded: screen.matches("Successfully reconnected").count(),
-        failed: screen.matches(failed.as_str()).count(),
+        succeeded: text.matches("Successfully reconnected").count(),
+        failed: text.matches(failed.as_str()).count(),
     }
 }
 
@@ -197,6 +293,45 @@ mod tests {
             assert_eq!(input_box(screen), input, "{name}");
             assert_eq!(reconnect_answers(screen), answers, "{name}");
         }
+    }
+
+    /// Found in the v0.19.0 release check on fodelf (Claude Code 2.1.302,
+    /// `capture-pane -e`): a fresh session's empty box shows a dim
+    /// suggestion, which plain text could not tell from a draft, so a
+    /// session nobody had said anything in was never reconnected. A draft
+    /// is drawn in the normal weight. Status line usage figures removed.
+    #[test]
+    fn a_dim_suggestion_is_an_empty_box_and_a_draft_is_not() {
+        let fresh = include_str!(
+            "../../../../../tests/fixtures/claude-tui-2.1.302/1-fresh-placeholder.txt"
+        );
+        assert!(
+            fresh.contains("\x1b[2mTry \""),
+            "the fixture keeps its colour codes"
+        );
+        assert_eq!(input_box(fresh), InputBox::Empty);
+        let draft = include_str!("../../../../../tests/fixtures/claude-tui-2.1.302/2-draft.txt");
+        assert_eq!(input_box(draft), InputBox::Holding);
+        // The rule above and below are coloured; still rules.
+        assert!(draft.contains("\x1b[38;5;244m─"), "{draft}");
+    }
+
+    #[test]
+    fn colour_codes_are_read_not_matched() {
+        let dim = Line::read("\x1b[39m❯\u{a0}\x1b[2mTry \"x\"\x1b[0m");
+        assert_eq!(dim.plain, "❯\u{a0}Try \"x\"");
+        assert_eq!(dim.bright, "❯\u{a0}");
+        // 2 inside a colour is a value, not dim; 22 turns dim off.
+        let colour = Line::read("\x1b[38;5;2mA\x1b[2mB\x1b[22mC\x1b[38;2;2;2;2mD");
+        assert_eq!(
+            (colour.plain.as_str(), colour.bright.as_str()),
+            ("ABCD", "ACD")
+        );
+        // A hyperlink's OSC is dropped whole, with either terminator.
+        let link = Line::read("\x1b]8;;https://x\x07go\x1b]8;;\x1b\\!");
+        assert_eq!(link.plain, "go!");
+        let answers = reconnect_answers("\x1b[2m  ⎿  \x1b[0mSuccessfully reconnected to ccnm\n");
+        assert_eq!(answers.succeeded, 1);
     }
 
     #[test]

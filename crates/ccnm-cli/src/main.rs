@@ -13,7 +13,7 @@ use ccnm_core::protocol::payload;
 use ccnm_core::protocol::probe::ProbeRequest;
 use ccnm_core::protocol::run::{
     AttachRequest, HistoryRequest, PurgeRequest, ResultRequest, RunReport, RunRequest, StartReport,
-    StartRequest, StatusRequest, StopRequest,
+    StartRequest, StatusRequest, StopRequest, UsageReport, UsageRequest,
 };
 use ccnm_core::provider::AgentProvider;
 use ccnm_core::{
@@ -163,6 +163,17 @@ enum Command {
         /// How many to show
         #[arg(short = 'n', long, default_value_t = 20, value_name = "N")]
         limit: u32,
+    },
+    /// How much of the AI login's subscription limits is used and when
+    /// each resets, as Claude Code's /usage or Codex reports it. Without a
+    /// workspace: every login this machine's projects use, each asked once
+    Usage {
+        /// Only the login this workspace's Agent runs under
+        workspace: Option<String>,
+        /// Another configured instance: on the workspace's Agent Node, or,
+        /// run on the Agent Node, one of its own
+        #[arg(long, value_name = "INSTANCE")]
+        agent: Option<String>,
     },
     /// What a session produced, for a `--print` run this terminal did not
     /// stay connected to
@@ -422,6 +433,11 @@ enum InternalCommand {
     },
     /// Work-side list of session records, finished ones included
     AgentHistory {
+        #[arg(long)]
+        payload: String,
+    },
+    /// Work-side read of a login's subscription limits, from the controller
+    AgentUsage {
         #[arg(long)]
         payload: String,
     },
@@ -732,6 +748,13 @@ fn zh_help(command: clap::Command) -> clap::Command {
             c.about("跑过的和正在跑的会话，最新的在前")
                 .mut_arg("workspace", |a| a.help("只看这个 workspace 的"))
                 .mut_arg("limit", |a| a.help("最多列几条"))
+        })
+        .mut_subcommand("usage", |c| {
+            c.about("AI 那台登录的订阅额度用了多少、什么时候重置，数是 Claude Code 的 /usage 或 Codex 自己报的。不给项目名：这台机器的项目用到的每个登录各问一次")
+                .mut_arg("workspace", |a| a.help("只问这个 workspace 的 Agent 用的那个登录"))
+                .mut_arg("agent", |a| {
+                    a.help("换一个配置好的实例：给了项目名就是那个项目 Agent Node 上的；在 Agent Node 上跑就是本机的")
+                })
         })
         .mut_subcommand("result", |c| {
             workspace_args(c.about("某次会话产出了什么——给那种 --print 跑完、终端没一直连着的情况"))
@@ -1132,6 +1155,11 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
                 )
             );
             Ok(0)
+        }
+        Command::Usage { workspace, agent } => {
+            let path = config_path()?;
+            let config = Config::load_in(&path, lang)?;
+            usage_command(&config, &path, workspace.as_deref(), agent.as_deref(), lang)
         }
         Command::Result {
             workspace,
@@ -1534,6 +1562,13 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
             InternalCommand::AgentHistory { payload } => {
                 let req: HistoryRequest = payload::decode(payload)?;
                 print_json(&work::history(
+                    &req,
+                    &agent_tools(config_path().ok().as_deref())?,
+                )?)
+            }
+            InternalCommand::AgentUsage { payload } => {
+                let req: UsageRequest = payload::decode(payload)?;
+                print_json(&work::usage(
                     &req,
                     &agent_tools(config_path().ok().as_deref())?,
                 )?)
@@ -2463,6 +2498,185 @@ fn session_history(
     entries.sort_by_key(|e| std::cmp::Reverse(e.started));
     entries.truncate(limit as usize);
     Ok(entries)
+}
+
+/// `ccnm usage` (P105): one block per login, each asked once.
+///
+/// Per login, not per workspace: every project on the same login shares
+/// its limits, so asking per project would print the same numbers once for
+/// each and keep the Agent's controller busy as many times. Named, a
+/// workspace's failure is the command's; listing them all, one login that
+/// cannot be asked is a line, and the rest are still shown.
+fn usage_command(
+    config: &Config,
+    config_path: &Path,
+    workspace: Option<&str>,
+    agent: Option<&str>,
+    lang: Lang,
+) -> Result<i32> {
+    let answers: Vec<(String, Result<UsageReport>)> = match workspace {
+        // On the Agent Node: the Runtime says which login the workspace
+        // uses, and this machine asks its own controller.
+        Some(name) if agent_side(config, name).is_some() => {
+            let (runtime, node) = agent_side(config, name).expect("checked just above");
+            let authority = launcher::resolve_from_agent(
+                runtime,
+                &node.ccnm_bin(),
+                name,
+                agent,
+                &launch_env()?,
+            )?;
+            let req = local_usage_request(authority.agent, authority.provider_config_dir);
+            let report = work::usage(&req, &agent_tools(Some(config_path))?)?;
+            vec![(
+                usage_who(lang.pick("本机", "this machine"), &req, 1, lang),
+                Ok(report),
+            )]
+        }
+        Some(name) => {
+            let resolved = config.workspace_in(name, lang)?;
+            let req = launcher::usage_request(&resolved, resolved.agent_reference(agent)?);
+            let report = launcher::usage(&resolved, &launch_env()?, agent).map_err(|e| {
+                unreachable_said(
+                    e,
+                    &resolved,
+                    ("查不到额度", "the limits cannot be read"),
+                    lang,
+                )
+            })?;
+            vec![(usage_who(resolved.agent_ssh()?, &req, 1, lang), Ok(report))]
+        }
+        // On the Agent Node with nothing named: Claude's default login and
+        // every instance registered here.
+        None if is_agent_node(config) => {
+            let mut asks = Vec::new();
+            match agent {
+                Some(_) => asks.push(local_instance_ref(config, agent)?),
+                None => {
+                    asks.push(None);
+                    for name in config.agents.keys() {
+                        asks.push(local_instance_ref(config, Some(name))?);
+                    }
+                }
+            }
+            let tools = agent_tools(Some(config_path))?;
+            asks.into_iter()
+                .map(|reference| {
+                    let req = local_usage_request(reference, None);
+                    let who = usage_who(lang.pick("本机", "this machine"), &req, 1, lang);
+                    (who, work::usage(&req, &tools))
+                })
+                .collect()
+        }
+        None => {
+            if agent.is_some() {
+                return Err(Error::invalid_args(
+                    "--agent picks an instance on one workspace's Agent Node; name the workspace too: ccnm usage <workspace> --agent <instance>",
+                ));
+            }
+            let env = launch_env()?;
+            // (which login, the first workspace on it, how many share it)
+            let mut logins: Vec<(String, &str, usize)> = Vec::new();
+            for name in config.workspaces.keys() {
+                let Ok(resolved) = config.workspace(name) else {
+                    continue;
+                };
+                // A workspace kept only for external MCP clients has no
+                // Agent, and so no login of ccnm's to ask about.
+                let (Ok(alias), Ok(reference)) =
+                    (resolved.agent_ssh(), resolved.agent_reference(None))
+                else {
+                    continue;
+                };
+                let req = launcher::usage_request(&resolved, reference);
+                let key = format!("{alias}\n{:?}\n{:?}", req.agent, req.provider_config_dir);
+                match logins.iter_mut().find(|(k, ..)| *k == key) {
+                    Some(login) => login.2 += 1,
+                    None => logins.push((key, name, 1)),
+                }
+            }
+            if logins.is_empty() {
+                return Err(Error::config(lang.pick(
+                    "这台机器上没有会起 Agent 的项目，没有登录可问。先 ccnm add <项目目录>",
+                    "no project here starts an Agent, so there is no login to ask about; add one first: ccnm add <project dir>",
+                )));
+            }
+            let mut answers = Vec::new();
+            for (_, name, shared) in logins {
+                let resolved = config.workspace(name)?;
+                let req = launcher::usage_request(&resolved, resolved.agent_reference(None)?);
+                let who = usage_who(resolved.agent_ssh()?, &req, shared, lang);
+                let answer = launcher::usage(&resolved, &env, None).map_err(|e| {
+                    unreachable_said(
+                        e,
+                        &resolved,
+                        ("查不到额度", "the limits cannot be read"),
+                        lang,
+                    )
+                });
+                answers.push((who, answer));
+            }
+            answers
+        }
+    };
+    let now = ccnm_core::overview::now_secs();
+    let offset = ccnm_core::overview::utc_offset(&SystemRunner);
+    let mut code = 0;
+    for (i, (who, answer)) in answers.iter().enumerate() {
+        if i > 0 {
+            println!();
+        }
+        match answer {
+            Ok(report) => print!(
+                "{}",
+                ccnm_core::quota::render(who, &report.quota, now, offset, lang)
+            ),
+            Err(e) => {
+                let message = e.message().replace('\n', "\n    ");
+                println!("{who}\n  ! {}: {message}", e.code());
+                if code == 0 {
+                    code = e.exit_code();
+                }
+            }
+        }
+    }
+    Ok(code)
+}
+
+/// The request for a login on this machine: an instance, or Claude's
+/// default with the config directory the Runtime said, if any.
+fn local_usage_request(
+    agent: Option<ccnm_core::instance::InstanceRef>,
+    provider_config_dir: Option<PathBuf>,
+) -> UsageRequest {
+    UsageRequest {
+        protocol: if agent.is_some() {
+            ccnm_core::instance::INSTANCE_SESSION_PROTOCOL
+        } else {
+            ccnm_core::protocol::payload::PROTOCOL
+        },
+        agent,
+        provider_config_dir,
+    }
+}
+
+/// How a login is named above its numbers: the machine, the instance or
+/// config directory when it is not the default, and how many projects
+/// share it.
+fn usage_who(machine: &str, req: &UsageRequest, shared: usize, lang: Lang) -> String {
+    let mut who = machine.to_string();
+    if let Some(reference) = &req.agent {
+        who.push_str(&format!(" · {}", reference.instance));
+    } else if let Some(dir) = &req.provider_config_dir {
+        who.push_str(&format!(" · {}", dir.display()));
+    }
+    if shared > 1 {
+        who.push_str(&lang.pick(
+            format!("（{shared} 个项目共用）"),
+            format!(" (shared by {shared} projects)"),
+        ));
+    }
+    who
 }
 
 /// An Agent Node that ssh could not reach, said as which machine, what did

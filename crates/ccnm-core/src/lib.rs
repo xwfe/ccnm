@@ -18,6 +18,7 @@ pub mod paths;
 pub mod process;
 pub mod protocol;
 pub mod provider;
+pub mod quota;
 pub mod rpc;
 pub mod runtime;
 pub mod safety;

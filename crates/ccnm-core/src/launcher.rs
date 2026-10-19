@@ -17,7 +17,7 @@ use crate::protocol::probe::{ProbeReport as WorkProbeReport, ProbeRequest};
 use crate::protocol::run::{
     AttachRequest, HistoryReport, HistoryRequest, OutputReport, OutputRequest, ResultReport,
     ResultRequest, RunReport, RunRequest, StartReport, StartRequest, StatusReport, StatusRequest,
-    StopReport, StopRequest,
+    StopReport, StopRequest, UsageReport, UsageRequest,
 };
 use crate::provider::AgentProvider;
 use crate::ssh::{Master, Ssh};
@@ -585,6 +585,69 @@ pub fn history(
             e
         }
     })
+}
+
+/// `ccnm usage` from the Runtime (P105): the limits of the login a
+/// workspace's Agent runs under, `agent` overriding its instance.
+///
+/// The project's directory is not checked, unlike for every command that
+/// opens or observes a session: a limit is the login's, and a project that
+/// has moved is no reason not to say how much of it is left.
+pub fn usage(resolved: &Resolved<'_>, env: &Env<'_>, agent: Option<&str>) -> Result<UsageReport> {
+    let ssh = Ssh::new(resolved.agent_ssh()?, &env.control_dir)?
+        .with_ccnm_bin(resolved.require_agent()?.ccnm_bin());
+    ssh.check_control_path()?;
+    let req = usage_request(resolved, resolved.agent_reference(agent)?);
+    let report: UsageReport = ssh
+        .call_ccnm(
+            env.runner,
+            Master::Reuse,
+            &["internal", "agent-usage"],
+            &req,
+            // The controller's own wait (150 s), plus the ssh.
+            Duration::from_secs(180),
+            ErrorCode::AgentUnreachable,
+        )
+        .map_err(|e| {
+            // clap's whole complaint, list of similar subcommands included,
+            // says nothing the one sentence does not.
+            if e.message().contains("unrecognized subcommand") && e.message().contains("agent-usage")
+            {
+                Error::new(
+                    ErrorCode::Version,
+                    format!(
+                        "the ccnm on {} is too old for `ccnm usage`; install the same version on both machines",
+                        resolved.agent_ssh().unwrap_or(resolved.agent_node())
+                    ),
+                )
+            } else {
+                e
+            }
+        })?;
+    verify_identity(req.agent.as_ref(), report.agent_identity.as_ref())?;
+    Ok(report)
+}
+
+/// Which login a workspace's Agent runs under, as `agent-usage` names it:
+/// its instance, or for a legacy workspace the Agent node's
+/// `claude_config_dir` (none means Claude's own default).
+pub fn usage_request(
+    resolved: &Resolved<'_>,
+    agent: Option<crate::instance::InstanceRef>,
+) -> UsageRequest {
+    UsageRequest {
+        protocol: if agent.is_some() { 3 } else { PROTOCOL },
+        provider_config_dir: agent
+            .is_none()
+            .then(|| {
+                resolved
+                    .agent
+                    .and_then(|node| AgentProvider::current().config_dir(node))
+                    .map(|dir| dir.to_path_buf())
+            })
+            .flatten(),
+        agent,
+    }
 }
 
 fn verify_identity(

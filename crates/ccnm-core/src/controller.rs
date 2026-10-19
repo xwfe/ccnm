@@ -341,6 +341,17 @@ pub enum RequestBody {
         #[serde(default)]
         ask: Ask,
     },
+    /// The login's subscription limits, from its own CLI (P105): asked
+    /// here for the reason the login is, macOS keeping Claude's in the
+    /// login Keychain. The same profile rules as [`RequestBody::AgentAuth`].
+    Usage {
+        #[serde(default, skip_serializing_if = "AgentProvider::is_claude")]
+        provider: AgentProvider,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        identity: Option<crate::instance::AgentIdentity>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        config_dir: Option<PathBuf>,
+    },
     /// Start the session whose directory this is. The one request that
     /// exists because of the login session: the process started here is
     /// Claude's ancestor, so Claude inherits it.
@@ -357,14 +368,18 @@ impl RequestBody {
     fn provider(&self) -> AgentProvider {
         match self {
             Self::Hello => AgentProvider::Claude,
-            Self::AgentAuth { provider, .. } | Self::Start { provider, .. } => *provider,
+            Self::AgentAuth { provider, .. }
+            | Self::Usage { provider, .. }
+            | Self::Start { provider, .. } => *provider,
         }
     }
 
     fn identity(&self) -> Option<&crate::instance::AgentIdentity> {
         match self {
             Self::Hello => None,
-            Self::AgentAuth { identity, .. } | Self::Start { identity, .. } => identity.as_ref(),
+            Self::AgentAuth { identity, .. }
+            | Self::Usage { identity, .. }
+            | Self::Start { identity, .. } => identity.as_ref(),
         }
     }
 
@@ -408,6 +423,7 @@ pub enum ReplyBody {
     Hello(Context),
     #[serde(rename = "claude")]
     Agent(AgentReport),
+    Usage(crate::quota::Quota),
     /// The supervisor's pid. Claude is its child; the session directory's
     /// `exit` file says when it is done.
     Started {
@@ -453,26 +469,31 @@ pub fn answer(req: &Request, tools: &Tools<'_>) -> Response {
             identity,
             config_dir,
             ask,
-        } => {
-            let profile = match resolve_profile(tools, *provider, identity.as_ref()) {
-                Ok(profile) => profile,
-                Err(error) => return Response::error(&error),
-            };
-            if identity.is_some() && config_dir.is_some() {
-                return Response::error(&Error::invalid_args(
-                    "bound Agent auth cannot accept a caller-supplied profile directory",
-                ));
-            }
-            if identity.is_none() && *provider == AgentProvider::Codex && config_dir.is_some() {
-                return Response::error(&Error::invalid_args("Codex home is Agent-local"));
-            }
-            Response::new(ReplyBody::Agent(provider.report_at(
+        } => match asked_profile(tools, *provider, identity.as_ref(), config_dir.as_deref()) {
+            Ok(profile) => Response::new(ReplyBody::Agent(provider.report_at(
                 tools.agents.get(*provider),
-                profile.as_deref().or(config_dir.as_deref()),
+                profile.as_deref(),
                 tools.runner,
                 *ask,
-            )))
-        }
+            ))),
+            Err(error) => Response::error(&error),
+        },
+        RequestBody::Usage {
+            provider,
+            identity,
+            config_dir,
+        } => match asked_profile(tools, *provider, identity.as_ref(), config_dir.as_deref())
+            .and_then(|profile| {
+                provider.quota_at(
+                    tools.agents.get(*provider),
+                    profile.as_deref(),
+                    tools.runner,
+                    &usage_dir()?,
+                )
+            }) {
+            Ok(quota) => Response::new(ReplyBody::Usage(quota)),
+            Err(error) => Response::error(&error),
+        },
         RequestBody::Start {
             session_dir,
             provider,
@@ -597,6 +618,43 @@ fn start_session(
     label_status_bar(&tmux, tools, &name);
     tracing::info!(session = %spec.id, %name, server_pid = pid, "started tmux session");
     Ok(pid)
+}
+
+/// The profile directory a question about the login is asked in: the
+/// instance's, resolved here, or a legacy Claude caller's
+/// `claude_config_dir`. Never both, and never a caller's directory for
+/// Codex, whose home is Agent-local.
+fn asked_profile(
+    tools: &Tools<'_>,
+    provider: AgentProvider,
+    identity: Option<&crate::instance::AgentIdentity>,
+    config_dir: Option<&Path>,
+) -> Result<Option<PathBuf>> {
+    let profile = resolve_profile(tools, provider, identity)?;
+    if identity.is_some() && config_dir.is_some() {
+        return Err(Error::invalid_args(
+            "bound Agent auth cannot accept a caller-supplied profile directory",
+        ));
+    }
+    if identity.is_none() && provider == AgentProvider::Codex && config_dir.is_some() {
+        return Err(Error::invalid_args("Codex home is Agent-local"));
+    }
+    Ok(profile.or_else(|| config_dir.map(Path::to_path_buf)))
+}
+
+/// The working directory `claude --print /usage` runs in: always this one,
+/// because Claude Code leaves an empty `memory/` directory under
+/// `~/.claude/projects/` for every directory it runs in (P105), and one is
+/// enough.
+fn usage_dir() -> Result<PathBuf> {
+    use std::os::unix::fs::DirBuilderExt as _;
+    let dir = crate::paths::state_dir()?.join("usage");
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(&dir)
+        .map_err(|e| Error::internal(format!("cannot create {}", dir.display())).with_source(e))?;
+    Ok(dir)
 }
 
 fn resolve_profile(
@@ -944,6 +1002,46 @@ pub fn agent_auth_instance(
     match call(path, body, Duration::from_secs(60))? {
         ReplyBody::Agent(rep) => Ok(rep),
         other => Err(unexpected(&other)),
+    }
+}
+
+/// [`RequestBody::Usage`], typed.
+///
+/// The slowest question the controller answers: `--version`, `auth
+/// status` (20 seconds each at most) and then `claude --print /usage` (60)
+/// or Codex's app-server (30). Measured around a second for `/usage` on
+/// fodelf; the controller answers one request at a time, so a session
+/// start waits behind it.
+pub fn usage(
+    path: &Path,
+    provider: AgentProvider,
+    identity: Option<&crate::instance::AgentIdentity>,
+    config_dir: Option<&Path>,
+) -> Result<crate::quota::Quota> {
+    let body = RequestBody::Usage {
+        provider,
+        identity: identity.cloned(),
+        config_dir: config_dir.map(Path::to_path_buf),
+    };
+    match call(path, body, Duration::from_secs(150)) {
+        Ok(ReplyBody::Usage(quota)) => Ok(quota),
+        Ok(other) => Err(unexpected(&other)),
+        // A controller started from an older ccnm cannot decode the request
+        // and says so in the words every version mismatch gets. The binary
+        // on disk is new; the process answering is not.
+        Err(e)
+            if e.code() == ErrorCode::Version
+                && e.message().starts_with("message is not valid for protocol") =>
+        {
+            Err(Error::new(
+                ErrorCode::Version,
+                format!(
+                    "the controller here was started by an older ccnm and does not know `ccnm usage`; restart it so it runs the installed one: {}",
+                    service_hint(Host::current(), "restart")
+                ),
+            ))
+        }
+        Err(e) => Err(e),
     }
 }
 
@@ -1596,6 +1694,70 @@ mod tests {
                 call.display()
             );
         }
+    }
+
+    /// `usage` takes a profile directory on the same terms as `claude-auth`
+    /// and refuses before running anything (P105). The success path is
+    /// tested in `provider::claude::usage`, where no state directory is
+    /// created on the machine running the tests.
+    #[test]
+    fn usage_refuses_a_caller_directory_where_auth_would() {
+        let fake = FakeRunner::new();
+        let codex = Request::new(RequestBody::Usage {
+            provider: AgentProvider::Codex,
+            identity: None,
+            config_dir: Some(PathBuf::from("/x/codex")),
+        });
+        let ReplyBody::Error(report) = answer(&codex, &tools(&fake, true)).body else {
+            panic!("expected an error reply")
+        };
+        assert_eq!(report.code(), ErrorCode::InvalidArgs);
+        assert!(report.message.contains("Agent-local"), "{report}");
+        assert!(fake.calls().is_empty(), "nothing ran");
+    }
+
+    #[test]
+    fn usage_is_its_own_request_on_the_wire() {
+        let req = Request::new(RequestBody::Usage {
+            provider: AgentProvider::Claude,
+            identity: None,
+            config_dir: None,
+        });
+        assert_eq!(
+            payload::to_json(&req).unwrap(),
+            r#"{"protocol":1,"body":{"request":"usage"}}"#
+        );
+    }
+
+    /// A controller started by an older ccnm cannot decode `usage` and says
+    /// so the way every mismatch is said; the caller turns that into what
+    /// to do about it.
+    #[test]
+    fn an_older_controller_is_told_apart_and_the_restart_named() {
+        let dir = std::path::PathBuf::from(format!("/tmp/ccnm-ctl-usage-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let dir = TestDir::adopt(dir);
+        let socket = dir.join("c.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut line = Vec::new();
+            BufReader::new(&stream)
+                .read_until(b'\n', &mut line)
+                .unwrap();
+            let refusal = Error::new(
+                ErrorCode::Version,
+                "message is not valid for protocol 1; ccnm versions probably differ\nreceived: {\"request\":\"usage\"}",
+            );
+            write_message(&stream, &Response::error(&refusal)).unwrap();
+            String::from_utf8(line).unwrap()
+        });
+        let err = usage(&socket, AgentProvider::Claude, None, None).unwrap_err();
+        assert!(server.join().unwrap().contains(r#""request":"usage""#));
+        assert_eq!(err.code(), ErrorCode::Version);
+        assert!(err.message().contains("older ccnm"), "{err}");
+        assert!(err.message().contains("restart"), "{err}");
     }
 
     /// A caller that already knows this controller is in the wrong session

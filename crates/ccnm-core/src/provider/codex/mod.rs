@@ -10,6 +10,7 @@ use std::time::Duration;
 
 pub mod context;
 pub mod result;
+pub mod usage;
 pub use crate::session::transport;
 
 pub const CREDENTIALS: super::CredentialMetadata = super::CredentialMetadata {

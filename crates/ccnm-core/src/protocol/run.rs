@@ -774,6 +774,47 @@ impl Protocol for StatusReport {
     }
 }
 
+/// `ccnm internal agent-usage` (P105): the subscription limits of the
+/// login an Agent runs under. Names the login the way a session does --
+/// an instance, or a legacy Claude's config directory -- and no workspace:
+/// a limit belongs to the login, whichever project used it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UsageRequest {
+    pub protocol: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<InstanceRef>,
+    /// A legacy workspace's `claude_config_dir`, from the Runtime's config.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_config_dir: Option<PathBuf>,
+}
+
+impl Protocol for UsageRequest {
+    fn protocol(&self) -> u32 {
+        self.protocol
+    }
+    fn expected_protocol(&self) -> u32 {
+        if self.agent.is_some() { 3 } else { 1 }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UsageReport {
+    pub protocol: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_identity: Option<AgentIdentity>,
+    pub quota: crate::quota::Quota,
+}
+
+impl Protocol for UsageReport {
+    fn protocol(&self) -> u32 {
+        self.protocol
+    }
+    fn expected_protocol(&self) -> u32 {
+        if self.agent_identity.is_some() { 3 } else { 1 }
+    }
+}
+
 /// One live interactive session, as the Agent Node sees it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LiveSession {

@@ -204,6 +204,53 @@ impl AgentProvider {
         }
     }
 
+    /// The login's subscription limits, from its own CLI (P105). Only from a
+    /// login session, like [`Ask::Everything`].
+    ///
+    /// Version and login first, through the same commands doctor runs: a
+    /// Claude Code with no login answers `/usage` with the same cost lines as
+    /// an API key (measured on 2.1.303), so a login missing has to be said
+    /// before `/usage` can be misread as "no limits".
+    pub fn quota_at(
+        self,
+        bin: Option<&Path>,
+        profile_dir: Option<&Path>,
+        runner: &dyn ProcessRunner,
+        workdir: &Path,
+    ) -> Result<crate::quota::Quota> {
+        let report = self.report_at(bin, profile_dir, runner, Ask::Everything);
+        let version = report.version.map_err(Error::from)?;
+        let auth = report.auth.map_err(Error::from)?;
+        if !auth.logged_in {
+            return Err(Error::new(ErrorCode::Auth, self.auth_hint(profile_dir)));
+        }
+        let bin = report
+            .path
+            .ok_or_else(|| Error::internal("a CLI answered without a path"))?;
+        match self {
+            Self::Claude => {
+                if !claude::usage::measured(&version) {
+                    return Err(Error::new(
+                        ErrorCode::Version,
+                        format!(
+                            "Claude Code {version} is older than {}, the first `claude --print /usage` was measured on; not asking it, since an older one may send /usage to the model as a prompt\nupgrade Claude Code there, or open claude on that machine and type /usage",
+                            claude::usage::MIN_VERSION
+                        ),
+                    ));
+                }
+                let out = runner.run(&claude::usage::cmd(&bin, profile_dir, workdir))?;
+                claude::usage::parse(&out, &version, auth.subscription_type)
+            }
+            Self::Codex => {
+                let home = profile_dir
+                    .map(Path::to_path_buf)
+                    .map_or_else(codex::home, Ok)?;
+                codex::validate_home(&home)?;
+                codex::usage::ask(&bin, &home, &version)
+            }
+        }
+    }
+
     pub fn launch_cmd(self, bin: &Path, spec: &Spec, dir: &Dir) -> Result<Cmd> {
         self.launch_cmd_at(bin, spec, dir, spec.provider_config_dir.as_deref(), None)
     }

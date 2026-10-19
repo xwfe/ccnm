@@ -26,7 +26,7 @@ use crate::protocol::run::{
     AgentGuardReport, AgentGuardRequest, AttachRequest, HistoryEntry, HistoryReport,
     HistoryRequest, OutputReport, OutputRequest, OwnerOnAgent, PurgeRequest, ResultReport,
     ResultRequest, RunReport, RunRequest, SessionRecord, SessionState, StartReport, StartRequest,
-    StatusReport, StatusRequest, StopReport, StopRequest, ToolsOnEntry,
+    StatusReport, StatusRequest, StopReport, StopRequest, ToolsOnEntry, UsageReport, UsageRequest,
 };
 use crate::protocol::{self};
 use crate::provider::{AgentProvider, AgentReport, AgentResult, Ask};
@@ -2717,6 +2717,50 @@ fn runtime_refusal(workspace: &str, report: &crate::runtime::AuditReport) -> Opt
         "not starting a session for `{workspace}`: its Runtime would refuse it\n{}\nfix it on the Runtime Node, then check: ccnm doctor {workspace}",
         report.audit.refusal(accepted, refused)
     )))
+}
+
+/// `ccnm usage` on this Agent Node (P105): the limits of the login the
+/// request names, asked of the controller.
+///
+/// Only a controller in a login session is asked, the rule
+/// [`ask_about_agent`] keeps for the login itself: anywhere else Claude
+/// cannot see its Keychain, says it is logged out, and the answer would
+/// send the person to log in on a machine that already is.
+pub fn usage(req: &UsageRequest, tools: &Tools<'_>) -> Result<UsageReport> {
+    let selected = select_agent(
+        req.agent.as_ref(),
+        AgentProvider::Claude,
+        req.provider_config_dir.as_deref(),
+        crate::config::PermissionMode::default(),
+        tools,
+    )?;
+    let ctx = controller::context(&tools.controller)?;
+    if !ctx.login_session() {
+        return Err(Error::new(
+            ErrorCode::NotReady,
+            format!(
+                "not asked: the controller is not in a login session ({}), so the CLI it runs cannot see the login\nccnm controller status says how it is running",
+                ctx.describe()
+            ),
+        ));
+    }
+    let quota = controller::usage(
+        &tools.controller,
+        selected.provider,
+        selected.identity.as_ref(),
+        // A bound instance's profile is the controller's to resolve.
+        selected
+            .identity
+            .is_none()
+            .then_some(selected.profile_dir.as_deref())
+            .flatten(),
+    )
+    .map_err(|error| redact_error(&selected, error))?;
+    Ok(UsageReport {
+        protocol: selected.report_protocol(),
+        agent_identity: selected.identity.clone(),
+        quota,
+    })
 }
 
 fn agent_readiness(selected: &SelectedAgent, tools: &Tools<'_>) -> Result<()> {

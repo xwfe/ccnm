@@ -1,5 +1,6 @@
 //! Asking the official Claude Code CLI about itself. ccnm only ever runs
-//! `claude --version` and `claude auth status`; it never logs in.
+//! `claude --version`, `claude auth status` and, for `ccnm usage`,
+//! `claude --print /usage`; it never logs in.
 
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -12,6 +13,7 @@ pub use super::types::{
 };
 pub mod context;
 pub mod tui;
+pub mod usage;
 
 pub const CREDENTIALS: super::CredentialMetadata = super::CredentialMetadata {
     env_prefixes: &["ANTHROPIC_", "CLAUDE_"],

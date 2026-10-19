@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-10-19T19:10:00+09:00",
-  "current_task": "P105",
+  "last_updated": "2026-10-19T20:05:00+09:00",
+  "current_task": null,
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
     "source": "docs/research/codex-internal-wiring-2026-09-07.md",
@@ -5148,15 +5148,64 @@
     {
       "id": "P105",
       "title": "ccnm usage：查 Agent 那台的订阅额度还剩多少",
-      "status": "in_progress",
+      "status": "completed",
       "depends_on": [
         "P104"
       ],
-      "owner": "claude-opus-5-5 / 2026-10-19 usage",
+      "owner": null,
       "started_at": "2026-10-19T19:10:00+09:00",
-      "last_updated": "2026-10-19T19:10:00+09:00",
-      "completed_criteria": [],
-      "evidence": [],
+      "last_updated": "2026-10-19T20:05:00+09:00",
+      "completed_criteria": [
+        "P105.1",
+        "P105.2",
+        "P105.3",
+        "P105.4"
+      ],
+      "evidence": [
+        {
+          "kind": "offline",
+          "criteria": [
+            "P105.1"
+          ],
+          "ref": "docs/research/2026-10-19-p105-usage.md",
+          "result": "本机 macOS arm64：Claude Code 2.1.300 接记录请求的假服务端跑 claude -p /usage --output-format json --no-session-persistence --strict-mcp-config，只收到 HEAD /api/hello、没有 /v1/messages，结果 local_command=usage、num_turns=0、duration_api_ms=0，result 只有费用 5 行（API key 没有订阅额度）。Codex 0.154.0（下载到 scratchpad 单独目录）与 0.162.1 各自 app-server generate-json-schema，GetAccountRateLimitsResponse 字段一致；请求写完就关 stdin 时只回 initialize、额度那条丢失。"
+        },
+        {
+          "kind": "real_nodes",
+          "criteria": [
+            "P105.1"
+          ],
+          "ref": "tests/fixtures/usage/README.md",
+          "result": "fodelf（macOS 26.3 arm64，Agent）在 ccnm 自己的 tmux server 里临时开会话跑（preload 拦截任何 /v1/messages，fetch 只见 /api/eval/sdk-… 与 /api/event_logging/v2/batch）：/opt/homebrew 的 2.1.280 与 ~/.local/bin 的 2.1.303 都回订阅额度（Current session / Current week (all models) / Current week (Fable) 的已用百分比与重置时间），local_command=usage、num_turns=0，duration_ms 约 950，墙钟 3.4–3.8 秒；--no-session-persistence 不留对话记录，只在 ~/.claude/projects/<目录>/ 留空 memory/（已 rmdir）。ssh 会话里钥匙串不让读，auth status 是 loggedIn=false，此时 /usage 的输出和 API key 一样。本机 Codex 0.162.1 用日常 ChatGPT 登录调 account/rateLimits/read：prolite、7 天窗口已用 100%、rate_limit_reached、3 次免费重置。四份 fixture 脱敏（会话 id、账号 id、重置券 id、一个 skill 名）。"
+        },
+        {
+          "kind": "offline",
+          "criteria": [
+            "P105.2",
+            "P105.3"
+          ],
+          "ref": "crates/ccnm-core/src/quota.rs",
+          "commit": "3b0a577",
+          "result": "stream_lines 带 stdin 并在 Flow::Close 之前不关（23fa2ba，两条测试：Close 之后读到 eof、没人 Close 时由超时结束）；quota 渲染（中英文、Codex 窗口按长度命名、重置时刻按本机时区、过期的重置时间、没有窗口时的说明）；Claude 解析两份订阅 fixture、API key 无窗口无费用行、不是本地命令结果拒绝、版本线 2.1.280、命令行参数；quota_at 先版本和登录、没登录 CCNM_E_AUTH 且不跑 /usage、旧版不跑、Codex 非 0.154.0 不跑；Codex 解析真实回复与主次窗口/另一组 limit/credits/错误回复/未知结构，经真实管道对一个照真实服务端行为写的假 codex 脚本（输入早关就不回）问到额度；Controller 的 usage 请求线上形状、Codex 带调用方目录被拒、旧 Controller 的解码失败换成重启提示。门禁（本机 macOS arm64）：cargo fmt --all --check、clippy --workspace --all-targets -D warnings、cargo +1.89 check --locked 通过；cargo test --workspace --no-fail-fast 1167 passed / 0 failed；python3 -B scripts/ci_gates.py 250 ran / 0 skipped / 0 failed（含计划、协议检查）。没在 Linux 上跑。"
+        },
+        {
+          "kind": "real_nodes",
+          "criteria": [
+            "P105.2"
+          ],
+          "ref": "docs/research/2026-10-19-p105-usage.md",
+          "result": "第 5 节。本机新编的 ccnm 用日常配置跑 ccnm usage，fodelf 装的 0.19.1 不认 agent-usage：一行 fodelf（8 个项目共用）+ CCNM_E_VERSION too old for ccnm usage，退出码 11，0.39 秒（8 个 legacy 项目去重成一次 ssh）。新二进制拷到 fodelf /tmp、独立 XDG_STATE_HOME 在 tmux -L ccnm 里起临时 Controller（没换已装 ccnm、没动 LaunchAgent 和三个在跑的会话）：经 ssh → internal agent-usage → 临时 Controller 时因 managername 是 Background 被现有登录会话规则拒（CCNM_E_NOT_READY，符合设计）；直接往它的 socket 发 usage 请求，3.56 秒回 version 2.1.303、plan max、三个窗口和账号说明，<状态目录>/usage 建成 0700。测完全部清掉。没验：换装后经真正的 LaunchAgent（Aqua）Controller 从项目机器一路问到底；Codex 经 ccnm 实例（0.154.0 + 实例目录登录）；Linux Agent。"
+        },
+        {
+          "kind": "offline",
+          "criteria": [
+            "P105.4"
+          ],
+          "ref": "docs/usage.md",
+          "commit": "21d93d3",
+          "result": "使用说明加'查额度还剩多少'一节（示例输出按渲染规则对齐）、排错手册按报错列表、支持矩阵加一行（写明没发版、没验的几项）、架构文档 Controller 职责、README 日常命令；研究记录 docs/research/2026-10-19-p105-usage.md；check_plan.py 与 git diff --check 通过。"
+        }
+      ],
       "blockers": []
     }
   ],
@@ -5228,7 +5277,7 @@
     "【2026-10-08 P80 时看到 / 只记不修】Agent 上的 MCP 转发 ccnm_agent（P50）在受管 Codex 会话里同样没配 tool_timeout_sec，Codex 对它只等 300 秒。它的 call_mcp_tool 默认等 60 秒、起 server 30 秒，用户给 Agent 上某个 server 配的 tool_timeout_sec 接近或超过 300 秒时（还没起的 server 起它的时间也算在内），调用会被 Codex 先截断、不发取消，照样在 Agent 上跑完。值取决于用户配置、不归 ccnm 的常量管，P80 没修。依据 docs/research/2026-10-08-p80-codex-tool-timeout.md 第 6 节。"
   ],
   "handoff": {
-    "next_action": "**2026-10-19 认领 P105（ccnm usage）。** 用户要查用量余量。实测已做完 P105.1 的探针部分：Claude Code 2.1.300 假服务端证明 `claude -p /usage` 不发模型请求、2.1.303 在 fodelf 登录会话里回订阅额度原文；Codex 0.154.0/0.162.1 的 account/rateLimits/read schema 一致、0.162.1 真实登录回过一次。下一步：写 fixture 和研究记录，再按 P105.2 实现。\n\n之前的交接：\n**2026-10-17 晚发了 v0.19.0 和 v0.19.1、三台换好，current_task 为 null。** 用户说审完合并 P103/P104 分支、清理分支和 worktree、发版换装做真机验证：分支 --no-ff 合进 main（66b5805），分支与 worktree 已删；v0.19.0 推上去后 CI Linux 红在 P104（rg 在 Linux 上 mmap 读点名文件，加 --no-mmap 修，9ebacc8），tag 打在修好之后；真机零额度验过 P100（接上、草稿不敲、接不上不进）、P101（-c 接 /clear 之后那段）、P102（/clear 带交接），hpsrv 上发布的 Linux 二进制跑中立客户端 53/53；验证中发现全新会话的暗色提示被当草稿（e246464 修），补发 v0.19.1（bed79da）。三台：本机与 fodelf 544593d4…（Controller pid 10130），hpsrv ccrun 277645f3…。没调模型。全部已推送。记录 docs/research/2026-10-17-release-0.19.0.md。\n\n之前的交接：\n**2026-10-17 P103、P104 完成，current_task 为 null。** 按 P100–P102 研究记录第 2.4、6 节排的两个阶段。P103：read_output 的 offset 落在字符中间时挪到下一个字符开头并写明、页尾只切没写完的字符、坏字节换 U+FFFD 照常翻页，修掉 limit N is too small 的误报（fodelf 10 次）。P104：search_text 的 path 可以是一个文件，范围和 read_file 一致（点名的 dotfile、被忽略的文件照搜，二进制、fifo 拒，glob/type 不用并写明）；实测 rg 15.2.0 对点名的路径不看任何排除规则，顺带堵上 path 指向 .git 的符号链接目录会把 .git 内容发回来的缺口。tools/list 里 search_text 的说明有意改了一句、fixture 已同步。两边旧二进制都在中立客户端上复现了 fodelf 日志里那句报错。Rust 1138/0、Python 250/0；只在 macOS arm64 上，没上 Linux、没上真机、没推送、没发版。记录 docs/research/2026-10-17-p103-p104-read-output-and-search-file.md。\n\n之前的交接：\n**2026-10-17 P103 完成，认领 P104。** read_output 的 offset 落在字符中间时挪到下一个字符开头、页尾只切没写完的字符、坏字节换 U+FFFD 照常翻页；旧二进制在中立客户端上复现 fodelf 那句 limit 4000 is too small。Rust 1131/0、Python 249/0；没推送。P104.1 实测完：rg 对点名的文件不看任何排除规则，另有 path 指向 .git 的符号链接目录会泄出 .git 内容的现有缺口。下一步：P104.3 先写红测试（文件路径、.git 拒绝含符号链接、二进制/fifo、glob/type 说明），再改 search.rs 的 Plan。",
+    "next_action": "**2026-10-19 P105 完成，current_task 为 null。** 用户要查用量余量：新增 `ccnm usage [项目] [--agent 实例]`，按 Agent 登录去重、每个登录问一次，数只从官方 CLI 来——Claude `claude --print /usage`（本地命令，实测不发模型请求）、Codex app-server 的 account/rateLimits/read；经 Controller 新增的 usage 请求在登录会话里问；先查版本和登录，Claude 低于 2.1.280 不问。实测：2.1.300 假服务端、fodelf 上 2.1.280/2.1.303 登录会话、Codex 0.154.0/0.162.1 schema 与 0.162.1 真实登录；fodelf 上临时 Controller 真机回过额度，旧 0.19.1 对端的报错也真机看过。Rust 1167/0、Python 250/0，只在 macOS arm64。没推送、没发版、没换装；没验换装后经真正的 LaunchAgent Controller 一路问到底、Codex 经实例、Linux Agent。下一步（要用户点头）：发版换装后在本机跑 `ccnm usage` 真机复验。记录 docs/research/2026-10-19-p105-usage.md。\n\n之前的交接：\n**2026-10-17 晚发了 v0.19.0 和 v0.19.1、三台换好，current_task 为 null。** 用户说审完合并 P103/P104 分支、清理分支和 worktree、发版换装做真机验证：分支 --no-ff 合进 main（66b5805），分支与 worktree 已删；v0.19.0 推上去后 CI Linux 红在 P104（rg 在 Linux 上 mmap 读点名文件，加 --no-mmap 修，9ebacc8），tag 打在修好之后；真机零额度验过 P100（接上、草稿不敲、接不上不进）、P101（-c 接 /clear 之后那段）、P102（/clear 带交接），hpsrv 上发布的 Linux 二进制跑中立客户端 53/53；验证中发现全新会话的暗色提示被当草稿（e246464 修），补发 v0.19.1（bed79da）。三台：本机与 fodelf 544593d4…（Controller pid 10130），hpsrv ccrun 277645f3…。没调模型。全部已推送。记录 docs/research/2026-10-17-release-0.19.0.md。\n\n之前的交接：\n**2026-10-17 P103、P104 完成，current_task 为 null。** 按 P100–P102 研究记录第 2.4、6 节排的两个阶段。P103：read_output 的 offset 落在字符中间时挪到下一个字符开头并写明、页尾只切没写完的字符、坏字节换 U+FFFD 照常翻页，修掉 limit N is too small 的误报（fodelf 10 次）。P104：search_text 的 path 可以是一个文件，范围和 read_file 一致（点名的 dotfile、被忽略的文件照搜，二进制、fifo 拒，glob/type 不用并写明）；实测 rg 15.2.0 对点名的路径不看任何排除规则，顺带堵上 path 指向 .git 的符号链接目录会把 .git 内容发回来的缺口。tools/list 里 search_text 的说明有意改了一句、fixture 已同步。两边旧二进制都在中立客户端上复现了 fodelf 日志里那句报错。Rust 1138/0、Python 250/0；只在 macOS arm64 上，没上 Linux、没上真机、没推送、没发版。记录 docs/research/2026-10-17-p103-p104-read-output-and-search-file.md。\n\n之前的交接：\n**2026-10-17 P103 完成，认领 P104。** read_output 的 offset 落在字符中间时挪到下一个字符开头、页尾只切没写完的字符、坏字节换 U+FFFD 照常翻页；旧二进制在中立客户端上复现 fodelf 那句 limit 4000 is too small。Rust 1131/0、Python 249/0；没推送。P104.1 实测完：rg 对点名的文件不看任何排除规则，另有 path 指向 .git 的符号链接目录会泄出 .git 内容的现有缺口。下一步：P104.3 先写红测试（文件路径、.git 拒绝含符号链接、二进制/fifo、glob/type 说明），再改 search.rs 的 Plan。",
     "scope": "2026-10-08 用户要求：零额度复现 Codex 300 秒工具超时、选修法、补外部入口文档、跑门禁、更新状态、粒度提交、不推送。改动：crates/ccnm-core（provider/codex 的 TOOL_TIMEOUT 与启动参数、测试；mcp/hooks 的 MAX_TIMEOUT 改 pub(crate)；mcp/output 注释）、docs/protocol/remote-workspace-mcp-v1.md、docs/usage.md、docs/troubleshooting.md、docs/research 的 P80 记录与夹具、ROADMAP、status。没动任何机器、已装的 ccnm 与配置；Codex 0.154.0 包和源码只下到会话 scratchpad。",
     "planning_validation": {
       "at": "2026-09-08T21:22:43+09:00",

@@ -280,17 +280,17 @@ ccnm usage my-project          # 只问这个项目用的那个登录
 ccnm usage my-project --agent codex-main   # 换成同一台 Agent 上的另一个实例
 ```
 
-在项目机器上跑长这样：
+在项目机器上跑长这样（2026-10-19 v0.20.0 真机输出）：
 
 ```text
-fodelf（8 个项目共用）· Claude Code 2.1.303 · max
-  当前 5 小时       已用 17%  剩 83%  Oct 19 at 6pm (Asia/Singapore) 重置
-  本周（全部模型）  已用 38%  剩 62%  Oct 24 at 11am (Asia/Singapore) 重置
-  本周（Fable）     已用 36%  剩 64%  Oct 24 at 11am (Asia/Singapore) 重置
+fodelf（8 个项目共用） · Claude Code 2.1.303 · max
+  当前 5 小时       已用 5%   剩 95%  Oct 19 at 10:59pm (Asia/Singapore) 重置
+  本周（全部模型）  已用 39%  剩 61%  Oct 24 at 10:59am (Asia/Singapore) 重置
+  本周（Fable）     已用 37%  剩 63%  Oct 24 at 10:59am (Asia/Singapore) 重置
   You are currently using your subscription to power your Claude Code usage
 ```
 
-Codex 实例长这样（重置时间换成敲命令这台的本地时间，和 `ccnm log` 一样）：
+Codex 实例长这样（按实测回复渲染，还没经 ccnm 实例真机跑过；重置时间换成敲命令这台的本地时间，和 `ccnm log` 一样）：
 
 ```text
 hpsrv · codex-main · Codex 0.154.0 · prolite
@@ -305,7 +305,7 @@ hpsrv · codex-main · Codex 0.154.0 · prolite
 
 **要知道的几件事**：
 
-- **问一次 3–4 秒。** 要先查版本和登录，再跑 `/usage`。这几秒里 Agent 上的 Controller 在忙这件事，同时起会话的话会等它。
+- **问一次 3–4 秒**（v0.20.0 真机：项目机器上 4.2 秒，AI 那台上 2.9 秒）：要先查版本和登录，再跑 `/usage`。这几秒里 Agent 上的 Controller 在忙这件事，同时起会话的话会等它。
 - **Claude Code 要 2.1.280 或更新。** 更旧的不问：没实测过的版本可能把 `/usage` 当成一句话发给模型，花的正是你要查的额度。
 - **Codex 只认 0.154.0**，和起会话同一条线。
 - **API key 或第三方平台登录没有 5 小时 / 每周额度**，会说"没有额度可报"。

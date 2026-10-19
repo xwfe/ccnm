@@ -449,6 +449,10 @@ pub enum Flow {
     Continue,
     /// Enough. The child is killed rather than left to finish.
     Stop,
+    /// Close the child's stdin and read on to its end: for a server that
+    /// answers what it was sent and exits at end of input. Without the
+    /// command's own `stdin` it is [`Flow::Continue`].
+    Close,
 }
 
 /// How a streamed command ended.
@@ -480,12 +484,21 @@ pub const STREAM_STDERR_KEEP: usize = 8 * 1024;
 /// model, and the callers of this (search today, `exec_command` later) are
 /// better tested against the real program anyway: what they mostly have to
 /// get right is that program's output format.
+///
+/// The command's `stdin`, when it has one, is written and then **kept
+/// open** until `on_line` says [`Flow::Close`] or the child is done. That is
+/// for `codex app-server` (P105): it drops a request still in flight when
+/// its input ends, so input closed straight after writing loses the answer.
 pub fn stream_lines(cmd: &Cmd, mut on_line: impl FnMut(&[u8]) -> Flow) -> Result<Streamed> {
     let started = Instant::now();
     let mut command = Command::new(&cmd.program);
     command
         .args(&cmd.args)
-        .stdin(Stdio::null())
+        .stdin(if cmd.stdin.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     if let Some(dir) = &cmd.cwd {
@@ -510,6 +523,23 @@ pub fn stream_lines(cmd: &Cmd, mut on_line: impl FnMut(&[u8]) -> Flow) -> Result
         .take()
         .ok_or_else(|| Error::internal("child has no stdout"))?;
     let stderr_reader = drain_bounded(child.stderr.take(), STREAM_STDERR_KEEP);
+    // On its own thread for the reason `run` gives, and handing the pipe
+    // back rather than dropping it: dropping it is what closes the input.
+    let mut stdin_writer = child
+        .stdin
+        .take()
+        .zip(cmd.stdin.clone())
+        .map(|(mut pipe, bytes)| {
+            thread::spawn(move || {
+                let _ = pipe.write_all(&bytes);
+                pipe
+            })
+        });
+    let close_stdin = |writer: &mut Option<JoinHandle<std::process::ChildStdin>>| {
+        if let Some(writer) = writer.take() {
+            drop(writer.join());
+        }
+    };
 
     // The child is shared with the watchdog so a program that stops
     // producing output cannot outlive its timeout. Killing by pid would
@@ -529,17 +559,22 @@ pub fn stream_lines(cmd: &Cmd, mut on_line: impl FnMut(&[u8]) -> Flow) -> Result
         while line.last().is_some_and(|b| *b == b'\n' || *b == b'\r') {
             line.pop();
         }
-        if on_line(&line) == Flow::Stop {
-            stopped_early = true;
-            // One attempt, unlike the watchdog's: the only caller that
-            // stops early is search, and `rg` starts no children to
-            // outlive it.
-            stopper.signal(Signal::Kill);
-            break;
+        match on_line(&line) {
+            Flow::Continue => {}
+            Flow::Close => close_stdin(&mut stdin_writer),
+            Flow::Stop => {
+                stopped_early = true;
+                // One attempt, unlike the watchdog's: the only caller that
+                // stops early is search, and `rg` starts no children to
+                // outlive it.
+                stopper.signal(Signal::Kill);
+                break;
+            }
         }
     }
-    // Let go of the pipe so a killed child cannot block writing to it.
+    // Let go of the pipes so a killed child cannot block on either one.
     drop(reader);
+    close_stdin(&mut stdin_writer);
 
     let stderr = join(stderr_reader)?;
     let status = stopper.reap()?;
@@ -1433,6 +1468,55 @@ mod tests {
         );
         // The tail is what is kept, so the last line is intact.
         assert!(String::from_utf8_lossy(&out.stderr).ends_with("0123456789\n"));
+    }
+
+    /// A server that answers one line and then waits for end of input, the
+    /// shape `codex app-server` has (P105).
+    const ANSWER_THEN_WAIT_FOR_EOF: &str = "read a; echo \"got $a\"; cat >/dev/null; echo eof";
+
+    #[test]
+    fn stdin_stays_open_until_the_caller_closes_it() {
+        let mut lines = Vec::new();
+        let out = stream_lines(
+            &Cmd::new("sh")
+                .args(["-c", ANSWER_THEN_WAIT_FOR_EOF])
+                .stdin(b"hello\n".to_vec())
+                .timeout(Duration::from_secs(10)),
+            |line| {
+                let line = String::from_utf8_lossy(line).into_owned();
+                let flow = if line == "got hello" {
+                    Flow::Close
+                } else {
+                    Flow::Continue
+                };
+                lines.push(line);
+                flow
+            },
+        )
+        .unwrap();
+        assert_eq!(lines, ["got hello", "eof"]);
+        assert_eq!(out.exit_code, Some(0));
+        assert!(!out.timed_out);
+    }
+
+    #[test]
+    fn stdin_left_open_is_bounded_by_the_deadline() {
+        // Nobody says Close, so the input never ends and the server never
+        // does either: what ends it is the timeout, not a closed pipe.
+        let mut lines = Vec::new();
+        let out = stream_lines(
+            &Cmd::new("sh")
+                .args(["-c", ANSWER_THEN_WAIT_FOR_EOF])
+                .stdin(b"hello\n".to_vec())
+                .timeout(Duration::from_millis(500)),
+            |line| {
+                lines.push(String::from_utf8_lossy(line).into_owned());
+                Flow::Continue
+            },
+        )
+        .unwrap();
+        assert_eq!(lines, ["got hello"]);
+        assert!(out.timed_out);
     }
 
     #[test]

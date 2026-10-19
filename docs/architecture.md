@@ -49,7 +49,7 @@ Controller 负责：
 
 - 启动 session supervisor；
 - 创建和管理 tmux 交互会话；
-- 按 Provider 获取官方 CLI 版本和登录状态；
+- 按 Provider 获取官方 CLI 版本、登录状态和订阅额度（`ccnm usage`，同样只在登录会话里问得准）；
 - 管理 session 状态。
 
 它不保存 workspace 真相，也不替 Runtime Node 执行项目工具。

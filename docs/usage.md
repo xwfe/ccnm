@@ -272,6 +272,48 @@ ccnm cleanup my-project --apply <令牌>   # 照预览删，令牌在预览最�
 
 两台机器上的三个账号（跑 AI 的账号、项目机器上的执行账号、敲 `ccnm` 的你）各删各的，项目、写锁和凭据都不碰，还在跑或说不清的会话不碰；Machine API 的会话删的是输出，记录和 `start_key` 留着，之后 `session.result` 回 `expired`。细节和会留下哪些东西见[运维手册](operations.md#想立刻腾地方ccnm-cleanup)。
 
+## 查额度还剩多少：`ccnm usage`
+
+```bash
+ccnm usage                     # 这台机器的项目用到的每个 AI 登录，各问一次
+ccnm usage my-project          # 只问这个项目用的那个登录
+ccnm usage my-project --agent codex-main   # 换成同一台 Agent 上的另一个实例
+```
+
+在项目机器上跑长这样：
+
+```text
+fodelf（8 个项目共用）· Claude Code 2.1.303 · max
+  当前 5 小时       已用 17%  剩 83%  Oct 19 at 6pm (Asia/Singapore) 重置
+  本周（全部模型）  已用 38%  剩 62%  Oct 24 at 11am (Asia/Singapore) 重置
+  本周（Fable）     已用 36%  剩 64%  Oct 24 at 11am (Asia/Singapore) 重置
+  You are currently using your subscription to power your Claude Code usage
+```
+
+Codex 实例长这样（重置时间换成敲命令这台的本地时间，和 `ccnm log` 一样）：
+
+```text
+hpsrv · codex-main · Codex 0.154.0 · prolite
+  7 天  已用 100%  剩 0%  10-25 14:35 重置（还有 5 天 19 小时）
+  ! 额度用完了（rate_limit_reached），到上面的重置时间才恢复
+  账号里还有 3 次免费重置（ccnm 不会替你用）
+```
+
+**额度是跟着 AI 那台的登录走的，不是跟着项目走的。** 8 个项目都用 fodelf 上同一个 Claude 登录，就只问一次、打一块，标题上写"8 个项目共用"。
+
+**数从哪来**：全是官方 CLI 自己报的，ccnm 不读登录凭据、不自己调接口。Claude 是 `claude --print /usage`（本地命令，不发模型请求，不花额度），Codex 是 `codex app-server` 的额度查询。所以它和你在那台机器上开 `claude` 敲 `/usage` 看到的是同一份，重置时间也是 Claude 按那台机器的时区写的原话。实测和依据见[研究记录](research/2026-10-19-p105-usage.md)。
+
+**要知道的几件事**：
+
+- **问一次 3–4 秒。** 要先查版本和登录，再跑 `/usage`。这几秒里 Agent 上的 Controller 在忙这件事，同时起会话的话会等它。
+- **Claude Code 要 2.1.280 或更新。** 更旧的不问：没实测过的版本可能把 `/usage` 当成一句话发给模型，花的正是你要查的额度。
+- **Codex 只认 0.154.0**，和起会话同一条线。
+- **API key 或第三方平台登录没有 5 小时 / 每周额度**，会说"没有额度可报"。
+- **`/usage` 后半段"是什么在花额度"那份估算不带回来**：它按 AI 那台的对话记录算，里面有 skill 和 MCP server 的名字。想看就在那台开 `claude` 敲 `/usage`。
+- 每问一次，Claude Code 会在那台的 `~/.claude/projects/` 下给 ccnm 的工作目录（`~/.local/state/ccnm/usage`）建一个空的 `memory/`，只建这一个，不留对话记录。
+
+在 AI 那台上敲：不带参数问本机 Claude 的默认登录和本机登记的每个实例，`--agent` 只问那一个；带项目名先问项目机器这个项目用哪个登录。报错怎么办见[排错手册](troubleshooting.md#ccnm-usage-查不到额度)。
+
 ## 非交互 `--print`
 
 只能在项目那台机器上敲；在跑 AI 的那台敲会报 `--print has to be run where the projects are; ssh there and run it`：

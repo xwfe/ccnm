@@ -749,6 +749,24 @@ CCNM_E_INVALID_ARGS: no output kept for r-0193f2c8a1b74e05
 - **每次请求都重读整段 context**：v0.15.0 之前用 1M 窗口的模型要到约 97 万 token 才压缩。一次 4 小时的会话按 API 价算，七成花在这上面。
 - **v0.15.0 起提前了**：受管会话到 30 万左右就压缩（v0.16.0 起是 56 万），并告诉模型压缩时留什么。想换值、写在哪，见[配置说明](configuration.md#受管-claude-会话的自动压缩)。
 
+想知道额度还剩多少：`ccnm usage`（[使用说明](usage.md#查额度还剩多少ccnm-usage)）。
+
+### `ccnm usage` 查不到额度
+
+不带项目名时，一个登录查不到只打一行 `!`，其余照常显示；退出码是第一个失败的。按第一行的报错找：
+
+| 报错 | 意思 | 怎么办 |
+| --- | --- | --- |
+| `CCNM_E_VERSION: the ccnm on <机器> is too old for ccnm usage` | AI 那台的 ccnm 比这台旧，不认这个命令 | 两台装同一个版本 |
+| `CCNM_E_VERSION: the controller here was started by an older ccnm` | 文件已经换成新的，AI 那台后台跑的 Controller 还是旧进程 | 在 AI 那台照报错里的命令重启它，或者再敲一次 `ccnm controller install` |
+| `CCNM_E_NOT_READY: not asked: the controller is not in a login session` | Controller 不在图形登录会话里，Claude 读不到钥匙串，问了也只会说没登录 | 和 doctor 的同一个问题，见[下面 `Background` 那条](#doctor-的-controller-行失败写着-backgroundmacos) |
+| `CCNM_E_AUTH: Claude is not authenticated …` | 那台的 Claude 真没登录（是在登录会话里问的） | 在 AI 那台自己的屏幕上 `claude auth login` |
+| `CCNM_E_VERSION: Claude Code <版本> is older than 2.1.280 …` | 这么旧的版本没实测过非交互的 `/usage`，ccnm 不问，免得它把 `/usage` 当成一句话发给模型、白花额度 | 升级 AI 那台的 Claude Code；或者在那台开 `claude` 敲 `/usage` |
+| `CCNM_E_VERSION: Claude Code <版本> did not answer /usage as its local command` | 这个版本的 Claude Code 没把 `/usage` 当本地命令跑，回的东西不能当额度读 | 在 AI 那台开 `claude` 敲 `/usage` 看；把版本号报给 ccnm |
+| 显示"没有额度可报" | 这个登录没有 5 小时 / 每周额度（API key、第三方平台），或者 Claude Code 改了 `/usage` 的输出 | 订阅登录也这样，就在 AI 那台开 `claude` 敲 `/usage` 对一下 |
+| `CCNM_E_VERSION: Codex <版本> has not been measured` | Codex 只认 0.154.0 | 和起会话一样，换回 0.154.0 |
+| `CCNM_E_NOT_READY: Codex did not report its limits: …` | 后面是 Codex 自己的原话，常见是 API key 登录（没有订阅额度） | 按原话处理 |
+
 ### 合上笔记本睡一觉，第二天某个项目的工具连不上
 
 **症状**：同时开着几个项目，其他都好，唯独一个 `ccnm <workspace>` 起来之后 Claude 里 MCP 显示连接失败，`ccnm status` 里它的工具那一行是"断了"（英文 `TOOLS DOWN`）。

@@ -113,7 +113,7 @@ ccnm my-project             # 开始
 
 `init` 的参数和别名怎么写、第一次启动会问什么、用 Codex 要多做哪几步，都在[快速开始](docs/getting-started.md)。输出默认中文，加 `--lang en` 换英文。
 
-日常命令（前五条两台机器上都能敲，后两条只在项目机器上）：
+日常命令（前七条两台机器上都能敲，后两条只在项目机器上）：
 
 ```bash
 ccnm my-project                          # 开会话并接上
@@ -121,6 +121,7 @@ ccnm my-project -c                       # 接着这个项目上一次的对话�
 ccnm attach my-project                   # 接回已有会话（简写 ccnm a）
 ccnm ls                                  # 所有项目：在不在跑、跑了多久、工具通不通（在 AI 那台只看得到它上面的会话）
 ccnm log                                 # 跑过的会话，最新的在前
+ccnm usage                               # AI 登录的订阅额度用了多少、几点重置
 ccnm stop my-project                     # 结束会话
 ccnm my-project --print "修复 parser 测试"   # 一问一答，不进 tmux
 ccnm cleanup my-project                  # 看看会话留下了什么，再按提示加 --apply 删

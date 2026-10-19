@@ -1341,6 +1341,17 @@ P73 当时把"外部 MCP workspace 里执行账号的安全没人验"留作挡�
 
 停止点：`path` 是目录时行为不变（只多了 `.git` 那条拒绝）；不加 `-A`/`-B`、`head_limit` 等其余原生参数；不推送、不发版。
 
+### P105 — `ccnm usage`：查 Agent 那台的订阅额度还剩多少
+
+**依赖 P104。** 用户 2026-10-19 要。额度是跟着 Agent 那台的登录走的，不是跟着项目走的：同一个登录下所有项目共用一份。两个官方 CLI 都有现成的入口，不用自己碰凭据：Claude Code 的 `claude -p /usage` 是本地命令，订阅登录时回当前 5 小时窗口和本周的已用百分比、重置时间；Codex 的 `codex app-server` 有 `account/rateLimits/read`，回结构化的窗口、用量和重置时刻。Claude 在 macOS 上要在登录会话里才读得到钥匙串，所以和查登录一样经 Controller 问。
+
+- **P105.1** 实测（零模型请求）：Claude Code 2.1.300 用假服务端证明 `claude -p /usage --output-format json` 不发 `/v1/messages`（`num_turns: 0`、`local_command: "usage"`），API key 登录只回费用几行；2.1.303 在 fodelf 的登录会话里回订阅额度的原文格式；ssh 会话里 `claude auth status` 是未登录（钥匙串不让读）。Codex 0.154.0 与 0.162.1 生成的 `GetAccountRateLimitsResponse` schema 字段一致；0.162.1 用真实 ChatGPT 登录调一次拿到回复；请求写完就关 stdin，回复会丢。脱敏 fixture 放 `tests/fixtures/usage/`，记录写进研究文档。
+- **P105.2** 实现：`ccnm usage [workspace] [--agent INSTANCE]`。Runtime 上不带项目名时，按 Agent 登录（Agent 节点 + 实例，legacy 再加 `claude_config_dir`）去重，每个问一次；带项目名问它用的那个。Agent 上问本机：不带参数问默认 Claude 和本机登记的每个实例，`--agent` 只问那一个，带项目名先问 Runtime 它是什么。新增 `internal agent-usage` 和 Controller 的 `usage` 请求；Claude 低于 2.1.300 不跑（没实测过，旧版可能把 `/usage` 当成 prompt 发给模型），回的不是本地命令结果就报错、不当额度；Codex 和会话同一条线只认 0.154.0；只带回窗口、已用、剩余、重置时间和账号级提示，`/usage` 后面"是什么在花额度"那段不带回；Controller 太旧、不认这个请求时说清楚要重启它。
+- **P105.3** 测试：两种 Claude 输出（订阅、API key）、认不出的格式、不是本地命令结果；Codex 的主次窗口、按 limit 分的几组、已用完、错误回复；版本闸；Codex 读回复期间 stdin 不关（假 codex 脚本走真实子进程）；中英文渲染；Runtime 不带项目名时同一个登录只问一次。
+- **P105.4** 文档：使用说明加一节（怎么用、数从哪来、为什么不是实时）；故障排查加常见报错；支持矩阵加一行；帮助文字中英文；研究记录与状态同步；Rust、Python、计划门禁通过。
+
+停止点：只读，不发模型请求、不读凭据文件、不直接调官方没公开的 HTTP 接口；不进 `ccnm rpc` 和 MCP 工具表；不替人用 Codex 的免费重置；不推送、不发版、不换装。
+
 ## 已撤销的自动重连阶段（2026-10-16）
 
 以下不是活动阶段，也不计入完成数：

@@ -1352,6 +1352,84 @@ P73 当时把"外部 MCP workspace 里执行账号的安全没人验"留作挡�
 
 停止点：只读，不发模型请求、不读凭据文件、不直接调官方没公开的 HTTP 接口；不进 `ccnm rpc` 和 MCP 工具表；不替人用 Codex 的免费重置；不推送、不发版、不换装。
 
+## Windows 当项目机器（2026-10-24）
+
+设计、决定和未知项（U1–U11）见 [Windows 当项目机器](windows-runtime.md)。用户 2026-10-24 定：Runtime 用 Windows 自带的 sshd，接受第一版 GUI 看不见（D1）；`shell` 走 Git Bash（D2）；停命令用 `taskkill`（D3）；绕不开的 unsafe 放进 toexec 新开的 crate（D7）；用 tailnet 里已有的 Win11 测试机。Agent 照旧是 macOS 或 Linux；Windows 当 Agent、在 Windows 上发起会话（设计文档的 W7）都没排。以下每个阶段都不推送、不发版、不换装，除非另外授权。
+
+### P106 — Windows 预研：在 Win11 测试机上实测挡路的未知项
+
+**依赖 P105。** 不写产品代码。测试用的小程序优先用 Windows 自带的东西做，要装软件时单独问。
+
+- **P106.1** 连接：从 Agent 用 ccnm 现在的 ssh 参数（`-T`、`BatchMode`、`SendEnv=-*`、`SetEnv`、`ServerAliveInterval`）连 Windows 自带的 OpenSSH Server，执行一个用正斜杠绝对路径写、带 base64 参数的 exe，参数原样到达；`SetEnv` 是被忽略还是连接被拒（U1）；`DefaultShell` 是 cmd 和 PowerShell 两种情况都试（U2）；后量子警告（U11）会被 ccnm 带到哪些输出里。
+- **P106.2** 长连接：一个回显程序在一条连接上跑满一小时、来回传 100 MB 随机字节，逐字节比对，不丢、不改（U3）。
+- **P106.3** 进程：SSH 断开后 sshd 会不会结束会话里的进程、它们在不在某个 Job 里（U4）；`taskkill /T /F` 杀一棵三层的进程树，父进程先退出的孙进程收不收得到；子进程继承了 sshd 给的标准句柄时，父进程退出后 Agent 那边的连接会不会挂住（D3 末尾那条，决定 P110 的 toexec crate 要不要做）。
+- **P106.4** 环境：账号是否在 Administrators 组、钥匙该放哪、文件权限要求；sshd 下的 `PATH`、`HOME`，Git for Windows 的 bash 在哪、`core.autocrlf` 怎么设（U5）；自带 `curl.exe` 认不认 `-K` 配置文件、能不能读 SSE（U8）。
+- **P106.5** 结论写进 `docs/research/`，按结论修订 P107–P112 的范围；U3 不成立（长连接撑不住）就停下交用户定方案。
+
+停止点：不改 ccnm 代码；Windows 上只放实测用的临时文件，做完删掉；放钥匙、改 sshd 配置或注册表、改防火墙、装软件每一项单独授权；不跑真实模型。
+
+### P107 — Windows 能编译、CI 有 Windows
+
+**依赖 P106。**
+
+- **P107.1** Runtime 侧代码按平台分开；只属于 Agent 的模块（controller、launchagent、systemd、tmux、launcher 等）在 Windows 上明确报"Windows 上不支持"，不是编译失败。`cargo build --target x86_64-pc-windows-msvc` 通过、clippy 无警告。
+- **P107.2** CI 加 `windows-latest` job，跑 Runtime 侧单元测试；macOS、Linux 现有测试全过；CI 门禁按 AGENTS.md 另跑那两条。
+- **P107.3** 列出 Agent 侧把 Runtime 根目录当成 `Path` 用的每一处（拼提示、算目录名、`-c` 找上一段对话等），定怎么改，写进设计文档第 2 节那一行。
+
+停止点：工具行为不变，Windows 上还没做的工具报"Windows 上还不支持"；不改协议。
+
+### P108 — Windows 上的只读工具和路径规则
+
+**依赖 P107。**
+
+- **P108.1** 设计文档 D5 的路径规则：规范化（去掉 `\\?\`、统一成 `/`、大小写折叠）之后再比较；拒绝备用数据流、设备保留名、以点或空格结尾的组件、形如 8.3 短名的组件；junction 按符号链接处理。每种绕法一条被拒的用例，`.git` 的短名那条也有。
+- **P108.2** `workspace_info`、`read_file`、`list_files`、`search_text`（按 PATHEXT 找 `rg.exe`）、`view_image`、`read_notebook`、`load_skill` 在 Windows CI 上有端到端测试；返回给模型的路径一律相对项目根、用 `/`。
+- **P108.3** macOS、Linux 上同一批工具的现有测试不改照过；Defender 对 rg 和大量小文件读的拖慢在测试机上量一次（U6）。
+
+停止点：不做写和执行；不调 `GetLongPathNameW`。
+
+### P109 — Windows 上写文件和写锁
+
+**依赖 P108。** 锁的身份用 P108 规范化之后的路径。
+
+- **P109.1** 设计文档 D4：write_guard 和补丁日志里"持锁的同时在同一个文件里读写"的地方，拆成只加锁的文件和放写者信息的文件；三个系统上都这么改，原有锁测试照过（改 `process.rs` 时另跑 `--test-threads=64`）。
+- **P109.2** `apply_patch`（含 `write`）：CRLF、BOM 保留的现有用例在 Windows 上跑通；可执行位相关逻辑在 Windows 上跳过；目标文件只读、被别的进程打开时报清楚的错，原内容不变。
+- **P109.3** 两个 mcp-serve 争同一个项目，第二个被拒；观察者读得到写者信息、不报错；打开着的输出文件删不掉时会重试。
+
+停止点：不做执行；不改协议里写锁的行为。
+
+### P110 — Windows 上执行命令
+
+**依赖 P109。**
+
+- **P110.1** toexec 新开一个只放 Windows 进程原语的 crate，第一版只有一件事：把本进程标准输入输出的句柄改成不可继承。Windows CI 上有测试证明后台子进程不再拿着这条通道；打 tag，ccnm 只在 `cfg(windows)` 下按 tag 引用，`unsafe_code = "forbid"` 不变。P106.3 证明不会挂住的话，这条改成记录依据、不建 crate。
+- **P110.2** `exec_command`：`cmd` 直接起程序，带 `CREATE_NO_WINDOW` 和 `CREATE_NEW_PROCESS_GROUP`；`.cmd` / `.bat` 经 `cmd.exe /d /s /c call`、`.ps1` 经 PowerShell（照 gld 的写法）；`shell` 用 Git for Windows 的 bash（先找 `C:\Program Files\Git\bin\bash.exe`，再看 Runtime 配置），找不到时报清楚的错、提示改用 `cmd`。技能钩子用同一套。
+- **P110.3** 超时、停止、会话结束用 `taskkill /T /F` 杀整棵树，失败退回结束根进程；父进程先退出的孙进程收不到，写进已知限制（和 macOS 一样）。后台命令、`read_output`、`stop_command` 在 Windows CI 上有端到端测试；后台命令还在跑时 mcp-serve 退出，Agent 那边的连接照常关闭、不挂住。
+- **P110.4** 中文输出、独立的 stderr、非零退出码都对；`call_mcp_tool` 能起 `npx.cmd` 这类 server；HTTP MCP 按 P106.4 对 `curl.exe` 的结论做，或者在 Windows 上先关掉并写明。
+
+停止点：不做 Job Object；不加 `powershell` 参数（设计文档 D2 备选 B）；沙箱在 Windows 上不能打开。
+
+### P111 — Windows Runtime 的配置、诊断和发布包
+
+**依赖 P110。**
+
+- **P111.1** `ccnm init`、`ccnm add` / `rm`、`ccnm ws` 在 Windows 上能用，配置和状态放在 `%USERPROFILE%\.config\ccnm\`、`%USERPROFILE%\.local\state\ccnm\`（设计文档 D6）；Agent 配置里 Windows Runtime 的 ccnm 路径必须是正斜杠绝对路径，doctor 检查并说清怎么写。
+- **P111.2** `runtime-audit` 的 Windows 检查项（Administrators 组、令牌是否提权——都读 `whoami /groups`、`%USERPROFILE%\.ssh` 里的私钥、OpenSSH Authentication Agent 服务、docker-users 组），共用账号下只显示不拒绝；写了 `runtime_user` 就拒绝并说明（D8）；打开沙箱就拒绝。从 Agent 跑 `ccnm doctor`，Windows Runtime 的每一行都给出结论。
+- **P111.3** 安装文档（OpenSSH Server、管理员账号的钥匙放哪、Git for Windows、rg、`Unblock-File`）按新手视角从零在测试机上走一遍（U7）；发布流程出 `ccnm-<版本>-windows-x86_64.zip` 和 sha256，只验构建。
+
+停止点：不做专用执行账号；不做安装程序；实际发版另外授权。
+
+### P112 — Windows Runtime 真机验收
+
+**依赖 P111。** 在测试机上装 ccnm 要单独授权。
+
+- **P112.1** 零额度：macOS Agent → Win11 Runtime，中立 MCP 客户端（`tests/test_remote_workspace_mcp.py`）把全部工具调一遍；假模型接口分别跑 Claude Code 和 Codex 的完整工具回合。
+- **P112.2** 真实模型：Claude Code 和 Codex 各一次，在 Windows 上的真实项目里读代码、改代码、编译、跑测试、提交。跑之前用户点头，记花费。
+- **P112.3** 断网 30 秒后恢复、按 Esc 停命令、`ccnm stop` 之后，测试机上都没有残留进程，写锁正常交出。
+- **P112.4** 支持矩阵、README 和 toexec 计划第 0 节那张表按实测改：做到哪一步就写到哪一步。
+
+停止点：Windows 当 Agent、在 Windows 上发起会话不在本阶段。
+
 ## 已撤销的自动重连阶段（2026-10-16）
 
 以下不是活动阶段，也不计入完成数：

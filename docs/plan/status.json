@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-10-19T21:00:00+09:00",
-  "current_task": null,
+  "last_updated": "2026-10-24T22:20:00+09:00",
+  "current_task": "P106",
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
     "source": "docs/research/codex-internal-wiring-2026-09-07.md",
@@ -5216,6 +5216,104 @@
         }
       ],
       "blockers": []
+    },
+    {
+      "id": "P106",
+      "title": "Windows 预研：在 Win11 测试机上实测挡路的未知项",
+      "status": "pending",
+      "depends_on": [
+        "P105"
+      ],
+      "owner": null,
+      "started_at": null,
+      "last_updated": "2026-10-24T22:20:00+09:00",
+      "completed_criteria": [],
+      "evidence": [],
+      "blockers": []
+    },
+    {
+      "id": "P107",
+      "title": "Windows 能编译、CI 有 Windows",
+      "status": "pending",
+      "depends_on": [
+        "P106"
+      ],
+      "owner": null,
+      "started_at": null,
+      "last_updated": "2026-10-24T22:20:00+09:00",
+      "completed_criteria": [],
+      "evidence": [],
+      "blockers": []
+    },
+    {
+      "id": "P108",
+      "title": "Windows 上的只读工具和路径规则",
+      "status": "pending",
+      "depends_on": [
+        "P107"
+      ],
+      "owner": null,
+      "started_at": null,
+      "last_updated": "2026-10-24T22:20:00+09:00",
+      "completed_criteria": [],
+      "evidence": [],
+      "blockers": []
+    },
+    {
+      "id": "P109",
+      "title": "Windows 上写文件和写锁",
+      "status": "pending",
+      "depends_on": [
+        "P108"
+      ],
+      "owner": null,
+      "started_at": null,
+      "last_updated": "2026-10-24T22:20:00+09:00",
+      "completed_criteria": [],
+      "evidence": [],
+      "blockers": []
+    },
+    {
+      "id": "P110",
+      "title": "Windows 上执行命令",
+      "status": "pending",
+      "depends_on": [
+        "P109"
+      ],
+      "owner": null,
+      "started_at": null,
+      "last_updated": "2026-10-24T22:20:00+09:00",
+      "completed_criteria": [],
+      "evidence": [],
+      "blockers": []
+    },
+    {
+      "id": "P111",
+      "title": "Windows Runtime 的配置、诊断和发布包",
+      "status": "pending",
+      "depends_on": [
+        "P110"
+      ],
+      "owner": null,
+      "started_at": null,
+      "last_updated": "2026-10-24T22:20:00+09:00",
+      "completed_criteria": [],
+      "evidence": [],
+      "blockers": []
+    },
+    {
+      "id": "P112",
+      "title": "Windows Runtime 真机验收",
+      "status": "pending",
+      "depends_on": [
+        "P111"
+      ],
+      "owner": null,
+      "started_at": null,
+      "last_updated": "2026-10-24T22:20:00+09:00",
+      "completed_criteria": [],
+      "evidence": [],
+      "blockers": []
     }
   ],
   "observed_gaps": [
@@ -5286,7 +5384,7 @@
     "【2026-10-08 P80 时看到 / 只记不修】Agent 上的 MCP 转发 ccnm_agent（P50）在受管 Codex 会话里同样没配 tool_timeout_sec，Codex 对它只等 300 秒。它的 call_mcp_tool 默认等 60 秒、起 server 30 秒，用户给 Agent 上某个 server 配的 tool_timeout_sec 接近或超过 300 秒时（还没起的 server 起它的时间也算在内），调用会被 Codex 先截断、不发取消，照样在 Agent 上跑完。值取决于用户配置、不归 ccnm 的常量管，P80 没修。依据 docs/research/2026-10-08-p80-codex-tool-timeout.md 第 6 节。"
   ],
   "handoff": {
-    "next_action": "**2026-10-19 发了 v0.20.0、三台换好，current_task 为 null。** 用户说发版、三台换装、本机真机跑 `ccnm usage` 复验：版本号提交 179571a，CI 与发布流程全绿，带说明的 tag v0.20.0。三台：本机与 fodelf aa7dd6ee…（fodelf Controller pid 78589），hpsrv ccrun 90651240…；fodelf 上 keex、shun、xdo 三个会话没停只换文件。真机：本机 `ccnm usage` 经 LaunchAgent Controller 拿到 Claude Code 2.1.303 的三个窗口，4.2 秒；fodelf 上直接敲、带项目名都通；八个日用项目 doctor 全过。中途本机磁盘只剩 268 MB、代理断了，用户让清理：删了 ccnm 的 target/debug（46 GB）和 scratchpad 下载包，空余 47 GB。没调模型；Codex 经实例、Linux Agent 没验。记录 docs/research/2026-10-19-release-0.20.0.md。\n\n之前的交接：\n**2026-10-19 P105 完成，current_task 为 null。** 用户要查用量余量：新增 `ccnm usage [项目] [--agent 实例]`，按 Agent 登录去重、每个登录问一次，数只从官方 CLI 来——Claude `claude --print /usage`（本地命令，实测不发模型请求）、Codex app-server 的 account/rateLimits/read；经 Controller 新增的 usage 请求在登录会话里问；先查版本和登录，Claude 低于 2.1.280 不问。实测：2.1.300 假服务端、fodelf 上 2.1.280/2.1.303 登录会话、Codex 0.154.0/0.162.1 schema 与 0.162.1 真实登录；fodelf 上临时 Controller 真机回过额度，旧 0.19.1 对端的报错也真机看过。Rust 1167/0、Python 250/0，只在 macOS arm64。没推送、没发版、没换装；没验换装后经真正的 LaunchAgent Controller 一路问到底、Codex 经实例、Linux Agent。下一步（要用户点头）：发版换装后在本机跑 `ccnm usage` 真机复验。记录 docs/research/2026-10-19-p105-usage.md。\n\n之前的交接：\n**2026-10-17 晚发了 v0.19.0 和 v0.19.1、三台换好，current_task 为 null。** 用户说审完合并 P103/P104 分支、清理分支和 worktree、发版换装做真机验证：分支 --no-ff 合进 main（66b5805），分支与 worktree 已删；v0.19.0 推上去后 CI Linux 红在 P104（rg 在 Linux 上 mmap 读点名文件，加 --no-mmap 修，9ebacc8），tag 打在修好之后；真机零额度验过 P100（接上、草稿不敲、接不上不进）、P101（-c 接 /clear 之后那段）、P102（/clear 带交接），hpsrv 上发布的 Linux 二进制跑中立客户端 53/53；验证中发现全新会话的暗色提示被当草稿（e246464 修），补发 v0.19.1（bed79da）。三台：本机与 fodelf 544593d4…（Controller pid 10130），hpsrv ccrun 277645f3…。没调模型。全部已推送。记录 docs/research/2026-10-17-release-0.19.0.md。\n\n之前的交接：\n**2026-10-17 P103、P104 完成，current_task 为 null。** 按 P100–P102 研究记录第 2.4、6 节排的两个阶段。P103：read_output 的 offset 落在字符中间时挪到下一个字符开头并写明、页尾只切没写完的字符、坏字节换 U+FFFD 照常翻页，修掉 limit N is too small 的误报（fodelf 10 次）。P104：search_text 的 path 可以是一个文件，范围和 read_file 一致（点名的 dotfile、被忽略的文件照搜，二进制、fifo 拒，glob/type 不用并写明）；实测 rg 15.2.0 对点名的路径不看任何排除规则，顺带堵上 path 指向 .git 的符号链接目录会把 .git 内容发回来的缺口。tools/list 里 search_text 的说明有意改了一句、fixture 已同步。两边旧二进制都在中立客户端上复现了 fodelf 日志里那句报错。Rust 1138/0、Python 250/0；只在 macOS arm64 上，没上 Linux、没上真机、没推送、没发版。记录 docs/research/2026-10-17-p103-p104-read-output-and-search-file.md。",
+    "next_action": "**2026-10-24 排了 Windows 当项目机器的 P106–P112，current_task 为 P106（还没认领）。** 用户看完设计草案 docs/plan/windows-runtime.md 定了四条：Runtime 用 Windows 自带的 OpenSSH Server、接受第一版 GUI 看不见（D1）；`shell` 走 Git Bash、PowerShell 先不加参数（D2）；停命令第一版用 taskkill（D3）；绕不开的 unsafe（只有\"不继承标准句柄\"一处）放进 toexec 新开的 crate（D7）；用 tailnet 里已有的 Win11 机器。设计文档改成定稿、第 5 节换成 P 编号、加了未知项 U11；toexec 计划第 0 节和去重审计同步。同日从 AI 那台 macOS 只读探过测试机：在线，22 端口是 `OpenSSH_for_Windows_9.5`；用 `bing`、BatchMode 登录被拒，本机也没有默认钥匙；本机 OpenSSH 10.3 连它每次打后量子警告（U11）；`ssh -o StrictHostKeyChecking=accept-new` 把它的主机钥匙记进了本机 known_hosts。下一步：P106 开工前要用户给 Windows 账号名、说明它在不在 Administrators 组、定用哪把钥匙（现有的还是新建一把）并放到 Windows 上，然后认领 P106 按 P106.1 起逐项实测。没写代码、没推送。\n\n之前的交接：\n**2026-10-19 发了 v0.20.0、三台换好，current_task 为 null。** 用户说发版、三台换装、本机真机跑 `ccnm usage` 复验：版本号提交 179571a，CI 与发布流程全绿，带说明的 tag v0.20.0。三台：本机与 fodelf aa7dd6ee…（fodelf Controller pid 78589），hpsrv ccrun 90651240…；fodelf 上 keex、shun、xdo 三个会话没停只换文件。真机：本机 `ccnm usage` 经 LaunchAgent Controller 拿到 Claude Code 2.1.303 的三个窗口，4.2 秒；fodelf 上直接敲、带项目名都通；八个日用项目 doctor 全过。中途本机磁盘只剩 268 MB、代理断了，用户让清理：删了 ccnm 的 target/debug（46 GB）和 scratchpad 下载包，空余 47 GB。没调模型；Codex 经实例、Linux Agent 没验。记录 docs/research/2026-10-19-release-0.20.0.md。\n\n之前的交接：\n**2026-10-19 P105 完成，current_task 为 null。** 用户要查用量余量：新增 `ccnm usage [项目] [--agent 实例]`，按 Agent 登录去重、每个登录问一次，数只从官方 CLI 来——Claude `claude --print /usage`（本地命令，实测不发模型请求）、Codex app-server 的 account/rateLimits/read；经 Controller 新增的 usage 请求在登录会话里问；先查版本和登录，Claude 低于 2.1.280 不问。实测：2.1.300 假服务端、fodelf 上 2.1.280/2.1.303 登录会话、Codex 0.154.0/0.162.1 schema 与 0.162.1 真实登录；fodelf 上临时 Controller 真机回过额度，旧 0.19.1 对端的报错也真机看过。Rust 1167/0、Python 250/0，只在 macOS arm64。没推送、没发版、没换装；没验换装后经真正的 LaunchAgent Controller 一路问到底、Codex 经实例、Linux Agent。下一步（要用户点头）：发版换装后在本机跑 `ccnm usage` 真机复验。记录 docs/research/2026-10-19-p105-usage.md。\n\n之前的交接：\n**2026-10-17 晚发了 v0.19.0 和 v0.19.1、三台换好，current_task 为 null。** 用户说审完合并 P103/P104 分支、清理分支和 worktree、发版换装做真机验证：分支 --no-ff 合进 main（66b5805），分支与 worktree 已删；v0.19.0 推上去后 CI Linux 红在 P104（rg 在 Linux 上 mmap 读点名文件，加 --no-mmap 修，9ebacc8），tag 打在修好之后；真机零额度验过 P100（接上、草稿不敲、接不上不进）、P101（-c 接 /clear 之后那段）、P102（/clear 带交接），hpsrv 上发布的 Linux 二进制跑中立客户端 53/53；验证中发现全新会话的暗色提示被当草稿（e246464 修），补发 v0.19.1（bed79da）。三台：本机与 fodelf 544593d4…（Controller pid 10130），hpsrv ccrun 277645f3…。没调模型。全部已推送。记录 docs/research/2026-10-17-release-0.19.0.md。",
     "scope": "2026-10-08 用户要求：零额度复现 Codex 300 秒工具超时、选修法、补外部入口文档、跑门禁、更新状态、粒度提交、不推送。改动：crates/ccnm-core（provider/codex 的 TOOL_TIMEOUT 与启动参数、测试；mcp/hooks 的 MAX_TIMEOUT 改 pub(crate)；mcp/output 注释）、docs/protocol/remote-workspace-mcp-v1.md、docs/usage.md、docs/troubleshooting.md、docs/research 的 P80 记录与夹具、ROADMAP、status。没动任何机器、已装的 ccnm 与配置；Codex 0.154.0 包和源码只下到会话 scratchpad。",
     "planning_validation": {
       "at": "2026-09-08T21:22:43+09:00",

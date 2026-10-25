@@ -25,7 +25,6 @@
 
 use std::fs;
 use std::io::Write as _;
-use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -34,6 +33,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::{Error, Result};
 use crate::instance::InstanceRef;
 use crate::paths;
+use crate::platform::OpenOptionsExt as _;
 use crate::process::{Cmd, ProcessRunner};
 use crate::provider::AgentProvider;
 
@@ -564,7 +564,7 @@ fn encode<T: Serialize>(value: &T) -> Result<Vec<u8>> {
 
 fn create_private(dir: &Path) -> Result<()> {
     fs::create_dir_all(dir)?;
-    fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
+    crate::platform::set_mode(dir, 0o700)?;
     Ok(())
 }
 
@@ -656,11 +656,12 @@ pub fn owner_check(runner: &dyn ProcessRunner, pid: u32, started: &str) -> Owner
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use crate::process::{Output, SystemRunner};
     use ccnm_testdir::TestDir;
+    use std::os::unix::fs::PermissionsExt as _;
 
     fn temp(test: &str) -> TestDir {
         let dir = std::env::temp_dir().join(format!("ccnm-rpcstore-{}-{test}", std::process::id()));

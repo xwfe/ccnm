@@ -259,7 +259,7 @@ pub fn expand_home(path: &str, home: &Path) -> PathBuf {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 

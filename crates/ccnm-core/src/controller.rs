@@ -68,7 +68,7 @@
 //! `claude auth status --json`.
 
 use std::io::{BufRead, BufReader, Read, Write};
-use std::os::unix::fs::PermissionsExt;
+#[cfg(unix)]
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -76,6 +76,8 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, ErrorCode, ErrorReport, Reported, Result};
+#[cfg(windows)]
+use crate::platform::unix_socket::{UnixListener, UnixStream};
 use crate::process::{Cmd, Output, ProcessRunner};
 use crate::protocol::hello::{self, HelloReport, HelloRequest};
 use crate::protocol::payload::{self, PROTOCOL, Protocol};
@@ -647,7 +649,7 @@ fn asked_profile(
 /// `~/.claude/projects/` for every directory it runs in (P105), and one is
 /// enough.
 fn usage_dir() -> Result<PathBuf> {
-    use std::os::unix::fs::DirBuilderExt as _;
+    use crate::platform::DirBuilderExt as _;
     let dir = crate::paths::state_dir()?.join("usage");
     std::fs::DirBuilder::new()
         .recursive(true)
@@ -764,7 +766,6 @@ pub fn supervisor_cmd(exe: &Path, req: &SuperviseRequest) -> Result<Cmd> {
 /// being replaced. A thread waits on the child so finished supervisors do
 /// not pile up as zombies; the wait is all it does.
 fn spawn_detached(cmd: &Cmd, log: &Path) -> Result<u32> {
-    use std::os::unix::process::CommandExt as _;
     use std::process::Stdio;
 
     let out = std::fs::File::create(log)?;
@@ -773,8 +774,8 @@ fn spawn_detached(cmd: &Cmd, log: &Path) -> Result<u32> {
     command
         .stdin(Stdio::null())
         .stdout(Stdio::from(out))
-        .stderr(Stdio::from(err))
-        .process_group(0);
+        .stderr(Stdio::from(err));
+    crate::platform::own_process_group(&mut command);
     let mut child = command.spawn().map_err(|e| {
         Error::internal(format!("cannot spawn {}", cmd.program.to_string_lossy())).with_source(e)
     })?;
@@ -848,12 +849,12 @@ impl Listener {
             && !dir.exists()
         {
             std::fs::create_dir_all(dir)?;
-            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+            crate::platform::set_mode(dir, 0o700)?;
         }
         let listener = UnixListener::bind(path).map_err(|e| {
             Error::internal(format!("cannot listen on {}", path.display())).with_source(e)
         })?;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+        crate::platform::set_mode(path, 0o600)?;
         tracing::info!(path = %path.display(), "controller listening");
         Ok(Listener {
             listener,
@@ -1157,7 +1158,7 @@ fn not_listening(path: &Path, err: &std::io::Error) -> Error {
     .with_source(std::io::Error::new(err.kind(), err.to_string()))
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use crate::process::{FakeRunner, Output};
@@ -1811,6 +1812,7 @@ mod tests {
     /// other, JSON both ways.
     #[test]
     fn a_request_and_its_reply_cross_the_socket() {
+        use std::os::unix::fs::PermissionsExt as _;
         let (_dir, path) = socket("roundtrip");
         let listener = Listener::bind(&path).unwrap();
         let mode = std::fs::metadata(&path).unwrap().permissions().mode();

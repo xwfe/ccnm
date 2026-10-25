@@ -82,19 +82,7 @@ impl AgentProfiles {
                     "cannot inspect Agent-local profiles configuration",
                 ));
             }
-            Ok(meta) => {
-                use std::os::unix::fs::MetadataExt;
-                let uid = crate::safety::credentials::effective_uid(&crate::SystemRunner)?;
-                if !meta.is_file()
-                    || meta.file_type().is_symlink()
-                    || meta.uid() != uid
-                    || meta.mode() & 0o077 != 0
-                {
-                    return Err(Error::config(
-                        "Agent-local profiles configuration must be a private regular file owned by this execution identity",
-                    ));
-                }
-            }
+            Ok(meta) => private_to_this_identity(&meta)?,
         }
         let text = std::fs::read_to_string(path)
             .map_err(|_| Error::config("cannot read Agent-local profiles configuration"))?;
@@ -149,4 +137,29 @@ impl AgentProfiles {
             directory,
         })
     }
+}
+
+/// The profiles file must be a private regular file of this identity's.
+#[cfg(unix)]
+fn private_to_this_identity(meta: &std::fs::Metadata) -> Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    let uid = crate::safety::credentials::effective_uid(&crate::SystemRunner)?;
+    if !meta.is_file()
+        || meta.file_type().is_symlink()
+        || meta.uid() != uid
+        || meta.mode() & 0o077 != 0
+    {
+        return Err(Error::config(
+            "Agent-local profiles configuration must be a private regular file owned by this execution identity",
+        ));
+    }
+    Ok(())
+}
+
+/// Profiles are the Agent Node's; with no owner and mode to check the file
+/// against on Windows, it is refused, not read.
+#[cfg(windows)]
+fn private_to_this_identity(meta: &std::fs::Metadata) -> Result<()> {
+    let _ = meta;
+    Err(crate::platform::agent_only("Agent-local profiles"))
 }

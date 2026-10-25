@@ -41,7 +41,6 @@ pub mod transport;
 pub mod view;
 
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -299,7 +298,7 @@ pub fn fence(state: &Path, id: &str) -> Result<bool> {
     fs::create_dir_all(paths::sessions_dir(state))?;
     match fs::create_dir(dir.path()) {
         Ok(()) => {
-            fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700))?;
+            crate::platform::set_mode(dir.path(), 0o700)?;
             fs::write(dir.stopping(), STOPPED_BEFORE_START)?;
             Ok(true)
         }
@@ -323,7 +322,7 @@ pub struct Control(fs::File);
 
 impl Control {
     pub fn lock(dir: &Dir) -> Result<Control> {
-        use std::os::unix::fs::OpenOptionsExt as _;
+        use crate::platform::OpenOptionsExt as _;
         let file = fs::OpenOptions::new()
             .read(true)
             .write(true)
@@ -339,7 +338,7 @@ impl Control {
     /// it (a start, a stop, a view being built). For removing a session,
     /// which must step aside rather than pull files out from under them.
     pub fn try_lock(dir: &Dir) -> Result<Option<Control>> {
-        use std::os::unix::fs::OpenOptionsExt as _;
+        use crate::platform::OpenOptionsExt as _;
         let file = fs::OpenOptions::new()
             .read(true)
             .write(true)
@@ -556,7 +555,7 @@ pub fn create(
         });
     }
     // The settings file names what the model may do; keep it the owner's.
-    fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700))?;
+    crate::platform::set_mode(dir.path(), 0o700)?;
     fs::write(dir.meta(), pretty(spec)?)?;
     // MCP JSON cannot express env_remove. Both official CLIs launch this
     // Agent-local boundary, which strips credentials immediately before SSH.
@@ -1057,12 +1056,13 @@ pub fn wait_for_outcome(
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use crate::process::{FakeRunner, Output};
     use crate::protocol::payload;
     use ccnm_testdir::TestDir;
+    use std::os::unix::fs::PermissionsExt;
 
     /// The two facts are reported separately because they disagree: a
     /// tmux session that says `Background` can still reach the Keychain,

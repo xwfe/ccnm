@@ -15,6 +15,7 @@ pub mod launcher;
 pub mod mcp;
 pub mod overview;
 pub mod paths;
+mod platform;
 pub mod process;
 pub mod protocol;
 pub mod provider;

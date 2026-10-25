@@ -101,10 +101,19 @@ fn load_for(request: &Request) -> Result<Spec> {
     Ok(spec)
 }
 
+#[cfg(unix)]
 fn exec_ssh(cmd: Cmd) -> Result<()> {
     use std::os::unix::process::CommandExt;
     let mut process = cmd.process();
     Err(Error::internal("cannot exec Agent-side SSH transport").with_source(process.exec()))
+}
+
+/// The transport is the Agent Node's, and Windows has no `exec` to hand
+/// this process over to ssh with.
+#[cfg(windows)]
+fn exec_ssh(cmd: Cmd) -> Result<()> {
+    let _ = cmd;
+    Err(crate::platform::agent_only("the Agent-side SSH transport"))
 }
 
 #[cfg(test)]

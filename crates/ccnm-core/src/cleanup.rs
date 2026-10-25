@@ -23,7 +23,6 @@
 //! take over anything.
 
 use std::fs;
-use std::os::unix::fs::MetadataExt as _;
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -459,7 +458,7 @@ fn runtime_item(state: &Path, id: &str, ended: bool, facts: &Facts) -> Option<It
         return not_a_dir();
     }
     let (bytes, version) = measure(&output, None);
-    let why = if facts.uid.is_some_and(|uid| meta.uid() != uid) {
+    let why = if crate::platform::owned_by_other(&meta, facts.uid) {
         Some(Why::ForeignOwner)
     } else if !ended {
         Some(Why::NotEnded)
@@ -703,7 +702,7 @@ fn agent_items(tools: &Tools<'_>, workspace: &str, purge: bool, uid: Option<u32>
             // serves both roles: it is measured and removed by the Runtime.
             let (bytes, version) = measure(dir.path(), Some("output"));
             let why = match state {
-                _ if uid.is_some_and(|uid| meta.uid() != uid) => Some(Why::ForeignOwner),
+                _ if crate::platform::owned_by_other(&meta, uid) => Some(Why::ForeignOwner),
                 SessionState::Completed | SessionState::Failed => None,
                 SessionState::Unknown => Some(Why::Unknown),
                 SessionState::Starting | SessionState::Running | SessionState::Stopping => {
@@ -727,7 +726,7 @@ fn agent_items(tools: &Tools<'_>, workspace: &str, purge: bool, uid: Option<u32>
             let (bytes, version) = measure(&path, None);
             let why = if !meta.is_dir() {
                 Some(Why::NotADirectory)
-            } else if uid.is_some_and(|uid| meta.uid() != uid) {
+            } else if crate::platform::owned_by_other(&meta, uid) {
                 Some(Why::ForeignOwner)
             } else if !all_ended {
                 // A session that may still run is working in it.
@@ -1354,5 +1353,5 @@ impl Applied {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests;

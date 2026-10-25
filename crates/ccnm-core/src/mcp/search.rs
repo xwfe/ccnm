@@ -876,7 +876,7 @@ fn locate_rg() -> Option<PathBuf> {
         .find(|p| crate::process::is_executable(p))
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use ccnm_testdir::TestDir;

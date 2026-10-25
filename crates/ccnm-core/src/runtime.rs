@@ -522,10 +522,9 @@ impl RootStatus {
         let meta = std::fs::metadata(root).ok();
         let present = meta.is_some();
         let is_dir = meta.as_ref().is_some_and(std::fs::Metadata::is_dir);
-        let owned = meta.as_ref().is_some_and(|meta| {
-            use std::os::unix::fs::MetadataExt;
-            current_uid(runner).is_some_and(|uid| uid == meta.uid())
-        });
+        let owned = meta
+            .as_ref()
+            .is_some_and(|meta| crate::platform::owned_by(meta, current_uid(runner)));
         RootStatus {
             present,
             is_dir,
@@ -880,7 +879,7 @@ pub fn canonical_root(root: &Path) -> Result<PathBuf> {
     Ok(canonical)
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use crate::provider::AgentProvider;

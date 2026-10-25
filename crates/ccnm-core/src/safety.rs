@@ -733,9 +733,22 @@ fn private_key_in(dir: &Path, runner: &dyn ProcessRunner) -> Option<Finding> {
     walk(dir, 3, runner)
 }
 
+/// Docker on Windows is a named pipe guarded by the docker-users group, not
+/// a socket's mode; the Windows audit checks that (P111.2). Until it does,
+/// not checked means not passed.
+#[cfg(windows)]
+fn docker_finding(_identity: &Identity) -> Finding {
+    Finding::fail(
+        "No Docker socket",
+        "the Docker check is not written for Windows yet",
+        "wait for the Windows Runtime audit (P111) before relying on this one",
+    )
+}
+
 /// Write access to the Docker socket is root, one `docker run -v /:/host`
 /// away. Worth checking because it is the escalation path people forget
 /// they left open.
+#[cfg(unix)]
 fn docker_finding(identity: &Identity) -> Finding {
     const NAME: &str = "No Docker socket";
     let socket = Path::new("/var/run/docker.sock");
@@ -775,6 +788,8 @@ fn docker_finding(identity: &Identity) -> Finding {
 struct Identity {
     user: String,
     uid: Option<u32>,
+    // Only the Unix Docker check reads it; the Windows audit is P111's.
+    #[cfg_attr(windows, allow(dead_code))]
     gids: Vec<u32>,
     groups: Vec<String>,
 }
@@ -808,7 +823,7 @@ impl Identity {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod provider_tests;
 
 #[cfg(test)]

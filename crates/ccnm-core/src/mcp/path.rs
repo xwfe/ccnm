@@ -281,7 +281,7 @@ fn contained(root: &Path, resolved: &Path, rel: &str) -> Result<()> {
     ))
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use ccnm_testdir::TestDir;

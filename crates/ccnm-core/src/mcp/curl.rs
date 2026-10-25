@@ -29,7 +29,6 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -40,6 +39,8 @@ use toexec_mcp::Error;
 use toexec_mcp::installed::{display_url, is_loopback_url};
 use toexec_mcp::sse::{answers, awaited_id, event_data, event_end};
 use toexec_mcp::transport::{MAX_MESSAGE_BYTES, Recv, Transport};
+
+use crate::platform::{DirBuilderExt as _, OpenOptionsExt as _};
 
 /// Longest a connection may take to open, whatever the call's own budget.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -509,7 +510,7 @@ fn too_long(bytes: usize) -> Error {
     ))
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::net::TcpListener;

@@ -204,6 +204,7 @@ pub trait ProcessRunner {
 /// `TERM` asks; nothing but `kill` itself carries it, because `Child` can
 /// only send `KILL`. So a `TERM` whose killer could not run reached nobody,
 /// and whoever sent it follows up with `KILL` anyway.
+#[cfg(unix)]
 fn kill_group(killer: &OsStr, signal: Signal, child: &mut std::process::Child) -> bool {
     let pid = child.id();
     let ran = Command::new(killer)
@@ -218,12 +219,25 @@ fn kill_group(killer: &OsStr, signal: Signal, child: &mut std::process::Child) -
     ran
 }
 
+/// Windows, until P110.3 brings `taskkill /T /F`: the leader only, so the
+/// answer is always that the group was not reached -- which is the truth,
+/// and what makes a caller treat it as "only the leader was signalled".
+#[cfg(windows)]
+fn kill_group(killer: &OsStr, signal: Signal, child: &mut std::process::Child) -> bool {
+    let _ = killer;
+    if signal == Signal::Kill {
+        let _ = child.kill();
+    }
+    false
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Signal {
     Term,
     Kill,
 }
 
+#[cfg(unix)]
 impl Signal {
     fn flag(self) -> &'static str {
         match self {
@@ -513,7 +527,7 @@ pub fn stream_lines(cmd: &Cmd, mut on_line: impl FnMut(&[u8]) -> Flow) -> Result
 
     // Its own process group, so the watchdog and Flow::Stop can reach
     // whatever the command starts, not just the command.
-    std::os::unix::process::CommandExt::process_group(&mut command, 0);
+    crate::platform::own_process_group(&mut command);
     tracing::debug!(cmd = %cmd.display(), "stream");
     let mut child = command.spawn().map_err(|e| {
         Error::internal(format!("cannot spawn {}", cmd.program.to_string_lossy())).with_source(e)
@@ -729,7 +743,7 @@ where
         command.env(key, value);
     }
 
-    std::os::unix::process::CommandExt::process_group(&mut command, 0);
+    crate::platform::own_process_group(&mut command);
     tracing::debug!(cmd = %cmd.display(), "capture");
     let mut child = command.spawn().map_err(|e| {
         Error::internal(format!("cannot spawn {}", cmd.program.to_string_lossy())).with_source(e)
@@ -904,7 +918,7 @@ impl ProcessRunner for SystemRunner {
         // only. The cost is that ctrl-c in the operator's terminal no
         // longer reaches this child directly -- it has no terminal anyway,
         // both its pipes are ours, and the deadline is what bounds it.
-        std::os::unix::process::CommandExt::process_group(&mut command, 0);
+        crate::platform::own_process_group(&mut command);
         tracing::debug!(cmd = %cmd.display(), "spawn");
         let mut child = command.spawn().map_err(|e| {
             Error::internal(format!("cannot spawn {}", cmd.program.to_string_lossy()))
@@ -1026,13 +1040,20 @@ impl ProcessRunner for FakeRunner {
 }
 
 pub(crate) fn is_executable(path: &std::path::Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::metadata(path)
-        .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
-        .unwrap_or(false)
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(path)
+            .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false)
+    }
+    // No execute bit: whether Windows runs a file is decided by its
+    // extension, which the caller's lookup (PATHEXT, P108) supplies.
+    #[cfg(windows)]
+    std::fs::metadata(path).is_ok_and(|m| m.is_file())
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use crate::error::ErrorCode;

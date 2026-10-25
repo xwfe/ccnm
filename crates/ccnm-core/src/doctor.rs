@@ -1661,7 +1661,7 @@ fn not_yet_implemented() -> Vec<Check> {
     .collect()
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use crate::process::{FakeRunner, Output};

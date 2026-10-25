@@ -57,11 +57,14 @@
 //! the name in `session::MCP_TOOLS`, and the `toexec-mcp` dependency.
 
 use std::io::Write;
+#[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(unix)]
+use std::time::Instant;
 
 use rmcp::model::{CallToolResult, ContentBlock};
 use rmcp::schemars;
@@ -544,17 +547,41 @@ impl Open for Opener<'_> {
 pub(crate) type Left = Arc<Mutex<Vec<String>>>;
 
 /// The program that holds a server's process group ([`start`]).
+#[cfg(unix)]
 const ANCHOR: &str = "/bin/cat";
 /// Absolute, like the managed stop's (`work.rs`): which `kill` and `ps` run
 /// is not up to whatever `PATH` this process was given.
+#[cfg(unix)]
 const KILLER: &str = "/bin/kill";
+#[cfg(unix)]
 const LISTER: &str = "/bin/ps";
 /// How long a process group has to empty after `SIGKILL` before what is
 /// still in it is reported. Only something no signal reaches -- a setuid
 /// program, a process stuck in the kernel -- lasts this long.
+#[cfg(unix)]
 const CLEAR_WITHIN: Duration = Duration::from_secs(5);
+#[cfg(unix)]
 const CLEAR_PAUSE_MIN: Duration = Duration::from_millis(20);
+#[cfg(unix)]
 const CLEAR_PAUSE_MAX: Duration = Duration::from_millis(500);
+
+/// Windows, until P110.4: no anchored group to put a server in (that is a
+/// Unix process group), so no server is started rather than one ccnm could
+/// not clear up after.
+#[cfg(windows)]
+pub(crate) fn start(
+    process: &mut Command,
+    server: &str,
+    left: &Left,
+) -> std::io::Result<(Child, Stop)> {
+    let _ = (process, left);
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        format!(
+            "cannot start MCP server {server}: running MCP servers on a Windows Runtime is not supported yet"
+        ),
+    ))
+}
 
 /// Spawn `process` -- a stdio server, pipes already set -- in a process
 /// group that can be killed whole however the server ends, and return it
@@ -581,6 +608,7 @@ const CLEAR_PAUSE_MAX: Duration = Duration::from_millis(500);
 /// Not reached: a descendant that left the group (`setsid`, a daemon's
 /// double fork). Nothing short of an OS container sees those; that is the
 /// line between what ccnm supervises and what it cannot.
+#[cfg(unix)]
 pub(crate) fn start(
     process: &mut Command,
     server: &str,
@@ -630,6 +658,7 @@ pub(crate) fn start(
 /// now is what it left behind. Killing again on every round is safe for as
 /// long as the anchor is uncollected (see [`start`]), and catches a child
 /// forked while the first kill was on its way.
+#[cfg(unix)]
 fn clear(anchor: &mut Child, killer: &str, lister: &str, within: Duration) -> Option<String> {
     let group = anchor.id();
     let deadline = Instant::now() + within;
@@ -668,6 +697,7 @@ fn clear(anchor: &mut Child, killer: &str, lister: &str, within: Duration) -> Op
 
 /// The processes of `group` that can still run, from `lister -A -o
 /// pid=,pgid=,stat=` (the same on macOS and procps).
+#[cfg(unix)]
 fn members(lister: &str, group: u32) -> std::result::Result<Vec<u32>, String> {
     let listed = Command::new(lister)
         .args(["-A", "-o", "pid=,pgid=,stat="])
@@ -684,6 +714,7 @@ fn members(lister: &str, group: u32) -> std::result::Result<Vec<u32>, String> {
 /// Neither the anchor, whose pid names the group, nor a zombie -- dead,
 /// only waiting for whoever inherited it to collect it. A list that cannot
 /// be read proves nothing, so it is an error, never an empty group.
+#[cfg(unix)]
 fn running_in(listing: &str, group: u32) -> std::result::Result<Vec<u32>, String> {
     let mut rows = 0;
     let mut found = Vec::new();
@@ -833,7 +864,7 @@ fn utf16(text: &str) -> usize {
     text.encode_utf16().count()
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(crate) mod tests {
     use super::*;
     use ccnm_testdir::TestDir;

@@ -22,13 +22,13 @@
 
 use std::fs;
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
 use super::{Control, Dir};
 use crate::error::{Error, Result};
+use crate::platform::OpenOptionsExt as _;
 use crate::provider::{REDACTED, Redaction};
 
 /// How much of a stream is kept: its last 32 MiB. Enough for any report a

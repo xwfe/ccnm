@@ -362,7 +362,7 @@ pub fn parse_auth(out: &Output) -> Result<AuthStatus> {
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use crate::config::{AgentTool, AgentTools};

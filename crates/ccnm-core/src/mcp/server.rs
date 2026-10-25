@@ -1938,7 +1938,7 @@ fn git_facts(root: &Path, runner: &dyn ProcessRunner) -> (bool, Option<String>) 
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use ccnm_testdir::TestDir;

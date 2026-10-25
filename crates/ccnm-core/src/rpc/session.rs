@@ -214,22 +214,21 @@ impl Runs for SystemRuns {
     /// process's: the same state directory, the same PATH to ssh. What it
     /// runs comes from the record, so nothing else needs to cross.
     fn detach(&self, handle: &str) -> CcnmResult<Option<u32>> {
-        use std::os::unix::process::CommandExt as _;
         use std::process::{Command, Stdio};
 
         let exe = std::env::current_exe()?;
-        let mut child = Command::new(&exe)
+        let mut command = Command::new(&exe);
+        command
             .arg("--config")
             .arg(&self.config_path)
             .args(["internal", "rpc-run", "--handle", handle])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .process_group(0)
-            .spawn()
-            .map_err(|e| {
-                crate::Error::internal(format!("cannot start the owner of {handle}")).with_source(e)
-            })?;
+            .stderr(Stdio::null());
+        crate::platform::own_process_group(&mut command);
+        let mut child = command.spawn().map_err(|e| {
+            crate::Error::internal(format!("cannot start the owner of {handle}")).with_source(e)
+        })?;
         let pid = child.id();
         // Reaped here while this process lives; once it exits, whoever
         // inherits the orphan does it.

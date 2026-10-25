@@ -584,7 +584,7 @@ pub(crate) fn open_error(rel: &str, err: std::io::Error) -> Error {
     Error::new(code, format!("cannot read {rel}")).with_source(err)
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use ccnm_testdir::TestDir;

@@ -24,7 +24,6 @@
 use std::collections::VecDeque;
 use std::fs;
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
 use std::path::PathBuf;
 use std::sync::Mutex;
 
@@ -36,6 +35,7 @@ use super::session::OutputAsk;
 use super::store::{Finish, Record, State};
 use super::wire::{RpcError, code};
 use crate::error::{Error, ErrorCode, Result as CcnmResult};
+use crate::platform::OpenOptionsExt as _;
 use crate::session::view::{RAW_CAP, Stream};
 
 /// A page when the caller does not say: the old fixed tail size.
@@ -436,7 +436,7 @@ fn snapshot(ctx: &Context, record: &Record, stream: Stream) -> CcnmResult<(Snaps
         serde_json::to_vec(&meta)
             .map_err(|e| Error::internal("cannot encode an output record").with_source(e))?,
     )?;
-    fs::set_permissions(&meta_tmp, fs::Permissions::from_mode(0o600))?;
+    crate::platform::set_mode(&meta_tmp, 0o600)?;
     fs::rename(&meta_tmp, &meta_path)?;
     Ok((meta, view_path))
 }

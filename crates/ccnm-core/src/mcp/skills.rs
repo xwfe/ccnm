@@ -1250,7 +1250,7 @@ fn read_file(scope: &Scope, skill: &Skill, file: &str, line: u64) -> Result<Stri
     Ok(out)
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use ccnm_testdir::TestDir;

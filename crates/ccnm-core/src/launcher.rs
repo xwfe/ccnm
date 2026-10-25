@@ -787,7 +787,7 @@ pub fn probe_timeout(calls: u32) -> Duration {
     Duration::from_secs(30) + Duration::from_millis(500) * calls
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     //! The two ways a session gets started, tested as whole loops rather
     //! than one hop at a time.

@@ -57,13 +57,12 @@ struct CodexHome {
 impl CodexHome {
     /// `<state>/<parent>/<name>`, mode 0700 both levels.
     fn create_in(state: &Path, parent: &str, name: &str) -> Result<Self> {
-        use std::os::unix::fs::PermissionsExt;
         let parent = state.join(parent);
         std::fs::create_dir_all(&parent)?;
-        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o700))?;
+        crate::platform::set_mode(&parent, 0o700)?;
         let dir = parent.join(name);
         std::fs::create_dir(&dir)?;
-        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
+        crate::platform::set_mode(&dir, 0o700)?;
         Ok(CodexHome { dir })
     }
 
@@ -245,9 +244,8 @@ pub fn permission_profile() -> Value {
 /// executor parses these with a URL parser, and a space or a non-ASCII
 /// byte left raw would be read as something else or refused.
 fn file_uri(path: &Path) -> String {
-    use std::os::unix::ffi::OsStrExt;
     let mut out = String::from("file://");
-    for byte in path.as_os_str().as_bytes() {
+    for byte in path.as_os_str().as_encoded_bytes() {
         match byte {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'/' => {
                 out.push(*byte as char);

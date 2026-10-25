@@ -175,6 +175,16 @@ pub fn private_home(path: &Path, files: &[&str]) -> Result<()> {
     private_home_for(path, files, effective_uid(&SystemRunner)?)
 }
 
+/// A dedicated Agent home is the Agent Node's (macOS or Linux): there is no
+/// owner and mode to check it against on Windows, and refusing is the only
+/// answer that cannot be wrong.
+#[cfg(windows)]
+pub fn private_home_for(path: &Path, files: &[&str], uid: u32) -> Result<()> {
+    let _ = (path, files, uid);
+    Err(crate::platform::agent_only("a dedicated Agent home"))
+}
+
+#[cfg(unix)]
 pub fn private_home_for(path: &Path, files: &[&str], uid: u32) -> Result<()> {
     use std::os::unix::fs::MetadataExt;
     let refused = || {

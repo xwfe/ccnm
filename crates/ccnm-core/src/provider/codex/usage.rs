@@ -214,7 +214,7 @@ fn windows_of(snapshot: &Snapshot, limit: Option<String>) -> Vec<Window> {
         .collect()
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use ccnm_testdir::TestDir;

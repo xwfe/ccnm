@@ -565,5 +565,5 @@ pub fn check_inventory_at(
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests;

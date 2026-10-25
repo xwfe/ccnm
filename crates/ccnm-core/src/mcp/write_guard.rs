@@ -1,8 +1,6 @@
 //! Runtime-owned single-writer guard for a canonical workspace resource.
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, Write};
-use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
@@ -11,6 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::Config;
 use crate::error::{Error, Result};
+use crate::platform::OpenOptionsExt as _;
 use crate::process::{Cmd, ProcessRunner};
 
 pub struct WriteGuard {
@@ -61,7 +60,7 @@ impl WriteGuard {
         let resource = resource_root(root, runner);
         let locks = state.join("write-guards");
         std::fs::create_dir_all(&locks)?;
-        std::fs::set_permissions(&locks, std::fs::Permissions::from_mode(0o700))?;
+        crate::platform::set_mode(&locks, 0o700)?;
         let path = lock_path(state, &resource);
         let mut file = OpenOptions::new()
             .read(true)
@@ -70,7 +69,7 @@ impl WriteGuard {
             .truncate(false)
             .mode(0o600)
             .open(&path)?;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+        crate::platform::set_mode(&path, 0o600)?;
         let mut looked = 0;
         let locked = loop {
             match file.try_lock() {
@@ -534,7 +533,7 @@ fn lock_path(state: &Path, resource: &Path) -> PathBuf {
 fn resource_id(resource: &Path) -> String {
     format!(
         "{:016x}",
-        crate::paths::fnv1a(resource.as_os_str().as_bytes())
+        crate::paths::fnv1a(resource.as_os_str().as_encoded_bytes())
     )
 }
 
@@ -571,10 +570,14 @@ fn reject_overlapping_roots(root: &Path, workspace: &str, config: Option<&Config
     Ok(())
 }
 
-#[cfg(test)]
+// Unix only until P109 brings the guard to Windows (its lock file is a
+// mandatory lock there, and the writer's record cannot share it).
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use crate::process::{FakeRunner, Output};
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::PermissionsExt;
 
     fn fixture(name: &str) -> (PathBuf, PathBuf) {
         let state = std::env::temp_dir().canonicalize().unwrap().join(format!(

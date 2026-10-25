@@ -892,8 +892,71 @@ fn config_path_for(cli: &Cli) -> Result<PathBuf> {
     }
 }
 
+/// The bridge hands this process over to its ssh, so there is no
+/// supervisor left to leak an orphan transport if the Host kills it.
+#[cfg(unix)]
+fn exec_bridge(mut process: std::process::Command) -> Result<i32> {
+    use std::os::unix::process::CommandExt as _;
+    Err(Error::internal("cannot exec the MCP bridge transport").with_source(process.exec()))
+}
+
+/// Never reached: [`windows_gate`] refuses `ccnm mcp bridge` first. Windows
+/// has no `exec` to hand the process over with.
+#[cfg(windows)]
+fn exec_bridge(process: std::process::Command) -> Result<i32> {
+    let _ = process;
+    Err(Error::new(
+        ccnm_core::ErrorCode::NotReady,
+        "ccnm mcp bridge is not supported on Windows",
+    ))
+}
+
+/// What a Windows machine may run so far (P107.1). Windows is a Runtime
+/// Node only (docs/plan/windows-runtime.md): the commands of the Agent
+/// Node and of the machine a person types `ccnm <project>` on are refused
+/// before they start anything. Of the Runtime's own, the ones whose Windows
+/// side is not written yet say which stage brings it.
+#[cfg(windows)]
+fn windows_gate(command: &Command, lang: Lang) -> Result<()> {
+    let not_yet = |name: &str, stage: &str| {
+        Err(Error::new(
+            ccnm_core::ErrorCode::NotReady,
+            lang.pick(
+                format!("Windows 上还不支持 {name}：这台当项目机器要用的部分还没做完，{stage} 会做"),
+                format!("{name} is not supported on Windows yet: the project machine's side of it comes in {stage}"),
+            ),
+        ))
+    };
+    let elsewhere = || {
+        Err(Error::new(
+            ccnm_core::ErrorCode::NotReady,
+            lang.pick(
+                "Windows 上不支持这个命令：Windows 只能当项目机器（Runtime），这个命令属于 AI 那台（macOS 或 Linux）".to_string(),
+                "this command is not supported on Windows: Windows can only be the project machine (Runtime), and this command belongs to the AI machine (macOS or Linux)".to_string(),
+            ),
+        ))
+    };
+    match command {
+        Command::Init { .. } | Command::Add(_) | Command::Remove(_) | Command::Workspace { .. } => {
+            Ok(())
+        }
+        Command::Internal { command } => match command {
+            InternalCommand::Hello { .. }
+            | InternalCommand::RuntimeResolve { .. }
+            | InternalCommand::RuntimeGuard { .. } => Ok(()),
+            InternalCommand::McpServe { .. } => not_yet("internal mcp-serve", "P108–P110"),
+            InternalCommand::RuntimeAudit { .. } => not_yet("internal runtime-audit", "P111"),
+            InternalCommand::RuntimeCleanup { .. } => not_yet("internal runtime-cleanup", "P110"),
+            _ => elsewhere(),
+        },
+        _ => elsewhere(),
+    }
+}
+
 fn run(cli: Cli, lang: Lang) -> Result<i32> {
     let config_path = || -> Result<PathBuf> { config_path_for(&cli) };
+    #[cfg(windows)]
+    windows_gate(&cli.command, lang)?;
 
     match &cli.command {
         Command::Init { agent, runtime } => {
@@ -1297,7 +1360,6 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
                     mode,
                 },
         } => {
-            use std::os::unix::process::CommandExt as _;
             let request = ccnm_core::mcp::bridge::Request {
                 workspace: workspace.clone(),
                 node: node.clone(),
@@ -1313,8 +1375,7 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
                 &request,
                 &ccnm_core::mcp::bridge::session_id(),
             )?;
-            let mut process = cmd.process();
-            Err(Error::internal("cannot exec the MCP bridge transport").with_source(process.exec()))
+            exec_bridge(cmd.process())
         }
         Command::Mcp {
             command:

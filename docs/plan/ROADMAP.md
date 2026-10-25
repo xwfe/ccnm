@@ -1387,7 +1387,7 @@ P73 当时把"外部 MCP workspace 里执行账号的安全没人验"留作挡�
 
 **依赖 P107。**
 
-- **P108.1** 设计文档 D5 的路径规则：规范化（去掉 `\\?\`、统一成 `/`、大小写折叠）之后再比较；拒绝备用数据流、设备保留名、以点或空格结尾的组件、形如 8.3 短名的组件；junction 按符号链接处理。每种绕法一条被拒的用例，`.git` 的短名那条也有。
+- **P108.1** 设计文档 D5 的路径规则：规范化（去掉 `\\?\`、统一成 `/`、大小写折叠）之后再比较；拒绝备用数据流、设备保留名、以点或空格结尾的组件、形如 8.3 短名的组件；junction 按符号链接处理。每种绕法一条被拒的用例，`.git` 的短名那条也有。Runtime 报给 Agent 的根目录每次都是同一种写法（`C:/…`：去掉 `\\?\`、统一成 `/`、盘符大写），`ws add` 存的也是这种；Agent 按字面比较根目录（P107.3），写法一变就认不出是同一个项目。
 - **P108.2** `workspace_info`、`read_file`、`list_files`、`search_text`（按 PATHEXT 找 `rg.exe`）、`view_image`、`read_notebook`、`load_skill` 在 Windows CI 上有端到端测试；返回给模型的路径一律相对项目根、用 `/`。
 - **P108.3** macOS、Linux 上同一批工具的现有测试不改照过；Defender 对 rg 和大量小文件读的拖慢在测试机上量一次（U6）。
 - **P108.4** 第一次上测试机：在测试机临时目录放一份 CI 构建的 ccnm（放之前问用户），经 sshd 起 `internal mcp-serve`，用中立客户端调这几个只读工具。
@@ -1436,6 +1436,11 @@ P73 当时把"外部 MCP workspace 里执行账号的安全没人验"留作挡�
 - **P111.1** `ccnm init`、`ccnm add` / `rm`、`ccnm ws` 在 Windows 上能用，配置和状态放在 `%USERPROFILE%\.config\ccnm\`、`%USERPROFILE%\.local\state\ccnm\`（设计文档 D6）。
   - Agent 配置里 Windows Runtime 的 ccnm 路径必须是正斜杠绝对路径，doctor 检查并说清怎么写。P106 实测：`~/` 开头的路径只在默认 shell 是 PowerShell 时能用，cmd 下不认。
   - doctor 读 Runtime 的 `DefaultShell`。是 PowerShell 时说明影响：原生程序的退出码回来只剩 0 或 1，以 `@` 开头的参数会被吃掉。ccnm 自己的远端命令在两种 shell 下都要能用。
+  - 描述另一台机器的路径按"远端路径"校验，`/…` 和 `X:/…` 都认，不看本机系统（P107.3 查出的）。涉及：
+    - Agent 侧对 Runtime 根目录的三处检查（`instance::profiles::absolute`、`WorkspaceBinding::validate`、`Spec::validate_identity`）；
+    - 配置里另一台机器的 `ccnm_bin`、`claude_config_dir`（`check_absolute`、`is_remote_path`）。
+
+    测试：绑了实例的 workspace 指向 Windows 根目录时，预检、建会话、`-c` 都通过；Agent 配置里写对了 Windows Runtime 的 `ccnm_bin` 时，`ccnm run` 和 `internal agent-*` 不再因为它报错（现在后者会落到"不认识这个 Runtime"那条误导的报错上）。`ssh.rs` 里"exited 127"、"chmod +x"这类提示按 Windows 远端改。
 - **P111.2** `runtime-audit` 的 Windows 检查项（Administrators 组、令牌是否提权——都读 `whoami /groups`、`%USERPROFILE%\.ssh` 里的私钥、OpenSSH Authentication Agent 服务、docker-users 组），共用账号下只显示不拒绝；写了 `runtime_user` 就拒绝并说明（D8）；打开沙箱就拒绝。从 Agent 跑 `ccnm doctor`，Windows Runtime 的每一行都给出结论。
 - **P111.3** 安装文档按新手视角从零在测试机上走一遍（U7）。内容：
   - OpenSSH Server、管理员账号的钥匙放哪、Git for Windows、rg、`Unblock-File`；

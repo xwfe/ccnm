@@ -57,7 +57,38 @@
 | 沙箱：[sandbox.rs](../../crates/ccnm-core/src/mcp/sandbox.rs) | 借 codex sandbox（macOS 是 seatbelt，Linux 是 bwrap / landlock） | Codex 在 Windows 上有自己的沙箱，0.154.0 的没验过 | 第一版拒绝打开，doctor 写明 |
 | 安全审计：[safety.rs](../../crates/ccnm-core/src/safety.rs) 第 454 行 `audit` | 查是不是 root、sudo、wheel / admin / docker 组、`~/.ssh` 私钥、Docker | 这些都是 Unix 概念 | 换成 Windows 的对应项：是否 Administrators 组成员、当前令牌是否提权、`%USERPROFILE%\.ssh` 里的私钥、OpenSSH Authentication Agent 服务、docker-users 组、凭据环境变量。组和提权读 `whoami /groups` 的输出，不调 API（D7）。共用账号模式下只显示、不拒绝，和 P78 一致 |
 | 配置和状态目录：[paths.rs](../../crates/ccnm-core/src/paths.rs) | `~/.config/ccnm/config.toml`、`~/.local/state/ccnm/`，有 XDG 变量就按变量 | Windows 的惯例是 `%APPDATA%` / `%LOCALAPPDATA%` | 见决定 D6 |
-| Agent 侧怎么处理 Runtime 的根目录 | 根目录字符串从 `runtime-resolve` 拿回来，Agent 上可能当成 Unix 路径用（拼提示、算目录名、`-c` 找上一段对话） | Windows 根目录长这样：`C:/Users/x/proj` | P107 里先把 Agent 侧所有把 root 变成 `Path` 的地方列出来再定怎么改；没查之前不能说 Agent 侧不用改 |
+| Agent 侧怎么处理 Runtime 的根目录 | 根目录字符串从 `runtime-resolve` 拿回来，在协议里是 `PathBuf`。2026-10-25 P107.3 查过 Agent 侧每一处用法，见下面这一段 | Windows 根目录长这样：`C:/Users/x/proj` | 见下面这一段 |
+
+**P107.3 查的结果（2026-10-25）：** Agent 侧把 Runtime 传回来的根目录当路径用的地方不多。
+
+**不用改的：**
+
+- 大多数只是传回 Runtime（`HelloRequest`、`ServePayload`）、写进会话的 `meta.json`，或者打在报错和 doctor 里。载荷都是 base64url，`:` 不碍事。
+- 没有一处对根目录做 `join`、`file_name`、`canonicalize`、`exists`、`starts_with`。
+- Claude、Codex 的工作目录是 Agent 自己的 `paths::workspace_dir`，不从根目录推。提示词里也没有根目录。
+
+**会出错的：**
+
+- **用本机的 `is_absolute()` 判断根目录是不是绝对路径。** 在 Unix 上，`C:/…` 不算绝对路径。涉及三处：
+  - `instance::profiles::absolute`（`instance/profiles.rs`）；
+  - `WorkspaceBinding::validate`（`instance.rs`），用在 `work.rs` 的 `mcp_handshake` 和 `provider_runtime_preflight`；
+  - `Spec::validate_identity` 与 `workspace_binding`（`session.rs`）。
+
+  结果是：绑了实例的 workspace 和 Codex 会话，在预检、doctor、mcp probe 时都会报"binding needs an absolute Runtime root"；会话建不起来、读不出来，`-c` 也找不到上一次。走 `agent_node` 的旧式 Claude workspace 不经过这道检查。
+
+  **改法：** 这三处只认"远端的绝对路径"，即 `/…` 或 `X:/…`，同样不许 `..` 和 NUL，不看 Agent 本机是什么系统。放在 P111.1。
+- **两处按字面比较根目录。** `work.rs` 里，比较旧会话的根目录是不是这一次的那一处，以及 `-c` 找上一次会话的那一处。只要 Runtime 每次报的写法一样，这样比就没问题；`C:/a` 和 `C:\a`、`c:` 和 `C:` 会被当成两个不同的目录。
+
+  **改法：** Runtime 那边保证每次报出同一种写法：去掉 `\\?\`、统一成 `/`、盘符大写。放在 P108.1。现在 `ws add` 会对根目录 `canonicalize`，在 Windows 上得到的是 `\\?\C:\…`。
+
+**反方向也有同样的问题：** 配置里那些写的是另一台机器路径的字段，现在都按本机规则校验。
+
+- Agent 的配置里写 Windows Runtime 的 `ccnm_bin`（`C:/Users/x/.local/bin/ccnm.exe`），会被 `check_absolute` 判成"不是绝对路径"，`is_remote_path` 也不许出现 `:`。
+  - `ccnm run` 当场失败。
+  - `internal agent-*` 读配置失败后会退回一份空配置，接着报"不认识这个 Runtime"，误导人。
+- 反过来，Windows Runtime 的配置里写 Agent 的 `ccnm_bin`、`claude_config_dir`（`/Users/…`），在 Windows 上也不算绝对路径。
+
+**改法：** 描述另一台机器的路径一律按"远端路径"校验，两种写法都认。放在 P111.1。顺带把 `ssh.rs` 里"exited 127"、"chmod +x"这类只对 Unix 成立的提示，按远端是 Windows 的情况改掉。
 | 发版：[release.yml](../../.github/workflows/release.yml) | 只出 macOS 通用二进制和 Linux x86_64 两个包 | — | 加 `x86_64-pc-windows-msvc`，出 zip + sha256 |
 | CI：[ci.yml](../../.github/workflows/ci.yml) | 只有 macOS 和 Ubuntu 两个 job | — | 加 `windows-latest` job，见 P107 |
 

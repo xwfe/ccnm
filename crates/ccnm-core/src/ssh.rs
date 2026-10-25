@@ -827,6 +827,11 @@ mod tests {
         assert!(err.message().contains("104 bytes"), "{err}");
     }
 
+    /// The master is the ssh *client's*, so this is the Agent Node's (macOS
+    /// or Linux) and never a Windows machine's: Windows is only ever the
+    /// side ssh lands on, and Win32-OpenSSH has no ControlMaster anyway.
+    /// There `join` would also spell the path with a `\` (P107 CI).
+    #[cfg(unix)]
     #[test]
     fn control_cmds() {
         assert_eq!(
@@ -837,6 +842,10 @@ mod tests {
             ssh().exit_master_cmd().display(),
             "ssh -o SendEnv=-* -o SetEnv=CCNM_TRANSPORT=1 -o ForwardAgent=no -o ClearAllForwardings=yes -o LogLevel=ERROR -o ControlPath=/Users/me/.local/state/ccnm/ssh/%C -O exit work"
         );
+    }
+
+    #[test]
+    fn resolve_cmd_layout() {
         assert_eq!(
             ssh().resolve_cmd().display(),
             "ssh -o SendEnv=-* -o SetEnv=CCNM_TRANSPORT=1 -o ForwardAgent=no -o ClearAllForwardings=yes -o LogLevel=ERROR -G work"

@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-10-25T13:00:00+09:00",
-  "current_task": "P106",
+  "last_updated": "2026-10-25T17:26:00+09:00",
+  "current_task": "P107",
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
     "source": "docs/research/codex-internal-wiring-2026-09-07.md",
@@ -5220,25 +5220,61 @@
     {
       "id": "P106",
       "title": "Windows 预研：在 Win11 测试机上实测挡路的未知项",
-      "status": "in_progress",
+      "status": "completed",
       "depends_on": [
         "P105"
       ],
       "owner": null,
       "started_at": "2026-10-24T22:40:00+09:00",
-      "last_updated": "2026-10-25T13:00:00+09:00",
-      "completed_criteria": [],
+      "last_updated": "2026-10-25T17:26:00+09:00",
+      "completed_criteria": [
+        "P106.1",
+        "P106.2",
+        "P106.3",
+        "P106.4",
+        "P106.5"
+      ],
       "evidence": [
         {
           "kind": "real_nodes",
           "criteria": [
-            "P106.1",
-            "P106.2",
-            "P106.3",
+            "P106.1"
+          ],
+          "ref": "docs/research/2026-10-24-p106-windows-preresearch.md",
+          "result": "AI 那台 macOS（OpenSSH 10.3）→ Win11 测试机（build 26200，自带 OpenSSH 9.5p2）。最后一轮用用户放好的钥匙、别名 win11、ssh.rs 原样的传输和控制两套参数（含 BatchMode=yes）：两种命令形状参数都原样到达，远端不存在时退出 1、stderr 先是三行后量子警告。SetEnv 静默忽略。DefaultShell 两种都测了：PowerShell（测试机原值）下以 @ 开头的参数被吃掉、原生退出码变 1、~/ 路径能用；临时改成 cmd（用户同意，WMI 起保险脚本，睡醒后自动写回原值）下参数和退出码都原样、~/ 不认。后量子警告排在 stderr 第一行，会让 from_first_line 认不出远端错误码，LogLevel=ERROR 能压住。"
+        },
+        {
+          "kind": "real_nodes",
+          "criteria": [
+            "P106.2"
+          ],
+          "ref": "docs/research/2026-10-24-p106-windows-preresearch.md",
+          "result": "同一条连接 14:00:15–15:01:16 跑满 3600 秒，远端 echo-mt（读写各一个线程、Rust std 的 NtReadFile/NtWriteFile 读写法），两个方向各 98 343 832 字节（目标 100 MB，少 1.7%），逐段比对与 sha256 一致；第 20–25、40–45 分钟空闲后照常；61 次采样 59 次零积压，最大 28 126 字节。前半段查出：stdin 是异步命名管道，.NET 同步读法会卡死（上游 #1314/#1938），单线程读一块写一块 4 MiB 就卡，读写分线程 64 MiB 不卡。"
+        },
+        {
+          "kind": "real_nodes",
+          "criteria": [
+            "P106.3"
+          ],
+          "ref": "docs/research/2026-10-24-p106-windows-preresearch.md",
+          "result": "会话进程在 Job 里，limit_flags=0x2800（KILL_ON_JOB_CLOSE|BREAKAWAY_OK）；客户端断开后 sshd、shell、子进程 40 秒后都还在（上游 #1751）；taskkill /T /F 收完整的三层树连同 conhost，中间层先退出时孙进程活下来；spawnbg inherit/noinherit 都在 1 秒左右返回、后台子进程随 Job 关闭被杀，经 sshd 不会因句柄继承挂住。"
+        },
+        {
+          "kind": "real_nodes",
+          "criteria": [
             "P106.4"
           ],
           "ref": "docs/research/2026-10-24-p106-windows-preresearch.md",
-          "result": "AI 那台 macOS（OpenSSH 10.3）→ Win11 测试机（build 26200，自带 OpenSSH 9.5p2，DefaultShell=Windows PowerShell 5.1），ssh 参数照 ssh.rs 的 transport，只把 BatchMode 换成密码登录。P106.1：SetEnv 静默忽略；ccnm 实际发的命令原样到达，以 @ 开头的参数被 PowerShell 吃掉，程序不存在时退出码 1 不是 127，原生程序退出码经 powershell -c 变成 1；新版 ssh 的三行后量子警告排在 stderr 最前面，会让 from_first_line 认不出远端错误码，LogLevel=ERROR 能压住。P106.2：stdout 方向 4 MiB 1.1 秒一致；stdin 方向 300 KB 起就收不到 EOF（sink 三次、echo 多次，停在 16–69 KB 不等），scp（sftp 子系统，不经 DefaultShell）4 MiB 正常；一小时长连接没跑。P106.3：客户端断开后 sshd、powershell、子进程 40 秒后都还在；taskkill /T /F 收掉整棵树。孙进程、Job、句柄继承没测。P106.4：环境表已记（管理员组且已提权、Git Bash 在 scoop 下、PATH 上的 bash 是 WSL 的、C: 开着 8.3 短名、代码页 936）；curl -K/SSE、Git Bash 在 sshd 下没测。都没完成：测试机中途离线。"
+          "result": "xdw 在 Administrators 组、ssh 登录是 High Mandatory Level；钥匙在 C:\\ProgramData\\ssh\\administrators_authorized_keys，ACL 只有 SYSTEM 与 Administrators；HOME=C:\\Users\\xdw；Git 2.52 由 scoop 装，bash 在 D:\\scoop\\apps\\git\\current\\bin\\bash.exe，PATH 上的 bash.exe 是 WSL 的，Git Bash 里 SHELL 是 PowerShell；core.autocrlf 最终 false；代码页 936；C: 开着 8.3 短名；curl.exe 8.16.0 认 ccnm 的 -K 配置、SSE 流式；sftp 也经过 DefaultShell；空闲 600 秒睡眠，SetThreadExecutionState 从 ssh 会话里有效。"
+        },
+        {
+          "kind": "review",
+          "criteria": [
+            "P106.5"
+          ],
+          "ref": "docs/plan/windows-runtime.md",
+          "commit": "470878f",
+          "result": "结论写进 docs/research/2026-10-24-p106-windows-preresearch.md；按结论修订 ROADMAP 的 P107.4、P108.4、P110.1–P110.4、P111.1、P111.3、P112.3 和设计文档 D2/D3/D7、U 表。U3 成立，不需要停下改方案。测试机上的临时目录、进程、电源请求测完都清掉，DefaultShell 是原值。"
         }
       ],
       "blockers": []
@@ -5396,7 +5432,7 @@
     "【2026-10-08 P80 时看到 / 只记不修】Agent 上的 MCP 转发 ccnm_agent（P50）在受管 Codex 会话里同样没配 tool_timeout_sec，Codex 对它只等 300 秒。它的 call_mcp_tool 默认等 60 秒、起 server 30 秒，用户给 Agent 上某个 server 配的 tool_timeout_sec 接近或超过 300 秒时（还没起的 server 起它的时间也算在内），调用会被 Codex 先截断、不发取消，照样在 Agent 上跑完。值取决于用户配置、不归 ccnm 的常量管，P80 没修。依据 docs/research/2026-10-08-p80-codex-tool-timeout.md 第 6 节。"
   ],
   "handoff": {
-    "next_action": "**2026-10-25 P106 做了一半，测试机离线，owner 已清，P106 保持 in_progress（不让 current_task 跳到 P107）。** 最大发现：这台机器 DefaultShell 是 Windows PowerShell 5.1，经 ssh 执行的命令从 stdin 收 300 KB 就等不到 EOF，而 ccnm 的 MCP 请求全走 stdin；stdout 方向和 scp（不经 DefaultShell）都正常。还有：原生程序退出码经 powershell -c 变 1、程序不存在退出 1 不是 127、新版 ssh 的后量子警告让远端错误码认不出。细节见 docs/research/2026-10-24-p106-windows-preresearch.md。恢复点：① 用户把测试机开机；② 先清掉测试机上可能残留的 sink 会话（只杀命令行带 ccnm-p106/p106.exe 的 powershell 树）；③ 要用户授权把 DefaultShell 临时改回 cmd.exe 重测 stdin（测完改回 PowerShell），这一条决定 Windows Runtime 走不走得通；④ 再跑 P106.3 剩下的 tree/injob/spawnbg 和 P106.4 的 curl、Git Bash；⑤ BatchMode 要放钥匙，另问。测试程序在 docs/research/probes/p106-windows-probe.cs（csc.exe 编译）和 p106-stdin-driver.py。\n\n之前的交接：\n**2026-10-24 认领 P106。** 用户给了 Win11 测试机的账号和密码（账号 xdw；密码只在对话里，不进仓库）。已用密码登录、只读摸了环境：xdw 在 Administrators 组、登录令牌是 High Mandatory Level；sshd 的 DefaultShell 是 Windows PowerShell 5.1（不是 cmd）；PATH 上的 bash.exe 是 WSL 的、Git 是 scoop 装的、没有 C:\\Program Files\\Git；Windows 上有 cargo。下一步：按 P106.1–P106.4 逐项实测，测试程序在测试机上用它自己的 cargo 编到临时目录，做完删掉；BatchMode 要钥匙，放钥匙另问用户。\n\n之前的交接：\n**2026-10-24 排了 Windows 当项目机器的 P106–P112，current_task 为 P106（还没认领）。** 用户看完设计草案 docs/plan/windows-runtime.md 定了四条：Runtime 用 Windows 自带的 OpenSSH Server、接受第一版 GUI 看不见（D1）；`shell` 走 Git Bash、PowerShell 先不加参数（D2）；停命令第一版用 taskkill（D3）；绕不开的 unsafe（只有\"不继承标准句柄\"一处）放进 toexec 新开的 crate（D7）；用 tailnet 里已有的 Win11 机器。设计文档改成定稿、第 5 节换成 P 编号、加了未知项 U11；toexec 计划第 0 节和去重审计同步。同日从 AI 那台 macOS 只读探过测试机：在线，22 端口是 `OpenSSH_for_Windows_9.5`；用 `bing`、BatchMode 登录被拒，本机也没有默认钥匙；本机 OpenSSH 10.3 连它每次打后量子警告（U11）；`ssh -o StrictHostKeyChecking=accept-new` 把它的主机钥匙记进了本机 known_hosts。下一步：P106 开工前要用户给 Windows 账号名、说明它在不在 Administrators 组、定用哪把钥匙（现有的还是新建一把）并放到 Windows 上，然后认领 P106 按 P106.1 起逐项实测。没写代码、没推送。\n\n之前的交接：\n**2026-10-19 发了 v0.20.0、三台换好，current_task 为 null。** 用户说发版、三台换装、本机真机跑 `ccnm usage` 复验：版本号提交 179571a，CI 与发布流程全绿，带说明的 tag v0.20.0。三台：本机与 fodelf aa7dd6ee…（fodelf Controller pid 78589），hpsrv ccrun 90651240…；fodelf 上 keex、shun、xdo 三个会话没停只换文件。真机：本机 `ccnm usage` 经 LaunchAgent Controller 拿到 Claude Code 2.1.303 的三个窗口，4.2 秒；fodelf 上直接敲、带项目名都通；八个日用项目 doctor 全过。中途本机磁盘只剩 268 MB、代理断了，用户让清理：删了 ccnm 的 target/debug（46 GB）和 scratchpad 下载包，空余 47 GB。没调模型；Codex 经实例、Linux Agent 没验。记录 docs/research/2026-10-19-release-0.20.0.md。",
+    "next_action": "**2026-10-25 P106 完成，current_task 为 P107（还没认领）。** 在 Win11 测试机上测完 P106.1–P106.5：ccnm 原样的 ssh 参数（含 BatchMode，用户放好了钥匙、加了 Host win11）两种形状都通；一小时同一条连接双向各约 98 MB 逐字节一致，U3 成立；但 sshd 给的 stdin 是异步管道，单线程读一块写一块 4 MiB 就卡，所以 ccnm 在 Windows 上必须一直有线程读 stdin（P108.4 拿真二进制验）。其他：PowerShell 当默认 shell 时原生退出码变 1、@ 开头参数被吃；后量子警告让远端错误码认不出；会话进程在 KILL_ON_JOB_CLOSE 的 Job 里，断开不收、shell 退出全收；taskkill /T 收不到孤儿孙进程；curl.exe 能用；PATH 上的 bash 是 WSL 的；测试机空闲 10 分钟就睡。P107–P112 已按这些修订（470878f）。测试机已清理干净，DefaultShell 是原值，钥匙文件保留。下一步：认领 P107（Windows 能编译、CI 有 Windows、P107.4 的 ssh 层修改），这一步不碰测试机。没推送。\n\n之前的交接：\n**2026-10-25 P106 做了一半，测试机离线，owner 已清，P106 保持 in_progress（不让 current_task 跳到 P107）。** 最大发现：这台机器 DefaultShell 是 Windows PowerShell 5.1，经 ssh 执行的命令从 stdin 收 300 KB 就等不到 EOF，而 ccnm 的 MCP 请求全走 stdin；stdout 方向和 scp（不经 DefaultShell）都正常。还有：原生程序退出码经 powershell -c 变 1、程序不存在退出 1 不是 127、新版 ssh 的后量子警告让远端错误码认不出。细节见 docs/research/2026-10-24-p106-windows-preresearch.md。恢复点：① 用户把测试机开机；② 先清掉测试机上可能残留的 sink 会话（只杀命令行带 ccnm-p106/p106.exe 的 powershell 树）；③ 要用户授权把 DefaultShell 临时改回 cmd.exe 重测 stdin（测完改回 PowerShell），这一条决定 Windows Runtime 走不走得通；④ 再跑 P106.3 剩下的 tree/injob/spawnbg 和 P106.4 的 curl、Git Bash；⑤ BatchMode 要放钥匙，另问。测试程序在 docs/research/probes/p106-windows-probe.cs（csc.exe 编译）和 p106-stdin-driver.py。\n\n之前的交接：\n**2026-10-24 认领 P106。** 用户给了 Win11 测试机的账号和密码（账号 xdw；密码只在对话里，不进仓库）。已用密码登录、只读摸了环境：xdw 在 Administrators 组、登录令牌是 High Mandatory Level；sshd 的 DefaultShell 是 Windows PowerShell 5.1（不是 cmd）；PATH 上的 bash.exe 是 WSL 的、Git 是 scoop 装的、没有 C:\\Program Files\\Git；Windows 上有 cargo。下一步：按 P106.1–P106.4 逐项实测，测试程序在测试机上用它自己的 cargo 编到临时目录，做完删掉；BatchMode 要钥匙，放钥匙另问用户。\n\n之前的交接：\n**2026-10-24 排了 Windows 当项目机器的 P106–P112，current_task 为 P106（还没认领）。** 用户看完设计草案 docs/plan/windows-runtime.md 定了四条：Runtime 用 Windows 自带的 OpenSSH Server、接受第一版 GUI 看不见（D1）；`shell` 走 Git Bash、PowerShell 先不加参数（D2）；停命令第一版用 taskkill（D3）；绕不开的 unsafe（只有\"不继承标准句柄\"一处）放进 toexec 新开的 crate（D7）；用 tailnet 里已有的 Win11 机器。设计文档改成定稿、第 5 节换成 P 编号、加了未知项 U11；toexec 计划第 0 节和去重审计同步。同日从 AI 那台 macOS 只读探过测试机：在线，22 端口是 `OpenSSH_for_Windows_9.5`；用 `bing`、BatchMode 登录被拒，本机也没有默认钥匙；本机 OpenSSH 10.3 连它每次打后量子警告（U11）；`ssh -o StrictHostKeyChecking=accept-new` 把它的主机钥匙记进了本机 known_hosts。下一步：P106 开工前要用户给 Windows 账号名、说明它在不在 Administrators 组、定用哪把钥匙（现有的还是新建一把）并放到 Windows 上，然后认领 P106 按 P106.1 起逐项实测。没写代码、没推送。",
     "scope": "2026-10-08 用户要求：零额度复现 Codex 300 秒工具超时、选修法、补外部入口文档、跑门禁、更新状态、粒度提交、不推送。改动：crates/ccnm-core（provider/codex 的 TOOL_TIMEOUT 与启动参数、测试；mcp/hooks 的 MAX_TIMEOUT 改 pub(crate)；mcp/output 注释）、docs/protocol/remote-workspace-mcp-v1.md、docs/usage.md、docs/troubleshooting.md、docs/research 的 P80 记录与夹具、ROADMAP、status。没动任何机器、已装的 ccnm 与配置；Codex 0.154.0 包和源码只下到会话 scratchpad。",
     "planning_validation": {
       "at": "2026-09-08T21:22:43+09:00",

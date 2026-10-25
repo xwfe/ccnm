@@ -9,7 +9,7 @@
 - **测试程序的读法不对。** Win32-OpenSSH 给子进程的 stdin 是一根异步命名管道，测试程序是 .NET 写的，.NET 用同步读法去读这种句柄会卡死。这是上游公开报过的问题，和默认 shell 是 PowerShell 还是 cmd 无关。
 - **单线程"读一块、写一块"会卡。** 读写都换成 Rust 的办法也一样，原因还没证实。
 
-一小时长连接的结果见"P106.2 一小时长连接"一节。
+一小时长连接 98 MB 也通过了，见"P106.2 一小时长连接"一节。
 
 另外几条会直接影响后面阶段的：
 
@@ -71,7 +71,7 @@
 - **钥匙文件（P106.4）：** `C:\ProgramData\ssh\administrators_authorized_keys`，一行 ssh-ed25519。`icacls` 只有 `NT AUTHORITY\SYSTEM:(F)` 和 `BUILTIN\Administrators:(F)`，和[微软的要求](https://learn.microsoft.com/en-us/windows-server/administration/openssh/openssh_keymanagement)一致。`%USERPROFILE%\.ssh\authorized_keys` 不存在：管理员账号的钥匙放在那里，sshd 不读。
 - 默认 shell 是 cmd 时的情况，见"DefaultShell 临时改成 cmd 重测"一节。
 
-## P106.2 长连接（U3）：发现阻断问题，一小时那轮没跑
+## P106.2 前半段：发现 stdin 卡住（2026-10-24）
 
 | 方向 | 实测 |
 | --- | --- |
@@ -89,7 +89,22 @@
 
 这条不解决，P107 以后的阶段都没意义（设计文档里"U3 不成立就停下交用户定"那条）。
 
-## P106.3 进程（U4、taskkill）：做了一部分
+## P106.2 一小时长连接（2026-10-25）
+
+- **怎么跑的：** 用 [p106-long-run.py](probes/p106-long-run.py)，经 ccnm 的传输参数连上去，远端跑 `p106.exe echo-mt awake`：读写各一个线程，运行期间请求系统别睡。节奏是：
+  - 每次送随机 1–64 KiB，平均约 33 KB/s；
+  - 第 20–25 分钟、第 40–45 分钟两段什么都不送，看空闲时连接还在不在；
+  - 每分钟记一次进度；
+  - 满 3600 秒后关 stdin，等远端回完。
+- **结果：** Mac 时间 14:00:15 开始，15:01:16 结束，`rc=0`。
+  - 两个方向各 98 343 832 字节（约 98 MB；目标写的是 100 MB，少 1.7%），逐段比对没有一处不一致，sha256 一致。
+  - 远端自己报 `echo-mt done read=98343832 written=98343832`。
+  - 两段空闲之后连接照常收发。
+  - 61 次每分钟采样里，"送出去还没回来"的字节数有 59 次是 0，最大一次 28 126 字节。
+- **结论：** U3 成立。Win32-OpenSSH 的标准输入输出撑得住一条连接跑一小时、几十 MB 的量、任意二进制，前提是程序读写分开、一直有线程在读 stdin。
+- **顺带看到：** 测完先停了防睡眠进程，测试机当场就睡了（空闲计时早就超过 10 分钟），同一条命令里排在后面的清理没跑完。以后的顺序应该是先清理，最后再撤防睡眠。ccnm 会话结束时撤请求也会是这个效果：会话一结束机器可能马上睡，这正是想要的。
+
+## P106.3 进程（U4、taskkill）
 
 - **客户端断开时（本机 ssh 被杀）：** 这条连接的 sshd 子进程、powershell、p106 都还活着，40 秒后还在。驱动脚本超时后在本机杀掉的那些会话，远端也都留着。结论：sshd 不会替你收会话里的进程，ccnm 在 Windows 上得自己收。
 - **`taskkill /T /F /PID <那个 powershell>`：** powershell、p106、conhost 三个一起结束，本机 ssh 随即退出（rc=1）。
@@ -194,6 +209,14 @@ DefaultShell 已经由保险脚本写回原值：测试机是睡眠，不是重�
 
 ## 留下了什么
 
-- **测试机上：** `C:\Users\xdw\AppData\Local\Temp\ccnm-p106\`，里面有 `p106.cs`、`p106.exe`、4 MiB 的 `up.bin`、保险脚本和它的日志。试编译用的 cargo 项目已经删了。2026-10-24 留下的两个 `sink` 会话，10-25 开机后已经收掉。
-- **DefaultShell：** 测试机离线时还是 cmd。只是睡眠或断网的话，保险脚本在租约过期后会写回 PowerShell；重启过就不会，要手动改回。
-- **本机：** `~/.ssh/known_hosts` 多了测试机的主机钥匙（第一次连时用的 `StrictHostKeyChecking=accept-new`）。会话临时目录里有测试脚本和登录用的密码文件，不进仓库。
+2026-10-25 17:25（Mac 时间）测完后的状态：
+
+- **测试机上：**
+  - 临时目录 `C:\Users\xdw\AppData\Local\Temp\ccnm-p106\` 已整个删掉，里面放过测试程序、保险脚本、日志和上传测试用的文件。
+  - 没有残留的测试进程，`powercfg /requests` 里也没有它的请求。
+  - `DefaultShell` 是原来的 Windows PowerShell 5.1。
+  - 用户放的钥匙文件 `C:\ProgramData\ssh\administrators_authorized_keys` 保留，以后的阶段要用。
+  - 试编译用的 cargo 项目在 10-24 就删了。
+- **本机：**
+  - `~/.ssh/known_hosts` 多了测试机的主机钥匙（第一次连时用的 `StrictHostKeyChecking=accept-new`），用户配的 `Host win11` 也用得上它。
+  - 登录用的密码文件和用密码登录的脚本，换成钥匙后就删了；测试脚本留在会话临时目录里，不进仓库。

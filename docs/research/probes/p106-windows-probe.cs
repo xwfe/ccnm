@@ -39,6 +39,15 @@ static class P106
             case "spawnbg": return SpawnBg(args[1] == "noinherit", args[2]);
             case "injob": return InJob();
             case "sink": return Sink();
+            case "sink-nt": return SinkWith(ReadNt);
+            case "sink-ov": return SinkWith(ReadOverlapped);
+            case "echo-nt": return EchoNt();
+            case "mode": return Mode();
+            case "echo-rs": return EchoRs(args.Length > 1 && args[1] == "awake");
+            case "awake-check": return AwakeCheck();
+            case "echo-mt": return EchoMt(args.Length > 1 && args[1] == "awake");
+            case "awake": SetThreadExecutionState(0x80000000 | 0x1); Thread.Sleep(int.Parse(args[1]) * 1000); return 0;
+            case "names": return Names();
             case "source": return Source(long.Parse(args[1]));
             default: Console.Error.WriteLine("modes: args echo sleep tree spawnbg injob"); return 2;
         }
@@ -161,6 +170,274 @@ static class P106
         o.Flush();
         sha.TransformFinalBlock(buf, 0, 0);
         Console.Error.WriteLine("source bytes=" + n + " sha256=" + BitConverter.ToString(sha.Hash).Replace("-", "").ToLower());
+        return 0;
+    }
+
+    // ---- 异步句柄的两种读法（2026-10-25 加）----
+    // Win32-OpenSSH 给子进程的 stdin 是带 FILE_FLAG_OVERLAPPED 的命名管道。.NET Framework
+    // 用同步 ReadFile 读这种句柄会卡住；下面两种读法用来区分"读法的问题"和"管道本身的问题"。
+
+    [DllImport("ntdll.dll")]
+    static extern int NtReadFile(IntPtr file, IntPtr ev, IntPtr apc, IntPtr apcCtx, IntPtr iosb,
+        IntPtr buf, uint len, IntPtr offset, IntPtr key);
+    [DllImport("ntdll.dll")]
+    static extern int NtQueryInformationFile(IntPtr file, IntPtr iosb, out uint info, uint len, int cls);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern uint WaitForSingleObject(IntPtr h, uint ms);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool ReadFile(IntPtr h, IntPtr buf, uint len, IntPtr read, IntPtr ovl);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool GetOverlappedResult(IntPtr h, IntPtr ovl, out uint n, bool wait);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern IntPtr CreateEvent(IntPtr attr, bool manual, bool initial, string name);
+
+    const int STATUS_PENDING = 0x103;
+    const int STATUS_END_OF_FILE = unchecked((int)0xC0000011);
+    const int STATUS_PIPE_BROKEN = unchecked((int)0xC000014B);
+    const int CHUNK = 65536;
+    static readonly IntPtr NtBuf = Marshal.AllocHGlobal(CHUNK);   // 异步 I/O 完成前内存不能动，所以放非托管内存
+    static readonly IntPtr NtIosb = Marshal.AllocHGlobal(16);     // IO_STATUS_BLOCK：x64 上 Status 8 字节 + Information 8 字节
+    static readonly IntPtr Ovl = Marshal.AllocHGlobal(32);        // OVERLAPPED：x64 上 32 字节，hEvent 在偏移 24
+
+    // 照抄 Rust std 的 Handle::synchronous_read：NtReadFile 不带事件，挂起就等句柄本身。
+    static int ReadNt(IntPtr h)
+    {
+        Marshal.WriteInt64(NtIosb, 0, STATUS_PENDING);
+        Marshal.WriteInt64(NtIosb, 8, 0);
+        int st = NtReadFile(h, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, NtIosb, NtBuf, CHUNK, IntPtr.Zero, IntPtr.Zero);
+        if (st == STATUS_PENDING)
+        {
+            WaitForSingleObject(h, 0xFFFFFFFF);
+            st = Marshal.ReadInt32(NtIosb, 0);
+        }
+        if (st == STATUS_END_OF_FILE || st == STATUS_PIPE_BROKEN) return 0;
+        if (st == STATUS_PENDING) throw new Exception("still pending after wait");
+        if (st < 0) throw new Exception("NtReadFile status 0x" + st.ToString("x"));
+        return (int)Marshal.ReadInt64(NtIosb, 8);
+    }
+
+    // 正规的异步读：OVERLAPPED 带自己的事件，ERROR_IO_PENDING 时 GetOverlappedResult 等完成。
+    static IntPtr OvlEvent = IntPtr.Zero;
+    static int ReadOverlapped(IntPtr h)
+    {
+        if (OvlEvent == IntPtr.Zero) OvlEvent = CreateEvent(IntPtr.Zero, true, false, null);
+        for (int k = 0; k < 32; k += 8) Marshal.WriteInt64(Ovl, k, 0);
+        Marshal.WriteIntPtr(Ovl, 24, OvlEvent);
+        uint n;
+        if (!ReadFile(h, NtBuf, CHUNK, IntPtr.Zero, Ovl))
+        {
+            int e = Marshal.GetLastWin32Error();
+            if (e == 109 || e == 38) return 0;           // ERROR_BROKEN_PIPE、ERROR_HANDLE_EOF
+            if (e != 997) throw new Exception("ReadFile error " + e);   // 997 = ERROR_IO_PENDING
+        }
+        if (!GetOverlappedResult(h, Ovl, out n, true))
+        {
+            int e = Marshal.GetLastWin32Error();
+            if (e == 109 || e == 38) return 0;
+            throw new Exception("GetOverlappedResult error " + e);
+        }
+        return (int)n;
+    }
+
+    static int SinkWith(Func<IntPtr, int> read)
+    {
+        IntPtr h = GetStdHandle(-10);
+        System.Security.Cryptography.SHA256 sha = System.Security.Cryptography.SHA256.Create();
+        byte[] buf = new byte[CHUNK];
+        long total = 0;
+        int n;
+        while ((n = read(h)) > 0)
+        {
+            Marshal.Copy(NtBuf, buf, 0, n);
+            sha.TransformBlock(buf, 0, n, null, 0);
+            total += n;
+        }
+        sha.TransformFinalBlock(buf, 0, 0);
+        Console.WriteLine("sink bytes=" + total + " sha256=" + BitConverter.ToString(sha.Hash).Replace("-", "").ToLower());
+        return 0;
+    }
+
+    static int EchoNt()
+    {
+        IntPtr h = GetStdHandle(-10);
+        Stream o = Console.OpenStandardOutput();
+        byte[] buf = new byte[CHUNK];
+        long total = 0;
+        int n;
+        while ((n = ReadNt(h)) > 0)
+        {
+            Marshal.Copy(NtBuf, buf, 0, n);
+            o.Write(buf, 0, n);
+            o.Flush();
+            total += n;
+        }
+        Console.Error.WriteLine("echo-nt done bytes=" + total);
+        return 0;
+    }
+
+    [DllImport("ntdll.dll")]
+    static extern int NtWriteFile(IntPtr file, IntPtr ev, IntPtr apc, IntPtr apcCtx, IntPtr iosb,
+        IntPtr buf, uint len, IntPtr offset, IntPtr key);
+    [DllImport("kernel32.dll")]
+    static extern uint SetThreadExecutionState(uint flags);
+
+    // 照抄 Rust std 的 Handle::synchronous_write，并像 write_all 一样写到全部写完。
+    static void WriteNt(IntPtr h, IntPtr buf, int len)
+    {
+        int done = 0;
+        while (done < len)
+        {
+            Marshal.WriteInt64(NtIosb, 0, STATUS_PENDING);
+            Marshal.WriteInt64(NtIosb, 8, 0);
+            int st = NtWriteFile(h, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, NtIosb,
+                new IntPtr(buf.ToInt64() + done), (uint)(len - done), IntPtr.Zero, IntPtr.Zero);
+            if (st == STATUS_PENDING)
+            {
+                WaitForSingleObject(h, 0xFFFFFFFF);
+                st = Marshal.ReadInt32(NtIosb, 0);
+            }
+            if (st == STATUS_PENDING) throw new Exception("write still pending after wait");
+            if (st < 0) throw new Exception("NtWriteFile status 0x" + st.ToString("x"));
+            done += (int)Marshal.ReadInt64(NtIosb, 8);
+        }
+    }
+
+    // 读写都用 Rust std 的办法；awake 时请求系统运行期间别睡（ES_CONTINUOUS | ES_SYSTEM_REQUIRED），进程退出就失效。
+    static int EchoRs(bool awake)
+    {
+        if (awake) SetThreadExecutionState(0x80000000 | 0x1);
+        IntPtr hin = GetStdHandle(-10), hout = GetStdHandle(-11);
+        long total = 0;
+        int n;
+        while ((n = ReadNt(hin)) > 0)
+        {
+            WriteNt(hout, NtBuf, n);
+            total += n;
+        }
+        Console.Error.WriteLine("echo-rs done bytes=" + total);
+        return 0;
+    }
+
+    // 和上面两个一样，但缓冲和 IO_STATUS_BLOCK 由调用方给，两个线程各用各的。
+    static int ReadNtWith(IntPtr h, IntPtr buf, IntPtr iosb, int len)
+    {
+        Marshal.WriteInt64(iosb, 0, STATUS_PENDING);
+        Marshal.WriteInt64(iosb, 8, 0);
+        int st = NtReadFile(h, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, iosb, buf, (uint)len, IntPtr.Zero, IntPtr.Zero);
+        if (st == STATUS_PENDING)
+        {
+            WaitForSingleObject(h, 0xFFFFFFFF);
+            st = Marshal.ReadInt32(iosb, 0);
+        }
+        if (st == STATUS_END_OF_FILE || st == STATUS_PIPE_BROKEN) return 0;
+        if (st == STATUS_PENDING) throw new Exception("read still pending after wait");
+        if (st < 0) throw new Exception("NtReadFile status 0x" + st.ToString("x"));
+        return (int)Marshal.ReadInt64(iosb, 8);
+    }
+
+    static void WriteNtWith(IntPtr h, IntPtr buf, IntPtr iosb, int len)
+    {
+        int done = 0;
+        while (done < len)
+        {
+            Marshal.WriteInt64(iosb, 0, STATUS_PENDING);
+            Marshal.WriteInt64(iosb, 8, 0);
+            int st = NtWriteFile(h, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, iosb,
+                new IntPtr(buf.ToInt64() + done), (uint)(len - done), IntPtr.Zero, IntPtr.Zero);
+            if (st == STATUS_PENDING)
+            {
+                WaitForSingleObject(h, 0xFFFFFFFF);
+                st = Marshal.ReadInt32(iosb, 0);
+            }
+            if (st == STATUS_PENDING) throw new Exception("write still pending after wait");
+            if (st < 0) throw new Exception("NtWriteFile status 0x" + st.ToString("x"));
+            done += (int)Marshal.ReadInt64(iosb, 8);
+        }
+    }
+
+    // ccnm 的 mcp-serve 是一个线程读 stdin、另一个线程写 stdout。这里照这个结构：
+    // 读线程只管读、塞进队列，写线程只管写，谁也不等谁。
+    static int EchoMt(bool awake)
+    {
+        if (awake) SetThreadExecutionState(0x80000000 | 0x1);
+        IntPtr hin = GetStdHandle(-10), hout = GetStdHandle(-11);
+        System.Collections.Concurrent.BlockingCollection<byte[]> q = new System.Collections.Concurrent.BlockingCollection<byte[]>();
+        long readTotal = 0, writeTotal = 0;
+        Thread w = new Thread(() =>
+        {
+            IntPtr wb = Marshal.AllocHGlobal(CHUNK), wi = Marshal.AllocHGlobal(16);
+            foreach (byte[] c in q.GetConsumingEnumerable())
+            {
+                Marshal.Copy(c, 0, wb, c.Length);
+                WriteNtWith(hout, wb, wi, c.Length);
+                writeTotal += c.Length;
+            }
+        });
+        w.Start();
+        IntPtr rb = Marshal.AllocHGlobal(CHUNK), ri = Marshal.AllocHGlobal(16);
+        int n;
+        while ((n = ReadNtWith(hin, rb, ri, CHUNK)) > 0)
+        {
+            byte[] c = new byte[n];
+            Marshal.Copy(rb, c, 0, n);
+            q.Add(c);
+            readTotal += n;
+        }
+        q.CompleteAdding();
+        w.Join();
+        Console.Error.WriteLine("echo-mt done read=" + readTotal + " written=" + writeTotal);
+        return 0;
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool GetFileInformationByHandleEx(IntPtr h, int cls, IntPtr info, uint size);
+    [DllImport("kernelbase.dll")]
+    static extern bool CompareObjectHandles(IntPtr a, IntPtr b);
+
+    // 三个标准句柄背后的管道名，以及 stdin 和 stdout 是不是同一个内核对象。
+    static int Names()
+    {
+        IntPtr info = Marshal.AllocHGlobal(1024);
+        for (int i = 0; i < 3; i++)
+        {
+            if (GetFileInformationByHandleEx(GetStdHandle(StdIds[i]), 2, info, 1024))   // FileNameInfo
+            {
+                int len = Marshal.ReadInt32(info, 0);
+                Console.WriteLine(StdNames[i] + " name=" + Marshal.PtrToStringUni(new IntPtr(info.ToInt64() + 4), len / 2));
+            }
+            else Console.WriteLine(StdNames[i] + " name error " + Marshal.GetLastWin32Error());
+        }
+        Console.WriteLine("stdin==stdout same object: " + CompareObjectHandles(GetStdHandle(-10), GetStdHandle(-11)));
+        Console.WriteLine("stdout==stderr same object: " + CompareObjectHandles(GetStdHandle(-11), GetStdHandle(-12)));
+        return 0;
+    }
+
+    static int AwakeCheck()
+    {
+        uint prev = SetThreadExecutionState(0x80000000 | 0x1);
+        Console.WriteLine("SetThreadExecutionState prev=0x" + prev.ToString("x"));
+        ProcessStartInfo si = new ProcessStartInfo("powercfg", "/requests");
+        si.UseShellExecute = false;
+        si.RedirectStandardOutput = true;
+        si.RedirectStandardInput = true;
+        si.CreateNoWindow = true;
+        Process p = Process.Start(si);
+        p.StandardInput.Close();
+        Console.WriteLine(p.StandardOutput.ReadToEnd());
+        p.WaitForExit();
+        return 0;
+    }
+
+    // FileModeInformation(16)：带 FILE_SYNCHRONOUS_IO_ALERT(0x10) 或 _NONALERT(0x20) 就是同步句柄，都没有就是异步。
+    static int Mode()
+    {
+        for (int i = 0; i < 3; i++)
+        {
+            uint mode;
+            int st = NtQueryInformationFile(GetStdHandle(StdIds[i]), NtIosb, out mode, 4, 16);
+            Console.WriteLine(StdNames[i] + " status=0x" + st.ToString("x") + " mode=0x" + mode.ToString("x") +
+                ((mode & 0x30) == 0 ? " ASYNC" : " sync"));
+        }
         return 0;
     }
 

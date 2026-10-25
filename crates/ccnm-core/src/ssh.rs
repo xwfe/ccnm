@@ -133,6 +133,14 @@ impl Ssh {
             "ForwardAgent=no",
             "-o",
             "ClearAllForwardings=yes",
+            // Informational messages go to the same stderr a remote ccnm
+            // writes `CCNM_E_*` to, and they come first: OpenSSH 10.x's
+            // post-quantum warning against an older server (P106: three
+            // lines against Windows' own 9.5), `Warning: Permanently added`
+            // on a first connection. Every message `never_reached` reads is
+            // an error and still prints (re-measured with this set).
+            "-o",
+            "LogLevel=ERROR",
         ]))
     }
 
@@ -428,8 +436,14 @@ impl Ssh {
 /// the one deliberate exception: a leading `~/` is expanded to the remote
 /// home by every login shell, which is exactly how the default ccnm path
 /// ([`DEFAULT_CCNM_BIN`]) is found.
+///
+/// A leading `@` is refused for Windows: when its sshd's shell is
+/// PowerShell, `@word` is splatting and the argument arrives as nothing
+/// (P106). cmd.exe passes it through; refusing it costs nothing, since
+/// ccnm never sends one.
 pub fn is_remote_safe(arg: &str) -> bool {
     !arg.is_empty()
+        && !arg.starts_with('@')
         && arg.chars().all(|c| {
             c.is_ascii_alphanumeric()
                 || matches!(c, '-' | '_' | '.' | '/' | '=' | ':' | '@' | '+' | ',' | '~')
@@ -569,6 +583,16 @@ fn shell_complaint(out: &Output) -> Option<RemoteOutcome> {
     if lower.contains("command not found") || lower.contains("no such file or directory") {
         return Some(RemoteOutcome::CommandNotFound);
     }
+    // A Windows Runtime's shell exits 1 for a program it cannot find (P106),
+    // cmd.exe and PowerShell each in their own words. PowerShell wraps its
+    // message at the console width, mid-word wherever the path puts it, so
+    // the lines are joined back before looking.
+    let joined: String = lower.lines().collect();
+    if joined.contains("is not recognized as an internal or external command")
+        || joined.contains("is not recognized as the name of a cmdlet")
+    {
+        return Some(RemoteOutcome::CommandNotFound);
+    }
     None
 }
 
@@ -689,7 +713,7 @@ mod tests {
         let text = cmd.display();
         assert!(
             text.starts_with(
-                "ssh -o SendEnv=-* -o SetEnv=CCNM_TRANSPORT=1 -o ForwardAgent=no -o ClearAllForwardings=yes -o BatchMode=yes"
+                "ssh -o SendEnv=-* -o SetEnv=CCNM_TRANSPORT=1 -o ForwardAgent=no -o ClearAllForwardings=yes -o LogLevel=ERROR -o BatchMode=yes"
             ),
             "{text}"
         );
@@ -713,6 +737,40 @@ mod tests {
         assert!(is_remote_safe("/opt/ccnm-0.1/bin/ccnm"));
     }
 
+    /// A Windows Runtime whose sshd runs PowerShell (P106, measured
+    /// 2026-10-24): `@lead` reached the program as nothing at all, read as
+    /// splatting a variable that does not exist. An `@` further in is
+    /// harmless there and stays allowed.
+    #[test]
+    fn an_argument_starting_with_at_is_refused() {
+        assert!(!is_remote_safe("@lead"));
+        assert!(is_remote_safe("a-b_c.d/e=f:g@h+i,j~k"));
+        assert!(
+            ssh()
+                .remote_cmd(Master::Reuse, &["ccnm", "@x"], Duration::from_secs(1))
+                .is_err()
+        );
+    }
+
+    /// OpenSSH 10.x prints a three-line post-quantum warning first on stderr
+    /// when the server is older (P106: 10.3 against Windows' own 9.5), and
+    /// prints `Warning: Permanently added ...` there on a first connection.
+    /// Either one took the first line, which is where a remote ccnm's
+    /// `CCNM_E_*` has to be. `LogLevel=ERROR` keeps every message
+    /// [`never_reached`] reads: all five were re-measured with it.
+    #[test]
+    fn every_ssh_keeps_informational_messages_off_stderr() {
+        let control = ssh()
+            .remote_cmd(Master::Reuse, &["ccnm", "x"], Duration::from_secs(1))
+            .unwrap()
+            .display();
+        let transport = ssh().mcp_transport_cmd("eyJ9").unwrap().display();
+        let resolve = ssh().resolve_cmd().display();
+        for text in [control, transport, resolve] {
+            assert!(text.contains(" -o LogLevel=ERROR "), "{text}");
+        }
+    }
+
     #[test]
     fn mcp_transport_cmd_is_one_plain_ssh_without_control_master() {
         let cmd = ssh()
@@ -722,7 +780,7 @@ mod tests {
         let text = cmd.display();
         assert_eq!(
             text,
-            "ssh -o SendEnv=-* -o SetEnv=CCNM_TRANSPORT=1 -o ForwardAgent=no -o ClearAllForwardings=yes -o BatchMode=yes -o ConnectTimeout=10 -o ClearAllForwardings=yes -o ControlMaster=no -o ControlPath=none -o ServerAliveInterval=15 -o ServerAliveCountMax=20 -o SendEnv=-ANTHROPIC_* -o SendEnv=-CLAUDE_* -T work /Users/ccrun/.local/bin/ccnm internal mcp-serve --payload eyJwIjoxfQ"
+            "ssh -o SendEnv=-* -o SetEnv=CCNM_TRANSPORT=1 -o ForwardAgent=no -o ClearAllForwardings=yes -o LogLevel=ERROR -o BatchMode=yes -o ConnectTimeout=10 -o ClearAllForwardings=yes -o ControlMaster=no -o ControlPath=none -o ServerAliveInterval=15 -o ServerAliveCountMax=20 -o SendEnv=-ANTHROPIC_* -o SendEnv=-CLAUDE_* -T work /Users/ccrun/.local/bin/ccnm internal mcp-serve --payload eyJwIjoxfQ"
         );
         assert!(cmd.stdin.is_none(), "the MCP client owns stdin, not Cmd");
         assert!(ssh().mcp_transport_cmd("has space").is_err());
@@ -773,15 +831,15 @@ mod tests {
     fn control_cmds() {
         assert_eq!(
             ssh().check_master_cmd().display(),
-            "ssh -o SendEnv=-* -o SetEnv=CCNM_TRANSPORT=1 -o ForwardAgent=no -o ClearAllForwardings=yes -o ControlPath=/Users/me/.local/state/ccnm/ssh/%C -O check work"
+            "ssh -o SendEnv=-* -o SetEnv=CCNM_TRANSPORT=1 -o ForwardAgent=no -o ClearAllForwardings=yes -o LogLevel=ERROR -o ControlPath=/Users/me/.local/state/ccnm/ssh/%C -O check work"
         );
         assert_eq!(
             ssh().exit_master_cmd().display(),
-            "ssh -o SendEnv=-* -o SetEnv=CCNM_TRANSPORT=1 -o ForwardAgent=no -o ClearAllForwardings=yes -o ControlPath=/Users/me/.local/state/ccnm/ssh/%C -O exit work"
+            "ssh -o SendEnv=-* -o SetEnv=CCNM_TRANSPORT=1 -o ForwardAgent=no -o ClearAllForwardings=yes -o LogLevel=ERROR -o ControlPath=/Users/me/.local/state/ccnm/ssh/%C -O exit work"
         );
         assert_eq!(
             ssh().resolve_cmd().display(),
-            "ssh -o SendEnv=-* -o SetEnv=CCNM_TRANSPORT=1 -o ForwardAgent=no -o ClearAllForwardings=yes -G work"
+            "ssh -o SendEnv=-* -o SetEnv=CCNM_TRANSPORT=1 -o ForwardAgent=no -o ClearAllForwardings=yes -o LogLevel=ERROR -G work"
         );
     }
 
@@ -873,6 +931,26 @@ mod tests {
         assert!(matches!(
             complaint("CCNM_E_WRONG_WORKSPACE:\n/x/y: No such file or directory"),
             RemoteOutcome::Completed(_)
+        ));
+        // A Windows Runtime (P106, measured 2026-10-24/25 on Windows 11
+        // build 26200): both shells exit 1 and say it their own way. The
+        // text is verbatim, CRLF and the line PowerShell wraps at included.
+        let windows = |stderr: &str| {
+            let mut out = Output::exited(1, "");
+            out.stderr = stderr.as_bytes().to_vec();
+            classify(out)
+        };
+        assert!(matches!(
+            windows(
+                "'C:/Users/xdw/.local/bin/ccnm.exe' is not recognized as an internal or external command,\r\noperable program or batch file.\r\n"
+            ),
+            RemoteOutcome::CommandNotFound
+        ));
+        assert!(matches!(
+            windows(
+                "C:/Users/xdw/.local/bin/ccnm.exe : The term 'C:/Users/xdw/.local/bin/ccnm.exe' is not recognized as the name of a cmdle\r\nt, function, script file, or operable program. Check the spelling of the name, or if a path was included, verify that t\r\nhe path is correct and try again.\r\n"
+            ),
+            RemoteOutcome::CommandNotFound
         ));
         // A real success is left alone even with chatter on stderr.
         let mut ok = Output::exited(0, "{\"protocol\":1}");

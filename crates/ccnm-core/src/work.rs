@@ -3135,7 +3135,7 @@ mod tests {
         );
         assert_eq!(
             calls[0].display(),
-            "ssh -o SendEnv=-* -o SetEnv=CCNM_TRANSPORT=1 -o ForwardAgent=no -o ClearAllForwardings=yes -G to-runtime"
+            "ssh -o SendEnv=-* -o SetEnv=CCNM_TRANSPORT=1 -o ForwardAgent=no -o ClearAllForwardings=yes -o LogLevel=ERROR -G to-runtime"
         );
         let reverse = calls[1].display();
         assert!(

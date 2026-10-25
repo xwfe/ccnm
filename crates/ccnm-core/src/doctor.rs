@@ -2946,7 +2946,7 @@ mod tests {
         );
         assert_eq!(
             calls[1].display(),
-            "ssh -o SendEnv=-* -o SetEnv=CCNM_TRANSPORT=1 -o ForwardAgent=no -o ClearAllForwardings=yes -G work"
+            "ssh -o SendEnv=-* -o SetEnv=CCNM_TRANSPORT=1 -o ForwardAgent=no -o ClearAllForwardings=yes -o LogLevel=ERROR -G work"
         );
         let probe = calls[2].display();
         assert!(probe.contains("ControlMaster=no"), "{probe}");
@@ -3284,7 +3284,7 @@ mod tests {
         assert!(
             calls[0]
                 .display()
-                .starts_with("ssh -o SendEnv=-* -o SetEnv=CCNM_TRANSPORT=1 -o ForwardAgent=no -o ClearAllForwardings=yes -G")
+                .starts_with("ssh -o SendEnv=-* -o SetEnv=CCNM_TRANSPORT=1 -o ForwardAgent=no -o ClearAllForwardings=yes -o LogLevel=ERROR -G")
         );
     }
 

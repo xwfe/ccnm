@@ -172,6 +172,23 @@ fn claude_behavior_matches_snapshot_except_documented_safety_and_colocated_fixes
                 .drain(0..5);
         }
     }
+    // P107 keeps ssh's informational messages off stderr: OpenSSH 10.x's
+    // post-quantum warning against an older server (P106 measured three
+    // lines of it against Windows' own sshd) and `Warning: Permanently
+    // added` came before a remote ccnm's `CCNM_E_*`, which has to be the
+    // first line. One more `-o` right after the P1 pairs; nothing else moves.
+    for launch in expected["launches"].as_array_mut().unwrap() {
+        if let Some(args) = launch
+            .pointer_mut("/mcp/mcpServers/ccnm/args")
+            .and_then(Value::as_array_mut)
+        {
+            let at = 1 + args
+                .iter()
+                .position(|a| a == "ClearAllForwardings=yes")
+                .unwrap();
+            args.splice(at..at, ["-o", "LogLevel=ERROR"].map(Value::from));
+        }
+    }
     // P13 moves the marker line and the list of further files ahead of the
     // project's own file, so a Host that cuts from the end drops the file
     // rather than the line saying how to read it. Same four pieces, same

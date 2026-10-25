@@ -25,7 +25,8 @@
 # declaration stays green. ccnm, gld and toexec keep the same rust-version
 # (toexec docs/plan/implementation-plan-v2.md, section 11).
 #
-# Only first-party actions are used (actions/checkout, actions/cache).
+# Only first-party actions are used (actions/checkout, actions/cache,
+# actions/upload-artifact).
 # Every third-party action is a supply-chain dependency that runs with a
 # token in a repository whose whole point is being careful about what runs
 # where; caching by hand is a few lines and no trust.
@@ -256,6 +257,17 @@ jobs:
         run: |
           cargo build --release -p ccnm-cli
           ./target/release/ccnm.exe --version
+
+      # The real-machine checks (P108.4 onward) run this very build on the
+      # Win11 test machine: nothing here can link for Windows locally, and a
+      # binary built some other way is not the one this job vouched for.
+      - name: Keep the binary for the real-machine check
+        uses: actions/upload-artifact@v4
+        with:
+          name: ccnm-windows-x86_64
+          path: target/release/ccnm.exe
+          retention-days: 7
+          if-no-files-found: error
 
   msrv:
     # Linux on purpose: the one item compiled for one OS only is the

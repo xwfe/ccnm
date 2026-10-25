@@ -151,6 +151,14 @@ class WorkflowTests(unittest.TestCase):
         for name in ("test", "linux-runtime"):
             position(jobs[name], "scripts/ci_gates.py")
 
+    def test_windows_builds_and_checks_its_gate(self):
+        # P107：Windows 只当项目机器，这个 job 证明能编译、拦得住不该在 Windows 上跑的命令。
+        # 不跑 ci_gates.py：那套 Python 门禁还假定是 Unix。
+        job = steps("ci.yml")["windows-runtime"]
+        self.assertIn("    runs-on: windows-latest", job["head"])
+        position(job, "cargo clippy --workspace --lib --bins -- -D warnings")
+        position(job, "cargo test -p ccnm-cli --test windows_gate")
+
     def test_a_release_uploads_only_after_the_gates_and_publishes_only_after_both(self):
         text = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
         # 任何一条都能让失败的门禁之后照样上传或发布。

@@ -35,6 +35,25 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
+### Windows 目标（P107 起）
+
+Windows 只当项目机器（Runtime），还在分阶段做（[设计](plan/windows-runtime.md)，P107–P112）。在 macOS 上检查 Windows 那一半：
+
+```bash
+rustup target add x86_64-pc-windows-msvc    # 只装一次
+cargo clippy --workspace --lib --bins --target x86_64-pc-windows-msvc -- -D warnings
+cargo check -p ccnm-core --lib --tests --target x86_64-pc-windows-msvc
+```
+
+macOS 上只能做到 check 和 clippy。`cargo build` 要链接，本机没有 MSVC 链接器，会报 `linker link.exe not found`。真正在 Windows 上编译、跑测试，靠 CI 的 `windows-runtime` job。
+
+写代码时的规矩：
+
+- **Unix 专用的调用走 [`platform.rs`](../crates/ccnm-core/src/platform.rs)**，包括创建文件时的权限位、`chmod`、进程组和归属比较。它只收在 Windows 上意思已经定下来的调用。
+- **读归属或权限位来做判断的检查，不进 `platform.rs`**，在 Windows 上一律拒绝（`platform::agent_only` 或 `ErrorCode::NotReady`），不能让检查在 Windows 上静默通过。
+- **CLI 入口有一道白名单**（`ccnm-cli` 的 `windows_gate`）：Windows 上只放行 Runtime 的命令。新阶段让 Windows 能跑某个命令，就改这里，同时改 [`windows_gate.rs`](../crates/ccnm-cli/tests/windows_gate.rs) 测试。
+- **还没在 Windows 上验证过的测试模块写 `#[cfg(all(test, unix))]`**。哪个阶段把某个模块做到 Windows 上，就去掉这个标记，并把模块名加进 `ci.yml` 里 `windows-runtime` 的 "Unit tests written for Windows" 那一步。
+
 ### 文档与公开契约也要过门禁
 
 ```bash

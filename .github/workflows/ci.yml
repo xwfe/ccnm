@@ -16,6 +16,10 @@
 # supported there, and nothing in docs/support-matrix.md should start
 # saying so because this job went green.
 #
+# The windows-runtime job is the same kind of gate for Windows as a
+# project machine, which is being built a stage at a time since P107 and
+# is narrower still; its own comment says how much a green one proves.
+#
 # A third job, msrv, only compiles, on the rust-version Cargo.toml declares.
 # Everything else runs on stable, where a std API newer than that
 # declaration stays green. ccnm, gld and toexec keep the same rust-version
@@ -186,13 +190,67 @@ jobs:
           bash scripts/dist-linux.sh
           dist/ccnm --version
 
+  windows-runtime:
+    # Windows as the project machine, being built a stage at a time
+    # (P107–P112, docs/plan/windows-runtime.md). A green job means the
+    # library and the binary build there, the unit tests already written for
+    # Windows pass, and the gate refuses what Windows does not run yet --
+    # nothing more. The tools are not there until P108–P110, and
+    # docs/support-matrix.md does not move because this job went green.
+    runs-on: windows-latest
+    timeout-minutes: 45
+    # sed and the rest are not in the runner's default pwsh; its Git Bash
+    # is, and keeps the steps written the way the other jobs write them.
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy
+          rustup default stable
+          rustc --version && cargo --version
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-
+
+      # The library and the binary only. Most test code still assumes
+      # Unix (`sh` scripts, mode bits) and is compiled out here; each
+      # stage that brings a tool to Windows brings its tests with it.
+      - name: Clippy
+        run: cargo clippy --workspace --lib --bins -- -D warnings
+
+      # The modules whose tests already run on Windows. A stage that ports
+      # one adds it here; docs/development.md says how.
+      - name: Unit tests written for Windows
+        run: |
+          cargo test -p ccnm-core --lib -- ssh:: protocol:: error:: lang::
+
+      - name: What Windows refuses, and what it lets through
+        run: cargo test -p ccnm-cli --test windows_gate
+
+      - name: The binary builds and reports its version
+        run: |
+          cargo build --release -p ccnm-cli
+          ./target/release/ccnm.exe --version
+
   msrv:
     # Linux on purpose: the one item compiled for one OS only is the
     # subreaper in mcp::orphans (P84), with its Linux-only `nix`
     # dependency, and this is where it compiles. Its other branch is a
-    # stub that does nothing; every other OS check is a `cfg!()`
-    # expression, which compiles on both. Add a real macOS-only item or
-    # dependency and this needs a macOS run too.
+    # stub that does nothing. The `cfg(unix)` items P107 added compile
+    # here too; their `cfg(windows)` twins compile in the windows-runtime
+    # job, on stable only. Add a real macOS-only item or dependency and
+    # this needs a macOS run too.
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4

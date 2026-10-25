@@ -268,6 +268,13 @@ fn normalize(raw: &str) -> Result<String> {
             "{trimmed} names the workspace root, not a path inside it"
         )));
     }
+    if cfg!(windows) {
+        for part in &parts {
+            if let Some(why) = windows_refusal(part) {
+                return Err(Error::policy(format!("{trimmed}: `{part}` {why}")));
+            }
+        }
+    }
     Ok(parts.join("/"))
 }
 
@@ -275,6 +282,75 @@ fn normalize(raw: &str) -> Result<String> {
 /// the same directory; on Linux it is another one nobody makes.
 pub(crate) fn is_git_name(name: &str) -> bool {
     name.eq_ignore_ascii_case(".git")
+}
+
+/// Why Windows will not take `component` at face value (design D5), or
+/// `None`. Each of these is a name Windows quietly turns into another one,
+/// which is how a check on the name as written gets walked past:
+///
+/// ```text
+/// a.txt:x          an alternate data stream of a.txt
+/// CON, nul.txt     a device, in every directory, extension or not
+/// src. / "src "    trailing dots and spaces are dropped: it opens src
+/// GIT~1, PROGRA~1  an 8.3 short name, which may be .git's
+/// ```
+///
+/// The last rule is a shape, not a lookup: expanding a short name needs
+/// `GetLongPathNameW` and so unsafe code, which ccnm does not have (D7). A
+/// file really called `notes~1.txt` is refused with the rest; `~$x.docx`
+/// and `file~` are not that shape.
+///
+/// Pure and the same on every platform, so it is tested everywhere; only
+/// Windows applies it, since on macOS and Linux each of these is an
+/// ordinary name for an ordinary file.
+pub(crate) fn windows_refusal(component: &str) -> Option<&'static str> {
+    if component.contains(':') {
+        return Some("names an alternate data stream (`:`), which Windows does not allow here");
+    }
+    if component.ends_with('.') || component.ends_with(' ') {
+        return Some("ends with a dot or a space, which Windows drops, so it names another file");
+    }
+    // Before the first dot, and before any spaces there: Windows reads
+    // `nul .txt` as NUL too.
+    let base = component
+        .split('.')
+        .next()
+        .unwrap_or("")
+        .trim_end_matches(' ');
+    if is_device_name(base) {
+        return Some("is a Windows device name, in every directory and with any extension");
+    }
+    if looks_short(component) {
+        return Some(
+            "looks like an 8.3 short name (`~` and digits), which may stand for another name such as .git; ccnm cannot expand it, so it refuses it",
+        );
+    }
+    None
+}
+
+/// The reserved names, from Microsoft's "Naming Files, Paths, and
+/// Namespaces" (checked 2026-10-25), including the superscript digits it
+/// says Windows also takes, plus `CONIN$` and `CONOUT$`, which open the
+/// console.
+fn is_device_name(base: &str) -> bool {
+    const FIXED: [&str; 6] = ["CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"];
+    if FIXED.iter().any(|name| base.eq_ignore_ascii_case(name)) {
+        return true;
+    }
+    let mut chars = base.chars();
+    let head: String = chars.by_ref().take(3).collect();
+    let tail: Vec<char> = chars.collect();
+    (head.eq_ignore_ascii_case("COM") || head.eq_ignore_ascii_case("LPT"))
+        && matches!(tail.as_slice(), ['1'..='9' | '¹' | '²' | '³'])
+}
+
+/// `~`, one or more digits, then the end or a `.`.
+fn looks_short(component: &str) -> bool {
+    component.match_indices('~').any(|(at, _)| {
+        let after = &component[at + 1..];
+        let digits = after.bytes().take_while(u8::is_ascii_digit).count();
+        digits > 0 && matches!(after.as_bytes().get(digits), None | Some(b'.'))
+    })
 }
 
 /// `C:\x`, `c:/x`. Meaningless on this host, but a model that thinks it is
@@ -305,6 +381,72 @@ fn contained(root: &Path, resolved: &Path, rel: &str) -> Result<()> {
 #[cfg(test)]
 mod rules {
     use super::*;
+
+    #[test]
+    fn each_windows_bypass_has_a_reason() {
+        for name in [
+            // An alternate data stream, including the one `::$DATA` names.
+            "a.txt:hidden",
+            "a.txt::$DATA",
+            ".git::$INDEX_ALLOCATION",
+            // Dropped on the way in.
+            "src.",
+            "src..",
+            "...",
+            "src ",
+            ".git. ",
+            // Devices, any case, any extension, superscript digits too.
+            "CON",
+            "con",
+            "nul.txt",
+            "NUL.tar.gz",
+            "nul .txt",
+            "aux",
+            "PRN.md",
+            "COM1",
+            "com9.log",
+            "LPT3",
+            "COM¹",
+            "lpt³.txt",
+            "CONIN$",
+            "conout$",
+            // Short names, .git's among them.
+            "GIT~1",
+            "git~1",
+            "PROGRA~1",
+            "AB12F~1.TXT",
+            "NOTES~12.md",
+        ] {
+            assert!(windows_refusal(name).is_some(), "{name:?} was let through");
+        }
+    }
+
+    #[test]
+    fn ordinary_names_are_not_caught_by_the_windows_rules() {
+        for name in [
+            "src",
+            ".git",
+            ".gitignore",
+            "main.rs",
+            "CONTRIBUTING.md",
+            "console.log",
+            "nullable.rs",
+            "COM10",
+            "COM0",
+            "LPT",
+            "computer",
+            "auxiliary.py",
+            "~$报告.docx",
+            "file~",
+            "a~b",
+            "v1~rc",
+            "~1x",
+            ".hidden",
+            "名字.txt",
+        ] {
+            assert_eq!(windows_refusal(name), None, "{name:?}");
+        }
+    }
 
     #[test]
     fn git_is_matched_in_any_case_and_nothing_else() {
@@ -623,5 +765,154 @@ mod tests {
             resolve_read(&root, ".git/config").unwrap().rel(),
             ".git/config"
         );
+    }
+}
+
+/// The Windows half (P108.1), on a real NTFS directory: each way of naming
+/// one file with another name, refused; junctions treated as symlinks.
+/// The Windows CI job runs it.
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+    use ccnm_testdir::TestDir;
+    use std::fs;
+
+    /// Like the Unix fixture, with junctions where that one has symlinks:
+    /// `mklink /J` needs no privilege, where a symlink needs Developer Mode
+    /// or an elevated token.
+    fn fixture(name: &str) -> TestDir {
+        let dir = std::env::temp_dir().join(format!("ccnm-path-{}-{name}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let root = dir.join("ws");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::create_dir_all(root.join(".git")).unwrap();
+        fs::create_dir_all(dir.join("outside")).unwrap();
+        fs::write(root.join("src/main.rs"), "fn main() {}\n").unwrap();
+        fs::write(root.join(".git/config"), "[core]\n").unwrap();
+        fs::write(dir.join("outside/secret.txt"), "secret\n").unwrap();
+        junction(&root.join("out"), &dir.join("outside"));
+        junction(&root.join("jin"), &root.join("src"));
+        junction(&root.join("jgit"), &root.join(".git"));
+        TestDir::adopt(fs::canonicalize(&root).unwrap()).also(dir)
+    }
+
+    fn junction(link: &Path, target: &Path) {
+        let out = std::process::Command::new("cmd")
+            .arg("/c")
+            .arg("mklink")
+            .arg("/J")
+            .arg(link)
+            .arg(target)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "mklink /J: {out:?}");
+    }
+
+    fn refused(root: &Path, raw: &str) -> Error {
+        match resolve_read(root, raw) {
+            Err(e) => e,
+            Ok(p) => panic!("{raw} should have been refused, got {}", p.rel()),
+        }
+    }
+
+    #[test]
+    fn plain_paths_still_resolve_and_come_back_with_slashes() {
+        let root = fixture("ok");
+        let p = resolve_read(&root, "src/main.rs").unwrap();
+        assert_eq!(p.rel(), "src/main.rs");
+        assert_eq!(p.abs(), root.join("src").join("main.rs"));
+        assert_eq!(
+            resolve_write(&root, "src/new.rs").unwrap().rel(),
+            "src/new.rs"
+        );
+    }
+
+    /// Without the rule, each of these opens `src\main.rs` or a stream of
+    /// it, or a device, under a name no check above recognises.
+    #[test]
+    fn every_other_name_for_a_file_is_a_policy_error() {
+        let root = fixture("names");
+        fs::write(root.join("src/main.rs:hidden"), "in a stream\n").unwrap();
+        for raw in [
+            "src/main.rs:hidden",
+            "src/main.rs::$DATA",
+            "src./main.rs",
+            "src /main.rs",
+            "src/main.rs.",
+            "NUL",
+            "src/con.txt",
+            "COM1",
+            "lpt²",
+            "CONIN$",
+        ] {
+            let err = refused(&root, raw);
+            assert_eq!(err.code(), ErrorCode::Policy, "{raw}: {err}");
+            let write = resolve_write(&root, raw).unwrap_err();
+            assert_eq!(write.code(), ErrorCode::Policy, "{raw}: {write}");
+        }
+    }
+
+    /// `.git`'s short name is usually `GIT~1`, whether or not this volume
+    /// generates them: the shape is refused, not looked up.
+    #[test]
+    fn a_short_name_is_refused_whatever_it_stands_for() {
+        let root = fixture("short");
+        for raw in ["GIT~1/config", "GIT~1", "src/MAIN~1.RS"] {
+            assert_eq!(refused(&root, raw).code(), ErrorCode::Policy, "{raw}");
+            assert_eq!(
+                resolve_write(&root, raw).unwrap_err().code(),
+                ErrorCode::Policy,
+                "{raw}"
+            );
+        }
+    }
+
+    #[test]
+    fn git_in_another_case_or_through_a_junction_is_not_written() {
+        let root = fixture("git");
+        for raw in [".GIT/config", ".Git/new", "jgit/config", "jgit/new"] {
+            let err = resolve_write(&root, raw).unwrap_err();
+            assert_eq!(err.code(), ErrorCode::Policy, "{raw}: {err}");
+            assert!(err.message().contains(".git"), "{err}");
+        }
+    }
+
+    #[test]
+    fn a_junction_is_a_symlink_to_the_policy() {
+        let root = fixture("junction");
+        // Out of the workspace: refused, reading or writing, existing or not.
+        for raw in ["out/secret.txt", "out/missing.txt", "out"] {
+            assert_eq!(refused(&root, raw).code(), ErrorCode::Policy, "{raw}");
+        }
+        assert_eq!(
+            resolve_write(&root, "out/planted.txt").unwrap_err().code(),
+            ErrorCode::Policy
+        );
+        // Inside: followed for reading, never written as itself.
+        let p = resolve_read(&root, "jin/main.rs").unwrap();
+        assert_eq!(p.rel(), "jin/main.rs");
+        assert_eq!(p.abs(), root.join("src").join("main.rs"));
+        let err = resolve_write(&root, "jin").unwrap_err();
+        assert_eq!(err.code(), ErrorCode::Policy);
+        assert!(err.message().contains("symlink"), "{err}");
+    }
+
+    #[test]
+    fn every_absolute_spelling_is_a_policy_error() {
+        let root = fixture("abs");
+        for raw in [
+            r"C:\Windows\win.ini",
+            "c:/Windows/win.ini",
+            "C:Windows",
+            r"\Windows",
+            "/Windows",
+            r"\\server\share\x",
+            "//server/share/x",
+            r"\\?\C:\Windows",
+            r"\\.\COM1",
+            "//./COM1",
+        ] {
+            assert_eq!(refused(&root, raw).code(), ErrorCode::Policy, "{raw}");
+        }
     }
 }

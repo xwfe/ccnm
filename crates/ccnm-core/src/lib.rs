@@ -32,6 +32,7 @@ pub mod work;
 pub use config::Config;
 pub use error::{Error, ErrorCode, Result};
 pub use lang::Lang;
+pub use platform::reported_path;
 pub use process::{Cmd, Output, ProcessRunner, SystemRunner};
 
 /// Version of the ccnm binary, shared by all crates in the workspace.

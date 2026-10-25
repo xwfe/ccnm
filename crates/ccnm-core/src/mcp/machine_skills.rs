@@ -67,6 +67,9 @@ impl Machine {
 
     /// `<home>/<dir>/<name>/SKILL.md` for every entry of every skills
     /// directory, as absolute paths, skills directories in precedence order.
+    ///
+    /// Written with `/` on every platform ([`shown`]): the catalog takes a
+    /// skill's directory and fallback name from the text after the last `/`.
     pub fn skill_candidates(&self) -> Vec<String> {
         SKILL_DIRS
             .iter()
@@ -76,7 +79,7 @@ impl Machine {
                     .into_iter()
                     .map(move |name| base.join(name).join("SKILL.md"))
             })
-            .map(|path| path.to_string_lossy().into_owned())
+            .map(|path| shown(&path))
             .collect()
     }
 
@@ -85,9 +88,7 @@ impl Machine {
     pub fn command_candidates(&self, depth: usize) -> Vec<String> {
         let mut out = Vec::new();
         commands(&self.home.join(COMMAND_DIR), depth, &mut out);
-        out.into_iter()
-            .map(|path| path.to_string_lossy().into_owned())
-            .collect()
+        out.into_iter().map(|path| shown(&path)).collect()
     }
 
     /// The real file behind a candidate. `Ok(None)`: nothing there.
@@ -107,11 +108,19 @@ impl Machine {
         if dir.parent().is_none() || self.home.starts_with(dir) {
             return Err(format!(
                 "its directory resolves to {}, which would open more than the skill; not offered",
-                dir.display()
+                shown(dir)
             ));
         }
         Ok(Some(real))
     }
+}
+
+/// A path on this machine as the model reads it: the Runtime's one
+/// spelling, `C:/Users/x/...` on Windows rather than `\\?\C:\Users\x\...`.
+pub(crate) fn shown(path: &Path) -> String {
+    crate::platform::reported_path(path)
+        .to_string_lossy()
+        .into_owned()
 }
 
 /// Entry names of a directory, sorted, dotfiles left out (`.system` is

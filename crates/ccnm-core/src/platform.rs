@@ -109,6 +109,80 @@ pub(crate) fn owned_by(meta: &std::fs::Metadata, uid: Option<u32>) -> bool {
     }
 }
 
+/// The file names a program called `name` may have here: `name` itself on
+/// Unix; on Windows `name` with each extension PATHEXT lists, in its order
+/// (`rg.com`, `rg.exe`, ...), since that is what decides what runs there.
+pub(crate) fn program_files(name: &str) -> Vec<String> {
+    #[cfg(unix)]
+    {
+        vec![name.to_string()]
+    }
+    #[cfg(windows)]
+    {
+        pathext_files(name, std::env::var("PATHEXT").ok().as_deref())
+    }
+}
+
+/// [`program_files`] for a given PATHEXT. Extensions come back lowercase;
+/// an empty or missing PATHEXT means Windows' own default.
+#[cfg(any(windows, test))]
+fn pathext_files(name: &str, pathext: Option<&str>) -> Vec<String> {
+    let listed: Vec<String> = pathext
+        .unwrap_or("")
+        .split(';')
+        .map(|ext| ext.trim().trim_start_matches('.').to_ascii_lowercase())
+        .filter(|ext| !ext.is_empty())
+        .collect();
+    let extensions = if listed.is_empty() {
+        ["com", "exe", "bat", "cmd"].map(String::from).to_vec()
+    } else {
+        listed
+    };
+    extensions
+        .into_iter()
+        .map(|ext| format!("{name}.{ext}"))
+        .collect()
+}
+
+/// How a path on this machine is written when the Runtime reports or
+/// records it: the root `runtime-resolve` gives the Agent, the one
+/// `ws add` stores, a machine skill's location.
+///
+/// On Unix it is the path as it is. On Windows `canonicalize` gives
+/// `\\?\C:\Users\x\proj`, and a hand-written config may say `c:\...`; the
+/// Agent compares roots as strings (P107.3), so one spelling has to win
+/// every time: `C:/Users/x/proj` -- no `\\?\`, `/` throughout, the drive
+/// letter in capitals. Only the spelling changes: nothing on disk is
+/// looked at, so the case of the rest is what was given.
+pub fn reported_path(path: &Path) -> std::path::PathBuf {
+    #[cfg(unix)]
+    {
+        path.to_path_buf()
+    }
+    #[cfg(windows)]
+    {
+        windows_spelling(&path.to_string_lossy()).into()
+    }
+}
+
+/// [`reported_path`]'s Windows half, on a string so every platform tests it.
+#[cfg(any(windows, test))]
+fn windows_spelling(path: &str) -> String {
+    let path = if let Some(share) = path.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{share}")
+    } else {
+        path.strip_prefix(r"\\?\").unwrap_or(path).to_string()
+    };
+    let mut spelled = path.replace('\\', "/");
+    if let [drive, b':', ..] = spelled.as_bytes()
+        && drive.is_ascii_lowercase()
+    {
+        let upper = drive.to_ascii_uppercase() as char;
+        spelled.replace_range(..1, upper.encode_utf8(&mut [0; 1]));
+    }
+    spelled
+}
+
 /// The error for something that only exists on macOS and Linux: the Agent
 /// Node's half of ccnm (P107.1). Windows is a Runtime Node only.
 #[cfg(windows)]
@@ -182,6 +256,58 @@ pub(crate) mod unix_socket {
 
         fn flush(&mut self) -> io::Result<()> {
             match self.0 {}
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pathext_order_and_case_decide_the_names() {
+        assert_eq!(
+            pathext_files("rg", Some(".COM;.EXE;.BAT;.CMD;.VBS;.JS")),
+            ["rg.com", "rg.exe", "rg.bat", "rg.cmd", "rg.vbs", "rg.js"]
+        );
+        // Stray separators and spaces, as a hand-edited PATHEXT has them.
+        assert_eq!(
+            pathext_files("rg", Some(" .EXE ;; .Cmd;")),
+            ["rg.exe", "rg.cmd"]
+        );
+        for unset in [None, Some(""), Some(";;")] {
+            assert_eq!(
+                pathext_files("rg", unset),
+                ["rg.com", "rg.exe", "rg.bat", "rg.cmd"],
+                "{unset:?}"
+            );
+        }
+    }
+
+    /// One spelling whatever Windows or a person wrote: the Agent compares
+    /// roots as strings (P107.3).
+    #[test]
+    fn a_windows_path_is_reported_one_way() {
+        for (given, reported) in [
+            (r"\\?\C:\Users\x\proj", "C:/Users/x/proj"),
+            (r"C:\Users\x\proj", "C:/Users/x/proj"),
+            (r"c:\Users\x\proj", "C:/Users/x/proj"),
+            ("c:/Users/x/proj", "C:/Users/x/proj"),
+            ("C:/Users/x/proj", "C:/Users/x/proj"),
+            (r"\\?\D:\", "D:/"),
+            (r"\\?\UNC\server\share\proj", "//server/share/proj"),
+            (r"\\server\share\proj", "//server/share/proj"),
+            (r"C:\Users\张三\项目", "C:/Users/张三/项目"),
+        ] {
+            assert_eq!(windows_spelling(given), reported, "{given}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_unix_path_is_reported_as_it_is() {
+        for path in ["/home/x/proj", "/Users/x/a\\b", "relative/x"] {
+            assert_eq!(reported_path(Path::new(path)), Path::new(path));
         }
     }
 }

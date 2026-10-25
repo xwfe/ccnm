@@ -194,8 +194,9 @@ jobs:
     # Windows as the project machine, being built a stage at a time
     # (P107–P112, docs/plan/windows-runtime.md). A green job means the
     # library and the binary build there, the unit tests already written for
-    # Windows pass, and the gate refuses what Windows does not run yet --
-    # nothing more. The tools are not there until P108–P110, and
+    # Windows pass, the gate refuses what Windows does not run yet, and the
+    # read tools work in a read-only session (P108) -- nothing more. Writing
+    # and running commands are not there until P109–P110, and
     # docs/support-matrix.md does not move because this job went green.
     runs-on: windows-latest
     timeout-minutes: 45
@@ -212,6 +213,13 @@ jobs:
           rustup toolchain install stable --profile minimal --component clippy
           rustup default stable
           rustc --version && cargo --version
+
+      # search_text runs ripgrep, as on the other two; the image has git
+      # but no rg. Chocolatey is on the image already.
+      - name: Install what the tools shell out to
+        run: |
+          choco install ripgrep -y --no-progress
+          rg --version
 
       - uses: actions/cache@v4
         with:
@@ -233,10 +241,16 @@ jobs:
       # one adds it here; docs/development.md says how.
       - name: Unit tests written for Windows
         run: |
-          cargo test -p ccnm-core --lib -- ssh:: protocol:: error:: lang::
+          cargo test -p ccnm-core --lib -- ssh:: protocol:: error:: lang:: \
+            platform:: mcp::path:: mcp::search::hit_paths:: safety::whoami::
 
       - name: What Windows refuses, and what it lets through
         run: cargo test -p ccnm-cli --test windows_gate
+
+      # The seven read tools through the real binary (P108.2), and the
+      # names NTFS reads as another file refused by them.
+      - name: The read tools, end to end
+        run: cargo test -p ccnm-cli --test read_tools
 
       - name: The binary builds and reports its version
         run: |

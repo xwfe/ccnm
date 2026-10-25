@@ -233,7 +233,7 @@ pub fn search_text(root: &Path, args: &SearchTextArgs) -> Result<SearchResult> {
     let plan = Plan::new(root, args)?;
     let rg = locate_rg().ok_or_else(|| {
         Error::dependency(
-            "ripgrep is not installed on the Runtime Node, and ccnm searches with it rather than scanning files itself; install it (`brew install ripgrep` on macOS, `apt install ripgrep` on Debian/Ubuntu) and try again",
+            "ripgrep is not installed on the Runtime Node, and ccnm searches with it rather than scanning files itself; install it (`brew install ripgrep` on macOS, `apt install ripgrep` on Debian/Ubuntu, `scoop install ripgrep` or `winget install BurntSushi.ripgrep.MSVC` on Windows) and try again",
         )
     })?;
 
@@ -690,16 +690,12 @@ impl Collector {
     /// it, the trailing `-g !.git` keeps it out when a caller's glob would
     /// have let it back in, and this drops it if both ever stop being true.
     fn safe_path(&mut self, raw: &str) -> Option<String> {
-        let path = raw.strip_prefix("./").unwrap_or(raw);
-        let rejected = path.is_empty()
-            || path.starts_with('/')
-            || path.split('/').any(|s| s == ".." || path::is_git_name(s));
-        if rejected {
+        let path = hit_path(raw, cfg!(windows));
+        if path.is_none() {
             self.notes
                 .insert("ripgrep offered a path outside the workspace and it was dropped".into());
-            return None;
         }
-        Some(path.to_string())
+        path
     }
 
     /// rg exit 1 means no matches, which is an answer, not a failure. Only
@@ -854,6 +850,30 @@ fn column_of(data: &Value, line: &str) -> u32 {
     prefix.chars().count() as u32 + 1
 }
 
+/// What [`Collector::safe_path`] decides, without the note, so both
+/// platforms' answers can be tested on either.
+///
+/// On Windows rg joins the names it finds with `\` (`./src\main.rs`), and a
+/// model is only ever given `/`. `\` cannot be part of a name there, so the
+/// swap loses nothing; elsewhere it is a legal character and stays. A `:`
+/// on Windows is a drive or a data stream, neither of which is a workspace
+/// file.
+fn hit_path(raw: &str, windows: bool) -> Option<String> {
+    let swapped;
+    let raw = if windows {
+        swapped = raw.replace('\\', "/");
+        swapped.as_str()
+    } else {
+        raw
+    };
+    let path = raw.strip_prefix("./").unwrap_or(raw);
+    let rejected = path.is_empty()
+        || path.starts_with('/')
+        || (windows && path.contains(':'))
+        || path.split('/').any(|s| s == ".." || path::is_git_name(s));
+    (!rejected).then(|| path.to_string())
+}
+
 /// Never let the Runtime Node's absolute paths reach the model, even
 /// through an error message.
 fn sanitize(message: &str, root: &Path) -> String {
@@ -864,16 +884,75 @@ fn sanitize(message: &str, root: &Path) -> String {
 
 /// Where `rg` might be. PATH first, then the two places Homebrew puts it,
 /// because a non-interactive ssh session gets a short PATH.
+///
+/// On Windows each PATH directory is tried with the extensions PATHEXT
+/// lists (`rg.exe`; scoop's `rg.exe` is a shim, which is fine), but not a
+/// `.bat` or `.cmd`: rg is stopped the moment the answer is full, and
+/// stopping a batch wrapper would leave the rg it started reading on.
 fn locate_rg() -> Option<PathBuf> {
+    let names: Vec<String> = crate::platform::program_files("rg")
+        .into_iter()
+        .filter(|name| !name.ends_with(".bat") && !name.ends_with(".cmd"))
+        .collect();
     let mut candidates: Vec<PathBuf> = Vec::new();
     if let Some(path) = std::env::var_os("PATH") {
-        candidates.extend(std::env::split_paths(&path).map(|dir| dir.join("rg")));
+        for dir in std::env::split_paths(&path) {
+            candidates.extend(names.iter().map(|name| dir.join(name)));
+        }
     }
-    candidates.push(PathBuf::from("/opt/homebrew/bin/rg"));
-    candidates.push(PathBuf::from("/usr/local/bin/rg"));
+    if cfg!(unix) {
+        candidates.push(PathBuf::from("/opt/homebrew/bin/rg"));
+        candidates.push(PathBuf::from("/usr/local/bin/rg"));
+    }
     candidates
         .into_iter()
         .find(|p| crate::process::is_executable(p))
+}
+
+/// Both platforms' answers, on every platform.
+#[cfg(test)]
+mod hit_paths {
+    use super::hit_path;
+
+    #[test]
+    fn windows_separators_become_slashes_and_only_there() {
+        assert_eq!(
+            hit_path(r"./src\main.rs", true).as_deref(),
+            Some("src/main.rs")
+        );
+        assert_eq!(hit_path(r"src\a\b.rs", true).as_deref(), Some("src/a/b.rs"));
+        // A legal character in a macOS or Linux name.
+        assert_eq!(
+            hit_path(r"./odd\name.txt", false).as_deref(),
+            Some(r"odd\name.txt")
+        );
+    }
+
+    #[test]
+    fn what_is_not_a_workspace_file_is_dropped_on_both() {
+        for windows in [false, true] {
+            for raw in [
+                "",
+                "./",
+                "/etc/passwd",
+                "../x",
+                "a/../../x",
+                ".git/config",
+                "./.GIT/x",
+            ] {
+                assert_eq!(hit_path(raw, windows), None, "{raw:?} windows={windows}");
+            }
+        }
+        for raw in [
+            r"C:\Windows\win.ini",
+            "C:/x",
+            r"\\server\share",
+            r".\..\x",
+            "a.txt:x",
+        ] {
+            assert_eq!(hit_path(raw, true), None, "{raw:?}");
+        }
+    }
 }
 
 #[cfg(all(test, unix))]

@@ -352,6 +352,17 @@ impl Server {
     /// `CCNM_E_WRONG_WORKSPACE` if the root is not a directory here, which
     /// the launcher sees as a failed `initialize`.
     pub fn new(payload: &ServePayload) -> CcnmResult<Self> {
+        // Windows has the read tools since P108; writing (the write guard's
+        // locks, P109) and running commands (P110) are not there yet. Said
+        // before anything is opened, rather than serving a session whose
+        // apply_patch and exec_command fail one call at a time.
+        #[cfg(windows)]
+        if payload.entry.writes() {
+            return Err(Error::new(
+                ErrorCode::NotReady,
+                "on Windows this Runtime serves read-only sessions so far: an external MCP client in read mode (external_mcp = \"read\"); a session that writes or runs commands comes with P109 and P110",
+            ));
+        }
         let root = crate::runtime::canonical_root(&payload.root)?;
         let exec_gate = ExecGate::decide(payload)?;
         // Every entry, at every access level. The findings this gate reads
@@ -1933,7 +1944,17 @@ fn git_facts(root: &Path, runner: &dyn ProcessRunner) -> (bool, Option<String>) 
     let top = std::fs::canonicalize(&top).unwrap_or(top);
     match root.strip_prefix(&top) {
         Ok(rel) if rel.as_os_str().is_empty() => (true, None),
-        Ok(rel) => (true, Some(rel.to_string_lossy().into_owned())),
+        // Joined by hand: on Windows the path's own separator is `\`, and
+        // what goes to the model is always `/`.
+        Ok(rel) => (
+            true,
+            Some(
+                rel.iter()
+                    .map(|part| part.to_string_lossy())
+                    .collect::<Vec<_>>()
+                    .join("/"),
+            ),
+        ),
         Err(_) => (true, None),
     }
 }

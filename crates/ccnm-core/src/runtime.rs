@@ -434,7 +434,9 @@ pub fn resolve(config: &Config, request: &ResolveRequest) -> Result<ResolveRepor
     let resolved = config.workspace(&request.workspace)?;
     let agent = resolved.agent_reference(request.agent.as_deref())?;
     let provider = crate::provider::AgentProvider::current();
-    let root = resolved.workspace.root.clone();
+    // The Agent tells sessions apart by this string (P107.3), so it is
+    // spelled one way whatever the config says: on Windows `C:/...`.
+    let root = crate::platform::reported_path(&resolved.workspace.root);
     Ok(ResolveReport {
         protocol: OPEN_PROTOCOL,
         workspace: request.workspace.clone(),

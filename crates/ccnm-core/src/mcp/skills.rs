@@ -1193,7 +1193,7 @@ fn read_file(scope: &Scope, skill: &Skill, file: &str, line: u64) -> Result<Stri
                 ),
                 _ => format!(
                     "{what}: use it where it is with exec_command: {}",
-                    skill.dir_abs.join(file).display()
+                    crate::mcp::machine_skills::shown(&skill.dir_abs.join(file))
                 ),
             }),
             dir::ReadError::NotFound | dir::ReadError::NotAFile => Error::invalid_args(format!(
@@ -1202,6 +1202,19 @@ fn read_file(scope: &Scope, skill: &Skill, file: &str, line: u64) -> Result<Stri
             _ => Error::invalid_args(what),
         }
     };
+    // The workspace's own rule for names Windows reads as something else
+    // (a device, a data stream, a short name): an installed skill's files
+    // do not go through `resolve_read`, and toexec's resolver, shared with
+    // gld, does not know them.
+    if cfg!(windows)
+        && let Some((part, why)) = file
+            .split(['/', '\\'])
+            // `..` is the resolver's to refuse, with its own words.
+            .filter(|part| !matches!(*part, "." | ".."))
+            .find_map(|part| path::windows_refusal(part).map(|why| (part, why)))
+    {
+        return Err(Error::policy(format!("{file}: `{part}` {why}")));
+    }
     let real = dir::resolve(&skill.dir_abs, file).map_err(refused)?;
     let text = dir::read_text(&real, MAX_FILE_BYTES).map_err(refused)?;
 

@@ -941,10 +941,12 @@ fn windows_gate(command: &Command, lang: Lang) -> Result<()> {
             Ok(())
         }
         Command::Internal { command } => match command {
+            // mcp-serve itself turns away the sessions Windows cannot serve
+            // yet (the ones that write), once it knows which kind it is.
             InternalCommand::Hello { .. }
             | InternalCommand::RuntimeResolve { .. }
-            | InternalCommand::RuntimeGuard { .. } => Ok(()),
-            InternalCommand::McpServe { .. } => not_yet("internal mcp-serve", "P108–P110"),
+            | InternalCommand::RuntimeGuard { .. }
+            | InternalCommand::McpServe { .. } => Ok(()),
             InternalCommand::RuntimeAudit { .. } => not_yet("internal runtime-audit", "P111"),
             InternalCommand::RuntimeCleanup { .. } => not_yet("internal runtime-cleanup", "P110"),
             _ => elsewhere(),
@@ -1854,6 +1856,9 @@ fn workspace_command(
                     .with_source(e));
                 }
             };
+            // The spelling runtime-resolve will report: on Windows
+            // `C:/Users/x/proj`, not the `\\?\C:\...` canonicalize gives.
+            let root = ccnm_core::reported_path(&root);
             let name = match name {
                 Some(name) => name,
                 None => name_from(&root, lang)?,

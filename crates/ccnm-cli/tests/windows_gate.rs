@@ -50,10 +50,9 @@ fn the_agent_nodes_commands_are_refused_before_they_start() {
 fn the_runtimes_unwritten_commands_name_their_stage() {
     for (args, stage) in [
         (
-            &["internal", "mcp-serve", "--payload", "e30"][..],
-            "P108–P110",
+            &["internal", "runtime-audit", "--payload", "e30"][..],
+            "P111",
         ),
-        (&["internal", "runtime-audit", "--payload", "e30"], "P111"),
         (&["internal", "runtime-cleanup", "--payload", "e30"], "P110"),
     ] {
         let out = ccnm(args);
@@ -68,13 +67,16 @@ fn the_runtimes_unwritten_commands_name_their_stage() {
 }
 
 /// Past the gate, each fails on what it is given -- here a config file that
-/// is not there -- and not on being on Windows.
+/// is not there, or a payload with no protocol number -- and not on being
+/// on Windows. mcp-serve is past it since P108 and turns away the sessions
+/// that write itself; tests/read_tools.rs has that, and the read session.
 #[test]
 fn the_runtimes_config_commands_get_past_the_gate() {
     for args in [
         &["ws", "ls"][..],
         &["internal", "runtime-resolve", "--payload", "e30"],
         &["internal", "runtime-guard", "--payload", "e30"],
+        &["internal", "mcp-serve", "--payload", "e30"],
     ] {
         let out = ccnm(args);
         let err = stderr(&out);

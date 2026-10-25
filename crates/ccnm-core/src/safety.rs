@@ -472,7 +472,7 @@ fn audit_with_environment(
     let shared_account = expected_user.is_none();
     let mut findings = Vec::new();
 
-    if identity.uid.is_none() {
+    if !identity.known() {
         findings.push(Finding::fail(
             "Runtime identity known",
             "the execution identity is unknown",
@@ -480,21 +480,29 @@ fn audit_with_environment(
         ));
     }
 
-    findings.push(match (&identity.uid, expected_user) {
-        (Some(0), _) => Finding::fail(
+    findings.push(match (identity.is_root(), identity.known(), expected_user) {
+        (true, _, _) => Finding::fail(
             "Runs as root",
-            "the runtime is root, so every tool call has unrestricted access to the machine",
+            if cfg!(windows) {
+                "the runtime is SYSTEM, so every tool call has unrestricted access to the machine"
+            } else {
+                "the runtime is root, so every tool call has unrestricted access to the machine"
+            },
             "run the MCP runtime as a dedicated unprivileged user; see docs/production-safety.md",
         ),
         // Not knowing must never read as confined. ccnm can verify
         // nothing about an account it cannot identify, and an audit that
         // says "probably fine" is worse than one that says nothing.
-        (None, _) => Finding::fail(
+        (false, false, _) => Finding::fail(
             "Runs as root",
             "cannot determine which account the runtime is running as",
-            "check that `id` works on the Runtime Node",
+            if cfg!(windows) {
+                "check that `whoami /user` works on the Runtime Node"
+            } else {
+                "check that `id` works on the Runtime Node"
+            },
         ),
-        (Some(_), Some(want)) if identity.user != want => Finding::fail(
+        (false, true, Some(want)) if identity.user != want => Finding::fail(
             "Runtime user",
             format!(
                 "this ccnm process runs as {}, and config.toml expects the Runtime Executor to be {want}",
@@ -504,11 +512,11 @@ fn audit_with_environment(
                 "make the Agent's SSH MCP transport land on {want}, or correct runtime_user in config.toml; typing ccnm as {want} is not what this checks"
             ),
         ),
-        (Some(_), Some(want)) => Finding::ok("Runtime user", want.to_string()),
+        (false, true, Some(want)) => Finding::ok("Runtime user", want.to_string()),
         // The default since P78. A warning, because the property this row
         // is about -- a dedicated account -- does not hold; not a failure,
         // because nobody asked for one.
-        (Some(_), None) => Finding::warn(
+        (false, true, None) => Finding::warn(
             "Runtime user",
             format!(
                 "no runtime_user is configured, so {0} is used as a shared account: commands run with everything {0} can reach, and the rows below are shown but refuse nothing
@@ -558,6 +566,7 @@ to isolate them, create a dedicated account and set runtime_user on the Runtime 
 /// Can this account become root without a password? `sudo -n` never
 /// prompts, so this cannot hang, and `true` is the most harmless thing
 /// there is to run if it turns out the answer is yes.
+#[cfg(unix)]
 fn sudo_finding(runner: &dyn ProcessRunner) -> Finding {
     const NAME: &str = "No sudo";
     let cmd = Cmd::new("/usr/bin/sudo")
@@ -587,6 +596,7 @@ fn sudo_finding(runner: &dyn ProcessRunner) -> Finding {
 
 /// On macOS, membership of `admin` is sudo with a password prompt, which
 /// an interactive user would answer. `wheel` is the same idea elsewhere.
+#[cfg(unix)]
 fn group_finding(identity: &Identity) -> Finding {
     const NAME: &str = "Not an admin";
     let privileged: Vec<&String> = identity
@@ -733,6 +743,29 @@ fn private_key_in(dir: &Path, runner: &dyn ProcessRunner) -> Option<Finding> {
     walk(dir, 3, runner)
 }
 
+/// Windows has no sudo to ask (Sudo for Windows is a setting, not a
+/// sudoers file); what stands for it there is the Administrators group and
+/// an elevated token, which the Windows audit reads from `whoami /groups`
+/// (P111.2). Until it does, not checked means not passed.
+#[cfg(windows)]
+fn sudo_finding(_runner: &dyn ProcessRunner) -> Finding {
+    Finding::fail(
+        "No sudo",
+        "whether this token is elevated is not checked on Windows yet",
+        "wait for the Windows Runtime audit (P111) before relying on this one",
+    )
+}
+
+/// Same, for membership of Administrators.
+#[cfg(windows)]
+fn group_finding(_identity: &Identity) -> Finding {
+    Finding::fail(
+        "Not an admin",
+        "membership of Administrators is not checked on Windows yet",
+        "wait for the Windows Runtime audit (P111) before relying on this one",
+    )
+}
+
 /// Docker on Windows is a named pipe guarded by the docker-users group, not
 /// a socket's mode; the Windows audit checks that (P111.2). Until it does,
 /// not checked means not passed.
@@ -783,18 +816,65 @@ fn docker_finding(identity: &Identity) -> Finding {
     }
 }
 
-/// Who this process is, from `id`. One subprocess, no unsafe, no libc.
+/// Who this process is, from `id` (Unix) or `whoami` (Windows). One
+/// subprocess, no unsafe, no libc.
 #[derive(Debug, Default)]
 struct Identity {
     user: String,
+    /// Unix only.
     uid: Option<u32>,
+    /// The account's SID. Windows only: it has no uid.
+    sid: Option<String>,
     // Only the Unix Docker check reads it; the Windows audit is P111's.
     #[cfg_attr(windows, allow(dead_code))]
     gids: Vec<u32>,
+    #[cfg_attr(windows, allow(dead_code))]
     groups: Vec<String>,
 }
 
+/// LocalSystem, which is what root is on Windows.
+const LOCAL_SYSTEM: &str = "S-1-5-18";
+
 impl Identity {
+    /// Whether the probe named an account at all.
+    fn known(&self) -> bool {
+        self.uid.is_some() || self.sid.is_some()
+    }
+
+    fn is_root(&self) -> bool {
+        self.uid == Some(0) || self.sid.as_deref() == Some(LOCAL_SYSTEM)
+    }
+
+    /// `whoami /user`, by its full path: a `whoami.exe` earlier on PATH --
+    /// the project's own `bin`, say -- must not get to say who this is.
+    /// Groups and elevation are the Windows audit's (P111.2).
+    #[cfg(windows)]
+    fn read(runner: &dyn ProcessRunner) -> Identity {
+        let system = std::env::var_os("SystemRoot")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from(r"C:\Windows"));
+        let cmd = Cmd::new(system.join(r"System32\whoami.exe"))
+            .args(["/user", "/fo", "csv", "/nh"])
+            .timeout(PROBE_TIMEOUT);
+        let said = runner
+            .run(&cmd)
+            .ok()
+            .filter(|out| out.success())
+            .and_then(|out| parse_whoami_user(&out.stdout_lossy()));
+        match said {
+            Some((user, sid)) => Identity {
+                user,
+                sid: Some(sid),
+                ..Identity::default()
+            },
+            None => Identity {
+                user: "unknown".to_string(),
+                ..Identity::default()
+            },
+        }
+    }
+
+    #[cfg(unix)]
     fn read(runner: &dyn ProcessRunner) -> Identity {
         let field = |args: [&str; 1]| -> Option<String> {
             let out = runner
@@ -819,12 +899,77 @@ impl Identity {
             uid,
             gids,
             groups,
+            ..Identity::default()
         }
     }
 }
 
+/// `"win11\xdw","S-1-5-21-…-1001"`: the one line `whoami /user /fo csv
+/// /nh` prints. `None` for anything else, so an answer that is not this
+/// shape reads as an unknown account rather than as some account.
+#[cfg(any(windows, test))]
+fn parse_whoami_user(stdout: &str) -> Option<(String, String)> {
+    let line = stdout.trim().trim_start_matches('\u{feff}');
+    let inner = line.strip_prefix('"')?.strip_suffix('"')?;
+    let (user, sid) = inner.split_once("\",\"")?;
+    let sid_shaped = sid.strip_prefix("S-1-").is_some_and(|rest| {
+        !rest.is_empty()
+            && rest
+                .split('-')
+                .all(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+    });
+    (!user.is_empty() && !user.contains('"') && sid_shaped)
+        .then(|| (user.to_string(), sid.to_string()))
+}
+
 #[cfg(all(test, unix))]
 mod provider_tests;
+
+/// The Windows identity probe's parsing, on every platform. Separate from
+/// `tests` below, which fakes `id` and so only means anything on Unix.
+#[cfg(test)]
+mod whoami {
+    use super::*;
+
+    #[test]
+    fn the_one_line_whoami_prints_is_an_account_and_a_sid() {
+        assert_eq!(
+            parse_whoami_user(
+                "\"win11\\xdw\",\"S-1-5-21-1004336348-1177238915-682003330-1001\"\r\n"
+            ),
+            Some((
+                "win11\\xdw".to_string(),
+                "S-1-5-21-1004336348-1177238915-682003330-1001".to_string()
+            ))
+        );
+        let system = parse_whoami_user("\"nt authority\\system\",\"S-1-5-18\"").unwrap();
+        let identity = Identity {
+            user: system.0,
+            sid: Some(system.1),
+            ..Identity::default()
+        };
+        assert!(identity.known() && identity.is_root());
+    }
+
+    #[test]
+    fn anything_else_is_an_unknown_account() {
+        for said in [
+            "",
+            "\r\n",
+            "win11\\xdw S-1-5-21-1",
+            "\"win11\\xdw\"",
+            "\"win11\\xdw\",\"\"",
+            "\"win11\\xdw\",\"S-1-\"",
+            "\"win11\\xdw\",\"S-1-5-x\"",
+            "\"\",\"S-1-5-18\"",
+            "ERROR: Access is denied.",
+        ] {
+            assert_eq!(parse_whoami_user(said), None, "{said:?}");
+        }
+        let nobody = Identity::default();
+        assert!(!nobody.known() && !nobody.is_root());
+    }
+}
 
 #[cfg(test)]
 mod tests {

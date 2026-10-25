@@ -1375,6 +1375,11 @@ P73 当时把"外部 MCP workspace 里执行账号的安全没人验"留作挡�
 - **P107.1** Runtime 侧代码按平台分开；只属于 Agent 的模块（controller、launchagent、systemd、tmux、launcher 等）在 Windows 上明确报"Windows 上不支持"，不是编译失败。`cargo build --target x86_64-pc-windows-msvc` 通过、clippy 无警告。
 - **P107.2** CI 加 `windows-latest` job，跑 Runtime 侧单元测试；macOS、Linux 现有测试全过；CI 门禁按 AGENTS.md 另跑那两条。
 - **P107.3** 列出 Agent 侧把 Runtime 根目录当成 `Path` 用的每一处（拼提示、算目录名、`-c` 找上一段对话等），定怎么改，写进设计文档第 2 节那一行。
+- **P107.4** ssh 这一层按 P106 的实测改（[记录](../research/2026-10-24-p106-windows-preresearch.md)）。三个系统共用这一层，改完都要测：
+  - 新版 ssh 在 stderr 开头打的后量子警告不能让远端错误码被认成 Internal（用 `LogLevel=ERROR`，或者认错误码时跳过 `** ` 开头的行；先核对 `never_reached` 依赖的那几条消息还在）；
+  - `classify` 认 Windows 上"程序不存在"的两种说法（cmd：`is not recognized as an internal or external command`；PowerShell：`is not recognized as the name of a cmdlet`），两种退出码都是 1；
+  - `is_remote_safe` 不许参数以 `@` 开头，PowerShell 会把它当 splatting 吃掉。
+  测试用实测记下来的原文。
 
 停止点：工具行为不变，Windows 上还没做的工具报"Windows 上还不支持"；不改协议。
 
@@ -1385,8 +1390,12 @@ P73 当时把"外部 MCP workspace 里执行账号的安全没人验"留作挡�
 - **P108.1** 设计文档 D5 的路径规则：规范化（去掉 `\\?\`、统一成 `/`、大小写折叠）之后再比较；拒绝备用数据流、设备保留名、以点或空格结尾的组件、形如 8.3 短名的组件；junction 按符号链接处理。每种绕法一条被拒的用例，`.git` 的短名那条也有。
 - **P108.2** `workspace_info`、`read_file`、`list_files`、`search_text`（按 PATHEXT 找 `rg.exe`）、`view_image`、`read_notebook`、`load_skill` 在 Windows CI 上有端到端测试；返回给模型的路径一律相对项目根、用 `/`。
 - **P108.3** macOS、Linux 上同一批工具的现有测试不改照过；Defender 对 rg 和大量小文件读的拖慢在测试机上量一次（U6）。
+- **P108.4** 第一次上测试机：在测试机临时目录放一份 CI 构建的 ccnm（放之前问用户），经 sshd 起 `internal mcp-serve`，用中立客户端调这几个只读工具。
+  - 压一次双向大流量：几个大结果和几个大请求同时在路上，连接不卡、结果不错。
+  - 这一条是 P106 查出的硬要求：sshd 给的 stdin 是异步管道，只要 mcp-serve 有一阵子不读 stdin，就会卡住（单线程读一块写一块时 4 MiB 就卡，读写分两个线程时 64 MiB 都没事）。所以要确认 rmcp 的读循环不会因为处理或输出积压而停下不读。
+  - 卡住就停下修，不往 P109 走。
 
-停止点：不做写和执行；不调 `GetLongPathNameW`。
+停止点：不做写和执行；不调 `GetLongPathNameW`；测试机上的临时构建测完删掉。
 
 ### P109 — Windows 上写文件和写锁
 
@@ -1402,10 +1411,21 @@ P73 当时把"外部 MCP workspace 里执行账号的安全没人验"留作挡�
 
 **依赖 P109。**
 
-- **P110.1** toexec 新开一个只放 Windows 进程原语的 crate，第一版只有一件事：把本进程标准输入输出的句柄改成不可继承。Windows CI 上有测试证明后台子进程不再拿着这条通道；打 tag，ccnm 只在 `cfg(windows)` 下按 tag 引用，`unsafe_code = "forbid"` 不变。P106.3 证明不会挂住的话，这条改成记录依据、不建 crate。
-- **P110.2** `exec_command`：`cmd` 直接起程序，带 `CREATE_NO_WINDOW` 和 `CREATE_NEW_PROCESS_GROUP`；`.cmd` / `.bat` 经 `cmd.exe /d /s /c call`、`.ps1` 经 PowerShell（照 gld 的写法）；`shell` 用 Git for Windows 的 bash（先找 `C:\Program Files\Git\bin\bash.exe`，再看 Runtime 配置），找不到时报清楚的错、提示改用 `cmd`。技能钩子用同一套。
-- **P110.3** 超时、停止、会话结束用 `taskkill /T /F` 杀整棵树，失败退回结束根进程；父进程先退出的孙进程收不到，写进已知限制（和 macOS 一样）。后台命令、`read_output`、`stop_command` 在 Windows CI 上有端到端测试；后台命令还在跑时 mcp-serve 退出，Agent 那边的连接照常关闭、不挂住。
-- **P110.4** 中文输出、独立的 stderr、非零退出码都对；`call_mcp_tool` 能起 `npx.cmd` 这类 server；HTTP MCP 按 P106.4 对 `curl.exe` 的结论做，或者在 Windows 上先关掉并写明。
+- **P110.1** toexec 新开一个只放 Windows 进程原语的 crate，放两件事。打 tag，ccnm 只在 `cfg(windows)` 下按 tag 引用，`unsafe_code = "forbid"` 不变。
+  - **本进程的标准输入输出句柄改成不可继承。** P106.3 实测：经 sshd 跑时不会因为继承挂住，shell 一退出，sshd 的 Job 就把后台进程收掉了。但 Windows CI 和本机直接起 mcp-serve 时没有这个 Job，gld 在 CI 上就因此挂过 20 分钟。Windows CI 上要有测试证明后台子进程不再拿着这条通道。
+  - **会话期间请求系统别睡**（`SetThreadExecutionState`），会话结束就撤，不改电源设置。P106 实测：测试机接电源时空闲 10 分钟就睡，经 ssh 进来的流量不算活动；从 sshd 会话里发请求是认的。
+- **P110.2** `exec_command`：
+  - `cmd` 直接起程序，带 `CREATE_NO_WINDOW` 和 `CREATE_NEW_PROCESS_GROUP`；`.cmd` / `.bat` 经 `cmd.exe /d /s /c call` 起，`.ps1` 经 PowerShell 起（照 gld 的写法）。
+  - `shell` 用 Git for Windows 的 bash。按这个顺序找：先 `C:\Program Files\Git\bin\bash.exe`；再从 PATH 上 `git.exe` 的位置往上推（测试机的 git 是 scoop 装的，bash 在 `D:\scoop\apps\git\current\bin\bash.exe`）；最后看 Runtime 配置。**不用 PATH 上的 `bash.exe`**：测试机上那是 WSL 的启动器。
+  - 起 bash 时把 `SHELL` 设成这个 bash 的路径。sshd 把它设成了默认 shell 的路径，测试机上就是 PowerShell。
+  - 找不到 bash 时报清楚的错，提示改用 `cmd`。技能钩子用同一套。
+- **P110.3** 超时、停止、会话结束用 `taskkill /T /F` 杀整棵树，失败退回结束根进程；父进程先退出的孙进程收不到，写进已知限制（P106.3 实测和 macOS 一样）。
+  - 后台命令、`read_output`、`stop_command` 在 Windows CI 上有端到端测试；后台命令还在跑时 mcp-serve 退出，Agent 那边的连接照常关闭、不挂住。
+  - 经 sshd 跑时，mcp-serve 一退出，它起的后台命令全部跟着结束（sshd 的 Job 带 `KILL_ON_JOB_CLOSE`）。这和 macOS、Linux 的 AUTH-02 不一样，写进支持矩阵。
+- **P110.4** 中文输出、独立的 stderr、非零退出码都对。
+  - 测试机的系统代码页是 936，原生工具输出的中文常常是 GBK 而不是 UTF-8。要定下来：输出不是合法 UTF-8 时，要不要按代码页转成 UTF-8，还是照现在的做法报"不是合法 UTF-8"并换成 U+FFFD。
+  - `call_mcp_tool` 能起 `npx.cmd` 这类 server。
+  - HTTP MCP 照用 `C:\Windows\System32\curl.exe`。P106.4 实测 8.16.0 认 ccnm 的 `-K` 配置，SSE 也是流式到的；只把建目录、写配置文件时的 Unix 权限位换掉。
 
 停止点：不做 Job Object；不加 `powershell` 参数（设计文档 D2 备选 B）；沙箱在 Windows 上不能打开。
 
@@ -1413,9 +1433,16 @@ P73 当时把"外部 MCP workspace 里执行账号的安全没人验"留作挡�
 
 **依赖 P110。**
 
-- **P111.1** `ccnm init`、`ccnm add` / `rm`、`ccnm ws` 在 Windows 上能用，配置和状态放在 `%USERPROFILE%\.config\ccnm\`、`%USERPROFILE%\.local\state\ccnm\`（设计文档 D6）；Agent 配置里 Windows Runtime 的 ccnm 路径必须是正斜杠绝对路径，doctor 检查并说清怎么写。
+- **P111.1** `ccnm init`、`ccnm add` / `rm`、`ccnm ws` 在 Windows 上能用，配置和状态放在 `%USERPROFILE%\.config\ccnm\`、`%USERPROFILE%\.local\state\ccnm\`（设计文档 D6）。
+  - Agent 配置里 Windows Runtime 的 ccnm 路径必须是正斜杠绝对路径，doctor 检查并说清怎么写。P106 实测：`~/` 开头的路径只在默认 shell 是 PowerShell 时能用，cmd 下不认。
+  - doctor 读 Runtime 的 `DefaultShell`。是 PowerShell 时说明影响：原生程序的退出码回来只剩 0 或 1，以 `@` 开头的参数会被吃掉。ccnm 自己的远端命令在两种 shell 下都要能用。
 - **P111.2** `runtime-audit` 的 Windows 检查项（Administrators 组、令牌是否提权——都读 `whoami /groups`、`%USERPROFILE%\.ssh` 里的私钥、OpenSSH Authentication Agent 服务、docker-users 组），共用账号下只显示不拒绝；写了 `runtime_user` 就拒绝并说明（D8）；打开沙箱就拒绝。从 Agent 跑 `ccnm doctor`，Windows Runtime 的每一行都给出结论。
-- **P111.3** 安装文档（OpenSSH Server、管理员账号的钥匙放哪、Git for Windows、rg、`Unblock-File`）按新手视角从零在测试机上走一遍（U7）；发布流程出 `ccnm-<版本>-windows-x86_64.zip` 和 sha256，只验构建。
+- **P111.3** 安装文档按新手视角从零在测试机上走一遍（U7）。内容：
+  - OpenSSH Server、管理员账号的钥匙放哪、Git for Windows、rg、`Unblock-File`；
+  - 机器会自己睡，ccnm 只在会话期间请求别睡（P110.1）；
+  - Windows PowerShell 5.1 按系统代码页读没有 BOM 的 `.ps1`，带中文时要存成带 BOM 的 UTF-8（P106 实测：注释会把下一行吞掉，而且不报错）。
+
+  发布流程出 `ccnm-<版本>-windows-x86_64.zip` 和 sha256，只验构建。
 
 停止点：不做专用执行账号；不做安装程序；实际发版另外授权。
 
@@ -1425,7 +1452,7 @@ P73 当时把"外部 MCP workspace 里执行账号的安全没人验"留作挡�
 
 - **P112.1** 零额度：macOS Agent → Win11 Runtime，中立 MCP 客户端（`tests/test_remote_workspace_mcp.py`）把全部工具调一遍；假模型接口分别跑 Claude Code 和 Codex 的完整工具回合。
 - **P112.2** 真实模型：Claude Code 和 Codex 各一次，在 Windows 上的真实项目里读代码、改代码、编译、跑测试、提交。跑之前用户点头，记花费。
-- **P112.3** 断网 30 秒后恢复、按 Esc 停命令、`ccnm stop` 之后，测试机上都没有残留进程，写锁正常交出。
+- **P112.3** 断网 30 秒后恢复、按 Esc 停命令、`ccnm stop` 之后，测试机上都没有残留进程，写锁正常交出。会话空闲超过 10 分钟，测试机不睡；会话结束后，防睡眠的请求撤掉（`powercfg /requests` 里看不到）。
 - **P112.4** 支持矩阵、README 和 toexec 计划第 0 节那张表按实测改：做到哪一步就写到哪一步。
 
 停止点：Windows 当 Agent、在 Windows 上发起会话不在本阶段。

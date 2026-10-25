@@ -42,7 +42,7 @@
 
 | 位置 | 现在靠什么 | 到 Windows 上会怎样 | 打算 |
 | --- | --- | --- | --- |
-| SSH 入口：[ssh.rs](../../crates/ccnm-core/src/ssh.rs) 第 431 行 `is_remote_safe` | 远端命令里只许出现 POSIX shell 不当特殊字符看待的字符；载荷用 base64；默认的 ccnm 路径 `~/.local/bin/ccnm` 靠登录 shell 展开 `~` | **好消息**：Windows 的 sshd 对每条不带终端的命令都套一层 `cmd.exe /c "<命令>"`（cc-desk-tunnel 读 OpenSSH 源码 `w32-doexec.c` 得出），base64 里没有 cmd 的特殊字符 `^ & \| < > ( ) %`，能原样过去。**坏消息**：cmd 不展开 `~`；允许的字符里没有 `\` 和空格 | Windows Runtime 必须在 Agent 配置里写绝对路径，用正斜杠，比如 `C:/Users/<名字>/.local/bin/ccnm.exe`。cmd 能不能执行正斜杠路径要实测（U2）。路径里有空格的账号（`C:\Users\Zhang San`）第一版不支持，doctor 直接说明 |
+| SSH 入口：[ssh.rs](../../crates/ccnm-core/src/ssh.rs) 第 431 行 `is_remote_safe` | 远端命令里只许出现 POSIX shell 不当特殊字符看待的字符；载荷用 base64；默认的 ccnm 路径 `~/.local/bin/ccnm` 靠登录 shell 展开 `~` | **好消息**：Windows 的 sshd 对每条不带终端的命令都套一层 `cmd.exe /c "<命令>"`（cc-desk-tunnel 读 OpenSSH 源码 `w32-doexec.c` 得出），base64 里没有 cmd 的特殊字符 `^ & \| < > ( ) %`，能原样过去。**坏消息**：cmd 不展开 `~`；允许的字符里没有 `\` 和空格 | Windows Runtime 必须在 Agent 配置里写绝对路径，用正斜杠，比如 `C:/Users/<名字>/.local/bin/ccnm.exe`。P106 实测：cmd 和 PowerShell 都能执行正斜杠路径（U2），而且默认 shell 可能被用户改成了 PowerShell（测试机就是），两种都得能用。路径里有空格的账号（`C:\Users\Zhang San`）第一版不支持，doctor 直接说明 |
 | 跑命令：[exec.rs](../../crates/ccnm-core/src/mcp/exec.rs) 第 468 行 | `shell` 参数固定用 `bash -c` | Windows 上默认没有 bash | 见决定 D2 |
 | 停命令：[process.rs](../../crates/ccnm-core/src/process.rs) 第 516、732、907 行 | 每条命令放进自己的进程组（`process_group(0)`），超时、停止、会话结束时另起一个 `kill -- -<组号>` 整组收掉。用 `kill` 程序而不用 `killpg` 系统调用，是因为整个 workspace 禁止 unsafe 代码（[Cargo.toml](../../Cargo.toml) 第 75 行 `unsafe_code = "forbid"`） | Windows 没有进程组信号 | 见决定 D3 |
 | 收逃出去的后代：[orphans.rs](../../crates/ccnm-core/src/mcp/orphans.rs) | 只在 Linux 上做：把 mcp-serve 设成子进程收养者（`PR_SET_CHILD_SUBREAPER`），扫 `/proc` 找脱离出去的后代，收掉再交出写锁（P84）。macOS 上做不到，README 已写成已知限制 | Windows 上第一版和 macOS 一样做不到 | D3 定了第一版用 `taskkill`，和 macOS 一样写成已知限制；要收干净得等 Job Object（没排期） |
@@ -86,7 +86,7 @@
 
 **推荐（用户 2026-10-24 定）：** 照 Claude Code 自己在 Windows 上的做法。找得到 Git for Windows 带的 bash，就用它跑 `shell`（模型写出来的本来就是 bash 语法）；找不到就报错，提示改用 `cmd` 参数直接跑程序。要用 PowerShell，模型可以直接写 `cmd: ["pwsh", "-NoProfile", "-Command", "..."]`，不用改协议。
 
-- **依据：** [Claude Code 安装文档](https://code.claude.com/docs/en/setup)："With Git for Windows, Claude Code uses Git Bash for the Bash tool"；没有 Git for Windows 时改用 PowerShell 工具；bash 找不到时用 `CLAUDE_CODE_GIT_BASH_PATH` 指定。ccnm 照抄这个规矩：先找 `C:\Program Files\Git\bin\bash.exe`，再看 Runtime 配置里的路径。
+- **依据：** [Claude Code 安装文档](https://code.claude.com/docs/en/setup)："With Git for Windows, Claude Code uses Git Bash for the Bash tool"；没有 Git for Windows 时改用 PowerShell 工具；bash 找不到时用 `CLAUDE_CODE_GIT_BASH_PATH` 指定。ccnm 照抄这个规矩，具体找法见 ROADMAP 的 P110.2。P106 实测：PATH 上的 `bash.exe` 可能是 WSL 的启动器；Git 也可能不在 `C:\Program Files\Git`，测试机的是 scoop 装的。
 - **备选 A：** 在 Windows 上把 `shell` 直接换成 PowerShell（cc-desk-tunnel 的选择）。同一个参数在不同系统上意思不一样，模型按 bash 写的命令会大面积失败，不推荐。
 - **备选 B：** 加一个可选参数 `powershell`（一段脚本，用 pwsh 7 跑）。[Remote Workspace MCP](../protocol/remote-workspace-mcp-v1.md) 的冻结规则允许加可选参数（属于加法，不用升 `/2`）。等真机上看到模型老是用 `cmd` 拼 pwsh 拼错了再加。真要加时照 cc-desk-tunnel 的办法：脚本从标准输入整段读进来、用 `[scriptblock]::Create` 执行，输入输出都设成 UTF-8，保留退出码。**别用 `-Command -` 或 `-File -`**：它们逐行读标准输入，跨行的代码块会丢（cc-desk-tunnel [`tunnel.ts` 第 46–54 行](https://github.com/sun168567/cc-desk-tunnel/blob/e2ec3db/apps/server/src/tunnel.ts)）。
 
@@ -96,6 +96,14 @@
 
 - **为什么：** 不用写 unsafe 代码，守住 workspace 的 `unsafe_code = "forbid"`，和 [process.rs](../../crates/ccnm-core/src/process.rs) 现在"另起一个 `kill` 程序"的做法是一个思路。gld 有 Windows CI 上跑通的证据（gld 的 `crates/core/src/tools/session.rs` 第 1662 行起，`crates/cli/tests/daemon_lifecycle.rs`）。
 - **局限：** `taskkill /T` 按父进程号找后代。父进程先退出的孙进程找不到，和 macOS 现在的已知限制一样，写进支持矩阵。
+
+**P106 实测（2026-10-25）：** sshd 把会话里的进程放进一个 Job，限制标志是 `KILL_ON_JOB_CLOSE | BREAKAWAY_OK`。这带来三个结果：
+
+- shell 一退出，整棵树都结束。所以经 sshd 跑时，不会因为句柄被继承而挂住，代价是 mcp-serve 一退出，它起的后台命令全部跟着死。
+- 客户端断开时，sshd 一个进程都不收（上游 [Win32-OpenSSH #1751](https://github.com/PowerShell/Win32-OpenSSH/issues/1751)，至今没修）。
+- `taskkill /T /F` 收不到父进程先退出的孙进程，和上面说的局限一致。
+
+详见 [P106 记录](../research/2026-10-24-p106-windows-preresearch.md)。
 
 **第二步（可选，没排期）：** Job Object，Windows 的进程容器。把每条命令放进它自己的 Job，并设 `KILL_ON_JOB_CLOSE`：Job 一关，里面整棵树一起结束，父进程先退出的孙进程也跑不掉；mcp-serve 被强杀时句柄自动关闭，子进程跟着走。cc-desk-tunnel 用它管 sshd 和所有子进程，实测关闭时能结束正在跑的命令和子进程（它的 [`apps/desktop/README.md`](https://github.com/sun168567/cc-desk-tunnel/blob/e2ec3db/apps/desktop/README.md)）。代价有三：
 
@@ -139,7 +147,9 @@ junction 按符号链接同样处理。返回给模型的路径一律是相对�
 
 Job Object、`SetHandleInformation`、`GetLongPathNameW`、令牌提权检查都要调 Windows API，都得写 unsafe，而 ccnm 整个 workspace 禁止 unsafe。
 
-**用户 2026-10-24 定：** 放进 toexec，新开一个只放 Windows 进程原语的 crate。第一版里面只有一件事：把 mcp-serve 自己的标准输入输出句柄改成不可继承（D3 末尾那条）。别处能不碰 unsafe 就不碰：杀进程树用 `taskkill`（D3），8.3 短名直接拒绝（D5），组和提权读 `whoami /groups`（第 2 节安全审计那行）。
+**用户 2026-10-24 定：** 放进 toexec，新开一个只放 Windows 进程原语的 crate。第一版里面原定只有一件事：把 mcp-serve 自己的标准输入输出句柄改成不可继承（D3 末尾那条）。
+
+P106 之后加了第二件：会话期间请求系统别睡（`SetThreadExecutionState`）。测试机空闲 10 分钟就睡，经 ssh 进来的流量不算活动。两件事的细节见 ROADMAP 的 P110.1。别处能不碰 unsafe 就不碰：杀进程树用 `taskkill`（D3），8.3 短名直接拒绝（D5），组和提权读 `whoami /groups`（第 2 节安全审计那行）。
 
 - **toexec 那边：** workspace 没有禁 unsafe（根 `Cargo.toml` 和各 crate 都没有 lints 设置），已经有 Windows CI（`windows-latest` 跑 clippy、test，再用 MSRV 1.89 跑一遍）。去重审计里"进程与输出：短期不要碰"那条，挡的是两边执行模型不同（ccnm 同步、gld tokio async）；这个 crate 不碰执行模型，所以不冲突。2026-10-24 在 toexec 的 `evidence/v2-k/duplication-audit.md` 那一节补了一笔。
 - **ccnm 这边：** 只在 `cfg(windows)` 下按 tag 引用这个 crate，自己的 `unsafe_code = "forbid"` 不变，macOS、Linux 的依赖树不变。
@@ -201,6 +211,16 @@ toexec-mcp 的 `ChildTransport` 不管进程怎么起、怎么杀，由产品传
 
 ## 6. 未知项
 
+P106 的实测结论（细节和依据见 [P106 记录](../research/2026-10-24-p106-windows-preresearch.md)）：
+
+- **U1：** `SetEnv` 静默忽略，连接不受影响。
+- **U2：** 两种默认 shell 下正斜杠路径都能执行。PowerShell 下有两个问题：原生程序的退出码会变成 1，以 `@` 开头的参数会被吃掉。
+- **U3：** 读写分两个线程、用 Rust 标准库的办法，64 MiB 双向都没问题；单线程读一块写一块，4 MiB 就卡。一小时那轮见记录。
+- **U4：** 进程在带 `KILL_ON_JOB_CLOSE` 的 Job 里；客户端断开时一个都不收。
+- **U5：** Git Bash 能用，但 `SHELL` 指向默认 shell，PATH 上的 `bash` 可能是 WSL 的。
+- **U8：** 自带 `curl.exe` 8.16.0 认 ccnm 的 `-K` 配置，SSE 是流式到的。
+- **U11：** 后量子警告排在 stderr 最前面，会让 ccnm 认不出远端的错误码。
+
 | 编号 | 问题 | 怎么验 | 不成立会怎样 |
 | --- | --- | --- | --- |
 | U1 | Windows 自带 sshd 对 `SetEnv` 的态度：不接受时是忽略，还是拒绝连接 | P106.1 | 拒绝的话，Windows Runtime 要去掉这个选项 |
@@ -217,7 +237,7 @@ toexec-mcp 的 `ChildTransport` 不管进程怎么起、怎么杀，由产品传
 
 ## 7. 验收要的环境和授权
 
-- **Windows 机器：用户提供 tailnet 里的 Win11 测试机（`win11`）。** 2026-10-24 从 AI 那台 macOS 只读探过：Tailscale 显示在线；22 端口开着，SSH 版本串是 `SSH-2.0-OpenSSH_for_Windows_9.5`，也就是 Windows 自带的 OpenSSH Server 已经装好、在跑；用本机账号名 `bing`、`BatchMode` 登录被拒（`Permission denied (publickey,password,keyboard-interactive)`），本机也没有默认钥匙（`~/.ssh` 里的钥匙都是按机器分开起名的）。所以 P106 开工前还差：Windows 上的账号名、它在不在 Administrators 组、给它配哪把钥匙。不能拿 Linux 上的单测或交叉编译顶替这台机器上的实测（toexec 计划里的原话："不以 Windows 交叉编译代替进程树/文件替换实测"）。
+- **Windows 机器：用户提供 tailnet 里的 Win11 测试机（`win11`）。** 2026-10-24 从 AI 那台 macOS 只读探过：Tailscale 显示在线；22 端口开着，SSH 版本串是 `SSH-2.0-OpenSSH_for_Windows_9.5`，也就是 Windows 自带的 OpenSSH Server 已经装好、在跑；用本机账号名 `bing`、`BatchMode` 登录被拒（`Permission denied (publickey,password,keyboard-interactive)`），本机也没有默认钥匙（`~/.ssh` 里的钥匙都是按机器分开起名的）。后来用户给了账号（`xdw`，在 Administrators 组里）和密码，P106 全程用密码登录。钥匙还没放，所以 `BatchMode=yes` 没测到。不能拿 Linux 上的单测或交叉编译顶替这台机器上的实测（toexec 计划里的原话："不以 Windows 交叉编译代替进程树/文件替换实测"）。
 - 在那台机器上放钥匙、改 sshd 配置或注册表、开防火墙、装软件（Git for Windows、rg、ccnm），每一项都要用户单独授权（[AGENTS.md](../../AGENTS.md) 的规定）。
 - P112 用真实模型，按以往真机轮的规模估，一次不超过几美元，跑之前要用户点头。
 - 零额度的验法照旧可用：假模型接口，加上不依赖 ccnm 代码的中立 MCP 客户端（`tests/test_remote_workspace_mcp.py`），从 Mac 连到 Windows 把 12 个工具都调一遍。

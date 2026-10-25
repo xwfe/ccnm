@@ -137,10 +137,13 @@ impl WriteTarget {
 /// it. The caller decides what `exists` should have been.
 pub fn resolve_write(root: &Path, raw: &str) -> Result<WriteTarget> {
     let rel = normalize(raw)?;
-    if rel.split('/').any(|segment| segment == ".git") {
-        return Err(Error::policy(format!(
+    let into_git = || {
+        Error::policy(format!(
             "{rel} is inside .git; ccnm's file tools never write to a git database"
-        )));
+        ))
+    };
+    if rel.split('/').any(is_git_name) {
+        return Err(into_git());
     }
     let joined = root.join(&rel);
 
@@ -160,6 +163,16 @@ pub fn resolve_write(root: &Path, raw: &str) -> Result<WriteTarget> {
         }
     };
     contained(root, &canonical_ancestor, &rel)?;
+    // Again where it resolves, not only as typed: a directory symlink to
+    // `.git` has no `.git` in its name, and on a case-insensitive disk
+    // `.GIT` is `.git` while comparing strings says it is not. The
+    // canonical path has the names on disk, so either way it says `.git`.
+    if canonical_ancestor
+        .strip_prefix(root)
+        .is_ok_and(|inside| inside.iter().any(|c| c.to_str().is_some_and(is_git_name)))
+    {
+        return Err(into_git());
+    }
 
     // A symlink at the target itself is refused whatever it points at.
     let exists = match std::fs::symlink_metadata(&joined) {
@@ -258,6 +271,12 @@ fn normalize(raw: &str) -> Result<String> {
     Ok(parts.join("/"))
 }
 
+/// `.git`, in any case. On Windows and on a default macOS disk `.GIT` is
+/// the same directory; on Linux it is another one nobody makes.
+pub(crate) fn is_git_name(name: &str) -> bool {
+    name.eq_ignore_ascii_case(".git")
+}
+
 /// `C:\x`, `c:/x`. Meaningless on this host, but a model that thinks it is
 /// on Windows should be told it escaped rather than that the file is
 /// missing.
@@ -279,6 +298,23 @@ fn contained(root: &Path, resolved: &Path, rel: &str) -> Result<()> {
         ErrorCode::Policy,
         format!("{rel} resolves outside the workspace (symlink escape)"),
     ))
+}
+
+/// The name rules alone, on every platform: they are pure, and the
+/// macOS and Linux runs are where most changes to them get made.
+#[cfg(test)]
+mod rules {
+    use super::*;
+
+    #[test]
+    fn git_is_matched_in_any_case_and_nothing_else() {
+        for name in [".git", ".GIT", ".Git", ".gIT"] {
+            assert!(is_git_name(name), "{name}");
+        }
+        for name in ["git", ".gitignore", ".github", "x.git", ".git2"] {
+            assert!(!is_git_name(name), "{name}");
+        }
+    }
 }
 
 #[cfg(all(test, unix))]
@@ -519,6 +555,39 @@ mod tests {
         }
         // A file merely called gitignore is not the git database.
         assert!(resolve_write(&root, ".gitignore").is_ok());
+    }
+
+    /// macOS is case-insensitive by default and `realpath` hands back the
+    /// name on disk, so `.GIT/config` *is* `.git/config` there -- and the
+    /// check above compared the string as typed (P108.1). On Linux `.GIT`
+    /// is another directory; refusing it costs a name nobody uses.
+    #[test]
+    fn writing_refuses_the_git_database_in_any_case() {
+        let root = fixture("write-git-case");
+        fs::create_dir_all(root.join(".git")).unwrap();
+        fs::write(root.join(".git/config"), "[core]\n").unwrap();
+        for raw in [".GIT/config", ".Git/config", ".gIt", "src/.GIT/x"] {
+            let err = resolve_write(&root, raw).unwrap_err();
+            assert_eq!(err.code(), ErrorCode::Policy, "{raw}");
+            assert!(err.message().contains(".git"), "{err}");
+        }
+    }
+
+    /// A directory symlink inside the workspace that points at `.git`:
+    /// nothing in the path as written says `.git`, and only the target
+    /// itself was checked for being a link. Decided on where the path
+    /// resolves instead (P108.1).
+    #[test]
+    fn writing_refuses_the_git_database_through_a_symlinked_directory() {
+        let root = fixture("write-git-link");
+        fs::create_dir_all(root.join(".git")).unwrap();
+        fs::write(root.join(".git/config"), "[core]\n").unwrap();
+        symlink(".git", root.join("gitdir")).unwrap();
+        for raw in ["gitdir/config", "gitdir/new"] {
+            let err = resolve_write(&root, raw).unwrap_err();
+            assert_eq!(err.code(), ErrorCode::Policy, "{raw}");
+            assert!(err.message().contains(".git"), "{err}");
+        }
     }
 
     #[test]

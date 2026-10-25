@@ -435,7 +435,7 @@ fn resolve_scope(root: &Path, raw: &str) -> Result<(String, bool)> {
     // Resolved too, not only as written: before P104 a `gitdir -> .git`
     // given as the directory sent `.git/config` back as `gitdir/config`,
     // which the check on rg's output cannot tell from any other path.
-    let in_git = |p: &Path| p.components().any(|c| c.as_os_str() == ".git");
+    let in_git = |p: &Path| p.iter().any(|c| c.to_str().is_some_and(path::is_git_name));
     let resolved_rel = resolved.abs().strip_prefix(root).unwrap_or(Path::new(""));
     if in_git(Path::new(&rel)) || in_git(resolved_rel) {
         return Err(Error::policy(format!(
@@ -693,7 +693,7 @@ impl Collector {
         let path = raw.strip_prefix("./").unwrap_or(raw);
         let rejected = path.is_empty()
             || path.starts_with('/')
-            || path.split('/').any(|s| s == ".." || s == ".git");
+            || path.split('/').any(|s| s == ".." || path::is_git_name(s));
         if rejected {
             self.notes
                 .insert("ripgrep offered a path outside the workspace and it was dropped".into());

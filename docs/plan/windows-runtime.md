@@ -47,10 +47,10 @@
 | 停命令：[process.rs](../../crates/ccnm-core/src/process.rs) 第 516、732、907 行 | 每条命令放进自己的进程组（`process_group(0)`），超时、停止、会话结束时另起一个 `kill -- -<组号>` 整组收掉。用 `kill` 程序而不用 `killpg` 系统调用，是因为整个 workspace 禁止 unsafe 代码（[Cargo.toml](../../Cargo.toml) 第 75 行 `unsafe_code = "forbid"`） | Windows 没有进程组信号 | 见决定 D3 |
 | 收逃出去的后代：[orphans.rs](../../crates/ccnm-core/src/mcp/orphans.rs) | 只在 Linux 上做：把 mcp-serve 设成子进程收养者（`PR_SET_CHILD_SUBREAPER`），扫 `/proc` 找脱离出去的后代，收掉再交出写锁（P84）。macOS 上做不到，README 已写成已知限制 | Windows 上第一版和 macOS 一样做不到 | D3 定了第一版用 `taskkill`，和 macOS 一样写成已知限制；要收干净得等 Job Object（没排期） |
 | 写锁：[write_guard.rs](../../crates/ccnm-core/src/mcp/write_guard.rs)、[patch.rs](../../crates/ccnm-core/src/mcp/patch.rs) | 标准库的 `File::try_lock` / `try_lock_shared`，在 Unix 上是 flock（建议锁：只管同样来加锁的人，不挡读写）；新建文件时用 Unix 权限位（`OpenOptionsExt::mode`） | 标准库在 Windows 上用 LockFileEx，那是**强制锁**：锁住的范围别的句柄连读都读不了。write_guard 会在持锁的同时把写者信息写进**同一个文件**，观察者要读这个文件，Windows 上很可能读失败 | 见决定 D4 |
-| 路径边界：[path.rs](../../crates/ccnm-core/src/mcp/path.rs) | 规范化、符号链接越界检查，按 Unix 路径的规矩比较 | 大小写不敏感；`canonicalize` 返回带 `\\?\` 前缀的路径；8.3 短名（`PROGRA~1`）、NTFS 备用数据流（`a.txt:隐藏`）、设备保留名（`CON`、`NUL`、`COM1`）、结尾的点和空格会被系统吞掉、junction（目录联接），这些都能用来绕过"只许在项目目录里"的检查 | 见决定 D5 |
+| 路径边界：[path.rs](../../crates/ccnm-core/src/mcp/path.rs) | 规范化、符号链接越界检查，按 Unix 路径的规矩比较 | 大小写不敏感；`canonicalize` 返回带 `\\?\` 前缀的路径；8.3 短名（`PROGRA~1`）、NTFS 备用数据流（`a.txt:隐藏`）、设备保留名（`CON`、`NUL`、`COM1`）、结尾的点和空格会被系统吞掉、junction（目录联接），这些都能用来绕过"只许在项目目录里"的检查 | 见决定 D5。P108 已做 |
 | 改文件：[patch.rs](../../crates/ccnm-core/src/mcp/patch.rs) | 已经保留 CRLF 和 BOM（第 679、899、909 行）；保留可执行位 | CRLF 是 Windows 项目里的常态，这块不用重做；Windows 没有可执行位 | 跳过可执行位相关逻辑，测试改成按平台断言 |
 | 读文件：[read.rs](../../crates/ccnm-core/src/mcp/read.rs) | 已经识别 CRLF，展示时去掉，并告诉模型这个文件是 CRLF | — | 不用改 |
-| 搜索：[search.rs](../../crates/ccnm-core/src/mcp/search.rs) 第 867 行 `locate_rg` | 在 PATH 里找名为 `rg` 的文件，再查 Homebrew 的两个位置 | Windows 上程序叫 `rg.exe`，这样找不到；装在 scoop / winget 的位置也不在列表里 | 按 PATHEXT 补扩展名找（gld 有现成写法，见 4.1）；doctor 说清怎么装 |
+| 搜索：[search.rs](../../crates/ccnm-core/src/mcp/search.rs) 第 867 行 `locate_rg` | 在 PATH 里找名为 `rg` 的文件，再查 Homebrew 的两个位置 | Windows 上程序叫 `rg.exe`，这样找不到；装在 scoop / winget 的位置也不在列表里 | P108 已做：按 PATHEXT 补扩展名找，不收 `.bat`/`.cmd`（停 rg 时停的会是包装脚本）；rg 吐出的 `\` 换成 `/`。doctor 说清怎么装，在 P111 |
 | 转发项目里的 MCP server：`mcp/relay.rs` | 照 `.mcp.json` 里写的命令起 server | `npx`、`uvx` 在 Windows 上其实是 `npx.cmd`，`.cmd` 不能直接起，要经 `cmd.exe` | 照 gld 的规矩：`.bat` / `.cmd` 经 `cmd.exe /d /s /c call ...` 起（见 4.1） |
 | HTTP MCP：[curl.rs](../../crates/ccnm-core/src/mcp/curl.rs) | 调系统的 `curl`，URL 和请求头写在 `-K` 配置文件里，不上命令行 | Windows 10 1803 起自带 `curl.exe`，但它对 `-K` 和 SSE 流的表现没验过 | U8 |
 | 技能钩子：[hooks.rs](../../crates/ccnm-core/src/mcp/hooks.rs) | 钩子命令用 shell 跑 | 同"跑命令"那一行 | 跟着 D2 走 |
@@ -166,6 +166,12 @@
 junction 按符号链接同样处理。返回给模型的路径一律是相对项目根、用 `/` 的形式。
 
 - **为什么：** 这些都是 Windows 上"只许在项目目录里"这类检查的经典绕法，gld 和 toexec 里都没有现成实现（gld 的审查文档自己记着"8.3 短路径还没进 Windows 小组"）。规范化可以借 gld：它去掉了 `\\?\`，并用 `canonicalize` 纠正大小写来给工作区锁定身份，在 Windows CI 上跑过（gld 的 `tools/workspace_runtime.rs` 第 570–576 行、第 679–705 行的测试）。
+- **P108 实现时（2026-10-25）定下的细节**，记录见 [P108 记录](../research/2026-10-27-p108-windows-read-tools.md)：
+  - 比较用的"规范化"不另写一套：containment 照旧比 `canonicalize` 的结果（Windows 上两边都是 `\\?\C:\…`，大小写是盘上的写法），所以大小写折叠只用在按名字认的规则上，也就是 `.git`。
+  - `.git` 三个系统都不分大小写，写的时候再按解析之后的路径查一遍。macOS 默认也不分大小写，原来的写法在 macOS 上就能绕，一起修了。
+  - 设备名另加 `CONIN$`、`CONOUT$`（打开控制台）；`COM0`、`LPT0` 不在微软的列表里，不拒。
+  - junction 不用另写：标准库把它和符号链接一样当 reparse point 的 name surrogate，`is_symlink()` 为真，`canonicalize` 会解析它。Windows CI 用 `mklink /J` 验。
+  - 子进程的工作目录不用去 `\\?\`：标准库在 Windows 上起进程时自己去掉（工作目录不支持 verbatim 路径）。
 
 ### D6 配置和状态放在哪
 

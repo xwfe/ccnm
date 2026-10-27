@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-10-25T20:05:00+09:00",
+  "last_updated": "2026-10-27T21:05:00+09:00",
   "current_task": "P108",
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
@@ -5335,9 +5335,42 @@
       ],
       "owner": "claude-opus-5-5（桌面端会话）",
       "started_at": "2026-10-25T20:05:00+09:00",
-      "last_updated": "2026-10-25T20:05:00+09:00",
-      "completed_criteria": [],
-      "evidence": [],
+      "last_updated": "2026-10-27T21:05:00+09:00",
+      "completed_criteria": [
+        "P108.1",
+        "P108.2",
+        "P108.5"
+      ],
+      "evidence": [
+        {
+          "kind": "offline",
+          "criteria": [
+            "P108.1"
+          ],
+          "ref": "docs/research/2026-10-27-p108-windows-read-tools.md",
+          "commit": "b745242",
+          "result": "de75931：.git 三个系统都不分大小写、写时按解析之后的路径再查；两条测试先在旧代码上红（macOS 上 .GIT/config 与经 gitdir -> .git 写 gitdir/config 都解析到 .../.git/config 并放行）。b745242：Windows 上拒绝备用数据流、设备名（含 COM¹²³、CONIN$、CONOUT$）、结尾点或空格、8.3 短名形状的组件；runtime-resolve 报的和 ws add 存的根目录统一成 C:/…。GitHub Actions 运行 40498978439（https://github.com/xwfe/ccnm/actions/runs/40498978439，提交 efaabd9）windows-latest 上 mcp::path::rules 3 条、mcp::path::windows_tests 6 条（真 NTFS，mklink /J 的 junction 按符号链接处理，.GIT 与经 junction 写 .git 被拒，十种绝对路径写法被拒）、platform::tests 2 条全过；单元测试共 64/0。"
+        },
+        {
+          "kind": "offline",
+          "criteria": [
+            "P108.2",
+            "P108.5"
+          ],
+          "ref": "crates/ccnm-cli/tests/read_tools.rs",
+          "commit": "b745242",
+          "result": "同一次运行：windows-runtime job 用 choco 装的 ripgrep 15.2.0，cargo test --test read_tools 3/0——经真二进制在 read 会话里调 workspace_info、read_file、list_files、search_text（按 PATHEXT 找到 rg.exe，rg 吐出的 \\ 换成 /）、view_image、read_notebook、load_skill（含已安装 skill，路径是 C:/Users/runneradmin/…），回答里没有 \\、没有根目录的任何写法，git_subdir 是 sub/proj；coding 会话在 initialize 之前报 CCNM_E_NOT_READY；四种名字经六个工具都报 CCNM_E_POLICY。会话能起来本身证明 whoami 认出了身份（认不出时'身份未知'不可豁免）。windows_gate 3/0（mcp-serve 过闸）。safety::whoami 2 条、mcp::search::hit_paths 2 条也在 Windows 上跑过。release 构建的 ccnm.exe 作为 artifact 12730989604 留存。"
+        },
+        {
+          "kind": "offline",
+          "criteria": [
+            "P108.3"
+          ],
+          "ref": ".github/workflows/ci.yml",
+          "commit": "efaabd9",
+          "result": "只是 P108.3 的前一半（macOS、Linux 上同一批工具的现有测试不改照过）：同一次运行 test（macos-latest）cargo test --workspace 1183/0、linux-runtime（ubuntu-24.04）1184/0，两边 ci_gates.py 的 Python 251 条 0 跳过，read_tools 三个系统都跑了；本机 macOS arm64 1183/0。现有测试只改了一处：windows_gate.rs 里 mcp-serve 从'还不支持'挪到'过闸'，那是 Windows 专用测试。后一半 Defender 计时（U6）要在测试机上量，还没做。"
+        }
+      ],
       "blockers": []
     },
     {

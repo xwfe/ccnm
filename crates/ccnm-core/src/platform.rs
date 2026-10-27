@@ -44,6 +44,46 @@ impl DirBuilderExt for std::fs::DirBuilder {
     }
 }
 
+/// Children started from here on do not inherit this process's standard
+/// input, output and error (P110.1). Call it first thing in `main`.
+///
+/// Windows hands a child every inheritable handle its parent has, not just
+/// the three it was given (rust-lang/rust#38227). This process's output is
+/// the ssh channel when it is `mcp-serve`, so a background command would
+/// otherwise hold that channel open after the server ends, and the Agent's
+/// side would wait for it. Through Windows' own sshd the session's Job ends
+/// such a child anyway (P106); started any other way -- CI, a person's own
+/// terminal -- nothing would. A child that is given a pipe or `inherit` on
+/// purpose still gets it. Unix closes what was not given, so there is
+/// nothing to do there.
+pub fn keep_std_handles_to_this_process() {
+    #[cfg(windows)]
+    toexec_win::stop_std_handles_being_inherited();
+}
+
+/// End `child` and every process it started that is still in its tree
+/// (design D3): `taskkill /T /F` by `taskkill`'s full path, then the child
+/// itself directly in case taskkill could not. Returns whether taskkill
+/// ran.
+///
+/// The pid is safe to name while `child` is held: Windows does not reuse a
+/// pid while a handle to that process is open, and `Child` holds one. What
+/// taskkill cannot find is a process whose parent had already exited -- it
+/// follows parent ids -- the same limit as macOS (P106.3).
+#[cfg(windows)]
+pub(crate) fn kill_tree(child: &mut std::process::Child, taskkill: &std::ffi::OsStr) -> bool {
+    let mut command = Command::new(taskkill);
+    command
+        .args(["/T", "/F", "/PID", &child.id().to_string()])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    own_process_group(&mut command);
+    let ran = command.status().is_ok();
+    let _ = child.kill();
+    ran
+}
+
 /// `chmod`. Nothing on Windows, for the reason [`OpenOptionsExt`] gives.
 pub(crate) fn set_mode(path: &Path, mode: u32) -> io::Result<()> {
     #[cfg(unix)]
@@ -136,6 +176,134 @@ pub(crate) fn remove_tree(path: &Path) -> io::Result<()> {
 
 const REMOVE_TRIES: u32 = 10;
 const REMOVE_PAUSE: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// A program in `%SystemRoot%\System32`, by its full path: `whoami`,
+/// `tasklist`, `taskkill`, PowerShell. Never looked up on PATH, where a
+/// project's own `bin` could put another program of the same name in front
+/// of the one whose answer decides something.
+#[cfg(windows)]
+pub(crate) fn system_program(name: &str) -> std::path::PathBuf {
+    std::env::var_os("SystemRoot")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from(r"C:\Windows"))
+        .join("System32")
+        .join(name)
+}
+
+/// `cmd` as Windows will run it (P110.2). The program is looked up the way
+/// a person typing it in `cmd.exe` would expect -- `npm` finds `npm.cmd` --
+/// which Rust's `Command` does not do: it only ever adds `.exe`.
+///
+/// A `.bat` or `.cmd` is left to the standard library, which runs it
+/// through `cmd.exe` with the quoting that keeps an argument from becoming
+/// a command (CVE-2024-24576), and refuses an argument it cannot quote. A
+/// `.ps1` runs under PowerShell, `pwsh` if there is one. Nothing found:
+/// `argv` unchanged, for the spawn to fail on and name.
+#[cfg(windows)]
+pub(crate) fn windows_program(argv: Vec<String>, cwd: &Path) -> Vec<String> {
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let pathext = std::env::var("PATHEXT").ok();
+    let Some(found) = find_program(&argv[0], cwd, &path, pathext.as_deref(), &|p: &Path| {
+        p.is_file()
+    }) else {
+        return argv;
+    };
+    let found = reported_path(&found).to_string_lossy().replace('/', r"\");
+    if found.to_ascii_lowercase().ends_with(".ps1") {
+        let shell = find_program("pwsh", cwd, &path, pathext.as_deref(), &|p: &Path| {
+            p.is_file()
+        })
+        .unwrap_or_else(|| system_program(r"WindowsPowerShell\v1.0\powershell.exe"));
+        let mut out: Vec<String> = [
+            &shell.to_string_lossy(),
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            &found,
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+        out.extend(argv.into_iter().skip(1));
+        return out;
+    }
+    let mut out = argv;
+    out[0] = found;
+    out
+}
+
+/// Where `name` is, the way Windows looks for a program: a path (anything
+/// with a separator) relative to `cwd`, a bare name in each PATH directory;
+/// either way as given if it has an extension, else with each PATHEXT one
+/// in turn. Pure but for `exists`, so both halves are tested everywhere.
+#[cfg(any(windows, test))]
+fn find_program(
+    name: &str,
+    cwd: &Path,
+    path: &std::ffi::OsStr,
+    pathext: Option<&str>,
+    exists: &dyn Fn(&Path) -> bool,
+) -> Option<std::path::PathBuf> {
+    let has_extension = Path::new(name).extension().is_some();
+    let names: Vec<String> = if has_extension {
+        vec![name.to_string()]
+    } else {
+        pathext_files(name, pathext)
+    };
+    let dirs: Vec<std::path::PathBuf> = if name.contains(['/', '\\']) {
+        vec![cwd.to_path_buf()]
+    } else {
+        std::env::split_paths(path).collect()
+    };
+    dirs.iter()
+        .flat_map(|dir| names.iter().map(move |name| dir.join(name)))
+        .find(|candidate| exists(candidate))
+}
+
+/// Git for Windows' bash, for `shell` and a skill's commands (design D2,
+/// P110.2), in this order:
+///
+/// 1. `%ProgramFiles%\Git\bin\bash.exe`, where its installer puts it;
+/// 2. beside a `git.exe` on PATH: its `cmd\` or `mingw64\bin\` sits under
+///    the installation, whose `bin\bash.exe` it is. Scoop's
+///    `apps\git\current\cmd` is found this way, its `shims\` is not;
+/// 3. `git_bash` in this machine's config.
+///
+/// Never the `bash.exe` PATH finds first: on a machine with WSL that is
+/// `System32\bash.exe`, which starts a Linux distribution, not this.
+#[cfg(windows)]
+pub(crate) fn git_bash(
+    configured: Option<&Path>,
+) -> std::result::Result<std::path::PathBuf, String> {
+    let installed = std::env::var_os("ProgramFiles")
+        .map(|dir| std::path::PathBuf::from(dir).join(r"Git\bin\bash.exe"));
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let beside_git = std::env::split_paths(&path)
+        .map(|dir| dir.join("git.exe"))
+        .filter(|git| git.is_file())
+        .find_map(|git| bash_beside_git(&git, &|p: &Path| p.is_file()));
+    installed
+        .filter(|bash| bash.is_file())
+        .or(beside_git)
+        .or_else(|| configured.filter(|bash| bash.is_file()).map(Path::to_path_buf))
+        .ok_or_else(|| {
+            "shell runs its line with Git for Windows' bash, and none was found: not in %ProgramFiles%\\Git, not beside a git.exe on PATH, and git_bash in config.toml names none; install Git for Windows, set git_bash to its bin\\bash.exe, or pass the program and its arguments in cmd instead".to_string()
+        })
+}
+
+/// `<installation>\bin\bash.exe` for a `git.exe` up to three levels inside
+/// that installation.
+#[cfg(any(windows, test))]
+fn bash_beside_git(git: &Path, exists: &dyn Fn(&Path) -> bool) -> Option<std::path::PathBuf> {
+    git.ancestors()
+        .skip(1)
+        .take(3)
+        .map(|dir| dir.join("bin").join("bash.exe"))
+        .find(|bash| exists(bash))
+}
 
 /// The file names a program called `name` may have here: `name` itself on
 /// Unix; on Windows `name` with each extension PATHEXT lists, in its order
@@ -329,6 +497,64 @@ mod tests {
         ] {
             assert_eq!(windows_spelling(given), reported, "{given}");
         }
+    }
+
+    /// How Windows finds a program, checked against a made-up disk.
+    #[test]
+    fn a_program_is_found_the_way_windows_finds_one() {
+        let bin = Path::new("tools");
+        let other = Path::new("more");
+        let path = std::env::join_paths([bin, other]).unwrap();
+        let disk = [
+            bin.join("npm.cmd"),
+            other.join("rg.exe"),
+            other.join("rg.cmd"),
+            Path::new("proj").join("scripts").join("build.bat"),
+            other.join("tool.ps1"),
+        ];
+        let exists = |p: &Path| disk.iter().any(|d| d == p);
+        let pathext = Some(".COM;.EXE;.BAT;.CMD");
+        let find = |name: &str| find_program(name, Path::new("proj"), &path, pathext, &exists);
+        // No extension: PATHEXT decides, in its order, PATH in its order.
+        assert_eq!(find("npm"), Some(bin.join("npm.cmd")));
+        assert_eq!(find("rg"), Some(other.join("rg.exe")));
+        // An extension is taken as given; nothing is added to it.
+        assert_eq!(find("tool.ps1"), Some(other.join("tool.ps1")));
+        assert_eq!(find("npm.exe"), None);
+        // A path is relative to where the command runs, not searched for.
+        assert_eq!(
+            find("scripts/build"),
+            Some(Path::new("proj").join("scripts").join("build.bat"))
+        );
+        assert_eq!(find("npm/x"), None);
+        assert_eq!(find("missing"), None);
+    }
+
+    #[test]
+    fn git_bash_is_found_from_the_git_beside_it() {
+        let scoop = Path::new("scoop").join("apps").join("git").join("current");
+        let program_files = Path::new("Git");
+        let disk = [
+            scoop.join("bin").join("bash.exe"),
+            program_files.join("bin").join("bash.exe"),
+        ];
+        let exists = |p: &Path| disk.iter().any(|d| d == p);
+        assert_eq!(
+            bash_beside_git(&scoop.join("cmd").join("git.exe"), &exists),
+            Some(scoop.join("bin").join("bash.exe"))
+        );
+        assert_eq!(
+            bash_beside_git(
+                &program_files.join("mingw64").join("bin").join("git.exe"),
+                &exists
+            ),
+            Some(program_files.join("bin").join("bash.exe"))
+        );
+        // Scoop's shim stands alone: no installation around it.
+        assert_eq!(
+            bash_beside_git(&Path::new("scoop").join("shims").join("git.exe"), &exists),
+            None
+        );
     }
 
     /// A file held open without sharing deletion, let go of after a while:

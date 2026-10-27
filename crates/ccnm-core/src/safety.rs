@@ -850,10 +850,7 @@ impl Identity {
     /// Groups and elevation are the Windows audit's (P111.2).
     #[cfg(windows)]
     fn read(runner: &dyn ProcessRunner) -> Identity {
-        let system = std::env::var_os("SystemRoot")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| std::path::PathBuf::from(r"C:\Windows"));
-        let cmd = Cmd::new(system.join(r"System32\whoami.exe"))
+        let cmd = Cmd::new(crate::platform::system_program("whoami.exe"))
             .args(["/user", "/fo", "csv", "/nh"])
             .timeout(PROBE_TIMEOUT);
         let said = runner

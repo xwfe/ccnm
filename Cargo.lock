@@ -137,6 +137,7 @@ dependencies = [
  "toexec-mcp",
  "toexec-skill",
  "toexec-text 0.1.0 (git+https://github.com/xwfe/toexec.git?tag=toexec-text-v0.1.0)",
+ "toexec-win",
  "tokio",
  "toml",
  "toml_edit",
@@ -890,6 +891,11 @@ source = "git+https://github.com/xwfe/toexec.git?tag=toexec-mcp-v0.2.0#a7c84bc47
 name = "toexec-text"
 version = "0.1.0"
 source = "git+https://github.com/xwfe/toexec.git?tag=toexec-text-v0.1.0#25ef24a8b670c37dc05ce66d1a91caddfefb2657"
+
+[[package]]
+name = "toexec-win"
+version = "0.1.0"
+source = "git+https://github.com/xwfe/toexec.git?tag=toexec-win-v0.1.0#0a4747f77e8d7b8cd4b3d69a05dcac0dfb1eeef1"
 
 [[package]]
 name = "tokio"

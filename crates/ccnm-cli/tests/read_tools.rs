@@ -7,8 +7,8 @@
 //! every path that comes back is relative to the workspace and written
 //! with `/`, the root is never in the text, and on Windows the names NTFS
 //! reads as another file are refused by the tools, not only by the path
-//! policy's unit tests. Since P109 it also holds the Windows coding
-//! session: it writes, and it runs nothing yet.
+//! policy's unit tests. Since P109 it also holds the coding session's
+//! writing, on all three.
 
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
@@ -345,8 +345,8 @@ fn each_read_tool_answers_with_workspace_relative_slashed_paths() {
 
 /// A coding session (P109 for Windows, the same everywhere else):
 /// `apply_patch` writes and keeps a file's BOM and CRLF, and a second
-/// writer is refused by the write guard while the first holds it. On
-/// Windows the tools that run programs say they come with P110.
+/// writer is refused by the write guard while the first holds it. Running
+/// commands on Windows is tests/windows_exec.rs.
 #[test]
 fn a_coding_session_writes_and_a_second_writer_is_refused() {
     let fixture = Fixture::new("coding");
@@ -398,17 +398,6 @@ fn a_coding_session_writes_and_a_second_writer_is_refused() {
         std::fs::read(fixture.root.join("crlf.txt")).unwrap(),
         b"\xEF\xBB\xBFone\r\nTWO\r\nthree\r\n"
     );
-
-    #[cfg(windows)]
-    for (tool, args) in [
-        ("exec_command", json!({"cmd": ["cmd", "/c", "echo hi"]})),
-        ("read_output", json!({"output_ref": "r-0000000000000000"})),
-        ("stop_command", json!({"output_ref": "r-0000000000000000"})),
-    ] {
-        let said = refusal(&session.call(tool, args));
-        assert!(said.starts_with("CCNM_E_NOT_READY:"), "{tool}: {said}");
-        assert!(said.contains("P110"), "{tool}: {said}");
-    }
 
     let second = fixture
         .serve(ExternalMode::Coding)

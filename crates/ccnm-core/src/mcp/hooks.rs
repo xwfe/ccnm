@@ -33,7 +33,7 @@ use std::time::Duration;
 use serde_json::{Map, Value as Json, json};
 use toexec_skill::frontmatter::Value;
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::mcp::sandbox::Sandbox;
 use crate::process::{Cmd, Output, ProcessRunner, SystemRunner};
 
@@ -247,7 +247,14 @@ pub struct View {
 /// machine, as natively. `apply_patch` is one view per file it touches,
 /// as natively each file is one `Edit` or `Write` call.
 fn native_views(tool: &str, args: &Map<String, Json>, root: &Path) -> Vec<View> {
-    let abs = |rel: &str| root.join(rel).display().to_string();
+    // The Runtime's one spelling of a path on this machine: `C:/...` on
+    // Windows, not the `\\?\` form a canonical root has, which a hook's
+    // script could not open.
+    let abs = |rel: &str| {
+        crate::platform::reported_path(&root.join(rel))
+            .display()
+            .to_string()
+    };
     let text = |key: &str| args.get(key).and_then(Json::as_str);
     let view = |name: &str, input: Json| View {
         tool_name: name.to_string(),
@@ -388,7 +395,7 @@ pub fn input(
 ) -> Vec<u8> {
     let mut value = json!({
         "session_id": session,
-        "cwd": root.display().to_string(),
+        "cwd": crate::platform::reported_path(root).display().to_string(),
         "hook_event_name": event.name(),
         "tool_name": view.tool_name,
         "tool_input": view.tool_input,
@@ -612,20 +619,23 @@ pub struct Runner {
     sandbox: Option<Arc<Sandbox>>,
     accepted: crate::safety::Accepted,
     shared_account: bool,
+    shell: std::result::Result<crate::mcp::exec::Shell, String>,
 }
 
 impl Runner {
-    pub fn new(
+    pub(crate) fn new(
         root: PathBuf,
         sandbox: Option<Arc<Sandbox>>,
         accepted: crate::safety::Accepted,
         shared_account: bool,
+        shell: std::result::Result<crate::mcp::exec::Shell, String>,
     ) -> Runner {
         Runner {
             root,
             sandbox,
             accepted,
             shared_account,
+            shell,
         }
     }
 
@@ -641,10 +651,18 @@ impl Runner {
             self.shared_account,
             &SystemRunner,
         )?;
-        let mut cmd = Cmd::new("bash")
-            .args(["-c", line])
+        let shell = self
+            .shell
+            .as_ref()
+            .map_err(|why| Error::dependency(why.clone()))?;
+        let argv = shell.argv(line);
+        let mut cmd = shell
+            .environment(Cmd::new(&argv[0]).args(&argv[1..]))
             .cwd(&self.root)
-            .env("CLAUDE_PROJECT_DIR", &self.root)
+            .env(
+                "CLAUDE_PROJECT_DIR",
+                crate::platform::reported_path(&self.root),
+            )
             .timeout(timeout);
         if let Some(input) = stdin {
             cmd = cmd.stdin(input);

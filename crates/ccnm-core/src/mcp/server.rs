@@ -319,6 +319,8 @@ struct Inner {
     /// that way in this session. Decided once at startup, from the same
     /// facts the `exec_command` question is.
     skill_commands: std::result::Result<Arc<hooks::Runner>, &'static str>,
+    /// What `shell` and a skill's commands run a line with, found once.
+    shell: std::result::Result<exec::Shell, String>,
     /// The hooks loaded skills registered. Empty unless `skill_commands`
     /// is a runner.
     hooks: hooks::Registry,
@@ -461,9 +463,8 @@ impl Server {
             None => None,
         };
         // Only for a session that may write: the tool is withheld from the
-        // others, and a relay would only read configs nobody asks about. Not
-        // on Windows before P110: starting a server is running a program.
-        let relay = if payload.entry.writes() && !cfg!(windows) {
+        // others, and a relay would only read configs nobody asks about.
+        let relay = if payload.entry.writes() {
             exec_gate.config.as_ref().and_then(|config| {
                 let home = crate::paths::home_dir().ok()?;
                 let codex_home = std::env::var_os("CODEX_HOME").map(PathBuf::from);
@@ -479,12 +480,19 @@ impl Server {
         } else {
             None
         };
+        let shell = exec::Shell::locate(
+            exec_gate
+                .config
+                .as_ref()
+                .and_then(|config| config.git_bash.as_deref()),
+        );
         let skill_commands = match unattended_commands(payload, &exec_gate) {
             Ok(()) => Ok(Arc::new(hooks::Runner::new(
                 root.clone(),
                 sandbox.clone(),
                 exec_gate.accepted,
                 exec_gate.audit.shared_account,
+                shell.clone(),
             ))),
             Err(why) => Err(why),
         };
@@ -541,6 +549,7 @@ impl Server {
                 entry: payload.entry,
                 calls: AtomicU64::new(0),
                 skill_commands,
+                shell,
                 hooks: hooks::Registry::default(),
                 subagents,
                 agent_tools,
@@ -627,23 +636,11 @@ impl Server {
     ///
     /// `tools/list` not naming it is a hint; a Host is free to ignore hints.
     /// This is the part that is not a hint.
-    ///
-    /// On Windows the tools that run programs answer too, until P110 brings
-    /// a way to run and stop them there: listed, as everywhere, and refused
-    /// with the stage that brings them rather than left to fail on `sh`.
     fn refuse_withheld(&self, tool: &str) -> Option<CallToolResult> {
-        if !self.offers(tool) {
-            return Some(tool_error(&Error::policy(format!(
+        (!self.offers(tool)).then(|| {
+            tool_error(&Error::policy(format!(
                 "{tool} is not available: this workspace is open for external MCP in read mode"
-            ))));
-        }
-        (cfg!(windows) && RUNS_PROGRAMS.contains(&tool)).then(|| {
-            tool_error(&Error::new(
-                ErrorCode::NotReady,
-                format!(
-                    "{tool} is not supported on Windows yet: running commands on a Windows Runtime comes with P110; reading and apply_patch work"
-                ),
-            ))
+            )))
         })
     }
 
@@ -851,12 +848,14 @@ impl Server {
         let running = Arc::clone(&stop);
         let run_dir = Arc::new(std::sync::OnceLock::new());
         let found = Arc::clone(&run_dir);
+        let shell = self.inner.shell.clone();
         let mut task = tokio::task::spawn_blocking(move || {
             let running = exec::Running {
                 jobs: &jobs,
                 stop: running,
                 sandbox: sandbox.as_deref(),
                 run_dir: Some(&found),
+                shell: &shell,
             };
             exec::exec_command_in(provider, &root, &output, &args, running)
         });
@@ -1207,10 +1206,6 @@ impl Server {
 /// no client can talk its way past.
 const INTERACTION_TOOLS: [&str; 2] = ["exec_command", relay::TOOL];
 
-/// The tools that start programs, and the two that only make sense after
-/// one: what a Windows Runtime does not do before P110.
-const RUNS_PROGRAMS: [&str; 4] = ["exec_command", "read_output", "stop_command", relay::TOOL];
-
 /// The tools a session without write access does not get. Four of them
 /// change things -- `call_mcp_tool` starts programs, like `exec_command`
 /// (P49); `read_output` is here because of session scoping, see
@@ -1287,9 +1282,6 @@ fn unattended_commands(
 ) -> std::result::Result<(), &'static str> {
     if !payload.entry.writes() {
         return Err("this session cannot run commands");
-    }
-    if cfg!(windows) {
-        return Err("commands do not run on a Windows Runtime yet (P110)");
     }
     if !gate.allowed() {
         return Err("exec_command is refused on this runtime, and a skill's commands are commands");
@@ -1770,6 +1762,12 @@ pub fn serve_external(request: &crate::runtime::ExternalOpenPayload) -> CcnmResu
 pub const HEARTBEAT: Duration = Duration::from_secs(30);
 
 fn run(server: Server) -> CcnmResult<()> {
+    // Windows sleeps when idle, and traffic through ssh does not count as
+    // use (P106). Declared first, so it is dropped last: the request is
+    // withdrawn only once everything below has been cleaned up, because the
+    // machine may well sleep the moment it is (P110.1).
+    #[cfg(windows)]
+    let _awake = toexec_win::KeepAwake::request();
     // Before any command starts: what one leaves outside its process group
     // then comes back to this process, and is ended with the session (P84).
     let adopting = super::orphans::adopt();

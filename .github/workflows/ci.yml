@@ -196,9 +196,10 @@ jobs:
     # (P107–P112, docs/plan/windows-runtime.md). A green job means the
     # library and the binary build there, the unit tests already written for
     # Windows pass, the gate refuses what Windows does not run yet, the read
-    # tools work (P108), and apply_patch and the write guard do (P109) --
-    # nothing more. Running commands is not there until P110, and
-    # docs/support-matrix.md does not move because this job went green.
+    # tools work (P108), apply_patch and the write guard do (P109), and
+    # running commands does (P110) -- nothing more: this is CI, not the real
+    # machine (P112), and docs/support-matrix.md does not move because this
+    # job went green.
     runs-on: windows-latest
     timeout-minutes: 45
     # sed and the rest are not in the runner's default pwsh; its Git Bash
@@ -259,6 +260,13 @@ jobs:
       # about its own guard while one holds it (P109.3).
       - name: The write guard between real processes
         run: cargo test -p ccnm-cli --test write_guard
+
+      # Programs found the Windows way, shell in Git Bash, timeouts ending
+      # the tree, background commands, a killed server's channel closing,
+      # and an MCP server behind a .cmd (P110). Node and Git Bash are on the
+      # image.
+      - name: Running commands
+        run: cargo test -p ccnm-cli --test windows_exec
 
       - name: The binary builds and reports its version
         run: |

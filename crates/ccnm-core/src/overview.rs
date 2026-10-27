@@ -301,9 +301,33 @@ pub fn scan_servers(runner: &dyn ProcessRunner) -> Vec<Server> {
 /// that removes a session's files on the strength of "nobody serves it"
 /// needs this one: an empty list from a failed `ps` is not an answer.
 pub fn try_scan_servers(runner: &dyn ProcessRunner) -> Option<Vec<Server>> {
+    #[cfg(unix)]
     let cmd = Cmd::new("/bin/ps")
         .args(["-axo", "pid=,ppid=,etime=,command="])
         .timeout(std::time::Duration::from_secs(10));
+    // Windows has no `ps`, and `tasklist` shows no command lines; CIM has
+    // both. Rows in `ps`'s shape so the one parser reads them -- with no
+    // elapsed time (`00:00`), which only an Agent Node's status shows, and
+    // Windows is not one. Encoded, so no quoting stands between this and
+    // what PowerShell runs. It takes a second or so to start, which the
+    // expiry sweep, the one Windows caller, spends on a thread of its own.
+    #[cfg(windows)]
+    let cmd = {
+        use base64::Engine as _;
+        let script = "Get-CimInstance Win32_Process -Filter \"Name='ccnm.exe'\" | ForEach-Object { '{0} {1} 00:00 {2}' -f $_.ProcessId, $_.ParentProcessId, $_.CommandLine }";
+        let utf16: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
+        Cmd::new(crate::platform::system_program(
+            r"WindowsPowerShell\v1.0\powershell.exe",
+        ))
+        .args([
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-EncodedCommand",
+        ])
+        .arg(base64::engine::general_purpose::STANDARD.encode(utf16))
+        .timeout(std::time::Duration::from_secs(30))
+    };
     match runner.run(&cmd) {
         Ok(out) if out.success() => Some(parse_servers(&out.stdout_lossy())),
         _ => None,

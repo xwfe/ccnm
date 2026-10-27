@@ -219,16 +219,22 @@ fn kill_group(killer: &OsStr, signal: Signal, child: &mut std::process::Child) -
     ran
 }
 
-/// Windows, until P110.3 brings `taskkill /T /F`: the leader only, so the
-/// answer is always that the group was not reached -- which is the truth,
-/// and what makes a caller treat it as "only the leader was signalled".
+/// Windows (design D3, P110.3): `taskkill /T /F` ends the child and every
+/// process whose parent chain leads back to it, then the leader is ended
+/// directly in case taskkill could not. A process whose parent had already
+/// exited is not found that way -- taskkill follows parent ids -- which is
+/// the same limit macOS has (P106.3).
+///
+/// There is no `TERM`: a console program started without a console window
+/// gets no close message, and `taskkill` without `/F` only asks windows to
+/// close. So a `TERM` reaches nobody and says so, and [`Stopper::stop`]
+/// does not wait a grace period for it.
 #[cfg(windows)]
 fn kill_group(killer: &OsStr, signal: Signal, child: &mut std::process::Child) -> bool {
-    let _ = killer;
-    if signal == Signal::Kill {
-        let _ = child.kill();
+    if signal == Signal::Term {
+        return false;
     }
-    false
+    crate::platform::kill_tree(child, killer)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -248,8 +254,17 @@ impl Signal {
 }
 
 /// The program [`kill_group`] runs. Only tests pass anything else, and they
-/// pass a killer that fails on purpose.
-const KILLER: &str = "kill";
+/// pass a killer that fails on purpose. On Windows `taskkill`, by its full
+/// path.
+#[cfg(unix)]
+fn killer() -> OsString {
+    OsString::from("kill")
+}
+
+#[cfg(windows)]
+fn killer() -> OsString {
+    crate::platform::system_program("taskkill.exe").into_os_string()
+}
 
 /// How long to wait before killing the group again, and the ceiling on
 /// that wait.
@@ -409,6 +424,9 @@ impl Stopper {
         }
         self.stopped.store(true, Ordering::SeqCst);
         let _ = self.signal(Signal::Term);
+        // Nothing was asked on Windows (see `kill_group`), so nothing is
+        // waited for.
+        let grace = if cfg!(windows) { Duration::ZERO } else { grace };
         while started.elapsed() < grace.min(give_up) {
             if self.finished() {
                 return true;
@@ -558,7 +576,7 @@ pub fn stream_lines(cmd: &Cmd, mut on_line: impl FnMut(&[u8]) -> Flow) -> Result
     // The child is shared with the watchdog so a program that stops
     // producing output cannot outlive its timeout. Killing by pid would
     // need libc, and this crate forbids unsafe.
-    let stopper = Stopper::new(child, OsStr::new(KILLER), cmd.display());
+    let stopper = Stopper::new(child, &killer(), cmd.display());
     let watchdog = watchdog(&stopper, started, cmd.timeout, "stream");
 
     let mut reader = std::io::BufReader::new(stdout);
@@ -646,7 +664,7 @@ where
     O: Write + Send + 'static,
     E: Write + Send + 'static,
 {
-    spawn_captured_with(cmd, out, err, observe, OsStr::new(KILLER))?.wait()
+    spawn_captured_with(cmd, out, err, observe, &killer())?.wait()
 }
 
 /// [`run_captured`] in two steps: start the command now, wait for it later
@@ -659,7 +677,7 @@ where
     O: Write + Send + 'static,
     E: Write + Send + 'static,
 {
-    spawn_captured_with(cmd, out, err, |_| Ok(()), OsStr::new(KILLER))
+    spawn_captured_with(cmd, out, err, |_| Ok(()), &killer())
 }
 
 /// A command [`spawn_captured`] started. Dropping it without [`wait`]ing
@@ -952,7 +970,7 @@ impl ProcessRunner for SystemRunner {
         // even for `sh -c 'sleep 10'`: 10.0s against a 100ms timeout. macOS
         // hid it because bash execs that shape, so the leader *was* the
         // sleep. Three spawn sites, one answer.
-        let stopper = Stopper::new(child, OsStr::new(KILLER), cmd.display());
+        let stopper = Stopper::new(child, &killer(), cmd.display());
         let watchdog = watchdog(&stopper, started, cmd.timeout, "spawn");
 
         if let Some(writer) = stdin_writer {

@@ -322,10 +322,7 @@ fn lookup(pid: u32, runner: &dyn ProcessRunner) -> Lookup {
 /// telling `ccnm.exe` from anything else is all [`left_held`] needs.
 #[cfg(windows)]
 fn lookup(pid: u32, runner: &dyn ProcessRunner) -> Lookup {
-    let system = std::env::var_os("SystemRoot")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(r"C:\Windows"));
-    let cmd = Cmd::new(system.join(r"System32\tasklist.exe")).args([
+    let cmd = Cmd::new(crate::platform::system_program("tasklist.exe")).args([
         "/fi".to_string(),
         format!("PID eq {pid}"),
         "/fo".to_string(),

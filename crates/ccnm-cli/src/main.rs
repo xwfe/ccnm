@@ -491,6 +491,10 @@ enum InternalCommand {
 }
 
 fn main() -> ExitCode {
+    // Before anything can start a child (P110.1): on Windows a child would
+    // otherwise inherit this process's stdin and stdout, which for
+    // mcp-serve are the ssh channel.
+    ccnm_core::keep_std_handles_to_this_process();
     let args = with_default_subcommand(std::env::args_os().collect());
     let cli = parse_in_ui_lang(args);
     init_logging(cli.verbose);

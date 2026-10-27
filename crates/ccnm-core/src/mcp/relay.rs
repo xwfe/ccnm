@@ -79,7 +79,7 @@ use toexec_mcp::{Open, Transport};
 use crate::config::RuntimeMcp;
 use crate::error::{Error, Result};
 use crate::mcp::retention::Output;
-use crate::mcp::sandbox::{self, Sandbox};
+use crate::mcp::sandbox::Sandbox;
 use crate::process::Cmd;
 
 /// The tool's name.
@@ -504,17 +504,42 @@ impl Open for Opener<'_> {
             .as_ref()
             .map(|dir| self.root.join(dir))
             .unwrap_or_else(|| self.root.to_path_buf());
-        if sandbox::locate(command, &cwd, std::env::var_os("PATH").as_deref()).is_none() {
-            return Err(toexec_mcp::Error::Start(format!(
+        let not_found = || {
+            toexec_mcp::Error::Start(format!(
                 "`{command}` is not on the runtime account's PATH (or, as a path, not a file from {})",
                 if cwd == self.root {
                     "the workspace root".to_string()
                 } else {
                     "its cwd".to_string()
                 }
-            )));
-        }
-        let mut cmd = Cmd::new(command).args(args).cwd(&cwd);
+            ))
+        };
+        #[cfg(unix)]
+        let argv: Vec<String> = {
+            if crate::mcp::sandbox::locate(command, &cwd, std::env::var_os("PATH").as_deref())
+                .is_none()
+            {
+                return Err(not_found());
+            }
+            std::iter::once(command.clone())
+                .chain(args.iter().cloned())
+                .collect()
+        };
+        // `npx` is `npx.cmd` there, which only a PATHEXT lookup finds.
+        #[cfg(windows)]
+        let argv = {
+            let argv = crate::platform::windows_program(
+                std::iter::once(command.clone())
+                    .chain(args.iter().cloned())
+                    .collect(),
+                &cwd,
+            );
+            if !Path::new(&argv[0]).is_file() {
+                return Err(not_found());
+            }
+            argv
+        };
+        let mut cmd = Cmd::new(&argv[0]).args(&argv[1..]).cwd(&cwd);
         cmd = crate::safety::environment::runtime_child(cmd);
         // After the cleaning, so a token the config gives this server is
         // not stripped with the inherited ones -- but never an Agent's.
@@ -565,22 +590,33 @@ const CLEAR_PAUSE_MIN: Duration = Duration::from_millis(20);
 #[cfg(unix)]
 const CLEAR_PAUSE_MAX: Duration = Duration::from_millis(500);
 
-/// Windows, until P110.4: no anchored group to put a server in (that is a
-/// Unix process group), so no server is started rather than one ccnm could
-/// not clear up after.
+/// Windows (P110.4): the server in a process group of its own, without a
+/// console window, and stopped by ending its tree with `taskkill /T /F`
+/// when it has not exited by itself.
+///
+/// No anchor: a Windows pid is not reused while a handle to the process is
+/// open, and the `Child` passed to the stop holds one. What it cannot
+/// reach is what the server left behind and exited from -- `npx` that
+/// started `node` and returned -- since taskkill finds children through a
+/// parent that is still running. That is not checked or reported here (no
+/// process list to check it against yet); through Windows' own sshd the
+/// session's Job ends them with the server process (P106.3).
 #[cfg(windows)]
 pub(crate) fn start(
     process: &mut Command,
     server: &str,
     left: &Left,
 ) -> std::io::Result<(Child, Stop)> {
-    let _ = (process, left);
-    Err(std::io::Error::new(
-        std::io::ErrorKind::Unsupported,
-        format!(
-            "cannot start MCP server {server}: running MCP servers on a Windows Runtime is not supported yet"
-        ),
-    ))
+    let _ = (server, left);
+    crate::platform::own_process_group(process);
+    let child = process.spawn()?;
+    let taskkill = crate::platform::system_program("taskkill.exe").into_os_string();
+    let stop: Stop = Box::new(move |child, exited| {
+        if !exited {
+            crate::platform::kill_tree(child, &taskkill);
+        }
+    });
+    Ok((child, stop))
 }
 
 /// Spawn `process` -- a stdio server, pipes already set -- in a process

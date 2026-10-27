@@ -113,6 +113,17 @@ impl Sandbox {
             ExecSandbox::Off => return Ok(None),
             ExecSandbox::Codex => {}
         }
+        // Codex's Windows sandbox is its own thing and has not been
+        // measured (design section 2). Refused at session start rather than
+        // wrapped in a profile measured for seatbelt and bwrap.
+        if cfg!(windows) {
+            return Err(Error::new(
+                crate::error::ErrorCode::NotReady,
+                format!(
+                    "exec_sandbox = \"codex\" is not supported on a Windows Runtime yet; workspace {workspace} sets it, so no session is served until it is removed"
+                ),
+            ));
+        }
         let codex_bin = config
             .nodes
             .get(&ws.runtime_node)

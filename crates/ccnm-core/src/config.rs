@@ -91,6 +91,11 @@ pub struct Config {
     /// whether its sessions get any (`agent_tools`, `mcp_servers`).
     #[serde(default, skip_serializing_if = "AgentMcp::is_default")]
     pub agent_mcp: AgentMcp,
+    /// Git for Windows' `bash.exe`, for a Windows Runtime whose bash ccnm
+    /// does not find by itself (P110.2): `shell` runs its line with it.
+    /// Local like `ui`; read on Windows only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_bash: Option<PathBuf>,
 }
 
 /// Skills installed for this machine's account -- `~/.claude/skills`,

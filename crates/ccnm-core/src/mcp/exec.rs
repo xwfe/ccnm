@@ -190,6 +190,7 @@ pub fn exec_command(
             stop: Arc::default(),
             sandbox: None,
             run_dir: None,
+            shell: &Shell::locate(None),
         },
     )
 }
@@ -207,6 +208,8 @@ pub(crate) struct Running<'a> {
     /// Where the caller learns the run's directory once there is one, to
     /// report the last line the command wrote while it waits (P82).
     pub run_dir: Option<&'a std::sync::OnceLock<std::path::PathBuf>>,
+    /// What `shell` runs its line with, or why there is nothing to.
+    pub shell: &'a std::result::Result<Shell, String>,
 }
 
 pub(crate) fn exec_command_in(
@@ -221,6 +224,7 @@ pub(crate) fn exec_command_in(
         stop,
         sandbox,
         run_dir,
+        shell,
     } = running;
     let (argv, command) = match (args.cmd.is_empty(), args.shell.as_deref()) {
         (false, Some(_)) => {
@@ -238,10 +242,10 @@ pub(crate) fn exec_command_in(
             if line.trim().is_empty() {
                 return Err(Error::invalid_args("shell is empty"));
             }
-            (
-                vec![SHELL.to_string(), "-c".to_string(), line.to_string()],
-                line.to_string(),
-            )
+            let shell = shell
+                .as_ref()
+                .map_err(|why| Error::dependency(why.clone()))?;
+            (shell.argv(line), line.to_string())
         }
     };
     let field = if args.shell.is_some() { "shell" } else { "cmd" };
@@ -289,6 +293,16 @@ pub(crate) fn exec_command_in(
         }
     };
 
+    // `cmd` the way Windows finds a program: `npm` is `npm.cmd`, a `.ps1`
+    // runs under PowerShell (P110.2). Relative to where it runs, so after
+    // `cwd` is known.
+    #[cfg(windows)]
+    let argv = if args.shell.is_none() {
+        crate::platform::windows_program(argv, &cwd_abs)
+    } else {
+        argv
+    };
+
     let ticket = jobs.admit(args.run_in_background, Arc::clone(&stop))?;
     if stop.reason().is_some() {
         return Err(Error::invalid_args(
@@ -305,6 +319,11 @@ pub(crate) fn exec_command_in(
         .cwd(&cwd_abs)
         .timeout(timeout_ms.map_or(Duration::MAX, Duration::from_millis));
     let _ = provider; // Runtime protection covers all known Agents, not this selection.
+    if args.shell.is_some()
+        && let Ok(shell) = shell
+    {
+        cmd = shell.environment(cmd);
+    }
     cmd = crate::safety::environment::runtime_child(cmd);
     if let Some(sandbox) = sandbox {
         if !cwd_abs.is_dir() {
@@ -464,8 +483,60 @@ fn background(
     })
 }
 
-/// The program `shell` runs its line with. Found on PATH like any `cmd`.
+/// The program `shell` runs its line with on macOS and Linux. Found on PATH
+/// like any `cmd`.
+#[cfg(unix)]
 const SHELL: &str = "bash";
+
+/// What `shell` -- and a skill's commands, which run the same way -- run a
+/// line with, found once for a session.
+///
+/// bash on PATH, except on Windows, where it is Git for Windows' bash
+/// (design D2, the way Claude Code does it there): models write bash, and
+/// PowerShell is a different language. Where it is looked for is
+/// [`crate::platform::git_bash`]; not found, `shell` says so and points at
+/// `cmd`.
+#[derive(Debug, Clone)]
+pub(crate) struct Shell {
+    program: std::path::PathBuf,
+}
+
+impl Shell {
+    /// `configured` is `git_bash` from this machine's config, which only a
+    /// Windows Runtime reads.
+    pub(crate) fn locate(configured: Option<&Path>) -> std::result::Result<Shell, String> {
+        #[cfg(windows)]
+        return crate::platform::git_bash(configured).map(|program| Shell { program });
+        #[cfg(unix)]
+        {
+            let _ = configured;
+            Ok(Shell {
+                program: SHELL.into(),
+            })
+        }
+    }
+
+    /// `<bash> -c <line>`.
+    pub(crate) fn argv(&self, line: &str) -> Vec<String> {
+        vec![
+            self.program.to_string_lossy().into_owned(),
+            "-c".to_string(),
+            line.to_string(),
+        ]
+    }
+
+    /// On Windows, `SHELL` naming this bash: sshd sets it to the account's
+    /// default shell -- PowerShell on the test machine (P106) -- and a script
+    /// that runs `$SHELL -c` would start that instead. Written `C:/...`,
+    /// which bash and a Windows program both run.
+    pub(crate) fn environment(&self, cmd: Cmd) -> Cmd {
+        if cfg!(windows) {
+            cmd.env("SHELL", crate::platform::reported_path(&self.program))
+        } else {
+            cmd
+        }
+    }
+}
 
 /// A program that could not be started, named. For `shell` the program is
 /// bash, and the way round a Runtime without it is `cmd`.
@@ -1156,6 +1227,7 @@ mod tests {
                 stop: Arc::default(),
                 sandbox: None,
                 run_dir: None,
+                shell: &Shell::locate(None),
             },
         )
         .unwrap();

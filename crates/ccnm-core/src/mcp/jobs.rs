@@ -732,6 +732,7 @@ mod tests {
                     stop,
                     sandbox: None,
                     run_dir: None,
+                    shell: &exec::Shell::locate(None),
                 },
             )
         }

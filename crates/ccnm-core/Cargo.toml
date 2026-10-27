@@ -25,6 +25,9 @@ toexec-text.workspace = true
 [target.'cfg(target_os = "linux")'.dependencies]
 nix.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+toexec-win.workspace = true
+
 [dev-dependencies]
 ccnm-testdir.workspace = true
 # In-memory pipes to stand in for a client the MCP server outlives.

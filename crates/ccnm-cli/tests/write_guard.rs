@@ -1,4 +1,8 @@
 //! Real Runtime processes and file locks; no network or Agent CLI.
+//!
+//! On every platform since P109, except the cases marked `cfg(unix)`: one
+//! needs `exec_command` to leave a child behind (P110 on Windows), one is
+//! the Agent Node's half.
 use ccnm_core::mcp::write_guard::{Observation, Observed, Process, Reason};
 use ccnm_core::protocol::mcp::ServePayload;
 use ccnm_core::protocol::payload;
@@ -6,10 +10,9 @@ use ccnm_core::runtime::{GUARD_PROTOCOL, GuardReport, GuardRequest};
 use ccnm_core::session;
 use serde_json::json;
 use std::io::{BufRead, BufReader, Write};
-use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 struct Fixture {
     root: PathBuf,
@@ -49,7 +52,7 @@ impl Fixture {
         command
             .args(["internal", "mcp-serve", "--payload", &wire])
             .env_clear()
-            .env("PATH", "/usr/bin:/bin")
+            .envs(base_env())
             .env("HOME", self.root.join("home"))
             .env("XDG_STATE_HOME", self.root.join("state"))
             .env("CCNM_CONFIG", &self.config)
@@ -100,7 +103,7 @@ impl Fixture {
         Command::new(env!("CARGO_BIN_EXE_ccnm"))
             .args(["internal", "runtime-guard", "--payload", &wire])
             .env_clear()
-            .env("PATH", "/usr/bin:/bin")
+            .envs(base_env())
             .env("HOME", self.root.join("home"))
             .env("XDG_STATE_HOME", self.root.join("state"))
             .env("CCNM_CONFIG", &self.config)
@@ -121,10 +124,22 @@ impl Fixture {
     }
 
     /// The one marker file, as bytes, or `None` before any exists.
+    ///
+    /// On Windows a held marker cannot be read past the holder's lock, and
+    /// what an observer reads then is the holder's copy beside it, so that
+    /// is what is compared there.
     fn marker(&self) -> Option<Vec<u8>> {
         let dir = self.root.join("state/ccnm/write-guards");
-        let entry = std::fs::read_dir(dir).ok()?.flatten().next()?;
-        Some(std::fs::read(entry.path()).unwrap())
+        let lock = std::fs::read_dir(dir)
+            .ok()?
+            .flatten()
+            .map(|entry| entry.path())
+            .find(|path| path.extension().is_some_and(|ext| ext == "lock"))?;
+        match std::fs::read(&lock) {
+            Ok(bytes) => Some(bytes),
+            Err(_) if cfg!(windows) => Some(std::fs::read(lock.with_extension("owner")).unwrap()),
+            Err(e) => panic!("{e}"),
+        }
     }
 }
 impl Drop for Fixture {
@@ -162,6 +177,29 @@ fn refused(fixture: &Fixture, session: &str, contains: &str) {
     assert!(stderr.contains(contains), "{stderr}");
 }
 
+/// What a Runtime process gets from its system besides ccnm's own
+/// variables. Windows programs need a few more than PATH to start at all,
+/// `tasklist` among them, which tells a live writer from a gone one there.
+fn base_env() -> Vec<(String, std::ffi::OsString)> {
+    if cfg!(windows) {
+        [
+            "PATH",
+            "SystemRoot",
+            "SystemDrive",
+            "PATHEXT",
+            "TEMP",
+            "TMP",
+            "ComSpec",
+        ]
+        .into_iter()
+        .filter_map(|name| Some((name.to_string(), std::env::var_os(name)?)))
+        .collect()
+    } else {
+        vec![("PATH".to_string(), "/usr/bin:/bin".into())]
+    }
+}
+
+#[cfg(unix)]
 fn alive(pid: i32) -> bool {
     Command::new("/bin/kill")
         .args(["-0", &pid.to_string()])
@@ -188,8 +226,11 @@ fn abrupt_server_exit_never_transfers_authority_by_timeout() {
     refused(&fixture, "two", "not transferred automatically");
 }
 
+#[cfg(unix)]
 #[test]
 fn residual_exec_child_keeps_the_workspace_unknown_until_manual_recovery() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::time::Instant;
     let fixture = Fixture::new("child");
     let script = fixture.root.join("owned-child.sh");
     let pid_file = fixture.root.join("owned-child.pid");
@@ -351,11 +392,14 @@ fn the_runtime_answers_only_its_bound_agent_and_its_own_protocol() {
 #[test]
 fn worktrees_of_one_repository_are_observed_as_one_resource() {
     let fixture = Fixture::new("observe-worktree");
+    // An empty file rather than /dev/null, which Windows does not have.
+    let no_config = fixture.root.join("empty.gitconfig");
+    std::fs::write(&no_config, "").unwrap();
     let git = |args: &[&str]| {
         let out = Command::new("git")
             .args(args)
             .current_dir(&fixture.project)
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_GLOBAL", &no_config)
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .output()
             .unwrap();
@@ -378,7 +422,9 @@ fn worktrees_of_one_repository_are_observed_as_one_resource() {
         "base",
     ]);
     let other = fixture.root.join("other-tree");
-    git(&["worktree", "add", "-q", other.to_str().unwrap()]);
+    // `C:/...` on Windows: git does not take the `\\?\` form.
+    let spelled = ccnm_core::reported_path(&other);
+    git(&["worktree", "add", "-q", spelled.to_str().unwrap()]);
     std::fs::write(
         &fixture.config,
         format!(
@@ -410,9 +456,11 @@ fn worktrees_of_one_repository_are_observed_as_one_resource() {
 
 /// Agent 用它自己那条到 Runtime 的链路转问，回答来自 Runtime 执行账号的 state；
 /// Agent 只补一条它自己才知道的事实。两端都是真实二进制，中间的 ssh 是假的。
+#[cfg(unix)]
 #[test]
 fn the_agent_relays_the_runtime_answer_over_its_own_link() {
     use ccnm_core::protocol::run::{AgentGuardReport, AgentGuardRequest, OwnerOnAgent};
+    use std::os::unix::fs::PermissionsExt;
     let fixture = Fixture::new("relay");
     std::fs::write(
         &fixture.config,

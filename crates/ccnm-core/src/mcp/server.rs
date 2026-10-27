@@ -352,17 +352,6 @@ impl Server {
     /// `CCNM_E_WRONG_WORKSPACE` if the root is not a directory here, which
     /// the launcher sees as a failed `initialize`.
     pub fn new(payload: &ServePayload) -> CcnmResult<Self> {
-        // Windows has the read tools since P108; writing (the write guard's
-        // locks, P109) and running commands (P110) are not there yet. Said
-        // before anything is opened, rather than serving a session whose
-        // apply_patch and exec_command fail one call at a time.
-        #[cfg(windows)]
-        if payload.entry.writes() {
-            return Err(Error::new(
-                ErrorCode::NotReady,
-                "on Windows this Runtime serves read-only sessions so far: an external MCP client in read mode (external_mcp = \"read\"); a session that writes or runs commands comes with P109 and P110",
-            ));
-        }
         let root = crate::runtime::canonical_root(&payload.root)?;
         let exec_gate = ExecGate::decide(payload)?;
         // Every entry, at every access level. The findings this gate reads
@@ -472,8 +461,9 @@ impl Server {
             None => None,
         };
         // Only for a session that may write: the tool is withheld from the
-        // others, and a relay would only read configs nobody asks about.
-        let relay = if payload.entry.writes() {
+        // others, and a relay would only read configs nobody asks about. Not
+        // on Windows before P110: starting a server is running a program.
+        let relay = if payload.entry.writes() && !cfg!(windows) {
             exec_gate.config.as_ref().and_then(|config| {
                 let home = crate::paths::home_dir().ok()?;
                 let codex_home = std::env::var_os("CODEX_HOME").map(PathBuf::from);
@@ -637,11 +627,23 @@ impl Server {
     ///
     /// `tools/list` not naming it is a hint; a Host is free to ignore hints.
     /// This is the part that is not a hint.
+    ///
+    /// On Windows the tools that run programs answer too, until P110 brings
+    /// a way to run and stop them there: listed, as everywhere, and refused
+    /// with the stage that brings them rather than left to fail on `sh`.
     fn refuse_withheld(&self, tool: &str) -> Option<CallToolResult> {
-        (!self.offers(tool)).then(|| {
-            tool_error(&Error::policy(format!(
+        if !self.offers(tool) {
+            return Some(tool_error(&Error::policy(format!(
                 "{tool} is not available: this workspace is open for external MCP in read mode"
-            )))
+            ))));
+        }
+        (cfg!(windows) && RUNS_PROGRAMS.contains(&tool)).then(|| {
+            tool_error(&Error::new(
+                ErrorCode::NotReady,
+                format!(
+                    "{tool} is not supported on Windows yet: running commands on a Windows Runtime comes with P110; reading and apply_patch work"
+                ),
+            ))
         })
     }
 
@@ -1205,6 +1207,10 @@ impl Server {
 /// no client can talk its way past.
 const INTERACTION_TOOLS: [&str; 2] = ["exec_command", relay::TOOL];
 
+/// The tools that start programs, and the two that only make sense after
+/// one: what a Windows Runtime does not do before P110.
+const RUNS_PROGRAMS: [&str; 4] = ["exec_command", "read_output", "stop_command", relay::TOOL];
+
 /// The tools a session without write access does not get. Four of them
 /// change things -- `call_mcp_tool` starts programs, like `exec_command`
 /// (P49); `read_output` is here because of session scoping, see
@@ -1281,6 +1287,9 @@ fn unattended_commands(
 ) -> std::result::Result<(), &'static str> {
     if !payload.entry.writes() {
         return Err("this session cannot run commands");
+    }
+    if cfg!(windows) {
+        return Err("commands do not run on a Windows Runtime yet (P110)");
     }
     if !gate.allowed() {
         return Err("exec_command is refused on this runtime, and a skill's commands are commands");

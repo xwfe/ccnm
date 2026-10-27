@@ -3,11 +3,12 @@
 //! work at all.
 //!
 //! A real `ccnm internal mcp-serve` in an external read session, over
-//! pipes: the one kind of session Windows serves so far. What only this
-//! file shows is the part that differs by platform: every path that comes
-//! back is relative to the workspace and written with `/`, the root is
-//! never in the text, and on Windows the names NTFS reads as another file
-//! are refused by the tools, not only by the path policy's unit tests.
+//! pipes. What only this file shows is the part that differs by platform:
+//! every path that comes back is relative to the workspace and written
+//! with `/`, the root is never in the text, and on Windows the names NTFS
+//! reads as another file are refused by the tools, not only by the path
+//! policy's unit tests. Since P109 it also holds the Windows coding
+//! session: it writes, and it runs nothing yet.
 
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
@@ -342,26 +343,85 @@ fn each_read_tool_answers_with_workspace_relative_slashed_paths() {
     session.shutdown();
 }
 
-/// Writing and running commands come with P109 and P110; until then
-/// Windows says so before a session exists, rather than serving one whose
-/// write tools fail one call at a time.
-#[cfg(windows)]
+/// A coding session (P109 for Windows, the same everywhere else):
+/// `apply_patch` writes and keeps a file's BOM and CRLF, and a second
+/// writer is refused by the write guard while the first holds it. On
+/// Windows the tools that run programs say they come with P110.
 #[test]
-fn a_session_that_writes_is_refused_on_windows_before_it_starts() {
+fn a_coding_session_writes_and_a_second_writer_is_refused() {
     let fixture = Fixture::new("coding");
-    let out = fixture
+    let mut session = Session::start(fixture.serve(ExternalMode::Coding));
+    let tools: Vec<String> = session.rpc("tools/list", json!({}))["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap().to_string())
+        .collect();
+    for tool in ["apply_patch", "exec_command", "read_output", "stop_command"] {
+        assert!(tools.iter().any(|t| t == tool), "{tool} missing: {tools:?}");
+    }
+    assert!(
+        !tools.iter().any(|t| t == "call_mcp_tool"),
+        "relaying starts programs: {tools:?}"
+    );
+
+    let added = ok(&session.call(
+        "apply_patch",
+        json!({"files": [{"op": "add", "path": "notes/new.txt", "content": "fresh\n"}]}),
+    ));
+    assert!(added.contains("notes/new.txt"), "{added}");
+    assert_eq!(
+        std::fs::read_to_string(fixture.root.join("notes/new.txt")).unwrap(),
+        "fresh\n"
+    );
+
+    std::fs::write(
+        fixture.root.join("crlf.txt"),
+        b"\xEF\xBB\xBFone\r\ntwo\r\nthree\r\n",
+    )
+    .unwrap();
+    // The footer ends `; version <v>]`, which is where a model copies it from.
+    let read = ok(&session.call("read_file", json!({"path": "crlf.txt"})));
+    let version = read
+        .rsplit("version ")
+        .next()
+        .and_then(|rest| rest.split([' ', ']', '\n', ';']).next())
+        .filter(|v| !v.is_empty() && read.contains("version "))
+        .unwrap_or_else(|| panic!("no version in {read:?}"))
+        .to_string();
+    ok(&session.call(
+        "apply_patch",
+        json!({"files": [{"op": "update", "path": "crlf.txt", "version": version,
+                          "edits": [{"old": "two", "new": "TWO"}]}]}),
+    ));
+    assert_eq!(
+        std::fs::read(fixture.root.join("crlf.txt")).unwrap(),
+        b"\xEF\xBB\xBFone\r\nTWO\r\nthree\r\n"
+    );
+
+    #[cfg(windows)]
+    for (tool, args) in [
+        ("exec_command", json!({"cmd": ["cmd", "/c", "echo hi"]})),
+        ("read_output", json!({"output_ref": "r-0000000000000000"})),
+        ("stop_command", json!({"output_ref": "r-0000000000000000"})),
+    ] {
+        let said = refusal(&session.call(tool, args));
+        assert!(said.starts_with("CCNM_E_NOT_READY:"), "{tool}: {said}");
+        assert!(said.contains("P110"), "{tool}: {said}");
+    }
+
+    let second = fixture
         .serve(ExternalMode::Coding)
         .stdin(Stdio::null())
         .output()
         .unwrap();
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(!out.status.success(), "{stderr}");
-    assert!(
-        out.stdout.is_empty(),
-        "a refused session wrote MCP: {out:?}"
-    );
-    assert!(stderr.contains("read-only sessions so far"), "{stderr}");
-    assert!(stderr.contains("P109"), "{stderr}");
+    let stderr = String::from_utf8_lossy(&second.stderr);
+    assert!(!second.status.success(), "{stderr}");
+    assert!(second.stdout.is_empty(), "{second:?}");
+    assert!(stderr.contains("write guard is busy"), "{stderr}");
+
+    session.shutdown();
+    Session::start(fixture.serve(ExternalMode::Coding)).shutdown();
 }
 
 /// The names NTFS reads as another file (design D5), through the tools a

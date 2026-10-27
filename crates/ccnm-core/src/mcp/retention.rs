@@ -201,7 +201,7 @@ impl Output {
             if busy {
                 continue;
             }
-            match std::fs::remove_dir_all(&run.dir) {
+            match crate::platform::remove_tree(&run.dir) {
                 Ok(()) => {}
                 // Another server of this session removed it first.
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -241,7 +241,7 @@ impl Output {
             if in_progress(&run) {
                 continue;
             }
-            if let Err(error) = std::fs::remove_dir_all(&run)
+            if let Err(error) = crate::platform::remove_tree(&run)
                 && error.kind() != std::io::ErrorKind::NotFound
             {
                 tracing::warn!(run = %run.display(), %error, "cannot remove retained output");
@@ -444,7 +444,7 @@ pub(crate) fn sweep(
         if runs_in(&output).iter().any(|run| in_progress(&run.dir)) {
             continue;
         }
-        match std::fs::remove_dir_all(&output) {
+        match crate::platform::remove_tree(&output) {
             Ok(()) => {
                 let _ = std::fs::remove_dir(entry.path());
                 removed.push(output);

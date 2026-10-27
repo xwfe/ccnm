@@ -109,6 +109,34 @@ pub(crate) fn owned_by(meta: &std::fs::Metadata, uid: Option<u32>) -> bool {
     }
 }
 
+/// `remove_dir_all`, waiting out a file that is open for a moment.
+///
+/// On Windows a file another process has open without sharing deletion
+/// cannot be removed, and something often has one open just after it was
+/// written: Defender scanning it, a command's handle not closed yet. That
+/// fails the removal for a few milliseconds and then would not, so a
+/// failure is tried again, [`REMOVE_TRIES`] times in all, [`REMOVE_PAUSE`]
+/// apart -- about a second, after which whatever holds it is not letting go
+/// and the error is the caller's (P109.3). Unix removes open files, so
+/// there it is one try.
+pub(crate) fn remove_tree(path: &Path) -> io::Result<()> {
+    let mut tried = 1;
+    loop {
+        match std::fs::remove_dir_all(path) {
+            Err(e)
+                if cfg!(windows) && e.kind() != io::ErrorKind::NotFound && tried < REMOVE_TRIES =>
+            {
+                tried += 1;
+                std::thread::sleep(REMOVE_PAUSE);
+            }
+            done => return done,
+        }
+    }
+}
+
+const REMOVE_TRIES: u32 = 10;
+const REMOVE_PAUSE: std::time::Duration = std::time::Duration::from_millis(100);
+
 /// The file names a program called `name` may have here: `name` itself on
 /// Unix; on Windows `name` with each extension PATHEXT lists, in its order
 /// (`rg.com`, `rg.exe`, ...), since that is what decides what runs there.
@@ -301,6 +329,59 @@ mod tests {
         ] {
             assert_eq!(windows_spelling(given), reported, "{given}");
         }
+    }
+
+    /// A file held open without sharing deletion, let go of after a while:
+    /// on Windows the first tries fail and a later one removes the tree.
+    #[test]
+    fn a_tree_is_removed_once_its_open_file_is_let_go_of() {
+        let dir = std::env::temp_dir().join(format!("ccnm-remove-tree-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("run")).unwrap();
+        std::fs::write(dir.join("run/stdout"), "out\n").unwrap();
+        let held = held_without_delete(&dir.join("run/stdout"));
+        let letting_go = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            drop(held);
+        });
+        remove_tree(&dir).unwrap();
+        letting_go.join().unwrap();
+        assert!(!dir.exists());
+        // Already gone is an answer, not something to wait out.
+        assert_eq!(
+            remove_tree(&dir).unwrap_err().kind(),
+            io::ErrorKind::NotFound
+        );
+    }
+
+    /// Something that never lets go: the error comes back, after about a
+    /// second rather than never.
+    #[cfg(windows)]
+    #[test]
+    fn a_file_that_stays_open_is_given_up_on() {
+        let dir = std::env::temp_dir().join(format!("ccnm-remove-stuck-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("stdout"), "out\n").unwrap();
+        let held = held_without_delete(&dir.join("stdout"));
+        let started = std::time::Instant::now();
+        assert!(remove_tree(&dir).is_err());
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        drop(held);
+        remove_tree(&dir).unwrap();
+    }
+
+    /// Opened the way an editor or a running program on Windows opens a
+    /// file: readable by others, not removable. Elsewhere a plain open.
+    fn held_without_delete(path: &Path) -> std::fs::File {
+        let mut options = std::fs::OpenOptions::new();
+        options.read(true);
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt as _;
+            options.share_mode(0x1); // FILE_SHARE_READ
+        }
+        options.open(path).unwrap()
     }
 
     #[cfg(unix)]

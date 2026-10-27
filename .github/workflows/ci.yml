@@ -195,9 +195,9 @@ jobs:
     # Windows as the project machine, being built a stage at a time
     # (P107–P112, docs/plan/windows-runtime.md). A green job means the
     # library and the binary build there, the unit tests already written for
-    # Windows pass, the gate refuses what Windows does not run yet, and the
-    # read tools work in a read-only session (P108) -- nothing more. Writing
-    # and running commands are not there until P109–P110, and
+    # Windows pass, the gate refuses what Windows does not run yet, the read
+    # tools work (P108), and apply_patch and the write guard do (P109) --
+    # nothing more. Running commands is not there until P110, and
     # docs/support-matrix.md does not move because this job went green.
     runs-on: windows-latest
     timeout-minutes: 45
@@ -243,15 +243,22 @@ jobs:
       - name: Unit tests written for Windows
         run: |
           cargo test -p ccnm-core --lib -- ssh:: protocol:: error:: lang:: \
-            platform:: mcp::path:: mcp::search::hit_paths:: safety::whoami::
+            platform:: mcp::path:: mcp::search::hit_paths:: safety::whoami:: \
+            mcp::write_guard:: mcp::patch::
 
       - name: What Windows refuses, and what it lets through
         run: cargo test -p ccnm-cli --test windows_gate
 
-      # The seven read tools through the real binary (P108.2), and the
-      # names NTFS reads as another file refused by them.
+      # The seven read tools through the real binary (P108.2), the names
+      # NTFS reads as another file refused by them, and a coding session
+      # that writes (P109).
       - name: The read tools, end to end
         run: cargo test -p ccnm-cli --test read_tools
+
+      # Two Runtime processes on one working tree, and what the Runtime says
+      # about its own guard while one holds it (P109.3).
+      - name: The write guard between real processes
+        run: cargo test -p ccnm-cli --test write_guard
 
       - name: The binary builds and reports its version
         run: |

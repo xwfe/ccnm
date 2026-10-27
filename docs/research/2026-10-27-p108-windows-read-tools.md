@@ -62,7 +62,23 @@ GitHub Actions 运行 40498978439（提交 efaabd9，`windows-latest`），windo
 
 ### 3.3 Win11 测试机（P108.3 的 U6、P108.4）
 
-（待补）
+用户 2026-10-27 同意：只动测试机上 `%TEMP%\ccnm-p108` 这一个目录，测完整个删掉；不改 sshd、注册表、Defender、防火墙，不装软件。
+
+怎么跑（`B` 是 `C:/Users/xdw/AppData/Local/Temp/ccnm-p108`，`P` 是探针）：
+
+```bash
+gh run download 40498978439 --repo xwfe/ccnm -n ccnm-windows-x86_64 -D 本地目录   # CI 编的那份
+python3 -I P prepare 本地目录/stage --base B && COPYFILE_DISABLE=1 tar -C 本地目录/stage -cf 本地目录/p108.tar .
+ssh win11 'New-Item -ItemType Directory -Force $env:TEMP\ccnm-p108 | Out-Null'
+scp 本地目录/ccnm.exe 本地目录/p108.tar win11:AppData/Local/Temp/ccnm-p108/
+ssh win11 'tar -xf $env:TEMP\ccnm-p108\p108.tar -C $env:TEMP\ccnm-p108; git -C $env:TEMP\ccnm-p108\repo init -q'
+python3 -I P run --ssh win11 --base B --out 证据.json
+ssh win11 'Remove-Item -Recurse -Force $env:TEMP\ccnm-p108'
+```
+
+`prepare` 生成的目录里有：配置（`external_mcp = "read"`、机器技能关掉）；包装脚本 `ccnm-p108.cmd`，它设好 `CCNM_CONFIG`、`XDG_STATE_HOME`、`HOME` 再调 `ccnm.exe`（sshd 不收 `SetEnv`，P106 的 U1）；一个 git 仓库往下一层的项目，里面有 8 MB 的 `big.txt` 和 5000 个小文件。
+
+结果：（待补）
 
 ## 4. 已知限制
 

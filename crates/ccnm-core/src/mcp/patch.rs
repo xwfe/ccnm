@@ -1434,10 +1434,18 @@ fn interrupted_report(record: &JournalFile, journal: &Path) -> String {
             out.push_str(&format!(" -> {to}"));
         }
         if let Some(backup) = &line.backup {
-            let shown = backup
-                .strip_prefix(&record.root)
-                .unwrap_or(backup.as_path());
-            out.push_str(&format!("   original kept at {}", shown.display()));
+            // Joined by hand when it is inside the workspace: on Windows a
+            // path's own separator is `\`, and the model is only ever shown
+            // `/`. One outside it stays as the machine writes it.
+            let shown = match backup.strip_prefix(&record.root) {
+                Ok(rel) => rel
+                    .iter()
+                    .map(|part| part.to_string_lossy())
+                    .collect::<Vec<_>>()
+                    .join("/"),
+                Err(_) => backup.display().to_string(),
+            };
+            out.push_str(&format!("   original kept at {shown}"));
         }
         out.push('\n');
     }
@@ -3011,7 +3019,21 @@ mod tests {
             .map(|e| e.path())
             .collect();
         assert_eq!(written.len(), 1, "{written:?}");
-        let record: JournalFile = serde_json::from_slice(&fs::read(&written[0]).unwrap()).unwrap();
+        #[cfg(unix)]
+        let body = fs::read(&written[0]).unwrap();
+        // Windows locks are mandatory: while the commit holds its journal
+        // nothing else can read it, and nothing needs to -- a journal is
+        // read only once its writer is gone (`check_abandoned`). So it is
+        // read here the way a killed process leaves it: kept, let go of.
+        #[cfg(windows)]
+        let body = {
+            journal.abandon();
+            drop(journal);
+            let body = fs::read(&written[0]).unwrap();
+            fs::remove_file(&written[0]).unwrap();
+            body
+        };
+        let record: JournalFile = serde_json::from_slice(&body).unwrap();
         assert_eq!(record.pid, std::process::id());
         assert_eq!(record.files.len(), 1);
         assert_eq!(record.files[0].rel, "src/main.rs");
@@ -3022,6 +3044,8 @@ mod tests {
 
         // Dropping it is what removes it, which is why a killed process
         // leaves it behind.
+        #[cfg(windows)]
+        let journal = Journal::open(&journals, &root, &staged).unwrap();
         drop(journal);
         let after: Vec<PathBuf> = fs::read_dir(&journals)
             .unwrap()

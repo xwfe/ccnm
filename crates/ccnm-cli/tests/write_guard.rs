@@ -392,9 +392,13 @@ fn the_runtime_answers_only_its_bound_agent_and_its_own_protocol() {
 #[test]
 fn worktrees_of_one_repository_are_observed_as_one_resource() {
     let fixture = Fixture::new("observe-worktree");
-    // An empty file rather than /dev/null, which Windows does not have.
+    // An empty file rather than /dev/null, which Windows does not have;
+    // spelled `C:/...` there, because git cannot read a `\\?\` path (CI
+    // run 40512221955: "unknown error occurred while reading the
+    // configuration files").
     let no_config = fixture.root.join("empty.gitconfig");
     std::fs::write(&no_config, "").unwrap();
+    let no_config = ccnm_core::reported_path(&no_config);
     let git = |args: &[&str]| {
         let out = Command::new("git")
             .args(args)

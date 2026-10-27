@@ -197,7 +197,10 @@ class Probe:
         serve = ["internal", "mcp-serve", "--payload", payload]
         if args.ssh:
             base = args.base.rstrip("/")
-            self.argv = ["ssh", "-T"] + [x for o in SSH_OPTIONS for x in ("-o", o)] + [
+            # --ssh-option 排在 ccnm 的参数后面：ssh 每个选项取第一次出现的值，
+            # 所以它只能补 ccnm 没写的（HostName、HostKeyAlias），改不了 ccnm 写了的。
+            options = SSH_OPTIONS + (args.ssh_option or [])
+            self.argv = ["ssh", "-T"] + [x for o in options for x in ("-o", o)] + [
                 args.ssh, f"{base}/ccnm-p108.cmd", *serve]
             self.env = None
             self.leaks = [base, base.replace("/", "\\"), "\\\\?\\"]
@@ -267,6 +270,13 @@ class Probe:
         """Defender 下的耗时：没关它，只量，第一轮是冷的。"""
         self.timings = []
         last = MANY_FILES - 1
+        # What 200 calls cost with no file in them: the round trip and the
+        # server's own work. A read's own cost, Defender's included, is what
+        # is left of read_200_small_ms after this.
+        baseline_started = time.monotonic()
+        for _ in range(200):
+            conn.call("tools/call", {"name": "workspace_info", "arguments": {}})
+        self.baseline_200_ms = round((time.monotonic() - baseline_started) * 1000)
         for n in range(ROUNDS):
             # Only the last file matches, so rg reads all of them: a query
             # that matches early stops at max_results and measures nothing.
@@ -313,14 +323,20 @@ class Probe:
         t = threading.Thread(target=writer, daemon=True)
         t.start()
         t.join(HOLD)
+        writer_seconds = round(time.monotonic() - started, 2) if sent["done"] else None
+        # The whole HOLD even when the writer finished early: by its end the
+        # server has certainly filled its stdout, whatever order it read in.
+        time.sleep(max(0.0, HOLD - (time.monotonic() - started)))
         sent["at_hold_end"] = sent["bytes"]
         written_while_held = sent["done"]
         conn.reading.set()
         t.join(600)
         total_request_bytes = sum(len(json.dumps(a)) + 80 for _, _, a in plan)
         self.record("server kept reading stdin while its stdout was backed up", written_while_held,
-                    f"{sent['at_hold_end']} of {total_request_bytes} request bytes written in the first {HOLD} s",
-                    request_bytes=total_request_bytes, written_while_held_bytes=sent["at_hold_end"])
+                    f"{sent['at_hold_end']} of {total_request_bytes} request bytes written while nothing was read "
+                    f"for {HOLD} s (the writer finished after {writer_seconds} s)",
+                    request_bytes=total_request_bytes, written_while_held_bytes=sent["at_hold_end"],
+                    writer_seconds=writer_seconds)
         try:
             answers = conn.wait(list(ids), timeout=600)
         except Exception as e:  # noqa: BLE001
@@ -348,6 +364,8 @@ def main() -> int:
     p.add_argument("--git-init", action="store_true")
     r = sub.add_parser("run")
     r.add_argument("--ssh")
+    r.add_argument("--ssh-option", action="append",
+                   help="extra ssh -o, e.g. HostName=192.168.x.y with HostKeyAlias=<the known name>")
     r.add_argument("--base")
     r.add_argument("--local")
     r.add_argument("--ccnm")
@@ -366,7 +384,8 @@ def main() -> int:
         probe.record("probe ran to the end", False, repr(e))
     evidence = {
         "started": started, "argv_target": args.ssh or "local", "records": probe.records,
-        "u6": getattr(probe, "timings", None), "workspace_info": getattr(probe, "platform", None),
+        "u6": getattr(probe, "timings", None), "u6_baseline_200_calls_ms": getattr(probe, "baseline_200_ms", None),
+        "workspace_info": getattr(probe, "platform", None),
         "passed": all(r["ok"] for r in probe.records),
     }
     Path(args.out).write_text(json.dumps(evidence, ensure_ascii=False, indent=2) + "\n")

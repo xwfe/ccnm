@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-10-27T21:10:00+09:00",
-  "current_task": "P108",
+  "last_updated": "2026-10-27T21:40:00+09:00",
+  "current_task": "P109",
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
     "source": "docs/research/codex-internal-wiring-2026-09-07.md",
@@ -5329,17 +5329,19 @@
     {
       "id": "P108",
       "title": "Windows 上的只读工具和路径规则",
-      "status": "in_progress",
+      "status": "completed",
       "depends_on": [
         "P107"
       ],
-      "owner": "claude-opus-5-5（桌面端会话）",
+      "owner": null,
       "started_at": "2026-10-25T20:05:00+09:00",
-      "last_updated": "2026-10-27T21:10:00+09:00",
+      "last_updated": "2026-10-27T21:40:00+09:00",
       "completed_criteria": [
         "P108.1",
         "P108.2",
-        "P108.5"
+        "P108.5",
+        "P108.3",
+        "P108.4"
       ],
       "evidence": [
         {
@@ -5369,6 +5371,22 @@
           "ref": ".github/workflows/ci.yml",
           "commit": "efaabd9",
           "result": "只是 P108.3 的前一半（macOS、Linux 上同一批工具的现有测试不改照过）：同一次运行 test（macos-latest）cargo test --workspace 1183/0、linux-runtime（ubuntu-24.04）1184/0，两边 ci_gates.py 的 Python 251 条 0 跳过，read_tools 三个系统都跑了；本机 macOS arm64 1183/0。现有测试只改了一处：windows_gate.rs 里 mcp-serve 从'还不支持'挪到'过闸'，那是 Windows 专用测试。后一半 Defender 计时（U6）要在测试机上量，还没做。"
+        },
+        {
+          "kind": "real_nodes",
+          "criteria": [
+            "P108.4"
+          ],
+          "ref": "docs/research/2026-10-27-p108-windows-read-tools.md",
+          "result": "用户 10-27 同意上测试机。Win11 测试机（build 26200，PowerShell 当默认 shell，Defender 实时保护开着），CI artifact 12730989604 的 ccnm.exe（sha256 c8714622…，远端 Get-FileHash 一致）放在 %TEMP%\\ccnm-p108，经 Windows 自带 sshd、照 ccnm 的传输 ssh 参数起 internal mcp-serve（外部 read 模式），用 docs/research/probes/p108-windows-read-tools.py（不 import ccnm）跑两轮，都全过：七个工具回答对、没有 \\ 和根目录，workspace_info 回 windows/x86_64、git_subdir sub/proj（whoami 认出了身份），六种 Windows 名字 read_file 报 CCNM_E_POLICY；224 个调用双向压测——读线程停 8 秒，写线程 0.69 秒就写完 25 200 275 字节请求，服务端在 stdout 堆着 14 434 751 字节回答时照样读完 stdin，之后 0.3 秒全部收完、内容各自对；关 stdin 后退出码 0。判据用单线程假服务端做过反例（只放进 1 MB，判 FAIL）。tailnet 那天连不上（测试机 Tailscale 服务在跑、节点离线），走局域网，HostKeyAlias 按 known_hosts 里原来的主机钥匙严格核对；ccnm 的 ssh 参数没改。测完目录删掉、无残留 ccnm 进程。看到一行 WARN：过期输出清理在 Windows 上列不出 mcp-serve，一律保留，记进 ROADMAP 的 P110.3。"
+        },
+        {
+          "kind": "real_nodes",
+          "criteria": [
+            "P108.3"
+          ],
+          "ref": "docs/research/2026-10-27-p108-windows-read-tools.md",
+          "result": "P108.3 的后一半（U6）：同一台测试机，Defender 实时保护开着、没关也没加排除（只量）。第二轮三遍：search_text 扫 5000 个小文件（只有最后一个命中）290/302/283 ms，list_files 列 1000 个 63/61/60 ms，顺序 200 次 read_file 小文件 1653/1360/1313 ms；同连接 200 次 workspace_info 基线 1342 ms（每次约 6.7 ms 往返）。扣掉基线，第一次读刚写过的小文件多 1.6 ms（第一轮测量多 5.8 ms），再读几乎不多；rg 冷热都约 0.3 s。结论：只读工具不需要建议加 Defender 排除，写多读多的到 P110 再量。前一半（macOS、Linux 现有测试照过）见上一条 CI 证据。"
         }
       ],
       "blockers": []
@@ -5498,7 +5516,7 @@
     "【2026-10-08 P80 时看到 / 只记不修】Agent 上的 MCP 转发 ccnm_agent（P50）在受管 Codex 会话里同样没配 tool_timeout_sec，Codex 对它只等 300 秒。它的 call_mcp_tool 默认等 60 秒、起 server 30 秒，用户给 Agent 上某个 server 配的 tool_timeout_sec 接近或超过 300 秒时（还没起的 server 起它的时间也算在内），调用会被 Codex 先截断、不发取消，照样在 Agent 上跑完。值取决于用户配置、不归 ccnm 的常量管，P80 没修。依据 docs/research/2026-10-08-p80-codex-tool-timeout.md 第 6 节。"
   ],
   "handoff": {
-    "next_action": "**2026-10-27 P108 做到等测试机这一步，保持 in_progress。** 用户同意推送和上测试机。已推送并提交：56abd97 认领、de75931 修 macOS 上 apply_patch 能写进 .git、b745242 Windows 只读（路径规则、根目录写法、七个工具、mcp-serve 只收 read 模式、whoami 认身份）、efaabd9 CI 留 ccnm.exe、e91668a 记证据；CI 运行 40498978439 四个 job 全绿，P108.1、P108.2、P108.5 记完成。剩 P108.3 的 Defender 计时和 P108.4：win11 离线（Tailscale 显示 1 天前最后在线，应是睡着了），要用户叫醒。醒了以后照研究记录第 3.3 节跑：本机已下载 CI artifact 12730989604 的 ccnm.exe（sha256 c8714622…），探针 prepare 出的 tar 按 base=C:/Users/xdw/AppData/Local/Temp/ccnm-p108 生成；scp ccnm.exe 和 tar 过去、远端 tar -xf、git -C <base>/repo init -q，然后 `p108-windows-read-tools.py run --ssh win11 --base <base> --out 证据`；跑完整个 <base> 删掉（用户只同意动这一个目录，不改 sshd、注册表、Defender、防火墙，不装软件）。卡住（压测那条 FAIL）就停下修，不往 P109 走。\n\n之前的交接：\n**2026-10-25 认领 P108。** 先做本机能做的：P108.1 路径规则（Windows 上拒绝备用数据流、设备保留名、结尾点或空格、8.3 短名形状的组件；`.git` 不分大小写，并按解析之后的路径再查一遍——macOS 默认不分大小写，`realpath` 会把 `.GIT/config` 纠正成 `.git/config`，现在 `apply_patch` 写 `.GIT/config` 能写进 git 库，一并修）、Runtime 报给 Agent 和 `ws add` 存的根目录统一成 `C:/…`；P108.2 七个只读工具在 Windows 上要改的几处（rg 按 PATHEXT 找、rg 吐出的 `\\` 换成 `/`、已安装技能的路径、git_subdir 用 `/`）和一份三个系统都跑的端到端测试。另外 P108.4 要 mcp-serve 在 Windows 上真能起来，计划里漏了两件：入口闸放行 mcp-serve 但只收只读会话（写和执行等 P109、P110），审计在 Windows 上认得出身份（现在 `/usr/bin/id` 不存在，会话被'身份未知'这条不可豁免的检查拒掉）；补成 P108.5。推送跑 Windows CI、往测试机放 CI 构建（P108.4）都要先问用户。\n\n之前的交接：\n**2026-10-25 P107 完成，current_task 为 P108（还没认领）。** 用户让推送跑 CI：toexec 322e937 和 ccnm 推到 main；第一次 CI 只红在 ssh::tests::control_cmds（Windows 上 ControlPath 用 \\ 拼），f0b64f4 修好并预防性地把 Windows 主线程栈设成 8 MiB，第二次运行 40184893788 四个 job 全绿（Windows：clippy、单元测试 49/0、windows_gate 3/0、release 构建 ccnm 0.20.0）。P107 交付：ssh 层（LogLevel=ERROR、认 Windows 找不到程序、拒绝 @ 开头参数）、platform 模块、Windows 入口白名单、CI windows-runtime job、开发文档 Windows 目标一节、P107.3 的 Agent 侧根目录清单（改法分到 P108.1、P111.1）。中途本机磁盘满过一次，删了 target/x86_64-pc-windows-msvc 和 target/debug/incremental。下一步 P108：Windows 上的只读工具和路径规则；P108.4 要在测试机放一份 CI 构建的 ccnm，放之前问用户；本机要不要装 cargo-xwin 也要用户定。\n\n之前的交接：\n**2026-10-25 P107 做到等 Windows 真机构建这一步，保持 in_progress。** 已提交：329cadc（P107.4 ssh 层）、ce727b2（P107.1 平台模块、Windows 入口白名单、测试模块按平台）、253107a（P107.2 CI windows-runtime job、开发文档）；P107.3 的结论写进设计文档第 2 节并分到 P108.1、P111.1。本机只能 check/clippy Windows 目标（没有 MSVC 链接器），P107.1 的 cargo build 和 P107.2 的 CI 都还没在 Windows 上跑过。下一步要用户定：推送到 GitHub 让 CI 跑（会把本地十几笔提交一起推上去），或者本机装 cargo-xwin 交叉编译、把测试程序拷到 Win11 测试机上跑。CI 红了就按报错修，绿了把 P107.1、P107.2 记完成。",
+    "next_action": "**2026-10-27 P108 完成，current_task 为 P109（还没认领）。** 用户叫醒测试机后跑完 P108.3 的 Defender 计时和 P108.4：CI 编的 ccnm.exe 经 Windows sshd 起 mcp-serve，七个只读工具、Windows 名字拒绝、双向 25 MB 压测（stdout 堆着时照样读 stdin）两轮全过；Defender 开着时只读工具不慢。测试机上的 %TEMP%\\ccnm-p108 已删、无残留进程。那天 win11 的 Tailscale 节点一直离线（服务在跑），走的局域网 192.168.31.157，HostKeyAlias 严格核对主机钥匙；要不要修它的 Tailscale 由用户定。P108 的提交：56abd97、de75931（macOS 上 apply_patch 能写进 .git 的缺口，三个系统都修）、b745242、efaabd9 已推送，CI 40498978439 全绿；之后的文档提交在本地，推不推问用户。下一步 P109：Windows 上写文件和写锁（设计文档 D4：锁文件只加锁、写者信息另放一个文件；三个系统都改，改 process.rs 时另跑 --test-threads=64），P109 的锁身份用 P108 规范化之后的路径。另：过期输出清理在 Windows 上列不出 mcp-serve（一律保留），已记进 P110.3。\n\n之前的交接：\n**2026-10-27 P108 做到等测试机这一步，保持 in_progress。** 用户同意推送和上测试机。已推送并提交：56abd97 认领、de75931 修 macOS 上 apply_patch 能写进 .git、b745242 Windows 只读（路径规则、根目录写法、七个工具、mcp-serve 只收 read 模式、whoami 认身份）、efaabd9 CI 留 ccnm.exe、e91668a 记证据；CI 运行 40498978439 四个 job 全绿，P108.1、P108.2、P108.5 记完成。剩 P108.3 的 Defender 计时和 P108.4：win11 离线（Tailscale 显示 1 天前最后在线，应是睡着了），要用户叫醒。醒了以后照研究记录第 3.3 节跑：本机已下载 CI artifact 12730989604 的 ccnm.exe（sha256 c8714622…），探针 prepare 出的 tar 按 base=C:/Users/xdw/AppData/Local/Temp/ccnm-p108 生成；scp ccnm.exe 和 tar 过去、远端 tar -xf、git -C <base>/repo init -q，然后 `p108-windows-read-tools.py run --ssh win11 --base <base> --out 证据`；跑完整个 <base> 删掉（用户只同意动这一个目录，不改 sshd、注册表、Defender、防火墙，不装软件）。卡住（压测那条 FAIL）就停下修，不往 P109 走。\n\n之前的交接：\n**2026-10-25 认领 P108。** 先做本机能做的：P108.1 路径规则（Windows 上拒绝备用数据流、设备保留名、结尾点或空格、8.3 短名形状的组件；`.git` 不分大小写，并按解析之后的路径再查一遍——macOS 默认不分大小写，`realpath` 会把 `.GIT/config` 纠正成 `.git/config`，现在 `apply_patch` 写 `.GIT/config` 能写进 git 库，一并修）、Runtime 报给 Agent 和 `ws add` 存的根目录统一成 `C:/…`；P108.2 七个只读工具在 Windows 上要改的几处（rg 按 PATHEXT 找、rg 吐出的 `\\` 换成 `/`、已安装技能的路径、git_subdir 用 `/`）和一份三个系统都跑的端到端测试。另外 P108.4 要 mcp-serve 在 Windows 上真能起来，计划里漏了两件：入口闸放行 mcp-serve 但只收只读会话（写和执行等 P109、P110），审计在 Windows 上认得出身份（现在 `/usr/bin/id` 不存在，会话被'身份未知'这条不可豁免的检查拒掉）；补成 P108.5。推送跑 Windows CI、往测试机放 CI 构建（P108.4）都要先问用户。\n\n之前的交接：\n**2026-10-25 P107 完成，current_task 为 P108（还没认领）。** 用户让推送跑 CI：toexec 322e937 和 ccnm 推到 main；第一次 CI 只红在 ssh::tests::control_cmds（Windows 上 ControlPath 用 \\ 拼），f0b64f4 修好并预防性地把 Windows 主线程栈设成 8 MiB，第二次运行 40184893788 四个 job 全绿（Windows：clippy、单元测试 49/0、windows_gate 3/0、release 构建 ccnm 0.20.0）。P107 交付：ssh 层（LogLevel=ERROR、认 Windows 找不到程序、拒绝 @ 开头参数）、platform 模块、Windows 入口白名单、CI windows-runtime job、开发文档 Windows 目标一节、P107.3 的 Agent 侧根目录清单（改法分到 P108.1、P111.1）。中途本机磁盘满过一次，删了 target/x86_64-pc-windows-msvc 和 target/debug/incremental。下一步 P108：Windows 上的只读工具和路径规则；P108.4 要在测试机放一份 CI 构建的 ccnm，放之前问用户；本机要不要装 cargo-xwin 也要用户定。",
     "scope": "2026-10-08 用户要求：零额度复现 Codex 300 秒工具超时、选修法、补外部入口文档、跑门禁、更新状态、粒度提交、不推送。改动：crates/ccnm-core（provider/codex 的 TOOL_TIMEOUT 与启动参数、测试；mcp/hooks 的 MAX_TIMEOUT 改 pub(crate)；mcp/output 注释）、docs/protocol/remote-workspace-mcp-v1.md、docs/usage.md、docs/troubleshooting.md、docs/research 的 P80 记录与夹具、ROADMAP、status。没动任何机器、已装的 ccnm 与配置；Codex 0.154.0 包和源码只下到会话 scratchpad。",
     "planning_validation": {
       "at": "2026-09-08T21:22:43+09:00",

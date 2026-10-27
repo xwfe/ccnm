@@ -2,7 +2,7 @@
 
 阶段范围见 [ROADMAP](../plan/ROADMAP.md) 的 P108，设计见 [Windows 当项目机器](../plan/windows-runtime.md) 的 D5。
 
-**结论：** 七个只读工具在 Windows 上能用，mcp-serve 在 Windows 上只服务外部客户端的 read 模式，会写的会话在建会话之前就被拒。认领时另外查出一个三个系统共有的缺口：macOS 上 `apply_patch` 能写进 `.git`，已修。
+**结论：** 七个只读工具在 Windows 上能用：CI 的 `windows-latest` 和 Win11 测试机（经 Windows 自带的 sshd）都跑通了。mcp-serve 在 Windows 上只服务外部客户端的 read 模式，会写的会话在建会话之前就被拒。P106 担心的"服务端一阵不读 stdin 就卡死"没有出现：stdout 堆着 14 MB 回答时，它照样把 25 MB 请求读完了。Defender 开着时只读工具不慢（第 3.3 节）。认领时另外查出一个三个系统共有的缺口：macOS 上 `apply_patch` 能写进 `.git`，已修。
 
 ## 1. 认领时查出来的两件事
 
@@ -78,7 +78,29 @@ ssh win11 'Remove-Item -Recurse -Force $env:TEMP\ccnm-p108'
 
 `prepare` 生成的目录里有：配置（`external_mcp = "read"`、机器技能关掉）；包装脚本 `ccnm-p108.cmd`，它设好 `CCNM_CONFIG`、`XDG_STATE_HOME`、`HOME` 再调 `ccnm.exe`（sshd 不收 `SetEnv`，P106 的 U1）；一个 git 仓库往下一层的项目，里面有 8 MB 的 `big.txt` 和 5000 个小文件。
 
-结果：（待补）
+**连接这一轮走的是局域网。** 10-27 用户叫醒测试机后，它的 Tailscale 服务在跑（`Running`），但节点一直显示离线（"last seen 1d ago"），tailnet 地址连不上；局域网 mDNS 能解析 `WIN11.local`，22 端口开着。所以 ssh 多加 `HostName=192.168.31.157`、`HostKeyAlias=100.118.127.25`、`StrictHostKeyChecking=yes`：按 known_hosts 里 win11 原来那把主机钥匙严格核对，对得上才连。ccnm 自己那组 ssh 参数一项没改，探针的 `--ssh-option` 只能补 ccnm 没写的选项。测试机那边的 Tailscale 没动。
+
+**测试机：** Windows 11 build 26200，账号 `win11\xdw`（管理员、经 sshd 是已提权的令牌，P106），默认 shell 是 PowerShell 5.1，Defender 实时保护开着（`RealTimeProtectionEnabled = True`），rg 是 scoop 的 shim，git 是 scoop 的 2.52。CI artifact 12730989604 的 `ccnm.exe` 拷过去之后 `Get-FileHash` 与本机一致，经包装脚本 `--version` 输出 `ccnm 0.20.0`。
+
+**结果（两轮都全过，第二轮在改严压测判据之后、重新解开小文件之后跑）：**
+
+- 握手约 0.5 秒（含 ssh 建连和起进程）。`tools/list` 正好七个只读工具。`workspace_info` 回 `inside git repository at sub/proj, windows/x86_64`：`whoami` 认出了身份，会话起来了；`git_subdir` 用 `/`。
+- 七个工具都对，回答里没有 `\`、没有 `C:/Users/xdw/AppData/Local/Temp/ccnm-p108` 的任何一种写法。`read_file` 对 `README.md:hidden`、`NUL`、`src/con.txt`、`src./main.rs`、`SRC~1/main.rs`、`GIT~1/config` 都报 `CCNM_E_POLICY`。
+- **双向大流量（P108.4 的硬要求）：** 224 个调用，其中 24 个各带 1 MiB 没声明的字段（请求共 25 200 275 字节），200 个各读 `big.txt` 的一页（回答共 14 434 751 字节）。读线程停 8 秒不读；写线程 0.69 秒就把 25 MB 请求全写进去了，那时服务端的 stdout 早已堆住。之后 224 个回答 0.3 秒收完，每个都是它自己那一页、那条说明。所以 rmcp 3.5.1 的读循环在输出积压时照样读 stdin，P106 的那种卡死没有出现。第一轮用的是改严之前的探针：写线程一写完读线程就恢复了，没停满 8 秒（判据仍成立，写完那一刻读线程还停着，只是 stdout 堆了多久说不准），从开始到全部收完 1.0 秒。
+- 关 stdin 之后 mcp-serve 退出码 0，ssh 正常返回；测试机上没有残留的 ccnm 进程。
+- 退出时 stderr 有一行 `WARN cannot list running mcp-serve processes; expired output is kept`：过期输出的清理要先列出在跑的 mcp-serve（`overview::try_scan_servers`），Windows 上列不出来，于是一个都不删。这是安全的那一边，而且只读会话不产生输出；输出要等 P110 的 `exec_command` 才有，记进 ROADMAP 的 P110。
+
+**U6（Defender 拖慢多少）：** 没关 Defender、也没加排除（用户只同意动那一个目录），只量开着时的耗时，所以只能看冷热差，量不出"关掉会快多少"。每轮三件事，三轮：
+
+| 第二轮测量（ms） | 第 1 轮（刚写过的文件） | 第 2 轮 | 第 3 轮 |
+| --- | --- | --- | --- |
+| `search_text` 扫 5000 个小文件（只有最后一个命中，rg 要读完全部） | 290 | 302 | 283 |
+| `list_files` 列 1000 个 | 63 | 61 | 60 |
+| 顺序 200 次 `read_file`，每次一个小文件 | 1653 | 1360 | 1313 |
+
+基线：同一连接上顺序 200 次 `workspace_info`（不碰文件）1342 ms，即每次调用约 6.7 ms 的往返加服务端开销。扣掉之后，第一次读一个刚写过的小文件多 1.6 ms（第一轮测量时是 2500 ms，多 5.8 ms），再读几乎不多。rg 扫 5000 个文件冷热都在 0.3 秒左右。结论：Defender 开着时，只读工具的耗时在这台机器上不构成问题，文档里不需要建议加排除；写多读多的场景（编译、跑测试）到 P110 再量一次（设计文档 U6 本来就写的 P108、P110 各量一次）。
+
+清理：测完 `Remove-Item -Recurse -Force %TEMP%\ccnm-p108`，`Test-Path` 为 False，`Get-Process ccnm` 没有进程。
 
 ## 4. 已知限制
 

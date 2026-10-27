@@ -1425,6 +1425,7 @@ P73 当时把"外部 MCP workspace 里执行账号的安全没人验"留作挡�
 - **P110.3** 超时、停止、会话结束用 `taskkill /T /F` 杀整棵树，失败退回结束根进程；父进程先退出的孙进程收不到，写进已知限制（P106.3 实测和 macOS 一样）。
   - 后台命令、`read_output`、`stop_command` 在 Windows CI 上有端到端测试；后台命令还在跑时 mcp-serve 退出，Agent 那边的连接照常关闭、不挂住。
   - 经 sshd 跑时，mcp-serve 一退出，它起的后台命令全部跟着结束（sshd 的 Job 带 `KILL_ON_JOB_CLOSE`）。这和 macOS、Linux 的 AUTH-02 不一样，写进支持矩阵。
+  - 过期输出的清理（`retention::sweep_expired`）要先列出在跑的 mcp-serve（`overview::try_scan_servers`），Windows 上列不出来，现在一律保留不删（P108.4 真机看到那行 WARN）。有了 `exec_command` 的输出之后，Windows 上要能列出来，或者另想办法判断哪些会话还活着。
 - **P110.4** 中文输出、独立的 stderr、非零退出码都对。
   - 测试机的系统代码页是 936，原生工具输出的中文常常是 GBK 而不是 UTF-8。要定下来：输出不是合法 UTF-8 时，要不要按代码页转成 UTF-8，还是照现在的做法报"不是合法 UTF-8"并换成 U+FFFD。
   - `call_mcp_tool` 能起 `npx.cmd` 这类 server。

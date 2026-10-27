@@ -336,6 +336,11 @@ fn a_timeout_ends_the_whole_tree() {
 /// pid, parent pid and name of the processes a command here could start.
 fn process_tree() -> String {
     let script = "Get-CimInstance Win32_Process | Where-Object { $_.Name -in 'bash.exe','sleep.exe','ping.exe','cmd.exe','ccnm.exe' } | ForEach-Object { '{0} {1} {2}' -f $_.ProcessId, $_.ParentProcessId, $_.Name }";
+    // No console and no stdin of ours: a PowerShell attached to the test's
+    // console left it unable to print its own failure (CI run 40527946104
+    // stopped right after `failures:`).
+    use std::os::windows::process::CommandExt as _;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     let out = Command::new("powershell")
         .args([
             "-NoLogo",
@@ -344,6 +349,8 @@ fn process_tree() -> String {
             "-Command",
             script,
         ])
+        .stdin(Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
         .output();
     match out {
         Ok(out) => String::from_utf8_lossy(&out.stdout).into_owned(),

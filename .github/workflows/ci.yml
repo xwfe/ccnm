@@ -266,7 +266,7 @@ jobs:
       # and an MCP server behind a .cmd (P110). Node and Git Bash are on the
       # image.
       - name: Running commands
-        run: cargo test -p ccnm-cli --test windows_exec
+        run: cargo test -p ccnm-cli --test windows_exec -- --nocapture --test-threads=1
 
       - name: The binary builds and reports its version
         run: |

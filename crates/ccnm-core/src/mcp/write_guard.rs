@@ -14,6 +14,10 @@ use crate::process::{Cmd, ProcessRunner};
 
 pub struct WriteGuard {
     file: File,
+    /// Where the copy of the marker for observers goes (Windows only; see
+    /// [`owner_path`]).
+    #[cfg(windows)]
+    owner: PathBuf,
     /// The `held …` line this guard wrote. Kept so [`abandon`](Self::abandon)
     /// can leave it in place instead of replacing it with [`RELEASED`].
     held: String,
@@ -130,8 +134,14 @@ impl WriteGuard {
         file.write_all(held.as_bytes())?;
         file.set_len(held.len() as u64)?;
         file.sync_data()?;
+        #[cfg(windows)]
+        let owner = owner_path(state, &resource);
+        #[cfg(windows)]
+        copy_for_observers(&owner, &held);
         Ok(Self {
             file,
+            #[cfg(windows)]
+            owner,
             held,
             abandoned: Mutex::new(None),
         })
@@ -178,6 +188,11 @@ impl Drop for WriteGuard {
         if let Err(error) = marked {
             tracing::warn!(?error, "could not mark Runtime write guard released");
         }
+        // Before the unlock: an observer that finds the lock free reads the
+        // marker itself, and one that finds it held should not see a copy
+        // older than the marker.
+        #[cfg(windows)]
+        copy_for_observers(&self.owner, &text);
         if let Err(error) = self.file.unlock() {
             tracing::warn!(?error, "could not unlock Runtime write guard explicitly");
         }
@@ -228,18 +243,22 @@ fn left_held(rest: &str, runner: &dyn ProcessRunner) -> String {
             "the marker names session {session}; it predates the pid record, so look for an\n\
              `ccnm internal mcp-serve` for this workspace in a process list"
         ),
-        Some(pid) => match owner_now(pid, runner) {
-            Some(command) if command.contains("ccnm") => format!(
+        Some(pid) => match lookup(pid, runner) {
+            Lookup::Running(command) if command.contains("ccnm") => format!(
                 "that session ({session}) is still running as pid {pid}: {command}\n\
                  end it first; taking the guard from a live writer is the one thing this refusal exists to stop"
             ),
-            Some(command) => format!(
+            Lookup::Running(command) => format!(
                 "the session ({session}) ran as pid {pid}, and that pid is now something else ({command}),\n\
                  so its own process is gone. **That does not clear this**: commands it started can outlive it"
             ),
-            None => format!(
+            Lookup::Gone => format!(
                 "the session ({session}) ran as pid {pid}, which is gone.\n\
                  **That does not clear this**: commands it started can outlive it, and nothing here can see them"
+            ),
+            Lookup::Unchecked => format!(
+                "the session ({session}) ran as pid {pid}; whether that process is still there could not be checked.\n\
+                 Either way this is not cleared: commands it started can outlive it"
             ),
         },
     };
@@ -268,18 +287,76 @@ fn left_held(rest: &str, runner: &dyn ProcessRunner) -> String {
     )
 }
 
-/// What that pid is now, or `None` when there is no such process. A pid is
-/// reused, so the command line is part of the answer -- it is what tells a
-/// stale marker apart from a live writer.
-fn owner_now(pid: u32, runner: &dyn ProcessRunner) -> Option<String> {
-    let output = runner
-        .run(&Cmd::new("ps").args(["-o", "command=", "-p", &pid.to_string()]))
-        .ok()?;
-    if !output.success() {
-        return None;
+/// What a pid is now. A pid is reused, so what runs under it is part of the
+/// answer -- it is what tells a stale marker apart from a live writer -- and
+/// "could not ask" is kept apart from "no such process": the first is not
+/// evidence of anything.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Lookup {
+    /// Unix: its command line. Windows: its image name (`ccnm.exe`).
+    Running(String),
+    Gone,
+    Unchecked,
+}
+
+/// `ps -o command= -p <pid>`.
+#[cfg(unix)]
+fn lookup(pid: u32, runner: &dyn ProcessRunner) -> Lookup {
+    let Ok(output) = runner.run(&Cmd::new("ps").args(["-o", "command=", "-p", &pid.to_string()]))
+    else {
+        return Lookup::Unchecked;
+    };
+    let command = output.stdout_lossy().trim().to_string();
+    match (output.success(), command.is_empty()) {
+        (true, false) => Lookup::Running(command),
+        // Both `ps`es exit 1 with nothing on stdout for a pid that is not
+        // there. Anything else is `ps` failing.
+        (false, true) if output.exit_code == Some(1) => Lookup::Gone,
+        _ => Lookup::Unchecked,
     }
-    let line = output.stdout_lossy().trim().to_string();
-    (!line.is_empty()).then_some(line)
+}
+
+/// `tasklist /fi "PID eq <pid>" /fo csv /nh`, by its full path for the
+/// reason `safety::Identity::read` gives for `whoami`. Windows has no `ps`.
+/// Only the image name, not a command line: tasklist does not have one, and
+/// telling `ccnm.exe` from anything else is all [`left_held`] needs.
+#[cfg(windows)]
+fn lookup(pid: u32, runner: &dyn ProcessRunner) -> Lookup {
+    let system = std::env::var_os("SystemRoot")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(r"C:\Windows"));
+    let cmd = Cmd::new(system.join(r"System32\tasklist.exe")).args([
+        "/fi".to_string(),
+        format!("PID eq {pid}"),
+        "/fo".to_string(),
+        "csv".to_string(),
+        "/nh".to_string(),
+    ]);
+    match runner.run(&cmd) {
+        Ok(output) if output.success() => parse_tasklist(&output.stdout_lossy(), pid),
+        _ => Lookup::Unchecked,
+    }
+}
+
+/// One `"image","pid",...` line per match. No match is a localized
+/// sentence (`INFO: No tasks are running...`, or the same in the system's
+/// language) and exit 0, so anything that is not such a line for this pid
+/// reads as gone -- which tasklist having answered at all makes true.
+#[cfg(any(windows, test))]
+fn parse_tasklist(stdout: &str, pid: u32) -> Lookup {
+    for line in stdout.lines() {
+        let Some(inner) = line.trim().strip_prefix('"') else {
+            continue;
+        };
+        let mut fields = inner.split("\",\"");
+        let (Some(image), Some(listed)) = (fields.next(), fields.next()) else {
+            continue;
+        };
+        if listed.trim_end_matches('"') == pid.to_string() {
+            return Lookup::Running(image.to_string());
+        }
+    }
+    Lookup::Gone
 }
 
 /// The write guard of one workspace as the Runtime that keeps it sees it
@@ -446,6 +523,12 @@ pub fn observe(state: &Path, root: &Path, runner: &dyn ProcessRunner) -> Observa
         let _ = file.unlock();
     }
     drop(file);
+    // Windows' lock is mandatory: while somebody holds it, no other handle
+    // can read the marker (os error 33). The holder keeps a copy for this.
+    #[cfg(windows)]
+    if live && read.is_err() {
+        text = std::fs::read_to_string(owner_path(state, &resource)).unwrap_or_default();
+    }
     let marker = parse_marker(&text);
     let owner = marker.as_ref().map(|(owner, _)| Owner {
         process: owner.pid.map(|pid| process_now(pid, runner)),
@@ -506,21 +589,13 @@ fn parse_marker(text: &str) -> Option<(Owner, Option<String>)> {
     ))
 }
 
-/// [`owner_now`], keeping "no such process" apart from "could not ask":
-/// the second is not evidence of anything.
+/// [`lookup`], in the observation's words.
 fn process_now(pid: u32, runner: &dyn ProcessRunner) -> Process {
-    let Ok(output) = runner.run(&Cmd::new("ps").args(["-o", "command=", "-p", &pid.to_string()]))
-    else {
-        return Process::Unchecked;
-    };
-    let command = output.stdout_lossy().trim().to_string();
-    match (output.success(), command.is_empty()) {
-        (true, false) if command.contains("ccnm") => Process::Ccnm,
-        (true, false) => Process::Other,
-        // Both `ps`es exit 1 with nothing on stdout for a pid that is not
-        // there. Anything else is `ps` failing.
-        (false, true) if output.exit_code == Some(1) => Process::Gone,
-        _ => Process::Unchecked,
+    match lookup(pid, runner) {
+        Lookup::Running(command) if command.contains("ccnm") => Process::Ccnm,
+        Lookup::Running(_) => Process::Other,
+        Lookup::Gone => Process::Gone,
+        Lookup::Unchecked => Process::Unchecked,
     }
 }
 
@@ -528,6 +603,34 @@ fn lock_path(state: &Path, resource: &Path) -> PathBuf {
     state
         .join("write-guards")
         .join(format!("{}.lock", resource_id(resource)))
+}
+
+/// Beside the lock file: a copy of its marker, for observers on Windows.
+///
+/// The marker stays in the lock file and the lock file stays what decides
+/// (P109.1). An older ccnm reads only that file, and one is running beside
+/// a newer one through every upgrade and after a rollback: a marker moved
+/// out of it would make a crashed session's guard look never taken to it.
+/// The copy exists because Windows locks are mandatory -- while the guard
+/// is held nothing else can read that file -- and it is only ever read
+/// then, by [`observe`]. macOS and Linux observers read the marker itself,
+/// so there it is not written.
+#[cfg(windows)]
+fn owner_path(state: &Path, resource: &Path) -> PathBuf {
+    lock_path(state, resource).with_extension("owner")
+}
+
+/// Best effort: a copy that could not be written leaves an observer
+/// without a name for the holder, which it already copes with -- the
+/// state still comes from the lock.
+#[cfg(windows)]
+fn copy_for_observers(path: &Path, text: &str) {
+    if let Err(error) = std::fs::write(path, text) {
+        tracing::warn!(
+            ?error,
+            "could not copy the write guard's marker for observers"
+        );
+    }
 }
 
 fn resource_id(resource: &Path) -> String {
@@ -570,14 +673,13 @@ fn reject_overlapping_roots(root: &Path, workspace: &str, config: Option<&Config
     Ok(())
 }
 
-// Unix only until P109 brings the guard to Windows (its lock file is a
-// mandatory lock there, and the writer's record cannot share it).
-#[cfg(all(test, unix))]
+// On every platform since P109. The ones marked `cfg(unix)` read mode bits,
+// fork, follow a symlink, or feed `ps` output to the pid lookup; Windows
+// has its own below for the lookup and for a live holder.
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::process::{FakeRunner, Output};
-    use std::os::unix::ffi::OsStrExt;
-    use std::os::unix::fs::PermissionsExt;
 
     fn fixture(name: &str) -> (PathBuf, PathBuf) {
         let state = std::env::temp_dir().canonicalize().unwrap().join(format!(
@@ -595,13 +697,17 @@ mod tests {
         let runner = FakeRunner::new();
         runner.push(Output::exited(1, ""));
         let first = WriteGuard::acquire(&state, &root, "one", "s1", None, &runner).unwrap();
-        let locks = state.join("write-guards");
-        assert_eq!(
-            std::fs::metadata(&locks).unwrap().permissions().mode() & 0o777,
-            0o700
-        );
-        let lock = std::fs::read_dir(&locks).unwrap().next().unwrap().unwrap();
-        assert_eq!(lock.metadata().unwrap().permissions().mode() & 0o777, 0o600);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let locks = state.join("write-guards");
+            assert_eq!(
+                std::fs::metadata(&locks).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+            let lock = std::fs::read_dir(&locks).unwrap().next().unwrap().unwrap();
+            assert_eq!(lock.metadata().unwrap().permissions().mode() & 0o777, 0o600);
+        }
         runner.push(Output::exited(1, ""));
         assert!(WriteGuard::acquire(&state, &root, "one", "s2", None, &runner).is_err());
         drop(first);
@@ -615,10 +721,7 @@ mod tests {
         let (state, root) = fixture("stale");
         let locks = state.join("write-guards");
         std::fs::create_dir_all(&locks).unwrap();
-        let path = locks.join(format!(
-            "{:016x}.lock",
-            crate::paths::fnv1a(root.as_os_str().as_bytes())
-        ));
+        let path = lock_path(&state, &root);
         std::fs::write(path, "held old-session\n").unwrap();
         let runner = FakeRunner::new();
         runner.push(Output::exited(1, ""));
@@ -634,6 +737,7 @@ mod tests {
     /// 这条挡的是 P43 之前真实跑出来的那一幕：一个离开了进程组又攥着管道的
     /// 后代，让 `stop_all` 放弃，server 照样正常退出并把 guard 标成 released，
     /// 下一个 coding 会话就在同一棵树上开起来了（评审 X05）。
+    #[cfg(unix)]
     #[test]
     fn a_session_that_could_not_stop_everything_does_not_hand_the_guard_on() {
         let (state, root) = fixture("abandon");
@@ -643,10 +747,7 @@ mod tests {
         guard.abandon("2 command(s) (r-aaa, r-bbb)");
         drop(guard);
 
-        let path = state.join("write-guards").join(format!(
-            "{:016x}.lock",
-            crate::paths::fnv1a(root.as_os_str().as_bytes())
-        ));
+        let path = lock_path(&state, &root);
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.starts_with("held s1 one pid "), "{text:?}");
         assert!(
@@ -669,6 +770,7 @@ mod tests {
 
     /// marker 里的 pid 只让诊断说得准，**从来不是交权的理由**：那个进程没了，
     /// 它起的命令可能还在，而这里看不见它们（评审 X05）。
+    #[cfg(unix)]
     #[test]
     fn the_pid_sharpens_the_refusal_and_never_lifts_it() {
         for (ps, expected) in [
@@ -682,10 +784,7 @@ mod tests {
             let (state, root) = fixture("pid");
             let locks = state.join("write-guards");
             std::fs::create_dir_all(&locks).unwrap();
-            let path = locks.join(format!(
-                "{:016x}.lock",
-                crate::paths::fnv1a(root.as_os_str().as_bytes())
-            ));
+            let path = lock_path(&state, &root);
             std::fs::write(&path, "held old-session demo pid 4242\n").unwrap();
             let runner = FakeRunner::new();
             runner.push(Output::exited(1, ""));
@@ -706,10 +805,7 @@ mod tests {
             let (state, root) = fixture("partial");
             let locks = state.join("write-guards");
             std::fs::create_dir_all(&locks).unwrap();
-            let path = locks.join(format!(
-                "{:016x}.lock",
-                crate::paths::fnv1a(root.as_os_str().as_bytes())
-            ));
+            let path = lock_path(&state, &root);
             std::fs::write(path, marker).unwrap();
             let runner = FakeRunner::new();
             runner.push(Output::exited(1, ""));
@@ -738,10 +834,7 @@ mod tests {
     }
 
     fn marker_path(state: &Path, root: &Path) -> PathBuf {
-        state.join("write-guards").join(format!(
-            "{:016x}.lock",
-            crate::paths::fnv1a(root.as_os_str().as_bytes())
-        ))
+        lock_path(state, root)
     }
 
     /// 观察说 free，当且仅当下一个 acquire 真能拿到；而且观察本身一个字节都不改。
@@ -810,6 +903,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_live_holder_is_held_named_and_left_alone() {
         let (state, root) = fixture("live");
@@ -846,6 +940,7 @@ mod tests {
     }
 
     /// pid 只是诊断：四种说法都有，状态一个都不变（评审 X05）。
+    #[cfg(unix)]
     #[test]
     fn the_pid_is_described_and_never_decides() {
         for (ps, expected) in [
@@ -877,12 +972,14 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn what_this_account_cannot_read_is_unknown_not_free() {
         let (state, root) = fixture("unreadable");
         let locks = state.join("write-guards");
         std::fs::create_dir_all(&locks).unwrap();
         std::fs::write(marker_path(&state, &root), "released\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&locks, std::fs::Permissions::from_mode(0o000)).unwrap();
         let seen = observe(&state, &root, &FakeRunner::new());
         // root 读得到一切，这条对它不成立。
@@ -921,6 +1018,7 @@ mod tests {
     ///
     /// 靠 close 放锁的写法在这里会偶发失败：别的线程刚 fork 出来、还没
     /// exec 的子进程和我们共享同一个打开的文件，锁跟着它活到 exec（P34）。
+    #[cfg(unix)]
     #[test]
     fn observing_under_fork_pressure_leaves_no_lock_behind() {
         let (state, root) = fixture("fork");
@@ -951,6 +1049,7 @@ mod tests {
         std::fs::remove_dir_all(state).unwrap();
     }
 
+    #[cfg(unix)]
     #[test]
     fn canonical_nested_and_symlink_alias_roots_are_refused() {
         let (state, root) = fixture("overlap");
@@ -967,6 +1066,106 @@ mod tests {
             let config = Config::parse(&text).unwrap();
             assert!(reject_overlapping_roots(&root, "one", Some(&config)).is_err());
         }
+        std::fs::remove_dir_all(state).unwrap();
+    }
+
+    /// tasklist's answer, read the way [`lookup`] reads it on Windows. Pure,
+    /// so it is checked everywhere.
+    #[test]
+    fn a_tasklist_answer_names_the_image_or_says_gone() {
+        let found = "\r\n\"ccnm.exe\",\"4744\",\"Services\",\"0\",\"12,345 K\"\r\n";
+        assert_eq!(
+            parse_tasklist(found, 4744),
+            Lookup::Running("ccnm.exe".into())
+        );
+        // Another pid that merely contains this one.
+        let other = "\"vim.exe\",\"47440\",\"Console\",\"1\",\"1 K\"\r\n";
+        assert_eq!(parse_tasklist(other, 4744), Lookup::Gone);
+        // No match: a sentence in the system's language, exit 0.
+        for none in [
+            "INFO: No tasks are running which match the specified criteria.\r\n",
+            "信息: 没有运行的任务匹配指定标准。\r\n",
+            "",
+        ] {
+            assert_eq!(parse_tasklist(none, 4744), Lookup::Gone, "{none:?}");
+        }
+    }
+
+    /// The Windows half (P109.1): while the guard is held its marker cannot
+    /// be read through another handle -- the lock is mandatory -- and the
+    /// observation names the holder from the copy instead. The rest is the
+    /// same as `a_live_holder_is_held_named_and_left_alone`.
+    #[cfg(windows)]
+    #[test]
+    fn a_live_holder_is_named_from_the_copy_on_windows() {
+        let (state, root) = fixture("live-windows");
+        let runner = FakeRunner::new();
+        let holder = WriteGuard::acquire(&state, &root, "demo", "s1", None, &runner).unwrap();
+        assert!(
+            std::fs::read(marker_path(&state, &root)).is_err(),
+            "the marker is readable while held, so the copy is not what this tests"
+        );
+
+        let tasklist = FakeRunner::new();
+        tasklist.push(Output::exited(1, "")); // git
+        tasklist.push(Output::exited(
+            0,
+            format!(
+                "\"ccnm.exe\",\"{}\",\"Console\",\"1\",\"9 K\"\r\n",
+                std::process::id()
+            ),
+        ));
+        let seen = observe(&state, &root, &tasklist);
+        assert_eq!(
+            (seen.state, seen.reason),
+            (Observed::Held, Reason::LiveHolder)
+        );
+        let owner = seen.owner.expect("the copy names who holds it");
+        assert_eq!(owner.session, "s1");
+        assert_eq!(owner.workspace.as_deref(), Some("demo"));
+        assert_eq!(owner.pid, Some(std::process::id()));
+        assert_eq!(owner.process, Some(Process::Ccnm));
+
+        assert!(
+            WriteGuard::acquire(&state, &root, "demo", "s2", None, &FakeRunner::new()).is_err()
+        );
+        drop(holder);
+        // Released in both: the lock file decides, the copy follows it.
+        assert_eq!(
+            std::fs::read_to_string(marker_path(&state, &root)).unwrap(),
+            RELEASED
+        );
+        assert_eq!(
+            std::fs::read_to_string(owner_path(&state, &root)).unwrap(),
+            RELEASED
+        );
+        let seen = observe(&state, &root, &FakeRunner::new());
+        assert_eq!(
+            (seen.state, seen.reason),
+            (Observed::Free, Reason::Released)
+        );
+        std::fs::remove_dir_all(state).unwrap();
+    }
+
+    /// The copy never decides: a marker left `held` in the lock file is
+    /// refused even when the copy says `released`, which is what an older
+    /// ccnm without copies would leave behind.
+    #[cfg(windows)]
+    #[test]
+    fn the_copy_never_grants_the_guard() {
+        let (state, root) = fixture("copy-decides-nothing");
+        std::fs::create_dir_all(state.join("write-guards")).unwrap();
+        std::fs::write(marker_path(&state, &root), "held old demo pid 4242\n").unwrap();
+        std::fs::write(owner_path(&state, &root), RELEASED).unwrap();
+        let seen = observe(&state, &root, &FakeRunner::new());
+        assert_eq!(
+            (seen.state, seen.reason),
+            (Observed::Unknown, Reason::LeftHeld)
+        );
+        let error = WriteGuard::acquire(&state, &root, "demo", "new", None, &FakeRunner::new())
+            .err()
+            .unwrap();
+        assert!(error.message().contains("not transferred"), "{error}");
         std::fs::remove_dir_all(state).unwrap();
     }
 }

@@ -582,9 +582,38 @@ fn read_existing(target: &WriteTarget, rel: &str) -> Result<(Vec<u8>, std::fs::M
             meta.len()
         )));
     }
-    let bytes = std::fs::read(target.abs())
-        .map_err(|e| Error::invalid_args(format!("cannot read {rel}")).with_source(e))?;
+    // Windows will neither replace nor remove a file with the read-only
+    // attribute (os error 5), and the attribute is usually there on
+    // purpose. Said here, before anything is staged: a staged copy would
+    // carry the attribute and could then not be cleaned up either. macOS
+    // and Linux replace by rename, which the file's own mode does not stop,
+    // and keep the mode, so a 0444 file stays 0444 there.
+    if cfg!(windows) && meta.permissions().readonly() {
+        return Err(Error::invalid_args(format!(
+            "{rel} has the Windows read-only attribute, and ccnm does not clear it for you; if it is meant to change, clear it on the Runtime (attrib -r {rel}) and call again"
+        )));
+    }
+    let bytes = std::fs::read(target.abs()).map_err(|e| {
+        Error::invalid_args(format!("cannot read {rel}{}", held_open(&e))).with_source(e)
+    })?;
     Ok((bytes, meta))
+}
+
+/// What Windows means by a failed open, replace or remove, in words a
+/// person can act on; empty elsewhere and for anything else. On Windows a
+/// file another program opened without sharing it cannot be replaced or
+/// removed (os error 32), which is the editor-or-running-program case.
+/// Only on Windows: the same numbers are other errors on Unix.
+fn held_open(e: &std::io::Error) -> &'static str {
+    match (cfg!(windows), e.raw_os_error()) {
+        (true, Some(32)) => {
+            ": another program has it open and does not let it be replaced or removed (a Windows sharing violation); close it there and call again"
+        }
+        (true, Some(5)) => {
+            ": Windows denied access (os error 5); it may have been made read-only, or another program has it locked"
+        }
+        _ => "",
+    }
 }
 
 /// The stale-baseline check. Refusing a patch with no version at all is
@@ -1457,6 +1486,12 @@ fn write_atomic_temp(
     rel: &str,
 ) -> Result<()> {
     use toexec_fs::Step;
+    // Never read-only on Windows, whatever the original was: Windows will
+    // not remove a read-only file, so a staged copy that kept the attribute
+    // would outlive the patch in somebody's source tree. `read_existing`
+    // refuses such originals; this covers one made read-only since.
+    #[cfg(windows)]
+    let mode = mode.filter(|mode| !mode.readonly());
     toexec_fs::write_durable(temp, bytes, mode).map_err(|e| {
         let message = match e.step {
             Step::Create => format!("cannot write beside {rel}"),
@@ -1540,7 +1575,8 @@ fn commit_one(one: &Staged) -> Result<Option<String>> {
             // this one and leaves this one alone, because a failed
             // replace has not touched it.
             toexec_fs::replace(temp, &planned.abs).map_err(|e| {
-                Error::internal(format!("cannot replace {}", planned.rel)).with_source(e)
+                Error::internal(format!("cannot replace {}{}", planned.rel, held_open(&e)))
+                    .with_source(e)
             })?;
             let meta = std::fs::metadata(&planned.abs)
                 .map_err(|e| Error::internal("cannot stat what was just written").with_source(e))?;
@@ -1548,7 +1584,8 @@ fn commit_one(one: &Staged) -> Result<Option<String>> {
         }
         Op::Delete => {
             std::fs::remove_file(&planned.abs).map_err(|e| {
-                Error::internal(format!("cannot remove {}", planned.rel)).with_source(e)
+                Error::internal(format!("cannot remove {}{}", planned.rel, held_open(&e)))
+                    .with_source(e)
             })?;
             Ok(None)
         }
@@ -1558,7 +1595,8 @@ fn commit_one(one: &Staged) -> Result<Option<String>> {
                 .as_ref()
                 .ok_or_else(|| Error::internal("a move with no destination"))?;
             std::fs::rename(&planned.abs, to).map_err(|e| {
-                Error::internal(format!("cannot move {}", planned.rel)).with_source(e)
+                Error::internal(format!("cannot move {}{}", planned.rel, held_open(&e)))
+                    .with_source(e)
             })?;
             let meta = std::fs::metadata(to)
                 .map_err(|e| Error::internal("cannot stat what was just moved").with_source(e))?;
@@ -1675,7 +1713,10 @@ fn report<'a>(
     }
 }
 
-#[cfg(all(test, unix))]
+// On every platform since P109. The `cfg(unix)` ones set mode bits, make a
+// directory unwritable with them, follow a symlink, or fork a `sleep`; the
+// Windows ones at the end cover what stands in for those there.
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::error::ErrorCode;
@@ -2084,6 +2125,7 @@ mod tests {
         assert!(!after.iter().any(|n| n.starts_with(".ccnm-")), "{after:?}");
     }
 
+    #[cfg(unix)]
     #[test]
     fn the_write_policy_is_the_one_the_read_tools_use() {
         // The root sits one level down so that `../outside.txt` lands in
@@ -2784,6 +2826,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn file_permissions_survive_a_patch() {
         let root = workspace("mode");
@@ -2869,6 +2912,7 @@ mod tests {
 
     /// chmod 000/555 does nothing for root, and then these tests would
     /// assert on a failure that never happened.
+    #[cfg(unix)]
     fn cannot_write_here(dir: &Path) -> bool {
         let probe = dir.join(".ccnm-probe");
         match fs::write(&probe, "x") {
@@ -2880,18 +2924,21 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     fn lock(dir: &Path) {
         let mut perms = fs::metadata(dir).unwrap().permissions();
         std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o555);
         fs::set_permissions(dir, perms).unwrap();
     }
 
+    #[cfg(unix)]
     fn unlock(dir: &Path) {
         let mut perms = fs::metadata(dir).unwrap().permissions();
         std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
         fs::set_permissions(dir, perms).unwrap();
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_staging_failure_cleans_up_what_was_already_staged() {
         // The plan phase cannot catch a full disk or a directory that
@@ -3322,6 +3369,7 @@ mod tests {
     /// A child given a copy of `file`'s descriptor, alive until killed.
     /// That is what a fork on another thread holds until it execs: the
     /// same open file description, and with it the flock.
+    #[cfg(unix)]
     fn child_holding_a_copy(file: &fs::File) -> std::process::Child {
         std::process::Command::new("sleep")
             .arg("60")
@@ -3334,6 +3382,7 @@ mod tests {
 
     /// Is the file's lock held by somebody -- a fresh handle asks, then
     /// lets go.
+    #[cfg(unix)]
     fn locked_by_someone(path: &Path) -> bool {
         let probe = fs::File::open(path).unwrap();
         match probe.try_lock() {
@@ -3353,6 +3402,7 @@ mod tests {
     /// until the child execs. Left to the close, the next probe finds the
     /// lock held and calls an interrupted commit "in progress", and a
     /// patch goes ahead over it.
+    #[cfg(unix)]
     #[test]
     fn a_probe_lets_go_of_the_lock_even_when_a_child_holds_a_copy() {
         let root = workspace("journal-fork-probe");
@@ -3468,6 +3518,7 @@ mod tests {
     /// The same for a journal kept on purpose: it is kept so that the
     /// next patch refuses, and the next patch would not while a forked
     /// child holds a copy of the descriptor the journal was locked with.
+    #[cfg(unix)]
     #[test]
     fn an_abandoned_journal_reads_as_abandoned_even_when_a_child_holds_a_copy() {
         let root = workspace("journal-fork-keep");
@@ -3788,6 +3839,7 @@ mod tests {
         assert!(err.message().contains("interrupted"), "{err}");
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_commit_failure_rolls_the_earlier_files_back() {
         // A move stages nothing -- no new content, no backup -- so a move
@@ -3844,6 +3896,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn write_replaces_a_whole_file_and_keeps_its_permissions() {
         let root = workspace("write");
@@ -3937,6 +3990,7 @@ mod tests {
         assert!(err.message().contains("\"write\""), "{err}");
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_failed_patch_puts_a_written_file_back() {
         let root = workspace("write-rollback");
@@ -4170,5 +4224,133 @@ mod tests {
             !root.join("brand").exists(),
             "a directory survived a failed patch"
         );
+    }
+
+    /// A handle that does what an editor or a running program on Windows
+    /// does: keeps the file open and lets others read it, but not replace
+    /// or remove it (no `FILE_SHARE_DELETE`).
+    #[cfg(windows)]
+    fn held_open_elsewhere(path: &Path) -> fs::File {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_SHARE_READ: u32 = 0x1;
+        fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ)
+            .open(path)
+            .unwrap()
+    }
+
+    /// P109.2: Windows will not replace or remove a read-only file, so the
+    /// patch is refused before anything is staged -- the file, and the
+    /// directory around it, exactly as they were.
+    #[cfg(windows)]
+    #[test]
+    fn a_read_only_file_on_windows_is_refused_and_left_alone() {
+        let root = workspace("win-readonly");
+        let path = root.join("src/main.rs");
+        let before = fs::read(&path).unwrap();
+        let v = version(&root, "src/main.rs");
+        let mut perms = fs::metadata(&path).unwrap().permissions();
+        perms.set_readonly(true);
+        fs::set_permissions(&path, perms.clone()).unwrap();
+        for patch in [
+            update("src/main.rs", &v, "let x = 1;", "let x = 2;"),
+            FilePatch {
+                op: Some(Op::Write),
+                path: "src/main.rs".into(),
+                version: Some(v.clone()),
+                content: Some("fn main() {}\n".into()),
+                ..Default::default()
+            },
+            FilePatch {
+                op: Some(Op::Delete),
+                path: "src/main.rs".into(),
+                version: Some(v.clone()),
+                ..Default::default()
+            },
+        ] {
+            let e = fails(&root, vec![patch]);
+            assert_eq!(e.code(), ErrorCode::InvalidArgs, "{e}");
+            assert!(e.message().contains("read-only attribute"), "{e}");
+            assert_eq!(fs::read(&path).unwrap(), before);
+            assert_eq!(temps(&root.join("src")), Vec::<String>::new());
+        }
+        #[allow(clippy::permissions_set_readonly_false)]
+        perms.set_readonly(false);
+        fs::set_permissions(&path, perms).unwrap();
+        apply(
+            &root,
+            vec![update("src/main.rs", &v, "let x = 1;", "let x = 2;")],
+        );
+        assert_eq!(
+            text(&root, "src/main.rs"),
+            "fn main() {\n    let x = 2;\n}\n"
+        );
+    }
+
+    /// P109.2: a file another program holds open on Windows cannot be
+    /// replaced or removed. The error says so, the patch is all or nothing
+    /// as everywhere -- the file before it is put back -- and nothing is
+    /// left behind; once the other program lets go, the same patch works.
+    #[cfg(windows)]
+    #[test]
+    fn a_file_held_open_on_windows_fails_the_patch_cleanly() {
+        let root = workspace("win-held");
+        let journal_dir = journals("win-held");
+        let main_before = fs::read(root.join("src/main.rs")).unwrap();
+        let lib_before = fs::read(root.join("src/lib.rs")).unwrap();
+        let patch = || {
+            vec![
+                update(
+                    "src/main.rs",
+                    &version(&root, "src/main.rs"),
+                    "let x = 1;",
+                    "let x = 5;",
+                ),
+                update(
+                    "src/lib.rs",
+                    &version(&root, "src/lib.rs"),
+                    "pub fn a()",
+                    "pub fn z()",
+                ),
+            ]
+        };
+        let args = |files| ApplyPatchArgs {
+            files,
+            dry_run: None,
+        };
+
+        let held = held_open_elsewhere(&root.join("src/lib.rs"));
+        let e = apply_patch(&root, Some(&journal_dir), &args(patch())).unwrap_err();
+        assert!(e.message().contains("another program"), "{e}");
+        assert!(e.message().contains("rolled back"), "{e}");
+        assert_eq!(fs::read(root.join("src/main.rs")).unwrap(), main_before);
+        assert_eq!(fs::read(root.join("src/lib.rs")).unwrap(), lib_before);
+        assert_eq!(temps(&root.join("src")), Vec::<String>::new());
+        assert_eq!(fs::read_dir(&journal_dir).unwrap().count(), 0);
+
+        let e = apply_patch(
+            &root,
+            Some(&journal_dir),
+            &args(vec![FilePatch {
+                op: Some(Op::Delete),
+                path: "src/lib.rs".into(),
+                version: Some(version(&root, "src/lib.rs")),
+                ..Default::default()
+            }]),
+        )
+        .unwrap_err();
+        assert!(e.message().contains("another program"), "{e}");
+        assert_eq!(fs::read(root.join("src/lib.rs")).unwrap(), lib_before);
+
+        drop(held);
+        apply_patch(&root, Some(&journal_dir), &args(patch())).unwrap();
+        assert_eq!(
+            text(&root, "src/main.rs"),
+            "fn main() {\n    let x = 5;\n}\n"
+        );
+        assert_eq!(text(&root, "src/lib.rs"), "pub fn z() {}\npub fn b() {}\n");
+        assert_eq!(temps(&root.join("src")), Vec::<String>::new());
+        assert_eq!(fs::read_dir(&journal_dir).unwrap().count(), 0);
     }
 }

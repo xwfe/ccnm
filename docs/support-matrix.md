@@ -68,6 +68,12 @@
 
 **Agent 那一侧：macOS 有真机证据，Linux 是 v0.12.0（P74）起实现的，Debian 13 上零额度真机通过（假模型，含重启 Controller 不断会话），并用真实 Codex 跑过一次交互会话（问、放行、取消都对）；Claude Code 当 Linux Agent 没用真实模型跑过。** macOS 上 Controller 是 launchd LaunchAgent，起会话前要求 `launchctl managername` 是 `Aqua`（为登录钥匙串设的）；Linux 上它是 systemd 用户服务，不要求图形会话——官方 CLI 的登录在文件里，由 CLI 自己的 `auth status` 证明——Controller 在会话信息里自报平台，所以在 macOS 的 Runtime 上读 Linux Agent 也按 Linux 判（[P74 记录](research/2026-10-07-p74-linux-agent.md)）。v0.11.2 及之前 Linux 上 `controller install` 装不上、起会话被拒。Windows 和其他官方 CLI 版本都没验收。P66 起 `ccnm controller install` 把非默认的配置与状态位置（`--config`/`CCNM_CONFIG`、`XDG_CONFIG_HOME`、`XDG_STATE_HOME`）写进 plist，2026-10-04 在真的 launchd 下装过一次（[P62 续跑记录](research/2026-10-04-p62-resume-release.md) 4.1）；一个账号仍只能有一个 Controller（Label 固定）。CI 有一个 Linux job，但它是 **Runtime 门禁**：绿的意思是代码在 Linux 上编得过、测试过得去，不是说 Agent 那一半在那儿能跑。
 
+**Windows 当项目机器（Runtime）：还在分阶段做（P106–P112），没有验收，上面那张表不因此改。** 这里只记已经定下来、和 macOS / Linux 不一样的地方：
+
+- **mcp-serve 一结束，它起的后台命令全部跟着结束，被强杀也一样。** Windows 自带的 sshd 把每个会话放进一个带 `KILL_ON_JOB_CLOSE` 的 Job，会话的 shell 一退出，整棵进程树都被收掉（[P106 记录](research/2026-10-24-p106-windows-preresearch.md) P106.3）。macOS、Linux 上 mcp-serve 被强杀之后后台命令还活着（[core-hardening.md](plan/core-hardening.md) 的 AUTH-02）。
+- **停命令用 `taskkill /T /F`**：按父进程号找后代，父进程先退出的孙进程收不到，和 macOS 一样；Linux 上 P84 能收的，Windows 收不到。
+- **`shell` 用 Git for Windows 的 bash**，找不到就报错、提示改用 `cmd`；沙箱（`exec_sandbox`）在 Windows 上开不了。
+
 **Runtime 那一侧（`internal mcp-serve` 与七工具）在 Debian 13 / x86_64 上验过一次**，作为 Remote Workspace MCP 的 dogfood（[记录](research/p12-real-project-2026-09-11.md)）：`cargo fmt`、严格 clippy 与全套测试在那台机器上 676 passed / 0 failed，与 macOS 同数。**那一次是从两个红开始的**，两个都真修了：`SystemRunner::run` 的超时只杀 leader（macOS 因为 bash 会 exec 而一直看不见），以及一个测试助手用了 BSD 语义的 `date -r`。Linux 当 Agent（Controller）后来在 v0.12.0 做了，见上一段；Runtime 侧也只验过这一种发行版和架构。
 
 **第三个红是发布前收口那一轮、由 CI 自己照出来的，它证明 P12 那次只修了一半。** 杀进程组走的是 `kill -KILL -<pgid>`，而 GNU/procps 的 `kill` 把开头带减号的参数当成**信号**读：`-8421` 被读成信号号，命令最后一个 pid 都没有，**退出码 0，什么都没杀**。所以进程组还在、孙进程还占着管道、超时还是不超时——而且这次还报成功。macOS 的 BSD `kill` 两种写法都当进程组，本机永远看不见；Debian 13 上碰巧是绿的（孤儿被别的东西收走了），所以 P12 的真机轮也没照出来。**是 ubuntu-24.04 的 runner 照出来的**：`write_guard` 里那条"残留子进程要人工恢复"的测试红了，残留进程在本该杀掉它的 kill 之后还活着。修法是在负 pid 前加 `--`（macOS 和 Linux 都认），三处都改了。当前 HEAD 在 ubuntu-24.04 与 macOS 上都是 **681 passed / 0 failed**（当时的数字；当前 HEAD 是 688），严格 clippy 都干净。

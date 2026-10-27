@@ -483,6 +483,18 @@ hidden = ["exa-search"]          # 这几个不给，哪一类都一样
 
 为什么经 ccnm 转、而不是把这些 server 直接写进 Claude / Codex 的配置：实测直接写进去的话，超过约 50 000 字符的结果 Claude Code 会存到本机磁盘、只给模型 2 KB 预览要它用 `Read` 去读（受管会话没有 `Read`），Codex 只留 12 KB；每个 server 的全部工具也会进每一次请求（playwright 一家 21 KB）。实测和取舍见 [P50 记录](research/p50-agent-mcp-2026-09-22.md)。
 
+## `git_bash`（顶层，只给 Windows 项目机器）
+
+```toml
+git_bash = "D:/scoop/apps/git/current/bin/bash.exe"
+```
+
+**Windows 项目机器上 `exec_command` 的 `shell` 用哪个 bash。** 一般不用写：ccnm 先找 `%ProgramFiles%\Git\bin\bash.exe`（Git for Windows 安装程序放的位置），再从 PATH 上的 `git.exe` 往上找它所在那份安装的 `bin\bash.exe`（scoop 装的 `apps\git\current\cmd\git.exe` 就是这么找到的），都找不到才看这里。用正斜杠写，免得 TOML 把 `\` 当转义。
+
+**不用 PATH 上第一个 `bash.exe`**：装了 WSL 的机器上那是 `C:\Windows\System32\bash.exe`，它起的是一个 Linux 发行版，不是 Git Bash。
+
+三处都找不到时，`shell` 报"没找到 Git for Windows 的 bash"，并提示改用 `cmd` 直接跑程序；`cmd` 不受影响。macOS、Linux 不读这一项，`shell` 照旧用 PATH 上的 `bash`。
+
 ## 受管 Claude 会话的自动压缩
 
 这一节没有配置项：ccnm 给每个远端 Claude 会话写的设置文件里固定带这几样东西。

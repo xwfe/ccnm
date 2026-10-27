@@ -137,6 +137,7 @@ impl Output {
         std::fs::create_dir(&staging).map_err(|e| {
             Error::internal("cannot create a directory for this run").with_source(e)
         })?;
+        #[cfg(unix)]
         let files = (|| -> std::io::Result<(File, File, File)> {
             let stdout = File::create(staging.join("stdout"))?;
             let stderr = File::create(staging.join("stderr"))?;
@@ -145,8 +146,30 @@ impl Output {
             std::fs::rename(&staging, &dir)?;
             Ok((stdout, stderr, running))
         })();
+        // Windows will not rename a directory while a file in it is open
+        // (os error 5, every command failing in CI run 40524315270). So the
+        // files are made and closed, the directory renamed, and then they
+        // are opened again and the marker locked. In between, for a few
+        // microseconds, the run is visible with its marker not yet locked:
+        // another server of this session making room could take it for a
+        // finished run, but only once every older finished run is gone and
+        // the session is still over its limits -- it is the newest -- and
+        // then this command fails to start rather than anything being lost.
+        #[cfg(windows)]
+        let files = (|| -> std::io::Result<(File, File, File)> {
+            for name in ["stdout", "stderr", RUNNING] {
+                File::create(staging.join(name))?;
+            }
+            std::fs::rename(&staging, &dir)?;
+            let open = |name: &str| std::fs::OpenOptions::new().write(true).open(dir.join(name));
+            let running = open(RUNNING)?;
+            running.lock()?;
+            Ok((open("stdout")?, open("stderr")?, running))
+        })();
         let (stdout, stderr, running) = files.map_err(|e| {
             let _ = std::fs::remove_dir_all(&staging);
+            #[cfg(windows)]
+            let _ = std::fs::remove_dir_all(&dir);
             Error::internal("cannot create a file for the command's output").with_source(e)
         })?;
         self.started

@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-10-27T22:50:00+09:00",
+  "last_updated": "2026-10-27T23:10:00+09:00",
   "current_task": "P110",
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
@@ -5440,13 +5440,13 @@
     {
       "id": "P110",
       "title": "Windows 上执行命令",
-      "status": "pending",
+      "status": "in_progress",
       "depends_on": [
         "P109"
       ],
-      "owner": null,
-      "started_at": null,
-      "last_updated": "2026-10-24T22:20:00+09:00",
+      "owner": "claude-opus-5-5（桌面端会话）",
+      "started_at": "2026-10-27T23:10:00+09:00",
+      "last_updated": "2026-10-27T23:10:00+09:00",
       "completed_criteria": [],
       "evidence": [],
       "blockers": []
@@ -5548,7 +5548,7 @@
     "【2026-10-08 P80 时看到 / 只记不修】Agent 上的 MCP 转发 ccnm_agent（P50）在受管 Codex 会话里同样没配 tool_timeout_sec，Codex 对它只等 300 秒。它的 call_mcp_tool 默认等 60 秒、起 server 30 秒，用户给 Agent 上某个 server 配的 tool_timeout_sec 接近或超过 300 秒时（还没起的 server 起它的时间也算在内），调用会被 Codex 先截断、不发取消，照样在 Agent 上跑完。值取决于用户配置、不归 ccnm 的常量管，P80 没修。依据 docs/research/2026-10-08-p80-codex-tool-timeout.md 第 6 节。"
   ],
   "handoff": {
-    "next_action": "**2026-10-27 P109 完成，current_task 为 P110（还没认领）。** 用户说继续，P108 之后的 5 笔文档提交按用户说的和 P109 一起推了。P109 提交：d26d321 认领、eff9567 写锁副本和 tasklist、1362ad8 apply_patch、f78d9b9 Windows 服务 coding 会话、2dd4ac3 中断报告路径用 /（CI 查出）、104fe53 worktree 用例的 git 配置路径；CI 第三次（40513678974）四个 job 全绿。和计划字面的偏差：写者信息没挪出 .lock，Windows 另写副本（理由在 ROADMAP P109.1 下）。P109 没上测试机（计划没要求）。下一步 P110：Windows 上执行命令（toexec 新开 Windows 进程原语 crate、Git Bash、taskkill、CI 端到端）；ROADMAP P110.3 下新记了两条：过期输出清理在 Windows 上列不出 mcp-serve、输出目录在文件开着时改名在 Windows 上会失败。P110.1 要在 toexec 开新 crate、打 tag，动手前看 toexec 那边的计划和 Windows CI。\n\n之前的交接：\n**2026-10-27 认领 P109。** 用户说继续。做法：P109.1 写锁在 Windows 上另写一份 `<id>.owner` 给持锁期间的观察者读，`.lock` 照旧说了算、macOS/Linux 不变（ROADMAP P109.1 下写了为什么不照字面拆：换装和回退时旧版本只认 `.lock`）；问 pid 现在是谁在 Windows 上用 tasklist。P109.2 apply_patch：Windows 上目标带只读属性就在规划时拒绝、临时文件不带只读属性（否则删不掉、留在源码树里），被别的程序独占打开时报清楚的错；patch 测试模块挪到三个系统都编译，Unix 专用的逐条标 cfg(unix)。P109.3：Windows 上放行会写的会话，exec_command、read_output、stop_command 报 P110 才有，call_mcp_tool 不提供；两个会话争锁、runtime-guard 读得到写者；删输出目录遇到被打开的文件会重试。推送跑 Windows CI 之前问用户（P108 之后那 5 笔文档提交一起推）。\n\n之前的交接：\n**2026-10-27 P108 完成，current_task 为 P109（还没认领）。** 用户叫醒测试机后跑完 P108.3 的 Defender 计时和 P108.4：CI 编的 ccnm.exe 经 Windows sshd 起 mcp-serve，七个只读工具、Windows 名字拒绝、双向 25 MB 压测（stdout 堆着时照样读 stdin）两轮全过；Defender 开着时只读工具不慢。测试机上的 %TEMP%\\ccnm-p108 已删、无残留进程。那天 win11 的 Tailscale 节点一直离线（服务在跑），走的局域网 192.168.31.157，HostKeyAlias 严格核对主机钥匙；要不要修它的 Tailscale 由用户定。P108 的提交：56abd97、de75931（macOS 上 apply_patch 能写进 .git 的缺口，三个系统都修）、b745242、efaabd9 已推送，CI 40498978439 全绿；之后的文档提交在本地，推不推问用户。下一步 P109：Windows 上写文件和写锁（设计文档 D4：锁文件只加锁、写者信息另放一个文件；三个系统都改，改 process.rs 时另跑 --test-threads=64），P109 的锁身份用 P108 规范化之后的路径。另：过期输出清理在 Windows 上列不出 mcp-serve（一律保留），已记进 P110.3。\n\n之前的交接：\n**2026-10-27 P108 做到等测试机这一步，保持 in_progress。** 用户同意推送和上测试机。已推送并提交：56abd97 认领、de75931 修 macOS 上 apply_patch 能写进 .git、b745242 Windows 只读（路径规则、根目录写法、七个工具、mcp-serve 只收 read 模式、whoami 认身份）、efaabd9 CI 留 ccnm.exe、e91668a 记证据；CI 运行 40498978439 四个 job 全绿，P108.1、P108.2、P108.5 记完成。剩 P108.3 的 Defender 计时和 P108.4：win11 离线（Tailscale 显示 1 天前最后在线，应是睡着了），要用户叫醒。醒了以后照研究记录第 3.3 节跑：本机已下载 CI artifact 12730989604 的 ccnm.exe（sha256 c8714622…），探针 prepare 出的 tar 按 base=C:/Users/xdw/AppData/Local/Temp/ccnm-p108 生成；scp ccnm.exe 和 tar 过去、远端 tar -xf、git -C <base>/repo init -q，然后 `p108-windows-read-tools.py run --ssh win11 --base <base> --out 证据`；跑完整个 <base> 删掉（用户只同意动这一个目录，不改 sshd、注册表、Defender、防火墙，不装软件）。卡住（压测那条 FAIL）就停下修，不往 P109 走。",
+    "next_action": "**2026-10-27 认领 P110。** 用户说继续做 P110。顺序：P110.1 先在 toexec 开 `toexec-win`（不带依赖，自己声明 kernel32 的 SetHandleInformation、SetThreadExecutionState；Windows CI 上测后台孙进程不再拿着父进程的输出管道、请求别睡能设能撤），toexec CI 绿了再推 main、打 `toexec-win-v0.1.0`，ccnm 只在 cfg(windows) 下按 tag 引用。ccnm 这边：kill_group 在 Windows 上跑 System32 的 taskkill /T /F、TERM 在 Windows 上没有就不等宽限；exec_command 的 cmd 按 PATHEXT 找程序，.cmd/.bat 经 cmd.exe /d /s /c call、.ps1 经 PowerShell（照 gld）；shell 找 Git Bash（Program Files → PATH 上 git.exe 往上推 → 配置），设 SHELL，找不到报错提示 cmd，技能钩子同一套；Windows 上放开执行类工具和 MCP 转发；过期输出清理在 Windows 上用 PowerShell 的 Win32_Process 列 mcp-serve；输出目录改名那步在 Windows 上实测，失败就换顺序；会话期间请求别睡、最后撤；main 一开始就让标准句柄不可继承。GBK 那条倾向不转码（要 unsafe 或新依赖），照现在的 U+FFFD 加说明，写进记录。推送 toexec 和打 tag 用户已同意（上一轮回复里写明了要在 toexec 开 crate、打 tag）。\n\n之前的交接：\n**2026-10-27 P109 完成，current_task 为 P110（还没认领）。** 用户说继续，P108 之后的 5 笔文档提交按用户说的和 P109 一起推了。P109 提交：d26d321 认领、eff9567 写锁副本和 tasklist、1362ad8 apply_patch、f78d9b9 Windows 服务 coding 会话、2dd4ac3 中断报告路径用 /（CI 查出）、104fe53 worktree 用例的 git 配置路径；CI 第三次（40513678974）四个 job 全绿。和计划字面的偏差：写者信息没挪出 .lock，Windows 另写副本（理由在 ROADMAP P109.1 下）。P109 没上测试机（计划没要求）。下一步 P110：Windows 上执行命令（toexec 新开 Windows 进程原语 crate、Git Bash、taskkill、CI 端到端）；ROADMAP P110.3 下新记了两条：过期输出清理在 Windows 上列不出 mcp-serve、输出目录在文件开着时改名在 Windows 上会失败。P110.1 要在 toexec 开新 crate、打 tag，动手前看 toexec 那边的计划和 Windows CI。\n\n之前的交接：\n**2026-10-27 认领 P109。** 用户说继续。做法：P109.1 写锁在 Windows 上另写一份 `<id>.owner` 给持锁期间的观察者读，`.lock` 照旧说了算、macOS/Linux 不变（ROADMAP P109.1 下写了为什么不照字面拆：换装和回退时旧版本只认 `.lock`）；问 pid 现在是谁在 Windows 上用 tasklist。P109.2 apply_patch：Windows 上目标带只读属性就在规划时拒绝、临时文件不带只读属性（否则删不掉、留在源码树里），被别的程序独占打开时报清楚的错；patch 测试模块挪到三个系统都编译，Unix 专用的逐条标 cfg(unix)。P109.3：Windows 上放行会写的会话，exec_command、read_output、stop_command 报 P110 才有，call_mcp_tool 不提供；两个会话争锁、runtime-guard 读得到写者；删输出目录遇到被打开的文件会重试。推送跑 Windows CI 之前问用户（P108 之后那 5 笔文档提交一起推）。\n\n之前的交接：\n**2026-10-27 P108 完成，current_task 为 P109（还没认领）。** 用户叫醒测试机后跑完 P108.3 的 Defender 计时和 P108.4：CI 编的 ccnm.exe 经 Windows sshd 起 mcp-serve，七个只读工具、Windows 名字拒绝、双向 25 MB 压测（stdout 堆着时照样读 stdin）两轮全过；Defender 开着时只读工具不慢。测试机上的 %TEMP%\\ccnm-p108 已删、无残留进程。那天 win11 的 Tailscale 节点一直离线（服务在跑），走的局域网 192.168.31.157，HostKeyAlias 严格核对主机钥匙；要不要修它的 Tailscale 由用户定。P108 的提交：56abd97、de75931（macOS 上 apply_patch 能写进 .git 的缺口，三个系统都修）、b745242、efaabd9 已推送，CI 40498978439 全绿；之后的文档提交在本地，推不推问用户。下一步 P109：Windows 上写文件和写锁（设计文档 D4：锁文件只加锁、写者信息另放一个文件；三个系统都改，改 process.rs 时另跑 --test-threads=64），P109 的锁身份用 P108 规范化之后的路径。另：过期输出清理在 Windows 上列不出 mcp-serve（一律保留），已记进 P110.3。",
     "scope": "2026-10-08 用户要求：零额度复现 Codex 300 秒工具超时、选修法、补外部入口文档、跑门禁、更新状态、粒度提交、不推送。改动：crates/ccnm-core（provider/codex 的 TOOL_TIMEOUT 与启动参数、测试；mcp/hooks 的 MAX_TIMEOUT 改 pub(crate)；mcp/output 注释）、docs/protocol/remote-workspace-mcp-v1.md、docs/usage.md、docs/troubleshooting.md、docs/research 的 P80 记录与夹具、ROADMAP、status。没动任何机器、已装的 ccnm 与配置；Codex 0.154.0 包和源码只下到会话 scratchpad。",
     "planning_validation": {
       "at": "2026-09-08T21:22:43+09:00",

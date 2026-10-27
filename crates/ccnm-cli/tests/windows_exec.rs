@@ -300,23 +300,55 @@ fn shell_runs_in_git_bash() {
 
 /// A timeout ends the command and what it started (`taskkill /T /F`,
 /// design D3): the call comes back at the deadline, not when a grandchild
-/// would have finished.
+/// would have finished. Both shapes run before anything is asserted, and a
+/// slow one comes with the process tree as it was two seconds after the
+/// deadline -- which processes were left, and whose children they were.
 #[test]
 fn a_timeout_ends_the_whole_tree() {
     let fixture = Fixture::new("timeout");
     let mut session = Session::start(&fixture);
+    let mut failures = Vec::new();
     for args in [
-        json!({"shell": "sleep 30 & sleep 30; echo never", "timeout_ms": 2000}),
+        json!({"shell": "sleep 30 & sleep 30; echo never-reached", "timeout_ms": 2000}),
         json!({"cmd": ["cmd", "/c", "ping -n 30 127.0.0.1 >nul"], "timeout_ms": 2000}),
     ] {
+        let snapshot = std::thread::spawn(|| {
+            std::thread::sleep(Duration::from_secs(4));
+            process_tree()
+        });
         let started = Instant::now();
         let said = text(&session.call("exec_command", args.clone()));
         let took = started.elapsed();
-        assert!(said.contains("timed out"), "{args}: {said}");
-        assert!(!said.contains("never"), "{args}: {said}");
-        assert!(took < Duration::from_secs(10), "{args}: took {took:?}");
+        let tree = snapshot.join().unwrap();
+        let ended = said.contains("timed out")
+            && !said.contains("\nnever-reached")
+            && took < Duration::from_secs(10);
+        if !ended {
+            failures.push(format!(
+                "{args}: took {took:?}\n{said}\nprocesses 2 s after the deadline:\n{tree}"
+            ));
+        }
     }
+    assert!(failures.is_empty(), "{}", failures.join("\n\n"));
     session.shutdown();
+}
+
+/// pid, parent pid and name of the processes a command here could start.
+fn process_tree() -> String {
+    let script = "Get-CimInstance Win32_Process | Where-Object { $_.Name -in 'bash.exe','sleep.exe','ping.exe','cmd.exe','ccnm.exe' } | ForEach-Object { '{0} {1} {2}' -f $_.ProcessId, $_.ParentProcessId, $_.Name }";
+    let out = Command::new("powershell")
+        .args([
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            script,
+        ])
+        .output();
+    match out {
+        Ok(out) => String::from_utf8_lossy(&out.stdout).into_owned(),
+        Err(e) => format!("(cannot list processes: {e})"),
+    }
 }
 
 /// Background commands: `read_output` waits for one to finish and says

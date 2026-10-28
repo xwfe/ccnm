@@ -190,8 +190,9 @@ fn cleanup_removes_an_ended_sessions_output() {
     };
     // How long the Runtime takes to say which sessions are served (the
     // PowerShell scan inside it), next to a PowerShell that only starts and
-    // exits: on this runner the scan has taken 20-30 s, against 0.3 s on a
-    // real machine, and which half is slow is not known yet.
+    // exits: on this runner the scan has taken 20-32 s and the bare start
+    // 0.3 s, so it is the WMI query that is slow here (0.3 s for the whole
+    // step on a real machine).
     let bare = std::time::Instant::now();
     let _ = Command::new(r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe")
         .args([

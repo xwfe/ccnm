@@ -316,8 +316,9 @@ pub fn try_scan_servers(runner: &dyn ProcessRunner) -> Option<Vec<Server>> {
     // machine the whole `runtime-cleanup`, this scan included, takes 0.3 s
     // under sshd. On the Windows CI runner the same step took 19.7, 25.6 and
     // over 30 seconds -- with and without the import, with a bare
-    // environment and with the one sshd gives -- and why is not known. So the
-    // limit is 90 s, not 30: past it the answer is "could not check" and
+    // environment and with the one sshd gives -- while a PowerShell that only
+    // starts and exits took 0.3 s there: it is the WMI query that is slow on
+    // the runner, and why is not known. So the limit is 90 s, not 30: past it the answer is "could not check" and
     // cleanup keeps everything, which is safe but useless, and the expiry
     // sweep that also asks runs on a thread of its own.
     #[cfg(windows)]

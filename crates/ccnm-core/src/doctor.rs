@@ -381,10 +381,16 @@ pub fn from_agent(
     answer: crate::Result<(&crate::runtime::ResolveReport, &ProbeReport)>,
 ) -> Report {
     let subject = workspace.to_string();
-    let mut checks = match Config::load(config_path) {
+    let config = Config::load(config_path);
+    let mut checks = match &config {
         Ok(_) => vec![Check::ok("Config", config_path.display().to_string())],
-        Err(err) => vec![Check::fail("Config", &err)],
+        Err(err) => vec![Check::fail("Config", err)],
     };
+    // The path this machine runs the Runtime's ccnm by, for the Windows
+    // shell row: a `~/` one works there only under PowerShell.
+    let ccnm_bin = config
+        .ok()
+        .and_then(|config| config.runtime_from_agent().map(|(_, node)| node.ccnm_bin()));
     let (authority, rep) = match answer {
         Ok(pair) => pair,
         Err(err) => {
@@ -422,6 +428,7 @@ pub fn from_agent(
             runtime_node: &authority.runtime_node,
             agent_node,
             provider_config_dir: authority.provider_config_dir.as_deref(),
+            runtime_ccnm_bin: ccnm_bin.as_deref(),
         },
         rep,
     ));
@@ -696,6 +703,9 @@ pub(crate) struct Subject<'a> {
     pub agent_node: &'a str,
     /// The Agent-side provider config directory, for the login hint.
     pub provider_config_dir: Option<&'a Path>,
+    /// How the Agent names the Runtime's ccnm, when this side knows: the
+    /// Agent's own config does, the Runtime's does not.
+    pub runtime_ccnm_bin: Option<&'a str>,
 }
 
 impl<'a> Subject<'a> {
@@ -708,6 +718,7 @@ impl<'a> Subject<'a> {
             provider_config_dir: r
                 .agent
                 .and_then(|node| AgentProvider::current().config_dir(node)),
+            runtime_ccnm_bin: None,
         }
     }
 }
@@ -808,6 +819,9 @@ fn probe_rows(r: &Subject<'_>, rep: &ProbeReport) -> Vec<Check> {
                 // The Runtime Executor's own answer about itself and the
                 // project, from the account the transport lands on.
                 checks.extend(executor_rows(r, rep));
+                if h.platform.starts_with("windows/") {
+                    checks.push(runtime_shell_row(r, rep, h));
+                }
                 checks.push(mcp_row(rep));
                 checks.push(terminal_row(r, rep));
             }
@@ -876,6 +890,10 @@ fn executor_root_row(r: &Subject<'_>, root: &crate::runtime::RootStatus, user: &
     use crate::runtime::GitStatus;
     const NAME: &str = "Workspace root";
     let path = r.root.display();
+    // A Windows Runtime has no uid to compare, so `owned` is never true
+    // there, and it only runs as the person's own account (D8). git's own
+    // ownership check -- `RefusedOwnership` -- still speaks for it.
+    let unmeasured = crate::paths::is_windows_spelling(&r.root.to_string_lossy());
     if !root.present {
         return Check::fail_with(
             NAME,
@@ -902,7 +920,11 @@ fn executor_root_row(r: &Subject<'_>, root: &crate::runtime::RootStatus, user: &
             NAME,
             format!("{path} is a directory for {user}; git could not be asked about it"),
         ),
-        _ if !root.owned => Check::warn(
+        GitStatus::NotARepo if unmeasured => Check::ok(
+            NAME,
+            format!("{path} is a directory {user} can use (not a git repository)"),
+        ),
+        _ if !root.owned && !unmeasured => Check::warn(
             NAME,
             format!(
                 "{path} is a directory for {user} but is owned by another account; tools that check ownership will refuse it"
@@ -1004,6 +1026,64 @@ fn terminal_row(r: &Subject<'_>, rep: &ProbeReport) -> Check {
         ),
         Some(live) => Check::ok(NAME, format!("tmux {version}, {}", live.describe())),
     }
+}
+
+/// What Windows's sshd runs the Agent's commands with, for a Windows
+/// Runtime (P111.1); [`crate::runtime::SshShell`] says what each shell does
+/// to them. cmd.exe is OK. Anything else is a WARN that says what changes,
+/// and -- when the Agent names the Runtime's ccnm by `~/` -- that this shell
+/// is the only reason that works.
+fn runtime_shell_row(r: &Subject<'_>, rep: &ProbeReport, hello: &HelloReport) -> Check {
+    use crate::runtime::SshShell;
+    const NAME: &str = "Runtime shell";
+    let shell = match &rep.runtime_audit {
+        Some(Ok(report)) => report.ssh_shell.as_ref(),
+        _ => return Check::skip(NAME, "not checked: the Runtime Executor did not answer"),
+    };
+    const CMD: &str = "commands and their exit codes arrive as they are";
+    let program = match shell {
+        None => return Check::skip(NAME, "not reported by that ccnm build"),
+        Some(SshShell::Unknown) => {
+            return Check::warn(
+                NAME,
+                "could not read sshd's DefaultShell (HKLM\\SOFTWARE\\OpenSSH); ccnm's own commands work under cmd.exe and Windows PowerShell alike",
+            );
+        }
+        Some(SshShell::Default) => {
+            return Check::ok(NAME, format!("cmd.exe, sshd's default: {CMD}"));
+        }
+        Some(SshShell::Set(program)) => program,
+    };
+    let file = program
+        .rsplit(['\\', '/'])
+        .next()
+        .unwrap_or(program)
+        .to_ascii_lowercase();
+    let mut detail = match file.as_str() {
+        "cmd.exe" => return Check::ok(NAME, format!("cmd.exe ({program}): {CMD}")),
+        "powershell.exe" => format!(
+            "Windows PowerShell ({program}) is sshd's DefaultShell: ccnm's own commands work, but for anything else run over this ssh a program's exit code comes back as 0 or 1, and an argument starting with @ is dropped"
+        ),
+        _ => format!(
+            "{program} is sshd's DefaultShell and has not been measured with ccnm; cmd.exe and Windows PowerShell have"
+        ),
+    };
+    if let Some(bin) = r.runtime_ccnm_bin.filter(|bin| bin.starts_with("~/")) {
+        let full = hello.exe.as_ref().map_or_else(
+            || "C:/Users/<you>/.local/bin/ccnm.exe".to_string(),
+            |exe| {
+                let exe = exe.to_string_lossy();
+                exe.strip_prefix(r"\\?\").unwrap_or(&exe).replace('\\', "/")
+            },
+        );
+        detail.push_str(&format!(
+            "\nccnm_bin is {bin}, which works only because this shell expands ~; under cmd.exe it is not found\nwrite the full path in this machine's config.toml: ccnm_bin = \"{full}\""
+        ));
+    }
+    detail.push_str(
+        "\nto go back to cmd.exe, as an administrator there: Remove-ItemProperty HKLM:\\SOFTWARE\\OpenSSH -Name DefaultShell",
+    );
+    Check::warn(NAME, detail)
 }
 
 /// One MCP session over the reverse ssh: initialize, tools/list, and a
@@ -1231,10 +1311,14 @@ fn row_label(lang: Lang, name: &str) -> &str {
         // what was looked at and the status says how it came out.
         "Runs as root" => "root 身份",
         "No sudo" => "sudo 权限",
+        "Not elevated" => "管理员令牌",
         "Not an admin" => "admin 组",
         "No SSH keys" => "SSH 私钥",
+        "No SSH agent" => "SSH agent 服务",
         "No Claude credential" => "Claude 凭据",
         "No Docker socket" => "Docker socket",
+        "No Docker access" => "Docker 权限",
+        "Runtime shell" => "Runtime 的 shell",
         "Anthropic egress" => "Anthropic 出口",
         "Runtime safety" => "Runtime 安全",
         "Command approval" => "命令审批",
@@ -1255,10 +1339,13 @@ fn safety_row_name(check: &str) -> &'static str {
         "Runs as root" => "Runs as root",
         "Runtime user" => "Runtime user",
         "No sudo" => "No sudo",
+        "Not elevated" => "Not elevated",
         "Not an admin" => "Not an admin",
         "No SSH keys" => "No SSH keys",
+        "No SSH agent" => "No SSH agent",
         "No Claude credential" => "No Claude credential",
         "No Docker socket" => "No Docker socket",
+        "No Docker access" => "No Docker access",
         "Anthropic egress" => "Anthropic egress",
         _ => "Runtime safety",
     }
@@ -1736,6 +1823,7 @@ mod tests {
             allow_unisolated_credentials: false,
             allow_unattended_exec: false,
             opener_config: Some(Vec::new()),
+            ssh_shell: None,
         }
     }
 
@@ -2706,6 +2794,110 @@ mod tests {
             !claude.detail.contains("local login state only"),
             "{claude:?}"
         );
+    }
+
+    /// A Windows Runtime as the Agent's doctor shows it (P111): the test
+    /// machine's shape -- a shared administrator account over ssh, sshd's
+    /// DefaultShell set to PowerShell, the Agent naming its ccnm by the
+    /// default `~/` -- and every row with a verdict of its own.
+    #[test]
+    fn a_windows_runtime_gets_a_verdict_on_every_row() {
+        use crate::runtime::SshShell;
+        let (dir, _) = setup("windows-runtime", false, false);
+        let config = dir.join("agent.toml");
+        std::fs::write(
+            &config,
+            "this = \"agent\"\nruntime_node = \"runtime\"\n[nodes.agent]\n[nodes.runtime]\nssh = \"win11\"\n",
+        )
+        .unwrap();
+        let authority = authority(Path::new("C:/Users/xdw/proj"));
+        let mut probe = good_probe();
+        let mut windows = hello("xdw", crate::VERSION, Some(true));
+        windows.platform = "windows/x86_64".into();
+        windows.exe = Some(PathBuf::from(r"C:\Users\xdw\.local\bin\ccnm.exe"));
+        probe.runtime_hello = Some(Ok(windows));
+        let finding = |check: &str, severity| safety::Finding {
+            check: check.into(),
+            severity,
+            detail: format!("{check}, as measured"),
+            fix: None,
+        };
+        let audit = |ssh_shell| crate::runtime::AuditReport {
+            audit: safety::Audit {
+                user: "win11\\xdw".into(),
+                findings: vec![
+                    finding("Runtime user", safety::Severity::Warn),
+                    finding("Not elevated", safety::Severity::Warn),
+                    finding("Not an admin", safety::Severity::Warn),
+                    finding("No SSH keys", safety::Severity::Ok),
+                    finding("No SSH agent", safety::Severity::Ok),
+                    finding("No Claude credential", safety::Severity::Ok),
+                    finding("No authentication environment", safety::Severity::Ok),
+                    finding("No Docker access", safety::Severity::Ok),
+                ],
+                shared_account: true,
+            },
+            root: crate::runtime::RootStatus {
+                present: true,
+                is_dir: true,
+                owned: false,
+                git: crate::runtime::GitStatus::NotARepo,
+            },
+            ssh_shell: Some(ssh_shell),
+            ..confined_report()
+        };
+        probe.runtime_audit = Some(Ok(audit(SshShell::Set(
+            r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe".into(),
+        ))));
+        let report = from_agent(&config, "xshun", Ok((&authority, &probe)));
+        let text = report.render();
+        for (name, status) in [
+            ("Not elevated", Status::Warn),
+            ("Not an admin", Status::Warn),
+            ("No SSH agent", Status::Ok),
+            ("No Docker access", Status::Ok),
+            ("exec_command", Status::Ok),
+        ] {
+            assert_eq!(row(&report, name).status, status, "{name}: {text}");
+        }
+        // Each Windows finding has a row of its own, none lumped under the
+        // generic name (which the environment row has always had).
+        assert!(
+            report
+                .checks
+                .iter()
+                .filter(|c| c.name == "Runtime safety")
+                .all(|c| c.detail.starts_with("No authentication environment")),
+            "{text}"
+        );
+        let root = row(&report, "Workspace root");
+        assert_eq!(root.status, Status::Ok, "{text}");
+        assert!(!root.detail.contains("another account"), "{text}");
+        let shell = row(&report, "Runtime shell");
+        assert_eq!(shell.status, Status::Warn, "{text}");
+        assert!(shell.detail.contains("comes back as 0 or 1"), "{text}");
+        assert!(
+            shell.detail.contains(
+                "ccnm_bin is ~/.local/bin/ccnm, which works only because this shell expands ~"
+            ),
+            "{text}"
+        );
+        assert!(
+            shell
+                .detail
+                .contains("ccnm_bin = \"C:/Users/xdw/.local/bin/ccnm.exe\""),
+            "{text}"
+        );
+
+        probe.runtime_audit = Some(Ok(audit(SshShell::Default)));
+        let report = from_agent(&config, "xshun", Ok((&authority, &probe)));
+        let shell = row(&report, "Runtime shell");
+        assert_eq!(shell.status, Status::Ok, "{shell:?}");
+        assert!(shell.detail.starts_with("cmd.exe"), "{shell:?}");
+
+        // Not a Windows Runtime: no such row at all.
+        let report = from_agent(&config, "xshun", Ok((&authority, &good_probe())));
+        assert!(!report.checks.iter().any(|c| c.name == "Runtime shell"));
     }
 
     /// Without the Runtime's answer the Agent Node has no workspace to

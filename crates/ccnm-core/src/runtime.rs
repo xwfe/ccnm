@@ -593,6 +593,66 @@ pub struct AuditReport {
     /// the same as "none there".
     #[serde(default)]
     pub opener_config: Option<Vec<String>>,
+    /// What Windows's sshd runs the Agent's commands with (P111.1). `None`
+    /// from a Runtime that is not Windows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ssh_shell: Option<SshShell>,
+}
+
+/// `DefaultShell` under `HKLM\SOFTWARE\OpenSSH`, unset meaning cmd.exe.
+///
+/// It matters because every command the Agent sends goes through it.
+/// Measured in P106.1: ccnm's own commands work under cmd.exe and Windows
+/// PowerShell alike, but PowerShell turns a native program's exit code into
+/// 0 or 1 and drops an argument that starts with `@`, and it is the only
+/// reason a `~/` ccnm_bin works there -- cmd.exe does not expand `~`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SshShell {
+    /// Not set: cmd.exe.
+    Default,
+    /// Set, to this program.
+    Set(String),
+    /// `reg.exe` could not be asked, or answered in a shape not known.
+    Unknown,
+}
+
+/// `reg.exe query`, by its full path like everything else that speaks for
+/// the machine.
+#[cfg(windows)]
+fn ssh_shell(runner: &dyn ProcessRunner) -> SshShell {
+    let cmd = crate::process::Cmd::new(crate::platform::system_program("reg.exe"))
+        .args(["query", r"HKLM\SOFTWARE\OpenSSH", "/v", "DefaultShell"])
+        .timeout(std::time::Duration::from_secs(10));
+    match runner.run(&cmd) {
+        Ok(out) if !out.timed_out => parse_ssh_shell(&out),
+        _ => SshShell::Unknown,
+    }
+}
+
+/// reg.exe exits 1 when the key or the value is not there, which is the
+/// default, and otherwise prints `    DefaultShell    REG_SZ    <program>`;
+/// the program's path may have spaces in it.
+#[cfg(any(windows, test))]
+fn parse_ssh_shell(out: &crate::process::Output) -> SshShell {
+    match out.exit_code {
+        Some(1) => SshShell::Default,
+        Some(0) => out
+            .stdout_lossy()
+            .lines()
+            .find_map(|line| {
+                let rest = line.trim().strip_prefix("DefaultShell")?;
+                let (_, value) = rest
+                    .split_once("REG_EXPAND_SZ")
+                    .or_else(|| rest.split_once("REG_SZ"))?;
+                Some(match value.trim() {
+                    "" => SshShell::Default,
+                    program => SshShell::Set(program.to_string()),
+                })
+            })
+            .unwrap_or(SshShell::Unknown),
+        _ => SshShell::Unknown,
+    }
 }
 
 /// What in a project takes effect as whoever opens it: an IDE's tasks and
@@ -674,6 +734,10 @@ pub fn audit(
     }
     let resolved = config.workspace(&request.workspace)?;
     let home = crate::paths::home_dir().unwrap_or_else(|_| PathBuf::from("/nonexistent"));
+    #[cfg(windows)]
+    let ssh_shell = Some(ssh_shell(runner));
+    #[cfg(not(windows))]
+    let ssh_shell = None;
     Ok(AuditReport {
         protocol: OPEN_PROTOCOL,
         audit: crate::safety::audit(resolved.runtime.runtime_user.as_deref(), &home, runner),
@@ -682,7 +746,43 @@ pub fn audit(
         allow_unisolated_credentials: resolved.workspace.allow_unisolated_credentials,
         allow_unattended_exec: resolved.workspace.allow_unattended_exec,
         opener_config: Some(opener_config_in(&resolved.workspace.root)),
+        ssh_shell,
     })
+}
+
+#[cfg(test)]
+mod ssh_shell_tests {
+    use super::*;
+    use crate::process::Output;
+
+    /// reg.exe's answers on the Win11 test machine (P106.1 set DefaultShell
+    /// to PowerShell there) and on one where it was never set.
+    #[test]
+    fn default_shell_is_read_from_what_reg_prints() {
+        let set = Output::exited(
+            0,
+            "\r\nHKEY_LOCAL_MACHINE\\SOFTWARE\\OpenSSH\r\n    DefaultShell    REG_SZ    C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe\r\n\r\n",
+        );
+        assert_eq!(
+            parse_ssh_shell(&set),
+            SshShell::Set(r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe".into())
+        );
+        let spaced = Output::exited(
+            0,
+            "    DefaultShell    REG_EXPAND_SZ    C:\\Program Files\\PowerShell\\7\\pwsh.exe\r\n",
+        );
+        assert_eq!(
+            parse_ssh_shell(&spaced),
+            SshShell::Set(r"C:\Program Files\PowerShell\7\pwsh.exe".into())
+        );
+        let unset = Output::exited(
+            1,
+            "ERROR: The system was unable to find the specified registry key or value.\r\n",
+        );
+        assert_eq!(parse_ssh_shell(&unset), SshShell::Default);
+        assert_eq!(parse_ssh_shell(&Output::exited(0, "")), SshShell::Unknown);
+        assert_eq!(parse_ssh_shell(&Output::exited(5, "")), SshShell::Unknown);
+    }
 }
 
 /// The wire version of a write-guard observation (P60).

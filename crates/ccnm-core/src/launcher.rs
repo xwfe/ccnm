@@ -900,6 +900,7 @@ mod tests {
             allow_unisolated_credentials: false,
             allow_unattended_exec: false,
             opener_config: Some(Vec::new()),
+            ssh_shell: None,
         })
         .unwrap()
     }

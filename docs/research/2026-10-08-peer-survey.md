@@ -36,6 +36,10 @@
 - **平台和开关**：
   - 文案里有 `tool host helper: not available on Windows`；
   - 由账号级开关和云环境开关控制，对应的内部标志有 `tengu_remote_tool_forward`、环境变量 `CLAUDE_CODE_REMOTE_TOOLS_FORWARD`。
+- **2026-10-28 复查（2.1.310，CHANGELOG 到 2.1.312 仍没提）**：还没公开，开关和 `_host` 都还在。变化有三处：
+  - `tool host helper: not available on Windows` 这句没了，平台限制改成通用的"沙箱在这台机器上用不了（平台不支持，或被 `sandbox.enabledPlatforms` 策略排除）就不服务"。同一版本里已有 Windows 沙箱的文案，所以 Windows 电脑以后可能也能当 device，没实测；
+  - 新增两条拒绝：沙箱给网络请求注入遮蔽凭据（`sandbox.credentials` 里 `mode "mask"` 的条目）时整机不服务；单个客户端可以关掉 device tools；
+  - 会话中途开启时会给模型补一句"之前说不能在用户电脑上跑工具的话作废"。
 
 **对 ccnm 意味着什么（推断）**：
 
@@ -50,7 +54,7 @@
 strings -n 6 "$(readlink -f "$(which claude)")" | grep -c 'device tools'
 ```
 
-2.1.286 上输出 13（按行计数）。另外搜一下 [CHANGELOG](https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md) 里的 `device`、`--cloud`。
+2.1.286 上输出 13、2.1.310 上 16（按行计数）。本机的 `grep` 若是 ugrep 别名，带长上下文的正则会报 complexity limits，计数用 `/usr/bin/grep`。另外搜一下 [CHANGELOG](https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md) 里的 `device`、`--cloud`。
 
 ## 2. 可借鉴清单（按对 ccnm 的用处排序）
 

@@ -62,9 +62,7 @@ use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::Duration;
-#[cfg(unix)]
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use rmcp::model::{CallToolResult, ContentBlock};
 use rmcp::schemars;
@@ -582,39 +580,56 @@ const KILLER: &str = "/bin/kill";
 const LISTER: &str = "/bin/ps";
 /// How long a process group has to empty after `SIGKILL` before what is
 /// still in it is reported. Only something no signal reaches -- a setuid
-/// program, a process stuck in the kernel -- lasts this long.
-#[cfg(unix)]
+/// program, a process stuck in the kernel -- lasts this long. The same for
+/// a Windows job after it was ended.
 const CLEAR_WITHIN: Duration = Duration::from_secs(5);
-#[cfg(unix)]
 const CLEAR_PAUSE_MIN: Duration = Duration::from_millis(20);
 #[cfg(unix)]
 const CLEAR_PAUSE_MAX: Duration = Duration::from_millis(500);
 
-/// Windows (P110.4): the server in a process group of its own, without a
-/// console window, and stopped by ending its tree with `taskkill /T /F`
-/// when it has not exited by itself.
-///
-/// No anchor: a Windows pid is not reused while a handle to the process is
-/// open, and the `Child` passed to the stop holds one. What it cannot
-/// reach is what the server left behind and exited from -- `npx` that
-/// started `node` and returned -- since taskkill finds children through a
-/// parent that is still running. That is not checked or reported here (no
-/// process list to check it against yet); through Windows' own sshd the
-/// session's Job ends them with the server process (P106.3).
+/// Windows (P110.4): the server in a job of its own, which is what the Unix
+/// anchor's process group is here, without a parent chain to follow: when
+/// the connection closes the job is ended whether or not the server
+/// exited, and with it whatever the server left -- `node` under an `npx`
+/// that returned. What is still in it [`CLEAR_WITHIN`] later goes to
+/// `left`, like a group that would not clear. No job (Windows refused):
+/// `taskkill /T /F` on a server that did not exit, which misses what it
+/// left, as macOS does.
 #[cfg(windows)]
 pub(crate) fn start(
     process: &mut Command,
     server: &str,
     left: &Left,
 ) -> std::io::Result<(Child, Stop)> {
-    let _ = (server, left);
     crate::platform::own_process_group(process);
     let child = process.spawn()?;
+    let job = toexec_win::Job::kill_on_close().and_then(|job| job.assign(&child).map(|()| job));
     let taskkill = crate::platform::system_program("taskkill.exe").into_os_string();
-    let stop: Stop = Box::new(move |child, exited| {
-        if !exited {
+    let server = server.to_string();
+    let left = Arc::clone(left);
+    let stop: Stop = Box::new(move |child, exited| match &job {
+        Ok(job) => {
+            let _ = job.terminate();
+            let deadline = Instant::now() + CLEAR_WITHIN;
+            while job.active_processes().unwrap_or(1) > 0 {
+                if Instant::now() >= deadline {
+                    let problem = format!(
+                        "its job still has {} process(es) after it was ended",
+                        job.active_processes().unwrap_or(1)
+                    );
+                    tracing::warn!(server, problem, "an MCP server left processes behind");
+                    left.lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .push(format!("MCP server {server} ({problem})"));
+                    break;
+                }
+                std::thread::sleep(CLEAR_PAUSE_MIN);
+            }
+        }
+        Err(_) if !exited => {
             crate::platform::kill_tree(child, &taskkill);
         }
+        Err(_) => {}
     });
     Ok((child, stop))
 }

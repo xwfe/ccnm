@@ -23,6 +23,11 @@
 //!
 //! macOS has no subreaper: [`adopt`] does nothing there and the sweeps find
 //! nothing, which is how ccnm behaved before P84.
+//!
+//! Windows has no process groups to leave: every command runs in a job of
+//! its own (P110), and what a finished command left running stays in its
+//! job until [`Sweeper::finish`] ends those jobs
+//! ([`crate::platform::end_kept_jobs`]).
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -173,10 +178,14 @@ impl Sweeper {
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
-        match imp::me() {
+        #[allow(unused_mut)]
+        let mut left = match imp::me() {
             Some(me) if self.adopting => imp::end_all(&me, GRACE, GIVE_UP),
             _ => Vec::new(),
-        }
+        };
+        #[cfg(windows)]
+        left.extend(crate::platform::end_kept_jobs(GRACE + GIVE_UP));
+        left
     }
 }
 

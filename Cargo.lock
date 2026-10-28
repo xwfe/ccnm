@@ -894,8 +894,8 @@ source = "git+https://github.com/xwfe/toexec.git?tag=toexec-text-v0.1.0#25ef24a8
 
 [[package]]
 name = "toexec-win"
-version = "0.1.0"
-source = "git+https://github.com/xwfe/toexec.git?tag=toexec-win-v0.1.0#0a4747f77e8d7b8cd4b3d69a05dcac0dfb1eeef1"
+version = "0.2.0"
+source = "git+https://github.com/xwfe/toexec.git?tag=toexec-win-v0.2.0#8a54ae37b341d027b29eac17e4bbe1d04b678d32"
 
 [[package]]
 name = "tokio"

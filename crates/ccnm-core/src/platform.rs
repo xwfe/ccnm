@@ -84,6 +84,92 @@ pub(crate) fn kill_tree(child: &mut std::process::Child, taskkill: &std::ffi::Os
     ran
 }
 
+/// The Windows job one command runs in (P110): it and everything it starts,
+/// ended together however their parents come and go.
+///
+/// When the command is over, its job is not closed if something in it still
+/// runs -- a server started with `&` and its output redirected. Closing it
+/// would end that on the spot, where on Linux it lives until the session
+/// ends (P84) and on macOS longer. It is kept instead, and ended with the
+/// session's other leftovers ([`end_kept_jobs`]); a server killed outright
+/// takes them all with it, as Windows' own sshd does to its whole session
+/// anyway (P106).
+#[cfg(windows)]
+pub(crate) struct CommandJob(Option<toexec_win::Job>);
+
+#[cfg(windows)]
+impl CommandJob {
+    /// `child` in a job of its own, straight after it was spawned; `None`
+    /// when it cannot be (it has already exited, or Windows refused).
+    pub(crate) fn around(child: &std::process::Child) -> Option<CommandJob> {
+        let job = toexec_win::Job::kill_on_close().and_then(|job| job.assign(child).map(|()| job));
+        match job {
+            Ok(job) => Some(CommandJob(Some(job))),
+            Err(error) => {
+                tracing::debug!(%error, "a command could not be put in a job; stopping it falls back to taskkill");
+                None
+            }
+        }
+    }
+
+    /// End everything in it. Whether that was done.
+    pub(crate) fn end(&self) -> bool {
+        self.0.as_ref().is_some_and(|job| job.terminate().is_ok())
+    }
+}
+
+#[cfg(windows)]
+impl Drop for CommandJob {
+    fn drop(&mut self) {
+        if let Some(job) = self.0.take()
+            && job.active_processes().map_or(true, |n| n > 0)
+        {
+            KEPT_JOBS
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(job);
+        }
+    }
+}
+
+/// Jobs of finished commands that still had something running, for
+/// [`end_kept_jobs`].
+#[cfg(windows)]
+static KEPT_JOBS: std::sync::Mutex<Vec<toexec_win::Job>> = std::sync::Mutex::new(Vec::new());
+
+/// End what the session's finished commands left running (the Windows half
+/// of P84's sweep) and say what would not go within `give_up`: one line per
+/// job, for the write guard. Empty when nothing was kept.
+#[cfg(windows)]
+pub(crate) fn end_kept_jobs(give_up: std::time::Duration) -> Vec<String> {
+    let jobs = std::mem::take(
+        &mut *KEPT_JOBS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+    );
+    for job in &jobs {
+        let _ = job.terminate();
+    }
+    let deadline = std::time::Instant::now() + give_up;
+    loop {
+        let left: Vec<u32> = jobs
+            .iter()
+            .map(|job| job.active_processes().unwrap_or(1))
+            .filter(|n| *n > 0)
+            .collect();
+        if left.is_empty() {
+            return Vec::new();
+        }
+        if std::time::Instant::now() >= deadline {
+            return left
+                .iter()
+                .map(|n| format!("a job of a finished command with {n} process(es) still running"))
+                .collect();
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
 /// `chmod`. Nothing on Windows, for the reason [`OpenOptionsExt`] gives.
 pub(crate) fn set_mode(path: &Path, mode: u32) -> io::Result<()> {
     #[cfg(unix)]

@@ -39,7 +39,7 @@ toexec-mcp = { git = "https://github.com/xwfe/toexec.git", tag = "toexec-mcp-v0.
 # 第五个，只在 Windows 上用（P110.1，设计文档 D7）：本进程的标准句柄不让
 # 子进程继承、会话期间请求别睡。这两件要 unsafe，而这里整个 workspace 禁止
 # unsafe，所以放在那边。macOS、Linux 的依赖树里没有它。
-toexec-win = { git = "https://github.com/xwfe/toexec.git", tag = "toexec-win-v0.1.0" }
+toexec-win = { git = "https://github.com/xwfe/toexec.git", tag = "toexec-win-v0.2.0" }
 base64 = "0.22"
 # Linux only (P84): make mcp-serve the subreaper of what its commands leave
 # behind, and signal those processes, without unsafe code. Already in the

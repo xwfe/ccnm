@@ -296,10 +296,18 @@ pub struct Stopper {
     stopped: Arc<AtomicBool>,
     killer: OsString,
     shown: Arc<str>,
+    /// Windows: the job the child was put in the moment it started, which
+    /// is what stops it and everything it started (P110). `None` when the
+    /// child could not be put in one -- it had already exited, say -- and
+    /// stopping falls back to `taskkill`.
+    #[cfg(windows)]
+    job: Option<Arc<crate::platform::CommandJob>>,
 }
 
 impl Stopper {
     fn new(child: std::process::Child, killer: &OsStr, shown: String) -> Stopper {
+        #[cfg(windows)]
+        let job = crate::platform::CommandJob::around(&child).map(Arc::new);
         Stopper {
             tracked: Arc::new(Mutex::new(Tracked {
                 child,
@@ -309,6 +317,8 @@ impl Stopper {
             stopped: Arc::new(AtomicBool::new(false)),
             killer: killer.to_os_string(),
             shown: shown.into(),
+            #[cfg(windows)]
+            job,
         }
     }
 
@@ -321,6 +331,20 @@ impl Stopper {
     /// poisoned mutex; otherwise whether the killer ran.
     fn signal(&self, signal: Signal) -> Option<bool> {
         let mut tracked = self.tracked.lock().ok()?;
+        // The job, even once the child has been collected: what it started
+        // can still hold the pipes, and a job, unlike a pid, cannot come to
+        // mean someone else. `taskkill` follows parent ids and misses every
+        // program Git Bash runs (P110, CI): ending the job does not.
+        #[cfg(windows)]
+        if signal == Signal::Kill
+            && let Some(job) = &self.job
+            && job.end()
+        {
+            if tracked.status.is_none() {
+                let _ = tracked.child.kill();
+            }
+            return Some(true);
+        }
         if tracked.status.is_some() {
             return None;
         }

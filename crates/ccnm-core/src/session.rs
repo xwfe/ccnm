@@ -355,6 +355,30 @@ impl Control {
     }
 }
 
+/// One reconnect of a session's tools at a time (P116): the Controller's
+/// watch and a person entering the session (P100) must not both type
+/// `/mcp reconnect ccnm` into it. Its own file, so a stop never waits on a
+/// reconnect, which can take 20 seconds.
+pub fn reconnect_lock(dir: &Dir, wait: bool) -> Result<Option<Control>> {
+    use crate::platform::OpenOptionsExt as _;
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(dir.path().join("reconnect.lock"))?;
+    if wait {
+        file.lock()?;
+        return Ok(Some(Control(file)));
+    }
+    match file.try_lock() {
+        Ok(()) => Ok(Some(Control(file))),
+        Err(fs::TryLockError::WouldBlock) => Ok(None),
+        Err(fs::TryLockError::Error(e)) => Err(e.into()),
+    }
+}
+
 impl Drop for Control {
     fn drop(&mut self) {
         // Explicitly, not by closing: a child forked meanwhile shares the
@@ -446,6 +470,11 @@ impl Dir {
     /// (P115), until its first conversation starts and takes it.
     pub fn carried(&self) -> PathBuf {
         self.0.join("carried.json")
+    }
+
+    /// What the Controller's watch did about this session's tools (P116).
+    pub fn reconnects(&self) -> PathBuf {
+        self.0.join("reconnects.json")
     }
 }
 

@@ -23,11 +23,11 @@ use crate::protocol::mcp::{ProbeReport as McpProbeReport, ServePayload};
 use crate::protocol::payload;
 use crate::protocol::probe::{ProbeReport, ProbeRequest};
 use crate::protocol::run::{
-    AgentGuardReport, AgentGuardRequest, AttachRequest, Carried, CarriedKind, HandoffReport,
-    HandoffRequest, HistoryEntry, HistoryReport, HistoryRequest, OutputReport, OutputRequest,
-    OwnerOnAgent, PurgeRequest, ResultReport, ResultRequest, RunReport, RunRequest, SessionRecord,
-    SessionState, StartReport, StartRequest, StatusReport, StatusRequest, StopReport, StopRequest,
-    ToolsOnEntry, UsageReport, UsageRequest,
+    AgentGuardReport, AgentGuardRequest, AttachCheck, AttachRequest, Carried, CarriedKind, Failing,
+    HandoffReport, HandoffRequest, HistoryEntry, HistoryReport, HistoryRequest, OutputReport,
+    OutputRequest, OwnerOnAgent, PurgeRequest, Reconnects, ResultReport, ResultRequest, RunReport,
+    RunRequest, SessionRecord, SessionState, StartReport, StartRequest, StatusReport,
+    StatusRequest, StopReport, StopRequest, ToolsOnEntry, UsageReport, UsageRequest,
 };
 use crate::protocol::{self};
 use crate::provider::{AgentProvider, AgentReport, AgentResult, Ask};
@@ -245,6 +245,20 @@ impl Tools<'_> {
         let Some(link) = self.runtime_link(node)? else {
             return Ok(None);
         };
+        self.dial_link(&link, workspace, root, provider).map(Some)
+    }
+
+    /// [`dial_runtime`](Self::dial_runtime) by the link a session recorded
+    /// when it started, for the questions asked about a session already
+    /// running (P116): a legacy session records how it reaches the Runtime,
+    /// not the Runtime's node name.
+    fn dial_link(
+        &self,
+        link: &RuntimeLink,
+        workspace: &str,
+        root: &Path,
+        provider: AgentProvider,
+    ) -> Result<Ssh> {
         let ssh = Ssh::new(&link.alias, &self.control_dir)?
             .with_ccnm_bin(&link.ccnm_bin)
             .for_provider(provider);
@@ -264,7 +278,7 @@ impl Tools<'_> {
         if let Some(refused) = runtime_refusal(workspace, &audit) {
             return Err(refused);
         }
-        Ok(Some(ssh))
+        Ok(ssh)
     }
 }
 
@@ -577,7 +591,6 @@ pub fn start(req: &StartRequest, tools: &Tools<'_>) -> Result<StartReport> {
             .and_then(|path| session::read_context(&session::Dir::at(path)));
         let entry = match (&existing, &dir) {
             (Some(spec), Some(path)) => tools_on_entry(
-                req,
                 spec,
                 &session::Dir::at(path),
                 &tmux,
@@ -632,6 +645,10 @@ struct Patience {
     /// the session ends the ssh within about a second of it starting, and
     /// one that took 3.07 s to start was measured once (P93).
     steady: u32,
+    /// Whether to wait for a reconnect somebody else is doing (P116): a
+    /// person entering waits for the Controller's watch, which instead
+    /// leaves a session alone while a person is reconnecting it.
+    wait_for_lock: bool,
 }
 
 const ENTRY_PATIENCE: Patience = Patience {
@@ -639,7 +656,141 @@ const ENTRY_PATIENCE: Patience = Patience {
     poll: Duration::from_millis(250),
     rounds: 80,
     steady: 20,
+    wait_for_lock: true,
 };
+
+const WATCH_PATIENCE: Patience = Patience {
+    wait_for_lock: false,
+    ..ENTRY_PATIENCE
+};
+
+/// How often the Controller looks at its sessions' tools (P116).
+pub const WATCH_EVERY: Duration = Duration::from_secs(30);
+
+/// Seconds between failed tries (P116): 30 s, 1 min, 2 min, then every 5
+/// minutes for as long as the session runs. A Runtime on a laptop that went
+/// to sleep is back within one step of it waking up, and one that is gone
+/// for a day costs a few hundred ssh attempts.
+const WATCH_BACKOFF: [u64; 4] = [30, 60, 120, 300];
+
+/// One round of the Controller's watch over the tools of the sessions on
+/// this machine (P116).
+///
+/// A session whose tools are up is left alone: no question to the Runtime,
+/// no key typed. One whose tools went down gets exactly what a person
+/// entering it gets (P100) -- the Runtime asked first, then
+/// `/mcp reconnect ccnm` typed, only into an empty input box -- with the
+/// same consequence: a new remote session, output references from before
+/// gone. This is not P98, which would have kept the connection itself from
+/// breaking; that is still not done.
+///
+/// Codex sessions are not watched: Codex cannot reconnect a running session
+/// (P96).
+pub fn watch_tools(tools: &Tools<'_>) {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let Ok(tmux) = tools.tmux() else {
+        return;
+    };
+    let Ok(out) = tools.runner.run(&tmux.list_cmd()) else {
+        return;
+    };
+    for live in tmux::parse_list(&out.stdout_lossy()) {
+        let Some(id) = live_session_id(&tmux, tools, &live.name) else {
+            continue;
+        };
+        let dir = session::Dir::at(paths::session_dir(&tools.state, &id));
+        let Ok(spec) = session::load(&dir) else {
+            continue;
+        };
+        if spec.runtime.is_none() || spec.provider() != AgentProvider::Claude {
+            continue;
+        }
+        watch_one(&spec, &dir, &tmux, &live.name, tools, now, &WATCH_PATIENCE);
+    }
+}
+
+fn watch_one(
+    spec: &Spec,
+    dir: &session::Dir,
+    tmux: &tmux::Tmux,
+    name: &str,
+    tools: &Tools<'_>,
+    now: u64,
+    patience: &Patience,
+) {
+    let before = read_reconnects(dir);
+    let mut after = before.clone();
+    match transport_alive(dir, tools) {
+        Some(true) => after.failing = None,
+        None => return,
+        Some(false) => {
+            if after.failing.as_ref().is_some_and(|f| now < f.next) {
+                return;
+            }
+            let failed = |previous: Option<Failing>, reason: String, back_off: bool| {
+                let tries = previous.as_ref().map_or(0, |f| f.tries) + u32::from(back_off);
+                let wait = if back_off {
+                    WATCH_BACKOFF[(tries.max(1) as usize - 1).min(WATCH_BACKOFF.len() - 1)]
+                } else {
+                    WATCH_EVERY.as_secs()
+                };
+                Failing {
+                    since: previous.map_or(now, |f| f.since),
+                    reason,
+                    tries,
+                    next: now + wait,
+                }
+            };
+            match reconnect_down(spec, dir, tmux, name, tools, patience) {
+                Some(ToolsOnEntry::Reconnected) => {
+                    tracing::info!(session = %spec.id, workspace = %spec.workspace, "tools were down; reconnected");
+                    after.count += 1;
+                    after.last = Some(now);
+                    after.failing = None;
+                }
+                Some(ToolsOnEntry::NotTyped) => {
+                    after.failing = Some(failed(
+                        after.failing.take(),
+                        "something is typed in its input box, and ccnm does not type over it"
+                            .into(),
+                        false,
+                    ));
+                }
+                Some(ToolsOnEntry::Failed(error)) => {
+                    let reason = error.message.lines().next().unwrap_or_default().to_string();
+                    tracing::info!(session = %spec.id, %reason, "tools are down; could not reconnect");
+                    after.failing = Some(failed(after.failing.take(), reason, true));
+                }
+                // Back by now, or somebody entering the session is on it.
+                None => {}
+            }
+        }
+    }
+    if after != before {
+        write_reconnects(dir, &after);
+    }
+}
+
+pub fn read_reconnects(dir: &session::Dir) -> Reconnects {
+    std::fs::read_to_string(dir.reconnects())
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default()
+}
+
+/// Best effort: a record that cannot be written costs only what
+/// `ccnm status` can say about it.
+fn write_reconnects(dir: &session::Dir, reconnects: &Reconnects) {
+    let path = dir.reconnects();
+    let tmp = path.with_extension("json.tmp");
+    if let Ok(text) = serde_json::to_string(reconnects)
+        && std::fs::write(&tmp, text).is_ok()
+    {
+        let _ = std::fs::rename(&tmp, &path);
+    }
+}
 
 /// Somebody is about to be put into a running session (P100). If its tools
 /// are down, bring them back first, the way they would by hand:
@@ -657,7 +808,21 @@ const ENTRY_PATIENCE: Patience = Patience {
 /// into an input box that is not empty -- somebody's unsent words, or a
 /// question that the keys would answer.
 fn tools_on_entry(
-    req: &StartRequest,
+    spec: &Spec,
+    dir: &session::Dir,
+    tmux: &tmux::Tmux,
+    name: &str,
+    tools: &Tools<'_>,
+    patience: &Patience,
+) -> Option<ToolsOnEntry> {
+    if spec.runtime.is_none() || transport_alive(dir, tools) != Some(false) {
+        return None;
+    }
+    reconnect_down(spec, dir, tmux, name, tools, patience)
+}
+
+/// [`tools_on_entry`] once its transport has been seen down.
+fn reconnect_down(
     spec: &Spec,
     dir: &session::Dir,
     tmux: &tmux::Tmux,
@@ -666,9 +831,22 @@ fn tools_on_entry(
     patience: &Patience,
 ) -> Option<ToolsOnEntry> {
     use crate::provider::claude::tui;
-    if spec.runtime.is_none() || transport_alive(dir, tools) != Some(false) {
-        return None;
-    }
+    // One reconnect at a time (P116). A lock that cannot be taken at all is
+    // no reason not to try.
+    let _reconnecting = match session::reconnect_lock(dir, false) {
+        Ok(Some(lock)) => Some(lock),
+        Ok(None) if !patience.wait_for_lock => return None,
+        // Somebody else is reconnecting it: wait for them, then look again,
+        // since they may well have brought the tools back.
+        Ok(None) => {
+            let lock = session::reconnect_lock(dir, true).ok().flatten();
+            if transport_alive(dir, tools) != Some(false) {
+                return None;
+            }
+            lock
+        }
+        Err(_) => None,
+    };
     if spec.provider() != AgentProvider::Claude {
         // Codex has no way to reconnect a running session; the person is
         // told the way back (P96) rather than put into it.
@@ -676,12 +854,8 @@ fn tools_on_entry(
             Error::new(ErrorCode::NotReady, "Codex cannot reconnect its tools").into(),
         ));
     }
-    if let Err(error) = tools.dial_runtime(
-        &req.runtime_node,
-        &req.workspace,
-        &spec.root,
-        spec.provider(),
-    ) {
+    let link = spec.runtime.as_ref()?;
+    if let Err(error) = tools.dial_link(link, &spec.workspace, &spec.root, spec.provider()) {
         return Some(ToolsOnEntry::Failed(error.into()));
     }
     let screen = |tools: &Tools<'_>| {
@@ -1285,14 +1459,45 @@ fn wait_for_context(dir: &session::Dir) -> Option<session::Context> {
 pub fn attach(req: &AttachRequest, tools: &Tools<'_>) -> Result<i32> {
     let tmux = tools.tmux()?;
     let name = tmux::session_name(&req.workspace);
-    if !tools.runner.run(&tmux.has_session_cmd(&name))?.success() {
-        return Err(tmux::no_session(&name));
-    }
-    let live_id = if req.agent.is_some() || req.session.is_some() {
-        live_session_id(&tmux, tools, &name)
-    } else {
-        None
+    attach_target(req, &tmux, &name, tools)?;
+    let captured = crate::process::run_attached(&tmux.attach_cmd(&name))?;
+    Ok(captured.exit_code.unwrap_or(1))
+}
+
+/// `ccnm internal agent-attach-check` (P116): before `ccnm attach` hands a
+/// terminal over, the session's tools, brought back if they are down --
+/// what entering with `ccnm <workspace>` does (P100), for the command
+/// people use most to get back in.
+pub fn attach_check(req: &AttachRequest, tools: &Tools<'_>) -> Result<AttachCheck> {
+    let tmux = tools.tmux()?;
+    let name = tmux::session_name(&req.workspace);
+    let spec = attach_target(req, &tmux, &name, tools)?;
+    let Some((spec, dir)) = spec else {
+        return Ok(AttachCheck {
+            protocol: PROTOCOL,
+            provider: AgentProvider::Claude,
+            tools: None,
+        });
     };
+    Ok(AttachCheck {
+        protocol: PROTOCOL,
+        provider: spec.provider(),
+        tools: tools_on_entry(&spec, &dir, &tmux, &name, tools, &ENTRY_PATIENCE),
+    })
+}
+
+/// The live session `req` names, checked the way an attach checks it; its
+/// record when it has one ccnm can read.
+fn attach_target(
+    req: &AttachRequest,
+    tmux: &tmux::Tmux,
+    name: &str,
+    tools: &Tools<'_>,
+) -> Result<Option<(Spec, session::Dir)>> {
+    if !tools.runner.run(&tmux.has_session_cmd(name))?.success() {
+        return Err(tmux::no_session(name));
+    }
+    let live_id = live_session_id(tmux, tools, name);
     if let Some(expected) = req.session.as_ref()
         && live_id.as_deref() != Some(expected)
     {
@@ -1305,16 +1510,27 @@ pub fn attach(req: &AttachRequest, tools: &Tools<'_>) -> Result<i32> {
         ));
     }
     if let Some(id) = live_id {
-        let spec = session::load(&session::Dir::at(paths::session_dir(&tools.state, &id)))?;
-        check_session_selection(&spec, &req.workspace, req.agent.as_ref(), tools)?;
+        let dir = session::Dir::at(paths::session_dir(&tools.state, &id));
+        // Only a selection that asked for one must have a readable record:
+        // a plain attach goes to whatever the terminal is, as it always did.
+        let selecting = req.agent.is_some() || req.session.is_some();
+        match session::load(&dir) {
+            Ok(spec) => {
+                if selecting {
+                    check_session_selection(&spec, &req.workspace, req.agent.as_ref(), tools)?;
+                }
+                return Ok(Some((spec, dir)));
+            }
+            Err(e) if selecting => return Err(e),
+            Err(_) => {}
+        }
     } else if req.agent.is_some() || req.session.is_some() {
         return Err(Error::new(
             ErrorCode::NotReady,
             "live tmux session has no verifiable ccnm identity",
         ));
     }
-    let captured = crate::process::run_attached(&tmux.attach_cmd(&name))?;
-    Ok(captured.exit_code.unwrap_or(1))
+    Ok(None)
 }
 
 /// Nothing is running, which is exactly the state `stop` exists to reach,
@@ -2146,6 +2362,10 @@ fn live_sessions(
                     .and_then(session::hook::read)
                     .map(|kept| kept.compactions)
                     .filter(|n| *n > 0),
+                reconnects: dir
+                    .as_ref()
+                    .map(read_reconnects)
+                    .filter(|r| r.count > 0 || r.failing.is_some()),
             }
         })
         .collect()
@@ -4136,6 +4356,7 @@ mod tests {
         poll: Duration::ZERO,
         rounds: 3,
         steady: 2,
+        wait_for_lock: true,
     };
 
     fn entry(dir: &Path, fake: &FakeRunner, test: &str) -> Option<ToolsOnEntry> {
@@ -4143,7 +4364,6 @@ mod tests {
         let spec = session::load(&sdir).unwrap();
         let tools = tmux_tools(fake, dir, test);
         tools_on_entry(
-            &start_request(),
             &spec,
             &sdir,
             &tools.tmux().unwrap(),
@@ -4205,6 +4425,219 @@ mod tests {
             "{ran:?}"
         );
         assert!(ran[7].ends_with("send-keys -t ccnm-xshun Enter"), "{ran:?}");
+    }
+
+    const WATCH_NO_WAIT: Patience = Patience {
+        wait_for_lock: false,
+        ..NO_WAIT
+    };
+
+    fn watched(dir: &Path, fake: &FakeRunner, test: &str, now: u64) -> Reconnects {
+        let sdir = session::Dir::at(paths::session_dir(dir, LIVE));
+        let spec = session::load(&sdir).unwrap();
+        let tools = tmux_tools(fake, dir, test);
+        watch_one(
+            &spec,
+            &sdir,
+            &tools.tmux().unwrap(),
+            "ccnm-xshun",
+            &tools,
+            now,
+            &WATCH_NO_WAIT,
+        );
+        read_reconnects(&sdir)
+    }
+
+    fn unreachable() -> Output {
+        let mut gone = Output::exited(255, "");
+        gone.stderr = b"ssh: connect to host xdwmbp port 22: Operation timed out\n".to_vec();
+        gone
+    }
+
+    /// P116: the Controller's watch costs one `ps` for a session whose
+    /// tools are up -- and clears what an earlier round had recorded.
+    #[test]
+    fn the_watch_leaves_a_session_with_its_tools_up_alone() {
+        let dir = temp("watch-up");
+        let (sdir, up) = live_remote(&dir, AgentProvider::Claude);
+        write_reconnects(
+            &sdir,
+            &Reconnects {
+                count: 1,
+                last: Some(5),
+                failing: Some(Failing {
+                    since: 10,
+                    reason: "gone".into(),
+                    tries: 3,
+                    next: 20,
+                }),
+            },
+        );
+        let fake = FakeRunner::new();
+        fake.push(Output::exited(0, up));
+        let after = watched(&dir, &fake, "watch-up", 100);
+        assert_eq!(fake.calls().len(), 1, "{:?}", ran(&fake));
+        assert_eq!((after.count, after.last, after.failing), (1, Some(5), None));
+    }
+
+    /// P116: a Runtime that cannot be reached is tried again 30 s, 1, 2
+    /// and then every 5 minutes later; in between, nothing is asked or typed.
+    #[test]
+    fn the_watch_backs_off_from_a_runtime_it_cannot_reach() {
+        let dir = temp("watch-backoff");
+        live_remote(&dir, AgentProvider::Claude);
+        let mut now = 1000;
+        for wait in [30, 60, 120, 300, 300] {
+            let fake = FakeRunner::new();
+            fake.push(Output::exited(0, "/bin/zsh\n")); // ps: down
+            fake.push(unreachable());
+            let after = watched(&dir, &fake, "watch-backoff", now);
+            let failing = after.failing.unwrap();
+            assert_eq!(
+                (failing.since, failing.next),
+                (1000, now + wait),
+                "{failing:?}"
+            );
+            assert!(
+                failing.reason.contains("Operation timed out"),
+                "{failing:?}"
+            );
+            assert!(!ran(&fake).iter().any(|c| c.contains("send-keys")));
+
+            // Before it is due: one `ps`, nothing else.
+            let fake = FakeRunner::new();
+            fake.push(Output::exited(0, "/bin/zsh\n"));
+            watched(&dir, &fake, "watch-backoff", now + wait - 1);
+            assert_eq!(fake.calls().len(), 1, "{:?}", ran(&fake));
+            now += wait;
+        }
+    }
+
+    /// P116: down, the Runtime answers, the input box is empty: the same
+    /// keys a person entering would get typed, and the session counts one
+    /// reconnect.
+    #[test]
+    fn the_watch_reconnects_tools_that_went_down() {
+        let dir = temp("watch-reconnect");
+        let (_, up) = live_remote(&dir, AgentProvider::Claude);
+        let fake = FakeRunner::new();
+        fake.push(Output::exited(0, "/bin/zsh\n")); // ps: down
+        fake.push(Output::exited(0, hello_json(true)));
+        fake.push(Output::exited(0, audit_json()));
+        fake.push(Output::exited(0, claude_screen("⏺ reply 0", "")));
+        fake.push(Output::exited(0, "")); // send-keys -l
+        fake.push(Output::exited(0, "")); // send-keys Enter
+        fake.push(Output::exited(0, up)); // ps: back
+        fake.push(Output::exited(
+            0,
+            claude_screen(
+                "❯ /mcp reconnect ccnm\n  ⎿  Successfully reconnected to ccnm",
+                "",
+            ),
+        ));
+        let after = watched(&dir, &fake, "watch-reconnect", 500);
+        assert_eq!(
+            (after.count, after.last, after.failing),
+            (1, Some(500), None)
+        );
+        assert!(
+            ran(&fake)
+                .iter()
+                .any(|c| c.ends_with("send-keys -t ccnm-xshun -l /mcp reconnect ccnm")),
+            "{:?}",
+            ran(&fake)
+        );
+    }
+
+    /// P116: somebody's unsent words are not typed over; the watch looks
+    /// again next round, without backing off -- nothing is wrong with the
+    /// Runtime.
+    #[test]
+    fn the_watch_does_not_type_over_a_draft() {
+        let dir = temp("watch-draft");
+        live_remote(&dir, AgentProvider::Claude);
+        let fake = FakeRunner::new();
+        fake.push(Output::exited(0, "/bin/zsh\n"));
+        fake.push(Output::exited(0, hello_json(true)));
+        fake.push(Output::exited(0, audit_json()));
+        fake.push(Output::exited(
+            0,
+            claude_screen("⏺ reply 0", "half a thought"),
+        ));
+        let failing = watched(&dir, &fake, "watch-draft", 700).failing.unwrap();
+        assert_eq!((failing.tries, failing.next), (0, 730), "{failing:?}");
+        assert!(failing.reason.contains("input box"), "{failing:?}");
+        assert!(!ran(&fake).iter().any(|c| c.contains("send-keys")));
+    }
+
+    /// P116: while somebody entering the session is reconnecting it, the
+    /// watch stays out of the way: no Runtime asked, no key typed.
+    #[test]
+    fn the_watch_steps_aside_for_a_reconnect_in_progress() {
+        let dir = temp("watch-busy");
+        let (sdir, _) = live_remote(&dir, AgentProvider::Claude);
+        let _held = session::reconnect_lock(&sdir, true).unwrap();
+        let fake = FakeRunner::new();
+        fake.push(Output::exited(0, "/bin/zsh\n"));
+        let after = watched(&dir, &fake, "watch-busy", 900);
+        assert_eq!(fake.calls().len(), 1, "{:?}", ran(&fake));
+        assert_eq!(after, Reconnects::default());
+    }
+
+    fn attach_req() -> AttachRequest {
+        AttachRequest {
+            protocol: PROTOCOL,
+            workspace: "xshun".into(),
+            agent: None,
+            session: None,
+        }
+    }
+
+    /// P116: `ccnm attach` asks this first. Tools up: nothing to do but
+    /// say so, and the terminal goes over.
+    #[test]
+    fn attach_check_with_tools_up_has_nothing_to_say() {
+        let dir = temp("attach-up");
+        let (_, up) = live_remote(&dir, AgentProvider::Claude);
+        let fake = FakeRunner::new();
+        fake.push(Output::exited(0, "")); // has-session
+        fake.push(Output::exited(0, format!("CCNM_SESSION={LIVE}\n")));
+        fake.push(Output::exited(0, up));
+        let check = attach_check(&attach_req(), &tmux_tools(&fake, &dir, "attach-up")).unwrap();
+        assert_eq!(check.tools, None);
+        assert!(!ran(&fake).iter().any(|c| c.contains("send-keys")));
+    }
+
+    /// P116: tools down and the Runtime unreachable -- the check says why,
+    /// and `ccnm attach` refuses with the way in regardless (`--force`).
+    #[test]
+    fn attach_check_with_tools_down_says_why_and_the_way_in() {
+        let dir = temp("attach-down");
+        live_remote(&dir, AgentProvider::Claude);
+        let fake = FakeRunner::new();
+        fake.push(Output::exited(0, ""));
+        fake.push(Output::exited(0, format!("CCNM_SESSION={LIVE}\n")));
+        fake.push(Output::exited(0, "/bin/zsh\n")); // ps: down
+        fake.push(unreachable());
+        let check = attach_check(&attach_req(), &tmux_tools(&fake, &dir, "attach-down")).unwrap();
+        let tools = check.tools.unwrap();
+        let (why, code) =
+            crate::protocol::run::tools_refused(&tools, check.provider, "xshun", crate::Lang::En)
+                .unwrap();
+        assert!(why.contains("Operation timed out"), "{why}");
+        assert!(why.contains("ccnm attach xshun --force"), "{why}");
+        assert_eq!(code, ErrorCode::RuntimeUnreachable.exit_code());
+    }
+
+    /// A workspace with no session is the attach's own error, said before
+    /// anything else.
+    #[test]
+    fn attach_check_with_no_session_says_so() {
+        let dir = temp("attach-none");
+        let fake = FakeRunner::new();
+        fake.push(Output::exited(1, "")); // has-session: none
+        let err = attach_check(&attach_req(), &tmux_tools(&fake, &dir, "attach-none")).unwrap_err();
+        assert_eq!(err.code(), ErrorCode::NotReady, "{err}");
     }
 
     /// The common case costs one `ps`: no Runtime, no screen, no keys.

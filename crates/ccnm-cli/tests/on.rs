@@ -8,7 +8,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use ccnm_core::protocol::run::{
-    Carried, CarriedKind, HandoffReport, LiveSession, StartReport, StartRequest, StatusReport,
+    AttachCheck, AttachRequest, Carried, CarriedKind, HandoffReport, LiveSession, StartReport,
+    StartRequest, StatusReport, ToolsOnEntry,
 };
 use ccnm_testdir::TestDir;
 
@@ -149,6 +150,7 @@ fn status(running: bool) -> String {
         context: None,
         tools: Some(true),
         compactions: None,
+        reconnects: None,
     };
     ccnm_core::protocol::payload::to_json(&StatusReport {
         protocol: 1,
@@ -564,4 +566,76 @@ fn an_older_ai_machine_gets_the_session_without_what_it_cannot_take() {
     assert!(err.contains("too old to take a handoff"), "{err}");
     let sent: StartRequest = m.sent("hpsrv.invalid", "agent-start").unwrap();
     assert_eq!(sent.carried, None);
+}
+
+/// An `agent-attach-check` answer: the tools were down and stayed down.
+fn tools_stayed_down() -> String {
+    ccnm_core::protocol::payload::to_json(&AttachCheck {
+        protocol: 1,
+        provider: Default::default(),
+        tools: Some(ToolsOnEntry::Failed(ccnm_core::error::ErrorReport::new(
+            ccnm_core::ErrorCode::RuntimeUnreachable,
+            "ssh: connect to host xdwmbp port 22: Operation timed out",
+        ))),
+    })
+    .unwrap()
+}
+
+/// P116: `ccnm attach` checks the tools first, like `ccnm <workspace>`:
+/// down and not coming back, the person is told why and not put in;
+/// `--force` goes in regardless.
+#[test]
+fn attach_checks_the_tools_first_and_force_goes_in_regardless() {
+    let m = machines("attach");
+    m.answer("fodelf.invalid", "agent-attach-check", &tools_stayed_down());
+    m.answer("fodelf.invalid", "attach", "");
+    let out = m.ccnm(&["attach", "xshun"]).output().unwrap();
+    let err = stderr(&out);
+    assert_eq!(
+        out.status.code(),
+        Some(ccnm_core::ErrorCode::RuntimeUnreachable.exit_code()),
+        "{err}"
+    );
+    assert!(err.contains("Operation timed out"), "{err}");
+    assert!(err.contains("ccnm attach xshun --force"), "{err}");
+    assert!(
+        m.sent::<AttachRequest>("fodelf.invalid", "attach")
+            .is_none(),
+        "no terminal was handed over"
+    );
+
+    let out = m.ccnm(&["attach", "xshun", "--force"]).output().unwrap();
+    assert!(
+        m.sent::<AttachRequest>("fodelf.invalid", "attach")
+            .is_some(),
+        "{}",
+        stderr(&out)
+    );
+    assert!(
+        m.sent::<AttachRequest>("fodelf.invalid", "agent-attach-check")
+            .is_some(),
+        "the first one was checked"
+    );
+}
+
+/// An AI machine older than P116 does not know the check: the attach goes
+/// ahead as it always did, and says the tools were not looked at.
+#[test]
+fn attach_to_an_older_ai_machine_goes_in_unchecked() {
+    let m = machines("attach-old");
+    let ssh = m.path().join("bin/ssh");
+    let script = std::fs::read_to_string(&ssh).unwrap().replace(
+        "if [ -f \"$f\" ]",
+        "if [ \"$sub\" = agent-attach-check ]; then echo \"error: unrecognized subcommand 'agent-attach-check'\" >&2; exit 2; fi\nif [ -f \"$f\" ]",
+    );
+    std::fs::write(&ssh, script).unwrap();
+    m.answer("fodelf.invalid", "attach", "");
+    let out = m.ccnm(&["attach", "xshun"]).output().unwrap();
+    let err = stderr(&out);
+    assert!(err.contains("too old to check the tools first"), "{err}");
+    assert!(
+        m.sent::<AttachRequest>("fodelf.invalid", "attach")
+            .is_some(),
+        "{err}"
+    );
 }

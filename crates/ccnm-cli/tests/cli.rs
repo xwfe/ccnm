@@ -1879,6 +1879,7 @@ fn status_and_ls_say_what_the_person_needs_and_nothing_untrue() {
             }),
             tools: Some(true),
             compactions: None,
+            reconnects: None,
         }],
         records: vec![],
         other_instances: vec![],

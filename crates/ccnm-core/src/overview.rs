@@ -700,13 +700,47 @@ pub(crate) fn session_rows(s: &LiveSession, now: u64, lang: Lang) -> Vec<Vec<Str
         vec![
             lang.pick("工具", "tools").into(),
             String::new(),
-            match s.tools {
-                Some(true) => lang.pick("通", "connected").into(),
-                Some(false) => s.tools_down_hint(lang),
-                None => lang.pick("说不清", "unknown").into(),
+            match (s.tools, s.reconnects.as_ref()) {
+                // P116: what the Controller's watch did, beside what is.
+                (Some(true), Some(r)) if r.count > 0 => {
+                    let ago = r
+                        .last
+                        .map(|at| span(now.saturating_sub(at), lang))
+                        .unwrap_or_default();
+                    lang.pick(
+                        format!("通（断过，自动接回过 {} 次，最近一次在 {ago}前）", r.count),
+                        format!(
+                            "connected (they went down and were brought back {} time{}, last {ago} ago)",
+                            r.count,
+                            if r.count == 1 { "" } else { "s" }
+                        ),
+                    )
+                }
+                (Some(true), _) => lang.pick("通", "connected").into(),
+                (Some(false), _) => s.tools_down_hint(lang),
+                (None, _) => lang.pick("说不清", "unknown").into(),
             },
         ],
     ];
+    if s.tools == Some(false)
+        && let Some(failing) = s.reconnects.as_ref().and_then(|r| r.failing.as_ref())
+    {
+        let next = span(failing.next.saturating_sub(now), lang);
+        rows.push(vec![
+            String::new(),
+            String::new(),
+            lang.pick(
+                format!(
+                    "Controller 在自动接：上一次没接上（{}），{next}后再试",
+                    failing.reason
+                ),
+                format!(
+                    "the Controller is bringing them back: the last try failed ({}); the next is in {next}",
+                    failing.reason
+                ),
+            ),
+        ]);
+    }
     if s.context.as_ref().and_then(|c| c.keychain) == Some(false) {
         let cli = s.provider.cli_name();
         rows.push(vec![
@@ -1116,6 +1150,7 @@ mod tests {
             context: None,
             tools,
             compactions: None,
+            reconnects: None,
         }
     }
 
@@ -1393,6 +1428,46 @@ mod tests {
         assert!(codex.contains("ccnm stop keex 再 ccnm keex"), "{codex}");
         assert!(!codex.contains("/mcp"), "{codex}");
         assert!(!codex.contains("resume"), "{codex}");
+    }
+
+    /// P116: what the Controller's watch did shows beside what is -- how
+    /// often it brought the tools back, or, while they are down, why the
+    /// last try failed and when the next is.
+    #[test]
+    fn the_tools_row_says_what_the_watch_did() {
+        use crate::protocol::run::{Failing, Reconnects};
+        let mut s = live("keex", "d13df3ae-8716-4874-bee3-9399c1f34561", Some(true));
+        s.reconnects = Some(Reconnects {
+            count: 2,
+            last: Some(1_000),
+            failing: None,
+        });
+        let said = block(&session_rows(&s, 1_000 + 180, Lang::Zh));
+        assert!(
+            said.contains("通（断过，自动接回过 2 次，最近一次在 3 分钟前）"),
+            "{said}"
+        );
+        let said = block(&session_rows(&s, 1_000 + 180, Lang::En));
+        assert!(said.contains("brought back 2 times, last 3m ago"), "{said}");
+
+        s.tools = Some(false);
+        s.reconnects = Some(Reconnects {
+            count: 2,
+            last: Some(1_000),
+            failing: Some(Failing {
+                since: 1_100,
+                reason: "ssh: connect to host xdwmbp port 22: Operation timed out".into(),
+                tries: 3,
+                next: 1_300,
+            }),
+        });
+        let said = block(&session_rows(&s, 1_180, Lang::Zh));
+        let lines: Vec<&str> = said.lines().collect();
+        assert!(lines[1].contains("工具"), "{said}");
+        assert!(
+            lines[2].starts_with("                    Controller 在自动接：上一次没接上（ssh: connect to host xdwmbp port 22: Operation timed out），2 分钟后再试"),
+            "{said}"
+        );
     }
 
     /// 每种写锁状态各说各的，问不到的时候说问不到——哪一种都不能读成"空闲"（AU-03）。

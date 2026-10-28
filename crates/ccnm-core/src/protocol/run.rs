@@ -357,22 +357,8 @@ impl StartReport {
                 ),
             ));
         }
-        let reconnect = crate::provider::claude::tui::reconnect_command();
-        match &self.tools {
-            Some(ToolsOnEntry::Reconnected) => lines.push(lang.pick(
-                format!("工具断了，已替你接上（{reconnect}）"),
-                format!("its tools were down; reconnected them ({reconnect})"),
-            )),
-            Some(ToolsOnEntry::NotTyped) => lines.push(lang.pick(
-                format!(
-                    "工具断了，输入框里有没发出去的字（或开着别的界面），没替你敲；进去后敲：{reconnect}"
-                ),
-                format!(
-                    "its tools are down, and the input box holds something unsent (or another view is open), so nothing was typed; once in, type: {reconnect}"
-                ),
-            )),
-            // Said by [`Self::refusal`], with what to do instead.
-            Some(ToolsOnEntry::Failed(_)) | None => {}
+        if let Some(said) = self.tools.as_ref().and_then(|t| tools_said(t, lang)) {
+            lines.push(said);
         }
         lines.join("\n")
     }
@@ -381,24 +367,84 @@ impl StartReport {
     /// (P100): what to tell the person instead of putting them into it, and
     /// the exit code. `None` when there is nothing to refuse.
     pub fn refusal(&self, workspace: &str, lang: Lang) -> Option<(String, i32)> {
-        let Some(ToolsOnEntry::Failed(why)) = &self.tools else {
-            return None;
-        };
-        let reason = match self.provider {
-            // Nothing was tried: Codex has no way to reconnect a running
-            // session, so the reason is the way back.
-            crate::provider::AgentProvider::Codex => self.provider.way_back(workspace, lang),
-            crate::provider::AgentProvider::Claude => why.message.clone(),
-        };
-        let text = lang.pick(
+        tools_refused(self.tools.as_ref()?, self.provider, workspace, lang)
+    }
+}
+
+/// What entering a session did about its tools (P100), in a line; `None`
+/// when there is nothing to say, or when [`tools_refused`] says it.
+pub fn tools_said(tools: &ToolsOnEntry, lang: Lang) -> Option<String> {
+    let reconnect = crate::provider::claude::tui::reconnect_command();
+    match tools {
+        ToolsOnEntry::Reconnected => Some(lang.pick(
+            format!("工具断了，已替你接上（{reconnect}）"),
+            format!("its tools were down; reconnected them ({reconnect})"),
+        )),
+        ToolsOnEntry::NotTyped => Some(lang.pick(
             format!(
-                "这个会话的工具断了，ccnm 没能替你接上，所以没让你进去。\n原因：{reason}\n网络或项目机器好了再 ccnm {workspace}；不管工具先进去看：ccnm attach {workspace}"
+                "工具断了，输入框里有没发出去的字（或开着别的界面），没替你敲；进去后敲：{reconnect}"
             ),
             format!(
-                "this session's tools are down and ccnm could not reconnect them, so you were not put into it.\nreason: {reason}\nonce the network or the project machine is back: ccnm {workspace}; to look at it anyway: ccnm attach {workspace}"
+                "its tools are down, and the input box holds something unsent (or another view is open), so nothing was typed; once in, type: {reconnect}"
             ),
-        );
-        Some((text, why.code().exit_code()))
+        )),
+        ToolsOnEntry::Failed(_) => None,
+    }
+}
+
+/// Tools that stayed down: what to tell the person instead of putting them
+/// into the session, and the exit code. The way in regardless is
+/// `ccnm attach --force` (P116): plain `attach` checks too.
+pub fn tools_refused(
+    tools: &ToolsOnEntry,
+    provider: crate::provider::AgentProvider,
+    workspace: &str,
+    lang: Lang,
+) -> Option<(String, i32)> {
+    let ToolsOnEntry::Failed(why) = tools else {
+        return None;
+    };
+    let reason = match provider {
+        // Nothing was tried: Codex has no way to reconnect a running
+        // session, so the reason is the way back.
+        crate::provider::AgentProvider::Codex => provider.way_back(workspace, lang),
+        crate::provider::AgentProvider::Claude => why.message.clone(),
+    };
+    let text = lang.pick(
+        format!(
+            "这个会话的工具断了，ccnm 没能替你接上，所以没让你进去。\n原因：{reason}\n网络或项目机器好了再 ccnm {workspace}；不管工具先进去看：ccnm attach {workspace} --force"
+        ),
+        format!(
+            "this session's tools are down and ccnm could not reconnect them, so you were not put into it.\nreason: {reason}\nonce the network or the project machine is back: ccnm {workspace}; to look at it anyway: ccnm attach {workspace} --force"
+        ),
+    );
+    Some((text, why.code().exit_code()))
+}
+
+/// `ccnm internal agent-attach-check` (P116): a running session's tools,
+/// looked at -- and brought back if they are down -- before a terminal is
+/// handed to it. Its own request, ahead of the attach, so the answer comes
+/// back to the machine the person typed on and is said in their language;
+/// the attach itself hands over a terminal and says nothing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AttachCheck {
+    pub protocol: u32,
+    #[serde(
+        default,
+        skip_serializing_if = "crate::provider::AgentProvider::is_claude"
+    )]
+    pub provider: crate::provider::AgentProvider,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tools: Option<ToolsOnEntry>,
+}
+
+impl Protocol for AttachCheck {
+    fn protocol(&self) -> u32 {
+        self.protocol
+    }
+    fn expected_protocol(&self) -> u32 {
+        1
     }
 }
 
@@ -930,6 +976,36 @@ pub struct LiveSession {
     /// been going on summaries, not only the model.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compactions: Option<u32>,
+    /// What the Controller's watch did about its tools (P116), when it did
+    /// anything.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reconnects: Option<Reconnects>,
+}
+
+/// What the Controller's watch did about one session's tools (P116).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Reconnects {
+    /// Times they were brought back without anybody asking.
+    #[serde(default)]
+    pub count: u32,
+    /// Unix seconds of the last of those.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last: Option<u64>,
+    /// While they are down and still being tried.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failing: Option<Failing>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Failing {
+    /// Unix seconds: the first try that failed.
+    pub since: u64,
+    /// Why the last try failed, in one line.
+    pub reason: String,
+    /// How many tries have failed in a row.
+    pub tries: u32,
+    /// Unix seconds: when the next try is due.
+    pub next: u64,
 }
 
 impl LiveSession {
@@ -1335,6 +1411,7 @@ mod tests {
                 }),
                 tools: Some(true),
                 compactions: None,
+                reconnects: None,
             }],
             records: vec![SessionRecord {
                 session: id.into(),

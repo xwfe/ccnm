@@ -2215,6 +2215,7 @@ mod tests {
                     }),
                     tools: Some(true),
                     compactions: None,
+                    reconnects: None,
                 }],
             }),
         }

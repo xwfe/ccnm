@@ -128,11 +128,15 @@ enum Command {
         #[arg(short = 'c', long = "continue", conflicts_with = "print")]
         continue_last: bool,
     },
-    /// Attach this terminal to a workspace's running session
+    /// Attach this terminal to a workspace's running session. Its tools are
+    /// checked first, and brought back if they went down
     #[command(visible_alias = "a")]
     Attach {
         /// Workspace name from config.toml
         workspace: String,
+        /// Go in even when its tools are down and cannot be brought back
+        #[arg(long)]
+        force: bool,
         /// Which AI machine: `<machine>`, `<machine>/<instance>`, or an
         /// instance on the project's own machine. Formerly --agent
         #[arg(long = "on", alias = "agent", value_name = "WHERE")]
@@ -475,6 +479,11 @@ enum InternalCommand {
         #[arg(long)]
         payload: String,
     },
+    /// Work-side check of a running session's tools before an attach
+    AgentAttachCheck {
+        #[arg(long)]
+        payload: String,
+    },
     /// Work-side read of what a project's last session left for the next
     AgentHandoff {
         #[arg(long)]
@@ -785,7 +794,8 @@ fn zh_help(command: clap::Command) -> clap::Command {
                 })
         })
         .mut_subcommand("attach", |c| {
-            workspace_args(c.about("把这个终端接到某个 workspace 正在跑的会话上"))
+            workspace_args(c.about("把这个终端接到某个 workspace 正在跑的会话上。先看工具通不通，断了先替你接上"))
+                .mut_arg("force", |a| a.help("工具断了、又接不上时也进去"))
         })
         .mut_subcommand("status", |c| {
             c.about("Agent Node 上现在跑着什么；不给项目名就看所有项目，连同 Runtime 上服务它们的进程")
@@ -1226,26 +1236,52 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
         }
         Command::Attach {
             workspace,
+            force,
             on,
             session,
         } => {
             let config = Config::load_in(&config_path()?, lang)?;
             if agent_side(&config, workspace).is_some() {
                 let instance = local_on(&config, on.as_deref(), lang)?;
-                return work::attach(
-                    &attach_request(
-                        workspace,
-                        local_instance_ref(&config, instance.as_deref())?,
-                        session.clone(),
-                    ),
-                    &agent_tools(config_path().ok().as_deref())?,
+                let req = attach_request(
+                    workspace,
+                    local_instance_ref(&config, instance.as_deref())?,
+                    session.clone(),
                 );
+                let tools = agent_tools(config_path().ok().as_deref())?;
+                if !*force
+                    && let Some(code) =
+                        tools_before_attach(work::attach_check(&req, &tools), workspace, lang)?
+                {
+                    return Ok(code);
+                }
+                return work::attach(&req, &tools);
             }
             let placement = placed(&config, workspace, on.as_deref(), lang)?;
             let resolved = placement.config.workspace_in(workspace, lang)?;
+            let env = launch_env()?;
+            if !*force {
+                let check = launcher::attach_check(
+                    &resolved,
+                    &env,
+                    placement.instance.as_deref(),
+                    session.as_deref(),
+                )
+                .map_err(|e| {
+                    unreachable_said(
+                        e,
+                        &resolved,
+                        ("接不上会话", "the session cannot be attached to"),
+                        lang,
+                    )
+                });
+                if let Some(code) = tools_before_attach(check, workspace, lang)? {
+                    return Ok(code);
+                }
+            }
             attach_selected(
                 &resolved,
-                &launch_env()?,
+                &env,
                 workspace,
                 placement.instance.as_deref(),
                 session.as_deref(),
@@ -1691,6 +1727,7 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
                 let socket = paths::controller_socket(&paths::state_dir()?);
                 let listener = controller::Listener::bind(&socket)?;
                 let controller_config_path = config_path()?;
+                let watch_config = controller_config_path.clone();
                 let tools = controller::Tools {
                     runner: &SystemRunner,
                     // Resolved here, in the service manager's environment
@@ -1708,6 +1745,23 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
                     exe: std::env::current_exe()?,
                     host: controller::Host::current(),
                 };
+                // P116: the tools of this machine's sessions, looked at every
+                // 30 s and brought back when they went down. Its own thread,
+                // so a reconnect that takes 20 s never holds up a request;
+                // a round that panics is logged and the next one runs.
+                std::thread::spawn(move || {
+                    loop {
+                        std::thread::sleep(work::WATCH_EVERY);
+                        let round = std::panic::catch_unwind(|| {
+                            if let Ok(tools) = agent_tools(Some(&watch_config)) {
+                                work::watch_tools(&tools);
+                            }
+                        });
+                        if round.is_err() {
+                            tracing::warn!("a round of the tools watch panicked");
+                        }
+                    }
+                });
                 listener.serve_forever(&tools)?;
                 Ok(0)
             }
@@ -1758,6 +1812,13 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
             InternalCommand::AgentHistory { payload } => {
                 let req: HistoryRequest = payload::decode(payload)?;
                 print_json(&work::history(
+                    &req,
+                    &agent_tools(config_path().ok().as_deref())?,
+                )?)
+            }
+            InternalCommand::AgentAttachCheck { payload } => {
+                let req: AttachRequest = payload::decode(payload)?;
+                print_json(&work::attach_check(
                     &req,
                     &agent_tools(config_path().ok().as_deref())?,
                 )?)
@@ -2747,6 +2808,43 @@ fn placed(
     lang: Lang,
 ) -> Result<ccnm_core::on::Placement> {
     config.place(workspace, on, Some(&paths::state_dir()?), lang)
+}
+
+/// What `ccnm attach` says about the session's tools before going in
+/// (P116), and the exit code when it does not go in. An Agent too old to
+/// be asked is attached to unchecked, as before.
+fn tools_before_attach(
+    check: Result<ccnm_core::protocol::run::AttachCheck>,
+    workspace: &str,
+    lang: Lang,
+) -> Result<Option<i32>> {
+    let check = match check {
+        Ok(check) => check,
+        Err(e) if e.code() == ccnm_core::ErrorCode::Version => {
+            eprintln!(
+                "{}",
+                lang.pick(
+                    "那台的 ccnm 太旧，没查工具通不通就接上了",
+                    "the ccnm there is too old to check the tools first; attaching without",
+                )
+            );
+            return Ok(None);
+        }
+        Err(e) => return Err(e),
+    };
+    let Some(tools) = check.tools else {
+        return Ok(None);
+    };
+    if let Some((why, code)) =
+        ccnm_core::protocol::run::tools_refused(&tools, check.provider, workspace, lang)
+    {
+        eprintln!("{why}");
+        return Ok(Some(code));
+    }
+    if let Some(said) = ccnm_core::protocol::run::tools_said(&tools, lang) {
+        eprintln!("{said}");
+    }
+    Ok(None)
 }
 
 /// `--on` typed on an AI machine: one of its own instances, or itself.

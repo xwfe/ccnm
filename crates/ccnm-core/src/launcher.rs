@@ -266,6 +266,45 @@ pub fn attach_cmd_selected(
     ssh.interactive_ccnm_cmd(&["internal", "attach", "--payload", &wire])
 }
 
+/// Before `ccnm attach` hands the terminal over (P116): the session's
+/// tools, brought back if they are down, as the Agent's
+/// `internal agent-attach-check` answers. An Agent too old to know it says
+/// so as a version error; the caller attaches without the check.
+pub fn attach_check(
+    resolved: &Resolved<'_>,
+    env: &Env<'_>,
+    agent: Option<&str>,
+    session: Option<&str>,
+) -> Result<crate::protocol::run::AttachCheck> {
+    let ssh = agent_ssh(resolved, env)?;
+    let selected = resolved.agent_reference(agent)?;
+    let req = AttachRequest {
+        protocol: if selected.is_some() { 3 } else { PROTOCOL },
+        workspace: resolved.name.to_string(),
+        agent: selected,
+        session: session.map(str::to_string),
+    };
+    ssh.call_ccnm(
+        env.runner,
+        Master::Reuse,
+        &["internal", "agent-attach-check"],
+        &req,
+        // A reconnect waits up to 20 s for Claude Code to answer (P100).
+        Duration::from_secs(60),
+        ErrorCode::AgentUnreachable,
+    )
+    .map_err(|e| {
+        if e.message().contains("agent-attach-check") {
+            Error::new(
+                ErrorCode::Version,
+                "the Agent's ccnm is too old to check a session's tools before attaching",
+            )
+        } else {
+            e
+        }
+    })
+}
+
 pub fn stop(resolved: &Resolved<'_>, env: &Env<'_>) -> Result<StopReport> {
     stop_selected(resolved, env, None, None)
 }

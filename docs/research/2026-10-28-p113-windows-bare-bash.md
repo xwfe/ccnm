@@ -39,3 +39,27 @@ GitHub Actions 运行 40673370162 四个 job 全绿。windows-runtime 里：两�
 
 探针第一次没跑完是探针的错：它拿 `$SHELL` 当 Windows 路径传给 `cmd`，而 Git Bash 里 `$SHELL` 读出来是 MSYS 的写法（`/d/scoop/...`）；ccnm 设的是 `D:/scoop/...`，进了 Git Bash 被它自己转换了。改成从说明里取路径。
 
+
+## 4. 发版
+
+| 步骤 | 结果 |
+| --- | --- |
+| 版本号提交 `a69b876` | `Cargo.toml`、`Cargo.lock`（只动三个工作区成员）、README 的最新版本和升级两行、支持矩阵的版本基线、本记录前三节；CI 运行 40674583305 四个 job 全绿 |
+| tag | 带说明的 `v0.21.1`（tag 对象）指向 `a69b876` |
+| 发布流程 | 运行 40675812999 第一次 macos 红：门禁里 `test_measure_codex` 的超时用例只给子进程 0.2 秒，runner 忙时 Python 没来得及打印，stdout 是空的；和本次改动无关，同一提交此前两次 CI 都过。公开的 tag 不改写，只重跑失败的 job：macos、linux、windows、publish 全过，六个文件齐全，release 页正文就是 tag 说明。那条用例在 `6a5bb0a` 改成给 3 秒（子进程睡 30 秒，照样超时） |
+
+| 文件 | sha256 |
+| --- | --- |
+| `ccnm-0.21.1-macos-universal.tar.gz` | `f013dffd492221383d5679133a4485e8c4b53060fbbe5f91ea8190e7513e10ad`（二进制 `7e7a61dc651be251…`） |
+| `ccnm-0.21.1-linux-x86_64.tar.gz` | `5fd8d46b98733ca773f9db4da88aca42d76a5887958d87e014faf209598397d3` |
+| `ccnm-0.21.1-windows-x86_64.zip` | `5e760d846e39c0b41d92fa747ee42884f26e213e35ff9aabd0972b40e9b260ae`（`ccnm.exe` `d142aa6b44a0ccce…`） |
+
+三个包按 GitHub 的 digest 和包里的 `.sha256` 两头核对过。
+
+**发布包复验**：测试机上照安装文档换成 v0.21.1 的 zip（核 sha256、`Expand-Archive`、`Unblock-File`），这台 macOS 用 v0.21.1 的 macOS 包里的 `ccnm`，同一个探针再跑一遍，**6/6**，结果和第 3 节一样；WSL 前后都是 `Stopped`，会话后没有残留进程。
+
+**三台自用机器不换**：它们都不用 Windows，v0.21.1 在 macOS、Linux 上和 v0.21.0 行为一样，几台之间版本一致就能互连。
+
+## 5. 清理
+
+测试机：删了 `%USERPROFILE%\.local\bin\ccnm.exe`、`.config\ccnm`、`.local\state\ccnm`、`%TEMP%\ccnm-p113`；`.local\bin` 里原有的 uv 等没动。之后没有 ccnm、bash 进程，WSL 是 `Stopped`，`powercfg` 里没有 ccnm 的请求。这台 macOS：删了 bridge 用的临时状态目录 `target/p113-state`。

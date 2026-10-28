@@ -18,6 +18,9 @@ use ccnm_core::protocol::payload;
 use ccnm_core::runtime::{ExternalMode, ExternalOpenPayload};
 use serde_json::{Value, json};
 
+/// The variable ccnm takes its home from: `USERPROFILE` on Windows (D6).
+const HOME: &str = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+
 /// A project inside a git repository, one level down so `git_subdir` has
 /// a separator in it, with something for each tool to read.
 struct Fixture {
@@ -107,7 +110,7 @@ external_mcp = "coding"
         cmd.args(["internal", "mcp-serve", "--payload", &wire])
             .env_clear()
             .env("PATH", std::env::var_os("PATH").unwrap_or_default())
-            .env("HOME", self.dir.join("home"))
+            .env(HOME, self.dir.join("home"))
             .env("XDG_STATE_HOME", self.dir.join("state"))
             .env("CCNM_CONFIG", &self.config);
         // What a Windows process cannot do without, and sshd gives every

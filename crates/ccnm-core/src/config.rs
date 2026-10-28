@@ -1018,14 +1018,11 @@ impl Config {
                 check_node_path(&format!("{at}.codex_bin"), bin, here, &mut problems);
             }
             if let Some(bin) = &node.ccnm_bin {
-                let at = format!("{at}.ccnm_bin");
-                if check_remote_bin(&at, bin, &mut problems) && !is_remote_path(bin) {
-                    problems.push(format!(
-                        "{at} must contain only [A-Za-z0-9._/-], after a leading ~ or a drive like C:, so the remote shell never has to quote it, got \"{}\"",
-                        bin.display()
-                    ));
-                }
+                problems.extend(ccnm_bin_problem(&format!("{at}.ccnm_bin"), bin));
             }
+        }
+        if cfg!(windows) {
+            self.windows_problems(&mut problems);
         }
 
         for (name, ws) in &self.workspaces {
@@ -1083,6 +1080,38 @@ impl Config {
             Err(Error::config(problems.join("\n")))
         }
     }
+
+    /// What this file may not say on a Windows machine, which is only ever
+    /// a Runtime. Separate so the rule is tested on every platform.
+    ///
+    /// `runtime_user` on this node (D8): Windows has no dedicated-account
+    /// mode yet -- local accounts, ACLs and "deny log on locally" are not
+    /// designed -- and the checks behind the name are Unix ones. Refused
+    /// here, once, rather than accepted and half-enforced.
+    fn windows_problems(&self, problems: &mut Vec<String>) {
+        let Some(this) = self.this.as_deref() else {
+            return;
+        };
+        if let Some(user) = self.nodes.get(this).and_then(|n| n.runtime_user.as_deref()) {
+            problems.push(format!(
+                "nodes.{this}.runtime_user = \"{user}\": a Windows Runtime has no dedicated-account mode yet\nremove the line: the tools then run as the account the Agent's ssh lands on, shared with you, and ccnm doctor shows what that account can reach (docs/production-safety.md)"
+            ));
+        }
+    }
+}
+
+/// Why `path` cannot be a node's `ccnm_bin`, as `at` -- the rule the
+/// config is loaded with, public so `ccnm init` can check the line it tells
+/// somebody to write on the other machine.
+pub fn ccnm_bin_problem(at: &str, path: &Path) -> Option<String> {
+    let mut problems = Vec::new();
+    if check_remote_bin(at, path, &mut problems) && !is_remote_path(path) {
+        problems.push(format!(
+            "{at} must contain only [A-Za-z0-9._/-], after a leading ~ or a drive like C:, so the remote shell never has to quote it, got \"{}\"",
+            path.display()
+        ));
+    }
+    problems.pop()
 }
 
 /// Names end up in tmux session names, session ids and state paths, so
@@ -1688,6 +1717,28 @@ mod tests {
             ));
             assert!(err.message().contains(expected), "{bin}: {err}");
         }
+    }
+
+    /// D8: on Windows a `runtime_user` on this node is refused at load and
+    /// says what to do instead. Another node's is that node's business.
+    #[test]
+    fn a_windows_runtime_refuses_a_dedicated_account() {
+        let config = Config::parse(
+            "this = \"runtime\"\n[nodes.runtime]\nruntime_user = \"ccrun\"\n[nodes.agent]\nssh = \"work\"\nruntime_user = \"other\"\n",
+        )
+        .unwrap();
+        let mut problems = Vec::new();
+        config.windows_problems(&mut problems);
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(
+            problems[0].starts_with("nodes.runtime.runtime_user = \"ccrun\": a Windows Runtime has no dedicated-account mode yet\nremove the line"),
+            "{problems:?}"
+        );
+        let mut problems = Vec::new();
+        Config::parse("this = \"runtime\"\n[nodes.runtime]\n")
+            .unwrap()
+            .windows_problems(&mut problems);
+        assert!(problems.is_empty(), "{problems:?}");
     }
 
     #[test]

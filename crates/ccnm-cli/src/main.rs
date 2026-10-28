@@ -1701,6 +1701,18 @@ fn init(
             )));
         }
     };
+    // Windows is only ever the machine holding the projects (P111.1): an
+    // Agent's config written here would describe a machine that cannot be
+    // one, and the next command would say so less helpfully.
+    if cfg!(windows) && this == "agent" {
+        return Err(ccnm_core::Error::new(
+            ccnm_core::ErrorCode::NotReady,
+            lang.pick(
+                "Windows 只能当放项目的那台（Runtime），AI 那台得是 macOS 或 Linux\n在这台上：ccnm init --agent <AI 那台的别名>",
+                "Windows can only be the machine holding the projects (Runtime); the AI machine has to be macOS or Linux\non this one: ccnm init --agent <alias of the AI machine>",
+            ),
+        ));
+    }
     edit.set_this(this, &mut changes);
     // An Agent Node says outright that the workspace list is elsewhere.
     // Without it a Runtime Node that has no projects yet is the same file,
@@ -1782,8 +1794,37 @@ fn init(
         // somebody retypes. Mixing `<别名>` into one line and `<name>`
         // into the next is worse than either choice on its own.
         println!("  ssh {alias} ccnm init --runtime <this machine's alias>");
+        if cfg!(windows) {
+            println!("{}", windows_ccnm_bin_hint(lang)?);
+        }
     }
     Ok(0)
+}
+
+/// The line the Agent Node needs to reach this Windows machine's ccnm
+/// (P111.1). Windows's sshd runs commands with cmd.exe, which does not
+/// expand the default `~/.local/bin/ccnm`, so the Agent has to name this
+/// file in full -- and nobody setting up a first Windows Runtime knows that,
+/// or which spelling it takes. Checked against the rule the Agent's config
+/// is loaded with, so the line printed is one it accepts.
+fn windows_ccnm_bin_hint(lang: Lang) -> Result<String> {
+    let here = ccnm_core::reported_path(&std::env::current_exe()?);
+    let mut text = lang.pick(
+        "\n然后在 Agent 那边这份配置的 [nodes.runtime] 下写上这台 ccnm 的全路径（Windows 用 cmd.exe 跑 ssh 命令，不认默认的 ~/.local/bin/ccnm）：".to_string(),
+        "\nthen, in that config's [nodes.runtime], the full path to this ccnm (Windows runs ssh commands with cmd.exe, which does not expand the default ~/.local/bin/ccnm):".to_string(),
+    );
+    match ccnm_core::config::ccnm_bin_problem("ccnm_bin", &here) {
+        None => text.push_str(&format!("\n  ccnm_bin = \"{}\"", here.display())),
+        Some(problem) => {
+            let suggested =
+                ccnm_core::reported_path(&paths::home_dir()?.join(".local/bin/ccnm.exe"));
+            text.push_str(&lang.pick(
+                format!("\n  这台 ccnm 现在在 {}，这个路径写不进 ccnm_bin：{problem}\n  把它挪到 {} 再写这一行：\n  ccnm_bin = \"{}\"", here.display(), suggested.display(), suggested.display()),
+                format!("\n  this ccnm is at {}, which ccnm_bin cannot name: {problem}\n  move it to {} and write:\n  ccnm_bin = \"{}\"", here.display(), suggested.display(), suggested.display()),
+            ));
+        }
+    }
+    Ok(text)
 }
 
 /// `path` exactly as written, when that is unambiguous: absolute, with no

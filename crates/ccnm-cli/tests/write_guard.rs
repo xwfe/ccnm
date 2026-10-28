@@ -7,6 +7,9 @@ use ccnm_core::mcp::write_guard::{Observation, Observed, Process, Reason};
 use ccnm_core::protocol::mcp::ServePayload;
 use ccnm_core::protocol::payload;
 use ccnm_core::runtime::{GUARD_PROTOCOL, GuardReport, GuardRequest};
+
+/// The variable ccnm takes its home from: `USERPROFILE` on Windows (D6).
+const HOME: &str = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
 use ccnm_core::session;
 use serde_json::json;
 use std::io::{BufRead, BufReader, Write};
@@ -53,7 +56,7 @@ impl Fixture {
             .args(["internal", "mcp-serve", "--payload", &wire])
             .env_clear()
             .envs(base_env())
-            .env("HOME", self.root.join("home"))
+            .env(HOME, self.root.join("home"))
             .env("XDG_STATE_HOME", self.root.join("state"))
             .env("CCNM_CONFIG", &self.config)
             .stdin(Stdio::piped())
@@ -104,7 +107,7 @@ impl Fixture {
             .args(["internal", "runtime-guard", "--payload", &wire])
             .env_clear()
             .envs(base_env())
-            .env("HOME", self.root.join("home"))
+            .env(HOME, self.root.join("home"))
             .env("XDG_STATE_HOME", self.root.join("state"))
             .env("CCNM_CONFIG", &self.config)
             .output()

@@ -205,9 +205,22 @@ fn env_path(name: &str) -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
+/// The variable that names this account's home: `USERPROFILE` on Windows
+/// (D6), `HOME` elsewhere. Windows has `HOME` only sometimes -- sshd sets
+/// it (P106.4), PowerShell and cmd do not, so `ccnm add` typed there failed
+/// -- and a `HOME` somebody set by hand could have the shell they type in
+/// and the mcp-serve sshd starts read two different config files.
+/// `USERPROFILE` is the same in both.
+#[cfg(windows)]
+const HOME_VAR: &str = "USERPROFILE";
+#[cfg(not(windows))]
+const HOME_VAR: &str = "HOME";
+
 pub fn home_dir() -> Result<PathBuf> {
-    env_path("HOME").ok_or_else(|| {
-        Error::config("HOME is not set, so ~/.config/ccnm/config.toml cannot be located")
+    env_path(HOME_VAR).ok_or_else(|| {
+        Error::config(format!(
+            "{HOME_VAR} is not set, so ~/.config/ccnm/config.toml cannot be located"
+        ))
     })
 }
 

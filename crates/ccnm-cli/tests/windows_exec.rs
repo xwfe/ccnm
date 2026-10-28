@@ -93,7 +93,7 @@ allow_unconfined_exec = true
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_ccnm"));
         cmd.args(["internal", "mcp-serve", "--payload", &wire])
             .env_clear()
-            .env("HOME", ccnm_core::reported_path(&self.dir.join("home")))
+            .env("USERPROFILE", self.dir.join("home"))
             .env("XDG_STATE_HOME", self.dir.join("state"))
             .env("CCNM_CONFIG", &self.config);
         // What a Windows program needs to start, Git Bash among them (it is
@@ -113,7 +113,6 @@ allow_unconfined_exec = true
             "CommonProgramFiles",
             "APPDATA",
             "LOCALAPPDATA",
-            "USERPROFILE",
             "USERNAME",
             "PROCESSOR_ARCHITECTURE",
             "NUMBER_OF_PROCESSORS",

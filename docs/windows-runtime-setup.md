@@ -121,7 +121,7 @@ ccnm add D:\work\myproj
 `init` 最后会打出 AI 那台要写的一行，形如：
 
 ```
-  ccnm_bin = "C:/Users/xdw/.local/bin/ccnm.exe"
+  ccnm_bin = "C:/Users/me/.local/bin/ccnm.exe"
 ```
 
 记下来，下一步要用。**为什么要写这一行：** sshd 用 cmd.exe 跑命令，cmd 不认 `~`，AI 那台默认按 `~/.local/bin/ccnm` 找，在 Windows 上就是"找不到程序"。只能写全路径，用正斜杠、带 `.exe`；写成 `C:\Users\...` 会被拒。
@@ -141,7 +141,7 @@ ccnm init --runtime win
 ```toml
 [nodes.runtime]
 ssh = "win"
-ccnm_bin = "C:/Users/xdw/.local/bin/ccnm.exe"
+ccnm_bin = "C:/Users/me/.local/bin/ccnm.exe"
 ```
 
 再跑：

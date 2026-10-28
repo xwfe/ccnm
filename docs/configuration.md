@@ -172,7 +172,7 @@ codex_bin = "/opt/codex/bin/codex"   # 可选：exec_sandbox = "codex" 用的 Co
 
 `ccnm_bin` 可以是绝对路径，也可以是 `~/` 开头——`~` 由**对面**的登录 shell 展开，这是每种 shell 都认的写法。别人的家目录（`~someone/...`）不行，`..` 也不行，路径里只能有 `[A-Za-z0-9._/-]`，因为它要出现在一条 ssh 命令行上而 ccnm 不给它加引号。
 
-**对面是 Windows 时必须写全路径**，用正斜杠、带 `.exe`，比如 `ccnm_bin = "C:/Users/xdw/.local/bin/ccnm.exe"`（在那台 Windows 上 `ccnm init --agent <别名>` 最后会打出这一行，照抄就行）。原因：Windows 的 sshd 默认用 cmd.exe 跑命令，cmd 不认 `~`，默认值 `~/.local/bin/ccnm` 在那边就是"找不到程序"；`~/` 只在那台把 sshd 的默认 shell 改成 PowerShell 时才碰巧能用。写成 `C:\Users\...` 会被拒，报 `must be an absolute path written with forward slashes`——反斜杠在命令行上要转义，ccnm 不给它加引号。用户名里有空格的账号（`C:/Users/Zhang San/...`）第一版不支持。
+**对面是 Windows 时必须写全路径**，用正斜杠、带 `.exe`，比如 `ccnm_bin = "C:/Users/me/.local/bin/ccnm.exe"`（在那台 Windows 上 `ccnm init --agent <别名>` 最后会打出这一行，照抄就行）。原因：Windows 的 sshd 默认用 cmd.exe 跑命令，cmd 不认 `~`，默认值 `~/.local/bin/ccnm` 在那边就是"找不到程序"；`~/` 只在那台把 sshd 的默认 shell 改成 PowerShell 时才碰巧能用。写成 `C:\Users\...` 会被拒，报 `must be an absolute path written with forward slashes`——反斜杠在命令行上要转义，ccnm 不给它加引号。用户名里有空格的账号（`C:/Users/Zhang San/...`）第一版不支持。
 
 描述**另一台**机器的路径（这一节的 `ccnm_bin`、`claude_config_dir`、`codex_bin`，以及 workspace 的 `root`）按那台机器的写法检查：`/…` 和 `C:/…` 都认，不看本机是什么系统。描述本机的，照本机的规矩。
 

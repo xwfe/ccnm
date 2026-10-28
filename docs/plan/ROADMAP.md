@@ -1471,6 +1471,8 @@ P73 当时把"外部 MCP workspace 里执行账号的安全没人验"留作挡�
 - **P112.3** 断网 30 秒后恢复、按 Esc 停命令、`ccnm stop` 之后，测试机上都没有残留进程，写锁正常交出。会话空闲超过 10 分钟，测试机不睡；会话结束后，防睡眠的请求撤掉（`powercfg /requests` 里看不到）。
 - **P112.4** 支持矩阵、README 和 toexec 计划第 0 节那张表按实测改：做到哪一步就写到哪一步。
 
+P111 走查时查出、没排进任何阶段的（[P111 记录](../research/2026-10-28-p111-windows-config-doctor.md)第 4.4 节）：`ccnm cleanup` 对 Windows 上的项目两边都跑不了（AI 那台让去 Runtime 跑，Windows 不让跑要连回 AI 那台的命令；旧输出照样 7 天过期）；Windows 上 `ccnm rm` 碰到连不上的 AI 那台要等满 60 秒。P112.4 写支持矩阵时照实写。
+
 停止点：Windows 当 Agent、在 Windows 上发起会话不在本阶段。
 
 ## 已撤销的自动重连阶段（2026-10-16）

@@ -196,10 +196,11 @@ jobs:
     # (P107–P112, docs/plan/windows-runtime.md). A green job means the
     # library and the binary build there, the unit tests already written for
     # Windows pass, the gate refuses what Windows does not run yet, the read
-    # tools work (P108), apply_patch and the write guard do (P109), and
-    # running commands does (P110) -- nothing more: this is CI, not the real
-    # machine (P112), and docs/support-matrix.md does not move because this
-    # job went green.
+    # tools work (P108), apply_patch and the write guard do (P109), running
+    # commands does (P110), and setting it up, auditing it and cleaning up
+    # after it do (P111) -- nothing more: this is CI, not the real machine
+    # (P112), and docs/support-matrix.md does not move because this job went
+    # green.
     runs-on: windows-latest
     timeout-minutes: 45
     # sed and the rest are not in the runner's default pwsh; its Git Bash
@@ -250,6 +251,12 @@ jobs:
 
       - name: What Windows refuses, and what it lets through
         run: cargo test -p ccnm-cli --test windows_gate
+
+      # What the Agent's doctor and cleanup ask a Windows Runtime, answered
+      # by this binary: the audit's Windows rows and sshd's shell, and an
+      # ended session's output found and removed (P111).
+      - name: What doctor and cleanup ask a Windows Runtime
+        run: cargo test -p ccnm-cli --test windows_doctor -- --nocapture
 
       # The seven read tools through the real binary (P108.2), the names
       # NTFS reads as another file refused by them, and a coding session

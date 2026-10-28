@@ -915,22 +915,12 @@ fn exec_bridge(process: std::process::Command) -> Result<i32> {
     ))
 }
 
-/// What a Windows machine may run so far (P107.1). Windows is a Runtime
-/// Node only (docs/plan/windows-runtime.md): the commands of the Agent
-/// Node and of the machine a person types `ccnm <project>` on are refused
-/// before they start anything. Of the Runtime's own, the ones whose Windows
-/// side is not written yet say which stage brings it.
+/// What a Windows machine may run (P107.1). Windows is a Runtime Node only
+/// (docs/plan/windows-runtime.md): the commands of the Agent Node and of
+/// the machine a person types `ccnm <project>` on are refused before they
+/// start anything. Since P111 every one of the Runtime's own gets through.
 #[cfg(windows)]
 fn windows_gate(command: &Command, lang: Lang) -> Result<()> {
-    let not_yet = |name: &str, stage: &str| {
-        Err(Error::new(
-            ccnm_core::ErrorCode::NotReady,
-            lang.pick(
-                format!("Windows 上还不支持 {name}：这台当项目机器要用的部分还没做完，{stage} 会做"),
-                format!("{name} is not supported on Windows yet: the project machine's side of it comes in {stage}"),
-            ),
-        ))
-    };
     let elsewhere = || {
         Err(Error::new(
             ccnm_core::ErrorCode::NotReady,
@@ -944,17 +934,15 @@ fn windows_gate(command: &Command, lang: Lang) -> Result<()> {
         Command::Init { .. } | Command::Add(_) | Command::Remove(_) | Command::Workspace { .. } => {
             Ok(())
         }
-        Command::Internal { command } => match command {
-            // mcp-serve itself turns away the sessions Windows cannot serve
-            // yet (the ones that write), once it knows which kind it is.
-            InternalCommand::Hello { .. }
-            | InternalCommand::RuntimeResolve { .. }
-            | InternalCommand::RuntimeGuard { .. }
-            | InternalCommand::McpServe { .. } => Ok(()),
-            InternalCommand::RuntimeAudit { .. } => not_yet("internal runtime-audit", "P111"),
-            InternalCommand::RuntimeCleanup { .. } => not_yet("internal runtime-cleanup", "P110"),
-            _ => elsewhere(),
-        },
+        Command::Internal {
+            command:
+                InternalCommand::Hello { .. }
+                | InternalCommand::RuntimeResolve { .. }
+                | InternalCommand::RuntimeGuard { .. }
+                | InternalCommand::RuntimeAudit { .. }
+                | InternalCommand::RuntimeCleanup { .. }
+                | InternalCommand::McpServe { .. },
+        } => Ok(()),
         _ => elsewhere(),
     }
 }

@@ -497,7 +497,9 @@ fn apply_runtime(state: &Path, asked: &Item, current: &[Item]) -> Item {
             .finish(Done::Skipped, Some(Why::Changed), None);
     }
     let session = crate::paths::session_dir(state, &asked.id);
-    match fs::remove_dir_all(session.join("output")) {
+    // Retried on Windows, where a file something still has open holds the
+    // directory for a moment (P109.3).
+    match crate::platform::remove_tree(&session.join("output")) {
         Ok(()) => {
             // Only if nothing else is in it: with one state directory for
             // both roles, the Agent's record lives beside it.

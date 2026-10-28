@@ -1,8 +1,7 @@
-//! What a Windows machine may run so far (P107.1): the Runtime's own
-//! commands get past the gate, the Agent Node's are refused before they
-//! start anything, and the Runtime's ones whose Windows side is not written
-//! yet say which stage brings it. Compiled on Windows only; the Windows CI
-//! job runs it.
+//! What a Windows machine may run (P107.1): the Runtime's own commands get
+//! past the gate -- all of them since P111 -- and the Agent Node's are
+//! refused before they start anything. Compiled on Windows only; the
+//! Windows CI job runs it.
 #![cfg(windows)]
 
 use std::process::{Command, Output};
@@ -43,26 +42,6 @@ fn the_agent_nodes_commands_are_refused_before_they_start() {
         assert_eq!(out.status.code(), Some(NOT_READY), "{args:?}: {err}");
         assert!(err.contains("not supported on Windows"), "{args:?}: {err}");
         assert!(err.contains("AI machine"), "{args:?}: {err}");
-    }
-}
-
-#[test]
-fn the_runtimes_unwritten_commands_name_their_stage() {
-    for (args, stage) in [
-        (
-            &["internal", "runtime-audit", "--payload", "e30"][..],
-            "P111",
-        ),
-        (&["internal", "runtime-cleanup", "--payload", "e30"], "P110"),
-    ] {
-        let out = ccnm(args);
-        let err = stderr(&out);
-        assert_eq!(out.status.code(), Some(NOT_READY), "{args:?}: {err}");
-        assert!(
-            err.contains("not supported on Windows yet"),
-            "{args:?}: {err}"
-        );
-        assert!(err.contains(stage), "{args:?}: {err}");
     }
 }
 
@@ -164,6 +143,8 @@ fn the_runtimes_config_commands_get_past_the_gate() {
         &["ws", "ls"][..],
         &["internal", "runtime-resolve", "--payload", "e30"],
         &["internal", "runtime-guard", "--payload", "e30"],
+        &["internal", "runtime-audit", "--payload", "e30"],
+        &["internal", "runtime-cleanup", "--payload", "e30"],
         &["internal", "mcp-serve", "--payload", "e30"],
     ] {
         let out = ccnm(args);

@@ -1316,6 +1316,8 @@ fn row_label(lang: Lang, name: &str) -> &str {
         "No SSH keys" => "SSH 私钥",
         "No SSH agent" => "SSH agent 服务",
         "No Claude credential" => "Claude 凭据",
+        "No Codex credential" => "Codex 凭据",
+        "No authentication environment" => "认证环境变量",
         "No Docker socket" => "Docker socket",
         "No Docker access" => "Docker 权限",
         "Runtime shell" => "Runtime 的 shell",
@@ -1344,6 +1346,8 @@ fn safety_row_name(check: &str) -> &'static str {
         "No SSH keys" => "No SSH keys",
         "No SSH agent" => "No SSH agent",
         "No Claude credential" => "No Claude credential",
+        "No Codex credential" => "No Codex credential",
+        "No authentication environment" => "No authentication environment",
         "No Docker socket" => "No Docker socket",
         "No Docker access" => "No Docker access",
         "Anthropic egress" => "Anthropic egress",
@@ -2860,14 +2864,11 @@ mod tests {
         ] {
             assert_eq!(row(&report, name).status, status, "{name}: {text}");
         }
-        // Each Windows finding has a row of its own, none lumped under the
-        // generic name (which the environment row has always had).
+        // Each finding has a row of its own, none lumped under the generic
+        // name. The environment row and Codex's credential row were, until
+        // the P111 walkthrough showed two "Runtime 安全" rows in a row.
         assert!(
-            report
-                .checks
-                .iter()
-                .filter(|c| c.name == "Runtime safety")
-                .all(|c| c.detail.starts_with("No authentication environment")),
+            !report.checks.iter().any(|c| c.name == "Runtime safety"),
             "{text}"
         );
         let root = row(&report, "Workspace root");

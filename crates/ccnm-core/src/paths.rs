@@ -161,12 +161,20 @@ pub fn config_home() -> Result<PathBuf> {
     ))
 }
 
+// One part per `join`: Windows prints `.config\ccnm/config.toml` for a
+// joined "ccnm/config.toml" -- it works, and reads like a typo (P111).
 pub(crate) fn config_path_in(home: &Path, xdg_config_home: Option<&Path>) -> PathBuf {
-    xdg_or(xdg_config_home, home, ".config").join("ccnm/config.toml")
+    xdg_or(xdg_config_home, home, ".config")
+        .join("ccnm")
+        .join("config.toml")
 }
 
 pub(crate) fn state_dir_in(home: &Path, xdg_state_home: Option<&Path>) -> PathBuf {
-    xdg_or(xdg_state_home, home, ".local/state").join("ccnm")
+    match xdg_state_home {
+        Some(dir) if dir.is_absolute() => dir.to_path_buf(),
+        _ => home.join(".local").join("state"),
+    }
+    .join("ccnm")
 }
 
 /// The variables that moved this process's config or state off the

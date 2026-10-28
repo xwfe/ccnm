@@ -266,6 +266,7 @@ P106 的实测结论（细节和依据见 [P106 记录](../research/2026-10-24-p
 - **U5：** Git Bash 能用，但 `SHELL` 指向默认 shell，PATH 上的 `bash` 可能是 WSL 的。
 - **U8：** 自带 `curl.exe` 8.16.0 认 ccnm 的 `-K` 配置，SSE 是流式到的。
 - **U11：** 后量子警告排在 stderr 最前面，会让 ccnm 认不出远端的错误码。
+- **U7（P111，2026-10-28）：** 经 ssh 起带"来自网络"标记的 `ccnm.exe`，PowerShell 和 cmd 下都正常，不被拦。Windows PowerShell 5.1 的 `Expand-Archive` 不把 zip 上的标记传给解出来的文件。安装文档仍建议 `Unblock-File`，见 [P111 记录](../research/2026-10-28-p111-windows-config-doctor.md)第 4.2 节。
 - **U6（只读那一半，P108，2026-10-27）：** Defender 实时保护开着时，rg 扫 5000 个小文件约 0.3 秒，冷热没差别；第一次读一个刚写过的小文件多 1.6–5.8 ms，再读几乎不多。只读工具不需要建议加排除。写多读多的（编译、跑测试）到 P110 再量。见 [P108 记录](../research/2026-10-27-p108-windows-read-tools.md)第 3.3 节。
 
 | 编号 | 问题 | 怎么验 | 不成立会怎样 |

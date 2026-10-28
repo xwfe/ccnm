@@ -76,6 +76,8 @@
 - **只有共用账号**（P111，设计 D8）：Windows 的配置里写了 `runtime_user`，读配置时就报错。审计在 Windows 上查 Administrators 组、令牌是否提权、docker-users（读 `whoami /groups`，按 SID 认）、`.ssh` 里的私钥（打开文件判断能不能读）和 OpenSSH Authentication Agent 服务，共用账号下只显示不拒绝。
 - **AI 那台的配置里要给它写全路径的 `ccnm_bin`**（`C:/…/ccnm.exe`，正斜杠）：sshd 默认用 cmd.exe，不认 `~`。家目录读 `USERPROFILE`，配置和状态放在它下面的 `.config\ccnm`、`.local\state\ccnm`。装法见 [Windows 安装](windows-runtime-setup.md)。
 - 发版多一个 `ccnm-<版本>-windows-x86_64.zip`（P111.3）；CI 每次推送都用同一个脚本打一次包，没发过版。
+- 2026-10-28 在 Win11 测试机（中文系统，sshd 默认 shell 是 PowerShell）上照安装文档装了 CI 打的包，从这台 macOS 用同一提交的构建、临时配置跑 doctor：Windows 那几行都有结论、和机器实际一致，MCP 握手经 sshd 开了真会话；没跑模型（[P111 记录](research/2026-10-28-p111-windows-config-doctor.md)第 4 节）。
+- **`ccnm cleanup` 对 Windows 上的项目两边都跑不了**：AI 那台说去定义它的那台跑，Windows 上不让跑这种要连回 AI 那台的命令。旧输出照样按 7 天自己过期。
 
 **Runtime 那一侧（`internal mcp-serve` 与七工具）在 Debian 13 / x86_64 上验过一次**，作为 Remote Workspace MCP 的 dogfood（[记录](research/p12-real-project-2026-09-11.md)）：`cargo fmt`、严格 clippy 与全套测试在那台机器上 676 passed / 0 failed，与 macOS 同数。**那一次是从两个红开始的**，两个都真修了：`SystemRunner::run` 的超时只杀 leader（macOS 因为 bash 会 exec 而一直看不见），以及一个测试助手用了 BSD 语义的 `date -r`。Linux 当 Agent（Controller）后来在 v0.12.0 做了，见上一段；Runtime 侧也只验过这一种发行版和架构。
 

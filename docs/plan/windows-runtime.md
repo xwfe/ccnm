@@ -117,6 +117,8 @@
 
 **推荐（用户 2026-10-24 定）：** 照 Claude Code 自己在 Windows 上的做法。找得到 Git for Windows 带的 bash，就用它跑 `shell`（模型写出来的本来就是 bash 语法）；找不到就报错，提示改用 `cmd` 参数直接跑程序。要用 PowerShell，模型可以直接写 `cmd: ["pwsh", "-NoProfile", "-Command", "..."]`，不用改协议。
 
+**2026-10-28 补了一条（P113，用户定）：`cmd` 里不带路径的 `bash`、`bash.exe` 也用这个 Git Bash。** P112 用真实模型时两个模型都写了 `cmd: ["bash", …]`，装了 WSL 的测试机上 PATH 先找到 WSL 的启动器，其中一次进了 WSL；现在换成 `shell` 那个 Git Bash、结果里说一声，写了路径的照原样。见 [P113 记录](../research/2026-10-28-p113-windows-bare-bash.md)。
+
 - **依据：** [Claude Code 安装文档](https://code.claude.com/docs/en/setup)："With Git for Windows, Claude Code uses Git Bash for the Bash tool"；没有 Git for Windows 时改用 PowerShell 工具；bash 找不到时用 `CLAUDE_CODE_GIT_BASH_PATH` 指定。ccnm 照抄这个规矩，具体找法见 ROADMAP 的 P110.2。P106 实测：PATH 上的 `bash.exe` 可能是 WSL 的启动器；Git 也可能不在 `C:\Program Files\Git`，测试机的是 scoop 装的。
 - **备选 A：** 在 Windows 上把 `shell` 直接换成 PowerShell（cc-desk-tunnel 的选择）。同一个参数在不同系统上意思不一样，模型按 bash 写的命令会大面积失败，不推荐。
 - **备选 B：** 加一个可选参数 `powershell`（一段脚本，用 pwsh 7 跑）。[Remote Workspace MCP](../protocol/remote-workspace-mcp-v1.md) 的冻结规则允许加可选参数（属于加法，不用升 `/2`）。等真机上看到模型老是用 `cmd` 拼 pwsh 拼错了再加。真要加时照 cc-desk-tunnel 的办法：脚本从标准输入整段读进来、用 `[scriptblock]::Create` 执行，输入输出都设成 UTF-8，保留退出码。**别用 `-Command -` 或 `-File -`**：它们逐行读标准输入，跨行的代码块会丢（cc-desk-tunnel [`tunnel.ts` 第 46–54 行](https://github.com/sun168567/cc-desk-tunnel/blob/e2ec3db/apps/server/src/tunnel.ts)）。

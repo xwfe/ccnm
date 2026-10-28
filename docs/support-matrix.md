@@ -72,7 +72,7 @@
 
 - **验过的**（v0.21.0 发布包；测试机是 Win11 x86_64 中文系统，sshd 默认 shell 是 PowerShell，账号在 Administrators 组里；Agent 是 macOS）：零额度部分，中立客户端经 bridge 把 12 个工具全调了一遍，19 项全过；真的 Claude Code 2.1.310、Codex 0.164.0 接假模型，各跑完一个完整工具回合；受管会话从 Controller 在图形登录会话里的 macOS Agent 起，`/mcp` 显示 12 个工具，`ccnm stop` 后 5 秒内收干净。真实模型部分，受管 Claude Code（Opus 5.5）和经 bridge 的 Codex（gpt-6-astra）在一个 Java 8 项目里各做完一次读代码、改代码、编译、跑测试、提交；两次提交后都在 Windows 上重新构建复核，全过。连接冻住 30 秒后能接着用；连接被掐断后 5 秒内，Windows 上的进程全部结束、写锁交出；取消命令约 1 秒生效；会话期间 `powercfg /requests` 里有 ccnm 的防睡眠请求，结束就撤掉（[记录](research/2026-10-28-release-0.21.0.md)第 3–5 节）。
 - **没验的**：网络悄悄断了、TCP 却不断开（要改防火墙才测得了）；"空闲 10 分钟不睡"能不能单独归功于 ccnm（那台机器上别的程序也在请求别睡）；sshd 默认 shell 是 cmd 的机器（P106.1 测过同样形状的命令）；Windows 10、ARM64、多台机器；Defender 对编译的影响。
-- **模型在 `cmd` 里写 `bash`，在装了 WSL 的机器上进的是 WSL。** PATH 上第一个 `bash` 是 `System32\bash.exe`，也就是 WSL 的启动器。`shell` 不受影响，它只用 Git Bash。验收时 Codex 就撞上了：WSL 里的 mise 顺手装了 233 MB 工具（[记录](research/2026-10-28-release-0.21.0.md)第 5.1 节）。改法还没定。
+- **模型在 `cmd` 里写 `bash`：v0.21.0 在装了 WSL 的机器上进的是 WSL，v0.21.1 起是 Git Bash（P113）。** PATH 上第一个 `bash` 是 `System32\bash.exe`，也就是 WSL 的启动器；验收时 Codex 撞上了，WSL 里的 mise 顺手装了 233 MB 工具（[记录](research/2026-10-28-release-0.21.0.md)第 5.1 节）。v0.21.1 把不带路径的 `bash`、`bash.exe` 换成 `shell` 那个 Git Bash，结果里说一声，写了路径的照原样。验过的：本机与 CI 的单元测试，Windows CI 上 PATH 最前面放假 `bash.exe` 的集成测试，同一台装了 WSL 的测试机上 CI 包和 v0.21.1 发布包经 bridge 各 6/6、整个会话 WSL 没被拉起（[P113 记录](research/2026-10-28-p113-windows-bare-bash.md)）。没验的：真实模型在 v0.21.1 上会不会照说明改写法。
 
 下面这些是已经定下来、和 macOS / Linux 不一样的地方：
 

@@ -16,6 +16,7 @@ JSON-RPC"。这里不 import 任何 ccnm 的东西。
 from __future__ import annotations
 
 import argparse
+import os
 import base64
 import json
 import shlex
@@ -94,17 +95,26 @@ def processes(win: str) -> dict[int, str]:
     names = " OR ".join(f"Name='{n}'" for n in WATCHED)
     said = windows(win, (
         "Import-Module CimCmdlets; $all = Get-CimInstance Win32_Process; "
-        "$mine = @{}; $p = $PID; while ($p -and -not $mine.ContainsKey($p)) { $mine[$p] = 1; "
-        "$p = ($all | Where-Object ProcessId -eq $p).ParentProcessId }; "
+        "$mine = @{}; $p = [int]$PID; while ($p -and -not $mine.ContainsKey($p)) { $mine[$p] = 1; "
+        "$p = [int](($all | Where-Object ProcessId -eq $p).ParentProcessId) }; "
         "Get-CimInstance Win32_Process -Filter \"" + names + "\" | "
         "Where-Object { -not $mine.ContainsKey([int]$_.ParentProcessId) -and -not $mine.ContainsKey([int]$_.ProcessId) } | "
-        "ForEach-Object { '{0}|{1}|{2}' -f $_.ProcessId, $_.Name, $_.CommandLine }"))
+        "ForEach-Object { '{0}|{1}|{2}|{3}' -f $_.ProcessId, $_.CreationDate.ToUniversalTime().ToString('o'), $_.Name, $_.CommandLine }"))
     found = {}
     for line in said.splitlines():
         pid, _, rest = line.partition("|")
         if pid.strip().isdigit():
             found[int(pid)] = rest.strip().lower()
     return found
+
+
+def windows_now(win: str) -> str:
+    """Windows 上的现在，和 processes() 里的创建时间同一种写法，可以按字符串比。"""
+    return windows(win, "(Get-Date).ToUniversalTime().ToString('o')").strip().lower()
+
+
+def created_after(found: dict[int, str], start: str) -> dict[int, str]:
+    return {pid: what for pid, what in found.items() if what.split("|", 1)[0] >= start}
 
 
 def new_since(win: str, before: dict[int, str]) -> dict[int, str]:
@@ -179,12 +189,12 @@ class Run:
         ]:
             pending = client.send("tools/call", {"name": "exec_command", "arguments": arguments})
             time.sleep(2)
-            running = [p for p, w in new_since(self.args.win, before).items() if w.startswith(image)]
+            running = [p for p, w in new_since(self.args.win, before).items() if w.split("|")[1] == image]
             client.notify("notifications/cancelled", {"requestId": pending, "reason": "p112 Esc"})
             gone_at = None
             for _ in range(10):
                 time.sleep(1)
-                left = [p for p, w in new_since(self.args.win, before).items() if w.startswith(image)]
+                left = [p for p, w in new_since(self.args.win, before).items() if w.split("|")[1] == image]
                 if not left:
                     gone_at = _ + 1
                     break
@@ -209,19 +219,95 @@ class Run:
         return 1 if self.failed else 0
 
 
+def guard(win: str) -> str:
+    """Windows 上这个项目的写锁文件里写着什么（`released` 或写者信息）。"""
+    return windows(win, "Get-ChildItem $env:USERPROFILE\\.local\\state\\ccnm\\write-guards\\*.lock | "
+                        "ForEach-Object { try { Get-Content -Raw $_.FullName } catch { 'unreadable: held' } }").strip()
+
+
+class Link(Run):
+    """断网的两种样子。bridge `exec` 成 /usr/bin/ssh，所以客户端起的那个进程就是那条 ssh。
+
+    stall：命令跑着时把这条 ssh 冻住 30 秒再放开——两边都不发不收，像网络断了 30 秒又回来。
+    drop：后台命令跑着时把这条 ssh 直接杀掉，像网络断了、Agent 那边的 ssh 放弃了。Windows 的
+    sshd 在客户端没了时不收会话里的进程（上游 Win32-OpenSSH #1751，P106.3），要看的是 mcp-serve
+    自己会不会发现、退出、交出写锁、停掉后台命令。
+    """
+
+    def stall(self):
+        import signal
+        before = processes(self.args.win)
+        client = self.client()
+        ssh_pid = client._proc.pid
+        pending = client.send("tools/call", {"name": "exec_command", "arguments": {"cmd": ["ping", "-n", "45", "127.0.0.1"]}})
+        time.sleep(3)
+        os.kill(ssh_pid, signal.SIGSTOP)
+        time.sleep(30)
+        os.kill(ssh_pid, signal.SIGCONT)
+        started = time.monotonic()
+        answers, _ = client.answers([pending])
+        said = result_text(answers[pending]) if pending in answers else ""
+        self.record("stall: the command running through the cut comes back", "ok in" in said,
+                    said, seconds_after_resume=round(time.monotonic() - started, 1))
+        self.tool(client, "workspace_info", {}, "windows")
+        client.close()
+        time.sleep(5)
+        left = left_over(self.args.win, before)
+        self.record("stall: nothing left after the session", not left, json.dumps(left, ensure_ascii=False))
+        self.record("stall: write guard released", guard(self.args.win).startswith("released"), guard(self.args.win))
+
+    def drop(self):
+        import signal
+        start = windows_now(self.args.win)
+        before = processes(self.args.win)
+        client = self.client()
+        self.tool(client, "exec_command", {"shell": "sleep 600", "run_in_background": True}, "output_ref")
+        time.sleep(2)
+        running = new_since(self.args.win, before)
+        os.kill(client._proc.pid, signal.SIGKILL)
+        timeline = []
+        cleared_at = None
+        for wait in (5, 10, 20, 30, 60, 90, 120, 180):
+            time.sleep(wait - (timeline[-1]["at"] if timeline else 0))
+            left = created_after(new_since(self.args.win, before), start)
+            held = guard(self.args.win)
+            timeline.append({"at": wait, "left": sorted(set(w.split("|")[1] for w in left.values())), "guard": held[:80]})
+            print(f"  {wait:>3} s after the drop: {timeline[-1]}", flush=True)
+            if not left and held.startswith("released"):
+                cleared_at = wait
+                break
+        self.record("drop: Windows clears the session by itself", cleared_at is not None,
+                    f"running at the drop: {sorted(set(w.split('|')[1] for w in running.values()))}; cleared after {cleared_at} s",
+                    timeline=timeline)
+        second = self.client()
+        self.tool(second, "apply_patch", {"files": [{"op": "add", "path": "after-drop.txt", "content": "x\n"}]}, "after-drop.txt")
+        second.close()
+
+    def run(self):
+        getattr(self, self.args.cmd)()
+        summary = {"failed": self.failed, "results": self.results}
+        if self.args.out:
+            Path(self.args.out).write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n")
+        print(f"{len(self.results) - self.failed} passed, {self.failed} failed")
+        return 1 if self.failed else 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("prepare")
     p.add_argument("out", type=Path)
-    r = sub.add_parser("run")
-    r.add_argument("--bridge", required=True)
-    r.add_argument("--win", required=True)
-    r.add_argument("--out")
+    for name in ("run", "stall", "drop"):
+        r = sub.add_parser(name)
+        r.add_argument("--bridge", required=True)
+        r.add_argument("--win", required=True)
+        r.add_argument("--out")
     args = parser.parse_args()
     if args.cmd == "prepare":
         prepare(args.out)
         return 0
+    if args.cmd in ("stall", "drop"):
+        return Link(args).run()
     return Run(args).run()
 
 

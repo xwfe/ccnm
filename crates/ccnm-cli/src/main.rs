@@ -1759,6 +1759,22 @@ fn init(
             lang.pick("<项目目录>", "<project directory>")
         );
     }
+    // Windows starts no session (P111.1), so nothing here dials the AI
+    // machine and a password-less ssh to it would be a chore with no use.
+    // What does matter is the AI machine's own config, and the one line in
+    // it nobody would guess.
+    if cfg!(windows) {
+        println!(
+            "\n{}",
+            lang.pick(
+                "接着在 AI 那台上写它自己的配置（这台不会连过去）：",
+                "next, on the AI machine, its own config (this one never dials it):",
+            )
+        );
+        println!("  ccnm init --runtime <this machine's alias>");
+        println!("{}", windows_ccnm_bin_hint(lang)?);
+        return Ok(0);
+    }
     // ssh has to work before anything else can; say so plainly rather than
     // testing it here, where a slow or absent network would turn `init`
     // into something that hangs.
@@ -1782,9 +1798,6 @@ fn init(
         // somebody retypes. Mixing `<别名>` into one line and `<name>`
         // into the next is worse than either choice on its own.
         println!("  ssh {alias} ccnm init --runtime <this machine's alias>");
-        if cfg!(windows) {
-            println!("{}", windows_ccnm_bin_hint(lang)?);
-        }
     }
     Ok(0)
 }

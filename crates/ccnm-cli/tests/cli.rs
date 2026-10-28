@@ -1554,9 +1554,26 @@ fn sitting_at_home_detached_starts_the_session_and_keeps_the_terminal_here() {
     let ssh = FakeSsh::install(
         &dir,
         &format!(
-            "  *'internal agent-start'*) printf '%s\\n' '{started}' ;;\n  *'internal attach'*) exit 0 ;;\n  *'internal agent-status'*) printf '%s\\n' '{nothing_running}' ;;"
+            "  *'internal agent-start'*) printf '%s\\n' '{started}' ;;\n  *'internal attach'*) exit 0 ;;\n  *'internal agent-status'*) printf '%s\\n' '{nothing_running}' ;;\n  *'internal agent-handoff'*) printf '%s\\n' '{{\"protocol\":1}}' ;;"
         ),
     );
+    // Before each new session, the machine its last one was on is asked
+    // what that one left (P115) -- here the same machine, which left
+    // nothing. The rest of what this test counts comes after.
+    let after_handoff = |calls: Vec<Vec<String>>| -> Vec<Vec<String>> {
+        let first = remote_line(&calls[0]);
+        assert_eq!(
+            first[..4],
+            [
+                "ccnm-test-nowhere.invalid",
+                "~/.local/bin/ccnm",
+                "internal",
+                "agent-handoff"
+            ],
+            "{calls:?}"
+        );
+        calls[1..].to_vec()
+    };
     let state = short_state("home-loop");
     let prepared = |args: &[&str]| {
         let mut cmd = ccnm();
@@ -1578,7 +1595,7 @@ fn sitting_at_home_detached_starts_the_session_and_keeps_the_terminal_here() {
         err.contains("attach when you want it: ccnm attach xshun"),
         "{err}"
     );
-    let calls = ssh.calls();
+    let calls = after_handoff(ssh.calls());
     assert_eq!(calls.len(), 1, "one ssh, to one machine: {calls:?}");
     let line = remote_line(&calls[0]);
     assert_eq!(
@@ -1612,7 +1629,7 @@ fn sitting_at_home_detached_starts_the_session_and_keeps_the_terminal_here() {
     let out = run(&["xshun"]);
     let err = stderr(&out);
     assert_eq!(out.status.code(), Some(0), "{err}");
-    let calls = ssh.calls();
+    let calls = after_handoff(ssh.calls());
     assert_eq!(
         calls.len(),
         3,
@@ -1650,7 +1667,7 @@ fn sitting_at_home_detached_starts_the_session_and_keeps_the_terminal_here() {
     );
     let err = stderr(&out);
     assert_eq!(out.status.code(), Some(0), "{err}");
-    let calls = ssh.calls();
+    let calls = after_handoff(ssh.calls());
     assert_eq!(calls.len(), 1, "{err}");
     let line = remote_line(&calls[0]);
     let req: StartRequest = payload::decode(&line[5]).unwrap();

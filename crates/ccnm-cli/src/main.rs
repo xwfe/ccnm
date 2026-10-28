@@ -191,6 +191,16 @@ enum Command {
         #[arg(long = "on", alias = "agent", value_name = "WHERE")]
         on: Option<String>,
     },
+    /// What the project's last session left for the next one: the handoff
+    /// it ended with, or the end of its conversation, and whether it has
+    /// gone to a new session yet
+    Handoff {
+        /// Workspace name from config.toml
+        workspace: String,
+        /// Drop it: the next session starts without it
+        #[arg(long)]
+        clear: bool,
+    },
     /// What a session produced, for a `--print` run this terminal did not
     /// stay connected to
     #[command(visible_alias = "res")]
@@ -462,6 +472,11 @@ enum InternalCommand {
     },
     /// Work-side read of a login's subscription limits, from the controller
     AgentUsage {
+        #[arg(long)]
+        payload: String,
+    },
+    /// Work-side read of what a project's last session left for the next
+    AgentHandoff {
         #[arg(long)]
         payload: String,
     },
@@ -795,6 +810,11 @@ fn zh_help(command: clap::Command) -> clap::Command {
                     a.help("在哪台 AI 机器上：<机器>、<机器>/<实例>，或项目默认那台上的实例。原来叫 --agent")
                 })
         })
+        .mut_subcommand("handoff", |c| {
+            c.about("这个项目上一次的会话给下一次留了什么：最后那条回复里的交接，或者那段对话的结尾；以及交出去过没有")
+                .mut_arg("workspace", |a| a.help("config.toml 里的 workspace 名字"))
+                .mut_arg("clear", |a| a.help("丢掉它：下一次起会话不带"))
+        })
         .mut_subcommand("result", |c| {
             workspace_args(c.about("某次会话产出了什么——给那种 --print 跑完、终端没一直连着的情况"))
                 .mut_arg("session", |a| a.help("会话 id；不给就是这个 workspace 最近的那次"))
@@ -1111,6 +1131,11 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
             config.workspace_in(workspace, lang)?;
             let env = launch_env()?;
             let placement = placed(&config, workspace, on.as_deref(), lang)?;
+            // Where the project's previous session was (P115), asked before
+            // make_way can forget it: that is where its handoff is.
+            let previous = (print.is_none() && !*continue_last)
+                .then(|| placed(&config, workspace, None, lang))
+                .transpose()?;
             // A --print run is one question, not where the project lives:
             // it neither moves the project nor asks anything to make way.
             let placement = if print.is_some() {
@@ -1137,13 +1162,46 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
                 return print_run_report(&rep, resolved.agent_node(), lang);
             }
             let opening = opening_prompt(prompt.as_deref(), *prompt_stdin)?;
-            let rep = launcher::start_interactive_with_agent(
-                &resolved,
-                &env,
-                opening.as_deref(),
-                instance,
-                *continue_last,
-            )?;
+            // A remembered machine still in the list is one whose session is
+            // running (make_way): that is an attach, with nothing to hand.
+            let carried = match &previous {
+                Some(previous) if !placement.remembered => {
+                    carry_over(previous, &placement, workspace, &env, lang)
+                }
+                _ => None,
+            };
+            let start = |carried| {
+                launcher::start_interactive_with_agent(
+                    &resolved,
+                    &env,
+                    opening.as_deref(),
+                    instance,
+                    *continue_last,
+                    carried,
+                )
+            };
+            let rep = match start(carried.clone()) {
+                // An AI machine older than P115 refuses the field by name;
+                // the session is worth more than what it would have carried.
+                Err(e)
+                    if carried.is_some()
+                        && e.message().contains("unknown field")
+                        && e.message().contains("carried") =>
+                {
+                    eprintln!(
+                        "{}",
+                        lang.pick(
+                            format!("{} 上的 ccnm 太旧，接不了交接；这次不带", placement.node),
+                            format!(
+                                "the ccnm on {} is too old to take a handoff; starting without it",
+                                placement.node
+                            ),
+                        )
+                    );
+                    start(None)?
+                }
+                other => other?,
+            };
             eprintln!("{}", rep.summary_in(lang));
             say_not_continued(&rep, *continue_last, workspace, lang);
             if let Some((why, code)) = rep.refusal(workspace, lang) {
@@ -1151,6 +1209,9 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
                 return Ok(code);
             }
             remember_placement(&placement, workspace, lang);
+            if let Some(carried) = carried.filter(|_| !rep.already_running) {
+                handed_over(&carried, &resolved, workspace, lang);
+            }
             if *detached {
                 eprintln!(
                     "\n{}",
@@ -1286,6 +1347,10 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
             let path = config_path()?;
             let config = Config::load_in(&path, lang)?;
             usage_command(&config, &path, workspace.as_deref(), on.as_deref(), lang)
+        }
+        Command::Handoff { workspace, clear } => {
+            let config = Config::load_in(&config_path()?, lang)?;
+            handoff_command(&config, workspace, *clear, lang)
         }
         Command::Result {
             workspace,
@@ -1693,6 +1758,13 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
             InternalCommand::AgentHistory { payload } => {
                 let req: HistoryRequest = payload::decode(payload)?;
                 print_json(&work::history(
+                    &req,
+                    &agent_tools(config_path().ok().as_deref())?,
+                )?)
+            }
+            InternalCommand::AgentHandoff { payload } => {
+                let req: ccnm_core::protocol::run::HandoffRequest = payload::decode(payload)?;
+                print_json(&work::handoff(
                     &req,
                     &agent_tools(config_path().ok().as_deref())?,
                 )?)
@@ -2226,8 +2298,13 @@ fn pad_label(label: &str) -> String {
 fn remove_workspace(path: &std::path::Path, name: &str, purge: bool, lang: Lang) -> Result<i32> {
     // Best effort, and in this order: the session belongs to the config
     // entry that is about to go.
-    if let Ok(config) = Config::load(path)
-        && let Ok(resolved) = config.workspace(name)
+    // On the machine its last session went to (P114), which is where a
+    // running one would be.
+    let placement = Config::load(path)
+        .ok()
+        .and_then(|config| placed(&config, name, None, lang).ok());
+    if let Some(placement) = &placement
+        && let Ok(resolved) = placement.config.workspace(name)
     {
         match launcher::stop(&resolved, &launch_env()?) {
             Ok(rep) if rep.killed => println!("{}", stopped(true, name, lang)),
@@ -2282,6 +2359,20 @@ fn remove_workspace(path: &std::path::Path, name: &str, purge: bool, lang: Lang)
     }
     edit.save(&changes)?;
     report_changes(&changes, path, lang);
+    // What P114 and P115 kept for it here: which machine it last ran on,
+    // and what was handed between its sessions. A project added again
+    // under the same name starts from nothing.
+    match paths::state_dir().and_then(|state| ccnm_core::handover::forget(&state, name)) {
+        Ok(true) => println!(
+            "{}",
+            lang.pick(
+                format!("也删了这台机器上为 {name} 记的交接和上次在哪台跑"),
+                format!("also removed what this machine kept for {name}: its handoff record and which machine it last ran on"),
+            )
+        ),
+        Ok(false) => {}
+        Err(e) => eprintln!("{e}"),
+    }
     Ok(0)
 }
 
@@ -2642,6 +2733,7 @@ fn start_request(
         prompt,
         agent_tools: authority.agent_tools.clone(),
         continue_last,
+        carried: None,
     }
 }
 
@@ -2789,6 +2881,233 @@ fn make_way(
             Ok(placement)
         }
     }
+}
+
+/// What the project's previous session left, for the one about to start
+/// (P115), fetched from the machine that session was on.
+///
+/// Never a reason not to start: what cannot be fetched is said in a line,
+/// and the session starts with nothing. On the same machine only a real
+/// handoff goes -- the conversation is still there to carry on with `-c`,
+/// and a raw tail handed to every fresh session would be noise; the tail
+/// is for moving to another machine, which cannot carry on anything.
+fn carry_over(
+    previous: &ccnm_core::on::Placement,
+    target: &ccnm_core::on::Placement,
+    workspace: &str,
+    env: &launcher::Env<'_>,
+    lang: Lang,
+) -> Option<ccnm_core::protocol::run::Carried> {
+    use ccnm_core::handover;
+    let resolved = previous.config.workspace_in(workspace, lang).ok()?;
+    let from = resolved
+        .agent_ssh()
+        .unwrap_or(resolved.agent_node())
+        .to_string();
+    let fetched = match launcher::handoff(&resolved, env, previous.instance.as_deref()) {
+        Ok(report) => report.carried?,
+        Err(e) => {
+            eprintln!(
+                "{}",
+                lang.pick(
+                    format!(
+                        "取不到 {from} 上一次会话留下的交接（{}），新会话不带",
+                        e.message().lines().next().unwrap_or_default()
+                    ),
+                    format!(
+                        "cannot fetch what the last session on {from} left ({}); the new session starts without it",
+                        e.message().lines().next().unwrap_or_default()
+                    ),
+                )
+            );
+            return None;
+        }
+    };
+    if fetched.kind == ccnm_core::protocol::run::CarriedKind::Conversation
+        && previous.node == target.node
+    {
+        return None;
+    }
+    let state = paths::state_dir().ok()?;
+    if !handover::still_to_carry(handover::kept(&state, workspace).as_ref(), &fetched) {
+        return None;
+    }
+    let carried = ccnm_core::protocol::run::Carried { from, ..fetched };
+    // Kept before it goes, so `ccnm handoff` shows it even when the start
+    // fails; marked handed over only once a new session took it.
+    let _ = handover::keep(
+        &state,
+        workspace,
+        &handover::Kept {
+            carried: carried.clone(),
+            done: None,
+        },
+    );
+    Some(carried)
+}
+
+/// A new session took `carried`: say so, and mark it handed over so the
+/// next session is not handed it again.
+fn handed_over(
+    carried: &ccnm_core::protocol::run::Carried,
+    resolved: &ccnm_core::config::Resolved<'_>,
+    workspace: &str,
+    lang: Lang,
+) {
+    use ccnm_core::handover;
+    let to = resolved.agent_ssh().unwrap_or(resolved.agent_node());
+    if let Ok(state) = paths::state_dir() {
+        let _ = handover::keep(
+            &state,
+            workspace,
+            &handover::Kept {
+                carried: carried.clone(),
+                done: Some(handover::Done {
+                    to: Some(to.to_string()),
+                    at: handover::now(),
+                }),
+            },
+        );
+    }
+    let what = carried_kind(carried, lang);
+    eprintln!(
+        "{}",
+        lang.pick(
+            format!(
+                "带上了 {} 上一次会话的{what}（{} 字节）；看内容：ccnm handoff {workspace}",
+                carried.from,
+                carried.text.len()
+            ),
+            format!(
+                "handed the new session the {what} of the last session on {} ({} bytes); to read it: ccnm handoff {workspace}",
+                carried.from,
+                carried.text.len()
+            ),
+        )
+    );
+}
+
+fn carried_kind(carried: &ccnm_core::protocol::run::Carried, lang: Lang) -> &'static str {
+    match carried.kind {
+        ccnm_core::protocol::run::CarriedKind::Handoff => lang.pick("交接", "handoff"),
+        ccnm_core::protocol::run::CarriedKind::Conversation => {
+            lang.pick("对话记录（没写交接）", "conversation (it wrote no handoff)")
+        }
+    }
+}
+
+/// `ccnm handoff <project>` (P115): what the next session would be handed,
+/// fetched now from where the project last ran, and whether it already was.
+fn handoff_command(config: &Config, workspace: &str, clear: bool, lang: Lang) -> Result<i32> {
+    use ccnm_core::handover;
+    if agent_side(config, workspace).is_some() {
+        return Err(Error::invalid_args(lang.pick(
+            "在项目机器上敲：交出去过没有记在那边",
+            "type it where the projects are: that machine keeps what was handed over",
+        )));
+    }
+    let previous = placed(config, workspace, None, lang)?;
+    let resolved = previous.config.workspace_in(workspace, lang)?;
+    let alias = resolved.agent_ssh()?.to_string();
+    let env = launch_env()?;
+    let fetched = launcher::handoff(&resolved, &env, None)
+        .map_err(|e| {
+            unreachable_said(
+                e,
+                &resolved,
+                ("取不到交接", "the handoff cannot be fetched"),
+                lang,
+            )
+        })?
+        .carried;
+    let Some(fetched) = fetched else {
+        println!(
+            "{}",
+            lang.pick(
+                format!("{alias} 上这个项目最近的会话没留下交接，也没有能读的对话：下次起会话什么都不带"),
+                format!("the latest session of this project on {alias} left no handoff and no conversation to read: the next session starts with nothing"),
+            )
+        );
+        return Ok(0);
+    };
+    let carried = ccnm_core::protocol::run::Carried {
+        from: alias.clone(),
+        ..fetched
+    };
+    let state = paths::state_dir()?;
+    let kept = handover::kept(&state, workspace);
+    let pending = handover::still_to_carry(kept.as_ref(), &carried);
+    let what = carried_kind(&carried, lang);
+    if clear {
+        if pending {
+            handover::keep(
+                &state,
+                workspace,
+                &handover::Kept {
+                    carried: carried.clone(),
+                    done: Some(handover::Done {
+                        to: None,
+                        at: handover::now(),
+                    }),
+                },
+            )?;
+            println!(
+                "{}",
+                lang.pick(
+                    format!("丢掉了：下次起会话不带 {alias} 上会话 {} 的{what}", carried.session),
+                    format!("dropped: the next session will not be handed the {what} of session {} on {alias}", carried.session),
+                )
+            );
+        } else {
+            println!(
+                "{}",
+                lang.pick(
+                    "它已经不会再带了",
+                    "it will not be handed over again anyway"
+                )
+            );
+        }
+        return Ok(0);
+    }
+    let ago = ccnm_core::overview::span(handover::now().saturating_sub(carried.written), lang);
+    println!(
+        "{}",
+        lang.pick(
+            format!(
+                "{alias} 上会话 {} 的{what}，{ago}前写的，{} 字节",
+                carried.session,
+                carried.text.len()
+            ),
+            format!(
+                "{what} of session {} on {alias}, written {ago} ago, {} bytes",
+                carried.session,
+                carried.text.len()
+            ),
+        )
+    );
+    let state_line = match kept.as_ref().and_then(|k| k.done.as_ref()).filter(|_| !pending) {
+        Some(handover::Done { to: Some(to), at }) => {
+            let ago = ccnm_core::overview::span(handover::now().saturating_sub(*at), lang);
+            lang.pick(
+                format!("{ago}前已经交给 {to} 上的新会话，不会再带"),
+                format!("handed to a new session on {to} {ago} ago; it will not be handed over again"),
+            )
+        }
+        Some(handover::Done { to: None, .. }) => lang.pick(
+            "丢掉了，不会再带".to_string(),
+            "dropped; it will not be handed over".to_string(),
+        ),
+        None if carried.kind == ccnm_core::protocol::run::CarriedKind::Conversation => lang.pick(
+            format!("换到另一台机器起会话时会带上；在 {alias} 上接着这段对话用 ccnm {workspace} -c；不想带：ccnm handoff {workspace} --clear"),
+            format!("goes to the next session started on another machine; to carry on this conversation on {alias}: ccnm {workspace} -c; to drop it: ccnm handoff {workspace} --clear"),
+        ),
+        None => lang.pick(
+            format!("下次起会话时会带上；不想带：ccnm handoff {workspace} --clear"),
+            format!("goes to the next session started; to drop it: ccnm handoff {workspace} --clear"),
+        ),
+    };
+    println!("{state_line}\n\n{}", carried.text.trim_end());
+    Ok(0)
 }
 
 /// Remember where the session just started went, for the next command

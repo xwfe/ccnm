@@ -184,8 +184,16 @@ fn session_start(dir: &Dir, id: Option<&str>, source: Option<&str>) -> String {
             }
         }
         // `startup`, and `resume` into a conversation whose count nobody
-        // kept.
-        _ => conversations.compactions = 0,
+        // kept. Only a session's very first conversation is handed what the
+        // project's previous session left (P115).
+        _ => {
+            conversations.compactions = 0;
+            if source == Some("startup")
+                && let Some(carried) = crate::session::carry::take(dir)
+            {
+                say.push(crate::session::carry::message(&carried));
+            }
+        }
     }
     let _ = write(dir, &conversations);
     say.push(how_to_hand_off());
@@ -276,6 +284,39 @@ mod tests {
     fn stop(reply: &str) -> String {
         serde_json::json!({"hook_event_name": "Stop", "session_id": FIRST, "stop_hook_active": false, "last_assistant_message": reply})
             .to_string()
+    }
+
+    /// P115: what the project's previous session left goes to the new
+    /// session's first conversation, once -- not to one after `/clear`, nor
+    /// to a resumed one, which already has its own history.
+    #[test]
+    fn what_the_previous_session_left_reaches_only_the_first_conversation() {
+        use crate::protocol::run::{Carried, CarriedKind};
+        let (_t, dir) = dir("carried");
+        crate::session::carry::leave(
+            &dir,
+            &Carried {
+                kind: CarriedKind::Handoff,
+                from: "hpsrv".into(),
+                session: "old".into(),
+                written: 1,
+                text: "[ccnm handoff]\nfinish the parser".into(),
+            },
+        );
+        let resumed = handle(&dir, &start(FIRST, "resume"));
+        assert!(!resumed.contains("finish the parser"), "{resumed}");
+        let first = handle(&dir, &start(FIRST, "startup"));
+        assert!(
+            first.contains("previous session, on the AI machine hpsrv"),
+            "{first}"
+        );
+        assert!(first.contains("finish the parser"), "{first}");
+        assert!(
+            first.contains(MARKER),
+            "how to hand off is still said: {first}"
+        );
+        let again = handle(&dir, &start(SECOND, "clear"));
+        assert!(!again.contains("finish the parser"), "{again}");
     }
 
     /// P101: each conversation is written down as it begins, so

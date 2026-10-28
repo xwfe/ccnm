@@ -23,10 +23,11 @@ use crate::protocol::mcp::{ProbeReport as McpProbeReport, ServePayload};
 use crate::protocol::payload;
 use crate::protocol::probe::{ProbeReport, ProbeRequest};
 use crate::protocol::run::{
-    AgentGuardReport, AgentGuardRequest, AttachRequest, HistoryEntry, HistoryReport,
-    HistoryRequest, OutputReport, OutputRequest, OwnerOnAgent, PurgeRequest, ResultReport,
-    ResultRequest, RunReport, RunRequest, SessionRecord, SessionState, StartReport, StartRequest,
-    StatusReport, StatusRequest, StopReport, StopRequest, ToolsOnEntry, UsageReport, UsageRequest,
+    AgentGuardReport, AgentGuardRequest, AttachRequest, Carried, CarriedKind, HandoffReport,
+    HandoffRequest, HistoryEntry, HistoryReport, HistoryRequest, OutputReport, OutputRequest,
+    OwnerOnAgent, PurgeRequest, ResultReport, ResultRequest, RunReport, RunRequest, SessionRecord,
+    SessionState, StartReport, StartRequest, StatusReport, StatusRequest, StopReport, StopRequest,
+    ToolsOnEntry, UsageReport, UsageRequest,
 };
 use crate::protocol::{self};
 use crate::provider::{AgentProvider, AgentReport, AgentResult, Ask};
@@ -843,15 +844,145 @@ fn latest_kept_conversation(
     })
 }
 
+/// What the session opens with. For Codex, what the project's previous
+/// session left goes in front of it (P115): no hook can hand it over later.
+fn opening_with(req: &StartRequest, provider: AgentProvider) -> Option<String> {
+    match (&req.carried, provider) {
+        (Some(carried), AgentProvider::Codex) => {
+            let carried = session::carry::message(carried);
+            Some(match &req.prompt {
+                Some(prompt) => format!("{carried}\n\n{prompt}"),
+                None => carried,
+            })
+        }
+        _ => req.prompt.clone(),
+    }
+}
+
 /// Claude keeps a conversation as `projects/<its cwd, flattened>/<id>.jsonl`
 /// under its config directory. How it flattens the cwd is Claude's own
 /// business, so every project directory is looked in; the id is a UUID, so
 /// a file by that name can only be this session's.
 fn transcript_kept(claude_home: &Path, id: &str) -> bool {
-    std::fs::read_dir(claude_home.join("projects")).is_ok_and(|dirs| {
-        dirs.flatten()
-            .any(|dir| dir.path().join(format!("{id}.jsonl")).is_file())
-    })
+    transcript_path(claude_home, id).is_some()
+}
+
+fn transcript_path(claude_home: &Path, id: &str) -> Option<PathBuf> {
+    std::fs::read_dir(claude_home.join("projects"))
+        .ok()?
+        .flatten()
+        .map(|dir| dir.path().join(format!("{id}.jsonl")))
+        .find(|path| path.is_file())
+}
+
+/// `ccnm internal agent-handoff` (P115): what this machine's most recent
+/// session of a project left for the next one -- the handoff its last reply
+/// ended with, else the end of its conversation.
+///
+/// Read-only. Whether it was already handed over, and to which machine, is
+/// kept by the machine holding the project, which is the one that knows
+/// where the next session goes.
+///
+/// Sessions newest first, and an empty one does not hide the one before:
+/// opening a session and closing it in silence leaves a record and nothing
+/// else, and must not lose the work the session before it described.
+pub fn handoff(req: &HandoffRequest, tools: &Tools<'_>) -> Result<HandoffReport> {
+    let selected = select_agent(
+        req.agent.as_ref(),
+        AgentProvider::Claude,
+        req.provider_config_dir.as_deref(),
+        crate::config::PermissionMode::default(),
+        tools,
+    )?;
+    let report = |carried| HandoffReport {
+        protocol: PROTOCOL,
+        carried,
+    };
+    // A Codex session has no hooks to keep a handoff with (P102), and its
+    // transcript is not one ccnm reads.
+    if selected.provider != AgentProvider::Claude {
+        return Ok(report(None));
+    }
+    let claude_home = match &selected.profile_dir {
+        Some(dir) => dir.clone(),
+        None => paths::home_dir()?.join(".claude"),
+    };
+    Ok(report(left_by_latest_session(
+        &tools.state,
+        &claude_home,
+        req,
+        &selected,
+    )))
+}
+
+fn left_by_latest_session(
+    state: &Path,
+    claude_home: &Path,
+    req: &HandoffRequest,
+    selected: &SelectedAgent,
+) -> Option<Carried> {
+    let modified = |path: &Path| {
+        std::fs::metadata(path)
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map_or(0, |d| d.as_secs())
+    };
+    let mut sessions: Vec<(u64, session::Dir, String)> =
+        match std::fs::read_dir(paths::sessions_dir(state)) {
+            Ok(entries) => entries
+                .flatten()
+                .filter_map(|entry| {
+                    let dir = session::Dir::at(entry.path());
+                    let spec = session::load(&dir).ok()?;
+                    (spec.workspace == req.workspace
+                        && spec.mode.is_interactive()
+                        && spec.provider() == selected.provider
+                        && spec.agent_identity == selected.identity
+                        && spec.root == req.root)
+                        .then(|| (started_at(&dir), dir, spec.id))
+                })
+                .collect(),
+            Err(_) => Vec::new(),
+        };
+    sessions.sort_by_key(|(at, ..)| std::cmp::Reverse(*at));
+    for (_, dir, id) in sessions {
+        if let Ok(text) = std::fs::read_to_string(dir.handoff())
+            && !text.trim().is_empty()
+        {
+            return Some(Carried {
+                kind: CarriedKind::Handoff,
+                from: String::new(),
+                session: id,
+                written: modified(&dir.handoff()),
+                text,
+            });
+        }
+        let kept = session::hook::read(&dir).unwrap_or_default();
+        let mut newest_first: Vec<String> = kept.ids.into_iter().rev().collect();
+        if !newest_first.contains(&id) {
+            newest_first.push(id.clone());
+        }
+        for conversation in newest_first {
+            let Some(path) = transcript_path(claude_home, &conversation) else {
+                continue;
+            };
+            let Some(text) = std::fs::File::open(&path)
+                .ok()
+                .and_then(|f| session::carry::conversation_tail(std::io::BufReader::new(f)))
+            else {
+                continue;
+            };
+            return Some(Carried {
+                kind: CarriedKind::Conversation,
+                from: String::new(),
+                session: id,
+                written: modified(&path),
+                text,
+            });
+        }
+    }
+    None
 }
 
 fn require_remote_topology(
@@ -1059,7 +1190,7 @@ fn start_fresh(
             .flatten(),
         permission_mode: req.permission_mode,
         mode: Mode::Interactive {
-            prompt: req.prompt.clone(),
+            prompt: opening_with(req, selected.provider),
             continues: continues.as_ref().map(|e| e.conversation.clone()),
         },
         // Not used interactively: nothing kills this session on a clock.
@@ -1084,6 +1215,13 @@ fn start_fresh(
     if let Some(earlier) = continues.as_ref().filter(|e| e.compactions > 0) {
         // Not worth failing a start over: without it the count starts at 0.
         let _ = session::hook::seed(&dir, earlier.compactions);
+    }
+    // Claude's first conversation takes it through the session hook;
+    // Codex, which has no hooks, has it in its opening prompt instead.
+    if let Some(carried) = req.carried.as_ref()
+        && selected.provider == AgentProvider::Claude
+    {
+        session::carry::leave(&dir, carried);
     }
     let server_pid = match controller::start_for_identity(
         &tools.controller,
@@ -3490,6 +3628,7 @@ mod tests {
             prompt: None,
             agent_tools: Default::default(),
             continue_last: false,
+            carried: None,
         }
     }
 
@@ -3587,6 +3726,128 @@ mod tests {
         let found = latest_kept_conversation(&state, &home, &start_request(), &claude)
             .map(|e| e.conversation);
         assert_eq!(found.as_deref(), Some(wanted.as_str()), "not {older}");
+    }
+
+    /// P115: Codex has no hook to hand it over later, so it opens with what
+    /// was carried, then the person's own opening; Claude's opening is left
+    /// as typed and its session hook hands the rest over.
+    #[test]
+    fn codex_opens_with_what_was_carried() {
+        let carried = Carried {
+            kind: CarriedKind::Handoff,
+            from: "fodelf".into(),
+            session: "old".into(),
+            written: 1,
+            text: "[ccnm handoff]\ngoal".into(),
+        };
+        let req = StartRequest {
+            prompt: Some("go on".into()),
+            carried: Some(carried.clone()),
+            ..start_request()
+        };
+        let codex = opening_with(&req, AgentProvider::Codex).unwrap();
+        assert!(
+            codex.starts_with(&session::carry::message(&carried)),
+            "{codex}"
+        );
+        assert!(codex.ends_with("\n\ngo on"), "{codex}");
+        assert_eq!(
+            opening_with(&req, AgentProvider::Claude).as_deref(),
+            Some("go on")
+        );
+        let req = StartRequest {
+            prompt: None,
+            ..req
+        };
+        assert_eq!(
+            opening_with(&req, AgentProvider::Codex),
+            Some(session::carry::message(&carried))
+        );
+    }
+
+    /// P115: what the latest session left for the next one -- its handoff,
+    /// else what was said in its last conversation -- and a session that
+    /// left nothing (opened and closed in silence) does not hide the one
+    /// before it.
+    #[test]
+    fn the_latest_session_leaves_its_handoff_else_its_conversation() {
+        let dir = temp("handoff-left");
+        let (state, home) = (dir.join("state"), dir.join("claude-home"));
+        let chat = || Mode::Interactive {
+            prompt: None,
+            continues: None,
+        };
+        let root = "/Users/bing/xshun";
+        let claude = SelectedAgent {
+            provider: AgentProvider::Claude,
+            identity: None,
+            profile_dir: None,
+        };
+        let req = HandoffRequest {
+            protocol: PROTOCOL,
+            agent: None,
+            workspace: "xshun".into(),
+            root: root.into(),
+            provider_config_dir: None,
+        };
+        let left = || left_by_latest_session(&state, &home, &req, &claude);
+        assert_eq!(left(), None, "no session, nothing");
+
+        let worked = kept(&state, &home, 100, "xshun", root, chat(), true);
+        std::fs::write(
+            home.join("projects/-flattened-cwd").join(format!("{worked}.jsonl")),
+            [
+                serde_json::json!({"type": "user", "message": {"content": "finish the parser"}}),
+                serde_json::json!({"type": "assistant", "message": {"content": [{"type": "text", "text": "Halfway: tests 3 of 5 pass."}]}}),
+            ]
+            .map(|v| v.to_string())
+            .join("\n"),
+        )
+        .unwrap();
+        // Newer, but empty, another workspace, or a print run: none of them
+        // is what the next session should be handed.
+        kept(&state, &home, 200, "xshun", root, chat(), false);
+        kept(&state, &home, 300, "other", root, chat(), true);
+        kept(
+            &state,
+            &home,
+            400,
+            "xshun",
+            root,
+            Mode::Print { prompt: "x".into() },
+            true,
+        );
+
+        let got = left().unwrap();
+        assert_eq!(
+            (got.kind, got.session.as_str()),
+            (CarriedKind::Conversation, worked.as_str())
+        );
+        assert_eq!(
+            got.text,
+            "[user]\nfinish the parser\n\n[AI]\nHalfway: tests 3 of 5 pass."
+        );
+
+        // A handoff the last reply ended with wins over the conversation.
+        let sdir = session::Dir::at(paths::session_dir(&state, &worked));
+        std::fs::write(sdir.handoff(), "[ccnm handoff]\nnext: tests 4 and 5").unwrap();
+        let got = left().unwrap();
+        assert_eq!(
+            (got.kind, got.text.as_str()),
+            (CarriedKind::Handoff, "[ccnm handoff]\nnext: tests 4 and 5")
+        );
+        assert!(
+            got.from.is_empty(),
+            "the machine holding the project names the source"
+        );
+
+        // Codex keeps neither.
+        let codex = SelectedAgent {
+            provider: AgentProvider::Codex,
+            identity: None,
+            profile_dir: None,
+        };
+        assert_eq!(left_by_latest_session(&state, &home, &req, &codex), None);
     }
 
     /// P111.1: an instance session whose Runtime is Windows. Its root is
@@ -3736,6 +3997,7 @@ mod tests {
         let req = StartRequest {
             provider_config_dir: Some(home),
             continue_last: true,
+            carried: None,
             ..start_request()
         };
         let err = start(&req, &tmux_tools(&fake, &dir, "continue-none")).unwrap_err();
@@ -3758,6 +4020,7 @@ mod tests {
         let req = StartRequest {
             provider: AgentProvider::Codex,
             continue_last: true,
+            carried: None,
             ..start_request()
         };
         let err = start(&req, &tmux_tools(&fake, &dir, "continue-codex")).unwrap_err();

@@ -1119,6 +1119,7 @@ fn active_session_with_another_identity_is_never_reused_or_replaced() {
         prompt: None,
         agent_tools: Default::default(),
         continue_last: false,
+        carried: None,
     };
     let error = work::start(&request, &f.tools(&runner)).unwrap_err();
     assert_eq!(error.code(), ErrorCode::NotReady);

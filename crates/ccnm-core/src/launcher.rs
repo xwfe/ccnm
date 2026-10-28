@@ -153,7 +153,7 @@ pub fn start_interactive(
     env: &Env<'_>,
     prompt: Option<&str>,
 ) -> Result<StartReport> {
-    start_interactive_with_agent(resolved, env, prompt, None, false)
+    start_interactive_with_agent(resolved, env, prompt, None, false, None)
 }
 
 /// `continue_last` is `--continue` (P92): the Agent picks the conversation,
@@ -164,6 +164,7 @@ pub fn start_interactive_with_agent(
     prompt: Option<&str>,
     agent: Option<&str>,
     continue_last: bool,
+    carried: Option<crate::protocol::run::Carried>,
 ) -> Result<StartReport> {
     let ssh = agent_ssh(resolved, env)?;
     let selected = resolved.agent_reference(agent)?;
@@ -183,6 +184,7 @@ pub fn start_interactive_with_agent(
         prompt: prompt.map(str::to_string),
         agent_tools: resolved.workspace.agent_tools.clone(),
         continue_last,
+        carried,
     };
     let report: StartReport = ssh.call_ccnm(
         env.runner,
@@ -579,6 +581,55 @@ pub fn history(
                 format!(
                     "the ccnm on the Agent Node is too old for `ccnm log`; install the same version on both machines\n({})",
                     e.message()
+                ),
+            )
+        } else {
+            e
+        }
+    })
+}
+
+/// What the workspace's most recent session on its Agent left for the
+/// next one (P115), as `internal agent-handoff` answers. An Agent too old
+/// to know the request says so as a version error, which the caller treats
+/// as "nothing to carry" with a reason, not as a failed start.
+pub fn handoff(
+    resolved: &Resolved<'_>,
+    env: &Env<'_>,
+    agent: Option<&str>,
+) -> Result<crate::protocol::run::HandoffReport> {
+    let ssh = agent_ssh(resolved, env)?;
+    let selected = resolved.agent_reference(agent)?;
+    let req = crate::protocol::run::HandoffRequest {
+        protocol: if selected.is_some() { 3 } else { PROTOCOL },
+        provider_config_dir: selected
+            .is_none()
+            .then(|| {
+                resolved
+                    .agent
+                    .and_then(|node| AgentProvider::current().config_dir(node))
+                    .map(|dir| dir.to_path_buf())
+            })
+            .flatten(),
+        agent: selected,
+        workspace: resolved.name.to_string(),
+        root: resolved.workspace.root.clone(),
+    };
+    ssh.call_ccnm(
+        env.runner,
+        Master::Reuse,
+        &["internal", "agent-handoff"],
+        &req,
+        Duration::from_secs(60),
+        ErrorCode::AgentUnreachable,
+    )
+    .map_err(|e| {
+        if e.message().contains("agent-handoff") {
+            Error::new(
+                ErrorCode::Version,
+                format!(
+                    "the ccnm on {} is too old to hand a session's work over; install the same version on both machines",
+                    resolved.agent_ssh().unwrap_or(resolved.agent_node())
                 ),
             )
         } else {

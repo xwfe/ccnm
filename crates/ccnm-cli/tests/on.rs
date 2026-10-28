@@ -7,7 +7,9 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-use ccnm_core::protocol::run::{LiveSession, StatusReport};
+use ccnm_core::protocol::run::{
+    Carried, CarriedKind, HandoffReport, LiveSession, StartReport, StartRequest, StatusReport,
+};
 use ccnm_testdir::TestDir;
 
 struct Machines {
@@ -71,44 +73,48 @@ impl Machines {
         self.path().join("s")
     }
 
-    /// The fake `ssh`: logs the alias it was asked to dial, says `xshun`
-    /// has a live session on each alias in `live`, and fails to connect for
-    /// everything else.
+    /// The fake `ssh`: logs the alias it was asked to dial and keeps the
+    /// payload of each request, answers a request with the file
+    /// `answers/<alias>/<request>.json` when the test wrote one, and fails to
+    /// connect otherwise. `live` are the aliases that say `xshun` has a
+    /// running session there.
     fn running_on(&self, live: &[&str]) {
-        let report = StatusReport {
-            protocol: 1,
-            agent_identity: None,
-            tmux: Ok("tmux 3.5".into()),
-            sessions: vec![LiveSession {
-                provider: Default::default(),
-                agent_identity: None,
-                tmux_session: "ccnm-xshun".into(),
-                workspace: Some("xshun".into()),
-                session: Some("s1".into()),
-                created: 1,
-                attached: 0,
-                context: None,
-                tools: Some(true),
-                compactions: None,
-            }],
-            records: vec![],
-            other_instances: vec![],
-        };
-        let json = ccnm_core::protocol::payload::to_json(&report).unwrap();
-        let mut cases = String::new();
-        for alias in live {
-            cases.push_str(&format!(
-                "case \"$args\" in *' {alias} '*agent-status*) printf '%s' '{json}'; exit 0;; esac\n"
-            ));
-        }
         let script = format!(
-            "#!/bin/sh\nargs=\" $* \"\nfor a in \"$@\"; do case \"$a\" in *.invalid) echo \"$a\" >> '{log}';; esac; done\n{cases}echo 'ssh: Could not resolve hostname: nodename nor servname provided' >&2\nexit 255\n",
-            log = self.path().join("dialled").display()
+            "#!/bin/sh\nalias=''; sub=''; payload=''; prev=''\nfor a in \"$@\"; do\n  case \"$a\" in *.invalid) alias=\"$a\";; esac\n  [ \"$prev\" = internal ] && sub=\"$a\"\n  [ \"$prev\" = --payload ] && payload=\"$a\"\n  prev=\"$a\"\ndone\necho \"$alias\" >> '{root}/dialled'\n[ -n \"$payload\" ] && printf '%s' \"$payload\" > '{root}/payloads/'\"$alias-$sub\"\nf='{root}/answers/'\"$alias/$sub.json\"\nif [ -f \"$f\" ]; then cat \"$f\"; exit 0; fi\necho 'ssh: Could not resolve hostname: nodename nor servname provided' >&2\nexit 255\n",
+            root = self.path().display()
         );
         let ssh = self.path().join("bin/ssh");
         std::fs::write(&ssh, script).unwrap();
         std::fs::set_permissions(&ssh, std::fs::Permissions::from_mode(0o700)).unwrap();
         let _ = std::fs::remove_file(self.path().join("dialled"));
+        let _ = std::fs::remove_dir_all(self.path().join("answers"));
+        let _ = std::fs::remove_dir_all(self.path().join("payloads"));
+        std::fs::create_dir_all(self.path().join("payloads")).unwrap();
+        for alias in live {
+            self.answer(alias, "agent-status", &status(true));
+        }
+    }
+
+    /// What `alias` answers to `internal <request>`.
+    fn answer(&self, alias: &str, request: &str, json: &str) {
+        let dir = self.path().join("answers").join(alias);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(format!("{request}.json")), json).unwrap();
+    }
+
+    /// The payload `alias` was last sent with `internal <request>`.
+    fn sent<T: serde::de::DeserializeOwned + ccnm_core::protocol::payload::Protocol>(
+        &self,
+        alias: &str,
+        request: &str,
+    ) -> Option<T> {
+        let wire = std::fs::read_to_string(
+            self.path()
+                .join("payloads")
+                .join(format!("{alias}-{request}")),
+        )
+        .ok()?;
+        Some(ccnm_core::protocol::payload::decode(&wire).unwrap())
     }
 
     fn dialled(&self) -> Vec<String> {
@@ -128,6 +134,66 @@ impl Machines {
 
 fn stderr(out: &Output) -> String {
     String::from_utf8_lossy(&out.stderr).into_owned()
+}
+
+/// An `agent-status` answer: `xshun` running there, or nothing running.
+fn status(running: bool) -> String {
+    let session = LiveSession {
+        provider: Default::default(),
+        agent_identity: None,
+        tmux_session: "ccnm-xshun".into(),
+        workspace: Some("xshun".into()),
+        session: Some("s1".into()),
+        created: 1,
+        attached: 0,
+        context: None,
+        tools: Some(true),
+        compactions: None,
+    };
+    ccnm_core::protocol::payload::to_json(&StatusReport {
+        protocol: 1,
+        agent_identity: None,
+        tmux: Ok("tmux 3.5".into()),
+        sessions: if running { vec![session] } else { vec![] },
+        records: vec![],
+        other_instances: vec![],
+    })
+    .unwrap()
+}
+
+/// An `agent-start` answer: a new session started.
+fn started() -> String {
+    ccnm_core::protocol::payload::to_json(&StartReport {
+        protocol: 1,
+        provider: Default::default(),
+        agent_identity: None,
+        session: Some("new-session".into()),
+        session_dir: None,
+        tmux_session: "ccnm-xshun".into(),
+        server_pid: 1,
+        already_running: false,
+        replaced: None,
+        controller: None,
+        context: None,
+        continues: None,
+        tools: None,
+    })
+    .unwrap()
+}
+
+/// An `agent-handoff` answer.
+fn left(kind: CarriedKind, session: &str, text: &str) -> String {
+    ccnm_core::protocol::payload::to_json(&HandoffReport {
+        protocol: 1,
+        carried: Some(Carried {
+            kind,
+            from: String::new(),
+            session: session.into(),
+            written: 1,
+            text: text.into(),
+        }),
+    })
+    .unwrap()
 }
 
 #[test]
@@ -246,7 +312,17 @@ fn the_last_machine_is_used_until_its_session_ends() {
         err.contains("it last ran on hpsrv, which cannot be asked now"),
         "{err}"
     );
-    assert_eq!(m.dialled(), ["hpsrv.invalid", "fodelf.invalid"], "{err}");
+    // hpsrv: is it still running there, and what did its last session
+    // leave (P115); then the start, on the project's own machine.
+    assert_eq!(
+        m.dialled(),
+        ["hpsrv.invalid", "hpsrv.invalid", "fodelf.invalid"],
+        "{err}"
+    );
+    assert!(
+        err.contains("cannot fetch what the last session on hpsrv.invalid left"),
+        "{err}"
+    );
     assert_eq!(m.remembered(), None, "{err}");
 }
 
@@ -309,4 +385,183 @@ fn init_again_with_another_alias_adds_a_machine() {
         "{}",
         String::from_utf8_lossy(&out.stdout)
     );
+}
+
+/// P115: moving a project to another machine hands the new session what
+/// the last one left -- here the end of its conversation, its login having
+/// run out before it wrote a handoff -- once.
+#[test]
+fn moving_hands_the_new_session_what_the_last_one_left_once() {
+    let m = machines("carry");
+    m.answer("fodelf.invalid", "agent-status", &status(false));
+    m.answer(
+        "fodelf.invalid",
+        "agent-handoff",
+        &left(
+            CarriedKind::Conversation,
+            "old",
+            "[user]\nfinish the parser",
+        ),
+    );
+    m.answer("hpsrv.invalid", "agent-start", &started());
+    let start = || {
+        m.ccnm(&["xshun", "--on", "hpsrv", "--detached"])
+            .stdin(std::process::Stdio::null())
+            .output()
+            .unwrap()
+    };
+    let out = start();
+    let err = stderr(&out);
+    assert_eq!(out.status.code(), Some(0), "{err}");
+    let sent: StartRequest = m.sent("hpsrv.invalid", "agent-start").unwrap();
+    let carried = sent.carried.expect("carried to the new session");
+    assert_eq!(carried.kind, CarriedKind::Conversation);
+    assert_eq!(carried.from, "fodelf.invalid");
+    assert_eq!(carried.text, "[user]\nfinish the parser");
+    assert!(
+        err.contains("handed the new session the conversation"),
+        "{err}"
+    );
+    let kept: ccnm_core::handover::Kept = serde_json::from_str(
+        &std::fs::read_to_string(m.state().join("ccnm/workspaces/xshun/handoff.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(kept.done.unwrap().to.as_deref(), Some("hpsrv.invalid"));
+    assert_eq!(m.remembered().as_deref(), Some("hpsrv"));
+
+    // Again, from scratch on hpsrv: the same text is not handed over twice.
+    ccnm_core::on::remember(&m.state().join("ccnm"), "xshun", None).unwrap();
+    let out = start();
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let sent: StartRequest = m.sent("hpsrv.invalid", "agent-start").unwrap();
+    assert_eq!(sent.carried, None, "{}", stderr(&out));
+}
+
+/// On the same machine only a real handoff goes: the conversation is still
+/// there to carry on with `-c`, and its raw end handed to every new session
+/// would be noise.
+#[test]
+fn on_the_same_machine_only_a_handoff_is_carried() {
+    let m = machines("same");
+    m.answer(
+        "fodelf.invalid",
+        "agent-handoff",
+        &left(CarriedKind::Conversation, "old", "[user]\nhi"),
+    );
+    m.answer("fodelf.invalid", "agent-start", &started());
+    let start = || {
+        m.ccnm(&["xshun", "--detached"])
+            .stdin(std::process::Stdio::null())
+            .output()
+            .unwrap()
+    };
+    let out = start();
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let sent: StartRequest = m.sent("fodelf.invalid", "agent-start").unwrap();
+    assert_eq!(sent.carried, None);
+
+    m.answer(
+        "fodelf.invalid",
+        "agent-handoff",
+        &left(
+            CarriedKind::Handoff,
+            "old",
+            "[ccnm handoff]\nnext: tests 4 and 5",
+        ),
+    );
+    let out = start();
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let sent: StartRequest = m.sent("fodelf.invalid", "agent-start").unwrap();
+    assert_eq!(
+        sent.carried.unwrap().text,
+        "[ccnm handoff]\nnext: tests 4 and 5"
+    );
+    // `-c` carries on the conversation instead, and is handed nothing.
+    let out = m
+        .ccnm(&["xshun", "-c", "--detached"])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let sent: StartRequest = m.sent("fodelf.invalid", "agent-start").unwrap();
+    assert!(sent.continue_last && sent.carried.is_none());
+}
+
+/// `ccnm handoff`: what the next session would be handed, and `--clear`
+/// drops it; removing the project removes what was kept for it.
+#[test]
+fn handoff_shows_it_and_clear_drops_it() {
+    let m = machines("show");
+    m.answer(
+        "fodelf.invalid",
+        "agent-handoff",
+        &left(CarriedKind::Handoff, "old", "[ccnm handoff]\ngoal: parser"),
+    );
+    let out = m.ccnm(&["handoff", "xshun"]).output().unwrap();
+    let said = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert!(
+        said.contains("handoff of session old on fodelf.invalid"),
+        "{said}"
+    );
+    assert!(said.contains("goes to the next session started"), "{said}");
+    assert!(said.ends_with("[ccnm handoff]\ngoal: parser\n"), "{said}");
+
+    let out = m.ccnm(&["handoff", "xshun", "--clear"]).output().unwrap();
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("dropped"),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    m.answer("fodelf.invalid", "agent-start", &started());
+    let out = m
+        .ccnm(&["xshun", "--detached"])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let sent: StartRequest = m.sent("fodelf.invalid", "agent-start").unwrap();
+    assert_eq!(sent.carried, None, "dropped, so not handed over");
+
+    let out = m.ccnm(&["rm", "xshun"]).output().unwrap();
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("handoff record"),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    assert!(!m.state().join("ccnm/workspaces/xshun").exists());
+}
+
+/// An AI machine older than P115 refuses a start that carries something;
+/// the session starts without it rather than not at all.
+#[test]
+fn an_older_ai_machine_gets_the_session_without_what_it_cannot_take() {
+    let m = machines("old-agent");
+    m.answer("fodelf.invalid", "agent-status", &status(false));
+    m.answer(
+        "fodelf.invalid",
+        "agent-handoff",
+        &left(CarriedKind::Handoff, "old", "[ccnm handoff]\ngoal"),
+    );
+    // Refuses the first start the way v0.21.1 does, takes the second.
+    let ssh = m.path().join("bin/ssh");
+    let script = std::fs::read_to_string(&ssh).unwrap().replace(
+        "if [ -f \"$f\" ]",
+        &format!(
+            "if [ \"$sub\" = agent-start ] && [ ! -f '{flag}' ]; then touch '{flag}'; echo 'CCNM_E_INVALID_ARGS: unknown field `carried`, expected one of `protocol`' >&2; exit 2; fi\nif [ -f \"$f\" ]",
+            flag = m.path().join("refused-once").display()
+        ),
+    );
+    std::fs::write(&ssh, script).unwrap();
+    m.answer("hpsrv.invalid", "agent-start", &started());
+    let out = m
+        .ccnm(&["xshun", "--on", "hpsrv", "--detached"])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    let err = stderr(&out);
+    assert_eq!(out.status.code(), Some(0), "{err}");
+    assert!(err.contains("too old to take a handoff"), "{err}");
+    let sent: StartRequest = m.sent("hpsrv.invalid", "agent-start").unwrap();
+    assert_eq!(sent.carried, None);
 }

@@ -361,10 +361,17 @@ fn public_default_and_explicit_instance_selection_use_v3_without_private_paths()
         })
         .collect();
     let run: ccnm_core::protocol::run::RunRequest = payload::decode(wires[0]).unwrap();
-    let start: ccnm_core::protocol::run::StartRequest = payload::decode(wires[1]).unwrap();
+    // Before the start, what the project's last session left is asked for
+    // (P115): of the workspace's own instance, since only the machine is
+    // remembered, not which instance ran there.
+    let handoff: ccnm_core::protocol::run::HandoffRequest = payload::decode(wires[1]).unwrap();
+    let start: ccnm_core::protocol::run::StartRequest = payload::decode(wires[2]).unwrap();
     assert_eq!(run.agent.unwrap().instance, "claude-main");
+    assert_eq!(handoff.agent.unwrap().instance, "claude-main");
+    assert_eq!(handoff.provider_config_dir, None);
     assert_eq!(start.agent.unwrap().instance, "codex-main");
     assert_eq!(run.protocol, 3);
+    assert_eq!(handoff.protocol, 3);
     assert_eq!(start.protocol, 3);
     for private in [
         "profile",

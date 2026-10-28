@@ -217,6 +217,12 @@ pub struct StartRequest {
     /// instead of quietly starting a new conversation.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub continue_last: bool,
+    /// What the project's previous session left (P115), for the new one
+    /// to start from. Left out when there is nothing, so an Agent too old
+    /// to know it still starts sessions that carry nothing, and refuses by
+    /// name one that would.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub carried: Option<Carried>,
 }
 
 impl Protocol for StartRequest {
@@ -774,6 +780,80 @@ impl Protocol for StatusReport {
     }
 }
 
+/// What a new session is handed from the project's previous one (P115):
+/// the handoff that session ended with, or -- when it ended without one,
+/// as it does when its login ran out -- the tail of its conversation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Carried {
+    pub kind: CarriedKind,
+    /// The AI machine it comes from, as the machine holding the project
+    /// names it. Empty as the Agent reports it: it does not know that name.
+    #[serde(default)]
+    pub from: String,
+    /// The ccnm session it comes from.
+    pub session: String,
+    /// Unix seconds: when it was last written.
+    pub written: u64,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CarriedKind {
+    /// The `[ccnm handoff]` the session's last reply ended with (P102).
+    Handoff,
+    /// What the person and the AI said, without tool calls or output.
+    Conversation,
+}
+
+/// `ccnm internal agent-handoff` (P115): what this AI machine's most recent
+/// session of a project left for the next one. Asked by the machine holding
+/// the project before it starts a session, on this machine or another.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HandoffRequest {
+    pub protocol: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<InstanceRef>,
+    pub workspace: String,
+    pub root: PathBuf,
+    /// A legacy workspace's `claude_config_dir`: where that Claude keeps its
+    /// transcripts.
+    #[serde(
+        rename = "claude_config_dir",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub provider_config_dir: Option<PathBuf>,
+}
+
+impl Protocol for HandoffRequest {
+    fn protocol(&self) -> u32 {
+        self.protocol
+    }
+    fn expected_protocol(&self) -> u32 {
+        if self.agent.is_some() { 3 } else { 1 }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HandoffReport {
+    pub protocol: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub carried: Option<Carried>,
+}
+
+impl Protocol for HandoffReport {
+    fn protocol(&self) -> u32 {
+        self.protocol
+    }
+    fn expected_protocol(&self) -> u32 {
+        1
+    }
+}
+
 /// `ccnm internal agent-usage` (P105): the subscription limits of the
 /// login an Agent runs under. Names the login the way a session does --
 /// an instance, or a legacy Claude's config directory -- and no workspace:
@@ -1055,7 +1135,60 @@ mod tests {
             prompt: None,
             agent_tools: Default::default(),
             continue_last,
+            carried: None,
         }
+    }
+
+    /// P115: a start that carries nothing reads exactly as before, so an
+    /// AI machine older than P115 still takes it; one that carries a
+    /// handoff is refused by that machine by name, which the caller turns
+    /// into a start without it.
+    #[test]
+    fn carried_is_on_the_wire_only_when_there_is_something() {
+        let plain = serde_json::to_value(start(false)).unwrap();
+        assert!(plain.get("carried").is_none(), "{plain}");
+        let with = StartRequest {
+            carried: Some(Carried {
+                kind: CarriedKind::Conversation,
+                from: "agent".into(),
+                session: "s".into(),
+                written: 1,
+                text: "[user]\nhi".into(),
+            }),
+            ..start(false)
+        };
+        let with = serde_json::to_value(with).unwrap();
+        assert_eq!(with["carried"]["kind"], "conversation");
+
+        // The field set as v0.21.1 had it.
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        #[allow(dead_code)]
+        struct Before {
+            protocol: u32,
+            #[serde(default)]
+            provider: Option<serde_json::Value>,
+            #[serde(default)]
+            agent: Option<serde_json::Value>,
+            workspace: String,
+            root: PathBuf,
+            runtime_node: String,
+            claude_config_dir: Option<PathBuf>,
+            permission_mode: PermissionMode,
+            #[serde(default)]
+            prompt: Option<String>,
+            #[serde(default)]
+            agent_tools: Option<serde_json::Value>,
+            #[serde(default)]
+            continue_last: bool,
+        }
+        serde_json::from_value::<Before>(plain).expect("an older Agent reads it");
+        let refused = serde_json::from_value::<Before>(with).err().unwrap();
+        let said = refused.to_string();
+        assert!(
+            said.contains("unknown field") && said.contains("carried"),
+            "{said}"
+        );
     }
 
     /// P92: a start that does not ask to continue reads exactly as it did

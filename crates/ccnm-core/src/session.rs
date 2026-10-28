@@ -36,6 +36,7 @@
 //! controller nothing once started. The rule: the session's lifetime is
 //! Claude's, not any outer process's.
 
+pub mod carry;
 pub mod hook;
 pub mod transport;
 pub mod view;
@@ -439,6 +440,12 @@ impl Dir {
     /// it to the next one (P102).
     pub fn handoff(&self) -> PathBuf {
         self.0.join("handoff.md")
+    }
+
+    /// What this session was handed from the project's previous one
+    /// (P115), until its first conversation starts and takes it.
+    pub fn carried(&self) -> PathBuf {
+        self.0.join("carried.json")
     }
 }
 

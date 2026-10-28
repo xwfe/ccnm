@@ -248,6 +248,30 @@ pub fn see_dir(path: &Path) -> Seen {
     }
 }
 
+/// An absolute path on **another** machine: `/…` for macOS and Linux,
+/// `X:/…` for Windows (P111.1). Judged by how it is spelled, never by this
+/// machine's rules -- on macOS `C:/Users/x` is a relative path, and on
+/// Windows `/Users/x` is one, so a Windows Runtime's project root was
+/// refused by every Agent before this. `.` and `..` are refused as parts,
+/// and so is `\`: a Windows Runtime reports `C:/…` (P108.1), and these paths
+/// are compared by their letters, so each place has one spelling.
+pub fn is_remote_absolute(path: &Path) -> bool {
+    let Some(text) = path.to_str() else {
+        return false;
+    };
+    let rest = match text.as_bytes() {
+        [b'/', ..] => &text[1..],
+        [drive, b':', b'/', ..] if drive.is_ascii_alphabetic() => &text[3..],
+        _ => return false,
+    };
+    !text.contains(['\\', '\0']) && rest.split('/').all(|part| part != "." && part != "..")
+}
+
+/// Spelled `X:/…`: a path on a Windows machine.
+pub fn is_windows_spelling(path: &str) -> bool {
+    matches!(path.as_bytes(), [drive, b':', b'/', ..] if drive.is_ascii_alphabetic())
+}
+
 /// What the remote login shell would make of a `~/...` path, so doctor
 /// can look at the same file the other machine will invoke. Only a
 /// leading `~/` (or bare `~`) is expanded; `~user/...` is left alone.
@@ -256,6 +280,52 @@ pub fn expand_home(path: &str, home: &Path) -> PathBuf {
         Some(rest) => home.join(rest),
         None if path == "~" => home.to_path_buf(),
         None => PathBuf::from(path),
+    }
+}
+
+/// Another machine's paths, judged the same on every platform: the Windows
+/// CI job runs these too.
+#[cfg(test)]
+mod remote {
+    use super::*;
+
+    #[test]
+    fn either_systems_absolute_spelling_is_a_remote_absolute_path() {
+        for good in [
+            "/",
+            "/home/me/proj",
+            "C:/",
+            "C:/Users/xdw/proj",
+            "d:/scoop/apps/ccnm.exe",
+            "/a//b",
+            "/opt/ccnm-0.1/bin/ccnm",
+            "C:/Users/x/a.b..c",
+        ] {
+            assert!(is_remote_absolute(Path::new(good)), "{good}");
+        }
+    }
+
+    #[test]
+    fn anything_else_is_not() {
+        for bad in [
+            "",
+            "proj",
+            "~/proj",
+            "./proj",
+            "C:",
+            "C:proj",
+            "CC:/x",
+            "1:/x",
+            "C:\\Users\\xdw",
+            "C:/Users\\xdw",
+            "\\\\?\\C:\\Users",
+            "/a/../b",
+            "/a/./b",
+            "C:/a/..",
+            "/a/\0",
+        ] {
+            assert!(!is_remote_absolute(Path::new(bad)), "{bad:?}");
+        }
     }
 }
 

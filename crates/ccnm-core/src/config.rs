@@ -1007,17 +1007,21 @@ impl Config {
             if let Some(ssh) = &node.ssh {
                 check_token(&format!("{at}.ssh"), ssh, &mut problems);
             }
+            // A node's paths are on that node: this machine's rules for the
+            // one this machine is, the other machine's spelling for the rest
+            // (P111.1). A Windows Runtime's `C:/…` is not absolute on macOS.
+            let here = self.this.as_deref() == Some(name.as_str());
             if let Some(dir) = &node.claude_config_dir {
-                check_absolute(&format!("{at}.claude_config_dir"), dir, &mut problems);
+                check_node_path(&format!("{at}.claude_config_dir"), dir, here, &mut problems);
             }
             if let Some(bin) = &node.codex_bin {
-                check_absolute(&format!("{at}.codex_bin"), bin, &mut problems);
+                check_node_path(&format!("{at}.codex_bin"), bin, here, &mut problems);
             }
             if let Some(bin) = &node.ccnm_bin {
                 let at = format!("{at}.ccnm_bin");
                 if check_remote_bin(&at, bin, &mut problems) && !is_remote_path(bin) {
                     problems.push(format!(
-                        "{at} must contain only [A-Za-z0-9._/-] and a leading ~ so the remote shell never has to quote it, got \"{}\"",
+                        "{at} must contain only [A-Za-z0-9._/-], after a leading ~ or a drive like C:, so the remote shell never has to quote it, got \"{}\"",
                         bin.display()
                     ));
                 }
@@ -1068,7 +1072,8 @@ impl Config {
                     Some(_) => {}
                 }
             }
-            check_absolute(&format!("{at}.root"), &ws.root, &mut problems);
+            let here = self.this.as_deref() == Some(ws.runtime_node.as_str());
+            check_node_path(&format!("{at}.root"), &ws.root, here, &mut problems);
         }
 
         crate::instance::validate_config(self, &mut problems);
@@ -1120,9 +1125,15 @@ fn check_token(at: &str, value: &str, problems: &mut Vec<String>) {
 }
 
 /// A path that will appear verbatim as one word of a remote ssh command.
+/// A Windows drive (`C:`) is the one colon allowed: cmd.exe and PowerShell
+/// both run `C:/Users/x/.local/bin/ccnm.exe` as written (P106.1).
 fn is_remote_path(path: &Path) -> bool {
     path.to_str().is_some_and(|s| {
         let rest = s.strip_prefix("~/").unwrap_or(s);
+        let rest = match rest.as_bytes() {
+            [drive, b':', ..] if drive.is_ascii_alphabetic() => &rest[2..],
+            _ => rest,
+        };
         rest.chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '/'))
     })
@@ -1165,7 +1176,38 @@ fn check_remote_bin(at: &str, path: &Path, problems: &mut Vec<String>) -> bool {
         ));
         return false;
     }
-    check_absolute(at, path, problems)
+    check_remote_absolute(at, path, problems)
+}
+
+/// A path on the node it belongs to: this machine's rules when that node is
+/// this machine, the other machine's spelling otherwise.
+fn check_node_path(at: &str, path: &Path, here: bool, problems: &mut Vec<String>) -> bool {
+    if here {
+        check_absolute(at, path, problems)
+    } else {
+        check_remote_absolute(at, path, problems)
+    }
+}
+
+/// [`check_absolute`] for a path on another machine, judged by its spelling
+/// ([`crate::paths::is_remote_absolute`]) rather than by this machine's
+/// rules. A backslash gets its own message: it is how a Windows path is
+/// usually copied, and "not absolute" would not say what to change.
+fn check_remote_absolute(at: &str, path: &Path, problems: &mut Vec<String>) -> bool {
+    if crate::paths::is_remote_absolute(path) {
+        return true;
+    }
+    let text = path.display();
+    problems.push(if path.to_string_lossy().contains('\\') {
+        format!(
+            "{at} must be an absolute path written with forward slashes, like C:/Users/<you>/.local/bin/ccnm.exe, got \"{text}\""
+        )
+    } else {
+        format!(
+            "{at} must be an absolute path on that machine -- /… on macOS and Linux, C:/… on Windows -- with no \".\" or \"..\" in it, got \"{text}\""
+        )
+    });
+    false
 }
 
 /// Absolute and free of `.` / `..` so that lexical comparisons between
@@ -1606,6 +1648,43 @@ mod tests {
         ] {
             let err = parse_err(&format!(
                 "this = \"runtime\"\n[nodes.agent]\nssh = \"work\"\nccnm_bin = \"{bin}\"\n[nodes.runtime]\n"
+            ));
+            assert!(err.message().contains(expected), "{bin}: {err}");
+        }
+    }
+
+    /// An Agent's config describing a Windows Runtime (P111.1): its ccnm is
+    /// `C:/…`, which this machine's own rules call relative. Before this the
+    /// whole file was refused, and `internal agent-*` fell back to an empty
+    /// config and said it did not know the Runtime.
+    #[test]
+    fn another_machines_windows_paths_are_judged_by_their_spelling() {
+        let ok = Config::parse(
+            "this = \"agent\"\nruntime_node = \"win\"\n[nodes.agent]\n[nodes.win]\nssh = \"win11\"\nccnm_bin = \"C:/Users/xdw/.local/bin/ccnm.exe\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            ok.runtime_from_agent().unwrap().1.ccnm_bin(),
+            "C:/Users/xdw/.local/bin/ccnm.exe"
+        );
+        // A Runtime's list naming an Agent elsewhere: that Agent's paths
+        // are that Agent's, whatever this machine is.
+        Config::parse(
+            "this = \"runtime\"\n[nodes.agent]\nssh = \"work\"\nclaude_config_dir = \"/Users/me/.claude-work\"\n[nodes.runtime]\n[workspaces.x]\nagent_node = \"agent\"\nroot = \"/tmp/x\"\n",
+        )
+        .unwrap();
+        for (bin, expected) in [
+            (
+                "C:\\\\Users\\\\xdw\\\\ccnm.exe",
+                "written with forward slashes, like C:/Users/<you>/.local/bin/ccnm.exe",
+            ),
+            ("C:/Users/xdw/../ccnm.exe", "with no \".\" or \"..\" in it"),
+            ("C:ccnm.exe", "C:/… on Windows"),
+            ("C:/Program Files/ccnm.exe", "never has to quote"),
+            ("C:/a:b/ccnm.exe", "never has to quote"),
+        ] {
+            let err = parse_err(&format!(
+                "this = \"agent\"\nruntime_node = \"win\"\n[nodes.agent]\n[nodes.win]\nssh = \"win11\"\nccnm_bin = \"{bin}\"\n"
             ));
             assert!(err.message().contains(expected), "{bin}: {err}");
         }

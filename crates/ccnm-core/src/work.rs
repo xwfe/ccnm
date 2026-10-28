@@ -3588,6 +3588,60 @@ mod tests {
         assert_eq!(found.as_deref(), Some(wanted.as_str()), "not {older}");
     }
 
+    /// P111.1: an instance session whose Runtime is Windows. Its root is
+    /// `C:/…`, which `is_absolute()` on this machine calls relative, and that
+    /// made the preflight's binding fail and every such record unreadable --
+    /// so `-c` found nothing to carry on from.
+    #[test]
+    fn a_windows_runtime_root_binds_and_continues() {
+        let dir = temp("continue-windows");
+        let (state, home) = (dir.join("state"), dir.join("claude-home"));
+        let root = "C:/Users/xdw/proj";
+        let selected = SelectedAgent {
+            provider: AgentProvider::Claude,
+            identity: Some(crate::instance::AgentIdentity {
+                node: "worker".into(),
+                instance: "claude-main".into(),
+                provider: AgentProvider::Claude,
+                profile_ref: "default".into(),
+            }),
+            profile_dir: None,
+        };
+        let binding = selected
+            .binding("xshun", Path::new(root), "win")
+            .unwrap()
+            .unwrap();
+        assert_eq!(binding.root, PathBuf::from(root));
+
+        let id = kept(
+            &state,
+            &home,
+            100,
+            "xshun",
+            root,
+            Mode::Interactive {
+                prompt: None,
+                continues: None,
+            },
+            true,
+        );
+        let meta = session::Dir::at(paths::session_dir(&state, &id)).meta();
+        let mut spec: Spec = serde_json::from_slice(&std::fs::read(&meta).unwrap()).unwrap();
+        spec.agent_identity = selected.identity.clone();
+        spec.runtime_node = Some("win".into());
+        spec.protocol = crate::instance::INSTANCE_SESSION_PROTOCOL;
+        std::fs::write(&meta, serde_json::to_string(&spec).unwrap()).unwrap();
+        assert_eq!(spec.workspace_binding().unwrap(), Some(binding));
+
+        let req = StartRequest {
+            root: root.into(),
+            ..start_request()
+        };
+        let found =
+            latest_kept_conversation(&state, &home, &req, &selected).map(|e| e.conversation);
+        assert_eq!(found.as_deref(), Some(id.as_str()));
+    }
+
     /// P101, the 2026-10-17 codingagent case: a session that was `/clear`ed
     /// is carried on from its last conversation, not from the one ccnm
     /// started it with. A `/clear` followed by nothing left no transcript,

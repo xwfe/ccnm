@@ -156,7 +156,7 @@ impl Spec {
         if let Some(identity) = &self.agent_identity {
             identity.validate()?;
             crate::instance::identifier(&self.workspace)?;
-            if self.runtime.is_none() || !crate::instance::profiles::absolute(&self.root) {
+            if self.runtime.is_none() || !crate::paths::is_remote_absolute(&self.root) {
                 return Err(Error::invalid_args(
                     "instance session requires an absolute Runtime root and a remote link",
                 ));

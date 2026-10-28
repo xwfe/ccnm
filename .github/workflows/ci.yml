@@ -244,7 +244,7 @@ jobs:
       - name: Unit tests written for Windows
         run: |
           cargo test -p ccnm-core --lib -- ssh:: protocol:: error:: lang:: \
-            platform:: mcp::path:: mcp::search::hit_paths:: safety::whoami:: \
+            platform:: paths::remote:: mcp::path:: mcp::search::hit_paths:: safety::whoami:: \
             mcp::write_guard:: mcp::patch::
 
       - name: What Windows refuses, and what it lets through

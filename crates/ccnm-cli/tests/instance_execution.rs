@@ -125,6 +125,74 @@ fn agent_side_diagnostics_ask_the_runtime_instead_of_delegating_to_it() {
     }
 }
 
+/// An Agent whose Runtime is Windows names that Runtime's ccnm as
+/// `C:/…` (P111.1), and both kinds of command take it as written: the
+/// public one the person types, and the internal one the Agent answers.
+/// Before, the first refused the whole config ("must be an absolute path")
+/// and the second fell back to an empty one and said the Runtime was not
+/// in it.
+#[test]
+fn a_windows_runtimes_ccnm_bin_is_used_as_written() {
+    let f = Fixture::new();
+    let config = f.0.join("agent.toml");
+    std::fs::write(
+        &config,
+        include_str!("../../../tests/fixtures/agent-instance/agent.toml")
+            .replace("runtime_node = \"runtime\"", "runtime_node = \"win\"")
+            .replace(
+                "[nodes.runtime]\nssh = \"runtime-alias\"",
+                "[nodes.win]\nssh = \"win11\"\nccnm_bin = \"C:/Users/xdw/.local/bin/ccnm.exe\"",
+            ),
+    )
+    .unwrap();
+    let log = f.0.join("ssh-args");
+    let ssh = f.0.join("bin/ssh");
+    std::fs::create_dir_all(ssh.parent().unwrap()).unwrap();
+    std::fs::write(
+        &ssh,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" >> '{}'\nexit 98\n",
+            log.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&ssh, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+    f.command()
+        .arg("--config")
+        .arg(&config)
+        .args(["run", "demo", "--detached"])
+        .output()
+        .unwrap();
+    let probe = ccnm_core::protocol::probe::ProbeRequest {
+        protocol: ccnm_core::protocol::PROTOCOL,
+        provider: AgentProvider::Claude,
+        agent: None,
+        workspace: "demo".into(),
+        root: "C:/Users/xdw/demo".into(),
+        runtime_node: "win".into(),
+        provider_config_dir: None,
+        mcp_calls: 0,
+    };
+    f.command()
+        .arg("--config")
+        .arg(&config)
+        .args(["internal", "probe", "--payload"])
+        .arg(payload::encode(&probe).unwrap())
+        .output()
+        .unwrap();
+
+    let args = std::fs::read_to_string(log).unwrap_or_default();
+    for asked in ["runtime-resolve", "hello"] {
+        assert!(
+            args.contains(&format!(
+                "win11\nC:/Users/xdw/.local/bin/ccnm.exe\ninternal\n{asked}\n"
+            )),
+            "{asked} was not sent to the Windows ccnm: {args}"
+        );
+    }
+}
+
 /// `--local` on the Agent Node has nothing to serve: the project is not
 /// here. It fails, rather than quietly measuring the remote transport and
 /// reporting it under a name that means the opposite.

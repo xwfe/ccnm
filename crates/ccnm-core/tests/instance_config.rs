@@ -345,6 +345,29 @@ fn substitutions_and_stale_registry_identity_fail_on_the_authoritative_side() {
     assert!(serde_json::from_value::<WorkspaceBinding>(forged).is_err());
 }
 
+/// A Windows Runtime's root as the Agent on macOS or Linux receives it
+/// (P111.1): `C:/…` is the Runtime's own absolute path, whatever this
+/// machine's `is_absolute()` says about it. Spelled any other way it is
+/// still refused, because roots are compared by their letters.
+#[test]
+fn a_windows_runtime_root_binds_on_an_agent_of_another_system() {
+    let (_, agent, mut binding) = bound();
+    binding.root = "C:/Users/xdw/project".into();
+    binding.validate().unwrap();
+    agent
+        .resolve_bound_instance(
+            &binding,
+            &AgentProfiles::default(),
+            Path::new("/agent"),
+            None,
+        )
+        .unwrap();
+    for bad in ["C:\\Users\\xdw\\project", "project", "C:/Users/xdw/../x"] {
+        binding.root = bad.into();
+        assert!(binding.validate().is_err(), "{bad}");
+    }
+}
+
 /// `model` is Codex's, and only Codex's.
 ///
 /// ccnm passes nothing of the sort to Claude -- its model is part of its own

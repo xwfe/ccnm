@@ -79,7 +79,8 @@ impl WorkspaceBinding {
         identifier(&self.workspace)?;
         identifier(&self.runtime_node)?;
         self.agent.validate()?;
-        if !profiles::absolute(&self.root) || self.runtime_node == self.agent.node {
+        // The root is the Runtime's path, whichever side checks it.
+        if !crate::paths::is_remote_absolute(&self.root) || self.runtime_node == self.agent.node {
             return Err(Error::config(
                 "binding needs an absolute Runtime root and a supported remote topology",
             ));

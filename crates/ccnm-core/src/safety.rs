@@ -52,6 +52,8 @@ use crate::process::{Cmd, ProcessRunner};
 
 pub mod credentials;
 pub mod environment;
+#[cfg(any(windows, test))]
+mod windows;
 
 /// Long enough for `id` and `sudo -n`, short enough that a wedged audit
 /// cannot make a Claude session look hung.
@@ -541,9 +543,20 @@ to isolate them, create a dedicated account and set runtime_user on the Runtime 
             finding
         }
     };
+    #[cfg(unix)]
     findings.push(isolation(sudo_finding(runner)));
+    #[cfg(windows)]
+    findings.push(isolation(windows::elevation_finding(
+        &identity.windows_groups,
+    )));
     findings.push(isolation(group_finding(&identity)));
     findings.push(isolation(ssh_key_finding(home, runner)));
+    // Windows keeps loaded keys in a service any process of the account can
+    // ask, with no variable to inherit or strip (P111.2).
+    #[cfg(windows)]
+    findings.push(isolation(windows::ssh_agent_finding(
+        windows::query_ssh_agent(runner).as_ref(),
+    )));
     findings.extend(
         credentials::findings_with(home, references, runner)
             .into_iter()
@@ -743,39 +756,17 @@ fn private_key_in(dir: &Path, runner: &dyn ProcessRunner) -> Option<Finding> {
     walk(dir, 3, runner)
 }
 
-/// Windows has no sudo to ask (Sudo for Windows is a setting, not a
-/// sudoers file); what stands for it there is the Administrators group and
-/// an elevated token, which the Windows audit reads from `whoami /groups`
-/// (P111.2). Until it does, not checked means not passed.
+/// Administrators, read from `whoami /groups` (P111.2).
 #[cfg(windows)]
-fn sudo_finding(_runner: &dyn ProcessRunner) -> Finding {
-    Finding::fail(
-        "No sudo",
-        "whether this token is elevated is not checked on Windows yet",
-        "wait for the Windows Runtime audit (P111) before relying on this one",
-    )
+fn group_finding(identity: &Identity) -> Finding {
+    windows::admin_finding(&identity.windows_groups)
 }
 
-/// Same, for membership of Administrators.
+/// docker-users, read from `whoami /groups` (P111.2): Docker on Windows is
+/// a named pipe guarded by that group, not a socket's mode.
 #[cfg(windows)]
-fn group_finding(_identity: &Identity) -> Finding {
-    Finding::fail(
-        "Not an admin",
-        "membership of Administrators is not checked on Windows yet",
-        "wait for the Windows Runtime audit (P111) before relying on this one",
-    )
-}
-
-/// Docker on Windows is a named pipe guarded by the docker-users group, not
-/// a socket's mode; the Windows audit checks that (P111.2). Until it does,
-/// not checked means not passed.
-#[cfg(windows)]
-fn docker_finding(_identity: &Identity) -> Finding {
-    Finding::fail(
-        "No Docker socket",
-        "the Docker check is not written for Windows yet",
-        "wait for the Windows Runtime audit (P111) before relying on this one",
-    )
+fn docker_finding(identity: &Identity) -> Finding {
+    windows::docker_finding(&identity.windows_groups)
 }
 
 /// Write access to the Docker socket is root, one `docker run -v /:/host`
@@ -825,11 +816,13 @@ struct Identity {
     uid: Option<u32>,
     /// The account's SID. Windows only: it has no uid.
     sid: Option<String>,
-    // Only the Unix Docker check reads it; the Windows audit is P111's.
     #[cfg_attr(windows, allow(dead_code))]
     gids: Vec<u32>,
     #[cfg_attr(windows, allow(dead_code))]
     groups: Vec<String>,
+    /// The token's groups, its integrity level among them. Windows only.
+    #[cfg(windows)]
+    windows_groups: Vec<windows::Group>,
 }
 
 /// LocalSystem, which is what root is on Windows.
@@ -847,7 +840,7 @@ impl Identity {
 
     /// `whoami /user`, by its full path: a `whoami.exe` earlier on PATH --
     /// the project's own `bin`, say -- must not get to say who this is.
-    /// Groups and elevation are the Windows audit's (P111.2).
+    /// Then `whoami /groups`, for Administrators, elevation and docker-users.
     #[cfg(windows)]
     fn read(runner: &dyn ProcessRunner) -> Identity {
         let cmd = Cmd::new(crate::platform::system_program("whoami.exe"))
@@ -862,6 +855,7 @@ impl Identity {
             Some((user, sid)) => Identity {
                 user,
                 sid: Some(sid),
+                windows_groups: windows::read_groups(runner),
                 ..Identity::default()
             },
             None => Identity {

@@ -18,7 +18,10 @@ pub enum Access {
 
 /// Symlinks (including dangling ones) and metadata errors are not absence.
 /// `/bin/test -r` consults this process identity's OS permissions/ACL, without
-/// opening a FIFO or reading a byte of the candidate file.
+/// opening a FIFO or reading a byte of the candidate file. Windows has no
+/// `/bin/test`, and no FIFO a file path can name, so there the file is
+/// opened for reading -- the ACL decides that open -- and closed unread
+/// (P111.2). Before, every file there was "unknown".
 pub fn access(path: &Path, runner: &dyn ProcessRunner) -> Access {
     if !path.is_absolute()
         || path
@@ -40,6 +43,16 @@ pub fn access(path: &Path, runner: &dyn ProcessRunner) -> Access {
             return Access::Unknown;
         }
     }
+    #[cfg(windows)]
+    {
+        let _ = runner;
+        match std::fs::File::open(path) {
+            Ok(_) => Access::Accessible,
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => Access::Inaccessible,
+            Err(_) => Access::Unknown,
+        }
+    }
+    #[cfg(unix)]
     match runner.run(
         &Cmd::new("/bin/test")
             .arg("-r")
@@ -222,4 +235,24 @@ pub fn private_home_for(path: &Path, files: &[&str], uid: u32) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// `access` on Windows opens the file (P111.2). Run by the Windows CI job;
+/// what an ACL refuses is measured on the real machine, not faked here.
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+
+    #[test]
+    fn a_readable_file_is_accessible_and_nothing_else_is_guessed() {
+        let dir = std::env::temp_dir().join(format!("ccnm-access-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("key"), b"not a key").unwrap();
+        let runner = SystemRunner;
+        assert_eq!(access(&dir.join("key"), &runner), Access::Accessible);
+        assert_eq!(access(&dir.join("absent"), &runner), Access::Missing);
+        assert_eq!(access(&dir.join("sub"), &runner), Access::Unknown);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

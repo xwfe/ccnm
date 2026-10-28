@@ -245,6 +245,7 @@ jobs:
         run: |
           cargo test -p ccnm-core --lib -- ssh:: protocol:: error:: lang:: \
             platform:: paths::remote:: mcp::path:: mcp::search::hit_paths:: safety::whoami:: \
+            safety::windows:: safety::credentials::windows_tests:: \
             mcp::write_guard:: mcp::patch::
 
       - name: What Windows refuses, and what it lets through

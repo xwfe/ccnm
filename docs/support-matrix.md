@@ -71,7 +71,7 @@
 **Windows 当项目机器（Runtime）：还在分阶段做（P106–P112），没有验收，上面那张表不因此改。** 这里只记已经定下来、和 macOS / Linux 不一样的地方：
 
 - **mcp-serve 一结束，它起的后台命令全部跟着结束，被强杀也一样。** Windows 自带的 sshd 把每个会话放进一个带 `KILL_ON_JOB_CLOSE` 的 Job，会话的 shell 一退出，整棵进程树都被收掉（[P106 记录](research/2026-10-24-p106-windows-preresearch.md) P106.3）。macOS、Linux 上 mcp-serve 被强杀之后后台命令还活着（[core-hardening.md](plan/core-hardening.md) 的 AUTH-02）。
-- **停命令用 `taskkill /T /F`**：按父进程号找后代，父进程先退出的孙进程收不到，和 macOS 一样；Linux 上 P84 能收的，Windows 收不到。
+- **停命令是结束这条命令的 Job**（P110）：它起的进程不管父进程还在不在都一起结束，Git Bash 起的程序也是（那些在 Windows 看来没有活着的父进程，`taskkill /T` 收不到）。命令结束后还在跑的进程活到会话结束，和 Linux 上 P84 收的时机一样。
 - **`shell` 用 Git for Windows 的 bash**，找不到就报错、提示改用 `cmd`；沙箱（`exec_sandbox`）在 Windows 上开不了。
 
 **Runtime 那一侧（`internal mcp-serve` 与七工具）在 Debian 13 / x86_64 上验过一次**，作为 Remote Workspace MCP 的 dogfood（[记录](research/p12-real-project-2026-09-11.md)）：`cargo fmt`、严格 clippy 与全套测试在那台机器上 676 passed / 0 failed，与 macOS 同数。**那一次是从两个红开始的**，两个都真修了：`SystemRunner::run` 的超时只杀 leader（macOS 因为 bash 会 exec 而一直看不见），以及一个测试助手用了 BSD 语义的 `date -r`。Linux 当 Agent（Controller）后来在 v0.12.0 做了，见上一段；Runtime 侧也只验过这一种发行版和架构。

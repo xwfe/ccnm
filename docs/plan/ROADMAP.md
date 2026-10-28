@@ -1434,7 +1434,7 @@ P73 当时把"外部 MCP workspace 里执行账号的安全没人验"留作挡�
   - `call_mcp_tool` 能起 `npx.cmd` 这类 server。
   - HTTP MCP 照用 `C:\Windows\System32\curl.exe`。P106.4 实测 8.16.0 认 ccnm 的 `-K` 配置，SSE 也是流式到的；只把建目录、写配置文件时的 Unix 权限位换掉。
 
-停止点：不做 Job Object；不加 `powershell` 参数（设计文档 D2 备选 B）；沙箱在 Windows 上不能打开。
+停止点：不加 `powershell` 参数（设计文档 D2 备选 B）；沙箱在 Windows 上不能打开。原写的"不做 Job Object"2026-10-28 用户改了：CI 实测 `taskkill /T` 收不到 Git Bash 起的任何外部程序，Job Object 放进本阶段（toexec-win 0.2.0），见 [P110 记录](../research/2026-10-28-p110-windows-exec.md)第 2.2 节。
 
 ### P111 — Windows Runtime 的配置、诊断和发布包
 

@@ -123,6 +123,8 @@
 
 ### D3 停命令：先用 `taskkill /T /F`，Job Object 留作第二步（用户定）
 
+**2026-10-28 改了（用户定）：P110 就用 Job Object。** CI 实测 `taskkill /T` 收不到 Git Bash 起的任何外部程序——MSYS2（Cygwin）执行外部程序是另起一个 Windows 进程、原进程退出，父进程链在 Windows 看来是断的——所以下面"第一版用 taskkill"的前提不成立了。现在每条命令（和 MCP 转发的 server）放进自己的 Job，`taskkill` 只在放不进 Job 时兜底。证据和取舍见 [P110 记录](../research/2026-10-28-p110-windows-exec.md)第 2.2 节。下面保留原来的分析。
+
 **推荐（用户 2026-10-24 定）：** 第一版照 gld 的办法：停止、超时、会话结束时跑 `taskkill /T /F /PID <pid>` 杀整棵进程树，失败了再单独结束根进程。
 
 - **为什么：** 不用写 unsafe 代码，守住 workspace 的 `unsafe_code = "forbid"`，和 [process.rs](../../crates/ccnm-core/src/process.rs) 现在"另起一个 `kill` 程序"的做法是一个思路。gld 有 Windows CI 上跑通的证据（gld 的 `crates/core/src/tools/session.rs` 第 1662 行起，`crates/cli/tests/daemon_lifecycle.rs`）。

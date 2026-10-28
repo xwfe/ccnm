@@ -683,7 +683,7 @@ impl<'a> Resolved<'a> {
         match (&self.workspace.agent, override_id) {
             (None, None) => Ok(None),
             (None, Some(_)) => Err(Error::config(
-                "--agent requires an instance-selected workspace; legacy Claude workspaces keep their existing selection",
+                "an instance after --on needs a workspace that selects by instance; this one runs on the machine's default login (agent_node), so name only the machine: --on <machine>",
             )),
             (Some(reference), None) => Ok(Some(reference.clone())),
             (Some(reference), Some(id)) => {
@@ -936,7 +936,7 @@ impl Config {
         })
     }
 
-    fn validate(&self) -> Result<()> {
+    pub(crate) fn validate(&self) -> Result<()> {
         let mut problems = Vec::new();
 
         if let Some(version) = self.version

@@ -88,18 +88,25 @@ enum Command {
     Doctor {
         /// Workspace name from config.toml; omit to check only the config
         workspace: Option<String>,
-        /// Use another configured instance on the workspace's Agent Node
-        #[arg(long, value_name = "INSTANCE", requires = "workspace")]
-        agent: Option<String>,
+        /// Which AI machine: `<machine>`, `<machine>/<instance>`, or an
+        /// instance on the project's own machine. Formerly --agent
+        #[arg(
+            long = "on",
+            alias = "agent",
+            value_name = "WHERE",
+            requires = "workspace"
+        )]
+        on: Option<String>,
     },
     /// Start the configured Agent session for a workspace on the Agent Node, and
     /// attach this terminal to it
     Run {
         /// Workspace name from config.toml
         workspace: String,
-        /// Override the workspace's default Agent Instance on the same node
-        #[arg(long, value_name = "INSTANCE")]
-        agent: Option<String>,
+        /// Which AI machine: `<machine>`, `<machine>/<instance>`, or an
+        /// instance on the project's own machine. Formerly --agent
+        #[arg(long = "on", alias = "agent", value_name = "WHERE")]
+        on: Option<String>,
         /// What the Agent opens with; without it the prompt starts empty
         prompt: Option<String>,
         /// Read what Claude opens with from stdin, to the end of input.
@@ -126,8 +133,10 @@ enum Command {
     Attach {
         /// Workspace name from config.toml
         workspace: String,
-        #[arg(long, value_name = "INSTANCE")]
-        agent: Option<String>,
+        /// Which AI machine: `<machine>`, `<machine>/<instance>`, or an
+        /// instance on the project's own machine. Formerly --agent
+        #[arg(long = "on", alias = "agent", value_name = "WHERE")]
+        on: Option<String>,
         #[arg(long, value_name = "ID")]
         session: Option<String>,
     },
@@ -137,8 +146,15 @@ enum Command {
     Status {
         /// Workspace name from config.toml; omit it for all of them
         workspace: Option<String>,
-        #[arg(long, value_name = "INSTANCE", requires = "workspace")]
-        agent: Option<String>,
+        /// Which AI machine: `<machine>`, `<machine>/<instance>`, or an
+        /// instance on the project's own machine. Formerly --agent
+        #[arg(
+            long = "on",
+            alias = "agent",
+            value_name = "WHERE",
+            requires = "workspace"
+        )]
+        on: Option<String>,
         #[arg(
             long,
             value_name = "ID",
@@ -147,7 +163,7 @@ enum Command {
         )]
         session: Option<String>,
         /// Every ccnm session on that machine, not just this workspace's
-        #[arg(long, conflicts_with = "agent", requires = "workspace")]
+        #[arg(long, conflicts_with = "on", requires = "workspace")]
         all: bool,
     },
     /// Every managed project, one line each: running or not, for how long,
@@ -170,10 +186,10 @@ enum Command {
     Usage {
         /// Only the login this workspace's Agent runs under
         workspace: Option<String>,
-        /// Another configured instance: on the workspace's Agent Node, or,
-        /// run on the Agent Node, one of its own
-        #[arg(long, value_name = "INSTANCE")]
-        agent: Option<String>,
+        /// Which AI machine: `<machine>`, `<machine>/<instance>`, or an
+        /// instance on the project's own machine. Formerly --agent
+        #[arg(long = "on", alias = "agent", value_name = "WHERE")]
+        on: Option<String>,
     },
     /// What a session produced, for a `--print` run this terminal did not
     /// stay connected to
@@ -181,8 +197,10 @@ enum Command {
     Result {
         /// Workspace name from config.toml
         workspace: String,
-        #[arg(long, value_name = "INSTANCE")]
-        agent: Option<String>,
+        /// Which AI machine: `<machine>`, `<machine>/<instance>`, or an
+        /// instance on the project's own machine. Formerly --agent
+        #[arg(long = "on", alias = "agent", value_name = "WHERE")]
+        on: Option<String>,
         /// A session id; without one, the workspace's most recent session
         #[arg(long, value_name = "ID")]
         session: Option<String>,
@@ -192,8 +210,10 @@ enum Command {
     Stop {
         /// Workspace name from config.toml
         workspace: String,
-        #[arg(long, value_name = "INSTANCE")]
-        agent: Option<String>,
+        /// Which AI machine: `<machine>`, `<machine>/<instance>`, or an
+        /// instance on the project's own machine. Formerly --agent
+        #[arg(long = "on", alias = "agent", value_name = "WHERE")]
+        on: Option<String>,
         #[arg(long, value_name = "ID")]
         session: Option<String>,
     },
@@ -256,10 +276,12 @@ struct AddArgs {
     /// What Claude may do without asking
     #[arg(long, value_name = "MODE")]
     permission_mode: Option<String>,
-    /// The node that runs this workspace's Agent. Needed only when the
-    /// config has more than one candidate and none is called `agent`
-    #[arg(long, value_name = "NODE")]
-    agent_node: Option<String>,
+    /// The AI machine this project runs on by default, by node name or ssh
+    /// alias. Needed only when the config has more than one and none is
+    /// called `agent`. Given with the name of a project that already exists
+    /// and no directory, it only moves that project. Formerly --agent-node
+    #[arg(long = "on", alias = "agent-node", value_name = "MACHINE")]
+    on: Option<String>,
 }
 
 /// `ccnm remove` and `ccnm ws remove`: one command under two names (P99).
@@ -295,8 +317,10 @@ enum McpCommand {
     Probe {
         /// Workspace name from config.toml
         workspace: String,
-        #[arg(long, value_name = "INSTANCE")]
-        agent: Option<String>,
+        /// Which AI machine: `<machine>`, `<machine>/<instance>`, or an
+        /// instance on the project's own machine. Formerly --agent
+        #[arg(long = "on", alias = "agent", value_name = "WHERE")]
+        on: Option<String>,
         /// How many workspace_info calls to time
         #[arg(long, default_value_t = 100)]
         calls: u32,
@@ -496,6 +520,7 @@ fn main() -> ExitCode {
     // mcp-serve are the ssh channel.
     ccnm_core::keep_std_handles_to_this_process();
     let args = with_default_subcommand(std::env::args_os().collect());
+    let renamed = renamed_flag(&args);
     let cli = parse_in_ui_lang(args);
     init_logging(cli.verbose);
     let lang = match ui_lang(&cli) {
@@ -505,6 +530,15 @@ fn main() -> ExitCode {
             return exit_code(err.exit_code());
         }
     };
+    if let Some(old) = renamed {
+        eprintln!(
+            "{}",
+            lang.pick(
+                format!("{old} 已改名为 --on，旧名字还能用"),
+                format!("{old} is now --on; the old name still works"),
+            )
+        );
+    }
     match run(cli, lang) {
         Ok(code) => exit_code(code),
         Err(err) => {
@@ -623,8 +657,8 @@ fn zh_add_args(command: clap::Command) -> clap::Command {
             a.help("交互会话执行命令前不再问你；不加就每条命令问一次（见 docs/configuration.md）")
         })
         .mut_arg("permission_mode", |a| a.help("Claude 不用问就能做的事"))
-        .mut_arg("agent_node", |a| {
-            a.help("哪个节点跑这个 workspace 的 Agent。配置里有不止一个候选、又没有叫 agent 的时候才需要给")
+        .mut_arg("on", |a| {
+            a.help("这个项目默认在哪台 AI 机器上跑，写节点名或 ssh 别名。配置里有不止一台、又没有叫 agent 的时候才需要给。项目已经存在、又没给目录时，只换它的机器。原来叫 --agent-node")
         })
 }
 
@@ -712,16 +746,16 @@ fn zh_help(command: clap::Command) -> clap::Command {
                 .mut_arg("workspace", |a| {
                     a.help("config.toml 里的 workspace 名字；不给就只查配置本身")
                 })
-                .mut_arg("agent", |a| {
-                    a.help("用这个 workspace 的 Agent Node 上另一个配好的 instance")
+                .mut_arg("on", |a| {
+                    a.help("在哪台 AI 机器上：<机器>、<机器>/<实例>，或项目默认那台上的实例。原来叫 --agent")
                 })
         })
         .mut_subcommand("run", |c| {
             c.about("在 Agent Node 上给这个 workspace 起一个 Agent 会话，然后把这个终端接上去")
                 .mut_arg("workspace", |a| a.help("config.toml 里的 workspace 名字"))
                 .mut_arg("prompt", |a| a.help("Agent 开场读什么；不给就是空的"))
-                .mut_arg("agent", |a| {
-                    a.help("不用这个 workspace 的默认 Agent Instance，改用同一节点上的另一个")
+                .mut_arg("on", |a| {
+                    a.help("在哪台 AI 机器上：<机器>、<机器>/<实例>，或项目默认那台上的实例。原来叫 --agent")
                 })
                 .mut_arg("prompt_stdin", |a| {
                     a.help("开场白从 stdin 读到结束。能带引号和换行，命令行上不行")
@@ -744,6 +778,7 @@ fn zh_help(command: clap::Command) -> clap::Command {
                     a.help("config.toml 里的 workspace 名字；不给就看全部")
                 })
                 .mut_arg("all", |a| a.help("那台机器上每一个 ccnm 会话，不只是这个 workspace 的"))
+                .mut_arg("on", |a| a.help("在哪台 AI 机器上：<机器>、<机器>/<实例>，或项目默认那台上的实例。原来叫 --agent"))
         })
         .mut_subcommand("list", |c| {
             c.about("所有项目一项一行：在不在跑、跑了多久、工具通不通（要问 Agent）。目录在哪看 ccnm ws ls")
@@ -756,8 +791,8 @@ fn zh_help(command: clap::Command) -> clap::Command {
         .mut_subcommand("usage", |c| {
             c.about("AI 那台登录的订阅额度用了多少、什么时候重置，数是 Claude Code 的 /usage 或 Codex 自己报的。不给项目名：这台机器的项目用到的每个登录各问一次")
                 .mut_arg("workspace", |a| a.help("只问这个 workspace 的 Agent 用的那个登录"))
-                .mut_arg("agent", |a| {
-                    a.help("换一个配置好的实例：给了项目名就是那个项目 Agent Node 上的；在 Agent Node 上跑就是本机的")
+                .mut_arg("on", |a| {
+                    a.help("在哪台 AI 机器上：<机器>、<机器>/<实例>，或项目默认那台上的实例。原来叫 --agent")
                 })
         })
         .mut_subcommand("result", |c| {
@@ -786,6 +821,7 @@ fn zh_help(command: clap::Command) -> clap::Command {
                         "向这个 workspace 的 Runtime 起一条 MCP 会话，调 N 次 workspace_info，报延迟，并证明回答的是同一个 server 进程；跑完就关掉",
                     )
                     .mut_arg("workspace", |a| a.help("config.toml 里的 workspace 名字"))
+                    .mut_arg("on", |a| a.help("在哪台 AI 机器上：<机器>、<机器>/<实例>，或项目默认那台上的实例。原来叫 --agent"))
                     .mut_arg("calls", |a| a.help("计时的 workspace_info 调用次数"))
                     .mut_arg("local", |a| {
                         a.help("把 server 起成这个进程的子进程，不走 work -> ssh -> home：量不含网络的那部分")
@@ -821,9 +857,15 @@ fn zh_help(command: clap::Command) -> clap::Command {
         })
 }
 
-/// The three arguments `attach`, `status`, `result` and `stop` all share.
+/// The arguments `attach`, `status`, `result` and `stop` all share.
 fn workspace_args(command: clap::Command) -> clap::Command {
-    command.mut_arg("workspace", |a| a.help("config.toml 里的 workspace 名字"))
+    command
+        .mut_arg("workspace", |a| a.help("config.toml 里的 workspace 名字"))
+        .mut_arg("on", |a| {
+            a.help(
+                "在哪台 AI 机器上：<机器>、<机器>/<实例>，或项目默认那台上的实例。原来叫 --agent",
+            )
+        })
 }
 
 /// `ccnm xshun` means `ccnm run xshun`.
@@ -965,8 +1007,12 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
             lang,
         ),
         Command::Workspace { command } => workspace_command(&config_path()?, command, lang),
-        Command::Doctor { workspace, agent } => {
+        Command::Doctor { workspace, on } => {
             let path = config_path()?;
+            // Which machine and instance the rows are about (P114). A config
+            // that does not load has its own row below, so nothing is placed.
+            let mut moved_to = None;
+            let mut instance = None;
             if let Some(workspace) = workspace {
                 let config = Config::load(&path)?;
                 // On the Agent Node the workspace lives elsewhere, so ask
@@ -975,10 +1021,16 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
                 // made the Runtime Executor dial back to this machine for a
                 // diagnostic (P7.4 Batch D2).
                 if let Some((runtime, node)) = agent_side(&config, workspace) {
+                    let instance = local_on(&config, on.as_deref(), lang)?;
                     let report =
-                        agent_side_doctor(&path, workspace, agent.as_deref(), runtime, node)?;
+                        agent_side_doctor(&path, workspace, instance.as_deref(), runtime, node)?;
                     print!("{}", report.render_in(lang));
                     return Ok(report.exit_code());
+                }
+                if config.workspaces.contains_key(workspace) {
+                    let placement = placed(&config, workspace, on.as_deref(), lang)?;
+                    moved_to = placement.moved().then(|| placement.node.clone());
+                    instance = placement.instance;
                 }
             }
             let env = doctor::Env {
@@ -986,13 +1038,19 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
                 control_dir: paths::state_dir()?.join("ssh"),
                 home: paths::home_dir()?,
             };
-            let report = doctor::run_selected(&path, workspace.as_deref(), agent.as_deref(), &env);
+            let report = doctor::run_selected(
+                &path,
+                workspace.as_deref(),
+                instance.as_deref(),
+                moved_to.as_deref(),
+                &env,
+            );
             print!("{}", report.render_in(lang));
             Ok(report.exit_code())
         }
         Command::Run {
             workspace,
-            agent,
+            on,
             prompt,
             prompt_stdin,
             print,
@@ -1013,13 +1071,14 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
                     ));
                 }
                 let opening = opening_prompt(prompt.as_deref(), *prompt_stdin)?;
-                let selected = local_instance_ref(&config, agent.as_deref())?;
+                let instance = local_on(&config, on.as_deref(), lang)?;
+                let selected = local_instance_ref(&config, instance.as_deref())?;
                 let env = launch_env()?;
                 let authority = launcher::resolve_from_agent(
                     runtime,
                     &host.ccnm_bin(),
                     workspace,
-                    agent.as_deref(),
+                    instance.as_deref(),
                     &env,
                 )?;
                 warn_accepted_risk(
@@ -1049,21 +1108,31 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
                 }
                 return work::attach(&attach_request(workspace, selected, None), &tools);
             }
-            let resolved = config.workspace_in(workspace, lang)?;
+            config.workspace_in(workspace, lang)?;
+            let env = launch_env()?;
+            let placement = placed(&config, workspace, on.as_deref(), lang)?;
+            // A --print run is one question, not where the project lives:
+            // it neither moves the project nor asks anything to make way.
+            let placement = if print.is_some() {
+                placement
+            } else {
+                make_way(&config, placement, workspace, &env, lang)?
+            };
+            let resolved = placement.config.workspace_in(workspace, lang)?;
+            let instance = placement.instance.as_deref();
             warn_accepted_risk(
                 workspace,
                 resolved.workspace.allow_unisolated_credentials,
                 resolved.workspace.allow_unattended_exec,
                 lang,
             );
-            let env = launch_env()?;
             if let Some(prompt) = print {
                 let rep = launcher::run_print_with_agent(
                     &resolved,
                     &env,
                     prompt,
                     std::time::Duration::from_secs(*timeout),
-                    agent.as_deref(),
+                    instance,
                 )?;
                 return print_run_report(&rep, resolved.agent_node(), lang);
             }
@@ -1072,7 +1141,7 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
                 &resolved,
                 &env,
                 opening.as_deref(),
-                agent.as_deref(),
+                instance,
                 *continue_last,
             )?;
             eprintln!("{}", rep.summary_in(lang));
@@ -1081,6 +1150,7 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
                 eprintln!("{why}");
                 return Ok(code);
             }
+            remember_placement(&placement, workspace, lang);
             if *detached {
                 eprintln!(
                     "\n{}",
@@ -1091,37 +1161,39 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
                 );
                 return Ok(0);
             }
-            attach_selected(&resolved, &env, workspace, agent.as_deref(), None, lang)
+            attach_selected(&resolved, &env, workspace, instance, None, lang)
         }
         Command::Attach {
             workspace,
-            agent,
+            on,
             session,
         } => {
             let config = Config::load_in(&config_path()?, lang)?;
             if agent_side(&config, workspace).is_some() {
+                let instance = local_on(&config, on.as_deref(), lang)?;
                 return work::attach(
                     &attach_request(
                         workspace,
-                        local_instance_ref(&config, agent.as_deref())?,
+                        local_instance_ref(&config, instance.as_deref())?,
                         session.clone(),
                     ),
                     &agent_tools(config_path().ok().as_deref())?,
                 );
             }
-            let resolved = config.workspace_in(workspace, lang)?;
+            let placement = placed(&config, workspace, on.as_deref(), lang)?;
+            let resolved = placement.config.workspace_in(workspace, lang)?;
             attach_selected(
                 &resolved,
                 &launch_env()?,
                 workspace,
-                agent.as_deref(),
+                placement.instance.as_deref(),
                 session.as_deref(),
                 lang,
             )
         }
         Command::Status {
             workspace,
-            agent,
+            on,
             session,
             all,
         } => {
@@ -1134,7 +1206,8 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
                 return Ok(0);
             };
             if agent_side(&config, workspace).is_some() {
-                let selected = local_instance_ref(&config, agent.as_deref())?;
+                let instance = local_on(&config, on.as_deref(), lang)?;
+                let selected = local_instance_ref(&config, instance.as_deref())?;
                 let req = StatusRequest {
                     protocol: if selected.is_some() {
                         ccnm_core::instance::INSTANCE_SESSION_PROTOCOL
@@ -1152,16 +1225,12 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
                 );
                 return Ok(0);
             }
-            let resolved = config.workspace_in(workspace, lang)?;
+            let placement = placed(&config, workspace, on.as_deref(), lang)?;
+            let resolved = placement.config.workspace_in(workspace, lang)?;
+            let agent = placement.instance.as_deref();
             let env = launch_env()?;
-            let rep = launcher::status_selected(
-                &resolved,
-                &env,
-                *all,
-                agent.as_deref(),
-                session.as_deref(),
-            )
-            .map_err(|e| {
+            let rep = launcher::status_selected(&resolved, &env, *all, agent, session.as_deref())
+                .map_err(|e| {
                 unreachable_said(
                     e,
                     &resolved,
@@ -1179,11 +1248,11 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
             // -- every workspace `ccnm ws add` makes -- has none to ask. It
             // printed two lines of CCNM_E_CONFIG there on every call, about
             // something that will never change (P95).
-            if resolved.agent_reference(agent.as_deref())?.is_some() {
+            if resolved.agent_reference(agent)?.is_some() {
                 print!(
                     "{}",
                     ccnm_core::overview::render_guard(
-                        &launcher::observe_guard(&resolved, &env, agent.as_deref()),
+                        &launcher::observe_guard(&resolved, &env, agent),
                         ccnm_core::overview::utc_offset(&SystemRunner),
                         lang,
                     )
@@ -1213,19 +1282,20 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
             );
             Ok(0)
         }
-        Command::Usage { workspace, agent } => {
+        Command::Usage { workspace, on } => {
             let path = config_path()?;
             let config = Config::load_in(&path, lang)?;
-            usage_command(&config, &path, workspace.as_deref(), agent.as_deref(), lang)
+            usage_command(&config, &path, workspace.as_deref(), on.as_deref(), lang)
         }
         Command::Result {
             workspace,
-            agent,
+            on,
             session,
         } => {
             let config = Config::load_in(&config_path()?, lang)?;
             if agent_side(&config, workspace).is_some() {
-                let selected = local_instance_ref(&config, agent.as_deref())?;
+                let instance = local_on(&config, on.as_deref(), lang)?;
+                let selected = local_instance_ref(&config, instance.as_deref())?;
                 let req = ResultRequest {
                     protocol: if selected.is_some() {
                         ccnm_core::instance::INSTANCE_SESSION_PROTOCOL
@@ -1243,12 +1313,13 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
                     lang,
                 );
             }
-            let resolved = config.workspace_in(workspace, lang)?;
+            let placement = placed(&config, workspace, on.as_deref(), lang)?;
+            let resolved = placement.config.workspace_in(workspace, lang)?;
             let rep = launcher::result_selected(
                 &resolved,
                 &launch_env()?,
                 session.as_deref(),
-                agent.as_deref(),
+                placement.instance.as_deref(),
             )
             .map_err(|e| {
                 unreachable_said(
@@ -1262,12 +1333,13 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
         }
         Command::Stop {
             workspace,
-            agent,
+            on,
             session,
         } => {
             let config = Config::load_in(&config_path()?, lang)?;
             if agent_side(&config, workspace).is_some() {
-                let selected = local_instance_ref(&config, agent.as_deref())?;
+                let instance = local_on(&config, on.as_deref(), lang)?;
+                let selected = local_instance_ref(&config, instance.as_deref())?;
                 let req = StopRequest {
                     protocol: if selected.is_some() {
                         ccnm_core::instance::INSTANCE_SESSION_PROTOCOL
@@ -1283,11 +1355,12 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
                 println!("{}", stopped(rep.killed, workspace, lang));
                 return Ok(0);
             }
-            let resolved = config.workspace_in(workspace, lang)?;
+            let placement = placed(&config, workspace, on.as_deref(), lang)?;
+            let resolved = placement.config.workspace_in(workspace, lang)?;
             let rep = launcher::stop_selected(
                 &resolved,
                 &launch_env()?,
-                agent.as_deref(),
+                placement.instance.as_deref(),
                 session.as_deref(),
             )
             .map_err(|e| {
@@ -1375,7 +1448,7 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
             command:
                 McpCommand::Probe {
                     workspace,
-                    agent,
+                    on,
                     calls,
                     local,
                 },
@@ -1396,10 +1469,11 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
                         ),
                     ));
                 }
+                let instance = local_on(&config, on.as_deref(), lang)?;
                 let rep = agent_side_mcp_probe(
                     &config_path()?,
                     workspace,
-                    agent.as_deref(),
+                    instance.as_deref(),
                     runtime,
                     node,
                     *calls,
@@ -1412,10 +1486,12 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
                     ccnm_core::ErrorCode::Internal.exit_code()
                 });
             }
-            let resolved = config.workspace(workspace)?;
+            let placement = placed(&config, workspace, on.as_deref(), lang)?;
+            let resolved = placement.config.workspace(workspace)?;
+            let agent = placement.instance.as_deref();
             let env = launch_env()?;
             let rep = if *local {
-                if resolved.agent_reference(agent.as_deref())?.is_some() {
+                if resolved.agent_reference(agent)?.is_some() {
                     return Err(Error::new(
                         ccnm_core::ErrorCode::NotReady,
                         "local MCP probe cannot resolve an Agent-private instance identity; use the remote probe",
@@ -1423,7 +1499,7 @@ fn run(cli: Cli, lang: Lang) -> Result<i32> {
                 }
                 launcher::mcp_probe_local(&resolved, &env, *calls)?
             } else {
-                launcher::mcp_probe_remote_selected(&resolved, &env, *calls, agent.as_deref())?
+                launcher::mcp_probe_remote_selected(&resolved, &env, *calls, agent)?
             };
             println!("{}", rep.summary());
             println!("{}", payload::to_json(&rep)?);
@@ -1701,6 +1777,13 @@ fn init(
             ),
         ));
     }
+    // A second AI machine (P114): run again with another alias where the
+    // projects are, this adds that machine beside the first instead of
+    // pointing every project at it. Moving a project is `ws add --on`.
+    let added = (this == "runtime")
+        .then(|| added_machine(path, alias))
+        .flatten();
+    let other = added.as_deref().unwrap_or(other);
     edit.set_this(this, &mut changes);
     // An Agent Node says outright that the workspace list is elsewhere.
     // Without it a Runtime Node that has no projects yet is the same file,
@@ -1728,6 +1811,19 @@ fn init(
         println!();
     }
     let config = Config::load(path)?;
+    if let Some(node) = &added {
+        println!(
+            "\n{}",
+            lang.pick(
+                format!(
+                    "加了一台 AI 机器 {node}（{alias}），原来那台不动、项目默认还在原来那台上\n在它上面起会话：      ccnm <项目> --on {alias}\n把某个项目默认换过去：ccnm ws add <项目> --on {alias}"
+                ),
+                format!(
+                    "added AI machine {node} ({alias}) beside the one already there; projects still default to that one\nstart a session on it:       ccnm <workspace> --on {alias}\nmove a project there for good: ccnm ws add <workspace> --on {alias}"
+                ),
+            )
+        );
+    }
     if this == "agent" {
         println!(
             "{}",
@@ -1802,6 +1898,78 @@ fn init(
     Ok(0)
 }
 
+/// The node a second AI machine gets (P114): `None` while there is no
+/// `agent` yet, or `agent` already is `alias`, or the config does not load
+/// (then the first one is written, as always). Named after the alias, which
+/// is what the person typed and will type again after `--on`.
+fn added_machine(path: &std::path::Path, alias: &str) -> Option<String> {
+    let config = Config::load(path).ok()?;
+    if let Some((name, _)) = config
+        .nodes
+        .iter()
+        .find(|(_, node)| node.ssh.as_deref() == Some(alias))
+    {
+        return (name != "agent").then(|| name.clone());
+    }
+    config.nodes.get("agent")?.ssh.as_ref()?;
+    let base: String = alias
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .skip_while(|c| !c.is_ascii_alphanumeric())
+        .take(60)
+        .collect();
+    let base = if base.is_empty() {
+        "ai".to_string()
+    } else {
+        base
+    };
+    let mut name = base.clone();
+    let mut n = 2;
+    while config.nodes.contains_key(&name) {
+        name = format!("{base}-{n}");
+        n += 1;
+    }
+    Some(name)
+}
+
+/// `--agent` and `--agent-node` are now `--on` (P114). The old names still
+/// work and say so once. `init --agent` is a different flag -- which machine
+/// is the AI one -- and keeps its name.
+fn renamed_flag(args: &[std::ffi::OsString]) -> Option<&'static str> {
+    let words: Vec<&str> = args.iter().skip(1).filter_map(|a| a.to_str()).collect();
+    let mut rest = words.iter();
+    let mut subcommand = None;
+    while let Some(word) = rest.next() {
+        if matches!(*word, "--config" | "--lang") {
+            rest.next();
+        } else if !word.starts_with('-') {
+            subcommand = Some(*word);
+            break;
+        }
+    }
+    if subcommand? == "init" {
+        return None;
+    }
+    let used = |flag: &str| {
+        words
+            .iter()
+            .any(|w| *w == flag || w.starts_with(&format!("{flag}=")))
+    };
+    if used("--agent-node") {
+        Some("--agent-node")
+    } else if used("--agent") {
+        Some("--agent")
+    } else {
+        None
+    }
+}
+
 /// The line the Agent Node needs to reach this Windows machine's ccnm
 /// (P111.1). Windows's sshd runs commands with cmd.exe, which does not
 /// expand the default `~/.local/bin/ccnm`, so the Agent has to name this
@@ -1851,8 +2019,37 @@ fn workspace_command(
             allow_unconfined_exec,
             allow_unattended_exec,
             permission_mode,
-            agent_node,
+            on,
         }) => {
+            // `ccnm ws add <project> --on <machine>`, nothing else, on a
+            // project that exists: only its default machine changes (P114.3).
+            // Taken as a new directory instead, the one you happen to stand
+            // in would repoint the project.
+            let only_moving = root.is_none()
+                && !*replace
+                && !*allow_unconfined_exec
+                && !*allow_unattended_exec
+                && permission_mode.is_none();
+            if let (true, Some(existing), Some(on)) = (only_moving, name.as_deref(), on.as_deref())
+                && let Ok(config) = Config::load(path)
+                && config.workspaces.contains_key(existing)
+            {
+                let node = config.machine_named(on, lang)?;
+                let mut edit = configedit::Edit::open(path)?;
+                let mut changes = configedit::Changes::default();
+                edit.set_workspace_machine(existing, &node, &mut changes);
+                edit.save(&changes)?;
+                report_changes(&changes, path, lang);
+                return Ok(0);
+            }
+            // A machine is named the way --on names it everywhere else: by
+            // node or by ssh alias. Without a config yet there is nothing to
+            // look the alias up in, and the name is written as given.
+            let on = match (on.as_deref(), Config::load(path)) {
+                (Some(on), Ok(config)) => Some(config.machine_named(on, lang)?),
+                (on, _) => on.map(str::to_string),
+            };
+            let agent_node = on;
             let (name, root) = add_target(
                 name.as_deref(),
                 root.as_deref(),
@@ -2237,9 +2434,9 @@ fn workspace_nodes(
         several => {
             let (path, several) = (config_path.display(), several.join(", "));
             Err(ccnm_core::Error::invalid_args(lang.pick(
-                format!("{path} 里有好几台机器能跑这个 workspace 的 AI：{several}\n指定一台：--agent-node <节点名>"),
+                format!("{path} 里有好几台机器能跑这个 workspace 的 AI：{several}\n指定一台：--on <机器>"),
                 format!(
-                    "{path} has more than one node that could run this workspace's Agent: {several}\nsay which: --agent-node <node>"
+                    "{path} has more than one node that could run this workspace's Agent: {several}\nsay which: --on <machine>"
                 ),
             )))
         }
@@ -2448,6 +2645,170 @@ fn start_request(
     }
 }
 
+/// Where a command for `workspace` goes, typed where the projects are
+/// (P114): `--on`, else the machine its last session from here went to,
+/// else the project's own.
+fn placed(
+    config: &Config,
+    workspace: &str,
+    on: Option<&str>,
+    lang: Lang,
+) -> Result<ccnm_core::on::Placement> {
+    config.place(workspace, on, Some(&paths::state_dir()?), lang)
+}
+
+/// `--on` typed on an AI machine: one of its own instances, or itself.
+fn local_on(config: &Config, on: Option<&str>, lang: Lang) -> Result<Option<String>> {
+    on.map(|on| ccnm_core::on::local_instance(config, on, lang))
+        .transpose()
+        .map(Option::flatten)
+}
+
+/// Before a session starts where `placement` says (P114.3).
+///
+/// One project has one writer, so a session still running on another AI
+/// machine has to end first -- and that is the person's to decide, since
+/// it may be in the middle of something. At a terminal they are asked; a
+/// script is told what to type. Without `--on`, a remembered machine is
+/// kept only while its session is: once that has ended, the project goes
+/// back to its own machine.
+fn make_way(
+    config: &Config,
+    placement: ccnm_core::on::Placement,
+    workspace: &str,
+    env: &launcher::Env<'_>,
+    lang: Lang,
+) -> Result<ccnm_core::on::Placement> {
+    let state = paths::state_dir()?;
+    let live = |placement: &ccnm_core::on::Placement| -> Result<bool> {
+        let resolved = placement.config.workspace_in(workspace, lang)?;
+        launcher::status_selected(&resolved, env, false, None, None).map(|r| !r.sessions.is_empty())
+    };
+    if placement.remembered {
+        return match live(&placement) {
+            Ok(true) => Ok(placement),
+            outcome => {
+                if let Err(e) = outcome {
+                    eprintln!(
+                        "{}",
+                        lang.pick(
+                            format!(
+                                "上次在 {} 上跑，现在问不到它（{}），按默认去 {}",
+                                placement.node,
+                                e.message().lines().next().unwrap_or_default(),
+                                placement.default_node
+                            ),
+                            format!(
+                                "it last ran on {}, which cannot be asked now ({}); going to its own machine, {}",
+                                placement.node,
+                                e.message().lines().next().unwrap_or_default(),
+                                placement.default_node
+                            ),
+                        )
+                    );
+                }
+                ccnm_core::on::remember(&state, workspace, None)?;
+                config.place(workspace, None, None, lang)
+            }
+        };
+    }
+    let current = config.place(workspace, None, Some(&state), lang)?;
+    if current.node == placement.node {
+        return Ok(placement);
+    }
+    match live(&current) {
+        Ok(false) => Ok(placement),
+        Ok(true) => {
+            use std::io::{BufRead as _, IsTerminal as _, Write as _};
+            let (from, to) = (current.node.as_str(), placement.node.as_str());
+            if !(std::io::stdin().is_terminal() && std::io::stderr().is_terminal()) {
+                return Err(Error::new(
+                    ccnm_core::ErrorCode::Policy,
+                    lang.pick(
+                        format!(
+                            "{workspace} 正在 {from} 上跑，一个项目同一时间只能在一台上写\n先停掉它：ccnm stop {workspace} --on {from}\n再起：    ccnm {workspace} --on {to}"
+                        ),
+                        format!(
+                            "{workspace} is running on {from}, and a project has one writer at a time\nend it first: ccnm stop {workspace} --on {from}\nthen:         ccnm {workspace} --on {to}"
+                        ),
+                    ),
+                ));
+            }
+            eprint!(
+                "{}",
+                lang.pick(
+                    format!("{workspace} 正在 {from} 上跑。先停掉它，再到 {to} 上起？[y/N] "),
+                    format!(
+                        "{workspace} is running on {from}. End it there and start on {to}? [y/N] "
+                    ),
+                )
+            );
+            let _ = std::io::stderr().flush();
+            let mut answer = String::new();
+            std::io::stdin().lock().read_line(&mut answer)?;
+            if !matches!(answer.trim(), "y" | "Y" | "yes" | "是") {
+                return Err(Error::new(
+                    ccnm_core::ErrorCode::Policy,
+                    lang.pick(
+                        format!("没动。{workspace} 还在 {from} 上跑，接回去：ccnm attach {workspace}"),
+                        format!("left as it was. {workspace} is still running on {from}; back in with: ccnm attach {workspace}"),
+                    ),
+                ));
+            }
+            let resolved = current.config.workspace_in(workspace, lang)?;
+            launcher::stop_selected(&resolved, env, None, None)?;
+            eprintln!(
+                "{}",
+                lang.pick(
+                    format!("停掉了 {from} 上的会话"),
+                    format!("ended the session on {from}"),
+                )
+            );
+            Ok(placement)
+        }
+        // Nobody to ask is not a reason to refuse: if a session there still
+        // holds the project, the write guard says so when this one opens.
+        Err(e) => {
+            eprintln!(
+                "{}",
+                lang.pick(
+                    format!(
+                        "问不到 {}（{}），不知道它上面还有没有会话；照样在 {} 上起",
+                        current.node,
+                        e.message().lines().next().unwrap_or_default(),
+                        placement.node
+                    ),
+                    format!(
+                        "cannot ask {} ({}) whether a session is still running there; starting on {} anyway",
+                        current.node,
+                        e.message().lines().next().unwrap_or_default(),
+                        placement.node
+                    ),
+                )
+            );
+            Ok(placement)
+        }
+    }
+}
+
+/// Remember where the session just started went, for the next command
+/// without `--on`. A state directory that cannot be written costs only
+/// that memory, never the session.
+fn remember_placement(placement: &ccnm_core::on::Placement, workspace: &str, lang: Lang) {
+    let node = placement.moved().then_some(placement.node.as_str());
+    if let Err(e) =
+        paths::state_dir().and_then(|state| ccnm_core::on::remember(&state, workspace, node))
+    {
+        eprintln!(
+            "{}",
+            lang.pick(
+                format!("记不下这次在哪台上跑（{e}）；之后的命令请带上 --on {}", placement.node),
+                format!("could not remember which machine this runs on ({e}); add --on {} to the next commands", placement.node),
+            )
+        );
+    }
+}
+
 fn local_instance_ref(
     config: &Config,
     agent: Option<&str>,
@@ -2458,7 +2819,7 @@ fn local_instance_ref(
     let node = config
         .this
         .as_ref()
-        .ok_or_else(|| Error::config("--agent on the Agent Node requires `this`"))?;
+        .ok_or_else(|| Error::config("--on on the Agent Node requires `this`"))?;
     let reference = ccnm_core::instance::InstanceRef {
         node: node.clone(),
         instance: instance.to_string(),
@@ -2558,10 +2919,13 @@ fn overview(
         let report = work::status_checked(&req, &agent_tools(Some(config_path))?)?;
         return Ok(ccnm_core::overview::from_agent_status(&report));
     }
+    // Each project looked for where its last session went (P114), not
+    // only on the machine the config names for it.
+    let state = paths::state_dir()?;
     Ok(ccnm_core::overview::collect(
-        config,
+        &config.placed_all(&state),
         &launch_env()?,
-        &paths::state_dir()?,
+        &state,
     ))
 }
 
@@ -2585,9 +2949,15 @@ fn session_history(
         Some(name) => vec![config.workspace_in(name, lang)?.name],
         None => config.workspaces.keys().map(String::as_str).collect(),
     };
+    // Every machine a project has run on from here (P114): its own, and the
+    // one `--on` last sent it to.
+    let placed = config.placed_all(&paths::state_dir()?);
     let mut asked = std::collections::BTreeSet::new();
     let mut entries = Vec::new();
-    for name in names {
+    for (name, config) in names
+        .iter()
+        .flat_map(|name| [(*name, config), (*name, &placed)])
+    {
         let resolved = config.workspace(name)?;
         let Ok(alias) = resolved.agent_ssh() else {
             continue;
@@ -2623,7 +2993,7 @@ fn usage_command(
     config: &Config,
     config_path: &Path,
     workspace: Option<&str>,
-    agent: Option<&str>,
+    on: Option<&str>,
     lang: Lang,
 ) -> Result<i32> {
     let answers: Vec<(String, Result<UsageReport>)> = match workspace {
@@ -2631,11 +3001,12 @@ fn usage_command(
         // uses, and this machine asks its own controller.
         Some(name) if agent_side(config, name).is_some() => {
             let (runtime, node) = agent_side(config, name).expect("checked just above");
+            let instance = local_on(config, on, lang)?;
             let authority = launcher::resolve_from_agent(
                 runtime,
                 &node.ccnm_bin(),
                 name,
-                agent,
+                instance.as_deref(),
                 &launch_env()?,
             )?;
             let req = local_usage_request(authority.agent, authority.provider_config_dir);
@@ -2646,7 +3017,9 @@ fn usage_command(
             )]
         }
         Some(name) => {
-            let resolved = config.workspace_in(name, lang)?;
+            let placement = placed(config, name, on, lang)?;
+            let resolved = placement.config.workspace_in(name, lang)?;
+            let agent = placement.instance.as_deref();
             let req = launcher::usage_request(&resolved, resolved.agent_reference(agent)?);
             let report = launcher::usage(&resolved, &launch_env()?, agent).map_err(|e| {
                 unreachable_said(
@@ -2662,8 +3035,11 @@ fn usage_command(
         // every instance registered here.
         None if is_agent_node(config) => {
             let mut asks = Vec::new();
-            match agent {
-                Some(_) => asks.push(local_instance_ref(config, agent)?),
+            match on {
+                Some(on) => asks.push(local_instance_ref(
+                    config,
+                    local_on(config, Some(on), lang)?.as_deref(),
+                )?),
                 None => {
                     asks.push(None);
                     for name in config.agents.keys() {
@@ -2680,12 +3056,26 @@ fn usage_command(
                 })
                 .collect()
         }
-        None => {
-            if agent.is_some() {
-                return Err(Error::invalid_args(
-                    "--agent picks an instance on one workspace's Agent Node; name the workspace too: ccnm usage <workspace> --agent <instance>",
-                ));
+        // One AI machine by name (P114): its default login, to see what is
+        // left there before moving a project to it.
+        None if on.is_some() => {
+            let on = on.expect("checked just above");
+            if on.contains('/') {
+                return Err(Error::invalid_args(lang.pick(
+                    "不给项目名时 --on 只能写机器；要问某个实例的额度，带上项目名：ccnm usage <项目> --on <机器>/<实例>",
+                    "without a workspace --on names a machine only; for an instance, name the workspace too: ccnm usage <workspace> --on <machine>/<instance>",
+                )));
             }
+            let key = config.machine_named(on, lang)?;
+            let node = &config.nodes[&key];
+            let alias = node.ssh.as_deref().unwrap_or(&key);
+            let req = local_usage_request(None, None);
+            vec![(
+                usage_who(alias, &req, 1, lang),
+                launcher::machine_usage(node, &launch_env()?),
+            )]
+        }
+        None => {
             let env = launch_env()?;
             // (which login, the first workspace on it, how many share it)
             let mut logins: Vec<(String, &str, usize)> = Vec::new();
@@ -2713,6 +3103,11 @@ fn usage_command(
                     "no project here starts an Agent, so there is no login to ask about; add one first: ccnm add <project dir>",
                 )));
             }
+            // Each key starts with the alias it asks.
+            let asked: std::collections::BTreeSet<String> = logins
+                .iter()
+                .filter_map(|(key, ..)| key.split('\n').next().map(str::to_string))
+                .collect();
             let mut answers = Vec::new();
             for (_, name, shared) in logins {
                 let resolved = config.workspace(name)?;
@@ -2727,6 +3122,22 @@ fn usage_command(
                     )
                 });
                 answers.push((who, answer));
+            }
+            // The AI machines no project here runs on by default (P114):
+            // the ones a project could be moved to, so their limits matter
+            // as much as the rest.
+            for (key, node) in &config.nodes {
+                let Some(alias) = node.ssh.as_deref() else {
+                    continue;
+                };
+                if config.this.as_deref() == Some(key.as_str()) || asked.contains(alias) {
+                    continue;
+                }
+                let req = local_usage_request(None, None);
+                answers.push((
+                    usage_who(alias, &req, 1, lang),
+                    launcher::machine_usage(node, &env),
+                ));
             }
             answers
         }
@@ -2878,13 +3289,14 @@ fn attach_selected(
     restore_terminal(&captured);
     match launcher::status_selected(resolved, env, false, agent, session) {
         Ok(rep) if !rep.sessions.is_empty() => {
+            // Which machine, now that a project can be on more than one
+            // (P114); the attach line needs no --on, it was remembered.
+            let machine = resolved.agent_ssh().unwrap_or(resolved.agent_node());
             eprintln!(
                 "\n{}",
                 lang.pick(
-                    format!("会话还在 Agent Node 上跑着，回去：ccnm attach {workspace}"),
-                    format!(
-                        "still running on the Agent Node; back in with: ccnm attach {workspace}"
-                    ),
+                    format!("会话还在 {machine} 上跑着，回去：ccnm attach {workspace}"),
+                    format!("still running on {machine}; back in with: ccnm attach {workspace}"),
                 )
             );
         }

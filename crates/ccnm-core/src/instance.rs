@@ -371,18 +371,24 @@ impl Config {
     ) -> Result<WorkspaceBinding> {
         identity.validate()?;
         let expected = self.instance_reference(workspace)?;
-        // The node, and only the node. Picking another instance on the same
-        // Agent Node is a supported public override (`ccnm run --agent`),
-        // so the Runtime authorizes the machine and leaves the instance to
-        // the Agent's own registry, which is the authority for it.
-        if expected.node != identity.node {
+        // The node, and only the node: the instance is the Agent's own
+        // registry's to resolve. Any AI machine this Runtime can dial may
+        // serve the project (`--on`, P114), not just the one it names by
+        // default. The name is the Agent's own claim, so this was never a
+        // barrier against a machine that can ssh in as the Runtime Executor;
+        // what it catches is a session meant for another Runtime's config.
+        let ws = &self.workspaces[workspace];
+        let dialable = self
+            .nodes
+            .get(&identity.node)
+            .is_some_and(|node| node.ssh.is_some());
+        if identity.node != expected.node && (!dialable || identity.node == ws.runtime_node) {
             return Err(Error::config(
-                "Agent identity node does not match the Runtime workspace reference",
+                "Agent identity node is not an AI machine this Runtime has registered",
             ));
         }
-        let ws = &self.workspaces[workspace];
         if ws.backend != Backend::McpSsh
-            || expected.node == ws.runtime_node
+            || identity.node == ws.runtime_node
             || !identity.provider.instance_capabilities().ssh_mcp
         {
             return Err(Error::new(

@@ -322,6 +322,33 @@ impl Edit {
         }
     }
 
+    /// Point an existing workspace at another AI machine by default (P114):
+    /// `agent.node` when it selects an instance, `agent_node` otherwise.
+    /// Its directory and every other setting stay as they are.
+    pub fn set_workspace_machine(&mut self, name: &str, node: &str, changes: &mut Changes) {
+        let Some(ws) = self
+            .doc
+            .get_mut("workspaces")
+            .and_then(|w| w.get_mut(name))
+            .and_then(Item::as_table_mut)
+        else {
+            changes.note(format!("workspaces.{name} is not a table; left alone"));
+            return;
+        };
+        if let Some(agent) = ws.get_mut("agent").and_then(Item::as_table_like_mut) {
+            let before = agent.get("node").and_then(Item::as_str).map(str::to_string);
+            if before.as_deref() != Some(node) {
+                agent.insert("node", value(node));
+                changes.note(format!(
+                    "workspaces.{name}.agent.node: {} -> {node}",
+                    before.unwrap_or_default()
+                ));
+            }
+            return;
+        }
+        set_str(ws, "agent_node", node, name, changes);
+    }
+
     /// Set `workspaces.<name>.runtime_node` on a workspace
     /// [`set_workspace`](Self::set_workspace) wrote. Only for a Runtime Node
     /// not called `runtime` (F24): a file with the default names keeps the

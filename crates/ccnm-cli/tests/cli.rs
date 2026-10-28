@@ -1137,10 +1137,10 @@ fn workspace_add_takes_its_nodes_from_the_config_it_writes_into() {
     assert_ne!(out.status.code(), Some(0), "{}", stdout(&out));
     let err = stderr(&out);
     assert!(err.contains("fodelf") && err.contains("xdwmbp"), "{err}");
-    assert!(err.contains("--agent-node"), "{err}");
+    assert!(err.contains("--on <machine>"), "{err}");
     assert_eq!(std::fs::read_to_string(&config).unwrap(), two);
 
-    let out = add(&["--agent-node", "xdwmbp"]);
+    let out = add(&["--on", "xdwmbp"]);
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
     let written = std::fs::read_to_string(&config).unwrap();
     let ws = workspace_lines(&written);

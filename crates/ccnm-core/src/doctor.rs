@@ -316,19 +316,26 @@ impl Report {
 
 /// Run every check this build can perform.
 pub fn run(config_path: &Path, workspace: Option<&str>, env: &Env<'_>) -> Report {
-    run_selected(config_path, workspace, None, env)
+    run_selected(config_path, workspace, None, None, env)
 }
 
+/// `on` is the AI machine `--on` picked (P114), when it is not the one the
+/// config names for the workspace: every row is then about that machine.
 pub fn run_selected(
     config_path: &Path,
     workspace: Option<&str>,
     agent: Option<&str>,
+    on: Option<&str>,
     env: &Env<'_>,
 ) -> Report {
     let subject = workspace.unwrap_or("config").to_string();
     let mut checks = Vec::new();
 
-    let config = match Config::load(config_path) {
+    let loaded = Config::load(config_path).and_then(|config| match (workspace, on) {
+        (Some(name), Some(node)) => config.moved_to(name, node),
+        _ => Ok(config),
+    });
+    let config = match loaded {
         Ok(config) => {
             checks.push(Check::ok("Config", config_path.display().to_string()));
             config

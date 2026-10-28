@@ -594,16 +594,37 @@ pub fn history(
 /// opens or observes a session: a limit is the login's, and a project that
 /// has moved is no reason not to say how much of it is left.
 pub fn usage(resolved: &Resolved<'_>, env: &Env<'_>, agent: Option<&str>) -> Result<UsageReport> {
-    let ssh = Ssh::new(resolved.agent_ssh()?, &env.control_dir)?
-        .with_ccnm_bin(resolved.require_agent()?.ccnm_bin());
-    ssh.check_control_path()?;
     let req = usage_request(resolved, resolved.agent_reference(agent)?);
+    ask_usage(resolved.require_agent()?, env, &req)
+}
+
+/// `ccnm usage` for an AI machine no project here runs on by default
+/// (P114): its default login, so the machine to move a project to can be
+/// picked by how much it has left.
+pub fn machine_usage(node: &crate::config::Node, env: &Env<'_>) -> Result<UsageReport> {
+    let req = UsageRequest {
+        protocol: PROTOCOL,
+        agent: None,
+        provider_config_dir: AgentProvider::current()
+            .config_dir(node)
+            .map(|dir| dir.to_path_buf()),
+    };
+    ask_usage(node, env, &req)
+}
+
+fn ask_usage(node: &crate::config::Node, env: &Env<'_>, req: &UsageRequest) -> Result<UsageReport> {
+    let alias = node
+        .ssh
+        .as_deref()
+        .ok_or_else(|| Error::config("this AI machine has no ssh alias to reach it by"))?;
+    let ssh = Ssh::new(alias, &env.control_dir)?.with_ccnm_bin(node.ccnm_bin());
+    ssh.check_control_path()?;
     let report: UsageReport = ssh
         .call_ccnm(
             env.runner,
             Master::Reuse,
             &["internal", "agent-usage"],
-            &req,
+            req,
             // The controller's own wait (150 s), plus the ssh.
             Duration::from_secs(180),
             ErrorCode::AgentUnreachable,
@@ -616,8 +637,7 @@ pub fn usage(resolved: &Resolved<'_>, env: &Env<'_>, agent: Option<&str>) -> Res
                 Error::new(
                     ErrorCode::Version,
                     format!(
-                        "the ccnm on {} is too old for `ccnm usage`; install the same version on both machines",
-                        resolved.agent_ssh().unwrap_or(resolved.agent_node())
+                        "the ccnm on {alias} is too old for `ccnm usage`; install the same version on both machines"
                     ),
                 )
             } else {

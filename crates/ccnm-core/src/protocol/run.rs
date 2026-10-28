@@ -955,9 +955,9 @@ impl StatusReport {
         }
         for other in &self.other_instances {
             out.push_str(&lang.pick(
-                format!("这个项目的终端现在是实例 {other} 的会话：加 --agent {other} 看它\n"),
+                format!("这个项目的终端现在是实例 {other} 的会话：加 --on {other} 看它\n"),
                 format!(
-                    "this workspace's terminal is a session of instance {other}: add --agent {other} to see it\n"
+                    "this workspace's terminal is a session of instance {other}: add --on {other} to see it\n"
                 ),
             ));
         }

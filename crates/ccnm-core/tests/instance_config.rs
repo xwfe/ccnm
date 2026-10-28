@@ -345,6 +345,36 @@ fn substitutions_and_stale_registry_identity_fail_on_the_authoritative_side() {
     assert!(serde_json::from_value::<WorkspaceBinding>(forged).is_err());
 }
 
+/// `ccnm <workspace> --on <machine>` (P114): a session of the same project
+/// from another AI machine this Runtime has registered is the same project,
+/// and binds. The node is still checked -- against the machines this
+/// Runtime can dial, not the one it names by default -- so one it has never
+/// heard of, or itself, is still refused.
+#[test]
+fn another_registered_ai_machine_binds_the_same_project() {
+    let (_, _, binding) = bound();
+    let runtime = Config::parse(&format!(
+        "{}[nodes.second]\nssh = \"second-alias\"\n[nodes.cold]\n",
+        RUNTIME.replace("claude-main", "codex-main")
+    ))
+    .unwrap();
+    let mut elsewhere = binding.agent.clone();
+    elsewhere.node = "second".into();
+    let moved = runtime.bind_workspace("demo", &elsewhere).unwrap();
+    assert_eq!(moved.agent.node, "second");
+    assert_eq!(moved.root, binding.root);
+    runtime.verify_runtime_binding(&moved).unwrap();
+
+    for refused in ["unregistered", "runtime", "cold"] {
+        let mut other = binding.agent.clone();
+        other.node = refused.into();
+        assert!(
+            runtime.bind_workspace("demo", &other).is_err(),
+            "{refused} must not bind"
+        );
+    }
+}
+
 /// A Windows Runtime's root as the Agent on macOS or Linux receives it
 /// (P111.1): `C:/…` is the Runtime's own absolute path, whatever this
 /// machine's `is_absolute()` says about it. Spelled any other way it is

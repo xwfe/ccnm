@@ -275,10 +275,7 @@ fn status_for_one_instance_says_when_another_instance_has_the_workspace() {
         claude.sessions.is_empty(),
         "it is not claude-main's session"
     );
-    for (lang, hint) in [
-        (Lang::En, "--agent codex-main"),
-        (Lang::Zh, "--agent codex-main"),
-    ] {
+    for (lang, hint) in [(Lang::En, "--on codex-main"), (Lang::Zh, "--on codex-main")] {
         let said = claude.render_in(lang);
         assert!(said.contains(hint), "{said}");
         // And it no longer reads as "nothing is running for this project".
@@ -288,7 +285,7 @@ fn status_for_one_instance_says_when_another_instance_has_the_workspace() {
     // Asked about the instance that has it: the session, and no hint.
     let codex = asked("codex-main");
     assert_eq!(codex.sessions.len(), 1);
-    assert!(!codex.render_in(Lang::En).contains("--agent"));
+    assert!(!codex.render_in(Lang::En).contains("--on"));
 }
 
 #[test]

@@ -311,12 +311,13 @@ pub fn try_scan_servers(runner: &dyn ProcessRunner) -> Option<Vec<Server>> {
     // Windows is not one. Encoded, so no quoting stands between this and
     // what PowerShell runs.
     //
-    // CimCmdlets is imported by name first (P111). Left to find
-    // `Get-CimInstance` itself, PowerShell looks through every module on the
-    // machine, and without the cache it keeps under LOCALAPPDATA -- which
-    // the environment ccnm runs in need not have -- that ran past the 30
-    // seconds below on the Windows CI runner, so cleanup kept everything as
-    // "could not check". On the Win11 test machine either way takes 0.3 s.
+    // CimCmdlets is imported by name first, so PowerShell does not go looking
+    // through every module for `Get-CimInstance` (P111). On the Win11 test
+    // machine the whole `runtime-cleanup`, this scan included, takes 0.3 s
+    // under sshd. On the Windows CI runner the scan ran past the 30 seconds
+    // below once without the import and took 20 s with it, so the import is
+    // not what makes the runner slow; past the limit the answer is "could
+    // not check", and cleanup keeps everything.
     #[cfg(windows)]
     let cmd = {
         use base64::Engine as _;

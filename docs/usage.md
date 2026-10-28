@@ -140,18 +140,52 @@ ccnm 给自己的 tmux server（`tmux -L ccnm`，跟你自己开的 tmux 完全�
 
 `--print` 照样只能在项目机器上敲。没在具体的 App 版本上实测过，键盘和显示问题先在 App 那边查。
 
-## 选择 Agent Instance
+## 换一台 AI 机器：`--on`
 
-使用 `agent = { node = "worker", instance = "claude-main" }` 的 workspace 会默认选择该 instance。同一个 Agent Node 上可显式覆盖：
+一台 AI 机器的额度用完了，或者想换个账号接着干：项目不用改名字、不用改目录，加 `--on` 就行。
 
 ```bash
-ccnm doctor my-project --agent codex-main
-ccnm run my-project --agent codex-main
+ccnm my-project --on hpsrv              # 在 hpsrv 上起会话
+ccnm my-project --on hpsrv/codex-main   # hpsrv 上的 codex-main 实例
+ccnm my-project --on codex-main         # 项目默认那台上的 codex-main 实例
 ```
 
-`--agent` 是受限 instance id，不是 Provider、Node、路径或官方 CLI 参数。legacy `agent_node` workspace 不接受它。Provider/profile 只由 Agent Node 本机配置解析；Codex 的专用 HOME 不会发给 Runtime。
+**`--on` 后面写什么**：
 
-一个正在运行的 session 固定绑定 workspace、root 和完整 Agent identity。换 Provider 或 instance 不会复用/替换旧 session；先精确停止旧 session。
+- **机器**：配置里 `[nodes.*]` 的名字，或者它的 ssh 别名。节点叫 `agent`、别名是 `fodelf` 时，`--on agent` 和 `--on fodelf` 是一回事。
+- **机器/实例**：那台机器上配好的某个实例。只有写成 `agent = { node = …, instance = … }` 的项目才按实例选，见[实例契约](agent-instance-config.md)；`ccnm ws add` 写出来的 `agent_node = "…"` 项目用那台机器的默认登录，只能选机器。
+- 只写一个名字时，**先当机器找**，不是机器再当项目默认那台上的实例找。机器和实例重名时以机器为准，要的是实例就写全 `机器/实例`。
+- 都找不到：报 `CCNM_E_INVALID_ARGS: no machine called …`，后面列出能选的机器。
+
+**之后的命令不用再带 `--on`。** ccnm 在项目机器上记下这个项目上次的会话起在了哪台（`~/.local/state/ccnm/workspaces/<项目>/on`），`attach`、`status`、`stop`、`result`、`doctor`、`usage`、`ls`、`log` 都去那台。再起会话时：那台上的会话还在跑，就接回它；已经结束了，就回到项目默认那台，并忘掉这条记录。
+
+**一个项目同一时间只能在一台上写。** 项目还在 A 上跑时 `--on b`：
+
+- 在终端里会问 `my-project 正在 A 上跑。先停掉它，再到 b 上起？[y/N]`。答 `y` 才停掉 A 上的会话、到 b 上起；答别的什么都不动。停掉会结束 A 上正在跑的命令，要交接的话先在 A 的会话里让模型写好。
+- 在脚本里（stdin 不是终端）不问，报 `CCNM_E_POLICY`，并给出要敲的两条命令。
+- 问不到 A（关机、断网）时照样在 b 上起，并打一行说明。A 上要是真有会话还占着项目，b 的会话开工具时会因为写锁被占拿不到工具，处理见[运维手册](operations.md#写入-guard-残留)。
+
+**改项目默认在哪台：**
+
+```bash
+ccnm ws add my-project --on hpsrv
+```
+
+项目已经存在、又没给目录时，只换机器，目录和别的设置都不动；输出 `workspaces.my-project.agent_node: agent -> hpsrv`。
+
+**加第二台 AI 机器：** 在项目机器上再跑一次 `ccnm init --agent <新机器的 ssh 别名>`。已经有一台时，这次是**加一台**：节点名取别名（`.` 换成 `-`），原来那台不动、项目默认还在原来那台上（v0.21 及以前会把原来那台的别名换掉，所有项目跟着换了机器）。新机器那边照[快速开始](getting-started.md)装好 ccnm、用官方 CLI 登录，再 `ccnm init --runtime <项目机器的 ssh 别名>`。加一次，所有项目都能 `--on` 它。
+
+- 实例写法的项目还要求两边对这台机器叫同一个名字：项目机器配置里的节点名，得等于那台机器自己配置里的 `this`。不一样时报 `instance reference names another Agent Node`，改成一样就好。`agent_node` 写法的项目没有这个要求。
+
+**看哪台还有额度：** 不带参数的 `ccnm usage` 问完项目在用的登录以后，登记过的其他 AI 机器也各问一次默认登录；`ccnm usage --on hpsrv` 只问那一台，见[查额度](#查额度还剩多少ccnm-usage)。
+
+**在 AI 机器上敲命令时：** 那台不存项目列表，`--on` 只能选它自己的实例（或者写它自己）；写别的机器会报错，让你去项目那台敲。
+
+**旧名字：** `--agent`、`ccnm ws add --agent-node` 照旧能用，多打一行"已改名为 --on"。`ccnm init --agent <别名>` 是另一回事（说明另一台是 AI 机器），名字不变。`ccnm rpc`（Machine API）的参数不变。
+
+一个正在跑的会话固定绑定项目、目录和那台机器上的那个登录。换机器、换实例都不会复用旧会话；要换先停掉旧的。
+
+为什么记住"上次在哪"、而不是每次把所有机器都问一遍：问一台就要一次 ssh（约 0.5–1 秒），机器一多，每条命令都要等这么久。额度用完时不替你自动换机器：挑哪台干活是调度策略，ccnm 只管执行（[路线图第一节](plan/ROADMAP.md)）。
 
 ## Prompt
 
@@ -236,21 +270,21 @@ ccnm status my-project --all
 ccnm stop my-project
 ```
 
-**不带 `--agent` 时只列这个 workspace 默认实例的会话。** 项目的终端要是被别的实例占着（比如用 `--agent codex-main` 起的），会多一行指给你看：
+**不带 `--on` 时只列这个项目当前那台机器上默认实例的会话。** 项目的终端要是被别的实例占着（比如用 `--on codex-main` 起的），会多一行指给你看：
 
 ```text
 实例 claude-main 没有在跑的会话（--print 的运行不算在内）
-这个项目的终端现在是实例 codex-main 的会话：加 --agent codex-main 看它
+这个项目的终端现在是实例 codex-main 的会话：加 --on codex-main 看它
 ```
 
-照它说的加上 `--agent codex-main`，或者用不带项目名的 `ccnm status`，就能看到那个会话的详情。
+照它说的加上 `--on codex-main`，或者用不带项目名的 `ccnm status`，就能看到那个会话的详情。
 
 精确寻址使用 ccnm session id：
 
 ```bash
-ccnm status my-project --agent codex-main --session <ccnm-session-id>
-ccnm attach my-project --agent codex-main --session <ccnm-session-id>
-ccnm stop my-project --agent codex-main --session <ccnm-session-id>
+ccnm status my-project --on codex-main --session <ccnm-session-id>
+ccnm attach my-project --on codex-main --session <ccnm-session-id>
+ccnm stop my-project --on codex-main --session <ccnm-session-id>
 ```
 
 在 Runtime Node 上跑 `ccnm status my-project`，最后一行是这个项目的写锁：空闲、被谁占着、故意留着，还是说不清。它经 Agent 问 Runtime 执行账号，所以 `--print` 运行和外部 MCP 客户端占着锁也看得见；它只看不拿锁，"空闲"也不代表替你占住了。各种说法怎么处理见[运维手册](operations.md#写入-guard-残留)。**只有写成 `agent = { node = …, instance = … }` 的 workspace 有这一行**：问写锁要经过那个实例，`ccnm ws add` 写出来的 `agent_node = "…"` 没有实例可问，所以不打（v0.17.0 及以前会打两行 `CCNM_E_CONFIG … needs an Agent instance binding`，不是出错了）。改成实例写法见[配置迁移](operations.md#配置迁移legacy--agent-instance)。
@@ -259,7 +293,7 @@ ccnm session id 与 Claude/Codex 自己的 thread/resume id 是两类值，不�
 
 精确停止 print session 时，即使已有结果，也会检查已记录的 supervisor/Agent 进程组；组仍存在、PID 记录损坏或进程查询失败会报 `CCNM_E_NOT_READY`（退出码 3），不对历史 PID 发信号，也不改写结果。
 
-session 建立后，Agent Node 上的 `attach/status/result/stop` 继续本机管理记录，不依赖重新解析 workspace root。Runtime Node 发起的命令仍由 Runtime 默认选择或 `--agent` 选择约束。
+session 建立后，Agent Node 上的 `attach/status/result/stop` 继续本机管理记录，不依赖重新解析 workspace root。Runtime Node 发起的命令按 `--on`、上次去的那台、项目默认那台的顺序选机器（[换一台 AI 机器](#换一台-ai-机器--on)）。
 
 ### 清掉结束了的会话留下的东西
 
@@ -275,9 +309,10 @@ ccnm cleanup my-project --apply <令牌>   # 照预览删，令牌在预览最�
 ## 查额度还剩多少：`ccnm usage`
 
 ```bash
-ccnm usage                     # 这台机器的项目用到的每个 AI 登录，各问一次
+ccnm usage                     # 这台机器的项目用到的每个 AI 登录各问一次，再加上登记过、没项目在用的 AI 机器
 ccnm usage my-project          # 只问这个项目用的那个登录
-ccnm usage my-project --agent codex-main   # 换成同一台 Agent 上的另一个实例
+ccnm usage my-project --on codex-main      # 换成同一台上的另一个实例
+ccnm usage --on hpsrv                      # 只问 hpsrv 这台的默认登录
 ```
 
 在项目机器上跑长这样（2026-10-19 v0.20.0 真机输出）：
@@ -312,7 +347,7 @@ hpsrv · codex-main · Codex 0.154.0 · prolite
 - **`/usage` 后半段"是什么在花额度"那份估算不带回来**：它按 AI 那台的对话记录算，里面有 skill 和 MCP server 的名字。想看就在那台开 `claude` 敲 `/usage`。
 - 每问一次，Claude Code 会在那台的 `~/.claude/projects/` 下给 ccnm 的工作目录（`~/.local/state/ccnm/usage`）建一个空的 `memory/`，只建这一个，不留对话记录。
 
-在 AI 那台上敲：不带参数问本机 Claude 的默认登录和本机登记的每个实例，`--agent` 只问那一个；带项目名先问项目机器这个项目用哪个登录。报错怎么办见[排错手册](troubleshooting.md#ccnm-usage-查不到额度)。
+在 AI 那台上敲：不带参数问本机 Claude 的默认登录和本机登记的每个实例，`--on <实例>` 只问那一个；带项目名先问项目机器这个项目用哪个登录。报错怎么办见[排错手册](troubleshooting.md#ccnm-usage-查不到额度)。
 
 ## 非交互 `--print`
 
@@ -334,7 +369,7 @@ ccnm result my-project
 ccnm result my-project --session <id>
 ```
 
-Agent Instance 建议同时带 `--agent <instance-id>`；不带 session 的“最近一次”只保留给人类兼容使用，不是稳定机器接口。
+Agent Instance 建议同时带 `--on <instance-id>`；不带 session 的“最近一次”只保留给人类兼容使用，不是稳定机器接口。
 
 ### 不想一条条确认：开 `allow_unattended_exec`
 

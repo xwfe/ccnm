@@ -779,6 +779,20 @@ CCNM_E_INVALID_ARGS: no output kept for r-0193f2c8a1b74e05
 | `CCNM_E_VERSION: Codex <版本> has not been measured` | Codex 只认 0.154.0 | 和起会话一样，换回 0.154.0 |
 | `CCNM_E_NOT_READY: Codex did not report its limits: …` | 后面是 Codex 自己的原话，常见是 API key 登录（没有订阅额度） | 按原话处理 |
 
+### 换机器（`--on`）时的报错
+
+规则本身见[使用说明：换一台 AI 机器](usage.md#换一台-ai-机器--on)，这里只列报错。
+
+| 报错 | 意思 | 怎么办 |
+| --- | --- | --- |
+| `CCNM_E_INVALID_ARGS: no machine called <名字>` | 项目机器的配置里没有叫这个名字、也没有用这个 ssh 别名的机器；项目是 `agent_node` 写法时，也不会把它当实例 | 照报错列出的写；新机器先在项目机器上 `ccnm init --agent <它的别名>` 加进来 |
+| `CCNM_E_POLICY: <项目> is running on <机器>`（中文是"正在 … 上跑"） | 不在终端里敲的（脚本、管道），项目还有会话在另一台上，一个项目同一时间只能在一台上写 | 照报错的两条命令：先 `ccnm stop <项目> --on <那台>`，再起 |
+| `--on <名字> is this machine` | 写的是项目机器自己；AI 得跑在另一台 | 写 AI 机器的名字 |
+| `an instance after --on needs a workspace that selects by instance` | 写了 `机器/实例`，可项目是 `agent_node` 写法，用的是那台的默认登录 | 只写机器；真要按实例选，先改成实例写法（[配置迁移](operations.md#配置迁移legacy--agent-instance)） |
+| `instance reference names another Agent Node` | 实例写法的项目换到了另一台，可那台自己配置里的 `this` 和项目机器给它起的节点名不一样 | 把两边改成同一个名字：项目机器 `[nodes.<名字>]` 的名字 = 那台的 `this` |
+| `on an AI machine --on can only pick one of its own instances` | 在 AI 机器上敲的；它不存项目列表，没法把项目派到别的机器 | 去项目机器上敲同一条命令 |
+| 会话起来了，MCP 日志里 `Agent identity node does not match the Runtime workspace reference` | 项目机器上的 ccnm 还是 v0.21.x 或更早，只认项目默认那一台 | 项目机器换成同一个版本 |
+
 ### 合上笔记本睡一觉，第二天某个项目的工具连不上
 
 **症状**：同时开着几个项目，其他都好，唯独一个 `ccnm <workspace>` 起来之后 Claude 里 MCP 显示连接失败，`ccnm status` 里它的工具那一行是"断了"（英文 `TOOLS DOWN`）。
@@ -922,7 +936,7 @@ CCNM_E_NOT_READY:
 
 ### doctor 说 Codex 已登录，会话里第一条消息却报 `refresh token was revoked`
 
-**症状**：`ccnm doctor <ws> --agent <codex 实例>` 的 `Codex authentication` 是 OK（`logged in via ChatGPT`），会话一发消息，Codex 回：
+**症状**：`ccnm doctor <ws> --on <codex 实例>` 的 `Codex authentication` 是 OK（`logged in via ChatGPT`），会话一发消息，Codex 回：
 
 ```text
 Your access token could not be refreshed because your refresh token was revoked. Please log out and sign in again.

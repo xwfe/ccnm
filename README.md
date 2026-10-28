@@ -71,6 +71,7 @@ AI 登录只在这里       ◀──────────── 结果 ─�
 - **代码在一台机器，AI 登录在另一台**：最主要的用法。
 - **本机已经开着 Claude Code / Codex，想让它顺手改远端项目**：用 `ccnm mcp bridge`，不用 ccnm 另起 AI。默认关着，要在项目机器上先打开（[怎么开](docs/usage.md#把远端项目给已经在跑的-agent-用)）。
 - **一句话的小活**：`ccnm my-project --print "修复 parser 测试"`，跑完结果直接打在终端里，中间不问。
+- **一台 AI 机器额度用完，换一台接着干**：`ccnm my-project --on <另一台>`，项目名和目录都不用改，之后的命令自动去那台（[说明](docs/usage.md#换一台-ai-机器--on)）。同一个项目同一时间仍只有一台在写。
 - **让脚本派活**：`ccnm rpc`，不开网络端口，有现成的 Python 客户端（[协议说明](docs/protocol/README.md)）。
 - **在手机上看进度、批命令**：用 PocketShell 这类 SSH App 连上跑 AI 的那台，敲同样的命令（[说明](docs/usage.md#通过第三方终端使用)）。
 

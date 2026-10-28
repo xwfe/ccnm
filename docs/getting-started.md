@@ -264,7 +264,7 @@ agent = { node = "agent", instance = "codex-main" }
 root = "/path/to/project"
 ```
 
-然后照常 `ccnm doctor my-project`、`ccnm my-project`。同一台机器上 Claude、Codex 都配、按需切换，见[使用说明：选择 Agent Instance](usage.md#选择-agent-instance)；改写法的细节和容易踩的坑见[运维：配置迁移](operations.md#配置迁移legacy--agent-instance)。
+然后照常 `ccnm doctor my-project`、`ccnm my-project`。同一台机器上 Claude、Codex 都配、按需切换，或者再加一台 AI 机器、一台额度用完时换着用，见[使用说明：换一台 AI 机器](usage.md#换一台-ai-机器--on)；改写法的细节和容易踩的坑见[运维：配置迁移](operations.md#配置迁移legacy--agent-instance)。
 
 ## 升级
 

@@ -42,7 +42,7 @@
 | --- | --- | --- |
 | legacy Claude，remote SSH MCP，从 Runtime Node 发起 | 支持 | 旧公开命令、Claude v1 wire 与 remote CLI golden 保持兼容；双机真机跑通。 |
 | legacy Claude，remote SSH MCP，从 Agent Node 发起 | 支持 | `run` 先委托 Runtime 解析 workspace，`attach/status/result/stop` 继续在 Agent 本机管理已有 session；`--print` 仍需在 Runtime Node 执行。 |
-| Claude Agent Instance，remote SSH MCP | 支持 | 默认 instance 与 `--agent`、print/interactive、doctor、精确 session、profile 隔离均有测试；公共双机 dogfood 已在授权环境真机通过，见下方门禁结果。 |
+| Claude Agent Instance，remote SSH MCP | 支持 | 默认 instance 与 `--on <实例>`（原 `--agent`）、print/interactive、doctor、精确 session、profile 隔离均有测试；公共双机 dogfood 已在授权环境真机通过，见下方门禁结果。 |
 | Codex Agent Instance，remote SSH MCP | 支持 | 仅接受实测的 Codex CLI `0.154.0`（见下方版本 pin）；公共入口已在授权双机真机验证。 |
 | Codex 原生执行链（`codex_exec_server`） | **已删除**（P86，2026-10-08） | 2026-09-17 起封存，2026-10-08 删掉，执行路径只剩上面那行的 MCP 七工具。配置里还写着 `codex_exec_server` 的（哪怕是 `false`）解析失败，报 `CCNM_E_CONFIG`。它原来是什么、封存前测到哪一步，见[双执行入口方案](plan/runtime-surfaces.md)第 12 节和 [P24 记录](research/p24-native-real-machine-2026-09-16.md) |
 | `exec_command` 的 OS 沙箱（workspace 写 `exec_sandbox = "codex"`） | 支持，opt-in，本机 macOS 与 Linux 容器实测 | 三种入口（受管 Claude/Codex、外部 MCP）的每条 `exec_command` 包进 `codex sandbox`，权限对象是 Codex 0.154.0 发给自己命令的那份，一字不改（[配置说明](configuration.md#exec_sandbox)、[P33 记录](research/p33-exec-sandbox-2026-09-17.md)）。**实测**：warm cache 的 `cargo build/test/run`、node、python、git 只读操作正常，编译耗时无差别，每条命令多约 40 ms（macOS）/ 14 ms（Linux）；挡住工作区外写、HOME 写、`.git` 写（`git commit` 失败）、网络（依赖下不了）、`ps`。Runtime 给不了沙箱时会话启动就拒。**前提**：Runtime 节点 `codex_bin` = Codex 0.154.0（与封存的原生链同一个 pin）；Linux 装 bubblewrap 并允许执行账号建 user namespace。**边界**：没上真机、没跑模型回合；Linux 只在本机 aarch64 容器里验过（真实 ccnm 二进制在容器里过了集成测试，含超时杀到沙箱内命令）；`codex sandbox` 的参数和权限对象形状随 Codex 版本变，升级 Codex 要重测。 |
@@ -179,19 +179,19 @@ Code Mode 是 Codex 的一个 under-development 特性，它把工具包一层�
 
 ## Agent Instance 入口
 
-Runtime workspace 只保存 `{node, instance}` 引用；Provider 和 `profile_ref` 由 Agent Node 的 `[agents.*]` 解析。在 Runtime Node 发起时，以下命令共享 workspace 默认值或显式选择；Agent Node 的本机生命周期命令不重新查询 Runtime 默认值，跨 instance 管理请同时指定 `--agent` 和 `--session`：
+Runtime workspace 只保存 `{node, instance}` 引用；Provider 和 `profile_ref` 由 Agent Node 的 `[agents.*]` 解析。在 Runtime Node 发起时，以下命令共享 workspace 默认值或显式选择；Agent Node 的本机生命周期命令不重新查询 Runtime 默认值，跨 instance 管理请同时指定 `--on` 和 `--session`：
 
 ```bash
 ccnm doctor demo
 ccnm run demo
-ccnm run demo --agent codex-main
-ccnm attach demo --agent codex-main --session <ccnm-session-id>
-ccnm status demo --agent codex-main --session <ccnm-session-id>
-ccnm result demo --agent codex-main --session <ccnm-session-id>
-ccnm stop demo --agent codex-main --session <ccnm-session-id>
+ccnm run demo --on codex-main
+ccnm attach demo --on codex-main --session <ccnm-session-id>
+ccnm status demo --on codex-main --session <ccnm-session-id>
+ccnm result demo --on codex-main --session <ccnm-session-id>
+ccnm stop demo --on codex-main --session <ccnm-session-id>
 ```
 
-`--agent` 只能是同一 Agent Node 上已配置的 instance id，不能传 node、Provider、root、profile 路径或官方 CLI argv。legacy workspace 不接受该参数。
+`--on` 写机器（节点名或 ssh 别名）、`机器/实例`，或项目默认那台上的实例 id（规则见[使用说明](usage.md#换一台-ai-机器--on)），不能传 Provider、root、profile 路径或官方 CLI argv。legacy workspace 只能选机器。原来的 `--agent` 照旧能用。
 
 ccnm session id 是生命周期主键；Claude/Codex 自己的 thread/resume id 只作为结果元数据，两者不能混用。精确命令会同时校验 workspace、instance 和 session 记录。
 

@@ -126,7 +126,7 @@ bash scripts/deploy.sh <另一台的 ssh 别名>
 
 ## 配置迁移：legacy → Agent Instance
 
-**什么时候需要**：要用 Codex、一台 Agent Node 上配多个实例、或者要用 `--agent` 切换时。只用 Claude、用默认登录的，不用改。
+**什么时候需要**：要用 Codex、一台 Agent Node 上配多个实例、或者要用 `--on <实例>` 切换实例时（只换 AI 机器用 `--on <机器>`，不用改写法）。只用 Claude、用默认登录的，不用改。
 
 **没有自动迁移命令**，是手动改配置文件。改动很小，改完用 `doctor` 验。
 
@@ -359,7 +359,7 @@ ccnm rm demo --purge     # 先停会话，再清 ccnm 为它保存的东西，�
 
 ```bash
 ccnm stop demo                                   # 停这个 workspace 的会话
-ccnm stop demo --agent codex-main --session <id>  # 精确停一个
+ccnm stop demo --on codex-main --session <id>     # 精确停一个
 ```
 
 停成功的判据是**三件事都被观察到**：Agent 进程组结束、承载工具调用的 MCP transport 结束、Runtime 的写入 guard 释放。任何一条证明不了，状态停在 unknown 而不是报成功——写权限提前交给下一个人，两个 Agent 就会同时改一棵工作树。

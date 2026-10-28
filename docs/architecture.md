@@ -242,7 +242,7 @@ Runtime MCP 初始化再用自己的配置重算 binding；legacy payload 不能
 
 新的 open 请求（内部 wire protocol **4**）里**没有 root 字段**，也没有任何路径。它只说 workspace 名字和调用方解析出来的 Agent identity，其余由 Runtime 查自己的注册表。`deny_unknown_fields` 让这成为 wire 属性而不是约定：对端硬塞一个 root 进来是解码失败，不是被默默忽略。
 
-身份核对分工明确：**Runtime 只认它拥有的那一半——workspace 的 Agent Node**，外加拓扑和 provider 能力。instance/provider/profile 是 Agent 本机的事实，而 `ccnm run --agent` 本来就允许在同一个 node 上换 instance，所以 Runtime 不重复校验 instance，由 Agent 自己的 registry 接受或拒绝。
+身份核对分工明确：**Runtime 只认它拥有的那一半——这台机器是不是它登记过的 AI 机器**（workspace 默认那台，或 `[nodes.*]` 里别的带 ssh 别名的，P114 的 `--on`），外加拓扑和 provider 能力。节点名是 Agent 自己报的，所以这一条防的是"会话走错了 Runtime"，不是安全边界：能以执行账号 ssh 进来的人报什么名字都行。instance/provider/profile 是 Agent 本机的事实，`--on <实例>` 本来就允许换 instance，所以 Runtime 不重复校验 instance，由 Agent 自己的 registry 接受或拒绝。
 
 **resolve 不是 capability token。** 从解析到真正 `mcp-serve` 打开之间有竞态，所以打开时 binding、安全审计、root canonicalize 和写入 guard 全部重做一遍。
 

@@ -1448,6 +1448,10 @@ P73 当时把"外部 MCP workspace 里执行账号的安全没人验"留作挡�
     - 配置里另一台机器的 `ccnm_bin`、`claude_config_dir`（`check_absolute`、`is_remote_path`）。
 
     测试：绑了实例的 workspace 指向 Windows 根目录时，预检、建会话、`-c` 都通过；Agent 配置里写对了 Windows Runtime 的 `ccnm_bin` 时，`ccnm run` 和 `internal agent-*` 不再因为它报错（现在后者会落到"不认识这个 Runtime"那条误导的报错上）。`ssh.rs` 里"exited 127"、"chmod +x"这类提示按 Windows 远端改。
+  - **2026-10-28 认领时补的三条：**
+    - Windows 上家目录取 `USERPROFILE`，不看 `HOME`。现在读的是 `HOME`：sshd 会设它（P106.4），PowerShell、cmd 里一般没有，`ccnm add` 在那儿直接报"HOME is not set"；用户自己设过 `HOME` 时，敲命令的那个 shell 和 sshd 起的 mcp-serve 还可能读到两份不同的配置。`USERPROFILE` 两边都是同一个值。
+    - Windows 上 `ccnm init --runtime`（把这台当 Agent）直接拒绝；`init --agent` 最后打出 Agent 那边要给这台写的 `ccnm_bin`（正斜杠、带 `.exe`），新手照抄就行。
+    - `internal runtime-cleanup` 的闸门写着"P110 会做"，P110 的验收里没有它，也没做。它是 Agent 上 `ccnm cleanup` 问 Runtime 的那一半，本阶段放开，Windows CI 上测。
 - **P111.2** `runtime-audit` 的 Windows 检查项（Administrators 组、令牌是否提权——都读 `whoami /groups`、`%USERPROFILE%\.ssh` 里的私钥、OpenSSH Authentication Agent 服务、docker-users 组），共用账号下只显示不拒绝；写了 `runtime_user` 就拒绝并说明（D8）；打开沙箱就拒绝。从 Agent 跑 `ccnm doctor`，Windows Runtime 的每一行都给出结论。
 - **P111.3** 安装文档按新手视角从零在测试机上走一遍（U7）。内容：
   - OpenSSH Server、管理员账号的钥匙放哪、Git for Windows、rg、`Unblock-File`；

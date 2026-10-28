@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-10-28T10:30:00+09:00",
+  "last_updated": "2026-10-28T11:30:00+09:00",
   "current_task": "P111",
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
@@ -5488,13 +5488,13 @@
     {
       "id": "P111",
       "title": "Windows Runtime 的配置、诊断和发布包",
-      "status": "pending",
+      "status": "in_progress",
       "depends_on": [
         "P110"
       ],
-      "owner": null,
-      "started_at": null,
-      "last_updated": "2026-10-24T22:20:00+09:00",
+      "owner": "claude-opus-5-5 (Claude Code 桌面端)",
+      "started_at": "2026-10-28T11:30:00+09:00",
+      "last_updated": "2026-10-28T11:30:00+09:00",
       "completed_criteria": [],
       "evidence": [],
       "blockers": []
@@ -5582,7 +5582,7 @@
     "【2026-10-08 P80 时看到 / 只记不修】Agent 上的 MCP 转发 ccnm_agent（P50）在受管 Codex 会话里同样没配 tool_timeout_sec，Codex 对它只等 300 秒。它的 call_mcp_tool 默认等 60 秒、起 server 30 秒，用户给 Agent 上某个 server 配的 tool_timeout_sec 接近或超过 300 秒时（还没起的 server 起它的时间也算在内），调用会被 Codex 先截断、不发取消，照样在 Agent 上跑完。值取决于用户配置、不归 ccnm 的常量管，P80 没修。依据 docs/research/2026-10-08-p80-codex-tool-timeout.md 第 6 节。"
   ],
   "handoff": {
-    "next_action": "**2026-10-28 P110 完成，current_task 为 P111（还没认领）。** Windows Runtime 能执行命令了，CI 40614212914 四个 job 全绿（windows_exec 6/0）。和计划不同的两处：一是 .bat/.cmd 交给 Rust 标准库起而不照 gld 拼 call（挡得住 %VAR%）；二是用户据 CI 证据把 Job Object 提到本阶段（taskkill /T 收不到 Git Bash 起的任何外部程序），toexec-win 发到 v0.2.0。GBK 定为不转码。toexec 推了 main 和两个 tag；ccnm 代码已推送，研究记录 docs/research/2026-10-28-p110-windows-exec.md 和这次状态更新在本地。没在真机上验：scoop git 旁边找 Git Bash、防睡眠（powercfg）、Defender 对编译的拖慢（U6 后一半）、curl.exe 的 HTTP MCP——都排在 P112，上测试机要另外问。下一步 P111：配置/诊断/发布包（init、ws 在 Windows 上、Agent 侧按远端路径校验 Windows 根目录和 ccnm_bin、runtime-audit 的 Windows 检查项、doctor、release 出 zip）。\n\n之前的交接：\n**2026-10-27 认领 P110。** 用户说继续做 P110。顺序：P110.1 先在 toexec 开 `toexec-win`（不带依赖，自己声明 kernel32 的 SetHandleInformation、SetThreadExecutionState；Windows CI 上测后台孙进程不再拿着父进程的输出管道、请求别睡能设能撤），toexec CI 绿了再推 main、打 `toexec-win-v0.1.0`，ccnm 只在 cfg(windows) 下按 tag 引用。ccnm 这边：kill_group 在 Windows 上跑 System32 的 taskkill /T /F、TERM 在 Windows 上没有就不等宽限；exec_command 的 cmd 按 PATHEXT 找程序，.cmd/.bat 经 cmd.exe /d /s /c call、.ps1 经 PowerShell（照 gld）；shell 找 Git Bash（Program Files → PATH 上 git.exe 往上推 → 配置），设 SHELL，找不到报错提示 cmd，技能钩子同一套；Windows 上放开执行类工具和 MCP 转发；过期输出清理在 Windows 上用 PowerShell 的 Win32_Process 列 mcp-serve；输出目录改名那步在 Windows 上实测，失败就换顺序；会话期间请求别睡、最后撤；main 一开始就让标准句柄不可继承。GBK 那条倾向不转码（要 unsafe 或新依赖），照现在的 U+FFFD 加说明，写进记录。推送 toexec 和打 tag 用户已同意（上一轮回复里写明了要在 toexec 开 crate、打 tag）。\n\n之前的交接：\n**2026-10-27 P109 完成，current_task 为 P110（还没认领）。** 用户说继续，P108 之后的 5 笔文档提交按用户说的和 P109 一起推了。P109 提交：d26d321 认领、eff9567 写锁副本和 tasklist、1362ad8 apply_patch、f78d9b9 Windows 服务 coding 会话、2dd4ac3 中断报告路径用 /（CI 查出）、104fe53 worktree 用例的 git 配置路径；CI 第三次（40513678974）四个 job 全绿。和计划字面的偏差：写者信息没挪出 .lock，Windows 另写副本（理由在 ROADMAP P109.1 下）。P109 没上测试机（计划没要求）。下一步 P110：Windows 上执行命令（toexec 新开 Windows 进程原语 crate、Git Bash、taskkill、CI 端到端）；ROADMAP P110.3 下新记了两条：过期输出清理在 Windows 上列不出 mcp-serve、输出目录在文件开着时改名在 Windows 上会失败。P110.1 要在 toexec 开新 crate、打 tag，动手前看 toexec 那边的计划和 Windows CI。\n\n之前的交接：\n**2026-10-27 认领 P109。** 用户说继续。做法：P109.1 写锁在 Windows 上另写一份 `<id>.owner` 给持锁期间的观察者读，`.lock` 照旧说了算、macOS/Linux 不变（ROADMAP P109.1 下写了为什么不照字面拆：换装和回退时旧版本只认 `.lock`）；问 pid 现在是谁在 Windows 上用 tasklist。P109.2 apply_patch：Windows 上目标带只读属性就在规划时拒绝、临时文件不带只读属性（否则删不掉、留在源码树里），被别的程序独占打开时报清楚的错；patch 测试模块挪到三个系统都编译，Unix 专用的逐条标 cfg(unix)。P109.3：Windows 上放行会写的会话，exec_command、read_output、stop_command 报 P110 才有，call_mcp_tool 不提供；两个会话争锁、runtime-guard 读得到写者；删输出目录遇到被打开的文件会重试。推送跑 Windows CI 之前问用户（P108 之后那 5 笔文档提交一起推）。",
+    "next_action": "**2026-10-28 认领 P111。** 用户说开始 P111。顺序：① 远端路径按远端规则校验：Agent 侧三处根目录检查和配置里另一台机器的 `ccnm_bin`、`claude_config_dir`、`codex_bin` 认 `/…` 和 `X:/…`，不看本机系统；ssh.rs 的'exited 127''chmod +x'按 Windows 远端改；测试走 instance_execution 的假 ssh。② Windows 上家目录取 `USERPROFILE`（不看 HOME，PowerShell 里敲的和 sshd 起的读同一份配置），`init --runtime` 在 Windows 上拒绝（Windows 只当 Runtime），`init --agent` 打出 Agent 那边该写的 `ccnm_bin`；Windows 上 `runtime_user` 写在本机节点上就在读配置时拒绝（D8）。③ runtime-audit 的 Windows 检查项：`whoami /groups` 读 Administrators（S-1-5-32-544）、令牌完整性级别（High/System 算提权）、docker-users；ssh-agent 服务；`~/.ssh` 私钥在 Windows 上用打开文件判断能不能读；Runtime 报 sshd 的 DefaultShell，doctor 从 Agent 跑时 Windows Runtime 每行都有结论（含 ccnm_bin 写法、DefaultShell 是 PowerShell 的影响）。④ runtime-cleanup 的闸门写的是 P110、P110 没做，本阶段放开（ROADMAP P111 下补记）。⑤ release 出 `ccnm-<版本>-windows-x86_64.zip` 和 sha256，CI 的 Windows job 跑同一个打包脚本；安装文档。Windows 那一半只能靠 Windows CI 验，推送前问用户；上测试机按安装文档走一遍要另外问。\n\n之前的交接：\n**2026-10-28 P110 完成，current_task 为 P111（还没认领）。** Windows Runtime 能执行命令了，CI 40614212914 四个 job 全绿（windows_exec 6/0）。和计划不同的两处：一是 .bat/.cmd 交给 Rust 标准库起而不照 gld 拼 call（挡得住 %VAR%）；二是用户据 CI 证据把 Job Object 提到本阶段（taskkill /T 收不到 Git Bash 起的任何外部程序），toexec-win 发到 v0.2.0。GBK 定为不转码。toexec 推了 main 和两个 tag；ccnm 代码已推送，研究记录 docs/research/2026-10-28-p110-windows-exec.md 和这次状态更新在本地。没在真机上验：scoop git 旁边找 Git Bash、防睡眠（powercfg）、Defender 对编译的拖慢（U6 后一半）、curl.exe 的 HTTP MCP——都排在 P112，上测试机要另外问。下一步 P111：配置/诊断/发布包（init、ws 在 Windows 上、Agent 侧按远端路径校验 Windows 根目录和 ccnm_bin、runtime-audit 的 Windows 检查项、doctor、release 出 zip）。\n\n之前的交接：\n**2026-10-27 认领 P110。** 用户说继续做 P110。顺序：P110.1 先在 toexec 开 `toexec-win`（不带依赖，自己声明 kernel32 的 SetHandleInformation、SetThreadExecutionState；Windows CI 上测后台孙进程不再拿着父进程的输出管道、请求别睡能设能撤），toexec CI 绿了再推 main、打 `toexec-win-v0.1.0`，ccnm 只在 cfg(windows) 下按 tag 引用。ccnm 这边：kill_group 在 Windows 上跑 System32 的 taskkill /T /F、TERM 在 Windows 上没有就不等宽限；exec_command 的 cmd 按 PATHEXT 找程序，.cmd/.bat 经 cmd.exe /d /s /c call、.ps1 经 PowerShell（照 gld）；shell 找 Git Bash（Program Files → PATH 上 git.exe 往上推 → 配置），设 SHELL，找不到报错提示 cmd，技能钩子同一套；Windows 上放开执行类工具和 MCP 转发；过期输出清理在 Windows 上用 PowerShell 的 Win32_Process 列 mcp-serve；输出目录改名那步在 Windows 上实测，失败就换顺序；会话期间请求别睡、最后撤；main 一开始就让标准句柄不可继承。GBK 那条倾向不转码（要 unsafe 或新依赖），照现在的 U+FFFD 加说明，写进记录。推送 toexec 和打 tag 用户已同意（上一轮回复里写明了要在 toexec 开 crate、打 tag）。\n\n之前的交接：\n**2026-10-27 P109 完成，current_task 为 P110（还没认领）。** 用户说继续，P108 之后的 5 笔文档提交按用户说的和 P109 一起推了。P109 提交：d26d321 认领、eff9567 写锁副本和 tasklist、1362ad8 apply_patch、f78d9b9 Windows 服务 coding 会话、2dd4ac3 中断报告路径用 /（CI 查出）、104fe53 worktree 用例的 git 配置路径；CI 第三次（40513678974）四个 job 全绿。和计划字面的偏差：写者信息没挪出 .lock，Windows 另写副本（理由在 ROADMAP P109.1 下）。P109 没上测试机（计划没要求）。下一步 P110：Windows 上执行命令（toexec 新开 Windows 进程原语 crate、Git Bash、taskkill、CI 端到端）；ROADMAP P110.3 下新记了两条：过期输出清理在 Windows 上列不出 mcp-serve、输出目录在文件开着时改名在 Windows 上会失败。P110.1 要在 toexec 开新 crate、打 tag，动手前看 toexec 那边的计划和 Windows CI。",
     "scope": "2026-10-08 用户要求：零额度复现 Codex 300 秒工具超时、选修法、补外部入口文档、跑门禁、更新状态、粒度提交、不推送。改动：crates/ccnm-core（provider/codex 的 TOOL_TIMEOUT 与启动参数、测试；mcp/hooks 的 MAX_TIMEOUT 改 pub(crate)；mcp/output 注释）、docs/protocol/remote-workspace-mcp-v1.md、docs/usage.md、docs/troubleshooting.md、docs/research 的 P80 记录与夹具、ROADMAP、status。没动任何机器、已装的 ccnm 与配置；Codex 0.154.0 包和源码只下到会话 scratchpad。",
     "planning_validation": {
       "at": "2026-09-08T21:22:43+09:00",

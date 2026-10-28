@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-10-28T11:30:00+09:00",
+  "last_updated": "2026-10-28T15:30:00+09:00",
   "current_task": "P111",
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
@@ -5492,11 +5492,23 @@
       "depends_on": [
         "P110"
       ],
-      "owner": "claude-opus-5-5 (Claude Code 桌面端)",
+      "owner": null,
       "started_at": "2026-10-28T11:30:00+09:00",
-      "last_updated": "2026-10-28T11:30:00+09:00",
+      "last_updated": "2026-10-28T15:30:00+09:00",
       "completed_criteria": [],
-      "evidence": [],
+      "evidence": [
+        {
+          "kind": "offline",
+          "criteria": [
+            "P111.1",
+            "P111.2",
+            "P111.3"
+          ],
+          "ref": "docs/research/2026-10-28-p111-windows-config-doctor.md",
+          "commit": "df93374",
+          "result": "只是 macOS 那一半，Windows 那一半没跑。本机 macOS arm64：fmt、clippy -D warnings 通过；cargo test --workspace 1202/0（P110 结束时 1188）；ci_gates.py 计划、协议通过，Python 252 条 0 跳过；按 x86_64-pc-windows-msvc 目标 clippy 库、二进制、ccnm-core 单元测试和五个 Windows 集成测试文件都干净（本机不能链接 Windows）。先红后绿：Windows 根目录的绑定与 -c 两条在撤掉 instance.rs/session.rs 改动后红；Agent 配置写 C:/… 的 ccnm_bin 后 run 与 internal probe 都按原样调到 ssh，撤掉 config.rs 改动后红；发版与 CI 的 Windows 测试清单比对，删一条即红。Windows CI（windows_gate 的 init/add/ws/rm 与 D8、windows_doctor 的审计与清理、USERPROFILE 改动后的 read_tools/write_guard/windows_exec、dist-windows.sh）要推送才跑；测试机按安装文档走一遍和 U7 没做。"
+        }
+      ],
       "blockers": []
     },
     {
@@ -5582,7 +5594,7 @@
     "【2026-10-08 P80 时看到 / 只记不修】Agent 上的 MCP 转发 ccnm_agent（P50）在受管 Codex 会话里同样没配 tool_timeout_sec，Codex 对它只等 300 秒。它的 call_mcp_tool 默认等 60 秒、起 server 30 秒，用户给 Agent 上某个 server 配的 tool_timeout_sec 接近或超过 300 秒时（还没起的 server 起它的时间也算在内），调用会被 Codex 先截断、不发取消，照样在 Agent 上跑完。值取决于用户配置、不归 ccnm 的常量管，P80 没修。依据 docs/research/2026-10-08-p80-codex-tool-timeout.md 第 6 节。"
   ],
   "handoff": {
-    "next_action": "**2026-10-28 认领 P111。** 用户说开始 P111。顺序：① 远端路径按远端规则校验：Agent 侧三处根目录检查和配置里另一台机器的 `ccnm_bin`、`claude_config_dir`、`codex_bin` 认 `/…` 和 `X:/…`，不看本机系统；ssh.rs 的'exited 127''chmod +x'按 Windows 远端改；测试走 instance_execution 的假 ssh。② Windows 上家目录取 `USERPROFILE`（不看 HOME，PowerShell 里敲的和 sshd 起的读同一份配置），`init --runtime` 在 Windows 上拒绝（Windows 只当 Runtime），`init --agent` 打出 Agent 那边该写的 `ccnm_bin`；Windows 上 `runtime_user` 写在本机节点上就在读配置时拒绝（D8）。③ runtime-audit 的 Windows 检查项：`whoami /groups` 读 Administrators（S-1-5-32-544）、令牌完整性级别（High/System 算提权）、docker-users；ssh-agent 服务；`~/.ssh` 私钥在 Windows 上用打开文件判断能不能读；Runtime 报 sshd 的 DefaultShell，doctor 从 Agent 跑时 Windows Runtime 每行都有结论（含 ccnm_bin 写法、DefaultShell 是 PowerShell 的影响）。④ runtime-cleanup 的闸门写的是 P110、P110 没做，本阶段放开（ROADMAP P111 下补记）。⑤ release 出 `ccnm-<版本>-windows-x86_64.zip` 和 sha256，CI 的 Windows job 跑同一个打包脚本；安装文档。Windows 那一半只能靠 Windows CI 验，推送前问用户；上测试机按安装文档走一遍要另外问。\n\n之前的交接：\n**2026-10-28 P110 完成，current_task 为 P111（还没认领）。** Windows Runtime 能执行命令了，CI 40614212914 四个 job 全绿（windows_exec 6/0）。和计划不同的两处：一是 .bat/.cmd 交给 Rust 标准库起而不照 gld 拼 call（挡得住 %VAR%）；二是用户据 CI 证据把 Job Object 提到本阶段（taskkill /T 收不到 Git Bash 起的任何外部程序），toexec-win 发到 v0.2.0。GBK 定为不转码。toexec 推了 main 和两个 tag；ccnm 代码已推送，研究记录 docs/research/2026-10-28-p110-windows-exec.md 和这次状态更新在本地。没在真机上验：scoop git 旁边找 Git Bash、防睡眠（powercfg）、Defender 对编译的拖慢（U6 后一半）、curl.exe 的 HTTP MCP——都排在 P112，上测试机要另外问。下一步 P111：配置/诊断/发布包（init、ws 在 Windows 上、Agent 侧按远端路径校验 Windows 根目录和 ccnm_bin、runtime-audit 的 Windows 检查项、doctor、release 出 zip）。\n\n之前的交接：\n**2026-10-27 认领 P110。** 用户说继续做 P110。顺序：P110.1 先在 toexec 开 `toexec-win`（不带依赖，自己声明 kernel32 的 SetHandleInformation、SetThreadExecutionState；Windows CI 上测后台孙进程不再拿着父进程的输出管道、请求别睡能设能撤），toexec CI 绿了再推 main、打 `toexec-win-v0.1.0`，ccnm 只在 cfg(windows) 下按 tag 引用。ccnm 这边：kill_group 在 Windows 上跑 System32 的 taskkill /T /F、TERM 在 Windows 上没有就不等宽限；exec_command 的 cmd 按 PATHEXT 找程序，.cmd/.bat 经 cmd.exe /d /s /c call、.ps1 经 PowerShell（照 gld）；shell 找 Git Bash（Program Files → PATH 上 git.exe 往上推 → 配置），设 SHELL，找不到报错提示 cmd，技能钩子同一套；Windows 上放开执行类工具和 MCP 转发；过期输出清理在 Windows 上用 PowerShell 的 Win32_Process 列 mcp-serve；输出目录改名那步在 Windows 上实测，失败就换顺序；会话期间请求别睡、最后撤；main 一开始就让标准句柄不可继承。GBK 那条倾向不转码（要 unsafe 或新依赖），照现在的 U+FFFD 加说明，写进记录。推送 toexec 和打 tag 用户已同意（上一轮回复里写明了要在 toexec 开 crate、打 tag）。\n\n之前的交接：\n**2026-10-27 P109 完成，current_task 为 P110（还没认领）。** 用户说继续，P108 之后的 5 笔文档提交按用户说的和 P109 一起推了。P109 提交：d26d321 认领、eff9567 写锁副本和 tasklist、1362ad8 apply_patch、f78d9b9 Windows 服务 coding 会话、2dd4ac3 中断报告路径用 /（CI 查出）、104fe53 worktree 用例的 git 配置路径；CI 第三次（40513678974）四个 job 全绿。和计划字面的偏差：写者信息没挪出 .lock，Windows 另写副本（理由在 ROADMAP P109.1 下）。P109 没上测试机（计划没要求）。下一步 P110：Windows 上执行命令（toexec 新开 Windows 进程原语 crate、Git Bash、taskkill、CI 端到端）；ROADMAP P110.3 下新记了两条：过期输出清理在 Windows 上列不出 mcp-serve、输出目录在文件开着时改名在 Windows 上会失败。P110.1 要在 toexec 开新 crate、打 tag，动手前看 toexec 那边的计划和 Windows CI。",
+    "next_action": "**2026-10-28 P111 代码和文档都做完、没推送，阶段仍是 in_progress（owner 已清空）。** 提交 999ce34 认领，4bb02a0 远端路径按写法判断（C:/… 也是绝对路径），5be42e0 ssh 提示按 Windows 改，9095d28 家目录读 USERPROFILE、init/D8，a1c51c4 Windows 审计项，03e8b77 DefaultShell 与 doctor 行，b60eb1a 放开 runtime-audit/runtime-cleanup 与 windows_doctor 测试，3c62f73 Windows 上 init 结尾，19a23f1 发版出 Windows zip、CI 同脚本打包，df93374 安装文档。本机 1202/0、Python 252/0、Windows 目标 clippy 干净；记录在 docs/research/2026-10-28-p111-windows-config-doctor.md。下一步要用户点头的两件：① 推送 ccnm main（连同 P110 的文档提交 8f76e10），看 Windows CI——windows_gate、windows_doctor 是新的，read_tools/write_guard/windows_exec 的家目录改成了 USERPROFILE，dist-windows.sh 第一次跑，红了按根因修；② 上测试机按 docs/windows-runtime-setup.md 从第 4 步起走一遍（CI 打的 zip 放进 %USERPROFILE%\\.local\\bin、init、add 一个临时项目），本机用同一提交的构建、临时 CCNM_CONFIG 跑 doctor，看真机上 Windows 那几行；U7 用 Zone.Identifier 模拟浏览器下载；测完按用户意思保留或删掉。都过了再把 P111.1–P111.3 标完成。\n\n之前的交接：\n**2026-10-28 认领 P111。** 用户说开始 P111。顺序：① 远端路径按远端规则校验：Agent 侧三处根目录检查和配置里另一台机器的 `ccnm_bin`、`claude_config_dir`、`codex_bin` 认 `/…` 和 `X:/…`，不看本机系统；ssh.rs 的'exited 127''chmod +x'按 Windows 远端改；测试走 instance_execution 的假 ssh。② Windows 上家目录取 `USERPROFILE`（不看 HOME，PowerShell 里敲的和 sshd 起的读同一份配置），`init --runtime` 在 Windows 上拒绝（Windows 只当 Runtime），`init --agent` 打出 Agent 那边该写的 `ccnm_bin`；Windows 上 `runtime_user` 写在本机节点上就在读配置时拒绝（D8）。③ runtime-audit 的 Windows 检查项：`whoami /groups` 读 Administrators（S-1-5-32-544）、令牌完整性级别（High/System 算提权）、docker-users；ssh-agent 服务；`~/.ssh` 私钥在 Windows 上用打开文件判断能不能读；Runtime 报 sshd 的 DefaultShell，doctor 从 Agent 跑时 Windows Runtime 每行都有结论（含 ccnm_bin 写法、DefaultShell 是 PowerShell 的影响）。④ runtime-cleanup 的闸门写的是 P110、P110 没做，本阶段放开（ROADMAP P111 下补记）。⑤ release 出 `ccnm-<版本>-windows-x86_64.zip` 和 sha256，CI 的 Windows job 跑同一个打包脚本；安装文档。Windows 那一半只能靠 Windows CI 验，推送前问用户；上测试机按安装文档走一遍要另外问。\n\n之前的交接：\n**2026-10-28 P110 完成，current_task 为 P111（还没认领）。** Windows Runtime 能执行命令了，CI 40614212914 四个 job 全绿（windows_exec 6/0）。和计划不同的两处：一是 .bat/.cmd 交给 Rust 标准库起而不照 gld 拼 call（挡得住 %VAR%）；二是用户据 CI 证据把 Job Object 提到本阶段（taskkill /T 收不到 Git Bash 起的任何外部程序），toexec-win 发到 v0.2.0。GBK 定为不转码。toexec 推了 main 和两个 tag；ccnm 代码已推送，研究记录 docs/research/2026-10-28-p110-windows-exec.md 和这次状态更新在本地。没在真机上验：scoop git 旁边找 Git Bash、防睡眠（powercfg）、Defender 对编译的拖慢（U6 后一半）、curl.exe 的 HTTP MCP——都排在 P112，上测试机要另外问。下一步 P111：配置/诊断/发布包（init、ws 在 Windows 上、Agent 侧按远端路径校验 Windows 根目录和 ccnm_bin、runtime-audit 的 Windows 检查项、doctor、release 出 zip）。\n\n之前的交接：\n**2026-10-27 认领 P110。** 用户说继续做 P110。顺序：P110.1 先在 toexec 开 `toexec-win`（不带依赖，自己声明 kernel32 的 SetHandleInformation、SetThreadExecutionState；Windows CI 上测后台孙进程不再拿着父进程的输出管道、请求别睡能设能撤），toexec CI 绿了再推 main、打 `toexec-win-v0.1.0`，ccnm 只在 cfg(windows) 下按 tag 引用。ccnm 这边：kill_group 在 Windows 上跑 System32 的 taskkill /T /F、TERM 在 Windows 上没有就不等宽限；exec_command 的 cmd 按 PATHEXT 找程序，.cmd/.bat 经 cmd.exe /d /s /c call、.ps1 经 PowerShell（照 gld）；shell 找 Git Bash（Program Files → PATH 上 git.exe 往上推 → 配置），设 SHELL，找不到报错提示 cmd，技能钩子同一套；Windows 上放开执行类工具和 MCP 转发；过期输出清理在 Windows 上用 PowerShell 的 Win32_Process 列 mcp-serve；输出目录改名那步在 Windows 上实测，失败就换顺序；会话期间请求别睡、最后撤；main 一开始就让标准句柄不可继承。GBK 那条倾向不转码（要 unsafe 或新依赖），照现在的 U+FFFD 加说明，写进记录。推送 toexec 和打 tag 用户已同意（上一轮回复里写明了要在 toexec 开 crate、打 tag）。",
     "scope": "2026-10-08 用户要求：零额度复现 Codex 300 秒工具超时、选修法、补外部入口文档、跑门禁、更新状态、粒度提交、不推送。改动：crates/ccnm-core（provider/codex 的 TOOL_TIMEOUT 与启动参数、测试；mcp/hooks 的 MAX_TIMEOUT 改 pub(crate)；mcp/output 注释）、docs/protocol/remote-workspace-mcp-v1.md、docs/usage.md、docs/troubleshooting.md、docs/research 的 P80 记录与夹具、ROADMAP、status。没动任何机器、已装的 ccnm 与配置；Codex 0.154.0 包和源码只下到会话 scratchpad。",
     "planning_validation": {
       "at": "2026-09-08T21:22:43+09:00",

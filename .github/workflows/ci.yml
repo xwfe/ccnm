@@ -276,19 +276,25 @@ jobs:
       - name: Running commands
         run: cargo test -p ccnm-cli --test windows_exec -- --nocapture --test-threads=1
 
-      - name: The binary builds and reports its version
+      # The same script release.yml runs (P111.3), so the download is built
+      # on every push and not first on a tag, when a failure is public.
+      - name: The download builds and reports its version
         run: |
-          cargo build --release -p ccnm-cli
-          ./target/release/ccnm.exe --version
+          bash scripts/dist-windows.sh
+          dist/ccnm.exe --version
 
       # The real-machine checks (P108.4 onward) run this very build on the
       # Win11 test machine: nothing here can link for Windows locally, and a
-      # binary built some other way is not the one this job vouched for.
+      # binary built some other way is not the one this job vouched for. The
+      # zip as well, because installing from it is what the docs describe.
       - name: Keep the binary for the real-machine check
         uses: actions/upload-artifact@v4
         with:
           name: ccnm-windows-x86_64
-          path: target/release/ccnm.exe
+          path: |
+            dist/ccnm.exe
+            dist/*.zip
+            dist/*.sha256
           retention-days: 7
           if-no-files-found: error
 

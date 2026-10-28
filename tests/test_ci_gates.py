@@ -169,7 +169,28 @@ class WorkflowTests(unittest.TestCase):
             gate = position(jobs[name], "scripts/ci_gates.py")
             upload = position(jobs[name], "actions/upload-artifact")
             self.assertLess(gate, upload, name)
-        self.assertIn("    needs: [macos, linux]", jobs["publish"]["head"])
+        # P111：Windows 跑的是 CI windows-runtime job 那一套，不是 ci_gates.py。
+        gate = position(jobs["windows"], "cargo test -p ccnm-cli --test windows_gate")
+        upload = position(jobs["windows"], "actions/upload-artifact")
+        self.assertLess(gate, upload, "windows")
+        self.assertIn("    needs: [macos, linux, windows]", jobs["publish"]["head"])
+
+    def test_the_windows_release_gate_is_the_ci_jobs_command_for_command(self):
+        # 两份清单是分开写的（CI 一步一个名字，发版一步跑完）。CI 加了一个
+        # Windows 测试而发版没加，发出去的包就少验了一样，没有别的东西会报。
+        def cargo_commands(job: dict) -> set:
+            text = "\n".join(job["steps"])
+            text = re.sub(r"\\\n\s*", "", text)
+            return {
+                " ".join(line.split())
+                for line in (l.strip().removeprefix("run: ") for l in text.splitlines())
+                if line.startswith(("cargo test", "cargo clippy"))
+            }
+
+        ci = cargo_commands(steps("ci.yml")["windows-runtime"])
+        release = cargo_commands(steps("release.yml")["windows"])
+        self.assertTrue(ci)
+        self.assertEqual(ci, release)
 
 
 if __name__ == "__main__":

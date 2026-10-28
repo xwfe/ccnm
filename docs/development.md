@@ -43,7 +43,7 @@ Windows 只当项目机器（Runtime），还在分阶段做（[设计](plan/win
 rustup target add x86_64-pc-windows-msvc    # 只装一次
 cargo clippy --workspace --lib --bins --target x86_64-pc-windows-msvc -- -D warnings
 cargo clippy -p ccnm-core --lib --profile test --target x86_64-pc-windows-msvc -- -D warnings
-cargo clippy -p ccnm-cli --test windows_gate --test read_tools --target x86_64-pc-windows-msvc -- -D warnings
+cargo clippy -p ccnm-cli --test windows_gate --test windows_doctor --test read_tools --test write_guard --test windows_exec --target x86_64-pc-windows-msvc -- -D warnings
 ```
 
 第二条查的是 ccnm-core 的单元测试代码。别写成 `--lib --tests`：那会连 `crates/ccnm-core/tests/` 下的集成测试一起编，它们还只写给 Unix（`from_mode`、`std::os::unix`），一定报错，和你改的东西无关。
@@ -55,7 +55,9 @@ macOS 上只能做到 check 和 clippy。`cargo build` 要链接，本机没有 
 - **Unix 专用的调用走 [`platform.rs`](../crates/ccnm-core/src/platform.rs)**，包括创建文件时的权限位、`chmod`、进程组和归属比较。它只收在 Windows 上意思已经定下来的调用。
 - **读归属或权限位来做判断的检查，不进 `platform.rs`**，在 Windows 上一律拒绝（`platform::agent_only` 或 `ErrorCode::NotReady`），不能让检查在 Windows 上静默通过。
 - **CLI 入口有一道白名单**（`ccnm-cli` 的 `windows_gate`）：Windows 上只放行 Runtime 的命令。新阶段让 Windows 能跑某个命令，就改这里，同时改 [`windows_gate.rs`](../crates/ccnm-cli/tests/windows_gate.rs) 测试。
-- **还没在 Windows 上验证过的测试模块写 `#[cfg(all(test, unix))]`**。哪个阶段把某个模块做到 Windows 上，就去掉这个标记，并把模块名加进 `ci.yml` 里 `windows-runtime` 的 "Unit tests written for Windows" 那一步。只有一部分能在 Windows 上跑时，把那部分拆成单独的模块，比如 `mcp::path::rules`（纯字符串规则，三个系统都跑）和 `mcp::path::windows_tests`（只在 Windows 上编译，用真 NTFS 目录和 junction）。
+- **还没在 Windows 上验证过的测试模块写 `#[cfg(all(test, unix))]`**。哪个阶段把某个模块做到 Windows 上，就去掉这个标记，并把模块名加进 `ci.yml` 里 `windows-runtime` 的 "Unit tests written for Windows" 那一步，**同时加进 `release.yml` 里 `windows` job 的 Gate**——两份是分开写的，`tests/test_ci_gates.py` 比对两边的 `cargo test`/`cargo clippy` 命令，不一样就红。新加 Windows 集成测试文件同理。只有一部分能在 Windows 上跑时，把那部分拆成单独的模块，比如 `mcp::path::rules`（纯字符串规则，三个系统都跑）和 `mcp::path::windows_tests`（只在 Windows 上编译，用真 NTFS 目录和 junction）。
+- **家目录在 Windows 上读 `USERPROFILE`，不读 `HOME`**（`paths::home_dir`，P111）。测试要给 mcp-serve 一个假的家目录，在 Windows 上就设 `USERPROFILE`，设 `HOME` 没用。
+- **描述另一台机器的路径用 `paths::is_remote_absolute` 判断**，`/…` 和 `C:/…` 都认；别用 `Path::is_absolute()`，它按本机规矩，macOS 上 `C:/x` 是相对路径（P111）。
 - **给模型看的路径一律用 `/`**。Windows 上 `Path` 自己的分隔符是 `\`，`to_string_lossy()`、`display()` 出来的都是 `\`，还可能带 `\\?\`：相对路径自己用 `/` 拼，机器上的绝对路径过一遍 `platform::reported_path`（`C:/Users/x/…`）。端到端测试 [`read_tools.rs`](../crates/ccnm-cli/tests/read_tools.rs) 三个系统都跑，断言每个只读工具的回答里没有 `\`、没有根目录。
 
 ### 文档与公开契约也要过门禁

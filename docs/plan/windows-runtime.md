@@ -55,8 +55,8 @@
 | HTTP MCP：[curl.rs](../../crates/ccnm-core/src/mcp/curl.rs) | 调系统的 `curl`，URL 和请求头写在 `-K` 配置文件里，不上命令行 | Windows 10 1803 起自带 `curl.exe`，但它对 `-K` 和 SSE 流的表现没验过 | U8 |
 | 技能钩子：[hooks.rs](../../crates/ccnm-core/src/mcp/hooks.rs) | 钩子命令用 shell 跑 | 同"跑命令"那一行 | 跟着 D2 走 |
 | 沙箱：[sandbox.rs](../../crates/ccnm-core/src/mcp/sandbox.rs) | 借 codex sandbox（macOS 是 seatbelt，Linux 是 bwrap / landlock） | Codex 在 Windows 上有自己的沙箱，0.154.0 的没验过 | 第一版拒绝打开，doctor 写明 |
-| 安全审计：[safety.rs](../../crates/ccnm-core/src/safety.rs) 第 454 行 `audit` | 查是不是 root、sudo、wheel / admin / docker 组、`~/.ssh` 私钥、Docker | 这些都是 Unix 概念 | 换成 Windows 的对应项：是否 Administrators 组成员、当前令牌是否提权、`%USERPROFILE%\.ssh` 里的私钥、OpenSSH Authentication Agent 服务、docker-users 组、凭据环境变量。组和提权读 `whoami /groups` 的输出，不调 API（D7）。共用账号模式下只显示、不拒绝，和 P78 一致 |
-| 配置和状态目录：[paths.rs](../../crates/ccnm-core/src/paths.rs) | `~/.config/ccnm/config.toml`、`~/.local/state/ccnm/`，有 XDG 变量就按变量 | Windows 的惯例是 `%APPDATA%` / `%LOCALAPPDATA%` | 见决定 D6 |
+| 安全审计：[safety.rs](../../crates/ccnm-core/src/safety.rs) 第 454 行 `audit` | 查是不是 root、sudo、wheel / admin / docker 组、`~/.ssh` 私钥、Docker | 这些都是 Unix 概念 | 换成 Windows 的对应项：是否 Administrators 组成员、当前令牌是否提权、`%USERPROFILE%\.ssh` 里的私钥、OpenSSH Authentication Agent 服务、docker-users 组、凭据环境变量。组和提权读 `whoami /groups` 的输出，不调 API（D7）。共用账号模式下只显示、不拒绝，和 P78 一致。P111 已做：按 SID 认组和完整性级别，私钥用打开文件判断，另加 sshd 的 DefaultShell |
+| 配置和状态目录：[paths.rs](../../crates/ccnm-core/src/paths.rs) | `~/.config/ccnm/config.toml`、`~/.local/state/ccnm/`，有 XDG 变量就按变量 | Windows 的惯例是 `%APPDATA%` / `%LOCALAPPDATA%` | 见决定 D6。P111 已做：家目录读 `USERPROFILE`，不看 `HOME` |
 | Agent 侧怎么处理 Runtime 的根目录 | 根目录字符串从 `runtime-resolve` 拿回来，在协议里是 `PathBuf`。2026-10-25 P107.3 查过 Agent 侧每一处用法，见下面这一段 | Windows 根目录长这样：`C:/Users/x/proj` | 见下面这一段 |
 
 **P107.3 查的结果（2026-10-25）：** Agent 侧把 Runtime 传回来的根目录当路径用的地方不多。
@@ -76,7 +76,7 @@
 
   结果是：绑了实例的 workspace 和 Codex 会话，在预检、doctor、mcp probe 时都会报"binding needs an absolute Runtime root"；会话建不起来、读不出来，`-c` 也找不到上一次。走 `agent_node` 的旧式 Claude workspace 不经过这道检查。
 
-  **改法：** 这三处只认"远端的绝对路径"，即 `/…` 或 `X:/…`，同样不许 `..` 和 NUL，不看 Agent 本机是什么系统。放在 P111.1。
+  **改法：** 这三处只认"远端的绝对路径"，即 `/…` 或 `X:/…`，同样不许 `..` 和 NUL，不看 Agent 本机是什么系统。放在 P111.1，已做（`paths::is_remote_absolute`）。
 - **两处按字面比较根目录。** `work.rs` 里，比较旧会话的根目录是不是这一次的那一处，以及 `-c` 找上一次会话的那一处。只要 Runtime 每次报的写法一样，这样比就没问题；`C:/a` 和 `C:\a`、`c:` 和 `C:` 会被当成两个不同的目录。
 
   **改法：** Runtime 那边保证每次报出同一种写法：去掉 `\\?\`、统一成 `/`、盘符大写。放在 P108.1。现在 `ws add` 会对根目录 `canonicalize`，在 Windows 上得到的是 `\\?\C:\…`。
@@ -88,8 +88,8 @@
   - `internal agent-*` 读配置失败后会退回一份空配置，接着报"不认识这个 Runtime"，误导人。
 - 反过来，Windows Runtime 的配置里写 Agent 的 `ccnm_bin`、`claude_config_dir`（`/Users/…`），在 Windows 上也不算绝对路径。
 
-**改法：** 描述另一台机器的路径一律按"远端路径"校验，两种写法都认。放在 P111.1。顺带把 `ssh.rs` 里"exited 127"、"chmod +x"这类只对 Unix 成立的提示，按远端是 Windows 的情况改掉。
-| 发版：[release.yml](../../.github/workflows/release.yml) | 只出 macOS 通用二进制和 Linux x86_64 两个包 | — | 加 `x86_64-pc-windows-msvc`，出 zip + sha256 |
+**改法：** 描述另一台机器的路径一律按"远端路径"校验，两种写法都认。放在 P111.1，已做。顺带把 `ssh.rs` 里"exited 127"、"chmod +x"这类只对 Unix 成立的提示，按远端是 Windows 的情况改掉。
+| 发版：[release.yml](../../.github/workflows/release.yml) | 只出 macOS 通用二进制和 Linux x86_64 两个包 | — | 加 `x86_64-pc-windows-msvc`，出 zip + sha256。P111 已做（`scripts/dist-windows.sh`），CI 每次推送都打一次 |
 | CI：[ci.yml](../../.github/workflows/ci.yml) | 只有 macOS 和 Ubuntu 两个 job | — | 加 `windows-latest` job，见 P107 |
 
 ## 3. 关键决定

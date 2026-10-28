@@ -18,6 +18,8 @@ struct Fixture {
     dir: PathBuf,
     config: PathBuf,
     root: PathBuf,
+    /// A directory the server's PATH starts with.
+    path_front: Option<PathBuf>,
 }
 
 impl Fixture {
@@ -80,7 +82,12 @@ allow_unconfined_exec = true
             ),
         )
         .unwrap();
-        Fixture { dir, config, root }
+        Fixture {
+            dir,
+            config,
+            root,
+            path_front: None,
+        }
     }
 
     fn serve(&self) -> Command {
@@ -121,6 +128,11 @@ allow_unconfined_exec = true
             if let Some(value) = std::env::var_os(name) {
                 cmd.env(name, value);
             }
+        }
+        if let Some(front) = &self.path_front {
+            let rest = std::env::var_os("PATH").unwrap_or_default();
+            let path = std::iter::once(front.clone()).chain(std::env::split_paths(&rest));
+            cmd.env("PATH", std::env::join_paths(path).unwrap());
         }
         cmd
     }
@@ -293,6 +305,52 @@ fn shell_runs_in_git_bash() {
     assert!(
         stderr.starts_with("err"),
         "stderr is its own stream: {said}"
+    );
+    session.shutdown();
+}
+
+/// A bare `bash` in `cmd` is the Git Bash `shell` uses (P113), whatever
+/// PATH finds first: here a fake `bash.exe` (a copy of `whoami.exe`) at the
+/// front of PATH, where WSL's `System32\bash.exe` is on a machine with WSL.
+/// The result names the one that did not run; named by its full path, the
+/// fake is what runs, and nothing is said.
+#[test]
+fn a_bare_bash_in_cmd_is_git_bash() {
+    let mut fixture = Fixture::new("bare-bash");
+    let fake_dir = fixture.dir.join("fakebin");
+    std::fs::create_dir_all(&fake_dir).unwrap();
+    let system_root = std::env::var_os("SystemRoot").unwrap();
+    std::fs::copy(
+        PathBuf::from(system_root).join(r"System32\whoami.exe"),
+        fake_dir.join("bash.exe"),
+    )
+    .unwrap();
+    let fake_dir = ccnm_core::reported_path(&fake_dir);
+    fixture.path_front = Some(fake_dir.clone());
+    let mut session = Session::start(&fixture);
+
+    for program in ["bash", "BASH.EXE"] {
+        let said = ok(&session.call(
+            "exec_command",
+            json!({"cmd": [program, "-c", "echo \"v=$BASH_VERSION|$SHELL\"; uname -s"]}),
+        ));
+        assert!(said.contains("MINGW") || said.contains("MSYS"), "{said}");
+        let line = said
+            .lines()
+            .find(|l| l.starts_with("v="))
+            .unwrap_or_else(|| panic!("{said}"));
+        assert!(!line.starts_with("v=|"), "BASH_VERSION is set: {said}");
+        assert!(line.ends_with("bash.exe"), "SHELL names Git Bash: {said}");
+        assert!(said.contains("bash ran as Git for Windows' bash"), "{said}");
+        assert!(said.contains("fakebin/bash.exe)"), "{said}");
+    }
+
+    let fake = fake_dir.join("bash.exe");
+    let said = ok(&session.call("exec_command", json!({"cmd": [fake.to_string_lossy()]})));
+    assert!(said.contains("ok in"), "{said}");
+    assert!(
+        !said.contains("MINGW") && !said.contains("Git for Windows"),
+        "{said}"
     );
     session.shutdown();
 }

@@ -293,6 +293,29 @@ pub(crate) fn exec_command_in(
         }
     };
 
+    // A bare `bash` in `cmd` is the bash `shell` uses (P113). On a machine
+    // with WSL the first one on PATH is `System32\bash.exe`, which starts a
+    // Linux distribution: both models in P112.2 wrote `["bash", ...]`, and
+    // one had a package manager there install 233 MB before the build
+    // failed. A path is left as written, and so is everything without Git
+    // Bash.
+    #[cfg(windows)]
+    let (argv, cmd_runs_shell_bash, bash_note) = match shell {
+        Ok(shell) if args.shell.is_none() && crate::platform::is_bare_bash(&argv[0]) => {
+            let note = crate::platform::bash_swap_note(
+                &shell.program,
+                crate::platform::bash_on_path(&cwd_abs).as_deref(),
+                &crate::platform::system_program("bash.exe"),
+            );
+            let mut argv = argv;
+            argv[0] = shell.program.to_string_lossy().into_owned();
+            (argv, true, note)
+        }
+        _ => (argv, false, None),
+    };
+    #[cfg(not(windows))]
+    let (cmd_runs_shell_bash, bash_note) = (false, None::<String>);
+
     // `cmd` the way Windows finds a program: `npm` is `npm.cmd`, a `.ps1`
     // runs under PowerShell (P110.2). Relative to where it runs, so after
     // `cwd` is known.
@@ -319,7 +342,7 @@ pub(crate) fn exec_command_in(
         .cwd(&cwd_abs)
         .timeout(timeout_ms.map_or(Duration::MAX, Duration::from_millis));
     let _ = provider; // Runtime protection covers all known Agents, not this selection.
-    if args.shell.is_some()
+    if (args.shell.is_some() || cmd_runs_shell_bash)
         && let Ok(shell) = shell
     {
         cmd = shell.environment(cmd);
@@ -369,7 +392,7 @@ pub(crate) fn exec_command_in(
     })?;
     stop.attach(started.stopper());
 
-    let mut notes = Vec::new();
+    let mut notes: Vec<String> = bash_note.into_iter().collect();
     if sandbox.is_some() {
         notes.push(sandbox::NOTE.to_string());
     }

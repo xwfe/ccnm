@@ -380,6 +380,60 @@ pub(crate) fn git_bash(
         })
 }
 
+/// Whether `cmd` names a bare `bash` -- `bash` or `bash.exe` in any case,
+/// with no path -- which a Windows Runtime runs as the bash `shell` uses
+/// (P113). A path is the caller's choice and stays what it says.
+#[cfg(any(windows, test))]
+pub(crate) fn is_bare_bash(program: &str) -> bool {
+    !program.contains(['/', '\\'])
+        && (program.eq_ignore_ascii_case("bash") || program.eq_ignore_ascii_case("bash.exe"))
+}
+
+/// What the result says when a bare `bash` ran as `git_bash` although the
+/// first `bash` on PATH is another program; nothing when they are the same
+/// one. `wsl` is `System32\bash.exe`, named for what it is: on a machine
+/// with WSL it is first on PATH and starts a Linux distribution, which is
+/// what P112.2 ran into.
+#[cfg(any(windows, test))]
+pub(crate) fn bash_swap_note(
+    git_bash: &Path,
+    on_path: Option<&Path>,
+    wsl: &Path,
+) -> Option<String> {
+    let key = |p: &Path| {
+        let text = p.to_string_lossy().replace('/', r"\").to_ascii_lowercase();
+        text.strip_prefix(r"\\?\")
+            .map(str::to_string)
+            .unwrap_or(text)
+    };
+    let shown = |p: &Path| p.to_string_lossy().replace('\\', "/");
+    let first = on_path?;
+    if key(first) == key(git_bash) {
+        return None;
+    }
+    let what = if key(first) == key(wsl) {
+        ", which starts WSL"
+    } else {
+        ""
+    };
+    Some(format!(
+        "bash ran as Git for Windows' bash ({}), the one shell uses, not as the first bash on PATH ({}{what}); to run that one, give its full path",
+        shown(git_bash),
+        shown(first)
+    ))
+}
+
+/// The `bash` PATH finds first for a command running in `cwd`, as
+/// [`windows_program`] would find it.
+#[cfg(windows)]
+pub(crate) fn bash_on_path(cwd: &Path) -> Option<std::path::PathBuf> {
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let pathext = std::env::var("PATHEXT").ok();
+    find_program("bash", cwd, &path, pathext.as_deref(), &|p: &Path| {
+        p.is_file()
+    })
+}
+
 /// `<installation>\bin\bash.exe` for a `git.exe` up to three levels inside
 /// that installation.
 #[cfg(any(windows, test))]
@@ -641,6 +695,53 @@ mod tests {
             bash_beside_git(&Path::new("scoop").join("shims").join("git.exe"), &exists),
             None
         );
+    }
+
+    #[test]
+    fn only_a_bare_bash_is_taken_for_git_bash() {
+        for bare in ["bash", "BASH", "bash.exe", "Bash.EXE"] {
+            assert!(is_bare_bash(bare), "{bare}");
+        }
+        for not in [
+            r"C:\Windows\System32\bash.exe",
+            "D:/scoop/shims/bash.exe",
+            "./bash",
+            "bash.cmd",
+            "bashx",
+            "sh",
+            "wsl",
+        ] {
+            assert!(!is_bare_bash(not), "{not}");
+        }
+    }
+
+    #[test]
+    fn the_note_names_the_bash_that_did_not_run() {
+        let git = Path::new(r"C:\Program Files\Git\bin\bash.exe");
+        let wsl = Path::new(r"C:\Windows\System32\bash.exe");
+        // PATH has WSL's first: said, and named for what it is.
+        let note =
+            bash_swap_note(git, Some(Path::new(r"C:\WINDOWS\system32\bash.exe")), wsl).unwrap();
+        assert!(note.contains("C:/Program Files/Git/bin/bash.exe"), "{note}");
+        assert!(
+            note.contains("C:/WINDOWS/system32/bash.exe, which starts WSL"),
+            "{note}"
+        );
+        assert!(note.contains("give its full path"), "{note}");
+        // Another bash first: said, without the WSL part.
+        let note = bash_swap_note(git, Some(Path::new(r"D:\scoop\shims\bash.exe")), wsl).unwrap();
+        assert!(note.contains("(D:/scoop/shims/bash.exe)"), "{note}");
+        assert!(!note.contains("WSL"), "{note}");
+        // The same program, however it is spelled, or none on PATH: nothing.
+        assert_eq!(
+            bash_swap_note(
+                git,
+                Some(Path::new(r"\\?\c:/program files/git/BIN/bash.exe")),
+                wsl
+            ),
+            None
+        );
+        assert_eq!(bash_swap_note(git, None, wsl), None);
     }
 
     /// A file held open without sharing deletion, let go of after a while:

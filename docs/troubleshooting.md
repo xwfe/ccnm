@@ -48,7 +48,7 @@ xshun
 
 **症状**：Claude 还能聊天，但一让它读文件就开始瞎猜，或者去调它自己机器上的 Bash
 （会被拒，那是第二道锁）。原因是那条 MCP ssh 断了——网断太久、Agent Node睡了、有人 kill 了它。
-断网多久算"太久"：两台都是 macOS 时，约 100–200 秒（2026-10-16 实测，[记录](research/2026-10-16-outage-experiment-plan.md#8-结果)）；短于一分半钟的一般不会断。Claude 只在断开的当下重试一次，网还没恢复就不再试：2026-10-15 项目机器的 Wi-Fi 断了 6.5 分钟，那次重试报 `ssh: connect to host … port 22: Operation timed out`，之后再没连过。会话开着的时候 ccnm 也不会自己接回来（2026-10-16 评估过、定了不做：接回来就是换一个远端会话，模型手里旧的输出引用全部作废，[协议 6.2 节](protocol/remote-workspace-mcp-v1.md#62-断线中断崩溃)），所以人在会话里时，网好了得照下面手动接，干等不会好。
+断网多久算"太久"：两台都是 macOS 时，约 100–200 秒（2026-10-16 实测，[记录](research/2026-10-16-outage-experiment-plan.md#8-结果)）；短于一分半钟的一般不会断。Claude 只在断开的当下重试一次，网还没恢复就不再试：2026-10-15 项目机器的 Wi-Fi 断了 6.5 分钟，那次重试报 `ssh: connect to host … port 22: Operation timed out`，之后再没连过。会话开着时，AI 机器上的 Controller 每 30 秒看一眼，断了替你接（见下面"会话跑着时"那段）；等不及就照下面手动接。
 
 **修**：在 Claude 里敲
 
@@ -66,7 +66,7 @@ xshun
 会话本来就在跑
 这个会话的工具断了，ccnm 没能替你接上，所以没让你进去。
 原因：ssh: connect to host xdwmbp port 22: Operation timed out
-网络或项目机器好了再 ccnm keex；不管工具先进去看：ccnm attach keex
+网络或项目机器好了再 ccnm keex；不管工具先进去看：ccnm attach keex --force
 ```
 
 | 原因那一行 | 是什么 | 怎么办 |
@@ -75,17 +75,38 @@ xshun
 | `CCNM_E_VERSION` 那类"不是同一个版本"，退出码 11 | 两台 ccnm 版本不一样 | 两台换成同一版本 |
 | 项目机器不肯开（`CCNM_E_POLICY`），退出码 33 | 同[起会话前就被拒](#ccnm-项目-起不来报-its-runtime-would-refuse-it) | 按那一节改 |
 | `Failed to reconnect to ccnm`，退出码 3 | 项目机器刚才答了，但这次连接被拒——多半是刚断网不久，旧连接还占着写锁 | 等半分钟到一两分钟再试；还不行看[写锁被占](#mcp-初始化报-workspace-write-guard-is-busy-或-unknown) |
-| `were not back within 20 s`，退出码 3 | 敲了命令，20 秒没接上 | 再试一次，或 `ccnm attach <项目>` 进去看 `/mcp` 里写什么 |
+| `were not back within 20 s`，退出码 3 | 敲了命令，20 秒没接上 | 再试一次，或 `ccnm attach <项目> --force` 进去看 `/mcp` 里写什么 |
 | Codex 会话那句，退出码 3 | Codex 没法重连正在跑的会话 | `ccnm stop <项目>` 再 `ccnm <项目>` 开新会话，对话不带过来 |
 
 输入框里有你没发出去的字（或者开着权限确认、菜单这类界面）时，ccnm 不敲——敲进去会拼在你的草稿后面，回车还可能替你答了那个问题。这时照常让你进去，并提示 `进去后敲：/mcp reconnect ccnm`。开着 vim 模式时同理不敲；停在 NORMAL 模式、界面上又没有 `-- INSERT --` 提示的那种 ccnm 看不出来，敲进去的字会被当成 vim 命令，碰到了就进去 `Esc` 掉、自己敲。
 
-`ccnm attach <项目>` 不做这些，直接进，是"不管工具先进去"的退路。新起的会话也不做：起之前已经问过项目机器（P91），起来时连不上的情况见下面几节。
+`ccnm attach <项目>` 也一样先查、先接，接不上不让你进（v0.21.1 及以前直接进）。不管工具先进去看：`ccnm attach <项目> --force`。AI 机器上的 ccnm 是 v0.21.1 或更早时，它不认识这个检查，attach 照旧直接进，并打一行"那台的 ccnm 太旧"。新起的会话不做这一步：起之前已经问过项目机器（P91），起来时连不上的情况见下面几节。
+
+**会话跑着时 Controller 替你接**（v0.21.1 及以前没有，断了只能自己接）：AI 机器上的 Controller 每 30 秒看一眼它那台每个受管 Claude 会话的工具通道。
+
+- 通着就什么都不做：不问项目机器，不敲字，每个会话只多一次 `ps`。
+- 断了就做和上面"从外面进会话"一模一样的那一步：先问项目机器，问得通、输入框又是空的，才敲 `/mcp reconnect ccnm`。接回来的同样是一个新的远端会话，断之前拿到的 `output_ref` 读不了。
+- 问不通（笔记本睡着、断网）就退避：30 秒、1 分钟、2 分钟，之后每 5 分钟试一次，一直试到会话结束，所以项目机器醒过来几分钟内会自己接上。
+- 输入框里有字时不敲，下一轮（30 秒后）再看。
+- 你正好在这时 `ccnm <项目>` 或 `ccnm attach` 进来，两边不会都敲：后来的那个等前一个做完，再看通没通。
+- `ccnm status <项目>` 的工具那一行会写"通（断过，自动接回过 N 次，最近一次在 … 前）"；还没接上时多一行"Controller 在自动接：上一次没接上（原因），… 后再试"。Controller 的日志（`~/.local/state/ccnm/controller.log`）里每次接上、没接上都有一行。
+- Codex 会话不接：Codex 没法重连正在跑的会话，照下面 Codex 那段做。
+- 换了新版本以后，要在 AI 机器上再跑一次 `ccnm controller install`，让后台跑的 Controller 换成新进程，否则还是旧的那个、不会替你接。
+
+这不是 2026-10-16 撤掉的 P98：P98 想让通道本身不断，那个依然不做。两台 macOS 之间断网超过约 100–200 秒，连接照样会断（[断网实验](research/2026-10-16-outage-experiment-plan.md#8-结果)），只是断了以后不用你再动手。
 
 `ccnm status <ws>` 和 `ccnm doctor <ws>` 都会明说这个状态——**看着正常的会话是不会显示
 这行的**，所以看到了就是真断了。
 
 **Codex 会话**显示的是"断了——Codex 里没法重连：ccnm stop <项目> 再 ccnm <项目> 开新会话，对话不带过来"（英文 `TOOLS DOWN (Codex cannot reconnect: ccnm stop <workspace>, then ccnm <workspace> for a new session; …)`），`ccnm doctor` 的终端会话那一行也是这句。Codex 里没有 `/mcp` 重连，照这句做就行，代价是对话上下文不带过来。（v0.17.0 及以前 `ccnm ls` 对 Codex 会话也说去 Claude 里 `/mcp`；P95 改过一版说"用官方 resume 接回去"，照做会掉进下面说的坑，P96 改成了现在这句。）要接回原对话，必须用 ccnm 那个 Codex 目录（`CODEX_HOME=~/.config/ccnm/agents/codex`）和 ccnm 起会话时的那套参数；直接敲 `codex resume <id>` 用的是你日常的 `~/.codex`，没有 ccnm 的工具，Codex 自带的 shell 还开着，命令会跑在 AI 那台上，别这么做。
+
+### Claude Code 的后台 agent 拿不到 ccnm 的工具（`write guard is busy`）
+
+**症状**：在受管会话里开了 Claude Code 的后台 agent（界面底栏的 `← for agents`，或让它在后台另起一个 agent），那个 agent 连不上 ccnm，Claude 的 MCP 日志里是 `Connection failed (CONNECTION_CLOSED)`，前面一行 `Server stderr: CCNM_E_POLICY: workspace write guard is busy; another session still owns this working tree`。
+
+**原因**：后台 agent 是 Claude Code 另起的一个进程，它加载同一份 MCP 配置，于是又开了一条 ccnm 通道；而一个项目同一时间只允许一个会话写（单写锁），主会话正占着。2026-10-28 查 2026-10-23、10-24 两次"MCP 没连上"就是这个：那两个连接的 Claude 会话 id 不属于任何 ccnm 会话，转录里写着 `sessionKind: "bg"` 和后台 agent 的名字（[P116 记录](research/2026-10-29-p116-watch.md)）。这和[按了"后台"](#在受管会话里按了-claude-code-的后台工具全没了)是同一类问题，换了个入口。
+
+**现在怎么办**：受管会话里别开后台 agent，要并行就另开一个项目（另 clone 一份，`ccnm add` 成另一个名字）。ccnm 这边还没定要不要关掉这个功能，或者给后台 agent 只读的工具。
 
 ### 会话里有 ccnm 的说明，工具却一个都没有（`request _meta is missing`）
 
@@ -659,6 +680,8 @@ who holds it, on the Runtime Node: the `held <session> <workspace>` file in
 ${XDG_STATE_HOME:-~/.local/state}/ccnm/write-guards/
 `ccnm status` alone does not prove nobody is using it: a --print run holds
 this guard and never appears there
+a Claude Code background agent or forked session started inside a managed
+session is a second session too, and gets no tools: one writer per project
 ```
 
 server 退出，Claude Code 对这种情况只显示 `CONNECTION_CLOSED: Connection closed`，**不显示 server 的 stderr**，所以上面这几行一个字都不会到你面前。要看见它们，在 Runtime Node 上跑 `ccnm doctor <workspace>`——那条 `Remote MCP handshake` 会把 server 的 stderr 原样带出来。

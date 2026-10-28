@@ -43,8 +43,11 @@ impl Fixture {
         self.dir.join("state")
     }
 
-    /// As sshd would start it: the account's profile, and the few
-    /// variables a Windows program cannot do without.
+    /// As sshd would start it: its own profile in place of the account's,
+    /// and the rest of the environment sshd builds for a session. Not just
+    /// the few variables a program cannot start without: with only those,
+    /// the PowerShell that lists the running servers took 20 to 30 seconds
+    /// on the runner (two runs in P111), against 0.3 s under a real sshd.
     fn ask(&self, subcommand: &str, wire: &str) -> Output {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_ccnm"));
         cmd.args(["internal", subcommand, "--payload", wire])
@@ -55,11 +58,32 @@ impl Fixture {
         for name in [
             "SystemRoot",
             "SystemDrive",
+            "windir",
             "PATH",
             "PATHEXT",
             "TEMP",
             "TMP",
             "ComSpec",
+            "APPDATA",
+            "LOCALAPPDATA",
+            "ProgramData",
+            "ALLUSERSPROFILE",
+            "ProgramFiles",
+            "ProgramFiles(x86)",
+            "ProgramW6432",
+            "CommonProgramFiles",
+            "CommonProgramFiles(x86)",
+            "CommonProgramW6432",
+            "PSModulePath",
+            "PUBLIC",
+            "USERNAME",
+            "USERDOMAIN",
+            "COMPUTERNAME",
+            "HOMEDRIVE",
+            "HOMEPATH",
+            "OS",
+            "NUMBER_OF_PROCESSORS",
+            "PROCESSOR_ARCHITECTURE",
         ] {
             if let Some(value) = std::env::var_os(name) {
                 cmd.env(name, value);

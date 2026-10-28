@@ -314,10 +314,12 @@ pub fn try_scan_servers(runner: &dyn ProcessRunner) -> Option<Vec<Server>> {
     // CimCmdlets is imported by name first, so PowerShell does not go looking
     // through every module for `Get-CimInstance` (P111). On the Win11 test
     // machine the whole `runtime-cleanup`, this scan included, takes 0.3 s
-    // under sshd. On the Windows CI runner the scan ran past the 30 seconds
-    // below once without the import and took 20 s with it, so the import is
-    // not what makes the runner slow; past the limit the answer is "could
-    // not check", and cleanup keeps everything.
+    // under sshd. On the Windows CI runner the same step took 19.7, 25.6 and
+    // over 30 seconds -- with and without the import, with a bare
+    // environment and with the one sshd gives -- and why is not known. So the
+    // limit is 90 s, not 30: past it the answer is "could not check" and
+    // cleanup keeps everything, which is safe but useless, and the expiry
+    // sweep that also asks runs on a thread of its own.
     #[cfg(windows)]
     let cmd = {
         use base64::Engine as _;
@@ -333,7 +335,7 @@ pub fn try_scan_servers(runner: &dyn ProcessRunner) -> Option<Vec<Server>> {
             "-EncodedCommand",
         ])
         .arg(base64::engine::general_purpose::STANDARD.encode(utf16))
-        .timeout(std::time::Duration::from_secs(30))
+        .timeout(std::time::Duration::from_secs(90))
     };
     match runner.run(&cmd) {
         Ok(out) if out.success() => Some(parse_servers(&out.stdout_lossy())),

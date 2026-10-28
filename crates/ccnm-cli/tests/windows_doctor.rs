@@ -44,10 +44,11 @@ impl Fixture {
     }
 
     /// As sshd would start it: its own profile in place of the account's,
-    /// and the rest of the environment sshd builds for a session. Not just
-    /// the few variables a program cannot start without: with only those,
-    /// the PowerShell that lists the running servers took 20 to 30 seconds
-    /// on the runner (two runs in P111), against 0.3 s under a real sshd.
+    /// and the rest of the environment sshd builds for a session (the list
+    /// below is what the Win11 test machine's sshd sets). With only the few
+    /// variables a program cannot start without, the scan of running servers
+    /// took 20-30 s here; with these it still took 25.6 s, so the environment
+    /// is not why the runner is slow (0.3 s under a real sshd).
     fn ask(&self, subcommand: &str, wire: &str) -> Output {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_ccnm"));
         cmd.args(["internal", subcommand, "--payload", wire])
@@ -188,7 +189,20 @@ fn cleanup_removes_an_ended_sessions_output() {
         report
     };
     // How long the Runtime takes to say which sessions are served (the
-    // PowerShell scan inside it). It ran into its 30-second limit here once.
+    // PowerShell scan inside it), next to a PowerShell that only starts and
+    // exits: on this runner the scan has taken 20-30 s, against 0.3 s on a
+    // real machine, and which half is slow is not known yet.
+    let bare = std::time::Instant::now();
+    let _ = Command::new(r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe")
+        .args([
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "exit",
+        ])
+        .output();
+    eprintln!("a bare powershell took {:?}", bare.elapsed());
     let asked = std::time::Instant::now();
     let preview = ask(None);
     eprintln!("cleanup preview took {:?}", asked.elapsed());

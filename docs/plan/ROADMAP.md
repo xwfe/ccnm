@@ -1473,6 +1473,8 @@ P73 当时把"外部 MCP workspace 里执行账号的安全没人验"留作挡�
 
 P111 走查时查出、没排进任何阶段的（[P111 记录](../research/2026-10-28-p111-windows-config-doctor.md)第 4.4 节）：`ccnm cleanup` 对 Windows 上的项目两边都跑不了（AI 那台让去 Runtime 跑，Windows 不让跑要连回 AI 那台的命令；旧输出照样 7 天过期）；Windows 上 `ccnm rm` 碰到连不上的 AI 那台要等满 60 秒。P112.4 写支持矩阵时照实写。
 
+P112.2 真实模型时查出、没排进任何阶段的（[记录](../research/2026-10-28-release-0.21.0.md)第 5.1 节）：在装了 WSL 的机器上，模型用 `exec_command` 的 `cmd` 写 `bash …`，按 PATH 找到的是 `System32\bash.exe`（WSL 的启动器），不是 Git Bash。两个模型都这么写了：Claude 先 `where bash` 看出来、改了全路径；Codex 直接跑进了 WSL，WSL 里的 mise 顺手装了 233 MB 工具。`shell` 不受影响。可选的改法：Windows Runtime 的 `workspace_info` 或工具说明里提醒一句；或者 `cmd` 的程序是裸 `bash` 时换成 `shell` 用的那个 Git Bash，并在结果里说一声。安装文档已经先加了提醒。
+
 停止点：Windows 当 Agent、在 Windows 上发起会话不在本阶段。
 
 ## 已撤销的自动重连阶段（2026-10-16）

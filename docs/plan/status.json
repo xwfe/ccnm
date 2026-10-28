@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-10-28T14:50:00+09:00",
-  "current_task": "P112",
+  "last_updated": "2026-10-28T18:00:00+09:00",
+  "current_task": null,
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
     "source": "docs/research/codex-internal-wiring-2026-09-07.md",
@@ -5539,15 +5539,47 @@
     {
       "id": "P112",
       "title": "Windows Runtime 真机验收",
-      "status": "in_progress",
+      "status": "completed",
       "depends_on": [
         "P111"
       ],
-      "owner": "claude-opus-5-5 (Claude Code 桌面端)",
+      "owner": null,
       "started_at": "2026-10-28T14:50:00+09:00",
-      "last_updated": "2026-10-28T14:50:00+09:00",
-      "completed_criteria": [],
-      "evidence": [],
+      "last_updated": "2026-10-28T18:00:00+09:00",
+      "completed_criteria": [
+        "P112.1",
+        "P112.2",
+        "P112.3",
+        "P112.4"
+      ],
+      "evidence": [
+        {
+          "kind": "real_nodes",
+          "criteria": [
+            "P112.1",
+            "P112.3"
+          ],
+          "ref": "docs/research/2026-10-28-release-0.21.0.md",
+          "commit": "21ba96d",
+          "result": "用户 2026-10-28 同意上测试机、测完清理。Win11 测试机（中文系统，sshd 默认 shell 是 Windows PowerShell，账号在 Administrators、钥匙登录是 High），装 v0.21.0 发布包（ccnm.exe 7302963177fdbf7f）。这台 macOS 用 v0.21.0 和临时配置经 ccnm mcp bridge coding：中立客户端（tests/mcp_client.py）19/0——12 个工具，读、搜、图片、notebook、skill 结果对，apply_patch 加 CRLF 文件与整篇改写，exec_command 的 cmd 与 shell（Git Bash），call_mcp_tool 经 node 的 .cmd shim，后台命令起、读、停，notifications/cancelled 约 1 秒停掉 ping 和 sleep，关会话 5 秒后没有残留，新会话写得进去；真的 Claude Code 2.1.310、Codex 0.164.0 接 127.0.0.1 的假模型各跑完一个工具回合（5 次请求、12 个工具、四步全对）。P112.3：ssh 被 SIGSTOP 冻住 30 秒后命令照常回来、会话接着能用；SIGKILL 掐断后 5 秒内 Windows 上 ccnm、bash、sleep 全没、写锁 released；powercfg /requests 的 SYSTEM 一栏会话开着时有 ccnm.exe，关掉 4 秒后没了。受管会话：fodelf（v0.21.0，Controller 在 Aqua）用单独的 --config 连测试机，doctor '可以用了'、握手 12 个工具；ccnm run --detached 后 /mcp 是 ccnm 12 tools、ccnm_agent 1 tool，ccnm stop 后 5 秒内没有 ccnm 进程、写锁 released、powercfg 里没有 ccnm。没验到：网络悄悄断而 TCP 不断（要改防火墙，没做）；'空闲 10 分钟不睡'没法单独归给 ccnm——那台机器上 GameViewer 和一条 [DRIVER] Legacy Kernel Caller 也在请求别睡，这里证明的是 ccnm 会话期间请求在、结束就撤；sshd 默认 shell 为 cmd 本轮没重测。"
+        },
+        {
+          "kind": "real_nodes",
+          "criteria": [
+            "P112.2"
+          ],
+          "ref": "docs/research/2026-10-28-release-0.21.0.md",
+          "result": "用户 2026-10-28 让我直接从这台 macOS ssh 测试机操作、跑真实模型。项目是测试机上的 Java 8 calc（Rust 没有 VS 生成工具链接不了）。Claude：fodelf 受管会话（Claude Code 2.1.312，claude-opus-5-5），我从这台 macOS ssh 到 fodelf 用 tmux 敲任务、只对 git/构建/where 这类命令按回车放行（git commit 整条看过再放）；19 次工具调用（read_file 5、exec_command 11、apply_patch 1 等），模型 40 秒，提交 calc: add div（+18 行），测试机上 Git Bash 重建 5/5；token：输入 22、写缓存 27 232、读缓存 269 866、输出 3 529；ccnm usage 前后都是 5 小时 0%、本周 46%。Codex：这台 macOS 的 Codex 0.164.0 codex exec（gpt-6-astra、推理 medium、ChatGPT 登录、--ignore-user-config、自身沙箱只读）经 v0.21.0 bridge coding；21 次工具调用、3 分钟，提交 calc: add pow（+26 行），build.cmd 重建 7/7；token：输入 464 150（缓存 434 944）、输出 1 439；没查 ChatGPT 额度前后。两次结束后测试机没有 ccnm 进程、写锁 released。查出：装了 WSL 的机器上，cmd 里的裸 bash 是 System32\\bash.exe（WSL）——Claude 先 where 看出来改了全路径；Codex 跑进 WSL，mise 按 Windows 账号的 mise 配置装了 java（212 MB）和 npm:whistle（21 MB），两份 mise config.toml 修改时间变了、内容变没变不知道。装上的目录已删、配置没动；改法未定，记在 ROADMAP P112 下和 observed_gaps。"
+        },
+        {
+          "kind": "offline",
+          "criteria": [
+            "P112.4"
+          ],
+          "ref": "docs/support-matrix.md",
+          "result": "支持矩阵：'平台与拓扑'一行加 Windows 11 x86_64 当 Runtime（单台测试机），'尚不能宣称'改成 Windows 当 Agent、Windows 10 和 ARM64；'Windows 当项目机器'一段从'没有验收'改成验过的、没验的、cmd 里 bash 进 WSL 三条。README（英文摘要、'两台'那段、升级表）、docs/README.md、getting-started、windows-runtime-setup.md 的现状去掉'还在验收'；安装文档加 WSL 的 bash 和 Rust 要 VS 生成工具两条。toexec 仓库 710683f 改了 docs/plan/implementation-plan-v2.md 第 0 节表格的 Windows 一列。check_plan.py 通过。"
+        }
+      ],
       "blockers": []
     }
   ],
@@ -5616,10 +5648,11 @@
     "【P38 已处理】search_text 的 glob 写成 **、*、src/** 这类能匹配目录的形状时，rg 会搜进 .gitignore 排除的目录（target/、node_modules/）：rg 里 glob 命中即跳过 .gitignore 判断。P37 把 dotfile 与 .git 的排除挪到最后修掉了同源的 dotfile 问题，但 .gitignore 没法靠顺序表达。修法二选一，都改变现有调用的结果：ccnm 自己按 glob 过滤 rg 结果（*.rs 在 rg 里是任意深度的文件名、在 ccnm Glob 里只匹配顶层），或拒绝能匹配目录的 glob。工具说明 Files that .gitignore rules out are never searched 在这种 glob 下不成立。依据 docs/research/p37-execution-surface-batch1-2026-09-17.md 第 2.2、5 节。 处理结果：两种设想的修法都没用——实测只能匹配文件的 *.log 也越过 .gitignore；改为 --type-add 缩小范围 + ccnm 按 rg 规则过滤，glob 含义不变，见 docs/research/p38-glob-gitignore-2026-09-17.md。",
     "【P41 记下不修】mcp-serve 被 SIGKILL（或别的不走正常退出的死法）时，它起的命令的进程组没人收：前台命令一直如此，P41 的后台命令没有期限，所以可能一直跑下去；它们的 run 在 read_output 里读作 exit status unknown。正常路径（客户端断开、stdin EOF、心跳发现对端不在）会先停掉所有命令再放写锁。要收干净得给子进程加会话标记、下次启动时按标记扫（封存的原生链 P26/P30 有类似做法），需另立阶段。依据 docs/research/p41-background-commands-2026-09-18.md 第 5 节。",
     "【2026-10-08 v0.13.0 真机看到 / 2026-10-08 P83 已处理（离线），75d18ab】没有 Agent、只给外部 MCP 用的 workspace，doctor 的结论永远是“还不能用（0 项失败，2 项没查）”：Runtime 安全、exec_command 两行写“没查”（体检结果只随 Agent 探测回来），而这种 workspace 设计上就没有 Agent。和 P73 同类，设计上查不到的行该是“不查”、不挡结论。依据 docs/research/2026-10-08-release-0.13.0.md 第 5 节。",
-    "【2026-10-08 P80 时看到 / 只记不修】Agent 上的 MCP 转发 ccnm_agent（P50）在受管 Codex 会话里同样没配 tool_timeout_sec，Codex 对它只等 300 秒。它的 call_mcp_tool 默认等 60 秒、起 server 30 秒，用户给 Agent 上某个 server 配的 tool_timeout_sec 接近或超过 300 秒时（还没起的 server 起它的时间也算在内），调用会被 Codex 先截断、不发取消，照样在 Agent 上跑完。值取决于用户配置、不归 ccnm 的常量管，P80 没修。依据 docs/research/2026-10-08-p80-codex-tool-timeout.md 第 6 节。"
+    "【2026-10-08 P80 时看到 / 只记不修】Agent 上的 MCP 转发 ccnm_agent（P50）在受管 Codex 会话里同样没配 tool_timeout_sec，Codex 对它只等 300 秒。它的 call_mcp_tool 默认等 60 秒、起 server 30 秒，用户给 Agent 上某个 server 配的 tool_timeout_sec 接近或超过 300 秒时（还没起的 server 起它的时间也算在内），调用会被 Codex 先截断、不发取消，照样在 Agent 上跑完。值取决于用户配置、不归 ccnm 的常量管，P80 没修。依据 docs/research/2026-10-08-p80-codex-tool-timeout.md 第 6 节。",
+    "【2026-10-28 P112.2 真机看到 / 只记不修】装了 WSL 的 Windows Runtime 上，模型用 exec_command 的 cmd 写 bash …，按 PATH 起的是 System32\\bash.exe（WSL 的启动器），不是 Git Bash；shell 不受影响（只用 Git Bash）。两个模型都这么写了，Codex 跑进 WSL 后 WSL 里的 mise 装了 233 MB 工具。可选改法：Windows Runtime 的 workspace_info 或工具说明里提醒；或 cmd 的程序是裸 bash 时换成 shell 用的 Git Bash 并说一声。安装文档已加提醒。依据 docs/research/2026-10-28-release-0.21.0.md 第 5.1 节。"
   ],
   "handoff": {
-    "next_action": "**2026-10-28 认领 P112。** 用户说继续 P112（P111 时同意过上测试机、测完清理）。先做不碰两台 Mac 已装东西的部分：测试机装 CI 打的包，这台 macOS 用同一提交的构建和临时配置跑 `ccnm mcp bridge <项目> --mode coding`（外部客户端那条路，经 sshd 到 Windows）——P112.1 用不 import ccnm 的客户端把 coding 模式的工具全调一遍，再分别让真的 Claude Code、Codex CLI 接假模型接口、经 bridge 跑完整工具回合；P112.3 里能在这条路上做的：取消正在跑的命令、模拟断网 30 秒（本机 ssh 走一个能冻住的本地转发）、会话空闲超过 10 分钟测试机不睡、结束后 powercfg 里没有请求、没有残留进程、写锁交出。受管会话（`ccnm <项目>`，要 P111 之后的 Agent 带 Controller）和 P112.2 真实模型要用户定：这台 Mac 没装 Controller、我的会话是 Background，fodelf 上是 v0.20.0。断网不改防火墙。\n\n之前的交接：\n**2026-10-28 P111 完成，current_task 为 P112（还没认领）。** 用户同意推送和上测试机。CI 40627674700 四个 job 全绿（第一次 40626856262 红在清理用例，72026d4 修）；测试机上照 docs/windows-runtime-setup.md 第 4–6 步走过，U7 不成问题，从 macOS 跑 doctor 的 Windows 各行都有结论，测完已清理。走查后又修了两处（de7435b 行名与 Windows 配置路径分隔符、8bc44d8 改正'翻遍模块'的注释），和这笔状态一起推送；那次 CI 的结果不在这里，用 `gh run list --branch main` 看。留给后面的（ROADMAP P112 下记着）：ccnm cleanup 对 Windows 项目两边都跑不了；Windows 上 rm 碰到连不上的 AI 那台等满 60 秒；runner 上列 mcp-serve 要 20 秒左右、原因没查清，windows_doctor 的清理用例可能偶尔撞 30 秒上限；测试机清理后 powercfg 多一条 [DRIVER] Legacy Kernel Caller。下一步 P112 真机验收：在测试机上装 ccnm 要单独授权；真实模型跑之前要用户点头。\n\n之前的交接：\n**2026-10-28 P111 代码和文档都做完、没推送，阶段仍是 in_progress（owner 已清空）。** 提交 999ce34 认领，4bb02a0 远端路径按写法判断（C:/… 也是绝对路径），5be42e0 ssh 提示按 Windows 改，9095d28 家目录读 USERPROFILE、init/D8，a1c51c4 Windows 审计项，03e8b77 DefaultShell 与 doctor 行，b60eb1a 放开 runtime-audit/runtime-cleanup 与 windows_doctor 测试，3c62f73 Windows 上 init 结尾，19a23f1 发版出 Windows zip、CI 同脚本打包，df93374 安装文档。本机 1202/0、Python 252/0、Windows 目标 clippy 干净；记录在 docs/research/2026-10-28-p111-windows-config-doctor.md。下一步要用户点头的两件：① 推送 ccnm main（连同 P110 的文档提交 8f76e10），看 Windows CI——windows_gate、windows_doctor 是新的，read_tools/write_guard/windows_exec 的家目录改成了 USERPROFILE，dist-windows.sh 第一次跑，红了按根因修；② 上测试机按 docs/windows-runtime-setup.md 从第 4 步起走一遍（CI 打的 zip 放进 %USERPROFILE%\\.local\\bin、init、add 一个临时项目），本机用同一提交的构建、临时 CCNM_CONFIG 跑 doctor，看真机上 Windows 那几行；U7 用 Zone.Identifier 模拟浏览器下载；测完按用户意思保留或删掉。都过了再把 P111.1–P111.3 标完成。\n\n之前的交接：\n**2026-10-28 认领 P111。** 用户说开始 P111。顺序：① 远端路径按远端规则校验：Agent 侧三处根目录检查和配置里另一台机器的 `ccnm_bin`、`claude_config_dir`、`codex_bin` 认 `/…` 和 `X:/…`，不看本机系统；ssh.rs 的'exited 127''chmod +x'按 Windows 远端改；测试走 instance_execution 的假 ssh。② Windows 上家目录取 `USERPROFILE`（不看 HOME，PowerShell 里敲的和 sshd 起的读同一份配置），`init --runtime` 在 Windows 上拒绝（Windows 只当 Runtime），`init --agent` 打出 Agent 那边该写的 `ccnm_bin`；Windows 上 `runtime_user` 写在本机节点上就在读配置时拒绝（D8）。③ runtime-audit 的 Windows 检查项：`whoami /groups` 读 Administrators（S-1-5-32-544）、令牌完整性级别（High/System 算提权）、docker-users；ssh-agent 服务；`~/.ssh` 私钥在 Windows 上用打开文件判断能不能读；Runtime 报 sshd 的 DefaultShell，doctor 从 Agent 跑时 Windows Runtime 每行都有结论（含 ccnm_bin 写法、DefaultShell 是 PowerShell 的影响）。④ runtime-cleanup 的闸门写的是 P110、P110 没做，本阶段放开（ROADMAP P111 下补记）。⑤ release 出 `ccnm-<版本>-windows-x86_64.zip` 和 sha256，CI 的 Windows job 跑同一个打包脚本；安装文档。Windows 那一半只能靠 Windows CI 验，推送前问用户；上测试机按安装文档走一遍要另外问。",
+    "next_action": "**2026-10-28 P112 完成，ROADMAP 上的阶段全部做完，current_task 为 null。** 用户让我直接从这台 macOS ssh 测试机操作：真实模型两次都在测试机的 Java 项目里做完了读、改、编译、测试、提交（Claude 走 fodelf 受管会话，Codex 在这台 macOS 经 bridge），结果与花费在 docs/research/2026-10-28-release-0.21.0.md 第 5 节；支持矩阵、README、安装文档、toexec 计划第 0 节按实测改了。测试机已清理（ccnm.exe、配置、状态、两个测试项目、Codex 那次 WSL 里 mise 装的东西）；fodelf 上连测试机那套（钥匙、ssh 配置、[nodes.win]、~/ccnm-p112、两次测试会话的记录）和测试机 administrators_authorized_keys 里 fodelf 那一行还在，等用户定留不留，备份文件名在记录第 4 节。留给后面、没排期的（ROADMAP P112 下）：cmd 里的裸 bash 在装了 WSL 的机器上进 WSL；ccnm cleanup 对 Windows 项目跑不了；Windows 上 rm 碰到连不上的 AI 那台等 60 秒；网络悄悄断而 TCP 不断没测。\n\n之前的交接：\n**2026-10-28 认领 P112。** 用户说继续 P112（P111 时同意过上测试机、测完清理）。先做不碰两台 Mac 已装东西的部分：测试机装 CI 打的包，这台 macOS 用同一提交的构建和临时配置跑 `ccnm mcp bridge <项目> --mode coding`（外部客户端那条路，经 sshd 到 Windows）——P112.1 用不 import ccnm 的客户端把 coding 模式的工具全调一遍，再分别让真的 Claude Code、Codex CLI 接假模型接口、经 bridge 跑完整工具回合；P112.3 里能在这条路上做的：取消正在跑的命令、模拟断网 30 秒（本机 ssh 走一个能冻住的本地转发）、会话空闲超过 10 分钟测试机不睡、结束后 powercfg 里没有请求、没有残留进程、写锁交出。受管会话（`ccnm <项目>`，要 P111 之后的 Agent 带 Controller）和 P112.2 真实模型要用户定：这台 Mac 没装 Controller、我的会话是 Background，fodelf 上是 v0.20.0。断网不改防火墙。\n\n之前的交接：\n**2026-10-28 P111 完成，current_task 为 P112（还没认领）。** 用户同意推送和上测试机。CI 40627674700 四个 job 全绿（第一次 40626856262 红在清理用例，72026d4 修）；测试机上照 docs/windows-runtime-setup.md 第 4–6 步走过，U7 不成问题，从 macOS 跑 doctor 的 Windows 各行都有结论，测完已清理。走查后又修了两处（de7435b 行名与 Windows 配置路径分隔符、8bc44d8 改正'翻遍模块'的注释），和这笔状态一起推送；那次 CI 的结果不在这里，用 `gh run list --branch main` 看。留给后面的（ROADMAP P112 下记着）：ccnm cleanup 对 Windows 项目两边都跑不了；Windows 上 rm 碰到连不上的 AI 那台等满 60 秒；runner 上列 mcp-serve 要 20 秒左右、原因没查清，windows_doctor 的清理用例可能偶尔撞 30 秒上限；测试机清理后 powercfg 多一条 [DRIVER] Legacy Kernel Caller。下一步 P112 真机验收：在测试机上装 ccnm 要单独授权；真实模型跑之前要用户点头。\n\n之前的交接：\n**2026-10-28 P111 代码和文档都做完、没推送，阶段仍是 in_progress（owner 已清空）。** 提交 999ce34 认领，4bb02a0 远端路径按写法判断（C:/… 也是绝对路径），5be42e0 ssh 提示按 Windows 改，9095d28 家目录读 USERPROFILE、init/D8，a1c51c4 Windows 审计项，03e8b77 DefaultShell 与 doctor 行，b60eb1a 放开 runtime-audit/runtime-cleanup 与 windows_doctor 测试，3c62f73 Windows 上 init 结尾，19a23f1 发版出 Windows zip、CI 同脚本打包，df93374 安装文档。本机 1202/0、Python 252/0、Windows 目标 clippy 干净；记录在 docs/research/2026-10-28-p111-windows-config-doctor.md。下一步要用户点头的两件：① 推送 ccnm main（连同 P110 的文档提交 8f76e10），看 Windows CI——windows_gate、windows_doctor 是新的，read_tools/write_guard/windows_exec 的家目录改成了 USERPROFILE，dist-windows.sh 第一次跑，红了按根因修；② 上测试机按 docs/windows-runtime-setup.md 从第 4 步起走一遍（CI 打的 zip 放进 %USERPROFILE%\\.local\\bin、init、add 一个临时项目），本机用同一提交的构建、临时 CCNM_CONFIG 跑 doctor，看真机上 Windows 那几行；U7 用 Zone.Identifier 模拟浏览器下载；测完按用户意思保留或删掉。都过了再把 P111.1–P111.3 标完成。\n\n之前的交接：\n**2026-10-28 认领 P111。** 用户说开始 P111。顺序：① 远端路径按远端规则校验：Agent 侧三处根目录检查和配置里另一台机器的 `ccnm_bin`、`claude_config_dir`、`codex_bin` 认 `/…` 和 `X:/…`，不看本机系统；ssh.rs 的'exited 127''chmod +x'按 Windows 远端改；测试走 instance_execution 的假 ssh。② Windows 上家目录取 `USERPROFILE`（不看 HOME，PowerShell 里敲的和 sshd 起的读同一份配置），`init --runtime` 在 Windows 上拒绝（Windows 只当 Runtime），`init --agent` 打出 Agent 那边该写的 `ccnm_bin`；Windows 上 `runtime_user` 写在本机节点上就在读配置时拒绝（D8）。③ runtime-audit 的 Windows 检查项：`whoami /groups` 读 Administrators（S-1-5-32-544）、令牌完整性级别（High/System 算提权）、docker-users；ssh-agent 服务；`~/.ssh` 私钥在 Windows 上用打开文件判断能不能读；Runtime 报 sshd 的 DefaultShell，doctor 从 Agent 跑时 Windows Runtime 每行都有结论（含 ccnm_bin 写法、DefaultShell 是 PowerShell 的影响）。④ runtime-cleanup 的闸门写的是 P110、P110 没做，本阶段放开（ROADMAP P111 下补记）。⑤ release 出 `ccnm-<版本>-windows-x86_64.zip` 和 sha256，CI 的 Windows job 跑同一个打包脚本；安装文档。Windows 那一半只能靠 Windows CI 验，推送前问用户；上测试机按安装文档走一遍要另外问。",
     "scope": "2026-10-08 用户要求：零额度复现 Codex 300 秒工具超时、选修法、补外部入口文档、跑门禁、更新状态、粒度提交、不推送。改动：crates/ccnm-core（provider/codex 的 TOOL_TIMEOUT 与启动参数、测试；mcp/hooks 的 MAX_TIMEOUT 改 pub(crate)；mcp/output 注释）、docs/protocol/remote-workspace-mcp-v1.md、docs/usage.md、docs/troubleshooting.md、docs/research 的 P80 记录与夹具、ROADMAP、status。没动任何机器、已装的 ccnm 与配置；Codex 0.154.0 包和源码只下到会话 scratchpad。",
     "planning_validation": {
       "at": "2026-09-08T21:22:43+09:00",

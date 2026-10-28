@@ -251,6 +251,18 @@ ccnm_bin = "/opt/homebrew/bin/ccnm"     # Runtime Node 上的实际路径
 `ccnm init --runtime <alias>` 只写别名，因为绝大多数情况默认路径就是对的。**报错里的那个路径
 就是它试过的那个**——如果它跟你在 Runtime Node 上 `which ccnm` 的结果不一样，那这行就是要补的。
 
+### Runtime 是 Windows：报 `... not found on <别名>: its Windows shell does not know that program`
+
+Agent 这份配置里没给那台 Windows 写 `ccnm_bin`，用的是默认值 `~/.local/bin/ccnm`，而 Windows 的 sshd 默认用 cmd.exe 跑命令，cmd 不认 `~`。补上全路径，正斜杠、带 `.exe`：
+
+```toml
+[nodes.runtime]
+ssh = "win-alias"
+ccnm_bin = "C:/Users/<你的账号>/.local/bin/ccnm.exe"
+```
+
+在那台 Windows 上 `ccnm init --agent <别名>` 最后一行打出的就是这一行。写了还报，就是那个路径上真没有 `ccnm.exe`：在 Windows 上 `dir %USERPROFILE%\.local\bin` 看一眼。
+
 ### `zsh: permission denied: ccnm`
 
 二进制在那儿但没有执行位。几乎总是 `scp` 传的时候丢的（OpenSSH 10.3 的 scp 不带 `-p`

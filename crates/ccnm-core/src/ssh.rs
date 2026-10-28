@@ -89,8 +89,9 @@ pub enum RemoteOutcome {
     /// ssh itself failed (exit 255) or the call timed out. The remote
     /// command never ran, or its result never arrived.
     Unreachable(String),
-    /// The remote shell could not find the command (exit 127).
-    CommandNotFound,
+    /// The remote shell could not find the command (exit 127). `windows`
+    /// when it was a Windows shell saying so, whose fix is not a POSIX one.
+    CommandNotFound { windows: bool },
     /// The remote shell found it and could not run it (exit 126).
     NotExecutable,
     /// The remote command ran; inspect the output.
@@ -412,13 +413,33 @@ impl Ssh {
             RemoteOutcome::Unreachable(why) => {
                 Error::new(unreachable, format!("ssh {}: {why}", self.alias))
             }
-            RemoteOutcome::CommandNotFound => Error::new(
+            RemoteOutcome::CommandNotFound { windows: false } => Error::new(
                 ErrorCode::Version,
                 format!(
                     "{ccnm_bin} not found on {} (the login shell exited 127)\ninstall the same ccnm build there, or set ccnm_bin for that host in config.toml",
                     self.alias
                 ),
             ),
+            // cmd.exe does not expand `~`, and a Windows path is only
+            // accepted with `/` (P106.1, P111.1): the two ways a default or
+            // copied-in value fails there, so the fix names both.
+            RemoteOutcome::CommandNotFound { windows: true } => Error::new(
+                ErrorCode::Version,
+                format!(
+                    "{ccnm_bin} not found on {}: its Windows shell does not know that program\nset ccnm_bin for that host in this machine's config.toml to the full path, with forward slashes and .exe, like C:/Users/<you>/.local/bin/ccnm.exe; a path starting with ~/ works there only while its sshd's DefaultShell is PowerShell",
+                    self.alias
+                ),
+            ),
+            // No mode bits to fix on Windows.
+            RemoteOutcome::NotExecutable if crate::paths::is_windows_spelling(ccnm_bin) => {
+                Error::new(
+                    ErrorCode::Version,
+                    format!(
+                        "{ccnm_bin} on {} is there but could not be run\ncheck that the account ssh lands as there may read and run it",
+                        self.alias
+                    ),
+                )
+            }
             RemoteOutcome::NotExecutable => Error::new(
                 ErrorCode::Version,
                 format!(
@@ -536,7 +557,7 @@ pub fn classify(out: Output) -> RemoteOutcome {
                 .unwrap_or("ssh exited 255 without a message");
             RemoteOutcome::Unreachable(why.to_string())
         }
-        Some(127) => RemoteOutcome::CommandNotFound,
+        Some(127) => RemoteOutcome::CommandNotFound { windows: false },
         // A shell says 126 when it found the file and could not execute
         // it. For ccnm that is almost always one thing: the binary was
         // copied over with a tool that did not carry the mode across, and
@@ -581,7 +602,7 @@ fn shell_complaint(out: &Output) -> Option<RemoteOutcome> {
         return Some(RemoteOutcome::NotExecutable);
     }
     if lower.contains("command not found") || lower.contains("no such file or directory") {
-        return Some(RemoteOutcome::CommandNotFound);
+        return Some(RemoteOutcome::CommandNotFound { windows: false });
     }
     // A Windows Runtime's shell exits 1 for a program it cannot find (P106),
     // cmd.exe and PowerShell each in their own words. PowerShell wraps its
@@ -591,7 +612,7 @@ fn shell_complaint(out: &Output) -> Option<RemoteOutcome> {
     if joined.contains("is not recognized as an internal or external command")
         || joined.contains("is not recognized as the name of a cmdlet")
     {
-        return Some(RemoteOutcome::CommandNotFound);
+        return Some(RemoteOutcome::CommandNotFound { windows: true });
     }
     None
 }
@@ -891,7 +912,7 @@ mod tests {
         }
         assert!(matches!(
             classify(Output::exited(127, "")),
-            RemoteOutcome::CommandNotFound
+            RemoteOutcome::CommandNotFound { windows: false }
         ));
         // 126 is not 127, and the difference is the whole diagnosis: the
         // file is there, the mode is wrong.
@@ -929,11 +950,11 @@ mod tests {
         ));
         assert!(matches!(
             complaint("zsh:1: command not found: ccnm"),
-            RemoteOutcome::CommandNotFound
+            RemoteOutcome::CommandNotFound { windows: false }
         ));
         assert!(matches!(
             complaint("zsh:1: no such file or directory: /opt/bin/ccnm"),
-            RemoteOutcome::CommandNotFound
+            RemoteOutcome::CommandNotFound { windows: false }
         ));
         // A ccnm that ran and refused is not a shell complaint, however
         // its stderr reads: it has more to say and says it itself.
@@ -953,13 +974,13 @@ mod tests {
             windows(
                 "'C:/Users/xdw/.local/bin/ccnm.exe' is not recognized as an internal or external command,\r\noperable program or batch file.\r\n"
             ),
-            RemoteOutcome::CommandNotFound
+            RemoteOutcome::CommandNotFound { windows: true }
         ));
         assert!(matches!(
             windows(
                 "C:/Users/xdw/.local/bin/ccnm.exe : The term 'C:/Users/xdw/.local/bin/ccnm.exe' is not recognized as the name of a cmdle\r\nt, function, script file, or operable program. Check the spelling of the name, or if a path was included, verify that t\r\nhe path is correct and try again.\r\n"
             ),
-            RemoteOutcome::CommandNotFound
+            RemoteOutcome::CommandNotFound { windows: true }
         ));
         // A real success is left alone even with chatter on stderr.
         let mut ok = Output::exited(0, "{\"protocol\":1}");
@@ -1093,5 +1114,37 @@ mod tests {
 
         let e = call().unwrap_err();
         assert_eq!(e.code(), ErrorCode::Version);
+    }
+
+    /// A Windows Runtime (P111.1): not found is a ccnm_bin to write out in
+    /// full, and not runnable has no chmod to suggest.
+    #[test]
+    fn a_windows_runtimes_failures_say_what_fixes_them_there() {
+        let fake = FakeRunner::new();
+        let mut missing = Output::exited(1, "");
+        missing.stderr = b"'~/.local/bin/ccnm' is not recognized as an internal or external command,\r\noperable program or batch file.\r\n".to_vec();
+        fake.push(missing);
+        fake.push(Output::exited(126, ""));
+        let call = |bin: &str| {
+            ssh().with_ccnm_bin(bin).call_ccnm::<Ping, Ping>(
+                &fake,
+                Master::Reuse,
+                &["internal", "hello"],
+                &Ping { protocol: 1, n: 0 },
+                Duration::from_secs(1),
+                ErrorCode::RuntimeUnreachable,
+            )
+        };
+        let e = call("~/.local/bin/ccnm").unwrap_err();
+        assert_eq!(e.code(), ErrorCode::Version);
+        assert!(!e.message().contains("127"), "{e}");
+        assert!(
+            e.message()
+                .contains("forward slashes and .exe, like C:/Users/<you>/.local/bin/ccnm.exe"),
+            "{e}"
+        );
+        let e = call("C:/Users/xdw/.local/bin/ccnm.exe").unwrap_err();
+        assert!(e.message().contains("could not be run"), "{e}");
+        assert!(!e.message().contains("chmod"), "{e}");
     }
 }

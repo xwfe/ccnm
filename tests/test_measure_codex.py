@@ -30,9 +30,13 @@ class MeasurementTests(unittest.TestCase):
             self.assertEqual(result["exit_code"], 0)
 
     def test_timeout_preserves_output_and_stops_the_child(self):
+        # The child has to get as far as printing before the timeout: 0.2 s
+        # was not always enough for a Python to start on a busy macOS runner
+        # (the v0.21.1 release gate, 2026-10-28, caught an empty stdout).
+        # It still sleeps ten times longer than this, so it still times out.
         result = probe.run([
             sys.executable, "-c", "import time; print('started', flush=True); time.sleep(30)",
-        ], timeout=0.2)
+        ], timeout=3)
         self.assertTrue(result["timed_out"])
         self.assertNotEqual(result["exit_code"], 0)
         self.assertIn("started", result["stdout"])

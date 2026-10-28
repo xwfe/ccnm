@@ -38,6 +38,7 @@ impl Fixture {
         Fixture { dir }
     }
 
+    /// `XDG_STATE_HOME`; ccnm keeps its own under `ccnm\` in it.
     fn state(&self) -> PathBuf {
         self.dir.join("state")
     }
@@ -138,7 +139,12 @@ fn the_audit_answers_every_row_on_windows() {
 fn cleanup_removes_an_ended_sessions_output() {
     let f = Fixture::new("cleanup");
     let id = ccnm_core::session::new_id();
-    let output = f.state().join("sessions").join(&id).join("output");
+    let output = f
+        .state()
+        .join("ccnm")
+        .join("sessions")
+        .join(&id)
+        .join("output");
     std::fs::create_dir_all(output.join("c1")).unwrap();
     std::fs::write(output.join("c1/stdout"), "done\n").unwrap();
 
@@ -157,7 +163,11 @@ fn cleanup_removes_an_ended_sessions_output() {
             answer(&f.ask("runtime-cleanup", &payload::encode(&request).unwrap()));
         report
     };
+    // How long the Runtime takes to say which sessions are served (the
+    // PowerShell scan inside it). It ran into its 30-second limit here once.
+    let asked = std::time::Instant::now();
     let preview = ask(None);
+    eprintln!("cleanup preview took {:?}", asked.elapsed());
     let [item] = &preview.items[..] else {
         panic!("{preview:?}");
     };

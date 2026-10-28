@@ -779,9 +779,9 @@ CCNM_E_INVALID_ARGS: no output kept for r-0193f2c8a1b74e05
 | `CCNM_E_VERSION: Codex <版本> has not been measured` | Codex 只认 0.154.0 | 和起会话一样，换回 0.154.0 |
 | `CCNM_E_NOT_READY: Codex did not report its limits: …` | 后面是 Codex 自己的原话，常见是 API key 登录（没有订阅额度） | 按原话处理 |
 
-### 换机器（`--on`）时的报错
+### 换机器（`--on`）和带交接时的报错
 
-规则本身见[使用说明：换一台 AI 机器](usage.md#换一台-ai-机器--on)，这里只列报错。
+规则本身见[使用说明：换一台 AI 机器](usage.md#换一台-ai-机器--on)和[新起会话时带交接](usage.md#长对话压缩几次之后换个新对话交接带过去)，这里只列报错。
 
 | 报错 | 意思 | 怎么办 |
 | --- | --- | --- |
@@ -792,6 +792,8 @@ CCNM_E_INVALID_ARGS: no output kept for r-0193f2c8a1b74e05
 | `instance reference names another Agent Node` | 实例写法的项目换到了另一台，可那台自己配置里的 `this` 和项目机器给它起的节点名不一样 | 把两边改成同一个名字：项目机器 `[nodes.<名字>]` 的名字 = 那台的 `this` |
 | `on an AI machine --on can only pick one of its own instances` | 在 AI 机器上敲的；它不存项目列表，没法把项目派到别的机器 | 去项目机器上敲同一条命令 |
 | 会话起来了，MCP 日志里 `Agent identity node does not match the Runtime workspace reference` | 项目机器上的 ccnm 还是 v0.21.x 或更早，只认项目默认那一台 | 项目机器换成同一个版本 |
+| `cannot fetch what the last session on <机器> left (…)`（中文是"取不到 … 上一次会话留下的交接"） | 上一次会话所在的那台连不上，或者它的 ccnm 太旧（括号里是原因） | 新会话照样起，只是不带。要带就等那台能连上再起，或者在新会话里把交接贴给模型 |
+| `the ccnm on <机器> is too old to take a handoff; starting without it` | 新会话所在那台的 ccnm 比项目机器旧，不认识带过去的字段 | 会话已经起来了，只是没带；两台换成同一个版本 |
 
 ### 合上笔记本睡一觉，第二天某个项目的工具连不上
 

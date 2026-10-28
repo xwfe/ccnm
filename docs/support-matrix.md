@@ -41,6 +41,7 @@
 | 配置 / 入口 | 阶段初验标签 | 按日期追加的证据与限制 |
 | --- | --- | --- |
 | legacy Claude，remote SSH MCP，从 Runtime Node 发起 | 支持 | 旧公开命令、Claude v1 wire 与 remote CLI golden 保持兼容；双机真机跑通。 |
+| 换一台 AI 机器（`--on`）、新会话带上上一次的交接（P114、P115） | 只有离线证据 | 2026-10-28：假 ssh 的 CLI 集成测试和单元测试（[P114 记录](research/2026-10-28-p114-on.md)、[P115 记录](research/2026-10-28-p115-carry.md)）；真机零额度没验，等选第二台 AI 机器。AI 机器终端上起的会话、Windows 项目机器不带交接；从 Codex 会话换走时什么都不带 |
 | legacy Claude，remote SSH MCP，从 Agent Node 发起 | 支持 | `run` 先委托 Runtime 解析 workspace，`attach/status/result/stop` 继续在 Agent 本机管理已有 session；`--print` 仍需在 Runtime Node 执行。 |
 | Claude Agent Instance，remote SSH MCP | 支持 | 默认 instance 与 `--on <实例>`（原 `--agent`）、print/interactive、doctor、精确 session、profile 隔离均有测试；公共双机 dogfood 已在授权环境真机通过，见下方门禁结果。 |
 | Codex Agent Instance，remote SSH MCP | 支持 | 仅接受实测的 Codex CLI `0.154.0`（见下方版本 pin）；公共入口已在授权双机真机验证。 |

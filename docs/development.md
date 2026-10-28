@@ -348,12 +348,13 @@ ci.yml       每次 push / PR：
              linux-runtime  (ubuntu-24.04)  clippy + 全部测试 + ci_gates.py + 构建 Linux 发布物
              msrv           (ubuntu-24.04)  按 Cargo.toml 的 rust-version 编译全部 targets
 release.yml  推 tag（v*）：
-             macos    门禁 → dist.sh       → 校验 tag 和版本号一致 → 上传
-             linux    门禁 → dist-linux.sh → 校验 tag 和版本号一致 → 上传
-             publish  两个都绿之后，用两份产物建一个 release
+             macos    门禁 → dist.sh         → 校验 tag 和版本号一致 → 上传
+             linux    门禁 → dist-linux.sh   → 校验 tag 和版本号一致 → 上传
+             windows  门禁 → dist-windows.sh → 校验 tag 和版本号一致 → 上传（P111 起）
+             publish  三个都绿之后，用三份产物建一个 release
 ```
 
-两个 release job 的「门禁」是同一个步骤里的 Rust 门禁加 `scripts/ci_gates.py`，排在构建和上传之前；任何一条命令失败，这一步就停，后面不构建、不上传，`publish` 也等不到两个都绿。`tests/test_ci_gates.py` 钉住这个顺序、「没有 `continue-on-error` / `always()`」和 `publish` 依赖两个 job，改工作流时挪错了它会红。**`ci_gates.py` 在 GitHub runner 上的实际结果见 [P53 记录](research/2026-09-25-p53-ci-gates.md)**——本机跑通不等于 runner 上跑通。
+macOS、Linux 两个 release job 的「门禁」是同一个步骤里的 Rust 门禁加 `scripts/ci_gates.py`，Windows 的是 CI 里 `windows-runtime` 那一套命令（逐条一样，`tests/test_ci_gates.py` 比对），都排在构建和上传之前；任何一条命令失败，这一步就停，后面不构建、不上传，`publish` 也等不到三个都绿。`tests/test_ci_gates.py` 钉住这个顺序、「没有 `continue-on-error` / `always()`」和 `publish` 依赖两个 job，改工作流时挪错了它会红。**`ci_gates.py` 在 GitHub runner 上的实际结果见 [P53 记录](research/2026-09-25-p53-ci-gates.md)**——本机跑通不等于 runner 上跑通。
 
 **Linux job 那一栏绿了，意思是"代码在 Linux 上编得过、测试过得去"，不是"Agent 那一半支持
 Linux"。** 别因为这个 job 绿了就去改支持矩阵。它存在的理由很具体：P12 在真实 Debian 13 上第一次

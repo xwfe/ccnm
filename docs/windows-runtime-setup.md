@@ -2,7 +2,7 @@
 
 本页从零搭一台 Windows 的 Runtime Node（放项目、跑工具的那台）。跑 AI 的那台（Agent Node）照旧是 macOS 或 Linux，按[快速开始](getting-started.md)装好；Windows 不能当跑 AI 的那台，也不能在 Windows 上敲 `ccnm <项目>` 起会话。
 
-> **现状：** Windows 这一半还在验收（P112），做到哪一步以[支持矩阵](support-matrix.md)里"Windows 当项目机器"那一段为准。2026-10-28 在一台 Win11（中文系统）上用 CI 打的包照着第 4–6 步走过一遍，结果见 [P111 记录](research/2026-10-28-p111-windows-config-doctor.md)第 4 节；第 1–3 步那台机器早就装好了，没有重做，winget 那两条也没在那儿跑过。
+> **现状：** 2026-10-28 在一台 Win11（中文系统）上真机验收过（P112），真实的 Claude Code 和 Codex 都在上面做完过改代码、编译、跑测试、提交；验到哪一步、哪些没验，以[支持矩阵](support-matrix.md)里"Windows 当项目机器"那一段为准。本页第 4–6 步在那台机器上照着走过（[P111 记录](research/2026-10-28-p111-windows-config-doctor.md)第 4 节）；第 1–3 步那台机器早就装好了，没有重做，winget 那两条也没在那儿跑过。
 
 下面的命令分两种：标了"在 Windows 上"的，在 Windows 的 **PowerShell** 里敲；标了"在 AI 那台"的，在 macOS / Linux 的终端里敲。
 
@@ -180,6 +180,8 @@ Windows 那台的几行通常是这样：
 - **沙箱（`exec_sandbox`）开不了**，开了会话直接被拒。
 - **`ccnm cleanup` 对 Windows 上的项目用不了**：AI 那台会说"去定义它的那台跑"，而 Windows 上不让跑这个命令（它要从 Windows 连 AI 那台）。旧的命令输出照样会自己删：最后一次运行过去 7 天、没有会话在用的，下次有会话连进来时删掉（[运维手册](operations.md)"Runtime 上的 `output/` 例外，它自己清"那段）。
 - **在 Windows 上 `ccnm rm` 会先试着去 AI 那台停掉这个项目的会话**，连不上就只删配置。连不上时最多要等 60 秒：实测那台的 ssh 客户端碰到连不上的别名一直挂着，不认 `ConnectTimeout`，是 ccnm 自己的 60 秒把它停下的。先在 AI 那台 `ccnm stop <项目>`，再在 Windows 上 `ccnm rm`，就不用等。
+- **装了 WSL 的机器上，模型用 `cmd` 跑 `bash`，进的是 WSL，不是 Git Bash。** PATH 上排第一的 `bash` 是 `C:\Windows\System32\bash.exe`，那是 WSL 的启动器。症状是构建报找不到 `javac`、`cargo` 之类：WSL 里没装这些。WSL 里要是有 mise 之类会自动装工具的东西，还会顺手装一堆（验收时一次装了 233 MB）。`shell` 不受影响，它只用 Git Bash。所以在项目的 `CLAUDE.md` / `AGENTS.md` 里写一句"bash 命令用 exec_command 的 `shell`，不要在 `cmd` 里写 `bash`"，或者直接给 Git Bash 的全路径。
+- **Rust 项目要装 Visual Studio 生成工具**（"使用 C++ 的桌面开发"）才能链接。没装的话 `cargo check` 能过，`cargo build`、`cargo test` 报 ``linker `link.exe` not found``。这是 Rust 在 Windows 上的要求，跟 ccnm 无关。
 - **Windows Defender** 对搜代码、读小文件的拖慢实测很小，不用为此加排除；编译这类写多读多的场景还没量。
 
 ## 出错时

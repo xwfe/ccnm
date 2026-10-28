@@ -13,7 +13,7 @@
 
 **放项目的机器**（Runtime Node）：
 
-- macOS，或 x86_64 的 Linux；Windows 还在验收，装法单独写在 [Windows 安装](windows-runtime-setup.md)；
+- macOS，或 x86_64 的 Linux；放项目的那台也可以是 Windows，装法单独写在 [Windows 安装](windows-runtime-setup.md)；
 - 项目目录、`git`，以及项目自己要用的编译工具；
 - `ripgrep`（命令名 `rg`）。AI 搜代码靠它，doctor 不查这一项。用 brew 或 apt 装最省事；装好后在跑 AI 的那台敲 `ssh <连项目那台的别名> 'command -v rg'`，要打出一个路径（ccnm 用的是这种非交互 SSH 看到的 `PATH`，你登录进去能用不算数）。没找到的话，模型第一次搜代码时报 `ripgrep is not installed on the Runtime Node…`。
 

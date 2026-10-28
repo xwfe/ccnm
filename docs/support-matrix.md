@@ -9,7 +9,7 @@
 | 能力 | 当前结论 | 尚不能宣称 |
 | --- | --- | --- |
 | Managed Claude / Codex | 两 Provider 有历史双机证据；Codex 受管 adapter 仍 pin `0.154.0`。**P62（2026-09-30）**：Claude 在 macOS Agent（fodelf）→ Debian 13 Runtime（`ccrun`）上用 main 的候选构建跑通交互闭环，含审批中与命令运行中的 detach/reattach 和精确停止（[记录](research/2026-09-30-p62-real-machine.md) 4.1）。**P62 续跑（2026-10-04，v0.10.1）**：Codex 在本机 Agent → 同一台 Runtime 上先红后绿、ccrun 独立核对、精确停止第一次就确认且 `ccnm log` 记成被停止；Claude 的精确停止同样一次确认（[P62 续跑记录](research/2026-10-04-p62-resume-release.md) 5.1、5.7） | 零额度测过 `0.155.1` 不代表受管支持；不是全部新工具都已验完整 SSH 链；P62 查出的交互 stop 先报 NOT_READY、`ccnm log` 把被停止的会话写成 `failed to start`（F4）P64 修好，续跑在两个 Provider 上真机复验通过；**受管 Codex 会话执行 `exec_command` 前原来不问人**（F21："每次都问"靠的是只有 Claude Code 认的键）；P71（2026-10-07）起会问——Agent 按 Runtime 标的工具给 Codex 设 `approval_mode="prompt"`，会话里切到 Full Access 就不再问，doctor 的 `Command approval` 行照此说明（Codex 0.154.0 零额度实测加离线证据；2026-10-07 真机复验用真实模型跑过，问、放行、取消都对，[记录](research/2026-10-07-p71-real-machine-recheck.md)）；会话里选过一次 Approve for me 会被 Codex 记进 profile，v0.11.0 及之前的 Agent 上之后的受管会话都不再问（F27），v0.11.1（P72）起启动参数盖过它（离线测试、零额度实测，2026-10-07 在 v0.11.2 上用真实模型真机复验：profile 里写着 `auto_review` 时新会话照样问人，会话里切走只管当前会话，[记录](research/2026-10-07-p72-real-machine-recheck.md)）；doctor 的 `Codex authentication` 只看本地登录状态，令牌被吊销时仍是 OK（F5），P65 起这一行自己写明这一点，没有变成真的校验 |
-| 平台与拓扑 | Agent：macOS 有证据；Linux v0.12.0（P74）起已实现（systemd 用户服务），Debian 13 上零额度真机与一次真实 Codex 会话通过（经代理，那台出口地区不受 OpenAI 支持）。Runtime 的 macOS、Debian 13 x86_64 有证据 | Linux Agent 上的 Claude Code（没用真实模型跑过）、Windows、一个账号同时当两边；Linux curl/容器探针不等于扩展了完整支持平台 |
+| 平台与拓扑 | Agent：macOS 有证据；Linux v0.12.0（P74）起已实现（systemd 用户服务），Debian 13 上零额度真机与一次真实 Codex 会话通过（经代理，那台出口地区不受 OpenAI 支持）。Runtime 的 macOS、Debian 13 x86_64 有证据；Windows 11 x86_64 当 Runtime 在一台测试机上验收过（P112，见下文"Windows 当项目机器"那一段） | Linux Agent 上的 Claude Code（没用真实模型跑过）、Windows 当 Agent、Windows 10 和 ARM64、一个账号同时当两边；Linux curl/容器探针不等于扩展了完整支持平台 |
 | PocketShell 等第三方终端 | 复用公共 CLI/SSH/PTY；[接入条件](usage.md#通过第三方终端使用)，不内建移动/Web 入口，不绑定手机 Tailscale | 特定客户端/手机版本已通过，或所有终端行为完全一致 |
 | Runtime 工具表 | 共 12 个工具定义；read 模式 7 个，coding 通常 11 个，有可转接服务才出现第 12 个 | 固定“七/八/十二工具”适用于所有连接；以实际 `tools/list` 为准 |
 | shell、搜索、图片与项目 skills | 已实现，有各自的离线测试和部分真实模型记录 | 每个入口/平台/Provider 都有同等级证据；不能再统一标为“只有离线证据” |
@@ -68,7 +68,13 @@
 
 **Agent 那一侧：macOS 有真机证据，Linux 是 v0.12.0（P74）起实现的，Debian 13 上零额度真机通过（假模型，含重启 Controller 不断会话），并用真实 Codex 跑过一次交互会话（问、放行、取消都对）；Claude Code 当 Linux Agent 没用真实模型跑过。** macOS 上 Controller 是 launchd LaunchAgent，起会话前要求 `launchctl managername` 是 `Aqua`（为登录钥匙串设的）；Linux 上它是 systemd 用户服务，不要求图形会话——官方 CLI 的登录在文件里，由 CLI 自己的 `auth status` 证明——Controller 在会话信息里自报平台，所以在 macOS 的 Runtime 上读 Linux Agent 也按 Linux 判（[P74 记录](research/2026-10-07-p74-linux-agent.md)）。v0.11.2 及之前 Linux 上 `controller install` 装不上、起会话被拒。Windows 和其他官方 CLI 版本都没验收。P66 起 `ccnm controller install` 把非默认的配置与状态位置（`--config`/`CCNM_CONFIG`、`XDG_CONFIG_HOME`、`XDG_STATE_HOME`）写进 plist，2026-10-04 在真的 launchd 下装过一次（[P62 续跑记录](research/2026-10-04-p62-resume-release.md) 4.1）；一个账号仍只能有一个 Controller（Label 固定）。CI 有一个 Linux job，但它是 **Runtime 门禁**：绿的意思是代码在 Linux 上编得过、测试过得去，不是说 Agent 那一半在那儿能跑。
 
-**Windows 当项目机器（Runtime）：还在分阶段做（P106–P112），没有验收，上面那张表不因此改。** 这里只记已经定下来、和 macOS / Linux 不一样的地方：
+**Windows 当项目机器（Runtime）：P106–P112 做完，2026-10-28 在一台 Win11 测试机上真机验收过（P112）。** 验收到哪一步：
+
+- **验过的**（v0.21.0 发布包；测试机是 Win11 x86_64 中文系统，sshd 默认 shell 是 PowerShell，账号在 Administrators 组里；Agent 是 macOS）：零额度部分，中立客户端经 bridge 把 12 个工具全调了一遍，19 项全过；真的 Claude Code 2.1.310、Codex 0.164.0 接假模型，各跑完一个完整工具回合；受管会话从 Controller 在图形登录会话里的 macOS Agent 起，`/mcp` 显示 12 个工具，`ccnm stop` 后 5 秒内收干净。真实模型部分，受管 Claude Code（Opus 5.5）和经 bridge 的 Codex（gpt-6-astra）在一个 Java 8 项目里各做完一次读代码、改代码、编译、跑测试、提交；两次提交后都在 Windows 上重新构建复核，全过。连接冻住 30 秒后能接着用；连接被掐断后 5 秒内，Windows 上的进程全部结束、写锁交出；取消命令约 1 秒生效；会话期间 `powercfg /requests` 里有 ccnm 的防睡眠请求，结束就撤掉（[记录](research/2026-10-28-release-0.21.0.md)第 3–5 节）。
+- **没验的**：网络悄悄断了、TCP 却不断开（要改防火墙才测得了）；"空闲 10 分钟不睡"能不能单独归功于 ccnm（那台机器上别的程序也在请求别睡）；sshd 默认 shell 是 cmd 的机器（P106.1 测过同样形状的命令）；Windows 10、ARM64、多台机器；Defender 对编译的影响。
+- **模型在 `cmd` 里写 `bash`，在装了 WSL 的机器上进的是 WSL。** PATH 上第一个 `bash` 是 `System32\bash.exe`，也就是 WSL 的启动器。`shell` 不受影响，它只用 Git Bash。验收时 Codex 就撞上了：WSL 里的 mise 顺手装了 233 MB 工具（[记录](research/2026-10-28-release-0.21.0.md)第 5.1 节）。改法还没定。
+
+下面这些是已经定下来、和 macOS / Linux 不一样的地方：
 
 - **mcp-serve 一结束，它起的后台命令全部跟着结束，被强杀也一样。** Windows 自带的 sshd 把每个会话放进一个带 `KILL_ON_JOB_CLOSE` 的 Job，会话的 shell 一退出，整棵进程树都被收掉（[P106 记录](research/2026-10-24-p106-windows-preresearch.md) P106.3）。macOS、Linux 上 mcp-serve 被强杀之后后台命令还活着（[core-hardening.md](plan/core-hardening.md) 的 AUTH-02）。
 - **停命令是结束这条命令的 Job**（P110）：它起的进程不管父进程还在不在都一起结束，Git Bash 起的程序也是（那些在 Windows 看来没有活着的父进程，`taskkill /T` 收不到）。命令结束后还在跑的进程活到会话结束，和 Linux 上 P84 收的时机一样。

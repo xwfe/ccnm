@@ -493,11 +493,11 @@ hidden = ["exa-search"]          # 这几个不给，哪一类都一样
 git_bash = "D:/scoop/apps/git/current/bin/bash.exe"
 ```
 
-**Windows 项目机器上 `exec_command` 的 `shell` 用哪个 bash。** 一般不用写：ccnm 先找 `%ProgramFiles%\Git\bin\bash.exe`（Git for Windows 安装程序放的位置），再从 PATH 上的 `git.exe` 往上找它所在那份安装的 `bin\bash.exe`（scoop 装的 `apps\git\current\cmd\git.exe` 就是这么找到的），都找不到才看这里。用正斜杠写，免得 TOML 把 `\` 当转义。
+**Windows 项目机器上 `exec_command` 的 `shell` 用哪个 bash；`cmd` 里写不带路径的 `bash` 时也是它（v0.21.1 起）。** 一般不用写：ccnm 先找 `%ProgramFiles%\Git\bin\bash.exe`（Git for Windows 安装程序放的位置），再从 PATH 上的 `git.exe` 往上找它所在那份安装的 `bin\bash.exe`（scoop 装的 `apps\git\current\cmd\git.exe` 就是这么找到的），都找不到才看这里。用正斜杠写，免得 TOML 把 `\` 当转义。
 
-**不用 PATH 上第一个 `bash.exe`**：装了 WSL 的机器上那是 `C:\Windows\System32\bash.exe`，它起的是一个 Linux 发行版，不是 Git Bash。
+**不用 PATH 上第一个 `bash.exe`**：装了 WSL 的机器上那是 `C:\Windows\System32\bash.exe`，它起的是一个 Linux 发行版，不是 Git Bash。模型在 `cmd` 里写 `["bash", "build.sh"]` 时也一样换成这里的 Git Bash，PATH 上第一个不是它时结果里多一行说明；v0.21.0 及以前照 PATH 找，会进 WSL。真要跑 WSL 的，写全路径或者用 `wsl.exe`。
 
-三处都找不到时，`shell` 报"没找到 Git for Windows 的 bash"，并提示改用 `cmd` 直接跑程序；`cmd` 不受影响。macOS、Linux 不读这一项，`shell` 照旧用 PATH 上的 `bash`。
+三处都找不到时，`shell` 报"没找到 Git for Windows 的 bash"，并提示改用 `cmd` 直接跑程序；`cmd` 里的 `bash` 照旧按 PATH 找。macOS、Linux 不读这一项，`shell` 照旧用 PATH 上的 `bash`。
 
 ## 受管 Claude 会话的自动压缩
 

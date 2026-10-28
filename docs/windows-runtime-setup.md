@@ -65,7 +65,7 @@ ssh -o BatchMode=yes win whoami
 
 ## 3. 装 Git for Windows 和 ripgrep
 
-- **Git for Windows**：模型的 `shell` 命令在它带的 Git Bash 里跑（和 Claude Code 在 Windows 上的做法一样）。没装的话，`shell` 报"没找到 Git for Windows 的 bash"，只能用 `cmd` 直接跑程序。
+- **Git for Windows**：模型的 `shell` 命令在它带的 Git Bash 里跑（和 Claude Code 在 Windows 上的做法一样），`cmd` 里写的 `bash` 也是它。没装的话，`shell` 报"没找到 Git for Windows 的 bash"，只能用 `cmd` 直接跑程序。
 - **ripgrep**（`rg`）：模型搜代码靠它。没装的话，第一次搜代码时报 `ripgrep is not installed on the Runtime Node…`。
 
 用 winget 装最省事（在 Windows 上）：
@@ -180,7 +180,7 @@ Windows 那台的几行通常是这样：
 - **沙箱（`exec_sandbox`）开不了**，开了会话直接被拒。
 - **`ccnm cleanup` 对 Windows 上的项目用不了**：AI 那台会说"去定义它的那台跑"，而 Windows 上不让跑这个命令（它要从 Windows 连 AI 那台）。旧的命令输出照样会自己删：最后一次运行过去 7 天、没有会话在用的，下次有会话连进来时删掉（[运维手册](operations.md)"Runtime 上的 `output/` 例外，它自己清"那段）。
 - **在 Windows 上 `ccnm rm` 会先试着去 AI 那台停掉这个项目的会话**，连不上就只删配置。连不上时最多要等 60 秒：实测那台的 ssh 客户端碰到连不上的别名一直挂着，不认 `ConnectTimeout`，是 ccnm 自己的 60 秒把它停下的。先在 AI 那台 `ccnm stop <项目>`，再在 Windows 上 `ccnm rm`，就不用等。
-- **装了 WSL 的机器上，模型用 `cmd` 跑 `bash`，进的是 WSL，不是 Git Bash。** PATH 上排第一的 `bash` 是 `C:\Windows\System32\bash.exe`，那是 WSL 的启动器。症状是构建报找不到 `javac`、`cargo` 之类：WSL 里没装这些。WSL 里要是有 mise 之类会自动装工具的东西，还会顺手装一堆（验收时一次装了 233 MB）。`shell` 不受影响，它只用 Git Bash。所以在项目的 `CLAUDE.md` / `AGENTS.md` 里写一句"bash 命令用 exec_command 的 `shell`，不要在 `cmd` 里写 `bash`"，或者直接给 Git Bash 的全路径。
+- **模型在 `cmd` 里写的 `bash` 是 Git Bash，不是 PATH 上第一个 `bash`**（v0.21.1 起）。装了 WSL 的机器上，PATH 上排第一的 `bash` 是 `C:\Windows\System32\bash.exe`，那是 WSL 的启动器；ccnm 把不带路径的 `bash`、`bash.exe` 换成 `shell` 用的那个 Git Bash，结果里多一行 `bash ran as Git for Windows' bash (…), not as the first bash on PATH (…, which starts WSL)`。真要跑 WSL 的，写全路径或用 `wsl.exe`。v0.21.0 没有这一步，`["bash", "build.sh"]` 会进 WSL：构建报找不到 `javac`、`cargo` 之类，WSL 里要是有 mise 之类会自动装工具的东西，还会顺手装一堆（验收时一次装了 233 MB）。还在用 v0.21.0 的，在项目的 `CLAUDE.md` / `AGENTS.md` 里写一句"bash 命令用 exec_command 的 `shell`"。
 - **Rust 项目要装 Visual Studio 生成工具**（"使用 C++ 的桌面开发"）才能链接。没装的话 `cargo check` 能过，`cargo build`、`cargo test` 报 ``linker `link.exe` not found``。这是 Rust 在 Windows 上的要求，跟 ccnm 无关。
 - **Windows Defender** 对搜代码、读小文件的拖慢实测很小，不用为此加排除；编译这类写多读多的场景还没量。
 

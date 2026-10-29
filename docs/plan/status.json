@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-10-29T20:45:00+09:00",
-  "current_task": "P114",
+  "last_updated": "2026-10-30T01:04:00+09:00",
+  "current_task": null,
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
     "source": "docs/research/codex-internal-wiring-2026-09-07.md",
@@ -5631,17 +5631,18 @@
     {
       "id": "P114",
       "title": "--on 选机器和实例：一个项目能在任何一台登记过的 AI 机器上跑",
-      "status": "blocked",
+      "status": "completed",
       "depends_on": [
         "P113"
       ],
       "owner": null,
       "started_at": "2026-10-28T22:10:00+09:00",
-      "last_updated": "2026-10-28T23:40:00+09:00",
+      "last_updated": "2026-10-30T01:04:00+09:00",
       "completed_criteria": [
         "P114.1",
         "P114.2",
         "P114.3",
+        "P114.4",
         "P114.5"
       ],
       "evidence": [
@@ -5655,33 +5656,34 @@
           ],
           "ref": "docs/research/2026-10-28-p114-on.md",
           "result": "本机 macOS arm64：新测试先在旧代码上红 8/8（tests/on.rs 7 条 + instance_config 绑定 1 条，产品源码 stash 后跑），恢复后全绿；on.rs 单元测试 12 条；fmt、clippy -D warnings 干净；cargo test --workspace 1224/0；ci_gates.py 计划、协议、Python 252/0 无跳过；x86_64-pc-windows-msvc 三条 clippy 干净。未推送、无 CI。终端里的 [y/N] 提问只走了非终端那条；实例写法项目换机器只验了项目机器侧绑定。"
-        }
-      ],
-      "blockers": [
+        },
         {
+          "kind": "real_nodes",
           "criteria": [
             "P114.4"
           ],
-          "reason": "零额度真机要第二台 AI 机器：装着能当 Agent 的 ccnm、官方 CLI 登录、指回项目机器的配置（ccnm init --runtime），项目机器要用开发构建加临时配置。用哪台、动不动它的配置要用户定。",
-          "unblock": "用户选定第二台 AI 机器并同意在它上面写/改 ccnm 配置（测完按备份恢复）后，项目机器用同一提交的构建先后 --on 两台起会话、mcp probe 与 status 看工具落到同一目录、两边不能同时写，然后清理。"
+          "ref": "docs/research/2026-10-30-p114-p115-sim.md",
+          "result": "用户 2026-10-30 定第二台 AI 机器\"简单模拟即可\"：同一台物理 AI 机器（macOS arm64，Claude Code 2.1.312）上两份并存部署 a、b（各自配置、数据目录、TMUX_TMPDIR、另起 Label 的 Controller、接本机假模型的 Claude 配置目录），项目机器用临时 Runtime 配置，日用配置都没改。零额度：--on a 时假模型经 apply_patch/exec_command 把文件写进项目机器的项目目录；a 开着时不在终端里 --on b 退出码 33（CCNM_E_POLICY，给出 stop 与重起的命令），从 b 开 coding 连接报 workspace write guard is busy；停 a 后 --on b，b 的工具写进同一个目录。顺带查出并修了 legacy claude_config_dir 起会话时被丢（v0.10.0 起），模拟用的是带修复的发布构建、只放在临时目录。两份部署同在一台机器、共用一个 ssh 别名，提示里机器名相同；两台真不同的机器没验。测完两边临时目录删净，日用 Controller pid 前后一致。"
         }
-      ]
+      ],
+      "blockers": []
     },
     {
       "id": "P115",
       "title": "项目数据目录与跨机器交接",
-      "status": "blocked",
+      "status": "completed",
       "depends_on": [
         "P114"
       ],
       "owner": null,
       "started_at": "2026-10-28T23:45:00+09:00",
-      "last_updated": "2026-10-29T01:20:00+09:00",
+      "last_updated": "2026-10-30T01:04:00+09:00",
       "completed_criteria": [
         "P115.1",
         "P115.2",
         "P115.3",
         "P115.4",
+        "P115.5",
         "P115.6"
       ],
       "evidence": [
@@ -5697,17 +5699,17 @@
           ],
           "ref": "docs/research/2026-10-28-p115-carry.md",
           "result": "本机 macOS arm64：新 CLI 测试对旧代码编译不过（9 个错，缺 Carried/HandoffReport/handover、StartRequest 无 carried）；单元测试 carry 6、hook 1、handover 2、work 2、protocol::run 1，CLI 集成 4 条（换机器带对话结尾且只带一次、同一台只带交接且 -c 不带、ccnm handoff 显示与 --clear、删项目清记录、旧 AI 机器拒字段时不带重起）；fmt、clippy -D warnings 干净；cargo test --workspace 1240/0；ci_gates.py 252/0 无跳过；Windows 目标 clippy 干净。P115.5 的离线部分做完，真机假模型部分没做。"
-        }
-      ],
-      "blockers": [
+        },
         {
+          "kind": "real_nodes",
           "criteria": [
             "P115.5"
           ],
-          "reason": "P115.5 的零额度真机（假模型）要两台 AI 机器：A 上写交接后 --on b 起会话，第一条请求里要有它；和 P114.4 是同一个条件（第二台 AI 机器由用户选并同意改它的配置）。",
-          "unblock": "与 P114.4 同一轮：用户选定第二台 AI 机器并授权后，两台都装同一提交的构建，用假模型接口起会话，看第一条请求里带的交接/原始记录，然后清理。"
+          "ref": "docs/research/2026-10-30-p114-p115-sim.md",
+          "result": "同一轮模拟（见 P114 这条）：a 上假模型回带 [ccnm handoff] 的回复，Stop 钩子存成 handoff.md；停 a 后 --on b，项目机器取到并标成已交，b 的第一条主请求里有 SessionStart:startup 的交接原文和\"用户另有吩咐以用户为准\"，carried.json 交完即删；b 没写交接就停、再 --on a，带过去的是只含人和模型两句话的原始记录，a 的第一条请求里明说它是原始记录、要先查 git status 和提到的文件。两台真不同的机器、真的额度用完都没验。"
         }
-      ]
+      ],
+      "blockers": []
     },
     {
       "id": "P116",
@@ -5832,7 +5834,7 @@
     "【2026-10-28 P112.2 真机看到 / 同日 P113 已修，v0.21.1】装了 WSL 的 Windows Runtime 上，模型用 exec_command 的 cmd 写 bash …，按 PATH 起的是 System32\\bash.exe（WSL 的启动器），不是 Git Bash；shell 不受影响（只用 Git Bash）。两个模型都这么写了，Codex 跑进 WSL 后 WSL 里的 mise 装了 233 MB 工具。可选改法：Windows Runtime 的 workspace_info 或工具说明里提醒；或 cmd 的程序是裸 bash 时换成 shell 用的 Git Bash 并说一声。安装文档已加提醒。依据 docs/research/2026-10-28-release-0.21.0.md 第 5.1 节。"
   ],
   "handoff": {
-    "next_action": "**2026-10-29 P116 完成（P116.5 真机零额度通过），P114、P115 仍只差第二台 AI 机器。** 用户定先验自动接回：本机与日用 AI 机器装 0d644fe 的发布构建、重启 Controller（用户三个会话没停），Controller 一起来就把两个断了多天的会话接回；测试会话经临时 ssh 别名的转发断网 3 分钟，退避两次、恢复后 21 秒接回，status 记次数和原因；attach 连不上时拒绝并给 --force。真机看出两处 status 文字问题已改（本地，没装）。测完清理干净，两台留着新版本。全部未推送。下一步要用户定：P114.4/P115.5 的第二台 AI 机器用哪台；后台 agent 怎么处理；要不要推送。\n\n之前的交接：\n**2026-10-29 P116 离线做完，P116.5 真机受阻（要在 AI 机器换 Controller），P114–P116 都只差真机。** Controller 线程每 30 秒 watch_tools：通着只一次 ps；断了走 P100 的 reconnect_down（先问项目机器、输入框空才敲），退避 30s/1m/2m/5m，reconnect.lock 防两边同时敲，结果在会话目录 reconnects.json、ccnm status 显示；attach 先发 agent-attach-check，接不上不进、--force 进，旧 AI 机器照旧进。P116.4：10-23/24 撞锁是 Claude Code 后台 agent（sessionKind=bg），写锁报错加一句、排错手册加一节，关不关待用户定。全部未推送。下一步要用户定：真机验收怎么安排（第二台 AI 机器用哪台、是否在本机和 fodelf 换上新版本），以及后台 agent 怎么处理。\n\n之前的交接：\n**2026-10-29 认领 P116。** 先查了 P116.4：10-24 13:45 UTC 那两个撞写锁的连接落在 ccnm 会话 44c3b067（本地 21:14 起、跑 1 天）里，Claude 会话 id 94d4c37f、4297dcf1 不是任何 ccnm 会话；fodelf 上 94d4c37f 的转录元数据是 sessionKind=bg、agentName=界面文字精简与功能提示（10-23 的 15e14ecb 也有 agentName）——是 Claude Code 的后台 agent 另起进程、加载同一份 MCP 配置、撞了一个项目一个写入者的锁，不是网络。2.1.310 里有 CLAUDE_CODE_DISABLE_AGENT_VIEW、CLAUDE_CODE_DISABLE_BACKGROUND_TASKS、disableBackgroundAgentLaunch，哪个管用没量；用户在用这个功能，关不关、或者给后台 agent 只读工具，是用户的决定。接下来做 P116.1–P116.3：tools_on_entry 改成接拨号闭包、按 spec 的 RuntimeLink 拨号；Controller 后台每 30 秒巡检、断了才敲、退避；attach 先接通再进、--force。\n\n之前的交接：\n**2026-10-29 P115 离线做完，P115.5 真机受阻（同 P114.4，等第二台 AI 机器），按规则接 P116。** 换机器/重开时由项目机器去上一台取交接（internal agent-handoff：交接，否则对话结尾 32 KiB），存 workspaces/<项目>/handoff.json，随 StartRequest.carried 交给新机器（Claude 走 SessionStart startup、Codex 拼开场白），只交一次；同一台只带交接；`ccnm handoff <项目>` 看、`--clear` 丢；删项目一起删，顺手修了删项目只停默认那台的会话；旧 AI 机器拒 carried 时不带重起。文档：usage 长对话交接一节、换机器一节、configuration 钩子、troubleshooting 报错表、support-matrix。记录 docs/research/2026-10-28-p115-carry.md。下一步：认领 P116——tools_on_entry 改成接拨号闭包、加按 spec 的 RuntimeLink 拨号；Controller 起后台巡检线程；attach 先接通再进、--force 退路；查 10-23/10-24 两连接撞写锁。",
+    "next_action": "**2026-10-30 P114、P115 完成（P114.4、P115.5 用模拟的第二台 AI 机器零额度通过），路线上排定阶段全部完成。** 用户说第二台没有 AI 服务、简单模拟即可：同一台 AI 机器上搭两份并存部署 a、b，Claude 接本机假模型，项目机器用临时配置。两台的工具写进同一个项目目录；一台开着时另一台起会话被拒、连写锁被拒；交接和没写交接时的原始记录都进了新会话的第一条请求。模拟时查出 legacy claude_config_dir 起会话时被丢掉（v0.10.0 起，doctor 看一个登录、实际跑默认登录），已修、先红后绿。测完两边清干净，日用 ~/.claude.json 里误加的一条信任记录已去掉（AI 机器上留了备份 ~/.claude.json.bak-2026-10-30-p114sim）。未推送、未发版、两台日用二进制没换。下一步：后台 agent 只读（10-29 我建议的顺序，用户 10-30 说继续；先零额度确认后台 agent 连上来带的会话 id），发 v0.22.0 要另外授权。\n\n之前的交接：\n**2026-10-29 P116 完成（P116.5 真机零额度通过），P114、P115 仍只差第二台 AI 机器。** 用户定先验自动接回：本机与日用 AI 机器装 0d644fe 的发布构建、重启 Controller（用户三个会话没停），Controller 一起来就把两个断了多天的会话接回；测试会话经临时 ssh 别名的转发断网 3 分钟，退避两次、恢复后 21 秒接回，status 记次数和原因；attach 连不上时拒绝并给 --force。真机看出两处 status 文字问题已改（本地，没装）。测完清理干净，两台留着新版本。全部未推送。下一步要用户定：P114.4/P115.5 的第二台 AI 机器用哪台；后台 agent 怎么处理；要不要推送。\n\n之前的交接：\n**2026-10-29 P116 离线做完，P116.5 真机受阻（要在 AI 机器换 Controller），P114–P116 都只差真机。** Controller 线程每 30 秒 watch_tools：通着只一次 ps；断了走 P100 的 reconnect_down（先问项目机器、输入框空才敲），退避 30s/1m/2m/5m，reconnect.lock 防两边同时敲，结果在会话目录 reconnects.json、ccnm status 显示；attach 先发 agent-attach-check，接不上不进、--force 进，旧 AI 机器照旧进。P116.4：10-23/24 撞锁是 Claude Code 后台 agent（sessionKind=bg），写锁报错加一句、排错手册加一节，关不关待用户定。全部未推送。下一步要用户定：真机验收怎么安排（第二台 AI 机器用哪台、是否在本机和 fodelf 换上新版本），以及后台 agent 怎么处理。\n\n之前的交接：\n**2026-10-29 认领 P116。** 先查了 P116.4：10-24 13:45 UTC 那两个撞写锁的连接落在 ccnm 会话 44c3b067（本地 21:14 起、跑 1 天）里，Claude 会话 id 94d4c37f、4297dcf1 不是任何 ccnm 会话；fodelf 上 94d4c37f 的转录元数据是 sessionKind=bg、agentName=界面文字精简与功能提示（10-23 的 15e14ecb 也有 agentName）——是 Claude Code 的后台 agent 另起进程、加载同一份 MCP 配置、撞了一个项目一个写入者的锁，不是网络。2.1.310 里有 CLAUDE_CODE_DISABLE_AGENT_VIEW、CLAUDE_CODE_DISABLE_BACKGROUND_TASKS、disableBackgroundAgentLaunch，哪个管用没量；用户在用这个功能，关不关、或者给后台 agent 只读工具，是用户的决定。接下来做 P116.1–P116.3：tools_on_entry 改成接拨号闭包、按 spec 的 RuntimeLink 拨号；Controller 后台每 30 秒巡检、断了才敲、退避；attach 先接通再进、--force。",
     "scope": "2026-10-08 用户要求：零额度复现 Codex 300 秒工具超时、选修法、补外部入口文档、跑门禁、更新状态、粒度提交、不推送。改动：crates/ccnm-core（provider/codex 的 TOOL_TIMEOUT 与启动参数、测试；mcp/hooks 的 MAX_TIMEOUT 改 pub(crate)；mcp/output 注释）、docs/protocol/remote-workspace-mcp-v1.md、docs/usage.md、docs/troubleshooting.md、docs/research 的 P80 记录与夹具、ROADMAP、status。没动任何机器、已装的 ccnm 与配置；Codex 0.154.0 包和源码只下到会话 scratchpad。",
     "planning_validation": {
       "at": "2026-09-08T21:22:43+09:00",

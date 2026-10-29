@@ -41,7 +41,7 @@
 | 配置 / 入口 | 阶段初验标签 | 按日期追加的证据与限制 |
 | --- | --- | --- |
 | legacy Claude，remote SSH MCP，从 Runtime Node 发起 | 支持 | 旧公开命令、Claude v1 wire 与 remote CLI golden 保持兼容；双机真机跑通。 |
-| 会话跑着时工具断了自动接回、`ccnm attach` 先接通再进（P116） | 只有离线证据 | 2026-10-29：假 runner 的单元测试和假 ssh 的 CLI 集成测试（[P116 记录](research/2026-10-29-p116-watch.md)）；真机断网再恢复没验，要在 AI 机器上换这一版的 Controller。只接 Claude 会话；Claude Code 的后台 agent 拿不到工具（单写锁），见[排错手册](troubleshooting.md#claude-code-的后台-agent-拿不到-ccnm-的工具write-guard-is-busy) |
+| 会话跑着时工具断了自动接回、`ccnm attach` 先接通再进（P116） | 支持，**只有零额度证据** | 2026-10-29：假 runner 的单元测试和假 ssh 的 CLI 集成测试；同日**真机验过**（`0d644fe` 的构建，fodelf 上 Claude Code 2.1.312，[P116 记录](research/2026-10-29-p116-watch.md)第 4 节）：Controller 换上后 40 秒内把两个工具断了多天的会话接回；测试会话断网 3 分钟（临时 ssh 别名上的转发，不动防火墙），连不上时退避、不敲，恢复后 21 秒接回、`ccnm status` 记了次数；断着又连不上时 `attach` 不让进、给 `--force`。没关过真 Wi-Fi、没让笔记本睡；`attach --force` 只有离线测试。只接 Claude 会话；Claude Code 的后台 agent 拿不到工具（单写锁），见[排错手册](troubleshooting.md#claude-code-的后台-agent-拿不到-ccnm-的工具write-guard-is-busy) |
 | 换一台 AI 机器（`--on`）、新会话带上上一次的交接（P114、P115） | 只有离线证据 | 2026-10-28：假 ssh 的 CLI 集成测试和单元测试（[P114 记录](research/2026-10-28-p114-on.md)、[P115 记录](research/2026-10-28-p115-carry.md)）；真机零额度没验，等选第二台 AI 机器。AI 机器终端上起的会话、Windows 项目机器不带交接；从 Codex 会话换走时什么都不带 |
 | legacy Claude，remote SSH MCP，从 Agent Node 发起 | 支持 | `run` 先委托 Runtime 解析 workspace，`attach/status/result/stop` 继续在 Agent 本机管理已有 session；`--print` 仍需在 Runtime Node 执行。 |
 | Claude Agent Instance，remote SSH MCP | 支持 | 默认 instance 与 `--on <实例>`（原 `--agent`）、print/interactive、doctor、精确 session、profile 隔离均有测试；公共双机 dogfood 已在授权环境真机通过，见下方门禁结果。 |

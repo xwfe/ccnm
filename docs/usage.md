@@ -133,7 +133,7 @@ ccnm 给自己的 tmux server（`tmux -L ccnm`，跟你自己开的 tmux 完全�
 - 这些值在 tmux server 启动时写入，**之后读一遍你的 `~/.tmux.conf`**——你自己写了什么就以你的为准。
 - 只想临时改回去：`ssh <agent> 'tmux -L ccnm set -g mouse off'`，改到 server 重启为止。
 
-**别在受管会话里用 Claude Code 的"后台"功能**：它会把会话 fork 成第二个进程，第二个进程拿不到 Runtime 工具（单写 guard 会拒），结果是一个什么都干不了的空会话。要离开就 detach，回来用 `ccnm attach`。详见[故障排查](troubleshooting.md#在受管会话里按了-claude-code-的后台工具全没了)。
+**别在受管会话里用 Claude Code 的"后台"功能**：它会把会话 fork 成第二个进程。一个项目同一时间只有一个写入者，主会话占着，所以第二个进程只拿到只读的工具（v0.21.1 之后的版本；v0.21.1 及更早一个都没有），改不了文件。后台 agent 也一样：让它读代码、查问题可以，要改的地方回主会话里改。要离开就 detach，回来用 `ccnm attach`。详见[故障排查](troubleshooting.md#claude-code-的后台-agent-只能读项目改不了文件)。
 
 输出要能随手复制、不想进 tmux 的话，用[非交互 `--print`](#非交互---print)：结果直接打在你本机终端里。
 

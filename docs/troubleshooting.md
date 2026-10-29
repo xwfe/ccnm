@@ -100,13 +100,15 @@ xshun
 
 **Codex 会话**显示的是"断了——Codex 里没法重连：ccnm stop <项目> 再 ccnm <项目> 开新会话，对话不带过来"（英文 `TOOLS DOWN (Codex cannot reconnect: ccnm stop <workspace>, then ccnm <workspace> for a new session; …)`），`ccnm doctor` 的终端会话那一行也是这句。Codex 里没有 `/mcp` 重连，照这句做就行，代价是对话上下文不带过来。（v0.17.0 及以前 `ccnm ls` 对 Codex 会话也说去 Claude 里 `/mcp`；P95 改过一版说"用官方 resume 接回去"，照做会掉进下面说的坑，P96 改成了现在这句。）要接回原对话，必须用 ccnm 那个 Codex 目录（`CODEX_HOME=~/.config/ccnm/agents/codex`）和 ccnm 起会话时的那套参数；直接敲 `codex resume <id>` 用的是你日常的 `~/.codex`，没有 ccnm 的工具，Codex 自带的 shell 还开着，命令会跑在 AI 那台上，别这么做。
 
-### Claude Code 的后台 agent 拿不到 ccnm 的工具（`write guard is busy`）
+### Claude Code 的后台 agent 只能读项目、改不了文件
 
-**症状**：在受管会话里开了 Claude Code 的后台 agent（界面底栏的 `← for agents`，或让它在后台另起一个 agent），那个 agent 连不上 ccnm，Claude 的 MCP 日志里是 `Connection failed (CONNECTION_CLOSED)`，前面一行 `Server stderr: CCNM_E_POLICY: workspace write guard is busy; another session still owns this working tree`。
+**症状**：在受管会话里开了 Claude Code 的后台 agent（界面底栏的 `← for agents`，或让它在后台另起一个 agent），它能读文件、搜代码，但调不了 `apply_patch`、`exec_command`，工具搜索里也找不到；问它为什么，它会说这条连接是只读的，改动要回主会话去做。
 
-**原因**：后台 agent 是 Claude Code 另起的一个进程，它加载同一份 MCP 配置，于是又开了一条 ccnm 通道；而一个项目同一时间只允许一个会话写（单写锁），主会话正占着。2026-10-28 查 2026-10-23、10-24 两次"MCP 没连上"就是这个：那两个连接的 Claude 会话 id 不属于任何 ccnm 会话，转录里写着 `sessionKind: "bg"` 和后台 agent 的名字（[P116 记录](research/2026-10-29-p116-watch.md)）。这和[按了"后台"](#在受管会话里按了-claude-code-的后台工具全没了)是同一类问题，换了个入口。
+**原因**：一个项目同一时间只允许一个会话写（单写锁），主会话正占着。后台 agent 是 Claude Code 的守护进程另起的 `claude`，启动参数照抄主会话的 `--settings` 和 `--mcp-config`，所以它会再开一条 ccnm 通道。从 v0.21.1 之后的版本起（P117），AI 机器认出这条通道不是会话自己那个 Claude 开的（父进程不是 ccnm 记下的那个），就向项目机器要只读工具：读文件、列目录、搜索、看图、读 notebook、加载 skill 都能用，写文件、跑命令的五个工具不给。这条连接也不拿写锁，所以主会话照常能写。它同样跑会话的钩子，但它的对话不会被记成这个会话的：`-c` 接的、换机器带的、`/clear` 交出去的，都还是主会话自己的。
 
-**现在怎么办**：受管会话里别开后台 agent，要并行就另开一个项目（另 clone 一份，`ccnm add` 成另一个名字）。ccnm 这边还没定要不要关掉这个功能，或者给后台 agent 只读的工具。
+**要它改文件怎么办**：让它把要改的地方写清楚，回到主会话里改。真要两边同时改代码，就另开一个项目（另 clone 一份，`ccnm add` 成另一个名字），各占各的写锁。
+
+**AI 机器或项目机器上的 ccnm 还是 v0.21.1 或更早**时，后台 agent 还是一个工具都拿不到：MCP 日志里是 `Connection failed (CONNECTION_CLOSED)`，前面一行 `Server stderr: CCNM_E_POLICY: workspace write guard is busy; another session still owns this working tree`。两台都换上新版本就好。2026-10-23、10-24 那两次"MCP 没连上"就是这种（[P116 记录](research/2026-10-29-p116-watch.md)）。和[按了"后台"](#在受管会话里按了-claude-code-的后台工具全没了)是同一回事，换了个入口。
 
 ### 会话里有 ccnm 的说明，工具却一个都没有（`request _meta is missing`）
 
@@ -663,6 +665,8 @@ claude_permission_mode = "bypassPermissions"
 
 ### 在受管会话里按了 Claude Code 的"后台"，工具全没了
 
+两台都换上 v0.21.1 之后的版本时，分身拿到的是只读工具，症状变成"能读、改不了"，原因和做法见[后台 agent 那一节](#claude-code-的后台-agent-只能读项目改不了文件)。下面是旧版本的样子。
+
 **症状**：会话一直好好的，某一刻屏幕上出现 `Backgrounding after the current tool finishes…`，紧接着每个工具都报：
 
 ```text
@@ -681,7 +685,8 @@ ${XDG_STATE_HOME:-~/.local/state}/ccnm/write-guards/
 `ccnm status` alone does not prove nobody is using it: a --print run holds
 this guard and never appears there
 a Claude Code background agent or forked session started inside a managed
-session is a second session too, and gets no tools: one writer per project
+session is a second session too; one writer per project, so an up-to-date
+ccnm on the AI machine gives it read-only tools instead of this
 ```
 
 server 退出，Claude Code 对这种情况只显示 `CONNECTION_CLOSED: Connection closed`，**不显示 server 的 stderr**，所以上面这几行一个字都不会到你面前。要看见它们，在 Runtime Node 上跑 `ccnm doctor <workspace>`——那条 `Remote MCP handshake` 会把 server 的 stderr 原样带出来。
@@ -694,7 +699,7 @@ server 退出，Claude Code 对这种情况只显示 `CONNECTION_CLOSED: Connect
 ccnm attach <workspace>
 ```
 
-后台那个分身直接关掉——只要原会话还握着锁，它起一个被拒一个。
+后台那个分身直接关掉：只要原会话还握着锁，它就写不了（旧版本上它起一个被拒一个，新版本上它只能读）。
 
 **别做的事**：不要为了让分身能跑去删锁。那把锁挡住的正是"两个 Claude 同时改同一棵树"。
 

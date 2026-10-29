@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-10-30T01:19:00+09:00",
-  "current_task": "P117",
+  "last_updated": "2026-10-30T01:37:00+09:00",
+  "current_task": null,
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
     "source": "docs/research/codex-internal-wiring-2026-09-07.md",
@@ -5767,15 +5767,40 @@
     {
       "id": "P117",
       "title": "Claude Code 后台 agent 拿只读工具，不再动主会话的记录",
-      "status": "in_progress",
+      "status": "completed",
       "depends_on": [
         "P116"
       ],
       "owner": null,
       "started_at": "2026-10-30T01:19:00+09:00",
-      "last_updated": "2026-10-30T01:19:00+09:00",
-      "completed_criteria": [],
-      "evidence": [],
+      "last_updated": "2026-10-30T01:37:00+09:00",
+      "completed_criteria": [
+        "P117.1",
+        "P117.2",
+        "P117.3",
+        "P117.4"
+      ],
+      "evidence": [
+        {
+          "kind": "offline",
+          "criteria": [
+            "P117.1",
+            "P117.2",
+            "P117.3",
+            "P117.4"
+          ],
+          "ref": "docs/research/2026-10-30-p117-background-agents.md",
+          "result": "本机 macOS arm64：钩子那条新测试只用旧接口，拿掉新判断后红（后台 agent 的 SessionStart 拿走了给主会话的交接），恢复后绿；其余新测试用到新函数，旧代码上编译不过。单元测试 7 条：父/祖父进程判定纯函数、本进程真实祖先链、两种载荷在非本会话 claude 时为 read、钩子不动对话记录/交接/待带内容、policy 到入口只认两个值、Runtime 以 read 打开实例会话为 Companion 且不写、Companion 工具表等于外部 read 且说明与报错讲原因。fmt、clippy -D warnings、Windows 目标两条 clippy 干净；cargo test --workspace 1259/0；ci_gates.py 计划、协议、Python 全过无跳过。未推送、无 CI。"
+        },
+        {
+          "kind": "real_nodes",
+          "criteria": [
+            "P117.3"
+          ],
+          "ref": "docs/research/2026-10-30-p117-background-agents.md",
+          "result": "零额度，P114 那套模拟部署只用一份 a，两边用带 P117 的发布构建（只放临时目录），Claude 接 AI 机器本机假模型。主会话 12 个工具、写文件、写交接、项目机器写锁归它；从 ssh 的 shell 照抄主会话 --settings/--mcp-config/--strict-mcp-config/--setting-sources 另起 claude（CLAUDE_CODE_SESSION_KIND=bg）扮后台 agent：连上，延迟列表里正好是只读 7 个工具，工具搜索 read_file+apply_patch 只回 read_file，read_file 读到项目内容，请求里有只读说明；两次后台运行前后主会话 conversations.json、handoff.md 的 sha1 不变（旧代码会删交接），写锁仍归主会话，之后主会话照常写回文件。Claude Code 2.1.312 上零额度量了：后台 agent 启动参数照抄父会话、MCP 子进程拿不到 CLAUDE_CODE_SESSION_KIND、主会话 MCP 子进程和钩子的父进程是 claude。真的后台 agent 没起过（开关由服务端下发）；Linux AI 机器没跑。测完两边临时目录、缓存里的 MCP 日志、探针目录都删了，日用 Controller pid 前后一致。"
+        }
+      ],
       "blockers": []
     }
   ],
@@ -5848,7 +5873,7 @@
     "【2026-10-28 P112.2 真机看到 / 同日 P113 已修，v0.21.1】装了 WSL 的 Windows Runtime 上，模型用 exec_command 的 cmd 写 bash …，按 PATH 起的是 System32\\bash.exe（WSL 的启动器），不是 Git Bash；shell 不受影响（只用 Git Bash）。两个模型都这么写了，Codex 跑进 WSL 后 WSL 里的 mise 装了 233 MB 工具。可选改法：Windows Runtime 的 workspace_info 或工具说明里提醒；或 cmd 的程序是裸 bash 时换成 shell 用的 Git Bash 并说一声。安装文档已加提醒。依据 docs/research/2026-10-28-release-0.21.0.md 第 5.1 节。"
   ],
   "handoff": {
-    "next_action": "**2026-10-30 认领 P117。** 零额度量了 Claude Code 2.1.312：后台 agent 是守护进程照抄父会话 --settings、--mcp-config 另起的 claude，所以撞写锁，还跑 ccnm 钩子、改写主会话的 conversations.json 和 handoff.md；MCP 子进程拿得到 Claude 的环境但没有 CLAUDE_CODE_SESSION_KIND；主会话的通道和钩子父进程都是 agent.pid。做法写在 ROADMAP P117：父/祖父进程不是 agent.pid 的通道要 read、钩子不做事；mcp-serve 的 policy 加 read。\n\n之前的交接：\n**2026-10-30 P114、P115 完成（P114.4、P115.5 用模拟的第二台 AI 机器零额度通过），路线上排定阶段全部完成。** 用户说第二台没有 AI 服务、简单模拟即可：同一台 AI 机器上搭两份并存部署 a、b，Claude 接本机假模型，项目机器用临时配置。两台的工具写进同一个项目目录；一台开着时另一台起会话被拒、连写锁被拒；交接和没写交接时的原始记录都进了新会话的第一条请求。模拟时查出 legacy claude_config_dir 起会话时被丢掉（v0.10.0 起，doctor 看一个登录、实际跑默认登录），已修、先红后绿。测完两边清干净，日用 ~/.claude.json 里误加的一条信任记录已去掉（AI 机器上留了备份 ~/.claude.json.bak-2026-10-30-p114sim）。未推送、未发版、两台日用二进制没换。下一步：后台 agent 只读（10-29 我建议的顺序，用户 10-30 说继续；先零额度确认后台 agent 连上来带的会话 id），发 v0.22.0 要另外授权。\n\n之前的交接：\n**2026-10-29 P116 完成（P116.5 真机零额度通过），P114、P115 仍只差第二台 AI 机器。** 用户定先验自动接回：本机与日用 AI 机器装 0d644fe 的发布构建、重启 Controller（用户三个会话没停），Controller 一起来就把两个断了多天的会话接回；测试会话经临时 ssh 别名的转发断网 3 分钟，退避两次、恢复后 21 秒接回，status 记次数和原因；attach 连不上时拒绝并给 --force。真机看出两处 status 文字问题已改（本地，没装）。测完清理干净，两台留着新版本。全部未推送。下一步要用户定：P114.4/P115.5 的第二台 AI 机器用哪台；后台 agent 怎么处理；要不要推送。\n\n之前的交接：\n**2026-10-29 P116 离线做完，P116.5 真机受阻（要在 AI 机器换 Controller），P114–P116 都只差真机。** Controller 线程每 30 秒 watch_tools：通着只一次 ps；断了走 P100 的 reconnect_down（先问项目机器、输入框空才敲），退避 30s/1m/2m/5m，reconnect.lock 防两边同时敲，结果在会话目录 reconnects.json、ccnm status 显示；attach 先发 agent-attach-check，接不上不进、--force 进，旧 AI 机器照旧进。P116.4：10-23/24 撞锁是 Claude Code 后台 agent（sessionKind=bg），写锁报错加一句、排错手册加一节，关不关待用户定。全部未推送。下一步要用户定：真机验收怎么安排（第二台 AI 机器用哪台、是否在本机和 fodelf 换上新版本），以及后台 agent 怎么处理。",
+    "next_action": "**2026-10-30 P117 完成（零额度真机通过），路线排定阶段全部完成。** Claude 会话的通道和钩子按父/祖父进程是不是 agent.pid 认主会话：不是就要 policy read（Runtime 侧 Entry::Companion：read 模式 7 工具、不拿写锁、说明讲原因），钩子不做事，不再改主会话的 conversations.json 和 handoff.md。协议文档、写锁报错末两行、样本、排错手册、使用说明、支持矩阵已改。模拟真机：照抄参数另起的 claude 拿到只读工具、读得到项目，主会话记录与写锁不变、之后照常写。未推送、未发版，两台日用二进制没换。下一步要用户定：推送；发 v0.22.0（含 --on、handoff、attach --force、claude_config_dir 修复、P117）并换装三台。\n\n之前的交接：\n**2026-10-30 认领 P117。** 零额度量了 Claude Code 2.1.312：后台 agent 是守护进程照抄父会话 --settings、--mcp-config 另起的 claude，所以撞写锁，还跑 ccnm 钩子、改写主会话的 conversations.json 和 handoff.md；MCP 子进程拿得到 Claude 的环境但没有 CLAUDE_CODE_SESSION_KIND；主会话的通道和钩子父进程都是 agent.pid。做法写在 ROADMAP P117：父/祖父进程不是 agent.pid 的通道要 read、钩子不做事；mcp-serve 的 policy 加 read。\n\n之前的交接：\n**2026-10-30 P114、P115 完成（P114.4、P115.5 用模拟的第二台 AI 机器零额度通过），路线上排定阶段全部完成。** 用户说第二台没有 AI 服务、简单模拟即可：同一台 AI 机器上搭两份并存部署 a、b，Claude 接本机假模型，项目机器用临时配置。两台的工具写进同一个项目目录；一台开着时另一台起会话被拒、连写锁被拒；交接和没写交接时的原始记录都进了新会话的第一条请求。模拟时查出 legacy claude_config_dir 起会话时被丢掉（v0.10.0 起，doctor 看一个登录、实际跑默认登录），已修、先红后绿。测完两边清干净，日用 ~/.claude.json 里误加的一条信任记录已去掉（AI 机器上留了备份 ~/.claude.json.bak-2026-10-30-p114sim）。未推送、未发版、两台日用二进制没换。下一步：后台 agent 只读（10-29 我建议的顺序，用户 10-30 说继续；先零额度确认后台 agent 连上来带的会话 id），发 v0.22.0 要另外授权。\n\n之前的交接：\n**2026-10-29 P116 完成（P116.5 真机零额度通过），P114、P115 仍只差第二台 AI 机器。** 用户定先验自动接回：本机与日用 AI 机器装 0d644fe 的发布构建、重启 Controller（用户三个会话没停），Controller 一起来就把两个断了多天的会话接回；测试会话经临时 ssh 别名的转发断网 3 分钟，退避两次、恢复后 21 秒接回，status 记次数和原因；attach 连不上时拒绝并给 --force。真机看出两处 status 文字问题已改（本地，没装）。测完清理干净，两台留着新版本。全部未推送。下一步要用户定：P114.4/P115.5 的第二台 AI 机器用哪台；后台 agent 怎么处理；要不要推送。",
     "scope": "2026-10-08 用户要求：零额度复现 Codex 300 秒工具超时、选修法、补外部入口文档、跑门禁、更新状态、粒度提交、不推送。改动：crates/ccnm-core（provider/codex 的 TOOL_TIMEOUT 与启动参数、测试；mcp/hooks 的 MAX_TIMEOUT 改 pub(crate)；mcp/output 注释）、docs/protocol/remote-workspace-mcp-v1.md、docs/usage.md、docs/troubleshooting.md、docs/research 的 P80 记录与夹具、ROADMAP、status。没动任何机器、已装的 ccnm 与配置；Codex 0.154.0 包和源码只下到会话 scratchpad。",
     "planning_validation": {
       "at": "2026-09-08T21:22:43+09:00",

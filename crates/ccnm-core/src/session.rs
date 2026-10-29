@@ -981,9 +981,12 @@ pub fn supervise(req: &SuperviseRequest) -> Result<Outcome> {
                 ))
             })
             .transpose()?;
+        // A legacy session has no instance, and its login is the caller's
+        // `claude_config_dir`, which the record does carry. Dropping it ran
+        // Claude on the default login while doctor checked the other one.
         let (profile, model) = match &local {
             Some((dir, model)) => (Some(dir.as_path()), model.as_deref()),
-            None => (None, None),
+            None => (spec.provider_config_dir.as_deref(), None),
         };
         spec.provider()
             .launch_cmd_at(&req.agent_bin, &spec, &dir, profile, model)
@@ -1740,6 +1743,42 @@ mod tests {
         let argv = fs::read_to_string(state.join("argv")).unwrap();
         assert!(!argv.contains("fix the failing test"), "{argv}");
         assert!(argv.contains("--print\n"), "{argv}");
+    }
+
+    /// A legacy workspace's `claude_config_dir` is the login Claude runs
+    /// under, not just the one doctor and `ccnm usage` look at. From
+    /// v0.10.0 to v0.21.1 the supervisor replaced it with the instance
+    /// profile, which a legacy session has none of, and Claude ran on the
+    /// default `~/.claude`.
+    #[test]
+    fn supervise_runs_claude_in_a_legacy_claude_config_dir() {
+        let state = temp("supervise-config-dir");
+        let login = state.join("claude-extra");
+        let mut spec = spec();
+        spec.cwd = state.to_path_buf();
+        spec.provider_config_dir = Some(login.clone());
+        let dir = create(
+            &state,
+            &spec,
+            Some(&ssh()),
+            &Default::default(),
+            &Default::default(),
+        )
+        .unwrap();
+        let fake = state.join("claude");
+        fs::write(
+            &fake,
+            "#!/bin/sh\nprintf '%s' \"${CLAUDE_CONFIG_DIR-unset}\" > \"$PWD/config-dir\"\ncat > /dev/null\necho '{\"is_error\":false,\"result\":\"done\"}'\n",
+        )
+        .unwrap();
+        fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let outcome = supervise(&SuperviseRequest::new(dir.path().to_path_buf(), fake)).unwrap();
+        assert!(outcome.ok(), "{outcome:?}");
+        assert_eq!(
+            fs::read_to_string(state.join("config-dir")).unwrap(),
+            login.to_string_lossy()
+        );
     }
 
     #[test]

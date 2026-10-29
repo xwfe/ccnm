@@ -1541,6 +1541,23 @@ P112.2 真实模型时查出的（[记录](../research/2026-10-28-release-0.21.0
 
 停止点：不做通道本身不断（P98 仍是撤销状态）；不改 Codex；不推送、不发版。
 
+### P117 — Claude Code 后台 agent 拿只读工具，不再动主会话的记录
+
+**依赖 P116。** 用户 2026-10-29 听了建议（给只读、不关掉；关掉的开关没量过，用户又在用），10-30 说继续。2026-10-30 零额度量 Claude Code 2.1.312 得到的事实：
+
+- 后台 agent 是 Claude Code 的守护进程另起的 `claude`，启动参数照抄父会话的 `--settings`、`--mcp-config`、`--strict-mcp-config`、`--setting-sources`。所以它开的 ccnm 通道带的就是父会话的 ccnm 会话 id，撞写锁被拒（P116.4）；它也跑 ccnm 的会话钩子，`SessionStart` 把它的对话 id 记进主会话的 `conversations.json`，`Stop` 按它的最后一句改写主会话的 `handoff.md`，没有交接就删掉。后者影响 `-c` 接哪段对话和 P115 带什么。
+- Claude Code 把自己的环境传给 MCP 子进程，但专门去掉了 `CLAUDE_CODE_SESSION_KIND`，所以环境变量认不出后台 agent。按对话 id 认也不行：它自己会把 id 记进去。
+- 主会话的 ccnm 通道和钩子命令，父进程都是监督进程记下的那个 `claude`（`agent.pid`）；后台 agent 的父进程是它自己的 `claude`。
+
+做法：
+
+- **P117.1** Claude 会话的 `internal agent-transport` 和 `internal session-hook` 先看自己是不是这个会话的 `claude` 起的：父进程或祖父进程是 `agent.pid`。是，照旧；不是（后台 agent，或别的什么照着这份配置另起的 `claude`），通道向 Runtime 要只读，钩子什么都不做、不输出。读不到 `agent.pid` 时照旧。判错只会错向"当成主会话"，也就是今天的行为；Codex 会话不变。
+- **P117.2** 协议加法：Agent 会话的 mcp-serve 载荷（legacy 的 `ServePayload`、实例的 `OpenPayload`）的 `policy` 多认一个 `read`。Runtime 收到时按 `read` 模式给工具（`apply_patch`、`exec_command` 等五个不给），不拿写锁；server 的说明告诉模型：这条连接不是会话本身开的，只读，要改文件让人到主会话里去做。主会话发的载荷一个字不变；旧 Runtime 不认 `read`，照旧拒绝，等于今天的行为。协议文档、变更记录、样本同步。
+- **P117.3** 测试先在旧代码上红：父进程/祖父进程判定的纯函数；通道载荷在"不是本会话的 claude"时是 `read`；钩子在那种情况下不碰 `conversations.json`、`handoff.md`；Runtime 以 `read` 开 Agent 会话时工具表、不拿写锁、说明文字；旧 Runtime 字段集拒绝。零额度真机（P114 的模拟部署）：主会话开着时，照 Claude Code 的做法另起一个带同一份 `--settings`、`--mcp-config` 的 `claude`（接假模型），它拿到只读工具、主会话照常能写、主会话的 `conversations.json` 和 `handoff.md` 不变。
+- **P117.4** 文档：排错手册"后台 agent 撞写锁"一节改成现在的行为；使用说明提一句后台 agent 只能读；支持矩阵；Rust、Python、计划门禁通过。
+
+停止点：不让后台 agent 写（一个项目一个写入者不变）；不关 Claude Code 的后台 agent；不改 Codex；不推送、不发版。
+
 ## 已撤销的自动重连阶段（2026-10-16）
 
 以下不是活动阶段，也不计入完成数：

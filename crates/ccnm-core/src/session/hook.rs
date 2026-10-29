@@ -141,6 +141,14 @@ fn is_uuid(id: &str) -> bool {
 /// What one hook call has to say to Claude Code on stdout. Never an error:
 /// see the module comment.
 pub fn handle(dir: &Dir, input: &str) -> String {
+    // A Claude Code background agent is relaunched with this session's
+    // --settings, so it runs these hooks too (P117). Its conversation is not
+    // the session's: written down, it is what `-c` and the next machine
+    // would pick, and its last reply would replace the session's handoff,
+    // or delete it.
+    if !crate::session::from_own_agent(dir) {
+        return String::new();
+    }
     let Ok(event) = serde_json::from_str::<serde_json::Value>(input) else {
         return String::new();
     };
@@ -317,6 +325,45 @@ mod tests {
         );
         let again = handle(&dir, &start(SECOND, "clear"));
         assert!(!again.contains("finish the parser"), "{again}");
+    }
+
+    /// P117: a Claude Code background agent runs the session's hooks too.
+    /// Its events change nothing and say nothing; the session's own still
+    /// work. Told apart by who started the hook: the recorded Agent pid is
+    /// this test's own pid, which is neither its parent nor its grandparent.
+    #[cfg(unix)]
+    #[test]
+    fn a_background_agents_hooks_leave_the_session_alone() {
+        use crate::protocol::run::{Carried, CarriedKind};
+        let (_t, dir) = dir("background");
+        handle(&dir, &start(FIRST, "startup"));
+        handle(&dir, &stop("[ccnm handoff]\nGoal: the session's own."));
+        crate::session::carry::leave(
+            &dir,
+            &Carried {
+                kind: CarriedKind::Handoff,
+                from: "a".into(),
+                session: "old".into(),
+                written: 1,
+                text: "[ccnm handoff]\nnot for a background agent".into(),
+            },
+        );
+
+        crate::session::write_agent_pid(&dir, std::process::id()).unwrap();
+        assert_eq!(handle(&dir, &start(SECOND, "startup")), "");
+        assert_eq!(handle(&dir, &stop("Background work done.")), "");
+        handle(&dir, &stop("[ccnm handoff]\nGoal: the background agent's."));
+        assert_eq!(read(&dir).unwrap().ids, [FIRST]);
+        assert_eq!(
+            fs::read_to_string(dir.handoff()).unwrap(),
+            "[ccnm handoff]\nGoal: the session's own."
+        );
+        assert!(dir.carried().exists(), "left for the session, not taken");
+
+        // The session's own Claude is this test's parent here.
+        crate::session::write_agent_pid(&dir, std::os::unix::process::parent_id()).unwrap();
+        handle(&dir, &start(SECOND, "clear"));
+        assert_eq!(read(&dir).unwrap().ids, [FIRST, SECOND]);
     }
 
     /// P101: each conversation is written down as it begins, so

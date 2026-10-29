@@ -336,6 +336,25 @@ pub fn external(
     format!("{head}\n{}", marker_file(EXTERNAL_PROJECT_FILES[0], None))
 }
 
+/// `initialize.result.instructions` for a managed session's channel that
+/// the session's own Agent did not open (P117): what this connection is
+/// and why it cannot write, then where the project's rules are. The file
+/// is named rather than included, so the paragraph that explains the
+/// missing tools is never what a Host's cap cuts.
+pub fn companion(workspace: &str, file: &str, project: Option<&Project>) -> String {
+    let marker = match project {
+        None => marker_file(file, None),
+        Some(p) => format!(
+            "[project instructions: {file}, {} bytes, not included here; read_file {file} before you start]",
+            p.bytes
+        ),
+    };
+    format!(
+        "{}\n\nThis connection was not opened by the Claude Code process ccnm started for this session: most likely it is a background agent, which Claude Code starts with the session's own MCP config. The project has one writer at a time, the main session, so this connection is read-only: it has no tool that changes a file or runs a command, and asking for one is refused by the machine the project is on, not by this text. Read, investigate and report what you find; a change to make goes back to the person, who makes it in the main session.\n{marker}",
+        base(workspace)
+    )
+}
+
 /// Same order as [`render`]: the marker before the file it describes.
 fn external_project(head: &str, file: &str, project: &Project) -> String {
     format!(

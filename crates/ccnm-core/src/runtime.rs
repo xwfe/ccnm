@@ -40,8 +40,9 @@ use crate::protocol::payload::Protocol;
 /// must fail loudly rather than read it as something it understands.
 pub const OPEN_PROTOCOL: u32 = 4;
 
-/// The only tool policy that exists. A caller may not invent one.
-const POLICY: &str = "coding";
+/// What an open asks for unless it says otherwise. The other policy there
+/// is, and the refusal of any third, are [`crate::protocol::mcp::Entry::for_policy`].
+const POLICY: &str = crate::protocol::mcp::POLICY_CODING;
 
 /// A request to open a workspace on this Runtime.
 ///
@@ -91,6 +92,13 @@ impl OpenPayload {
         self.interactive = interactive;
         self
     }
+
+    /// Ask for read-only tools: the session's own Agent did not open this
+    /// channel ([`crate::protocol::mcp::Entry::Companion`]).
+    pub fn read_only(mut self) -> Self {
+        self.policy = crate::protocol::mcp::POLICY_READ.to_string();
+        self
+    }
 }
 
 impl Protocol for OpenPayload {
@@ -112,6 +120,8 @@ pub struct Opened {
     /// `runtime_user`: the identity the Runtime Executor is expected to be.
     pub runtime_user: Option<String>,
     pub allow_unconfined_exec: bool,
+    /// What the request's `policy` asked for.
+    pub entry: crate::protocol::mcp::Entry,
 }
 
 impl Opened {
@@ -125,6 +135,7 @@ impl Opened {
         ServePayload::new(&self.workspace, self.root.clone(), &request.session)
             .with_binding(self.binding.clone())
             .with_interactive(request.interactive)
+            .with_entry(self.entry)
     }
 }
 
@@ -143,9 +154,7 @@ pub fn open(config: &Config, request: &OpenPayload) -> Result<Opened> {
             ),
         ));
     }
-    if request.policy != POLICY {
-        return Err(Error::policy("unknown tool policy"));
-    }
+    let entry = crate::protocol::mcp::Entry::for_policy(&request.policy)?;
     // The session id becomes a directory name on this machine.
     identifier(&request.session)?;
     // bind_workspace is the cross-check: the workspace exists here, this
@@ -167,6 +176,7 @@ pub fn open(config: &Config, request: &OpenPayload) -> Result<Opened> {
         binding,
         runtime_user,
         allow_unconfined_exec,
+        entry,
     })
 }
 
@@ -1308,6 +1318,24 @@ root = "{}"
         let mut request = OpenPayload::new("demo", identity(), "s-1");
         request.policy = "readonly".into();
         assert!(open(&config, &request).is_err());
+    }
+
+    /// P117: `read` is the one other policy, and what it opens never writes:
+    /// no write tools, no write guard. `coding` opens what it always did.
+    #[test]
+    fn a_read_open_is_a_companion_that_never_writes() {
+        use crate::protocol::mcp::Entry;
+        let dir = workspace_dir("policy-read");
+        let config = config(&dir.join("project"));
+        let request = OpenPayload::new("demo", identity(), "s-1");
+        let coding = open(&config, &request).unwrap();
+        assert_eq!(coding.serve_payload(&request).entry, Entry::Managed);
+        let request = request.read_only();
+        let read = open(&config, &request).unwrap();
+        let payload = read.serve_payload(&request);
+        assert_eq!(payload.entry, Entry::Companion);
+        assert!(!payload.entry.writes());
+        assert!(payload.binding.is_some(), "verified like any managed open");
     }
 
     #[test]

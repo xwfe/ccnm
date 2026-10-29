@@ -45,6 +45,14 @@ pub fn launcher_for(
 
 /// The one connection this session's tools ride: MCP over ssh.
 pub fn command(spec: &Spec) -> Result<Cmd> {
+    command_for(spec, true)
+}
+
+/// [`command`], for a channel the session's own Agent opened or not. One it
+/// did not open asks for read-only tools ([`crate::protocol::mcp::Entry::Companion`]):
+/// a Claude Code background agent, which would otherwise be refused at the
+/// write guard and get no tools at all.
+fn command_for(spec: &Spec, own: bool) -> Result<Cmd> {
     spec.validate_identity()?;
     let runtime = remote(spec)?;
     let ssh = Ssh::new(&runtime.alias, "/unused")?
@@ -62,16 +70,20 @@ pub fn command(spec: &Spec) -> Result<Cmd> {
     let wire = match spec.agent_identity.clone() {
         Some(identity) => {
             spec.workspace_binding()?;
-            payload::encode(
-                &crate::runtime::OpenPayload::new(&spec.workspace, identity, &spec.id)
-                    .with_interactive(spec.mode.is_interactive()),
-            )?
+            let open = crate::runtime::OpenPayload::new(&spec.workspace, identity, &spec.id)
+                .with_interactive(spec.mode.is_interactive());
+            payload::encode(&if own { open } else { open.read_only() })?
         }
-        None => payload::encode(
-            &crate::protocol::mcp::ServePayload::new(&spec.workspace, spec.root.clone(), &spec.id)
-                .with_interactive(spec.mode.is_interactive())
-                .with_provider(spec.provider()),
-        )?,
+        None => {
+            let serve = crate::protocol::mcp::ServePayload::new(
+                &spec.workspace,
+                spec.root.clone(),
+                &spec.id,
+            )
+            .with_interactive(spec.mode.is_interactive())
+            .with_provider(spec.provider());
+            payload::encode(&if own { serve } else { serve.read_only() })?
+        }
     };
     let mut cmd = ssh.mcp_transport_cmd(&wire)?;
     // Claude's previous MCP JSON and measured Codex transport both pinned the
@@ -88,7 +100,11 @@ fn remote(spec: &Spec) -> Result<&session::RuntimeLink> {
 
 pub fn exec(request: &Request) -> Result<()> {
     let spec = load_for(request)?;
-    exec_ssh(command(&spec)?)
+    // Codex has no background agents, and its MCP servers are not measured
+    // to be its direct children; only Claude's channels are asked about.
+    let own = spec.provider() != crate::provider::AgentProvider::Claude
+        || session::from_own_agent(&Dir::at(&request.session_dir));
+    exec_ssh(command_for(&spec, own)?)
 }
 
 fn load_for(request: &Request) -> Result<Spec> {
@@ -219,5 +235,32 @@ mod tests {
         let cmd = command(&spec).unwrap();
         let sent: crate::runtime::OpenPayload = payload::decode(&wire(&cmd)).unwrap();
         assert!(!sent.interactive);
+    }
+
+    /// P117: a channel the session's own Agent did not open asks for less,
+    /// in both shapes; the session's own asks for what it always did.
+    #[test]
+    fn a_channel_from_another_process_asks_for_read_only_tools() {
+        use crate::protocol::mcp::{POLICY_CODING, POLICY_READ, ServePayload};
+        let bound = |own| {
+            let cmd = command_for(&spec(Some(identity())), own).unwrap();
+            payload::decode::<crate::runtime::OpenPayload>(&wire(&cmd))
+                .unwrap()
+                .policy
+        };
+        assert_eq!(bound(true), POLICY_CODING);
+        assert_eq!(bound(false), POLICY_READ);
+        let legacy = |own| {
+            let cmd = command_for(&spec(None), own).unwrap();
+            payload::decode::<ServePayload>(&wire(&cmd)).unwrap().policy
+        };
+        assert_eq!(legacy(true), POLICY_CODING);
+        assert_eq!(legacy(false), POLICY_READ);
+        assert_eq!(
+            payload::decode::<ServePayload>(&wire(&command(&spec(None)).unwrap()))
+                .unwrap()
+                .policy,
+            POLICY_CODING
+        );
     }
 }

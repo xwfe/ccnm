@@ -27,6 +27,7 @@
 > 2026-10-27（P109）**Windows Runtime 也服务 `coding` 模式了**：`apply_patch` 和写入互斥可用；会运行程序的 `exec_command`、`read_output`、`stop_command` 照常列在 `tools/list` 里，调用时报 `CCNM_E_NOT_READY`（P110 才有），`call_mcp_tool` 不提供，skill 的命令不跑。Windows 上 `apply_patch` 多两种失败：目标带只读属性时在改任何东西之前报 `CCNM_E_INVALID_ARGS`（Windows 既不让替换也不让删这种文件，ccnm 不替人摘掉这个属性）；目标被别的程序以不许删除的方式打开着时，提交阶段失败，说明里写清楚是另一个程序占着，同一补丁里已经改了的文件照常回滚。写入互斥的判定不变；Windows 上持锁期间观察者读的是持锁者另写的一份副本（锁是强制锁，标记文件本身读不了）。macOS、Linux 上行为不变，只有一处措辞：查不了旧写者的 pid 时，拒绝的说明不再说成"进程没了"。
 > 2026-10-27（P110）**Windows Runtime 能执行命令了**：`exec_command`、`read_output`、`stop_command`、`call_mcp_tool` 和 skill 的命令都可用，工具、参数、错误码不变。Windows 上的做法：`cmd` 按 PATHEXT 找程序（`npm` 找到 `npm.cmd`，`.bat`/`.cmd` 由 Rust 标准库经 `cmd.exe` 起、带它的转义，`.ps1` 交给 PowerShell）；`shell` 用 Git for Windows 的 bash，找不到时报 `CCNM_E_DEPENDENCY` 并提示改用 `cmd`；每条命令放进它自己的 Job，超时、停止时结束整个 Job，它起的进程（包括 Git Bash 起的、父进程已不在的）一起结束，命令结束后还在跑的活到会话结束；没有 TERM，停的时候不等宽限期；`exec_sandbox` 在 Windows 上让会话起不来（`CCNM_E_NOT_READY`）。经 Windows 自带 sshd 跑时，mcp-serve 一退出（含被强杀），它起的后台命令全部跟着结束，和 macOS、Linux 不同（第 7 节 AUTH-02 那条在 Windows 上不成立）。macOS、Linux 上行为不变。
 > 2026-10-28（P113）**Windows Runtime 上，`cmd` 里不带路径的 `bash` 跑 `shell` 那个 Git Bash**：`cmd` 的第一项是 `bash` 或 `bash.exe`（不分大小写、不带路径）时，不再按 PATH 找，改用 `shell` 用的那个 Git for Windows 的 bash，`SHELL` 也照 `shell` 设。PATH 上第一个 `bash` 不是它时，结果里多一行说明，点名那个没跑的；是 `System32\bash.exe` 时写明它会起 WSL。原因：装了 WSL 的机器上 PATH 先找到的是 WSL 的启动器，P112 用真实模型时两个模型都写了 `["bash", …]`，其中一次进了 WSL。写了路径的（`C:/…/bash.exe`、`./bash`）照原样；找不到 Git Bash 时照原样按 PATH 找。工具、参数、错误码、`tools/list` 都没变；macOS、Linux 上行为不变。
+> 2026-10-30（P117）**受管会话的通道可以要只读**：Claude Code 的后台 agent 会照抄会话的 MCP 配置另开一条 ccnm 通道，以前撞写入互斥被拒、一个工具都拿不到。现在 Agent 认出这条通道不是会话自己的 Claude 开的（它的父进程不是监督进程记下的那个），就在 mcp-serve 的载荷里写 `policy: "read"`；Runtime 照第 4.3 节 `read` 那一列给工具、不碰写入互斥，`initialize` 的 instructions 说明这条连接为什么只读。会话自己的通道发的载荷一个字没变。旧 Runtime 不认这个值，照旧拒绝，等于以前的行为。写入互斥被占时的报错最后两行改了措辞，第一行和错误码没变。
 
 面向的读者是**已经在本机跑着 Claude Code / Codex / 别的 MCP Host，但项目在另一台机器上的人**。它给你的不是一条裸 SSH 通道，而是一个绑定了 workspace 的远程项目工具集。
 
@@ -247,6 +248,8 @@ Remote MCP（coding 模式）  ────┘
 `coding` 模式在**远端 server 打开的时候**就去拿这把锁——和 Managed session 走同一个函数、同一把锁文件，锁的键是工作树的规范化根路径，所以别名路径、嵌套路径和共享 `.git` 的 worktree 算同一棵树。拿不到就启动失败，不会出现"连上了但是写不了"或者更糟的"两个 Agent 同时改一棵树"。
 
 `read` 模式不碰这把锁，因此多个 read 连接可以并存，也可以和一个 Managed coding session 并存。
+
+受管会话也有一种连接走 `read` 这一列（P117）：会话自己的 Claude 以外的进程照着会话的 MCP 配置开的通道，最常见的是 Claude Code 的后台 agent。它在载荷里写 `policy: "read"`，Runtime 不给它写工具、不让它拿锁，所以会话自己的 coding 连接照常握着这把锁；它要改的东西只能回到会话里去改。`policy` 只能往少里要：Agent 会话的载荷只认 `coding` 和 `read`，别的值报 `CCNM_E_POLICY`。
 
 ### 4.5 首版不做多租户
 

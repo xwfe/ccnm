@@ -638,9 +638,14 @@ impl Server {
     /// This is the part that is not a hint.
     fn refuse_withheld(&self, tool: &str) -> Option<CallToolResult> {
         (!self.offers(tool)).then(|| {
-            tool_error(&Error::policy(format!(
-                "{tool} is not available: this workspace is open for external MCP in read mode"
-            )))
+            tool_error(&Error::policy(match self.inner.entry {
+                crate::protocol::mcp::Entry::Companion => format!(
+                    "{tool} is not available: this connection was not opened by the session's own Claude Code process (a background agent, most likely), so it is read-only; the change belongs in the main session"
+                ),
+                _ => format!(
+                    "{tool} is not available: this workspace is open for external MCP in read mode"
+                ),
+            }))
         })
     }
 
@@ -665,6 +670,11 @@ impl Server {
                 self.inner.project.as_ref(),
                 &self.inner.named,
             ),
+            crate::protocol::mcp::Entry::Companion => context::companion(
+                &self.inner.workspace,
+                self.inner.provider.project_file(),
+                self.inner.project.as_ref(),
+            ),
         };
         debug_assert!(self.instructions_cap().fits(&text));
         text
@@ -676,7 +686,9 @@ impl Server {
     pub fn instructions_cap(&self) -> context::Cap {
         match self.inner.entry {
             crate::protocol::mcp::Entry::External(_) => context::EXTERNAL_CAP,
-            crate::protocol::mcp::Entry::Managed => self.inner.provider.instructions_cap(),
+            crate::protocol::mcp::Entry::Managed | crate::protocol::mcp::Entry::Companion => {
+                self.inner.provider.instructions_cap()
+            }
         }
     }
 
@@ -1721,7 +1733,10 @@ pub(crate) fn quote_argument(text: &str) -> String {
 /// Serve MCP on this process's stdin/stdout until the client closes the
 /// stream. Synchronous from the caller's point of view.
 pub fn serve(payload: &ServePayload) -> CcnmResult<()> {
-    run(Server::new(payload)?)
+    // The entry is in-process only; what the wire says about it is the
+    // policy, which can ask for less than a managed session gets, never more.
+    let entry = crate::protocol::mcp::Entry::for_policy(&payload.policy)?;
+    run(Server::new(&payload.clone().with_entry(entry))?)
 }
 
 /// Serve a Runtime-authority open: the caller named a workspace, this
@@ -2395,6 +2410,57 @@ mod tests {
             server.get_tool(relay::TOOL).is_none(),
             "read mode never gets it"
         );
+    }
+
+    /// P117: a managed payload's policy picks its entry, and nothing but the
+    /// two policies is read as one.
+    #[test]
+    fn a_managed_payload_asks_for_its_entry_by_policy() {
+        use crate::protocol::mcp::Entry;
+        assert_eq!(Entry::for_policy("coding").unwrap(), Entry::Managed);
+        assert_eq!(Entry::for_policy("read").unwrap(), Entry::Companion);
+        for other in ["readonly", "Coding", ""] {
+            assert!(Entry::for_policy(other).is_err(), "{other:?}");
+        }
+    }
+
+    /// P117: a channel the session's own Agent did not open gets exactly the
+    /// tools read mode gets, says why in its instructions, and a write tool
+    /// called anyway is refused with the reason. It takes no write guard:
+    /// [`Entry::writes`] is what `Server::new` asks before taking one.
+    ///
+    /// [`Entry::writes`]: crate::protocol::mcp::Entry::writes
+    #[test]
+    fn a_companion_channel_reads_and_says_why_it_cannot_write() {
+        use crate::protocol::mcp::Entry;
+        let dir = temp("companion");
+        let open = |entry| {
+            fixture_server(&ServePayload::new("xshun", dir.to_path_buf(), "s").with_entry(entry))
+                .unwrap()
+        };
+        let names = |server: &Server| {
+            let mut names: Vec<String> =
+                server.tools().iter().map(|t| t.name.to_string()).collect();
+            names.sort();
+            names
+        };
+        let server = open(Entry::Companion);
+        assert_eq!(
+            names(&server),
+            names(&open(Entry::External(crate::runtime::ExternalMode::Read)))
+        );
+        assert!(server.get_tool("apply_patch").is_none());
+        assert!(server.get_tool("exec_command").is_none());
+        assert!(!Entry::Companion.writes());
+        let text = server.instructions();
+        assert!(text.contains("background agent"), "{text}");
+        assert!(text.contains("read-only"), "{text}");
+        assert!(text.contains("main session"), "{text}");
+        assert!(server.instructions_cap().fits(&text));
+        let refused =
+            serde_json::to_string(&server.refuse_withheld("apply_patch").unwrap()).unwrap();
+        assert!(refused.contains("main session"), "{refused}");
+        assert!(!refused.contains("external MCP"), "{refused}");
     }
 
     /// `--print` starts Claude with prompting switched off on purpose:

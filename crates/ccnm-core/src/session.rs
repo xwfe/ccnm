@@ -895,6 +895,63 @@ pub fn read_agent_pid(dir: &Dir) -> Option<u32> {
         .ok()
 }
 
+/// Whether the process asking -- this session's MCP transport or one of
+/// its hooks -- was started by the session's own Agent: the pid the
+/// supervisor recorded is its parent or grandparent (P117).
+///
+/// A Claude Code background agent is another `claude`, which Claude Code's
+/// daemon relaunches with the session's `--settings` and `--mcp-config`
+/// (2.1.312). Its channel and its hooks arrive here looking like the
+/// session's own, and nothing they are handed says otherwise: Claude Code
+/// strips `CLAUDE_CODE_SESSION_KIND` from what its MCP servers inherit, and
+/// the background agent's hooks write its conversation id down like any
+/// other. Its parent is that other `claude`.
+///
+/// Measured on 2.1.312: the session's MCP servers and hook commands are
+/// direct children of its `claude`. The grandparent is for a hook run
+/// through a shell that does not exec. The answer can only be wrong one
+/// way, "the session's own" -- which is what every channel was before this
+/// -- and a session without the record says so too.
+pub fn from_own_agent(dir: &Dir) -> bool {
+    started_by(read_agent_pid(dir), parent_pid(), parent_of)
+}
+
+fn started_by(
+    agent: Option<u32>,
+    parent: Option<u32>,
+    parent_of: impl Fn(u32) -> Option<u32>,
+) -> bool {
+    let (Some(agent), Some(parent)) = (agent, parent) else {
+        return true;
+    };
+    parent == agent || parent_of(parent) == Some(agent)
+}
+
+#[cfg(unix)]
+fn parent_pid() -> Option<u32> {
+    Some(std::os::unix::process::parent_id())
+}
+
+/// The Agent side never runs on Windows.
+#[cfg(not(unix))]
+fn parent_pid() -> Option<u32> {
+    None
+}
+
+fn parent_of(pid: u32) -> Option<u32> {
+    use crate::process::ProcessRunner as _;
+    let out = process::SystemRunner
+        .run(
+            &process::Cmd::new("/bin/ps")
+                .args(["-o", "ppid=", "-p", &pid.to_string()])
+                .timeout(Duration::from_secs(5)),
+        )
+        .ok()?;
+    out.success()
+        .then(|| out.stdout_lossy().trim().parse().ok())
+        .flatten()
+}
+
 /// What `ccnm internal supervise --payload` is told.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1743,6 +1800,43 @@ mod tests {
         let argv = fs::read_to_string(state.join("argv")).unwrap();
         assert!(!argv.contains("fix the failing test"), "{argv}");
         assert!(argv.contains("--print\n"), "{argv}");
+    }
+
+    /// P117: the session's own Agent is the parent, or the grandparent
+    /// through a shell; anything else is another process. No record, or no
+    /// way to tell, is the session's own -- what every channel was before.
+    #[test]
+    fn who_started_a_channel_is_told_by_its_parents() {
+        let none = |_| None;
+        assert!(started_by(Some(10), Some(10), none));
+        assert!(started_by(Some(10), Some(11), |pid| (pid == 11).then_some(10)));
+        assert!(!started_by(Some(10), Some(12), |pid| (pid == 12).then_some(13)));
+        assert!(!started_by(Some(10), Some(12), none));
+        assert!(started_by(None, Some(12), none));
+        assert!(started_by(Some(10), None, none));
+    }
+
+    /// The real lookup, against this test's own ancestry.
+    #[cfg(unix)]
+    #[test]
+    fn this_process_is_from_its_parent_and_not_from_itself() {
+        let state = temp("own-agent");
+        let dir = create(
+            &state,
+            &spec(),
+            Some(&ssh()),
+            &Default::default(),
+            &Default::default(),
+        )
+        .unwrap();
+        assert!(from_own_agent(&dir), "no record yet");
+        write_agent_pid(&dir, std::os::unix::process::parent_id()).unwrap();
+        assert!(from_own_agent(&dir));
+        let grandparent = parent_of(std::os::unix::process::parent_id()).unwrap();
+        write_agent_pid(&dir, grandparent).unwrap();
+        assert!(from_own_agent(&dir));
+        write_agent_pid(&dir, std::process::id()).unwrap();
+        assert!(!from_own_agent(&dir));
     }
 
     /// A legacy workspace's `claude_config_dir` is the login Claude runs

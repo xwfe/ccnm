@@ -101,16 +101,19 @@ impl WriteGuard {
                     // reached it through `ccnm doctor`, and the next thing
                     // they need is where to look.
                     //
-                    // The last line is the cause seen most (P116.4): a Claude
-                    // Code background agent is a second process loading the
-                    // same MCP config, and so a second session.
+                    // The last lines are the cause seen most (P116.4): a
+                    // Claude Code background agent is a second process
+                    // loading the same MCP config. Since P117 the AI machine
+                    // asks for read-only tools for it, which take no guard;
+                    // an older one still lands here.
                     "workspace write guard is busy; another session still owns this working tree\n\
                      who holds it, on the Runtime Node: the `held <session> <workspace>` file in\n\
                      ${XDG_STATE_HOME:-~/.local/state}/ccnm/write-guards/\n\
                      `ccnm status` alone does not prove nobody is using it: a --print run holds\n\
                      this guard and never appears there\n\
                      a Claude Code background agent or forked session started inside a managed\n\
-                     session is a second session too, and gets no tools: one writer per project",
+                     session is a second session too; one writer per project, so an up-to-date\n\
+                     ccnm on the AI machine gives it read-only tools instead of this",
                 ));
             }
             Err(_) => {

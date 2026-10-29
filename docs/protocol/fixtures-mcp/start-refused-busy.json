@@ -3,6 +3,6 @@
   "$note": "工作树被另一个 coding session 占着。改用 --mode read 可以连，写不了。第一行之后是给人的排查指引，措辞会变——机器判断只看退出码和第一行的名字。",
   "message": {
     "exit_code": 1,
-    "stderr": "CCNM_E_POLICY:\nworkspace write guard is busy; another session still owns this working tree\nwho holds it, on the Runtime Node: the `held <session> <workspace>` file in\n${XDG_STATE_HOME:-~/.local/state}/ccnm/write-guards/\n`ccnm status` alone does not prove nobody is using it: a --print run holds\nthis guard and never appears there\na Claude Code background agent or forked session started inside a managed\nsession is a second session too, and gets no tools: one writer per project"
+    "stderr": "CCNM_E_POLICY:\nworkspace write guard is busy; another session still owns this working tree\nwho holds it, on the Runtime Node: the `held <session> <workspace>` file in\n${XDG_STATE_HOME:-~/.local/state}/ccnm/write-guards/\n`ccnm status` alone does not prove nobody is using it: a --print run holds\nthis guard and never appears there\na Claude Code background agent or forked session started inside a managed\nsession is a second session too; one writer per project, so an up-to-date\nccnm on the AI machine gives it read-only tools instead of this"
   }
 }

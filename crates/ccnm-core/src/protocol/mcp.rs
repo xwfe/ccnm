@@ -18,21 +18,44 @@ use super::payload::{PROTOCOL, Protocol};
 /// putting it on the wire as well would let the two disagree — and a peer
 /// that could send `Managed` alongside an external open would be asking for
 /// the write guard and the seven tools by claiming to be something else.
+/// The one thing a managed payload says about it is its `policy`
+/// ([`Entry::for_policy`]), which can only ask for less.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Entry {
     /// A ccnm-managed Agent session. The only entry there was before P10.
     #[default]
     Managed,
+    /// A managed session's channel that the session's own Agent did not
+    /// open (P117): a Claude Code background agent, which Claude Code
+    /// relaunches with the session's `--mcp-config`. Read-only, and it
+    /// takes no write guard, so the session keeps its own.
+    Companion,
     /// An external MCP client, in the mode this Runtime granted it.
     External(crate::runtime::ExternalMode),
 }
 
+/// The tool policies a managed session's channel asks for.
+pub const POLICY_CODING: &str = "coding";
+/// See [`Entry::Companion`].
+pub const POLICY_READ: &str = "read";
+
 impl Entry {
+    /// The entry a managed payload's `policy` asks for. Anything else is
+    /// refused, not read as the nearest policy there is.
+    pub fn for_policy(policy: &str) -> crate::error::Result<Entry> {
+        match policy {
+            POLICY_CODING => Ok(Entry::Managed),
+            POLICY_READ => Ok(Entry::Companion),
+            _ => Err(crate::error::Error::policy("unknown tool policy")),
+        }
+    }
+
     /// Whether this session may change anything — the one question the
     /// write guard, the tool list and every write tool ask.
     pub fn writes(self) -> bool {
         match self {
             Entry::Managed => true,
+            Entry::Companion => false,
             Entry::External(mode) => mode.writes(),
         }
     }
@@ -62,7 +85,8 @@ pub struct ServePayload {
     /// Session id chosen by the launcher; names the retained-output
     /// directory later.
     pub session: String,
-    /// Tool policy. Only `coding` exists.
+    /// Tool policy: `coding`, or `read` for a channel the session's own
+    /// Agent did not open ([`Entry::Companion`]).
     pub policy: String,
     /// Whether a person is at a terminal for this session.
     ///
@@ -92,7 +116,7 @@ impl ServePayload {
             workspace: workspace.to_string(),
             root,
             session: session.to_string(),
-            policy: "coding".to_string(),
+            policy: POLICY_CODING.to_string(),
             interactive: false,
             entry: Entry::Managed,
         }
@@ -120,6 +144,13 @@ impl ServePayload {
     /// Say a person is at a terminal for this session.
     pub fn with_interactive(mut self, interactive: bool) -> Self {
         self.interactive = interactive;
+        self
+    }
+
+    /// Ask for read-only tools: the session's own Agent did not open this
+    /// channel ([`Entry::Companion`]).
+    pub fn read_only(mut self) -> Self {
+        self.policy = POLICY_READ.to_string();
         self
     }
 }

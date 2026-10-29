@@ -708,7 +708,7 @@ pub(crate) fn session_rows(s: &LiveSession, now: u64, lang: Lang) -> Vec<Vec<Str
                         .map(|at| span(now.saturating_sub(at), lang))
                         .unwrap_or_default();
                     lang.pick(
-                        format!("通（断过，自动接回过 {} 次，最近一次在 {ago}前）", r.count),
+                        format!("通（断过，自动接回过 {} 次，最近一次：{ago}前）", r.count),
                         format!(
                             "connected (they went down and were brought back {} time{}, last {ago} ago)",
                             r.count,
@@ -717,6 +717,12 @@ pub(crate) fn session_rows(s: &LiveSession, now: u64, lang: Lang) -> Vec<Vec<Str
                     )
                 }
                 (Some(true), _) => lang.pick("通", "connected").into(),
+                // The Controller is already retrying and the next row says
+                // why it failed; reconnecting by hand fails the same way.
+                // A draft in the box (tries 0) still needs the person.
+                (Some(false), Some(r)) if r.failing.as_ref().is_some_and(|f| f.tries > 0) => {
+                    lang.pick("断了", "TOOLS DOWN").into()
+                }
                 (Some(false), _) => s.tools_down_hint(lang),
                 (None, _) => lang.pick("说不清", "unknown").into(),
             },
@@ -1444,7 +1450,7 @@ mod tests {
         });
         let said = block(&session_rows(&s, 1_000 + 180, Lang::Zh));
         assert!(
-            said.contains("通（断过，自动接回过 2 次，最近一次在 3 分钟前）"),
+            said.contains("通（断过，自动接回过 2 次，最近一次：3 分钟前）"),
             "{said}"
         );
         let said = block(&session_rows(&s, 1_000 + 180, Lang::En));
@@ -1463,7 +1469,11 @@ mod tests {
         });
         let said = block(&session_rows(&s, 1_180, Lang::Zh));
         let lines: Vec<&str> = said.lines().collect();
-        assert!(lines[1].contains("工具"), "{said}");
+        assert!(
+            lines[1].contains("工具") && lines[1].ends_with("断了"),
+            "{said}"
+        );
+        assert!(!said.contains("/mcp"), "{said}");
         assert!(
             lines[2].starts_with("                    Controller 在自动接：上一次没接上（ssh: connect to host xdwmbp port 22: Operation timed out），2 分钟后再试"),
             "{said}"

@@ -47,13 +47,15 @@ ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=no -o UserKnow
 
 **为什么会这样**：[快速开始第 2 节](getting-started.md#2-配好双向-ssh)要你让项目机器上的账号免密 SSH 到 AI 那台（从项目机器发起会话要用），命令默认又正好以这个账号跑。ccnm 会去掉命令环境里的 `SSH_AUTH_SOCK`，但私钥文件和 `~/.ssh/config` 里的别名都还在，ssh 照样用得上。doctor 看不出这一条：`SSH 私钥` 那一行只看执行账号名下有没有私钥，不去试连。
 
+**登记了好几台 AI 机器（`--on` 换着用）时，每台都一样**：项目机器上的账号能免密连到哪几台，模型就能连回哪几台。自测对每台各跑一次，堵也要每台都堵。
+
 **两种堵法。默认不用建 `ccrun`，用第一种就行**；只有要在项目机器上用 `--print`、`ccnm rpc`，或者项目机器上你的账号里还有别的不想让模型碰的东西，才换第二种。
 
 | | 只从 AI 那台发起 | 建专用执行账号 |
 | --- | --- | --- |
 | 怎么做 | 在 **AI 那台**的 `~/.ssh/authorized_keys` 里删掉项目机器上你那把钥匙的公钥那一行，以后 ccnm 命令都在 AI 那台敲 | 建 `ccrun`，Runtime 配置写 `runtime_user`，Agent 改用它登进来（本页后面几节） |
 | 为什么管用 | 只从 AI 那台发起时，ccnm 从来不需要项目机器连回去。实测：项目机器那份配置里 AI 机的别名改成连不上的，`init`、`doctor`、开会话、`status`、`attach`、`ls`、`stop`、`log` 在 AI 那台照常 | 命令以 `ccrun` 跑，它名下没有能登 AI 那台的钥匙 |
-| 代价 | `--print`、`cleanup`、`ccnm rpc` 只能在项目机器上敲，这种部署下都用不了；在项目机器上敲 `ccnm my-project`、`attach`、`stop`、`doctor` 都报 `CCNM_E_AGENT_UNREACHABLE` | 要建账号、给它开项目目录的权限、在它名下装工具链 |
+| 代价 | `--print`、`cleanup`、`ccnm rpc` 只能在项目机器上敲，这种部署下都用不了；`--on` 换到另一台 AI 机器、新会话带上一次的交接，也只在项目机器上敲才有；在项目机器上敲 `ccnm my-project`、`attach`、`stop`、`doctor` 都报 `CCNM_E_AGENT_UNREACHABLE` | 要建账号、给它开项目目录的权限、在它名下装工具链 |
 
 只从 AI 那台发起时三件事要知道：
 

@@ -855,7 +855,7 @@ ccnm status                 # 不带项目名：会把"Agent 那头已经没有�
 
 拒绝信息里还会说上一个会话的 pid 现在是什么（还在跑，连命令行一起给；已经不在；或者被别的程序复用了）。**pid 没了不等于可以接管**——它起的命令可能还活着，而 ccnm 看不见它们。
 
-先在 Runtime Node 上跑 `ccnm status <workspace>`，看最后那一行写锁：谁占着、那个 pid 现在是什么、Agent 那边这个会话是不是早结束了（它经 Agent 问 Runtime 执行账号，只看不动）。说"Agent 那边已经结束"的，就是[合上笔记本睡一觉](#合上笔记本睡一觉第二天某个项目的工具连不上)那种孤儿 `mcp-serve`。再在 Agent Node 用 `ccnm status <workspace> --agent <instance-id> --session <ccnm-session-id>` 定位会话，由 Runtime 那边的人确认旧 MCP 和子进程都没了，再按[写入 guard 残留](operations.md#写入-guard-残留)处理。`doctor`/MCP probe 同样经过写 guard，活动 writer 下诊断被拒绝不等于 SSH 损坏；写锁那一行不拿锁，不会被拒，也不会挡别人。
+先在 Runtime Node 上跑 `ccnm status <workspace>`，看最后那一行写锁：谁占着、那个 pid 现在是什么、Agent 那边这个会话是不是早结束了（它经 Agent 问 Runtime 执行账号，只看不动）。说"Agent 那边已经结束"的，就是[合上笔记本睡一觉](#合上笔记本睡一觉第二天某个项目的工具连不上)那种孤儿 `mcp-serve`。再在 Agent Node 用 `ccnm status <workspace> --on <instance-id> --session <ccnm-session-id>` 定位会话，由 Runtime 那边的人确认旧 MCP 和子进程都没了，再按[写入 guard 残留](operations.md#写入-guard-残留)处理。`doctor`/MCP probe 同样经过写 guard，活动 writer 下诊断被拒绝不等于 SSH 损坏；写锁那一行不拿锁，不会被拒，也不会挡别人。
 
 Machine API 那边看到的是同一件事的两种码：有进程正持有，`session.start` 回 `-32008`，等它结束再发；异常退出或故意留下的，回 `-32007`，`data.reason` 是 `left_held` / `kept_on_purpose` 等，按上面处理，重发不会好。
 

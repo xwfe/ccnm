@@ -16,7 +16,7 @@
 | 放项目的机器（Runtime） | 执行账号（AI 那台 ssh 登进来的那个账号：默认就是你自己的，另建了专用账号就是它，比如 `ccrun`）。AI 那台经 ssh 调起的是它名下 `ccnm_bin` 指的那份，默认 `~/.local/bin/ccnm` | `反向 SSH` 行失败：`the Runtime Node runs ccnm 0.13.1, this machine runs 0.14.0; …`；起会话也被拒，报同一句外加 `before starting a session` |
 | 跑 AI 的机器（Agent） | 跑 Controller 的账号 | `Agent 的 ccnm` 行失败：`the Agent Node <名字> runs ccnm 0.13.1, this machine runs 0.14.0; …`。换了文件没重启 Controller，见第 4 步 |
 
-一台机器同时当两个角色、或执行账号就是你自己，就少换几份。顺序：
+一台机器同时当两个角色、或执行账号就是你自己，就少换几份。登记了好几台 AI 机器（`--on` 换着用的）时，每台都是"跑 AI 的机器"，都要换、都要做第 4 步；漏了哪台，`--on` 到那台时就撞上表里第一行那种版本不一致。顺序：
 
 **1. 停掉所有会话。** 在放项目的机器上：
 
@@ -294,9 +294,13 @@ sessions/<ccnm-session-id>/
 ├── stderr           官方 CLI 的 stderr
 ├── supervisor.log   supervisor 自己的诊断
 ├── tmux.conf        ccnm 自己那个 tmux server 启动时读的配置（见下）
+├── conversations.json  这个会话里每段对话的 id，-c 靠它接最后那段
+├── handoff.md       最后一条以 [ccnm handoff] 起头的回复，/clear 后和下一个会话要用
+├── carried.json     项目机器带过来的上一次会话的交接，交给模型后就删
 └── exit             最后写的：它是怎么结束的
 workspaces/<name>/   官方 CLI 的工作目录
 controller.sock      controller 的监听 socket
+controller.log       controller 的日志，自动接回工具每次接上、没接上都有一行
 ```
 
 **Runtime Node：**
@@ -307,8 +311,12 @@ write-guards/                        工作树级独占锁                      
 rpc/sessions/<handle>.json           machine API 的会话记录                               Operator 的
 rpc/start-keys/                      启动幂等键                                           Operator 的
 rpc/outputs/<handle>/                session.result 从 Agent 拷来的输出                   Operator 的
+workspaces/<name>/on                 这个项目上次的会话起在了哪台 AI 机器（--on）          Operator 的
+workspaces/<name>/handoff.json       哪份交接交给过哪个会话，同一份只交一次                Operator 的
 ssh/                                 ControlPath socket
 ```
+
+`workspaces/<name>/` 下这两个文件在 `ccnm rm <name>` 时一起删。下一个新会话不想带上一次的交接，用 `ccnm handoff <name> --clear`，别手删 `handoff.json`：它记的是"交过了"，删了反而会再交一次。
 
 最后一列是"在谁的 state 目录里"。另建了专用执行账号时，Operator（敲 `ccnm`、跑 `ccnm rpc` 的账号）和 Runtime 执行账号（Agent 的 ssh 落到的账号，通常是 `ccrun`）是两个账号，这两组东西在两个不同的目录里，谁的东西只能由谁删；默认的共用账号下它们是同一个目录。
 

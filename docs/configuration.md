@@ -532,7 +532,7 @@ ccnm ws ls                       # 配置里有哪些项目、目录在哪；只
 ccnm rm <名字>                    # 先停它的会话，再从配置里去掉；项目目录不碰
 ```
 
-`ccnm rm`（全称 `ccnm remove`）和 `ccnm ws rm` 是同一个命令（v0.17.0 及以前只有后者，敲 `ccnm rm` 会被当成打开一个叫 `rm` 的项目）。加 `--purge` 连 ccnm 为它存的会话记录一起删，见[运维手册](operations.md#想立刻腾地方ccnm-cleanup)。`ccnm ws ls` 和 `ccnm ls` 不是一回事：后者要问 AI 那台，说的是会话在不在跑、工具通不通。
+`ccnm rm`（全称 `ccnm remove`）和 `ccnm ws rm` 是同一个命令（v0.17.0 及以前只有后者，敲 `ccnm rm` 会被当成打开一个叫 `rm` 的项目）。在项目机器上删时，这台为它记的"上次在哪台 AI 机器上跑"和交接记录（`~/.local/state/ccnm/workspaces/<名字>/` 下的 `on`、`handoff.json`）也一起删。加 `--purge` 连 ccnm 为它存的会话记录一起删，见[运维手册](operations.md#想立刻腾地方ccnm-cleanup)。`ccnm ws ls` 和 `ccnm ls` 不是一回事：后者要问 AI 那台，说的是会话在不在跑、工具通不通。
 
 `ccnm add` 和 `ccnm workspace add`（`ws` 是 `workspace` 的别名）是同一个命令。只给一个参数时：不像名字（`.`、`./x`、`~/x`、带 `/` 的）就当项目目录；像名字就当名字、项目取当前目录，但当前目录下正好有同名子目录时报错、让你写清楚（`./名字` 或 `名字 .`）。从目录名取名字时 `.` 换成 `-`。其他选项：`--replace`（名字已存在时改指到这个目录，不加就报错）、`--permission-mode <模式>`（写 [`claude_permission_mode`](#claude_permission_mode)）、`--allow-unconfined-exec`（写 [`allow_unconfined_exec`](#allow_unconfined_exec)）、`--allow-unattended-exec`（写 [`allow_unattended_exec`](#allow_unattended_exec) `= true`，不加就不写、默认每条命令问一次）、`--on <机器>`（这个项目默认在哪台 AI 机器上跑，写节点名或 ssh 别名；项目已经存在、又没给目录时只换机器，见[使用说明](usage.md#换一台-ai-机器--on)，原来叫 `--agent-node`）。`allow_unisolated_credentials` 没有对应选项：只在写了 `runtime_user` 的专用账号模式下用得上，开之前要读那一节，所以只能手写。
 

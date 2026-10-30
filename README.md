@@ -1,93 +1,84 @@
 # ccnm
 
-**让 Claude Code / Codex 在一台机器上跑，它看文件、改代码、跑命令却都在另一台机器上做。**
+**Claude Code 登录在你这台电脑上，项目却在另一台机器上（比如一台服务器）？用 ccnm，这台的 Claude Code 直接去那台看代码、改代码、跑测试。**
 
-一台机器跑 AI，AI 的登录只放在这里；另一台放项目，代码、Git、编译环境只在这里。两台都可以是 macOS 或 Linux：Mac 跑 AI、Linux 服务器放项目最常见，反过来、两台都是 Mac 或都是 Linux 也都实现了，每种搭配验到哪一步见[下面的表](#两台机器各干什么)。
+那台上不用登录 AI，代码也不用来回同步。Codex 一样能用。两台都可以是 macOS 或 Linux，怎么搭配都行；放项目的那台也可以是 Windows。
 
-*ccnm runs Claude Code or Codex on one machine while every file read, edit and command happens over SSH on another machine that holds the project. Either machine can be macOS or Linux x86\_64, in any combination; since v0.21.0 the project machine can also be Windows (x86\_64, through its own OpenSSH Server), accepted on one Windows 11 machine with real Claude Code and Codex runs. On the project machine, commands run as your own account by default, or as a dedicated low-privilege one if you set it up. By default that account can also SSH back to the AI machine, where the AI login lives; [production-safety.md](docs/production-safety.md#默认配置下项目机器能连回-ai-机器) has a one-line self-test and two ways to close it. Docs are in Chinese.*
+*ccnm lets Claude Code or Codex run on the machine where you are logged in, while every file read, edit and command happens over SSH on the machine that holds the project. Either side can be macOS or Linux x86\_64; the project side can also be Windows. By default the project machine can SSH back to the AI machine, where the AI login lives; [production-safety.md](docs/production-safety.md#默认配置下项目机器能连回-ai-机器) has a one-line self-test and two ways to close it. Docs are in Chinese.*
 
-## 它解决什么问题
+## 用起来是什么样
 
-项目在一台机器上（家里的 Linux 服务器、公司的台式机、另一台 Mac），Claude / Codex 登录在你平时用的那台上。常见的两种凑合办法都有代价：
+在放项目的机器上敲（跑 AI 的那台上也能敲）：
 
-| 办法 | 问题 |
-| --- | --- |
-| 在放项目的机器上也登录 AI | 登录凭证多放一处，而且就放在 AI 跑命令的那个账号里，一句 prompt 就能被读出去 |
-| 把代码同步到跑 AI 的机器上改 | 两份代码要对齐；这边没有那套环境，测试跑不了或结果不一样 |
+```bash
+ccnm my-project
+```
 
-用 ccnm：AI 照常在它那台机器上跑，但它看文件、改代码、跑命令，都通过 SSH 交给放项目的机器去做，结果再传回来。命令默认以你在项目机器上的账号跑，和你在那台机器上直接用 Claude Code 一样；想让它碰不到那个账号里的私钥和各种登录，可以另建一个专门的低权限账号替它干活（可选，见[生产安全](docs/production-safety.md#要不要建专用账号)）。
-
-**默认配置下有个口子，先知道：AI 能从项目机器连回跑 AI 的那台。** 上手要求项目机器上你的账号能免密 SSH 到 AI 那台，命令默认又正好以这个账号跑，所以模型一条 `ssh` 就过去了，AI 的登录就在那台上（2026-10-11 在作者的两台 Mac 上实测，连得回去）。也就是说，上面表里第一行那个"一句 prompt 就能被读出去"，默认配置下并没有躲开。一条命令自测、两种堵法（只在 AI 那台敲命令，并让它不再接受项目机器的登录；或者另建执行账号。两台之间要用系统 SSH 加钥匙，开着 Tailscale SSH 这类不看钥匙的登录时两种都没用），见[生产安全](docs/production-safety.md#默认配置下项目机器能连回-ai-机器)。
+1. 跑 AI 的那台开出 Claude Code（或 Codex），你的终端直接接进去。
+2. 像平常一样聊。它看文件、搜代码、改代码、跑 `cargo test`，都在放项目的那台上做，结果传回来。
+3. **默认每条命令跑之前都会停下来问你。** 嫌烦可以关掉，见[该做的](#该做的和别做的)第一条。
+4. 要走开就直接关终端，AI 接着干；回来敲 `ccnm attach my-project`，做完 `ccnm stop my-project`。
 
 ```text
-跑 AI 的机器（macOS / Linux）                       放项目的机器（macOS / Linux）
+跑 AI 的机器                                          放项目的机器
 Claude Code / Codex  ── 通过 SSH 发出"看/改/跑" ──▶  ccnm 在这台机器上去做
 AI 登录只在这里       ◀──────────── 结果 ───────────  代码、Git、编译环境只在这里
 ```
+
+## 你可能会遇到的事
+
+- **一台 AI 机器额度用完了**：`ccnm my-project --on <另一台>`，换一台接着干，项目名和目录都不用改。上一个会话最后写的交接（做到哪、下一步干什么）会自动交给新会话；额度用完、模型没来得及写的话，交的是那段对话的结尾。之后的命令自动去新那台。同一个项目同一时间只有一台能改代码，旧的还开着时会先问你要不要停掉。加一台 AI 机器、名字怎么写，见[使用说明](docs/usage.md#换一台-ai-机器--on)。
+- **网断了一会儿**：Claude 的会话开着时，AI 那台每 30 秒看一眼，工具断了自己接上，不用你管。你回来敲 `ccnm my-project` 或 `ccnm attach` 时，也会先接上再让你进。接不上会告诉你为什么（[排错手册](docs/troubleshooting.md#tools-down--会话看着在跑模型却什么都够不着)）。
+- **对话太长了**：压缩几次后模型会建议换个新对话，并先写好交接；你 `/clear`，交接自动交给新对话。下次 `ccnm my-project -c` 接着上一次的对话开（[说明](docs/usage.md#长对话压缩几次之后换个新对话交接带过去)）。
+- **想看额度还剩多少**：`ccnm usage`，每个 AI 登录用了多少、几点重置（[说明](docs/usage.md#查额度还剩多少ccnm-usage)）。
+- **一句话的小活**：`ccnm my-project --print "修复 parser 测试"`，跑完结果直接打在终端里，中间不问。
+- **本机已经开着 Claude Code / Codex**：用 `ccnm mcp bridge` 让它顺手改远端项目，不用 ccnm 另起 AI。默认关着，要先在项目机器上打开（[怎么开](docs/usage.md#把远端项目给已经在跑的-agent-用)）。
+- **在手机上看进度、批命令**：用 PocketShell 这类 SSH App 连上跑 AI 的那台，敲同样的命令（[说明](docs/usage.md#通过第三方终端使用)）。
+- **让脚本派活**：`ccnm rpc`，不开网络端口，有现成的 Python 客户端（[协议说明](docs/protocol/README.md)）。
+
+## 为什么不直接在服务器上用 Claude Code
+
+| 常见做法 | 问题 |
+| --- | --- |
+| 在服务器上也登录 AI | 登录凭证多放一处，而且就放在 AI 跑命令的那个账号里，一句 prompt 就能被读出去 |
+| 把代码同步到本机改 | 两份代码要对齐；本机没有那套环境，测试跑不了或结果不一样 |
+
+用 ccnm，AI 的登录只留在它自己那台。AI 的命令默认以你在项目机器上的账号跑，和你在那台上直接用 Claude Code 一样；想让它碰不到这个账号里的私钥和各种登录，可以另建一个低权限账号替它干活（可选，见[生产安全](docs/production-safety.md#要不要建专用账号)）。
+
+**默认配置下有个口子：AI 能从项目机器连回跑 AI 的那台。** 上手时要让项目机器上你的账号能免密 SSH 到 AI 那台，而 AI 的命令默认就以这个账号跑，所以模型一条 `ssh` 就能过去，AI 的登录就在那边。上面表里第一行的风险，默认配置下并没有躲开。一条命令自测和两种堵法见[生产安全](docs/production-safety.md#默认配置下项目机器能连回-ai-机器)。
 
 ## 两台机器各干什么
 
 | | 跑 AI 的机器 | 放项目的机器 |
 | --- | --- | --- |
+| 上面有什么 | Claude Code / Codex 和它的登录；一个后台服务（Controller），负责拉起 AI、断了替你接回 | 项目代码、Git、编译测试工具；AI 的命令在这里跑 |
+| 系统 | macOS；Linux x86_64 | macOS；Linux x86_64；Windows x86_64（[装法](docs/windows-runtime-setup.md)） |
 | 文档里叫 | Agent Node | Runtime Node |
-| 上面有什么 | Claude Code / Codex 和它的登录；一个常驻后台（Controller），负责拉起 AI（Mac 上是 launchd 服务，Linux 上是 systemd 用户服务） | 项目代码、Git、编译测试工具。AI 的命令以 SSH 登进来的那个账号跑（文档里叫执行账号），默认就是你自己的 |
-| 系统 | macOS；Linux x86_64 | macOS；Linux x86_64 |
 
-"两台"指的是两个 SSH 能互相连上的账号，不一定是两台物理机：同一台机器上，用你的账号跑 AI、另建一个账号放项目也行。Windows 从 v0.21.0 起可以当放项目的那台（装法见 [Windows 安装](docs/windows-runtime-setup.md)；在一台 Win11 上用真实的 Claude Code 和 Codex 验收过，没验的见[支持矩阵](docs/support-matrix.md)），跑 AI 的那台还不能是 Windows，要先单独设计。
+"两台"其实是两个能互相 SSH 的账号：同一台机器上，用你的账号跑 AI、另建一个账号放项目也行。跑 AI 的那台可以有好几台，额度用完时用 `--on` 换。
 
 每种搭配验到了哪一步：
 
 | 跑 AI → 放项目 | 验到哪一步 |
 | --- | --- |
-| macOS → Linux | Claude 和 Codex 都用真实模型跑过：交互会话、一问一答、别的 AI 工具接入、脚本调用、安装升级回退（Debian 13，执行账号是专门的 `ccrun`） |
-| macOS → macOS | Claude：作者日常在用，两台 Mac，真实模型、交互会话；Codex：同一台 Mac 的两个账号上用真实模型跑通过脚本调用 |
+| macOS → Linux | Claude 和 Codex 都用真实模型跑过：交互会话、一问一答、别的 AI 工具接入、脚本调用、安装升级回退 |
+| macOS → macOS | Claude：作者日常在用；Codex：同一台 Mac 的两个账号上用真实模型跑通过脚本调用 |
+| macOS → Windows | 一台 Win11 上用真实的 Claude Code 和 Codex 验收过 |
 | Linux → Linux | 同一台 Debian 13 上的两个账号：Codex 用真实模型从安装到改代码跑通；Claude Code 当跑 AI 的一边还没用真实模型跑过 |
 | Linux → macOS | 还没在真机上配过 |
 
-逐项没验过的写在[支持矩阵](docs/support-matrix.md)。Linux 上有两件事先知道：
+逐项没验过的写在[支持矩阵](docs/support-matrix.md)。另外几件事先知道：
 
-- 要 glibc 2.39 以上（比如 Debian 13、Ubuntu 24.04），太旧时一运行就报 ``version `GLIBC_2.39' not found``。
-- 跑 AI 的那台默认你一退出登录，systemd 就把后台服务和会话一起停掉，要常驻得开 linger（`sudo loginctl enable-linger <账号>`，见[快速开始](docs/getting-started.md#4-初始化跑-ai-的机器)）。
-
-不管哪种系统，跑 AI 的机器都要能访问 OpenAI / Anthropic；在不支持的地区（比如中国大陆）要先配代理（[怎么配](docs/troubleshooting.md#登录-codex-报-device-code-request-failed-with-status-403-forbidden或会话里模型一直连不上)）。
-
-还有两个词会经常看到：
-
-- **workspace**：在项目机器上登记过的一个项目目录，起个名字，比如 `my-project`。命令里写的都是这个名字。
-- **会话**：一次 Claude / Codex 运行，开在 AI 那台机器的 tmux 里。关掉终端它还在，随时接回。
-
-## 用起来是什么样
-
-1. 在项目机器上敲 `ccnm my-project`。
-2. AI 那台机器上开出 Claude Code（或 Codex），你的终端直接接进去。
-3. 像平常一样聊。它要看文件、搜代码、改代码、跑 `cargo test`，都在项目机器上做：看和改只限项目目录，命令能碰到什么取决于替它跑命令的那个账号的权限。它自带的读文件、跑命令功能是关掉的。
-4. **默认每次要跑命令，它会先停下来问你。** 嫌一条条点烦可以关掉，见下面[该做的](#该做的和别做的)第一条。
-5. 要走开就直接关终端，AI 接着干；回来敲 `ccnm attach my-project`。做完 `ccnm stop my-project`。
-
-## 适合和不适合
-
-适合：
-
-- **代码在一台机器，AI 登录在另一台**：最主要的用法。
-- **本机已经开着 Claude Code / Codex，想让它顺手改远端项目**：用 `ccnm mcp bridge`，不用 ccnm 另起 AI。默认关着，要在项目机器上先打开（[怎么开](docs/usage.md#把远端项目给已经在跑的-agent-用)）。
-- **一句话的小活**：`ccnm my-project --print "修复 parser 测试"`，跑完结果直接打在终端里，中间不问。
-- **一台 AI 机器额度用完，换一台接着干**：`ccnm my-project --on <另一台>`，项目名和目录都不用改，之后的命令自动去那台（[说明](docs/usage.md#换一台-ai-机器--on)）。同一个项目同一时间仍只有一台在写。
-- **让脚本派活**：`ccnm rpc`，不开网络端口，有现成的 Python 客户端（[协议说明](docs/protocol/README.md)）。
-- **在手机上看进度、批命令**：用 PocketShell 这类 SSH App 连上跑 AI 的那台，敲同样的命令（[说明](docs/usage.md#通过第三方终端使用)）。
-
-不适合：
-
-- **项目和 AI 在同一个账号下**：直接用 Claude Code / Codex 就好。ccnm 会拒绝这种配法（同一台机器的两个账号可以，见上）。
-- **要多个 AI 分工协作、自动拆任务、自动审查**：ccnm 只管"让一个 AI 在远端项目上干活"，安排活是另一个项目的事（[交接说明](docs/orchestrator-handoff.md)）。
-- **要让代码一点都不出服务器**：AI 读到的代码会发给模型服务商。ccnm 分开的是机器和权限，不是数据。
-- **要防数据外传**：ccnm 不管网络，防火墙要你自己在项目机器上配。
+- Linux 要 glibc 2.39 以上（比如 Debian 13、Ubuntu 24.04），太旧时一运行就报 ``version `GLIBC_2.39' not found``。
+- 跑 AI 的那台是 Linux 时，你一退出登录，systemd 默认就把后台服务和会话一起停掉，要常驻得开 linger（`sudo loginctl enable-linger <账号>`，见[快速开始](docs/getting-started.md#4-初始化跑-ai-的机器)）。
+- 跑 AI 的那台要能访问 OpenAI / Anthropic；在不支持的地区（比如中国大陆）要先配代理（[怎么配](docs/troubleshooting.md#登录-codex-报-device-code-request-failed-with-status-403-forbidden或会话里模型一直连不上)）。
 
 ## 上手
 
 准备（每一项怎么弄见[快速开始](docs/getting-started.md)）：
 
 - 两台都装**同一个版本**的 ccnm，放在 `~/.local/bin/ccnm`（[怎么装](docs/getting-started.md#1-两台都装-ccnm)）；
-- 两台之间能用钥匙免密 SSH（系统自带的 SSH 服务，别用 Tailscale SSH，[怎么配](docs/getting-started.md#2-配好双向-ssh)）：项目机器上你的账号能连到 AI 那台（这一条就是上面说的口子）；AI 那台能连到项目机器（连进去的那个账号就是替 AI 跑命令的账号，用你自己的就行）；
+- 两台之间能用钥匙免密 SSH，两个方向都要（用系统自带的 SSH 服务，别用 Tailscale SSH，[怎么配](docs/getting-started.md#2-配好双向-ssh)）；
 - AI 那台上 Claude Code（或 Codex 0.154.0）已登录，装了 `tmux`；
 - 项目机器上装了 `git`、`ripgrep` 和项目要用的编译工具。
 
@@ -102,66 +93,63 @@ ccnm add /path/to/my-project      # 项目名取目录名：my-project
 
 ```bash
 ccnm init --runtime <连项目机器用的 ssh 别名>
-ccnm controller install        # 装那个负责拉起 AI 的后台服务
+ccnm controller install           # 装那个负责拉起 AI 的后台服务
 ```
 
 回到**项目机器**：
 
 ```bash
-ccnm doctor my-project      # 只读体检，逐项说哪里没配好
-ccnm my-project             # 开始
+ccnm doctor my-project            # 只读体检，逐项说哪里没配好
+ccnm my-project                   # 开始
 ```
 
-`init` 的参数和别名怎么写、第一次启动会问什么、用 Codex 要多做哪几步，都在[快速开始](docs/getting-started.md)。输出默认中文，加 `--lang en` 换英文。
+参数怎么写、第一次启动会问什么、用 Codex 要多做哪几步，都在[快速开始](docs/getting-started.md)。输出默认中文，加 `--lang en` 换英文。
 
-日常命令（前七条两台机器上都能敲，后两条只在项目机器上）：
+## 日常命令
 
 ```bash
 ccnm my-project                          # 开会话并接上
-ccnm my-project -c                       # 接着这个项目上一次的对话开（只支持 Claude）
+ccnm my-project -c                       # 接着上一次的对话开（只支持 Claude）
+ccnm my-project --on <另一台>             # 换一台 AI 机器开（在项目机器上敲）
 ccnm attach my-project                   # 接回已有会话（简写 ccnm a）
-ccnm ls                                  # 所有项目：在不在跑、跑了多久、工具通不通（在 AI 那台只看得到它上面的会话）
-ccnm log                                 # 跑过的会话，最新的在前
-ccnm usage                               # AI 登录的订阅额度用了多少、几点重置
+ccnm ls                                  # 所有项目：在不在跑、跑了多久、工具通不通
+ccnm usage                               # AI 登录的额度用了多少、几点重置
 ccnm stop my-project                     # 结束会话
 ccnm my-project --print "修复 parser 测试"   # 一问一答，不进 tmux
-ccnm cleanup my-project                  # 看看会话留下了什么，再按提示加 --apply 删
+ccnm handoff my-project                  # 下次新会话会带上什么交接（在项目机器上敲）
+ccnm log                                 # 跑过的会话，最新的在前
 ```
 
-**安装**见[快速开始](docs/getting-started.md#1-两台都装-ccnm)。**升级**时三件事别漏：先停掉所有会话；每台都换成同一个版本，放项目那台如果另建了执行账号（比如 `ccrun`），它名下那份也要换；跑 AI 的那台换完再敲一次 `ccnm controller install`，不然后台还是旧进程。完整步骤和回退见[运维：用发布包升级](docs/operations.md#用发布包升级一般就用这个)。
+完整用法见[使用说明](docs/usage.md)。
 
 ## 该做的和别做的
 
 **该做**
 
-- **常用交互会话的项目，打开 `allow_unattended_exec`**，免得每条命令都点一次确认（[怎么开](docs/getting-started.md#不想每条命令都点确认)）。开了之后命令执行前就没人看了，挡着它的只剩执行账号自己的权限。一次性的小活也可以用 `--print`，那条路本来就不问。
-- **想让 AI 的命令碰不到你账号里的私钥和登录**，看[生产安全：要不要建专用账号](docs/production-safety.md#要不要建专用账号)。不建也能用：命令就以你自己的账号跑，机器分开了、权限没分开。
-- **改完配置或升级后，先跑 `ccnm doctor <项目>`。** 最后一行以"可以用了"开头就行；标"失败"或"没查"的行要处理，标"注意"和"不查"的不挡你用（[每一行怎么读](docs/troubleshooting.md#doctor-的表怎么读)）。
-- **两台一起升级**，版本要一样，不一样时会报 `CCNM_E_VERSION`。
+- **常用交互会话的项目，打开 `allow_unattended_exec`**，免得每条命令都点一次确认（[怎么开](docs/getting-started.md#不想每条命令都点确认)）。开了之后命令执行前就没人看了，挡着它的只剩替它跑命令那个账号的权限。
+- **改完配置或升级后，先跑 `ccnm doctor <项目>`。** 最后一行以"可以用了"开头就行；标"失败"或"没查"的行要处理（[每一行怎么读](docs/troubleshooting.md#doctor-的表怎么读)）。
+- **升级时三件事别漏**：先停掉会话；所有装了 ccnm 的机器换同一个版本，另建了替 AI 跑命令的账号的，它名下那份也换；跑 AI 的那几台换完再敲一次 `ccnm controller install`，不然后台还是旧的。每个版本改了什么看 [Releases 页](https://github.com/xwfe/ccnm/releases)，步骤见[运维：用发布包升级](docs/operations.md#用发布包升级一般就用这个)。
 
 **别做**
 
-- **别把 AI 登录拷到项目机器上。** 登录只在 AI 那台是 ccnm 的前提；拷过去之后，模型在那边跑的命令就能把它读出来。
-- **升级时别用 `cp` 覆盖正在用的 ccnm。** Apple Silicon 的 Mac 上会让程序签名失效，之后一运行就被系统杀掉（`Killed: 9`）。用[快速开始](docs/getting-started.md#1-两台都装-ccnm)里的"新文件 + 改名"。
-- **用 Codex 时别随手在 `/permissions` 里切 Approve for me。** 切了就是由 Codex 自己的自动审查决定放不放行（真机上连 `rm -f` 都放行），不是你；想不问，用上面的 `allow_unattended_exec`。
-- **别让两个账号（或两份不同的 `XDG_STATE_HOME`）各自跑 ccnm 去服务同一个项目目录。** "同一时间只有一个会话能改代码"靠的是一把锁，锁记在各自的状态目录里，就成了两把互不知道的锁。
+- **别把 AI 登录拷到项目机器上。** 拷过去之后，模型在那边跑的命令就能把它读出来。
+- **升级时别用 `cp` 覆盖正在用的 ccnm。** Apple Silicon 的 Mac 上会让程序签名失效，之后一运行就被系统杀掉（`Killed: 9`）。用"新文件 + 改名"（[怎么做](docs/getting-started.md#1-两台都装-ccnm)）。
+- **别指望 Claude Code 的后台 agent 改文件。** 同一个项目同一时间只有一个会话能改，主会话占着，后台 agent 只能读代码、查问题，要改的地方回主会话改（[说明](docs/troubleshooting.md#claude-code-的后台-agent-只能读项目改不了文件)）。
+- **用 Codex 时别随手在 `/permissions` 里切 Approve for me。** 切了就是 Codex 自己的自动审查决定放不放行（真机上连 `rm -f` 都放行），不是你。
+- **别让两个账号各自跑 ccnm 去服务同一个项目目录。** "同一时间只有一个会话能改代码"靠的是一把记在 ccnm 状态目录里的锁，两个账号就是两把互不知道的锁。
 
-## 现在的状态
+## 不适合的情况
 
-| | |
-| --- | --- |
-| 最新版本 | [v0.22.0](https://github.com/xwfe/ccnm/releases)（2026-10-30），每个版本改了什么写在 Releases 页 |
-| 真机验过什么 | 按搭配见上面[两台机器各干什么](#两台机器各干什么)；哪些**没验过**逐条写在[支持矩阵](docs/support-matrix.md) |
-| 从旧版升到 v0.22.0 | 不用改配置。装了 ccnm 的机器一起换，AI 那台换完照常 `ccnm controller install` 重启 Controller。v0.22.0：一台 AI 机器额度用完，`ccnm <项目> --on <另一台>` 换过去接着干，之后的命令自动去那台，同一个项目同一时间仍只有一台在写（[使用说明](docs/usage.md#换一台-ai-机器--on)）；`--agent`、`ccnm ws add --agent-node` 改名为 `--on`，旧名字照旧能用、多打一行提示；已经有一台 AI 机器时再 `ccnm init --agent <别名>` 是加一台，不再把原来那台换掉；新起会话带上上一次会话的交接，换了机器又没写交接时带那段对话的结尾，`ccnm handoff <项目>` 先看会带什么（[使用说明](docs/usage.md#长对话压缩几次之后换个新对话交接带过去)）；`ccnm attach` 也先接通工具再进，`attach --force` 不管工具直接进；会话开着时 AI 那台的 Controller 每 30 秒看一眼工具通道，断了替你接（[排错手册](docs/troubleshooting.md#tools-down--会话看着在跑模型却什么都够不着)）；Claude Code 的后台 agent 拿到只读工具，不再一个工具都没有，也不再改动主会话的对话记录和交接（[排错手册](docs/troubleshooting.md#claude-code-的后台-agent-只能读项目改不了文件)）；`agent_node` 写法节点上配的 `claude_config_dir` 从 v0.10.0 起在起会话时不生效（用的是默认登录），修好了。从 v0.21.0 升的，v0.21.1 只改了 Windows 项目机器上的一处：模型在 `cmd` 里写不带路径的 `bash`，跑的是 Git Bash，不再是 PATH 上第一个（装了 WSL 的机器上那是 WSL），结果里会说一声（[说明](docs/windows-runtime-setup.md#用起来和-macoslinux-不一样的地方)）。只用 macOS、Linux 的可以不换；用 Windows 当项目机器的，AI 那台和 Windows 一起换（两边要同一个构建）。从 v0.20.x 升的，v0.21.0：放项目的机器可以是 Windows 了，多了一个 `windows-x86_64` 的 zip（[装法](docs/windows-runtime-setup.md)）；macOS、Linux 上能看到的变化：ccnm 起的 ssh 都带 `LogLevel=ERROR`，新版 OpenSSH 的后量子提醒不再混进报错里；模型写 `.GIT/config` 这类换了大小写的 `.git` 也被拒（原来在 macOS 上能绕进去）；配置里描述另一台机器的路径可以写 `C:/…`；doctor 的两行有了自己的名字（认证环境变量、Codex 凭据），不再都叫"Runtime 安全"。从 v0.19.x 升的，v0.20.0：新增 `ccnm usage`，查 AI 那台登录的订阅额度用了多少、几点重置，数是 Claude Code 的 `/usage` 或 Codex 自己报的（[使用说明](docs/usage.md#查额度还剩多少ccnm-usage)）；AI 那台换完文件要照常 `ccnm controller install` 重启 Controller，不然 `ccnm usage` 会说 Controller 是旧的。从 v0.19.0 升的，v0.19.1 修了进会话重连里的一处——一句话没说过的会话，空输入框里的暗色提示被当成草稿，工具断了也没替你敲。从 v0.18.x 或更早升的，v0.19.0 的新行为：进一个已经在跑、工具却断了的 Claude 会话时（多半是中间断过网），`ccnm <项目>` 先替你在会话里敲 `/mcp reconnect ccnm` 接上，接不上就报错、不让你进去，`ccnm attach` 是不管工具先进去的退路（[排错手册](docs/troubleshooting.md#tools-down--会话看着在跑模型却什么都够不着)）；`-c` 接最后一次 `/clear` 之后那段对话，不再是会话开头那段；对话压缩几次后模型会建议换新对话，写好的交接在你 `/clear` 后自动带过去，`ccnm status` 显示压缩过几次（[使用说明](docs/usage.md#长对话压缩几次之后换个新对话交接带过去)）——`-c` 跟上 `/clear` 和交接这两样靠新起会话时写的设置，换装前就开着的会话要 `ccnm stop` 再开才有；`read_output` 不再误报"limit 太小"；`search_text` 可以只搜一个文件。从 v0.17.x 或更早升的，v0.18.0 的新行为：新增 `ccnm add <项目目录>`（名字取目录名）和 `ccnm rm <名字>`，分别就是 `ccnm ws add`、`ccnm ws rm`（[配置说明](docs/configuration.md#cli-改配置)）；起会话的提示、`ccnm ls`、`ccnm status`、`stop`、`result`、常见报错和 `doctor` 的结论都改短了，长解释换成文档链接，**拿这些给人看的输出写过脚本的要改，程序请用 `ccnm rpc`**；Codex 会话工具断了时，提示改成 `ccnm stop` 再开新会话。从 v0.16.1 或更早升的，v0.17.0 的新行为：修好了偶尔出现的"会话里有 ccnm 的说明、却一个工具都没有"（Claude Code 探测新协议时 ccnm 起得慢，它退回旧协议就撞上，[排错手册](docs/troubleshooting.md#会话里有-ccnm-的说明工具却一个都没有request-_meta-is-missing)）；项目机器不肯开这个会话时，`ccnm <项目>` 直接报错、不再起一个没有工具的会话（[排错手册](docs/troubleshooting.md#ccnm-项目-起不来报-its-runtime-would-refuse-it)），每个新会话因此多建一次 SSH 连接，0.5–2.5 秒，看两台之间的网络；新增 `ccnm <项目> -c` 接着上一次的对话开（[使用说明](docs/usage.md#接着上一次的对话开--continue)）、`ccnm ws add --allow-unattended-exec`。从 v0.16.0 或更早升的：tmux 3.7c 下 `ccnm ls`、`ccnm status` 看不见交互会话，v0.16.1 修好了（[排错手册](docs/troubleshooting.md#ccnm-ls-写--print-运行中ccnm-status-说没有在跑的会话可交互会话明明开着)）。从 v0.15.x 升的，v0.16.0 的新行为：受管 Claude 会话的自动压缩从 30 万左右推迟到 56 万左右，压缩时交给模型的指令重写了，压完更容易接着干（[为什么、怎么换值](docs/configuration.md#受管-claude-会话的自动压缩)）。从 v0.14.x 或更早升的：你在 `~/.claude/settings.json` 里写的 `autoCompactWindow` 在受管会话里不生效，要改值用环境变量。还在 v0.13.x 的，先删掉配置里的 `codex_exec_server`（v0.14.0 起读不进来，[报错长这样](docs/troubleshooting.md#升级后-ccnm-报-unknown-field-codex_exec_server)） |
+- **项目和 AI 在同一个账号下**：直接用 Claude Code / Codex 就好，ccnm 会拒绝这种配法。
+- **要多个 AI 分工、自动拆任务、自动审查**：ccnm 只管"让一个 AI 在远端项目上干活"，额度用完也不替你自动换机器（[交接说明](docs/orchestrator-handoff.md)）。
+- **要代码一点都不出服务器**：AI 读到的代码会发给模型服务商。ccnm 分开的是机器和权限，不是数据。
+- **要防数据外传**：ccnm 不管网络，AI 跑的命令能连到哪里由你在项目机器上用防火墙管。
 
-已知限制：
+还有几条限制：
 
-- **ccnm 不管网络。** AI 跑的命令能连到哪里，ccnm 不限制也没验证。
 - **Codex 只认 0.154.0 这一个版本**（实测过的）；Claude Code 用你装的那个。
 - **doctor 只看得出 Codex "登录过"**，登录失效要到会话的第一条消息才知道。
-- **命令里自己脱离出去的后台进程**（比如用 `setsid` 起的守护进程）：项目机器是 Linux 时，会话结束时一并收掉。是 macOS 时 ccnm 停不掉：还攥着命令输出的，写锁留着、下一个会话被挡，按[运维手册](docs/operations.md#写入-guard-残留)手工收；完全脱离的，写锁照常交出，它可能还在改文件，要自己找到它结束掉（[怎么找](docs/troubleshooting.md#会话已经结束工作区却还在被写)）。
-
-会话里 AI 具体有哪些工具、能用哪些 skills 和 MCP，见[使用说明](docs/usage.md)和[配置说明](docs/configuration.md)。
+- **命令里自己脱离出去的后台进程**（比如用 `setsid` 起的守护进程）：项目机器是 Linux 时会话结束一并收掉；是 macOS 时 ccnm 停不掉，可能挡住下一个会话或接着改文件，处理见[运维手册](docs/operations.md#写入-guard-残留)和[排错手册](docs/troubleshooting.md#会话已经结束工作区却还在被写)。
 
 ## 文档
 

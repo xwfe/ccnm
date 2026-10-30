@@ -2,7 +2,7 @@
 
 本页区分当前支持结论与分阶段证据。`docs/plan/status.json` 是阶段进度的唯一事实来源；历史真机记录不能替代当前 build 的重新验收。
 
-## 当前能力与证据汇总（2026-10-28 文档同步，版本基线 v0.21.1）
+## 当前能力与证据汇总（2026-10-30 文档同步，版本基线 v0.22.0）
 
 本表是当前判断入口。下方详细记录保留阶段初验与后来补验，不把“阶段完成”换算成所有环境通过。P51、P52、P53 的测试仍分别属于其带日期证据；2026-09-28 只整理文档与计划，没有新增远端、真实模型或手机兼容性验收。
 
@@ -45,7 +45,7 @@
 | 受管会话里 Claude Code 的后台 agent（P117） | 支持只读，**只有零额度证据** | 2026-10-30：后台 agent 照抄会话的 `--settings`、`--mcp-config` 另起 `claude`。AI 机器看通道和钩子的父进程不是 ccnm 记下的那个 claude，就给只读工具（不拿写锁，主会话照常写），钩子不再改主会话的对话记录和交接。离线测试先红后绿；零额度真机用照它的参数另起的 `claude` 扮后台 agent，拿到只读的 7 个工具、读得到项目，主会话的记录不变（[记录](research/2026-10-30-p117-background-agents.md)）。真的后台 agent 没起过（开关由服务端下发）；两台都要换上新版本，旧版本上它照旧一个工具都拿不到 |
 | 换一台 AI 机器（`--on`）、新会话带上上一次的交接（P114、P115） | 支持，**第二台是模拟的** | 2026-10-28：假 ssh 的 CLI 集成测试和单元测试（[P114 记录](research/2026-10-28-p114-on.md)、[P115 记录](research/2026-10-28-p115-carry.md)）。2026-10-30 零额度真机：第二台 AI 机器用同一台物理机上的并存部署模拟、两份都接假模型（[模拟记录](research/2026-10-30-p114-p115-sim.md)）：两台的工具写进同一个项目目录，一台开着时另一台起不了会话、连不上写锁，交接和没写交接时的原始记录都进了新会话的第一条请求。两台真不同的机器没验。AI 机器终端上起的会话、Windows 项目机器不带交接；从 Codex 会话换走时什么都不带 |
 | legacy Claude，remote SSH MCP，从 Agent Node 发起 | 支持 | `run` 先委托 Runtime 解析 workspace，`attach/status/result/stop` 继续在 Agent 本机管理已有 session；`--print` 仍需在 Runtime Node 执行。 |
-| legacy 写法节点上的 `claude_config_dir`（第二个登录） | v0.10.0–v0.21.1 **不生效**，下一版修好 | 这几版里 doctor、`ccnm usage` 看的是这个目录，起会话（交互和 `--print`）却用默认的 `~/.claude`，花的是默认登录的额度。2026-10-30 模拟真机时查出、修好：离线测试先红后绿，修后零额度真机看到 Claude 进程带着这个目录（[记录](research/2026-10-30-p114-p115-sim.md) 第 2 节）。实例写法（`profile_ref`）不受影响 |
+| legacy 写法节点上的 `claude_config_dir`（第二个登录） | v0.10.0–v0.21.1 **不生效**，v0.22.0 修好 | 这几版里 doctor、`ccnm usage` 看的是这个目录，起会话（交互和 `--print`）却用默认的 `~/.claude`，花的是默认登录的额度。2026-10-30 模拟真机时查出、修好：离线测试先红后绿，修后零额度真机看到 Claude 进程带着这个目录（[记录](research/2026-10-30-p114-p115-sim.md) 第 2 节）。实例写法（`profile_ref`）不受影响 |
 | Claude Agent Instance，remote SSH MCP | 支持 | 默认 instance 与 `--on <实例>`（原 `--agent`）、print/interactive、doctor、精确 session、profile 隔离均有测试；公共双机 dogfood 已在授权环境真机通过，见下方门禁结果。 |
 | Codex Agent Instance，remote SSH MCP | 支持 | 仅接受实测的 Codex CLI `0.154.0`（见下方版本 pin）；公共入口已在授权双机真机验证。 |
 | Codex 原生执行链（`codex_exec_server`） | **已删除**（P86，2026-10-08） | 2026-09-17 起封存，2026-10-08 删掉，执行路径只剩上面那行的 MCP 七工具。配置里还写着 `codex_exec_server` 的（哪怕是 `false`）解析失败，报 `CCNM_E_CONFIG`。它原来是什么、封存前测到哪一步，见[双执行入口方案](plan/runtime-surfaces.md)第 12 节和 [P24 记录](research/p24-native-real-machine-2026-09-16.md) |

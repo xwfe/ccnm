@@ -19,7 +19,7 @@ Node 可以是：
 
 运行 AI Coding Agent，并持有对应的登录/订阅/OAuth 凭证。
 
-legacy 配置运行官方 Claude Code；Agent Instance 通过明确 enum 分发到 Claude 或实测版本的 Codex CLI。项目源码不要求存在于 Agent Node。第三 Provider 尚未实现，也不需要插件系统。
+legacy 配置和 Agent Instance 运行的都是官方 Claude Code：1.0.0 起 ccnm 只起 Claude Code，Codex Agent 删了（P118）。项目源码不要求存在于 Agent Node。没有别的 Provider，也不需要插件系统。
 
 ## Runtime Node
 
@@ -72,7 +72,7 @@ Node 说的是"哪台机器负责什么"，身份说的是"哪个账号在动手
 ```text
 Runtime Node                                  Agent Node
 ┌──────────────────────────────┐              ┌─────────────────────────────┐
-│ workspace                    │              │ Claude Code / Codex CLI     │
+│ workspace                    │              │ Claude Code                 │
 │ Git / cargo / node / python  │              │ login / subscription        │
 │ ccnm internal mcp-serve      │◀── SSH ────▶│ ccnm controller + tmux     │
 │ Runtime Service Account      │   stdio MCP  │ session supervisor          │
@@ -108,7 +108,7 @@ Runtime Node
     ├──── SSH ────> Agent Node
     │               │
     │               ├─ Controller
-    │               ├─ Claude/Codex / tmux
+    │               ├─ Claude Code / tmux
     │               │
     │               └──── SSH stdio MCP ────> Runtime Node
     │                                         ccnm internal mcp-serve
@@ -137,7 +137,7 @@ Agent 和项目在同一台机器上，workspace 的 Agent Node 和 `runtime_nod
                                  └─ 项目就在本地磁盘
 ```
 
-当前 build **明确拒绝 colocated 启动**。Claude 的 native 候选命令已去掉 remote-only MCP/工具限制，但 installed CLI 尚未真机验证；Codex colocated 没有测量。不能因为配置能表达就声称支持，也不能静默降级。
+当前 build **明确拒绝 colocated 启动**。Claude 的 native 候选命令已去掉 remote-only MCP/工具限制，但 installed CLI 尚未真机验证。不能因为配置能表达就声称支持，也不能静默降级。
 
 ### 为什么不是"单 Node"
 
@@ -199,13 +199,12 @@ work machine ≈ Agent Node
 
 ## Agent Provider 内部边界
 
-`crates/ccnm-core/src/provider/` 通过明确的 `AgentProvider::{Claude, Codex}` enum 分发；没有插件注册或动态加载。公开入口只接受已配置的 instance id，不能直接注入 Provider、路径或官方 CLI argv；Agent Node 本机 registry 决定实际 Provider/profile。
+`crates/ccnm-core/src/provider/` 的 `AgentProvider` enum 只剩 `Claude`。enum 留着，是因为 `provider` 写在实例配置、会话记录和 wire 里：读到 `codex` 要点名拒绝，不能当成 Claude 读；配置里写了它报 `CCNM_E_CONFIG`，怎么改见[排错手册](troubleshooting.md#升级到-100-后报-provider-codex-is-no-longer-supported)。没有插件注册或动态加载。公开入口只接受已配置的 instance id，不能直接注入 Provider、路径或官方 CLI argv；Agent Node 本机 registry 决定实际 Provider/profile。
 
 - `provider/claude/`：CLI 定位、version/auth 探测、配置目录环境变量、启动参数、交互/print 输入、MCP 配置和工具权限、结果解析，以及项目 instruction/context 规则。
-- `provider/codex/`：已实测的官方 CLI `0.154.0` 适配（唯一接受的版本，见[支持矩阵](support-matrix.md)）、Agent-local HOME、固定工具策略、JSONL 结果和 Runtime 根目录 AGENTS 上下文。未测版本和 colocated 模式拒绝启动。
 - `provider/types.rs`：Controller、work 和报告消费者使用的 Agent 观测/结果；保留 v1 字段形状。
-- `provider` 的凭据元数据声明环境前缀、已知目录/容器、文件名和 egress 检查目标。P1 由 `safety/` 统一执行所有已知 Provider 的可访问性检查和分来源环境策略。专用账号模式下，凭据可访问或未知**不可由 `allow_unconfined_exec` 跳过**——那个开关只接受 confinement 风险，要接受凭据这一条得单独写 `allow_unisolated_credentials`；身份未知和继承来的认证环境两个开关都放不开，共用账号下也照样拒绝（`safety::audit` 按 `runtime_user` 有没有写把其余失败降为警告，`Audit::shared_account` 记着是哪种）。不读取或传递凭据内容。
-- `session/transport.rs` 是两 Provider 共用的 Agent-side stdio wrapper；Claude MCP JSON 和 Codex 会话参数均指向它，再由它清理环境并执行 OpenSSH。SSH 与 Runtime child 的机制不放在 Codex 模块里；详情见 [安全契约](provider-safety.md)。
+- `provider` 的凭据元数据声明环境前缀、已知目录/容器、文件名和 egress 检查目标。Claude 的在 `provider/claude/`；ccnm 不再起 Codex，但 Codex 的（`CODEX_CREDENTIALS`）留在 `provider/mod.rs`，为什么见[安全契约](provider-safety.md)开头。P1 由 `safety/` 对这两份统一执行可访问性检查和分来源环境策略。专用账号模式下，凭据可访问或未知**不可由 `allow_unconfined_exec` 跳过**——那个开关只接受 confinement 风险，要接受凭据这一条得单独写 `allow_unisolated_credentials`；身份未知和继承来的认证环境两个开关都放不开，共用账号下也照样拒绝（`safety::audit` 按 `runtime_user` 有没有写把其余失败降为警告，`Audit::shared_account` 记着是哪种）。不读取或传递凭据内容。
+- `session/transport.rs` 是 Agent-side stdio wrapper：Claude 的 MCP JSON 指向它，由它清理环境并执行 OpenSSH；详情见 [安全契约](provider-safety.md)。
 - session/Controller 负责进程、tmux 和生命周期；launcher/work 负责 topology、OpenSSH alias 与 Runtime Node 握手。Runtime 当前有 12 个工具定义，实际工具表按权限和配置生成；工具调用经手写的 `call_tool` 进来，已加载 skill 的 `hooks` 在这里前后执行（P79，`mcp::hooks`，只在命令不问人的会话里登记）；Agent 的 skills/MCP 是另一执行面，不能用早期七工具的边界概括它。
 
 legacy 公开配置仍是 `claude_config_dir`、`claude_permission_mode`。Rust 内部使用通用字段名，通过 serde 显式保留旧 session/协议的 `claude_config_dir`、`claude_bin`、`claude-auth`、`claude`；没有顺便重命名旧字段。
@@ -216,21 +215,21 @@ legacy 公开配置仍是 `claude_config_dir`、`claude_permission_mode`。Rust 
 
 P3 将 Claude colocated 候选命令中的 remote-only `--tools ""`、`--mcp-config`/strict 参数移除，并在单独断言中记录该差异，没有重录 golden。由于尚无 installed Claude 真机验收，公共启动在创建 session 前明确拒绝该 topology。
 
-### 第二 provider 的兼容与隔离
+### 兼容与隔离
 
-历史 Codex internal 会话保留 `protocol=2` fixture；公开 Agent Instance 使用 v3 `InstanceRef` 请求，由 Agent 解析出完整 identity。旧 peer 因版本不匹配拒绝请求，不能忽略 identity 后误启动 Claude。Claude 的 v1 序列化不增加 provider 字段，旧配置字段和响应标签不改名。Codex 结果有独立 provider 标签；未报告的费用/API 耗时不填假零。
+第二个 provider（Codex 当 Agent 的那一套：实测的 `0.154.0` 适配、Agent-local HOME、固定工具策略、JSONL 结果、Runtime 根目录 AGENTS 上下文）随 `provider/codex/` 在 P118 删了，当时的设计和实测见 [Codex 内部接线](research/codex-internal-wiring-2026-09-07.md)。
 
-专用 HOME 由 Agent 自己按 ccnm 配置目录解析，不接受 Runtime 传来的路径，不读取认证文件内容。用户必须在 Agent 登录会话中独立使用官方 CLI 登录；目录与认证文件要求仅属主可访问、非符号链接。启动前通过官方 CLI 检查版本、登录和空 MCP inventory。所有 Codex SSH 连接在 Agent 侧清除敏感环境、禁止 agent forwarding，不复用个人 ControlMaster；Runtime payload 只有 workspace、root、session 和 provider 等执行上下文。
+公开 Agent Instance 使用 v3 `InstanceRef` 请求，由 Agent 解析出完整 identity。旧 peer 因版本不匹配拒绝请求，不能忽略 identity 后误启动 Claude。Claude 的 v1 序列化不增加 provider 字段，旧配置字段和响应标签不改名。
 
-Codex 项目上下文仅投影 Runtime 根目录的 `AGENTS.override.md` 或 `AGENTS.md`，空 override 仍覆盖 base；不自动枚举嵌套 instructions。P48/P50 后，Agent 侧会按配置读取已安装 skills 和 MCP 定义，不能再笼统声明“不读 Agent 私人配置”。原生 CLI 文件/shell 工具策略、Runtime 账号权限与第三方 MCP 权限是不同层，固定 CLI tool policy 不等于 sandbox。
+P48/P50 后，Agent 侧会按配置读取已安装 skills 和 MCP 定义，不能再笼统声明“不读 Agent 私人配置”。原生 CLI 文件/shell 工具策略、Runtime 账号权限与第三方 MCP 权限是不同层，固定 CLI tool policy 不等于 sandbox。
 
-实测依据见 [Codex 内部接线](research/codex-internal-wiring-2026-09-07.md)；P3 公共入口的当前验收级别见[支持矩阵](support-matrix.md)。不扩展为多 Agent coordination 或并行 worktree 调度。
+P3 公共入口的当前验收级别见[支持矩阵](support-matrix.md)。不扩展为多 Agent coordination 或并行 worktree 调度。
 
 ## Agent Instance 执行边界（P2/P3）
 
 P2 增加 node-scoped instance 配置与公开身份 DTO：Runtime workspace 保存 node/instance 引用；Agent registry 保存 provider/profile_ref；私有目录在 Agent-local profiles.toml 中独立解析。不复制 root 或远端 profile 定义。`WorkspaceBinding` 分别由 Runtime 校验 root/引用、Agent 校验完整 registry identity；`ResolvedAgent`/`ResolvedProfile` 不实现 Serialize/Debug，私有目录不进入绑定消息。
 
-P3 将 v3 identity 接入现有 launcher/work/Controller/supervisor/tmux/SSH MCP。Runtime 发出受限 `InstanceRef`；Agent 每一层重新解析并比较 identity，Controller 启动前重新加载权威配置，supervisor 再解析 profile。session 固定 workspace/root/runtime_node/identity；不同 Provider 或 instance 不复用也不自动替换。ccnm session id 与 Provider thread/resume id 分开。
+P3 将 v3 identity 接入现有 launcher/work/Controller/supervisor/tmux/SSH MCP。Runtime 发出受限 `InstanceRef`；Agent 每一层重新解析并比较 identity，Controller 启动前重新加载权威配置，supervisor 再解析 profile。session 固定 workspace/root/runtime_node/identity；不同 instance 不复用也不自动替换。ccnm session id 与 Claude 自己的 session id 分开。
 
 Runtime MCP 初始化再用自己的配置重算 binding；legacy payload 不能打开 instance workspace。实例配置的契约见[实例配置](agent-instance-config.md)，写互斥见下面的 [Runtime 单写者](#runtime-单写者)。本阶段没有协调器、分布式 lease 或 worktree 调度。
 
@@ -248,9 +247,9 @@ Runtime MCP 初始化再用自己的配置重算 binding；legacy payload 不能
 
 ### 开会话之前先问 Runtime 开不开（P91）
 
-Agent 在建会话目录、叫 Controller 之前，经同一个 Runtime 别名先发 `internal hello`（两边是不是同一个构建、项目根在不在），再发 `internal runtime-audit`（doctor 问的也是它）。Runtime 用执行账号自己的审计和这个 workspace 的开关回答两道门：会话门（执行账号碰不碰得到 Agent 的登录）和命令门（`exec_command` 让不让跑）。哪道不过，Agent 就以 `CCNM_E_POLICY` 停下，带回 Runtime 自己拒绝时的那段原文，什么都不建。交互和 `--print`、Claude 和 Codex、legacy 和 instance 都走这一步；已经在跑的会话直接接上，不问。
+Agent 在建会话目录、叫 Controller 之前，经同一个 Runtime 别名先发 `internal hello`（两边是不是同一个构建、项目根在不在），再发 `internal runtime-audit`（doctor 问的也是它）。Runtime 用执行账号自己的审计和这个 workspace 的开关回答两道门：会话门（执行账号碰不碰得到 Agent 的登录）和命令门（`exec_command` 让不让跑）。哪道不过，Agent 就以 `CCNM_E_POLICY` 停下，带回 Runtime 自己拒绝时的那段原文，什么都不建。交互和 `--print`、legacy 和 instance 都走这一步；已经在跑的会话直接接上，不问。
 
-**为什么要这一步**：legacy Claude 会话以前只问 `hello`，Runtime 要到 MCP 握手才拒，表现是会话起来了、Claude 里却没有 ccnm 的工具；命令门哪种会话都要到第一次 `exec_command` 才知道。**它同样不是 capability token**：`mcp-serve` 打开时照样全部重做。写锁占没占不在这一步查，那是运行时状态，Codex 和 instance 会话起之前的完整握手预检照旧会查到。**代价**是每个新会话多建一次 ssh 连接：审计本身约 0.07 秒，建连接在 xdwmbp ↔ fodelf 上量到 0.5–2.5 秒，看网络（[v0.17.0 记录](research/2026-10-15-release-0.17.0.md)第 4 节）。
+**为什么要这一步**：legacy Claude 会话以前只问 `hello`，Runtime 要到 MCP 握手才拒，表现是会话起来了、Claude 里却没有 ccnm 的工具；命令门哪种会话都要到第一次 `exec_command` 才知道。**它同样不是 capability token**：`mcp-serve` 打开时照样全部重做。写锁占没占不在这一步查，那是运行时状态，instance 会话起之前的完整握手预检照旧会查到。**代价**是每个新会话多建一次 ssh 连接：审计本身约 0.07 秒，建连接在 xdwmbp ↔ fodelf 上量到 0.5–2.5 秒，看网络（[v0.17.0 记录](research/2026-10-15-release-0.17.0.md)第 4 节）。
 
 两种 wire 靠 `protocol` 数字区分，没有第三条路也没有回退：本 build 不认识的数字直接 `CCNM_E_VERSION`。旧 build 拿到 protocol 4 也一样——它缺 `root` 又多 `agent`，解码就失败。
 

@@ -193,11 +193,11 @@ v1 只有六个方法，名字在本阶段定稿：
 
 ### 这里为什么没有 provider
 
-一条 instance 是 Claude 还是 Codex，由 **Agent Node** 权威解析——这是配置模型的基本约定，Runtime Node 不保存第二份。而 `ccnm rpc` 跑在持有项目的 Runtime Node 上，它的配置里只有 workspace 到 `{node, instance}` 的绑定。
+一条 instance 用哪个 provider，由 **Agent Node** 权威解析——这是配置模型的基本约定，Runtime Node 不保存第二份。而 `ccnm rpc` 跑在持有项目的 Runtime Node 上，它的配置里只有 workspace 到 `{node, instance}` 的绑定。
 
 这不是"通常没有"，是**结构上不可能有**：配置校验要求 instance workspace 的 root 只在它的 Runtime Node 上定义，同时要求 instance 模式不是 colocated，两条加起来就决定了绑定里的那个 node 永远不是本机。既然给不出，协议里就不留这个字段——留一个永远缺席的字段，只会让调用方写一段永远不执行的分支。
 
-想知道 provider，看 `session.start` / `session.status` / `session.result` 返回的 `agent.provider`——那是 Agent Node 自己报的，权威。
+想知道 provider，看 `session.start` / `session.status` / `session.result` 返回的 `agent.provider`——那是 Agent Node 自己报的，权威。1.0.0 起 ccnm 只起 Claude Code，这个值只会是 `claude`。schema 的 `provider` 枚举里还留着 `codex`，是为了不改冻结的 schema；1.0 的响应里不会出现它。
 
 列表只反映**当前配置**。它不探测网络、不检查登录、不启动任何进程——想知道能不能真的跑起来，只有 `session.start` 会告诉你。
 
@@ -295,7 +295,7 @@ v1 只有六个方法，名字在本阶段定稿：
 
 - `outcome` 是**进程层面**的结果：Agent 进程怎么结束的。
 - `text` 是 Agent 的最终文本，只有 provider 真的产出了结构化结果时才有。
-- `usage` / `cost` 可选，**只有 provider 报了才有**，缺席不代表零。具体到当前两个 provider：token 数两边都报；**`cost` 只有 Claude 有**，Codex 的结果文档里根本没有这个字段，所以那边永远不出现——不是零，是没有。另外，报回来全是零和什么都没报在这两个文档里长得一模一样，服务端把全零当作"没报"处理，宁可不给也不给一个没人测过的数。
+- `usage` / `cost` 可选，**只有 provider 报了才有**，缺席不代表零。1.0.0 起 provider 只有 `claude`，token 数和费用它都报。但报回来全是零和什么都没报在它的结果文档里长得一模一样，服务端把全零当作"没报"处理（费用是零也一样），宁可不给也不给一个没人测过的数。
 - `output` 是有界输出，见第 9 节。
 - `failure` 可选，**只有这个 session 不是以 Agent 进程自己结束收场时才有**，见下。
 
@@ -627,13 +627,13 @@ ccnm 内部已经有两套编号，本协议**跟它们都不是一回事**：
 - 通过 JSON 传 PTY，或者对 interactive session 承诺结构化最终结果。
 - 批量请求。
 - 多 Agent 编排、任务图、路由、重试策略、worktree 调度——那些属于独立 Orchestrator，不是执行层。
-- 第三个 provider。
+- 别的 provider。
 
 ## 13. 兼容规则
 
 **`ccnm.machine/1` 于 2026-09-10 冻结**，从这一刻起下面的兼容规则是承诺，不再是"定稿后要遵守的参照"。
 
-冻结的依据是两个 provider 各跑通过一次真机双机闭环，并与人类 CLI 对同一件事做副作用对照——两条腿的产物属主相同、`usage` 端到端到达调用方：[Claude](../research/p7-real-machine-2026-09-10.md)、[Codex](../research/p7-codex-parity-2026-09-10.md)。冻结前最后改掉的两处行为记在 [P7.5 记录](../research/p7-5-freeze-2026-09-10.md)里，其中 `ccnm stop` 的幂等修正也影响本协议的 `session.stop`：那个方法本来就对终态记录幂等，现在它底下的执行路径也是了。
+冻结的依据是当时的两个 provider 各跑通过一次真机双机闭环，并与人类 CLI 对同一件事做副作用对照——两条腿的产物属主相同、`usage` 端到端到达调用方：[Claude](../research/p7-real-machine-2026-09-10.md)、[Codex](../research/p7-codex-parity-2026-09-10.md)。冻结前最后改掉的两处行为记在 [P7.5 记录](../research/p7-5-freeze-2026-09-10.md)里，其中 `ccnm stop` 的幂等修正也影响本协议的 `session.stop`：那个方法本来就对终态记录幂等，现在它底下的执行路径也是了。
 
 **冻结的是这份契约，不是产品的全部能力。** 没实现的仍然没实现（见[协议说明](README.md)的"实现得比契约少"清单），未来补上时按下面的加法规则走。
 

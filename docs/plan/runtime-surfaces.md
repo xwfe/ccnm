@@ -24,7 +24,7 @@ Operator @ Runtime Node
         │ control
         ▼
 Agent Node
-  Controller + Claude/Codex
+  Controller + Claude Code
         │ persistent SSH stdio MCP
         ▼
 Runtime Executor (ccrun) @ Runtime Node
@@ -111,7 +111,7 @@ v1 固定四种角色，其中前三种是正常运行身份：
 | 角色 | 运行内容 | 可以持有什么 | 不应持有什么 |
 | --- | --- | --- | --- |
 | Operator / Control Identity | public CLI、`ccnm rpc`、本地控制逻辑 | 到 Agent 的 control SSH 凭据、用户自己的管理配置 | 不自动继承给 Runtime 工具 |
-| Agent Identity | Controller、Claude/Codex、Agent-local profile | Agent 官方登录；到 Runtime Executor 的 SSH 凭据 | Runtime 项目私密凭据除非项目明确需要 |
+| Agent Identity | Controller、Claude Code、Agent-local profile | Agent 官方登录；到 Runtime Executor 的 SSH 凭据 | Runtime 项目私密凭据除非项目明确需要 |
 | Runtime Executor (`ccrun`) | `internal mcp-serve`、workspace/Git/build/test、Runtime 权威检查 | `authorized_keys` 等入站公开状态、项目最小必要凭据 | Agent 登录、个人凭据、**任何 ccnm 所需的主动 SSH 私钥/SSH agent**、sudo/admin/特权 socket |
 | Administrator | 安装账号/ACL/网络策略 | 主机管理能力 | 不参与日常 Agent session |
 
@@ -151,7 +151,7 @@ Agent Node
   ├─ 1. 向 Runtime Executor 查询 workspace authority / binding
   │      （只返回非秘密的 workspace/instance/runtime identity 信息）
   │
-  ├─ 2. 在 Agent 本机 Controller 启动 Claude/Codex
+  ├─ 2. 在 Agent 本机 Controller 启动 Claude Code
   │
   └─ 3. Agent 的 MCP transport SSH 到 Runtime Executor
             │
@@ -329,7 +329,7 @@ coding         暴露七工具，持有 workspace writer guard
 这是两个入口能安全共存的硬条件：
 
 ```text
-Managed Claude/Codex session ─┐
+Managed Claude Code session ──┐
                               ├─ same Runtime workspace write guard
 Remote Workspace MCP client ──┘
 ```
@@ -350,7 +350,7 @@ Claude Code 自己还有更丰富的 Tool 权限/并发/中断语义；ccnm 不�
 
 ### 7.5 项目 instructions
 
-Managed Provider 已知道 Claude/Codex，因此可以按已测 Provider 规则投影 `CLAUDE.md` / `AGENTS.md`。External MCP client 则不能可靠从 MCP 握手推断自己是什么 Agent。
+Managed 会话的 Agent 是 ccnm 自己起的（1.0.0 起只有 Claude Code），因此可以按已测规则投影 `CLAUDE.md`。External MCP client 则不能可靠从 MCP 握手推断自己是什么 Agent。
 
 首版不要偷偷猜客户端。P9 在以下两种窄方案中择一并用真客户端验证：
 
@@ -428,7 +428,7 @@ ROADMAP 的 P9–P12 对应以下顺序；P8 仍先完成独立 Orchestrator 的
 
 ## 12. Codex 原生执行链（P21–P30；2026-09-17 封存，2026-10-08 删除）
 
-**已删除**（P86，2026-10-08，用户定："目前处于 dogfood，删掉不影响"）。执行路径只有一条：ccnm 的 MCP 七工具 + 共享库，Claude Code、Codex、Web AI（经 gld hub）都走它。配置键 `codex_exec_server` 一起去掉，写着它的配置解析失败（`CCNM_E_CONFIG`）。
+**已删除**（P86，2026-10-08，用户定："目前处于 dogfood，删掉不影响"）。执行路径只有一条：ccnm 的 MCP 七工具 + 共享库，受管的 Claude Code 会话和经 `ccnm mcp bridge` 接进来的外部客户端（Codex CLI、经 gld hub 的 Web AI）都走它。配置键 `codex_exec_server` 一起去掉，写着它的配置解析失败（`CCNM_E_CONFIG`）。
 
 **它原来是什么**：受管 Codex 交互会话不用 ccnm 的 MCP 工具，改用 Codex 自带的执行工具，由官方 `codex exec-server` 在 Runtime 上执行；Agent 侧 `ccnm internal exec-transport` 接成到 Runtime 的 ssh，Runtime 侧 `ccnm internal exec-serve` 解析 workspace、审计、取写锁，并按规则表逐条过滤 JSON-RPC（内部协议号 6，删除后不再分配给别的东西）。
 

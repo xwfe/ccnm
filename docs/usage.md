@@ -24,7 +24,7 @@ lang = "en"
 - 给模型看的 MCP 文本（工具说明、报错正文）——那是模型据以改做法的指令，已经按英文验过
 - 命令、配置键名、路径、SSH alias
 
-`--lang` 也管 `--help`。但**不读系统的 `LANG`/`LC_ALL`**：ccnm 要去匹配 git、ssh、tmux、Codex 的英文输出（比如 git 的 `dubious ownership`、ssh 的 `permission denied`），拿 locale 当语言开关会让这些匹配悄悄失效，而且不报错。
+`--lang` 也管 `--help`。但**不读系统的 `LANG`/`LC_ALL`**：ccnm 要去匹配 git、ssh、tmux 的英文输出（比如 git 的 `dubious ownership`、ssh 的 `permission denied`），拿 locale 当语言开关会让这些匹配悄悄失效，而且不报错。
 
 **中文模式下仍是英文的**：doctor 表的说明列，和大部分报错正文（`CCNM_E_*` 后面那句）。说明列里有路径、版本、ssh 命令行和对面机器生成的文字，翻一半既不能复制也读不顺，所以不翻。两台机器各说各的，语言不跨 SSH 传。
 
@@ -38,7 +38,7 @@ ccnm my-project
 ccnm run my-project
 ```
 
-会话开在跑 AI 那台的 tmux 里；AI 看文件、搜代码、改代码、跑命令，都落到项目那台去做。第一次起会话时 Claude Code / Codex 会先问几句（信任目录、auto mode），怎么答见[快速开始](getting-started.md#6-开始用)。
+会话开在跑 AI 那台的 tmux 里；AI 看文件、搜代码、改代码、跑命令，都落到项目那台去做。第一次起会话时 Claude Code 会先问几句（信任目录、auto mode），怎么答见[快速开始](getting-started.md#6-开始用)。
 
 只启动、不 attach：
 
@@ -74,7 +74,6 @@ ccnm my-project -c "接着把剩下的测试修完"
 
 - 报 `CCNM_E_NOT_READY: workspace `my-project` has no earlier conversation on this Agent to continue`：这台 AI 机器上没有能接的对话。去掉 `-c` 开个新的就行。
 - 终端上说 `会话本来就在跑` 和 `-c 没有另起新会话`（v0.17.0 是一句 `已经有会话在跑，--continue 没有另起，直接接上它`）：会话本来就开着，它就是最新的对话，`-c` 什么都没做。真想从头开，先 `ccnm stop my-project`。
-- 报 `CCNM_E_INVALID_ARGS: --continue works with Claude only for now`：Codex 会话暂时不支持续接。
 - 报 `the argument '--continue' cannot be used with '--print <PROMPT>'`：`--print` 不留对话，没法接着，也没法被接着。
 - 报 `CCNM_E_VERSION`（`message is not valid for protocol …; ccnm versions probably differ`）：AI 那台的 ccnm 还是旧版本，不认识这个请求，两台换成同一个版本（[排错](troubleshooting.md#message-is-not-valid-for-protocol-1-ccnm-versions-probably-differ)）。
 
@@ -105,7 +104,6 @@ ccnm my-project -c "接着把剩下的测试修完"
 - `-c` 续接，接的是对话本身；会话本来就在跑，直接接上。
 - 在 AI 机器自己的终端上起的会话：交出去过没有记在项目机器上，那边看不到。项目机器是 Windows 时会话都是这么起的（Windows 上不能敲 `ccnm <项目>`），所以也不带。
 - 上一台连不上，或者它的 ccnm 是 v0.21.1 或更早：取不到，打一行说明。新机器的 ccnm 是 v0.21.1 或更早：接不了，打一行说明。
-- 上一次是 Codex 会话：Codex 写不了交接，ccnm 也不读它的对话记录。
 
 要知道的几点：
 
@@ -161,8 +159,8 @@ ccnm 给自己的 tmux server（`tmux -L ccnm`，跟你自己开的 tmux 完全�
 
 ```bash
 ccnm my-project --on hpsrv              # 在 hpsrv 上起会话
-ccnm my-project --on hpsrv/codex-main   # hpsrv 上的 codex-main 实例
-ccnm my-project --on codex-main         # 项目默认那台上的 codex-main 实例
+ccnm my-project --on hpsrv/claude-work  # hpsrv 上的 claude-work 实例
+ccnm my-project --on claude-work        # 项目默认那台上的 claude-work 实例
 ```
 
 **`--on` 后面写什么**：
@@ -287,26 +285,26 @@ ccnm status my-project --all
 ccnm stop my-project
 ```
 
-**不带 `--on` 时只列这个项目当前那台机器上默认实例的会话。** 项目的终端要是被别的实例占着（比如用 `--on codex-main` 起的），会多一行指给你看：
+**不带 `--on` 时只列这个项目当前那台机器上默认实例的会话。** 项目的终端要是被别的实例占着（比如用 `--on claude-work` 起的），会多一行指给你看：
 
 ```text
 实例 claude-main 没有在跑的会话（--print 的运行不算在内）
-这个项目的终端现在是实例 codex-main 的会话：加 --on codex-main 看它
+这个项目的终端现在是实例 claude-work 的会话：加 --on claude-work 看它
 ```
 
-照它说的加上 `--on codex-main`，或者用不带项目名的 `ccnm status`，就能看到那个会话的详情。
+照它说的加上 `--on claude-work`，或者用不带项目名的 `ccnm status`，就能看到那个会话的详情。
 
 精确寻址使用 ccnm session id：
 
 ```bash
-ccnm status my-project --on codex-main --session <ccnm-session-id>
-ccnm attach my-project --on codex-main --session <ccnm-session-id>
-ccnm stop my-project --on codex-main --session <ccnm-session-id>
+ccnm status my-project --on claude-work --session <ccnm-session-id>
+ccnm attach my-project --on claude-work --session <ccnm-session-id>
+ccnm stop my-project --on claude-work --session <ccnm-session-id>
 ```
 
 在 Runtime Node 上跑 `ccnm status my-project`，最后一行是这个项目的写锁：空闲、被谁占着、故意留着，还是说不清。它经 Agent 问 Runtime 执行账号，所以 `--print` 运行和外部 MCP 客户端占着锁也看得见；它只看不拿锁，"空闲"也不代表替你占住了。各种说法怎么处理见[运维手册](operations.md#写入-guard-残留)。**只有写成 `agent = { node = …, instance = … }` 的 workspace 有这一行**：问写锁要经过那个实例，`ccnm ws add` 写出来的 `agent_node = "…"` 没有实例可问，所以不打（v0.17.0 及以前会打两行 `CCNM_E_CONFIG … needs an Agent instance binding`，不是出错了）。改成实例写法见[配置迁移](operations.md#配置迁移legacy--agent-instance)。
 
-ccnm session id 与 Claude/Codex 自己的 thread/resume id 是两类值，不能互换。精确操作会校验 session 的 workspace 和 Agent identity。状态区分 `starting`、`running`、`completed`、`failed`、`stopping`、`unknown`；不能证明进程已经结束时不会猜成 failed。
+ccnm session id 与 Claude 自己的 session id 是两类值，不能互换。精确操作会校验 session 的 workspace 和 Agent identity。状态区分 `starting`、`running`、`completed`、`failed`、`stopping`、`unknown`；不能证明进程已经结束时不会猜成 failed。
 
 精确停止 print session 时，即使已有结果，也会检查已记录的 supervisor/Agent 进程组；组仍存在、PID 记录损坏或进程查询失败会报 `CCNM_E_NOT_READY`（退出码 3），不对历史 PID 发信号，也不改写结果。
 
@@ -328,7 +326,7 @@ ccnm cleanup my-project --apply <令牌>   # 照预览删，令牌在预览最�
 ```bash
 ccnm usage                     # 这台机器的项目用到的每个 AI 登录各问一次，再加上登记过、没项目在用的 AI 机器
 ccnm usage my-project          # 只问这个项目用的那个登录
-ccnm usage my-project --on codex-main      # 换成同一台上的另一个实例
+ccnm usage my-project --on claude-work      # 换成同一台上的另一个实例
 ccnm usage --on hpsrv                      # 只问 hpsrv 这台的默认登录
 ```
 
@@ -342,24 +340,14 @@ fodelf（8 个项目共用） · Claude Code 2.1.303 · max
   You are currently using your subscription to power your Claude Code usage
 ```
 
-Codex 实例长这样（按实测回复渲染，还没经 ccnm 实例真机跑过；重置时间换成敲命令这台的本地时间，和 `ccnm log` 一样）：
-
-```text
-hpsrv · codex-main · Codex 0.154.0 · prolite
-  7 天  已用 100%  剩 0%  10-25 14:35 重置（还有 5 天 19 小时）
-  ! 额度用完了（rate_limit_reached），到上面的重置时间才恢复
-  账号里还有 3 次免费重置（ccnm 不会替你用）
-```
-
 **额度是跟着 AI 那台的登录走的，不是跟着项目走的。** 8 个项目都用 fodelf 上同一个 Claude 登录，就只问一次、打一块，标题上写"8 个项目共用"。
 
-**数从哪来**：全是官方 CLI 自己报的，ccnm 不读登录凭据、不自己调接口。Claude 是 `claude --print /usage`（本地命令，不发模型请求，不花额度），Codex 是 `codex app-server` 的额度查询。所以它和你在那台机器上开 `claude` 敲 `/usage` 看到的是同一份，重置时间也是 Claude 按那台机器的时区写的原话。实测和依据见[研究记录](research/2026-10-19-p105-usage.md)。
+**数从哪来**：全是官方 CLI 自己报的，ccnm 不读登录凭据、不自己调接口。用的是 `claude --print /usage`（本地命令，不发模型请求，不花额度）。所以它和你在那台机器上开 `claude` 敲 `/usage` 看到的是同一份，重置时间也是 Claude 按那台机器的时区写的原话。实测和依据见[研究记录](research/2026-10-19-p105-usage.md)。
 
 **要知道的几件事**：
 
 - **问一次 3–4 秒**（v0.20.0 真机：项目机器上 4.2 秒，AI 那台上 2.9 秒）：要先查版本和登录，再跑 `/usage`。这几秒里 Agent 上的 Controller 在忙这件事，同时起会话的话会等它。
 - **Claude Code 要 2.1.280 或更新。** 更旧的不问：没实测过的版本可能把 `/usage` 当成一句话发给模型，花的正是你要查的额度。
-- **Codex 只认 0.154.0**，和起会话同一条线。
 - **API key 或第三方平台登录没有 5 小时 / 每周额度**，会说"没有额度可报"。
 - **`/usage` 后半段"是什么在花额度"那份估算不带回来**：它按 AI 那台的对话记录算，里面有 skill 和 MCP server 的名字。想看就在那台开 `claude` 敲 `/usage`。
 - 每问一次，Claude Code 会在那台的 `~/.claude/projects/` 下给 ccnm 的工作目录（`~/.local/state/ccnm/usage`）建一个空的 `memory/`，只建这一个，不留对话记录。
@@ -390,7 +378,7 @@ Agent Instance 建议同时带 `--on <instance-id>`；不带 session 的“最�
 
 ### 不想一条条确认：开 `allow_unattended_exec`
 
-交互式会话默认每次执行命令都停下来问你一次。Claude 那边**任何权限模式都关不掉**（[为什么](troubleshooting.md#开了-bypasspermissionsexec_command-还是每次都问)）；Codex 那边你可以在会话里用 `/permissions` 切到 Full Access 或 Approve for me，但只管那一个会话，而且 Approve for me 是让 Codex 自己的自动审查替你决定（[细说](configuration.md#allow_unattended_exec)）。
+交互式会话默认每次执行命令都停下来问你一次。Claude 的**任何权限模式都关不掉**这一步（[为什么](troubleshooting.md#开了-bypasspermissionsexec_command-还是每次都问)）。
 
 平时用交互会话干活的项目，建议在**项目那台机器**的 `config.toml` 里给它打开：
 
@@ -455,11 +443,11 @@ ccnm rpc
 
 它在 stdin/stdout 上说 JSON-RPC 2.0，一行一条消息，不开网络端口。谁能启动这个进程，谁就有这套 API 的全部权限。
 
-现在能用的是 `print` 模式的完整一轮：握手、列 instance、启动、查状态、取结果、停止。Claude 与 Codex 各在真机上跑通过一次，协议 `ccnm.machine/1` **已于 2026-09-10 冻结**：往后加字段、加方法可以，删字段和改语义要升版本。方法、参数、错误码和 fixture 见[协议说明](protocol/README.md)。
+现在能用的是 `print` 模式的完整一轮：握手、列 instance、启动、查状态、取结果、停止。冻结前 Claude 与 Codex 各在真机上跑通过一次（1.0.0 起只剩 Claude），协议 `ccnm.machine/1` **已于 2026-09-10 冻结**：往后加字段、加方法可以，删字段和改语义要升版本。方法、参数、错误码和 fixture 见[协议说明](protocol/README.md)。
 
 ## 把远端项目给已经在跑的 Agent 用
 
-上面那条是 ccnm 帮你启动 Agent。反过来：你的 Claude Code 或 Codex 已经开着，只是项目在另一台机器上——那就把这个进程配进它的 MCP server 列表：
+上面那条是 ccnm 帮你启动 Agent。反过来：你的 Claude Code（或别的 MCP 客户端）已经开着，只是项目在另一台机器上——那就把这个进程配进它的 MCP server 列表：
 
 ```bash
 ccnm mcp bridge my-project --mode read
@@ -510,21 +498,21 @@ call_mcp_tool
 - 要一直跑的命令（dev server、watch、很长的构建）用 `exec_command` 加 `run_in_background: true`：马上拿到 `output_ref`，命令在 Runtime 上接着跑。`read_output` 读它到目前为止的输出，加 `wait_ms` 等它结束；`stop_command` 停掉它。**后台命令活不过会话**：会话结束、断开、在 Claude Code 里 `/mcp` 重连，都会停掉这个会话起的所有命令。同时最多 8 个。中间隔了一层 hub（比如 gld）时，**hub 自己的调用预算通常先到**，连接一丢后台命令跟着停，症状和排查见[排错手册](troubleshooting.md#后台命令跑着跑着就没了)。细节见[协议第 5.5 节](protocol/remote-workspace-mcp-v1.md#55-后台命令run_in_backgroundwait_msstop_commandp41-新增)，四个时钟分别管什么见[第 6 节](protocol/remote-workspace-mcp-v1.md#6-连接生命周期)；
 - 客户端取消一条还没跑完的 `exec_command`（MCP 的 `notifications/cancelled`，Claude Code 中止工具调用时发它），Runtime 上的命令会被停掉（先 TERM，2 秒后 KILL），不会接着跑完。**取消一次带 `wait_ms` 的 `read_output` 不一样**：停的只是这次等待，命令照跑，要停它只有 `stop_command`；
 - `load_skill` 把项目自带的 skills 交给模型，见下一节；
-- `view_image` 把 Runtime 上的 PNG、JPEG、GIF、WebP 图片交给模型看（单个文件最多 3932160 字节，太大时报错并给出缩小的命令）；图片原样发出，Claude Code 会自己缩放。受管 Codex 会话里模型要在脚本里调 `image()` 才看得到图，规则见[协议第 5.3 节](protocol/remote-workspace-mcp-v1.md#53-view_image看-workspace-里的图片p39-新增)；
-- Claude 使用项目根 `CLAUDE.md` 上下文；Codex 使用根目录 `AGENTS.override.md`/`AGENTS.md` 的已测优先级；
-- remote session 使用对应 Provider 的已测工具策略，让项目访问统一走 Runtime Node；
-- 受管会话里模型还能**搜网页**（Claude 的 `WebSearch`、Codex 的 `web_search`）、用 **Agent 机器上装好的 MCP server**（默认只给远端地址的，见下面[那一节](#agent-机器上的-mcp-server)），Claude 还能**抓网页、派子代理、记待办清单**。这五项默认全开，不想要哪项就在 Runtime 的 workspace 上写 `agent_tools` 去掉它，全关写 `agent_tools = []`。Agent 自带的文件和 shell 工具一直关着，见[配置说明](configuration.md#agent_tools)。
+- `view_image` 把 Runtime 上的 PNG、JPEG、GIF、WebP 图片交给模型看（单个文件最多 3932160 字节，太大时报错并给出缩小的命令）；图片原样发出，Claude Code 会自己缩放，规则见[协议第 5.3 节](protocol/remote-workspace-mcp-v1.md#53-view_image看-workspace-里的图片p39-新增)；
+- Claude 使用项目根 `CLAUDE.md` 上下文；
+- remote session 使用 Claude Code 的已测工具策略，让项目访问统一走 Runtime Node；
+- 受管会话里模型还能**搜网页**（Claude 的 `WebSearch`）、用 **Agent 机器上装好的 MCP server**（默认只给远端地址的，见下面[那一节](#agent-机器上的-mcp-server)），Claude 还能**抓网页、派子代理、记待办清单**。这五项默认全开，不想要哪项就在 Runtime 的 workspace 上写 `agent_tools` 去掉它，全关写 `agent_tools = []`。Agent 自带的文件和 shell 工具一直关着，见[配置说明](configuration.md#agent_tools)。
 
 **传错参数会怎样**：`exec_command`、`apply_patch`、`stop_command` 不接受它们没声明的字段，连 `files[]` 里的每一项也一样——拒绝发生在命令跑起来、补丁落盘之前。`call_mcp_tool` 外层参数也拒绝未知字段，嵌套 `arguments` 则是目标 server 的参数对象，不能套用 ccnm 文件工具的 schema。只读文件工具通常接受额外字段并在末尾说明；Agent 的 `read_mcp_result` 有自己的严格 schema，不应据此推定所有只读工具都相同。`timeout_ms`、`preview_bytes` 超过上限是直接拒，不会自动截到上限，规则见[协议](protocol/remote-workspace-mcp-v1.md)。
 
 ## 项目自带的 skills
 
-**skill 是项目写给 AI 的"这类任务该怎么做"**：`.claude/skills/<名字>/SKILL.md`，开头几行写名字和描述，后面是做法，旁边可以放脚本。直接在项目机器上跑官方 CLI 时，CLI 会在当前目录下发现它们；经 ccnm 时 CLI 的当前目录在 Agent Node 上，项目在 Runtime Node 上，它一个都发现不了——所以由 Runtime 这一侧来发现，经 `load_skill` 工具交给模型。Claude、Codex、外部 MCP 客户端三种入口都一样，不用配置。
+**skill 是项目写给 AI 的"这类任务该怎么做"**：`.claude/skills/<名字>/SKILL.md`，开头几行写名字和描述，后面是做法，旁边可以放脚本。直接在项目机器上跑官方 CLI 时，CLI 会在当前目录下发现它们；经 ccnm 时 CLI 的当前目录在 Agent Node 上，项目在 Runtime Node 上，它一个都发现不了——所以由 Runtime 这一侧来发现，经 `load_skill` 工具交给模型。受管 Claude 会话和外部 MCP 客户端两种入口都一样，不用配置。
 
 会被找到的三个地方（相对项目根）：`.claude/skills/<名字>/SKILL.md`、`.agents/skills/<名字>/SKILL.md`、`.claude/commands/**/*.md`。
 
 - **模型怎么知道有哪些**：每个 skill 的名字和描述就写在 `load_skill` 这个工具的说明里，模型整个会话都看得见；要用哪个，它带名字调一次，拿到正文照着做。
-- **人怎么手动启动一个**（只有 Claude Code）：敲 `/mcp__ccnm__<名字> 参数`。Codex 不支持这种方式。
+- **人怎么手动启动一个**（只有 Claude Code）：敲 `/mcp__ccnm__<名字> 参数`。
 - **skill 里的脚本在哪跑**：Runtime Node 上，由模型用 `exec_command` 跑，和别的命令一样以执行账号的身份、受同样的限制。
 
 **skill 要求替它跑的命令，看会话里跑命令问不问人**（P79）。SKILL.md 里的 `` !`命令` ``（官方 CLI 会在加载 skill 时先执行它、把输出填进正文）和 frontmatter 里的 `hooks`，都是没人一条条批准就要跑的命令，所以只在**命令本来就不问人**的会话里跑：开了 [`allow_unattended_exec`](configuration.md#allow_unattended_exec) 的交互会话、`--print`、`ccnm mcp bridge` 的 coding 模式。其余会话（默认的交互会话、只读的外部会话）照旧不跑，模型加载时会看到一份清单和原因，需要就自己用 `exec_command` 跑。
@@ -534,7 +522,7 @@ call_mcp_tool
 | `` !`命令` `` | 命令不问人的会话：加载时在项目那台机器上跑，输出填进正文，跑失败这次加载就报错（和原生一样）。其余会话：不跑，列出来 |
 | `hooks` | 命令不问人的会话：加载后登记，本会话剩下的时间里，在项目那台机器上围着 ccnm 自己的工具跑。`PreToolUse` 退出码 2 或 `permissionDecision: "deny"` 会拦下这次调用，`PostToolUse` 的 stderr 或 `additionalContext` 附在结果后面。`matcher` 写原生工具名也行：`Bash` 对应 `exec_command`，`Read` 对应 `read_file`，`Edit`/`Write` 对应 `apply_patch`（每个文件一次），`Grep`、`Glob` 对应 `search_text`、`list_files`；钩子从 stdin 读到的是原生的格式（`tool_input.command`、`tool_input.file_path`），给本地 Claude Code 写的脚本照样能用。`Stop` 这类发生在客户端里的事件、`http` 等非 command 类型不跑，会写明。其余会话：不登记 |
 | `allowed-tools` | 不逐条放行：命令不问人的会话里本来就不用放行；会问的会话里一个 skill 关不掉那一问（要关去开 `allow_unattended_exec`）。列了 `WebFetch` 这类 Agent 自带工具时，会告诉模型它们在这个 workspace 开没开（[`agent_tools`](configuration.md#agent_tools) 定） |
-| `context: fork`（连同 `agent`、`model`） | Claude 会话、开着子代理（默认开）时，告诉模型用 `Agent` 工具派一个子代理去跑，带上 `agent` 和 `model`。这是给模型的指示，ccnm 看不到它照没照做。没有子代理（Codex、关了 `subagents`）时写明没生效 |
+| `context: fork`（连同 `agent`、`model`） | Claude 会话、开着子代理（默认开）时，告诉模型用 `Agent` 工具派一个子代理去跑，带上 `agent` 和 `model`。这是给模型的指示，ccnm 看不到它照没照做。没有子代理（关了 `subagents`，或外部客户端不支持）时写明没生效 |
 | 只写了 `model` | 不起作用：经 MCP 交出去的 skill 换不了会话的模型 |
 | `effort`、`shell`、`disallowed-tools` | 不起作用，加载时写明 |
 

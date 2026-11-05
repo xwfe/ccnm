@@ -26,7 +26,7 @@ ccnm rpc
 
 它从 stdin 读、往 stdout 写，没有网络端口。谁能启动这个进程，谁就有这套 API 的全部权限。
 
-**`ccnm.machine/1` 已于 2026-09-10 冻结。** 依据是两个 provider 各跑通过一次真机双机闭环，并与人类 CLI 走同一件事做副作用对照——两条腿的产物属主相同，`usage` 端到端到达调用方（记录见 [Claude](../research/p7-real-machine-2026-09-10.md) 与 [Codex](../research/p7-codex-parity-2026-09-10.md)）。往后加字段、加方法、加非终态可以；删字段、改语义、加终态要升到 `ccnm.machine/2`，规则见[协议第 13 节](machine-protocol-v1.md#13-兼容规则)。
+**`ccnm.machine/1` 已于 2026-09-10 冻结。** 依据是当时的两个 provider 各跑通过一次真机双机闭环，并与人类 CLI 走同一件事做副作用对照——两条腿的产物属主相同，`usage` 端到端到达调用方（记录见 [Claude](../research/p7-real-machine-2026-09-10.md) 与 [Codex](../research/p7-codex-parity-2026-09-10.md)）；1.0.0 起只剩 Claude，契约没变，见[协议 5.2 节](machine-protocol-v1.md#这里为什么没有-provider)。往后加字段、加方法、加非终态可以；删字段、改语义、加终态要升到 `ccnm.machine/2`，规则见[协议第 13 节](machine-protocol-v1.md#13-兼容规则)。
 
 冻结的是**契约**。实现仍然比契约少，下面这份清单就是差在哪里——补上它们属于加法，不需要升版本，也不违反冻结。差距全是这个方向，没有反过来的：
 

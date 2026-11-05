@@ -15,7 +15,7 @@
         },
         {
           "node": "work",
-          "instance": "codex-review",
+          "instance": "claude-review",
           "workspaces": []
         }
       ]

@@ -2,7 +2,7 @@
 
 `exec_command` 本质上是在 **Runtime Node** 上，以某个真实操作系统账号执行命令。这个账号才是 ccnm 当前最重要的权限边界。
 
-**默认就用你自己的账号**：Agent 经 SSH 登进 Runtime Node 用的是哪个账号，项目命令就以谁的身份跑，和你直接在那台机器上开 Claude Code / Codex 一样。不用建账号，也不用写任何开关。
+**默认就用你自己的账号**：Agent 经 SSH 登进 Runtime Node 用的是哪个账号，项目命令就以谁的身份跑，和你直接在那台机器上开 Claude Code 一样。不用建账号，也不用写任何开关。
 
 本页讲的是**要不要、怎么再加一层隔离**：建一个只给 ccnm 用的低权限账号——建议叫 `ccrun`，文档里叫 Runtime Service Account 或执行账号——并在 Runtime 配置里写上 `runtime_user`，让 ccnm 照专用账号的标准去查它。
 
@@ -72,7 +72,7 @@ ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=no -o UserKnow
 | 身份 | 干什么 | 可以持有 | 不该持有 |
 | --- | --- | --- | --- |
 | **Operator**（控制身份） | 你本人。敲 `ccnm run/status/stop`、跑 `ccnm rpc` | 连到 Agent Node 的 SSH 私钥、你自己的配置 | 这些不会自动传给 Runtime 工具 |
-| **Agent Identity** | Agent Node 上跑 Controller 和 Claude/Codex 的账号 | 官方 CLI 的登录/订阅、连到 Runtime Executor 的 SSH 私钥 | 项目的私密凭据（除非项目确实需要） |
+| **Agent Identity** | Agent Node 上跑 Controller 和 Claude Code 的账号 | 官方 CLI 的登录/订阅、连到 Runtime Executor 的 SSH 私钥 | 项目的私密凭据（除非项目确实需要） |
 | **Runtime Executor**（`ccrun`） | Runtime Node 上跑 `internal mcp-serve` 和全部项目工具 | `authorized_keys` 这类**入站**公开状态、项目最小必要凭据 | Agent 登录、你的个人凭据、**任何 ccnm 正常运行所需的出站 SSH 私钥或 SSH agent**、sudo/admin/特权 socket |
 | **Administrator** | 建账号、配 ACL、改网络策略 | 主机管理权限 | 不参与日常 Agent session |
 

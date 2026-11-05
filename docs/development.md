@@ -140,11 +140,11 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_blackbox_client -q
 
 单独跑一个文件时，找不到二进制这组测试会 skip 而不是失败——测试文件本身不依赖 cargo。看到 skip 就是没构建；`scripts/ci_gates.py` 自己构建，并把任何 skip 判成失败。
 
-**这些测试里没有真实 Agent。** 真机双机闭环（真实 Claude / Codex）另有带日期的记录，见[支持矩阵](support-matrix.md)；离线测试数量不能代替它。
+**这些测试里没有真实 Agent。** 真机双机闭环（真实 Claude Code）另有带日期的记录，见[支持矩阵](support-matrix.md)；离线测试数量不能代替它。
 
-[Codex 0.153.4 真机测量](research/codex-provider-probe-2026-09-07.md)是 Codex provider 的回归基线（受管会话现在钉 0.154.0）。`cargo test -p ccnm-core --test codex_measurements` 只检查 fixture，不启动模型；测量脚本 `scripts/measure_codex.py` 的离线测试另用 `python3 -m unittest tests.test_measure_codex -v` 运行。反向真实交互和 tmux 生命周期的证据见 [interactive 测量](research/codex-interactive-reverse-2026-09-07.md)。
+Codex Agent 的回归（`provider::codex`、`--test codex_measurements`、测量脚本 `scripts/measure_codex.py` 及其测试）在 1.0.0 随它一起删了（P118），当时的测量见 [Codex 0.153.4 真机测量](research/codex-provider-probe-2026-09-07.md)。`exec_sandbox = "codex"` 留着，它的测试是 `cargo test -p ccnm-cli --test exec_sandbox` 和 `cargo test -p ccnm-core --lib mcp::sandbox`。
 
-内部接线后的回归另跑 `cargo test -p ccnm-core provider::codex`；覆盖已测 JSONL、失败/拒绝/截断、私有目录权限、工具策略和版本边界。P3 公共 instance 回归另见 `cargo test -p ccnm-cli --test instance_execution`、`cargo test -p ccnm-core --test public_lifecycle`、`cargo test -p ccnm-core --test session_identity` 和 `cargo test -p ccnm-cli --test write_guard`。不要手改已有 session 的 Provider/identity；临时 Controller、历史真机与当前未复验边界见[内部接线记录](research/codex-internal-wiring-2026-09-07.md)和[支持矩阵](support-matrix.md)。
+P3 公共 instance 回归另跑 `cargo test -p ccnm-cli --test instance_execution`、`cargo test -p ccnm-core --test public_lifecycle`、`cargo test -p ccnm-core --test session_identity` 和 `cargo test -p ccnm-cli --test write_guard`。不要手改已有 session 的 Provider/identity；当前验到哪一步见[支持矩阵](support-matrix.md)。
 
 CI 跑的就是「本地跑测试」那三条，加上 `scripts/ci_gates.py`。Rust 测试里所有外部命令（ssh、tmux、launchctl、claude）都是注进去的
 假 runner，**除了**几个故意用真东西的：`git`（list_files 的 git 模式）、`rg`（search_text）、

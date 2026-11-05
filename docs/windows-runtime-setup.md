@@ -2,7 +2,7 @@
 
 本页从零搭一台 Windows 的 Runtime Node（放项目、跑工具的那台）。跑 AI 的那台（Agent Node）照旧是 macOS 或 Linux，按[快速开始](getting-started.md)装好；Windows 不能当跑 AI 的那台，也不能在 Windows 上敲 `ccnm <项目>` 起会话。
 
-> **现状：** 2026-10-28 在一台 Win11（中文系统）上真机验收过（P112），真实的 Claude Code 和 Codex 都在上面做完过改代码、编译、跑测试、提交；验到哪一步、哪些没验，以[支持矩阵](support-matrix.md)里"Windows 当项目机器"那一段为准。本页第 4–6 步在那台机器上照着走过（[P111 记录](research/2026-10-28-p111-windows-config-doctor.md)第 4 节）；第 1–3 步那台机器早就装好了，没有重做，winget 那两条也没在那儿跑过。
+> **现状：** 2026-10-28 在一台 Win11（中文系统）上真机验收过（P112），真实的 Claude Code（受管会话）和 Codex（当外部客户端经 `ccnm mcp bridge` 接进来）都在上面做完过改代码、编译、跑测试、提交；验到哪一步、哪些没验，以[支持矩阵](support-matrix.md)里"Windows 当项目机器"那一段为准。本页第 4–6 步在那台机器上照着走过（[P111 记录](research/2026-10-28-p111-windows-config-doctor.md)第 4 节）；第 1–3 步那台机器早就装好了，没有重做，winget 那两条也没在那儿跑过。
 
 下面的命令分两种：标了"在 Windows 上"的，在 Windows 的 **PowerShell** 里敲；标了"在 AI 那台"的，在 macOS / Linux 的终端里敲。
 

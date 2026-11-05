@@ -24,7 +24,7 @@
 | 远端 MCP 握手 | Remote MCP handshake | 本机工具策略 | Native tool policy |
 | 终端会话 | Terminal session | 以你身份生效的文件 | Files that act as you |
 
-`Controller`、`exec_command`、`Claude Code`、`Codex CLI`、`Claude authentication`、`Codex authentication` 这几行两种语言下同名。`No …`/`Not …` 这类英文名，中文用的是中性名词（`SSH 私钥`，不是"没有 SSH 私钥"），查得怎么样只看状态那一列。
+`Controller`、`exec_command`、`Claude Code`、`Claude authentication` 这几行两种语言下同名。`No …`/`Not …` 这类英文名，中文用的是中性名词（`SSH 私钥`，不是"没有 SSH 私钥"），查得怎么样只看状态那一列。
 
 状态词：`正常`=OK、`注意`=WARN、`不查`=NOTE、`没查`=SKIP、`失败`=FAIL。结论行 `可以用了`=READY、`还不能用`=NOT READY。
 
@@ -76,7 +76,6 @@ xshun
 | 项目机器不肯开（`CCNM_E_POLICY`），退出码 33 | 同[起会话前就被拒](#ccnm-项目-起不来报-its-runtime-would-refuse-it) | 按那一节改 |
 | `Failed to reconnect to ccnm`，退出码 3 | 项目机器刚才答了，但这次连接被拒——多半是刚断网不久，旧连接还占着写锁 | 等半分钟到一两分钟再试；还不行看[写锁被占](#mcp-初始化报-workspace-write-guard-is-busy-或-unknown) |
 | `were not back within 20 s`，退出码 3 | 敲了命令，20 秒没接上 | 再试一次，或 `ccnm attach <项目> --force` 进去看 `/mcp` 里写什么 |
-| Codex 会话那句，退出码 3 | Codex 没法重连正在跑的会话 | `ccnm stop <项目>` 再 `ccnm <项目>` 开新会话，对话不带过来 |
 
 输入框里有你没发出去的字（或者开着权限确认、菜单这类界面）时，ccnm 不敲——敲进去会拼在你的草稿后面，回车还可能替你答了那个问题。这时照常让你进去，并提示 `进去后敲：/mcp reconnect ccnm`。开着 vim 模式时同理不敲；停在 NORMAL 模式、界面上又没有 `-- INSERT --` 提示的那种 ccnm 看不出来，敲进去的字会被当成 vim 命令，碰到了就进去 `Esc` 掉、自己敲。
 
@@ -90,15 +89,12 @@ xshun
 - 输入框里有字时不敲，下一轮（30 秒后）再看。
 - 你正好在这时 `ccnm <项目>` 或 `ccnm attach` 进来，两边不会都敲：后来的那个等前一个做完，再看通没通。
 - `ccnm status <项目>` 的工具那一行会写"通（断过，自动接回过 N 次，最近一次：… 前）"；还没接上时那一行只写"断了"，下面多一行"Controller 在自动接：上一次没接上（原因），… 后再试"，这时不用自己去 `/mcp` 里接，项目机器连不上，手动接也一样失败。Controller 的日志（`~/.local/state/ccnm/controller.log`）里每次接上、没接上都有一行。
-- Codex 会话不接：Codex 没法重连正在跑的会话，照下面 Codex 那段做。
 - 换了新版本以后，要在 AI 机器上再跑一次 `ccnm controller install`，让后台跑的 Controller 换成新进程，否则还是旧的那个、不会替你接。
 
 这不是 2026-10-16 撤掉的 P98：P98 想让通道本身不断，那个依然不做。两台 macOS 之间断网超过约 100–200 秒，连接照样会断（[断网实验](research/2026-10-16-outage-experiment-plan.md#8-结果)），只是断了以后不用你再动手。
 
 `ccnm status <ws>` 和 `ccnm doctor <ws>` 都会明说这个状态——**看着正常的会话是不会显示
 这行的**，所以看到了就是真断了。
-
-**Codex 会话**显示的是"断了——Codex 里没法重连：ccnm stop <项目> 再 ccnm <项目> 开新会话，对话不带过来"（英文 `TOOLS DOWN (Codex cannot reconnect: ccnm stop <workspace>, then ccnm <workspace> for a new session; …)`），`ccnm doctor` 的终端会话那一行也是这句。Codex 里没有 `/mcp` 重连，照这句做就行，代价是对话上下文不带过来。（v0.17.0 及以前 `ccnm ls` 对 Codex 会话也说去 Claude 里 `/mcp`；P95 改过一版说"用官方 resume 接回去"，照做会掉进下面说的坑，P96 改成了现在这句。）要接回原对话，必须用 ccnm 那个 Codex 目录（`CODEX_HOME=~/.config/ccnm/agents/codex`）和 ccnm 起会话时的那套参数；直接敲 `codex resume <id>` 用的是你日常的 `~/.codex`，没有 ccnm 的工具，Codex 自带的 shell 还开着，命令会跑在 AI 那台上，别这么做。
 
 ### Claude Code 的后台 agent 只能读项目、改不了文件
 
@@ -169,13 +165,34 @@ fix it on the Runtime Node, then check: ccnm doctor my-project
 
 **为什么现在才报**：起新会话之前，AI 那台会经 SSH 问一次项目机器"这个会话你开不开、命令让不让跑"，项目机器说不就不起，原样带回它的理由。每个新会话为此多建一次 SSH 连接：xdwmbp ↔ fodelf 在 10-15 量了两轮共 10 次，0.5–2.5 秒，几乎全是建连接的时间（问的那一步本身约 0.07 秒），网络差时更久；已经在跑的会话直接接上，不问。**v0.16.1 及以前没有这一步**：会话照样起来，Claude 里却没有 ccnm 的工具（doctor 的 `Remote MCP handshake` 行失败），看着像网络断了，其实是项目机器在握手时拒了。
 
+### 升级到 1.0.0 后报 `provider "codex" is no longer supported`
+
+```text
+CCNM_E_CONFIG:
+~/.config/ccnm/config.toml: TOML parse error at line 10, column 12
+   |
+10 | provider = "codex"
+   |            ^^^^^^^
+provider "codex" is no longer supported: since 1.0 ccnm starts Claude Code sessions only. …
+```
+
+**1.0.0 起 ccnm 只起 Claude Code，Codex 那套删了**（P118），写着 `provider = "codex"` 的配置整份解析不了，所以这台机器上每条 ccnm 命令都报这个（退出码 10），连 Claude 的项目也用不了。
+
+**怎么办**：
+
+1. 在报错的那份 `config.toml` 里，把报错那一行所在的整节 `[agents.<名字>]`（或 `[profiles.<名字>]`）删掉。
+2. 项目机器上还有 workspace 指着这个实例（`agent = { node = "...", instance = "<名字>" }`）的，改成指向一个 Claude 实例，再 `ccnm doctor <项目>`。
+3. ccnm 以前给 Codex 建的登录目录（默认 `~/.config/ccnm/agents/codex`）不会自动删，里面有 Codex 的登录。不用了就自己删：`rm -rf ~/.config/ccnm/agents/codex`。
+
+还要用 Codex，就留在 0.22.0。`exec_sandbox = "codex"` 不受影响：那是借 Codex 程序给命令套沙箱，和起不起 Codex 会话无关（见[配置说明](configuration.md#exec_sandbox)）。
+
 ### 升级后 `ccnm` 报 `unknown field `codex_exec_server``
 
 ```text
 CCNM_E_CONFIG: …: unknown field `codex_exec_server`, expected one of …
 ```
 
-**配置里还写着 v0.14.0 删掉的开关。** 它管的是一条早就封存的 Codex 执行方式，v0.14.0 连同开关一起删了，写着它的配置（哪怕是 `false`）不再能解析。在报错的那份 `config.toml` 里删掉这一行即可，Codex 会话不受影响。
+**配置里还写着 v0.14.0 删掉的开关。** 它管的是一条早就封存的 Codex 执行方式，v0.14.0 连同开关一起删了，写着它的配置（哪怕是 `false`）不再能解析。在报错的那份 `config.toml` 里删掉这一行即可。
 
 ### 工具报 `failed to deserialize parameters: unknown field ...`
 
@@ -225,22 +242,22 @@ if none is running: log in to this account over ssh, or keep one running with: s
 
 **怎么办**：`sudo loginctl enable-linger <账号>`，之后 `ccnm controller install` 一次。这是改机器对这个账号的处理方式、要管理员权限，所以 ccnm 不替你开。
 
-### 登录 Codex 报 `device code request failed with status 403 Forbidden`，或会话里模型一直连不上
+### 会话里模型一直连不上，或登录时报 403
 
-**原因**：跑 AI 的这台机器出口所在的地区，OpenAI 不提供服务（Anthropic 也一样）。2026-10-07 在一台出口在中国大陆的 Linux 机器上撞到：登录接口回 `{"error":{"code":"unsupported_country_region_territory",...}}`，`api.openai.com` 和 `chatgpt.com` 直接连不上。这不是 ccnm 的问题，但跑 AI 的机器必须能访问 AI 服务，模型的每一次调用都是从这台机器发出去的。
+**原因**：跑 AI 的这台机器出口所在的地区，Anthropic 不提供服务。这不是 ccnm 的问题，但模型的每一次调用都是从这台机器发出去的，它必须能访问 AI 服务。2026-10-07 在一台出口在中国大陆的 Linux 机器上撞到过同一类问题（当时连的是 OpenAI，登录接口回 `unsupported_country_region_territory`）。
 
 **先确认是不是这个**（不带任何凭据，只看回什么）：
 
 ```bash
-curl -sS -m 15 -o /dev/null -w "%{http_code}\n" https://api.openai.com/v1/models
+curl -sS -m 15 -o /dev/null -w "%{http_code}\n" https://api.anthropic.com/v1/models
 ```
 
-回 `401` 是通的（只是没带凭据）；回 `403` 并带 `unsupported_country_region_territory`，或者超时，就是这个问题。
+回 `401` 说明连得上（只是没带凭据）；超时、连不上，或者回 `403`，就是这个问题。
 
 **怎么办**：给这台机器配一个能出去的代理，登录和 Controller 都要用上。
 
-- 登录时在命令前加上代理：`HTTPS_PROXY=http://<代理> CODEX_HOME=~/.config/ccnm/agents/codex codex login --device-auth`（`codex` 要是 0.154.0 那份，见[快速开始：用 Codex](getting-started.md#7-用-codex)）。
-- **Linux 上让 Controller 带上代理**：ccnm 不会去掉 `HTTPS_PROXY` 这类变量，Controller 的环境里有，它起的 Codex 就有。临时的做法（实测过）：`systemctl --user set-environment HTTPS_PROXY=http://<代理> NO_PROXY=127.0.0.1,localhost`，再 `ccnm controller install` 重启一次；用户实例重启后就没了。要长期生效，按 systemd 的常规做法写一个附加配置 `~/.config/systemd/user/dev.ccnm.controller.service.d/proxy.conf`（`[Service]` 下写 `Environment="HTTPS_PROXY=..."`），`controller install` 只重写主单元文件、不碰这个目录——这种写法这次没实测。
+- 登录时在命令前加上代理：`HTTPS_PROXY=http://<代理> claude auth login`。
+- **Linux 上让 Controller 带上代理**：ccnm 不会去掉 `HTTPS_PROXY` 这类变量，Controller 的环境里有，它起的 Claude Code 就有。临时的做法：`systemctl --user set-environment HTTPS_PROXY=http://<代理> NO_PROXY=127.0.0.1,localhost`，再 `ccnm controller install` 重启一次；用户实例重启后就没了（2026-10-07 实测过，当时 Controller 起的是 Codex）。要长期生效，按 systemd 的常规做法写一个附加配置 `~/.config/systemd/user/dev.ccnm.controller.service.d/proxy.conf`（`[Service]` 下写 `Environment="HTTPS_PROXY=..."`），`controller install` 只重写主单元文件、不碰这个目录——这种写法没实测。
 - macOS 上通常用系统级代理，Controller 不用另配。
 
 ### `Killed: 9` / exit 137 —— 升级完二进制就全炸
@@ -342,7 +359,7 @@ Agent 的 ccnm           失败   CCNM_E_VERSION: the Agent Node agent reports c
 
 ### doctor 报 `the Agent Node refused this Agent before probing anything`
 
-**症状**：`选哪个 Agent`（`Agent selection`）那一行失败，冒号后面是 Agent Node 自己给的原因；下面 Controller、Claude/Codex、反向 SSH 这些行全是"没查"：
+**症状**：`选哪个 Agent`（`Agent selection`）那一行失败，冒号后面是 Agent Node 自己给的原因；下面 Controller、Claude Code、反向 SSH 这些行全是"没查"：
 
 ```text
 选哪个 Agent            失败   CCNM_E_AUTH: the Agent Node refused this Agent before probing anything: dedicated Agent home must be private, owned by the execution identity and free of symlinks; …
@@ -597,28 +614,6 @@ allow_unattended_exec = true
 
 一次性的活也可以走 `--print`：那条路上**不带**这个键（那是"一句问一个答、终端前没人"的模式，挂上只会让模型答"我没处可问"然后拒绝执行）。两条路的对照见[使用说明](usage.md#不想一条条确认开-allow_unattended_exec)。`ccnm mcp bridge` 无论如何都不带这个键——bridge 不知道 Host 那头有没有人，冒充知道比不说更糟。
 
-### 受管 Codex 会话：`exec_command` 每次都弹，或者一次都不弹
-
-**每次都弹是正常行为**，样子是：
-
-```text
-• Calling ccnm.exec_command({"cmd":"cargo test --offline"})
-  Allow the ccnm MCP server to run tool "exec_command"?
-  cmd: cargo test --offline
-  › 1. Allow   Run the tool and continue.
-    2. Cancel  Cancel this tool call
-```
-
-只有"允许 / 取消"，没有"本会话都允许"，下一次照样问；取消（或按 Esc）的那次调用根本到不了 Runtime，模型收到的是 `user cancelled MCP tool call`。`call_mcp_tool` 也一样会问，其余工具不问。不想被问，和 Claude 一样两条路：`--print`，或在 Runtime 侧的 workspace 写 `allow_unattended_exec = true`（见上一节）。
-
-**一次都不弹**，按顺序查：
-
-1. **这个会话里切过权限。** 在 Codex 里用 `/permissions` 选了 Full Access 就不再问；选 Approve for me 是交给 Codex 自己的自动审查，真机上它连 `rm -f` 都直接放行、不问人。这是终端前那个人的选择，ccnm 拦不住，但只管这一个会话，下一个会话照样问。Claude 会话没有这个口子。
-2. **workspace 开了 `allow_unattended_exec`。** 这时 doctor 的 `命令审批` 是"注意"，写着这个开关。
-3. **两台的 ccnm 不是同一个构建。** 两台装同一个版本，doctor 的版本行会指出哪边不对。
-
-实测见 [记录](research/2026-10-07-p71-codex-asks-before-exec.md)。
-
 ### Codex 里报 `timed out awaiting tools/call after 300s`，命令其实还在跑
 
 **症状**：Codex 里一条长命令（或一次长的 `read_output` 等待）过了 5 分钟，模型看到：
@@ -636,8 +631,7 @@ Caused by:
 
 **怎么办**：
 
-- **受管 Codex 会话**：ccnm 启动 Codex 时已经自带足够长的 `tool_timeout_sec`，不会撞上。撞上了说明 Agent 上的 ccnm 太旧，两台装同一个新版本。
-- **Codex 当 Host 连 `ccnm mcp bridge`**：在 Codex 的 server 配置里加 `tool_timeout_sec = 1870`，见[协议文档](protocol/remote-workspace-mcp-v1.md#codex-当-host写上-tool_timeout_sec)。
+- 只会出现在 Codex 当外部客户端、经 `ccnm mcp bridge` 接进来的时候（1.0.0 起 ccnm 不再自己起 Codex 会话）：在 Codex 的 server 配置里加 `tool_timeout_sec = 1870`，见[协议文档](protocol/remote-workspace-mcp-v1.md#codex-当-host写上-tool_timeout_sec)。
 - 已经撞上了：第一条会在它自己的 `timeout_ms` 到点时被 ccnm 停掉，在那之前别让模型并行再起一份。
 
 ### 自己的 settings.json 里写了 `bypassPermissions`，ccnm 会话里还是一个个问
@@ -804,8 +798,6 @@ CCNM_E_INVALID_ARGS: no output kept for r-0193f2c8a1b74e05
 | `CCNM_E_VERSION: Claude Code <版本> is older than 2.1.280 …` | 这么旧的版本没实测过非交互的 `/usage`，ccnm 不问，免得它把 `/usage` 当成一句话发给模型、白花额度 | 升级 AI 那台的 Claude Code；或者在那台开 `claude` 敲 `/usage` |
 | `CCNM_E_VERSION: Claude Code <版本> did not answer /usage as its local command` | 这个版本的 Claude Code 没把 `/usage` 当本地命令跑，回的东西不能当额度读 | 在 AI 那台开 `claude` 敲 `/usage` 看；把版本号报给 ccnm |
 | 显示"没有额度可报" | 这个登录没有 5 小时 / 每周额度（API key、第三方平台），或者 Claude Code 改了 `/usage` 的输出 | 订阅登录也这样，就在 AI 那台开 `claude` 敲 `/usage` 对一下 |
-| `CCNM_E_VERSION: Codex <版本> has not been measured` | Codex 只认 0.154.0 | 和起会话一样，换回 0.154.0 |
-| `CCNM_E_NOT_READY: Codex did not report its limits: …` | 后面是 Codex 自己的原话，常见是 API key 登录（没有订阅额度） | 按原话处理 |
 
 ### 换机器（`--on`）和带交接时的报错
 
@@ -939,7 +931,7 @@ Tailscale 掉线时对面照样连不上。2026-09-16 真机上就是这样：�
 
 | `failure.code` | 意思 | 怎么办 |
 | --- | --- | --- |
-| `-32003` | Agent 上的官方 CLI 没登录 | 去 Agent Node 自己的终端登录（`claude auth login` / `codex login`） |
+| `-32003` | Agent 上的官方 CLI 没登录 | 去 Agent Node 自己的终端登录（`claude auth login`） |
 | `-32002` | 两台机器的 ccnm 版本或构建不同（`detail` 里是 `runs ccnm 0.8.0, this one runs 0.9.0` 或 `message is not valid for protocol 1`） | 两端装同一个构建，先跑 `ccnm doctor` |
 | `-32004` / `-32005` | 连不上 Agent / Agent 连不回 Runtime | 查 ssh，见上面几节 |
 | `-32007` | 被策略拒绝，比如写锁交不出来 | 看 `detail`，多半要人处理 |
@@ -964,33 +956,6 @@ CCNM_E_NOT_READY:
 
 **`ccnm log` 里是"没有终端"（`failed to start`）**：终端不是 stop 停的，而是自己没了（tmux server 被杀、机器重启），之后才有人对它 stop。ccnm 不知道它什么时候结束的，只能这么记。
 
-### doctor 说 Codex 已登录，会话里第一条消息却报 `refresh token was revoked`
-
-**症状**：`ccnm doctor <ws> --on <codex 实例>` 的 `Codex authentication` 是 OK（`logged in via ChatGPT`），会话一发消息，Codex 回：
-
-```text
-Your access token could not be refreshed because your refresh token was revoked. Please log out and sign in again.
-```
-
-**原因**：doctor 和 `codex login status` 都只看本地的登录状态，不去服务器验证令牌。在别处登录同一个账号、或者长时间没用，都可能让这份令牌失效。
-
-**doctor 自己会说这一点**，那一行仍是"正常"，但多一句：
-
-```text
-Codex authentication    OK     logged in via ChatGPT
-                               local login state only, not checked with the server: a revoked or expired token still reads as logged in, and the first message of a session is what shows it
-```
-
-它没有变成真的校验。ccnm 不读登录文件的内容，而官方 CLI 里唯一问登录状态的命令不联网；`codex doctor` 也许能验，但它会不会顺手刷新（也就是改写）令牌没有量过，见 [P65 记录](research/2026-09-30-p65-hidden-root-failure-reason-codex-login.md)第 2.3 节。所以**这一行绿只说明"登录过"，不说明"现在还能用"**。
-
-**怎么办**：在 Agent Node 自己的终端，对 **ccnm 用的那份** Codex 目录重新登录（不是你日常的 `~/.codex`），用受管会话实际用的那个 Codex 0.154.0（路径换成你机器上的）：
-
-```bash
-CODEX_HOME=~/.config/ccnm/agents/codex /path/to/codex-0.154.0/codex login
-```
-
-用更新版本的 Codex 登录这个目录，它可能顺手升级目录里的状态文件，0.154.0 之后未必读得了。
-
 ### Machine API：会话一直是 `unknown`
 
 `unknown` 的意思是 ccnm 说不清这次运行到了哪一步，**别自动重试**：那次运行可能已经改过东西。
@@ -1010,7 +975,7 @@ CODEX_HOME=~/.config/ccnm/agents/codex /path/to/codex-0.154.0/codex login
 
 **其实是**：Agent 上管这次运行的监督进程（`ccnm internal supervise`）没了：被杀、机器重启、Controller 被强行卸掉。Agent 每 2 秒核一次它，没了几秒内就收尾成 `unknown`。`unknown` 是对的：被留下的 Claude / Codex 进程可能还在跑，ccnm 不替它写结局、也不去杀它。`agent_refused` 也是对的：监督进程是 Agent 输出的转存者，它死后的输出没人接，别据此去查认证。
 
-**怎么办**：在 Agent Node 上看 `ps` 里还有没有这次会话的 `claude` / `codex`（`failure` 里有它的 pid，命令行里有会话 id），有就按进程组结束它；Runtime 上的写锁由执行账号保管，命令都收掉了它自己会放。别重发同一个任务。
+**怎么办**：在 Agent Node 上看 `ps` 里还有没有这次会话的 `claude`（`failure` 里有它的 pid，命令行里有会话 id），有就按进程组结束它；Runtime 上的写锁由执行账号保管，命令都收掉了它自己会放。别重发同一个任务。
 
 ### Machine API：`session.result` 带 `unavailable_reason: agent_refused`，完整输出拿不到
 

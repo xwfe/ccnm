@@ -1,6 +1,8 @@
 # Provider 安全契约（P1）
 
-本契约约束 Claude/Codex 的既有远程执行链路，不新增公开配置、Provider、RPC 或生产权限。Provider 声明已测需求，`safety`、SSH、Controller/session 和 Runtime 执行它们。native colocated 是受信任本地执行，不是隔离 Runtime；其已知支持缺口留给 P3。
+本契约约束 Claude Code 的既有远程执行链路，不新增公开配置、Provider、RPC 或生产权限。Provider 声明已测需求，`safety`、SSH、Controller/session 和 Runtime 执行它们。native colocated 是受信任本地执行，不是隔离 Runtime；其已知支持缺口留给 P3。
+
+1.0.0 起 ccnm 只起 Claude Code（P118），但下文的"已知 Provider / 已知 Agent 凭据"仍包括 Codex：Runtime 账号上可能装着、登录着 Codex（`exec_sandbox = "codex"` 就要跑它），它的登录和 `CODEX_*`/`OPENAI_*` 变量照样不能让模型的命令碰到。
 
 ## 身份、状态和来源
 
@@ -14,7 +16,7 @@
 
 普通变量不是“任意字符串都安全”的承诺。P1 没有新增项目秘密授权 API：已知 Agent 前缀（包括 Codex 已测的整个 CODEX/OPENAI 前缀）继续移除；未知的 token/password/secret/credential 等名称形态按未授权认证处理。`GOOGLE_CLOUD_PROJECT` 等普通项目标识不因供应商品牌被一刀切删除。显式命令可自行构造环境，这是任意 exec 的既有权限，不是凭据隔离绕过的防御目标。
 
-兼容例外必须明确：Claude v1 的 `claude_config_dir` 仍保留原有调用方参数语义，本阶段不擅改用户配置，不新增私有路径发现或回传。它不是新 profile 的授权模型；P2 负责 Agent-local 引用与 legacy 冲突/迁移契约。Codex 专用 HOME 始终只由 Agent 自己解析。
+兼容例外必须明确：Claude v1 的 `claude_config_dir` 仍保留原有调用方参数语义，本阶段不擅改用户配置，不新增私有路径发现或回传。它不是新 profile 的授权模型；P2 负责 Agent-local 引用与 legacy 冲突/迁移契约。
 
 Runtime 启动环境（包括 SSH 服务端 `AcceptEnv`）必须由 Runtime 运维明确控制。P1 不新增环境授权配置，也不证明任意 SSH 配置不会传递普通变量。名称分类不是扫描秘密值：藏在任意名称、任意文件或项目输出中的秘密不在这份诊断的证明范围。
 
@@ -27,9 +29,9 @@ Runtime 启动环境（包括 SSH 服务端 `AcceptEnv`）必须由 Runtime 运�
 - `accessible`：可以读取已知认证文件/容器，失败。不实际读取内容。
 - `unknown`：身份、目录引用、metadata、symlink、访问探测、权限错误或超时不能解释，失败。未知不能输出“机器没有秘密”。
 
-只检查两 Provider 的已知文件位置，包括默认 Codex 目录和 ccnm 专用目录；额外/自定义位置只取 Runtime 本地来源。macOS login Keychain 容器的可访问性是保守风险信号，不读取 item，不声称它一定有 Claude token，也不能据此证明 Keychain 服务级 ACL。任意其他路径、凭据代理或 OS credential service 的完整隔离需 P3 专用身份/ACL 实测。
+只检查 Claude、Codex 两家登录的已知文件位置，包括默认 Codex 目录和 ccnm 以前给 Codex 建的专用目录；额外/自定义位置只取 Runtime 本地来源。macOS login Keychain 容器的可访问性是保守风险信号，不读取 item，不声称它一定有 Claude token，也不能据此证明 Keychain 服务级 ACL。任意其他路径、凭据代理或 OS credential service 的完整隔离需 P3 专用身份/ACL 实测。
 
-Agent 的专用 Codex HOME 必须是当前有效 UID 所有、仅属主可访问、无符号链接的目录；不能把 HOME 目录的属主当执行 UID。认证文件同样要求私有、正规文件且非 symlink。官方 CLI 探测是受控诊断，政策失败不能拉起项目命令或 Agent 会话。
+Agent Instance 解析出的 profile 目录（内建 `default` 是 `~/.claude`）必须是当前有效 UID 所有、仅属主可访问、无符号链接的目录；不能把 HOME 目录的属主当执行 UID。认证文件同样要求私有、正规文件且非 symlink。官方 CLI 探测是受控诊断，政策失败不能拉起项目命令或 Agent 会话。
 
 Runtime 初始化先检查身份和凭据边界，失败时不进入 Git 等依赖项目的子进程；exec 前再复查凭据可访问性和环境，不能仅依赖 session 启动时的旧审计。OS 权限仍须阻止进程在检查后获得新权限：审计不是无竞态 sandbox。
 
@@ -51,6 +53,6 @@ Runtime 初始化先检查身份和凭据边界，失败时不进入 Git 等依�
 1. Agent transport 和预检 SSH：分别检查构造命令、共用 spawn/exec 环境应用函数实际交给测试子进程的合成环境及 OpenSSH 解析选项。MCP launch plan 指向 Agent-local Rust wrapper；测试仅替换 SSH 可执行程序，不连接远端。不借 Runtime 的 `env -i` 证明上游已清理。
 2. Runtime child：普通合成项目变量保留；已知 Provider 私有变量不进入 child；未知认证环境或可访问/未知认证路径在 spawn 前失败，以 marker 文件未产生证明。
 3. 私有目录与身份：合成 fixture 覆盖错误 UID、权限、symlink、缺失、访问拒绝和未知。测试不读取真实用户认证文件、不安装 CLI、不调用真实模型。
-4. Claude CLI 参数、策略和协议保持 golden 原件；SSH 安全选项或 exec 拒绝边界的收紧必须作为明确行为变更单独断言，不能重录原 golden 将其伪装成等价重构。Codex 固定 CLI 策略不放宽。
+4. Claude CLI 参数、策略和协议保持 golden 原件；SSH 安全选项或 exec 拒绝边界的收紧必须作为明确行为变更单独断言，不能重录原 golden 将其伪装成等价重构。
 
 本阶段不执行建账号、sudo/ACL/firewall 改动或部署。生产安全、真实多身份与网络断连验证留给 P3，离线通过不得提升为生产通过。

@@ -1,15 +1,15 @@
 # 快速开始
 
-本页从零搭起来：一台机器放项目，一台机器跑 AI。默认用 Claude Code，用 Codex 的看最后一节。"Agent Node""Runtime Node""执行账号"这几个词，见 [README 的"两台机器各干什么"](../README.md#两台机器各干什么)：Agent Node 就是跑 AI 的那台，Runtime Node 就是放项目的那台。
+本页从零搭起来：一台机器放项目，一台机器跑 AI。AI 是 Claude Code（1.0.0 起 ccnm 只起 Claude Code）。"Agent Node""Runtime Node""执行账号"这几个词，见 [README 的"两台机器各干什么"](../README.md#两台机器各干什么)：Agent Node 就是跑 AI 的那台，Runtime Node 就是放项目的那台。
 
 ## 先准备
 
 **跑 AI 的机器**（Agent Node）：
 
 - macOS，或 x86_64 的 Linux（要有 systemd）；
-- Claude Code 已经登录（用 Codex 见[最后一节](#7-用-codex)）；
+- Claude Code 已经登录；
 - 装了 `tmux`；
-- 能访问 Anthropic / OpenAI。在不支持的地区（比如中国大陆）要先配代理，见[排错手册](troubleshooting.md#登录-codex-报-device-code-request-failed-with-status-403-forbidden或会话里模型一直连不上)。
+- 能访问 Anthropic。在不支持的地区（比如中国大陆）要先配代理，见[排错手册](troubleshooting.md#会话里模型一直连不上或登录时报-403)。
 
 **放项目的机器**（Runtime Node）：
 
@@ -166,10 +166,10 @@ ssh = "runtime-ssh-alias"
 
 **macOS 上**，Controller 是一个 launchd 服务，跑在图形登录会话里：这样哪怕请求是从 SSH 来的，Claude Code 也能用钥匙串里的登录。所以这台 Mac 至少要有人在屏幕前登录过一次（锁屏没关系）。只有 SSH 登录、没有图形登录时，doctor 的 `Controller` 行会写 `Background`，`Claude authentication` 那一行是"没查"，见[排错手册](troubleshooting.md#doctor-的-controller-行失败写着-backgroundmacos)。
 
-**Linux 上**，Controller 装成 systemd 用户服务（`~/.config/systemd/user/dev.ccnm.controller.service`），不需要图形登录：Claude 和 Codex 在 Linux 上把登录存在文件里，任何会话都读得到。三件事要知道：
+**Linux 上**，Controller 装成 systemd 用户服务（`~/.config/systemd/user/dev.ccnm.controller.service`），不需要图形登录：Claude Code 在 Linux 上把登录存在文件里，任何会话都读得到。三件事要知道：
 
 - **`ccnm controller install` 要在这个账号用 SSH 登录进来的会话里跑。** `su` 或 `sudo -u` 进来的会话通常报 `Failed to connect to bus`，见[排错手册](troubleshooting.md#linux-上-ccnm-controller-install-报-failed-to-connect-to-bus)。
-- **这台机器要能访问 AI 服务。** 出口在不支持的地区时，登录会报 403、会话里模型连不上，见[排错手册](troubleshooting.md#登录-codex-报-device-code-request-failed-with-status-403-forbidden或会话里模型一直连不上)。
+- **这台机器要能访问 AI 服务。** 出口在不支持的地区时，登录会报 403、会话里模型连不上，见[排错手册](troubleshooting.md#会话里模型一直连不上或登录时报-403)。
 - **默认这个账号最后一次退出登录时，systemd 会停掉 Controller 和它起的所有会话。** 要它常驻，开 linger（说白了就是"没人登录也保留这个账号的用户服务"）：`sudo loginctl enable-linger <账号>`。没开时，`controller install`、`controller status` 和 doctor 的 `Controller` 行都会提示。
 
 ## 5. 跑 doctor
@@ -196,7 +196,7 @@ doctor 只读，不会替你建账号、改权限或登录 Claude。
 ccnm my-project
 ```
 
-**第一次起会话，Claude Code / Codex 会先问几句**，答一次，同一个项目以后不再问：
+**第一次起会话，Claude Code 会先问几句**，答一次，同一个项目以后不再问：
 
 - **"是否信任这个目录"**：选信任。问的是 ccnm 在跑 AI 那台上给这个项目建的空占位目录（`~/.local/state/ccnm/workspaces/<项目名>`），不是你的项目。Claude 默认选中的是 "No, exit"，要先按一次下箭头，直接回车会话就退出了。
 - **Claude Code 问"要不要把 auto mode 设成默认权限模式"**：选 "No"。选 "Yes" 改的是那个账号上 Claude Code 的全局默认，你在那台机器上直接用 Claude 时也会跟着变；ccnm 起会话时自己指定权限模式，用不着它。
@@ -205,7 +205,7 @@ ccnm my-project
 
 在跑 AI 的那台敲同一条命令也行：它先问项目机器这个名字对应哪个目录，再在本机起会话、接上。`--print`（一问一答）例外，只能在项目机器上敲，在 AI 那台敲会报 `--print has to be run where the projects are; ssh there and run it`。
 
-会话关了以后想接着上次聊到的地方干，用 `ccnm my-project -c`（只支持 Claude，[说明](usage.md#接着上一次的对话开--continue)）。日常命令和会话里 AI 能做什么，见[使用说明](usage.md)。
+会话关了以后想接着上次聊到的地方干，用 `ccnm my-project -c`（[说明](usage.md#接着上一次的对话开--continue)）。再加一台 AI 机器、一台额度用完时换着用，见[使用说明：换一台 AI 机器](usage.md#换一台-ai-机器--on)。日常命令和会话里 AI 能做什么，见[使用说明](usage.md)。
 
 ### 不想每条命令都点确认
 
@@ -222,49 +222,6 @@ allow_unattended_exec = true
 ```
 
 之后新起的会话就不问了，项目 skill 里要求加载时跑的命令和 `hooks` 也会跟着跑（[说明](usage.md#项目自带的-skills)）。别另起一个同名的 `[workspaces.my-project]` 再写这一行：TOML 不允许同一张表出现两次，整份配置会读不进来。开了之后少了什么、怎么收回、doctor 里 `命令审批` 那一行为什么一直是"注意"，见[配置说明](configuration.md#allow_unattended_exec)。
-
-## 7. 用 Codex
-
-**1. 在跑 AI 的机器上装 Codex 0.154.0。** 只认这一个版本（实测过的），别的版本 doctor 报 `Codex <版本> has not been measured; this adapter requires 0.154.0`。从 [openai/codex 的 rust-v0.154.0 发布页](https://github.com/openai/codex/releases/tag/rust-v0.154.0)下**两个**包：`codex` 本体，和 `codex-code-mode-host`。后者必须和 `codex` 放在同一个目录：不给实例指定模型时，ccnm 用的是 Codex 的 Code Mode，少了它，会话里模型一个工具都拿不到。包里的文件名带着平台，要改名：
-
-```bash
-t=aarch64-apple-darwin          # Intel Mac 是 x86_64-apple-darwin，Linux 是 x86_64-unknown-linux-musl
-base=https://github.com/openai/codex/releases/download/rust-v0.154.0
-curl -fLO $base/codex-$t.tar.gz && curl -fLO $base/codex-code-mode-host-$t.tar.gz
-tar -xzf codex-$t.tar.gz && tar -xzf codex-code-mode-host-$t.tar.gz
-install -m 755 codex-$t ~/.local/bin/codex
-install -m 755 codex-code-mode-host-$t ~/.local/bin/codex-code-mode-host
-~/.local/bin/codex --version    # 要打出 0.154.0
-```
-
-ccnm 按这个顺序找 `codex`：Controller 的 `PATH`，然后是 `~/.local/bin`、`~/.cargo/bin`、`/opt/homebrew/bin`、`/usr/local/bin`。
-
-**2. 登录到 ccnm 自己的 Codex 目录。** ccnm 不用你日常的 `~/.codex`，它用 `~/.config/ccnm/agents/codex/`。这个目录要你自己先建好，而且只能你自己能进（权限 0700），否则 doctor 报 `dedicated Agent home must be private…`。然后对它单独登录一次，用 0.154.0 这份 Codex 登（更新的版本可能顺手升级目录里的文件，之后 0.154.0 可能就读不了了）：
-
-```bash
-mkdir -p -m 700 ~/.config/ccnm/agents/codex
-CODEX_HOME=~/.config/ccnm/agents/codex ~/.local/bin/codex login
-```
-
-Linux 上没有浏览器时加 `--device-auth`；要代理时在前面加 `HTTPS_PROXY=http://<代理地址>`。别从 `~/.codex` 把 `auth.json` 拷过来，要单独登录。
-
-**3. 两边配置各加几行。** 跑 AI 的机器上，定义一个 Codex 实例：
-
-```toml
-[agents.codex-main]
-provider = "codex"
-profile_ref = "default"
-```
-
-放项目的机器上，把这个项目的 `agent_node = "agent"` 换成指向这个实例（两个不能同时写）：
-
-```toml
-[workspaces.my-project]
-agent = { node = "agent", instance = "codex-main" }
-root = "/path/to/project"
-```
-
-然后照常 `ccnm doctor my-project`、`ccnm my-project`。同一台机器上 Claude、Codex 都配、按需切换，或者再加一台 AI 机器、一台额度用完时换着用，见[使用说明：换一台 AI 机器](usage.md#换一台-ai-机器--on)；改写法的细节和容易踩的坑见[运维：配置迁移](operations.md#配置迁移legacy--agent-instance)。
 
 ## 升级
 

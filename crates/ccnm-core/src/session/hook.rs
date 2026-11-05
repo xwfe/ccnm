@@ -8,19 +8,30 @@
 //!   used to carry on that first one, skipping everything after the last
 //!   `/clear` -- on 2026-10-17 a whole day of it. `SessionStart` says which
 //!   conversation is current, so each id is written down here as it begins.
-//! - **Handing off to a fresh conversation (P102).** Compaction keeps a
-//!   session going past its window, and each one summarises the summary
-//!   before it. After each, the model is told how many there have been and
-//!   when to suggest a fresh conversation; a handoff it ends a reply with is
-//!   kept, and given to the next conversation when the person types
-//!   `/clear`. ccnm never clears anything itself: whether the work is done
-//!   is the person's call, and a cleared context does not come back.
+//! - **Handing off to a fresh conversation (P102, P120).** Compaction keeps
+//!   a session going past its window, and each one summarises the summary
+//!   before it. From the [`HAND_OFF_AFTER`]th on, ccnm tells the *person*,
+//!   once per compaction, that a fresh conversation would help (P120). Until
+//!   P120 the model was told to suggest it, and from the third compaction on
+//!   it did so at every point the work could be left -- with a person who
+//!   commits every small change, at every commit. A handoff the model ends
+//!   a reply with (when asked for one) is kept, and given to the next
+//!   conversation when the person types `/clear`; without one, a
+//!   conversation compacted that often hands over its end. ccnm never
+//!   clears anything itself: whether the work is done is the person's call,
+//!   and a cleared context does not come back.
 //!
 //! Measured on Claude Code 2.1.300 (docs/research/probes/p100-session-hooks.py):
 //! `SessionStart` fires with `source` `startup`, `clear` (new `session_id`),
 //! `compact` and, for `--resume <id> --fork-session --session-id <ours>`,
 //! `fork`; its stdout reaches the model in the next request. `Stop` carries
-//! the last reply as `last_assistant_message`.
+//! the last reply as `last_assistant_message`. On 2.1.318
+//! (docs/research/probes/p120-hook-notices.py): stdout that is JSON with a
+//! `systemMessage` shows that line to the person, as `SessionStart:compact
+//! says: …` or `Stop says: …`, from both hooks; `SessionStart`'s
+//! `hookSpecificOutput.additionalContext` reaches the model like plain
+//! stdout; both hooks get `transcript_path`, and after `/clear` the new
+//! conversation's transcript sits beside the old one's.
 //!
 //! A hook that fails puts its stderr in front of the person, and nothing
 //! here is worth that: every failure is silent, and the worst it costs is a
@@ -32,6 +43,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::Lang;
 use crate::error::Result;
 use crate::protocol::payload::{self, Protocol};
 use crate::session::Dir;
@@ -71,12 +83,13 @@ pub fn command(exe: &Path, dir: &Dir) -> Result<String> {
     ))
 }
 
-/// From this many compactions on, the model is asked not to wait for the
-/// task to be finished before suggesting a fresh conversation. Each one
-/// summarises the one before; on 2026-10-15–17 a busy session compacted
-/// every one to two and a half hours, so three is most of a working day in
-/// one window. Lower means more interruptions, higher means more of the
-/// conversation known only as a summary of summaries.
+/// From this many compactions on, ccnm tells the person after each one that
+/// a fresh conversation would help, and a `/clear` with no handoff hands the
+/// new conversation the end of this one (P120). Each compaction summarises
+/// the one before; on 2026-10-15–17 a busy session compacted every one to
+/// two and a half hours, so three is most of a working day in one window.
+/// Lower means more of those lines and more `/clear`s carrying text; higher
+/// means more of the conversation known only as a summary of summaries.
 pub const HAND_OFF_AFTER: u32 = 3;
 
 /// The line a handoff starts with. Plain text, so it reads naturally to the
@@ -141,6 +154,13 @@ fn is_uuid(id: &str) -> bool {
 /// What one hook call has to say to Claude Code on stdout. Never an error:
 /// see the module comment.
 pub fn handle(dir: &Dir, input: &str) -> String {
+    handle_in(dir, input, &person_lang)
+}
+
+/// [`handle`], with the language of what ccnm tells the person asked for
+/// only when there is something to tell: reading the config is not worth
+/// doing on every reply.
+pub fn handle_in(dir: &Dir, input: &str, lang: &dyn Fn() -> Lang) -> String {
     // A Claude Code background agent is relaunched with this session's
     // --settings, so it runs these hooks too (P117). Its conversation is not
     // the session's: written down, it is what `-c` and the next machine
@@ -154,19 +174,45 @@ pub fn handle(dir: &Dir, input: &str) -> String {
     };
     let text = |key: &str| event.get(key).and_then(serde_json::Value::as_str);
     match text("hook_event_name") {
-        Some("SessionStart") => session_start(dir, text("session_id"), text("source")),
-        Some("Stop") => {
-            if let Some(reply) = text("last_assistant_message") {
-                keep_handoff(dir, reply);
+        Some("SessionStart") => session_start(
+            dir,
+            text("session_id"),
+            text("source"),
+            text("transcript_path"),
+            lang,
+        ),
+        Some("Stop") => match text("last_assistant_message") {
+            Some(reply) if keep_handoff(dir, reply) => {
+                serde_json::json!({ "systemMessage": handoff_kept(lang()) }).to_string()
             }
-            String::new()
-        }
+            _ => String::new(),
+        },
         _ => String::new(),
     }
 }
 
-fn session_start(dir: &Dir, id: Option<&str>, source: Option<&str>) -> String {
+/// The language ccnm speaks to people on this machine: the config's
+/// `[ui] lang`, as the CLI reads it, else Chinese. A hook gets no
+/// `--lang`, and a config that cannot be read is no reason to stay silent.
+fn person_lang() -> Lang {
+    crate::paths::effective_config_path()
+        .ok()
+        .and_then(|path| crate::Config::load(&path).ok())
+        .and_then(|config| config.ui.lang)
+        .and_then(|text| Lang::parse(&text))
+        .unwrap_or(Lang::Zh)
+}
+
+fn session_start(
+    dir: &Dir,
+    id: Option<&str>,
+    source: Option<&str>,
+    transcript: Option<&str>,
+    lang: &dyn Fn() -> Lang,
+) -> String {
     let mut conversations = read(dir).unwrap_or_default();
+    // The conversation a `/clear` leaves: the last one written down.
+    let previous = conversations.ids.last().cloned();
     if let Some(id) = id.filter(|id| is_uuid(id))
         && conversations.ids.last().map(String::as_str) != Some(id)
     {
@@ -176,18 +222,37 @@ fn session_start(dir: &Dir, id: Option<&str>, source: Option<&str>) -> String {
         }
     }
     let mut say = Vec::new();
+    let mut notice = None;
     match source {
         Some("compact") => {
             conversations.compactions = conversations.compactions.saturating_add(1);
             say.push(compacted(conversations.compactions));
+            if conversations.compactions >= HAND_OFF_AFTER {
+                notice = Some(compacted_notice(conversations.compactions, lang()));
+            }
         }
         // Carries on a conversation ccnm seeded the count of.
         Some("fork") => {}
         Some("clear") => {
-            conversations.compactions = 0;
+            let compacted = std::mem::take(&mut conversations.compactions);
             if let Some(handoff) = take_handoff(dir) {
                 say.push(format!(
                     "ccnm: the user typed /clear, and the conversation before it in this terminal ended with the handoff below. Pick the work up from it. If the user's next message asks for something else, follow the user.\n\n{handoff}"
+                ));
+                notice = Some(lang().pick(
+                    "ccnm：交接已经交给这段新对话".to_string(),
+                    "ccnm: the handoff went to this new conversation".to_string(),
+                ));
+            } else if compacted >= HAND_OFF_AFTER
+                && let Some(tail) = previous_tail(transcript, previous.as_deref())
+            {
+                say.push(format!(
+                    "ccnm: the user typed /clear after the conversation before it in this terminal had been compacted {compacted} times, and it ended without a handoff. Below is the end of that conversation: what the user and the AI said, without tool calls or their output. It is raw, not a summary: use it to learn where the work stood, check the project itself before relying on any of it (git status, the files it names), then carry on. If the user's next message asks for something else, follow the user.\n\n{tail}"
+                ));
+                notice = Some(lang().pick(
+                    "ccnm：上一段对话没写交接，把它最后的部分交给了这段新对话".to_string(),
+                    "ccnm: the last conversation wrote no handoff; its end went to this new one"
+                        .to_string(),
                 ));
             }
         }
@@ -205,45 +270,79 @@ fn session_start(dir: &Dir, id: Option<&str>, source: Option<&str>) -> String {
     }
     let _ = write(dir, &conversations);
     say.push(how_to_hand_off());
-    say.join("\n\n")
+    let context = say.join("\n\n");
+    match notice {
+        // JSON only when there is a line for the person: plain stdout is
+        // what every build before P120 printed, measured back to 2.1.300.
+        Some(notice) => serde_json::json!({
+            "systemMessage": notice,
+            "hookSpecificOutput": {
+                "hookEventName": "SessionStart",
+                "additionalContext": context,
+            },
+        })
+        .to_string(),
+        None => context,
+    }
 }
 
+/// What the model is told after a compaction: how many there have been,
+/// and nothing about what to do with that. Until P120 it was also told
+/// when to suggest a fresh conversation, and from the third on it did at
+/// every stopping point; the person hears it from ccnm instead.
 fn compacted(times: u32) -> String {
-    if times >= HAND_OFF_AFTER {
-        format!(
-            "ccnm: this conversation has now been compacted {times} times; each compaction summarised the one before, and detail from early on is gone. Do not wait for the task to be finished: at the next point where the work can be left safely (a check run, the changes listed or committed), stop, write the handoff below and ask the user to type /clear to go on in a fresh conversation. Tell them why in one sentence."
-        )
+    if times == 1 {
+        "ccnm: this conversation has now been compacted once, so what came before is a summary."
+            .to_string()
     } else {
-        let times = if times == 1 {
-            "once".to_string()
-        } else {
-            format!("{times} times")
-        };
         format!(
-            "ccnm: this conversation has now been compacted {times}, so what came before is a summary. When the task the user gave you is finished and they move on to something else, do not start it here: write the handoff below and suggest they type /clear to go on in a fresh conversation."
+            "ccnm: this conversation has now been compacted {times} times; each compaction summarised the one before, and detail from early on is gone."
         )
     }
 }
 
+/// The one line the person gets after a compaction, from the
+/// [`HAND_OFF_AFTER`]th on.
+fn compacted_notice(times: u32, lang: Lang) -> String {
+    lang.pick(
+        format!(
+            "ccnm：这段对话已压缩 {times} 次，早期细节只剩摘要。敲 /clear 开新对话，会带上这段的结尾（要完整交接，先说“写交接”）"
+        ),
+        format!(
+            "ccnm: compacted {times} times, early detail is only a summary now. Type /clear for a fresh conversation; it gets the end of this one (for a full handoff, ask for one first)"
+        ),
+    )
+}
+
+/// What the person sees when the last reply ended with a handoff.
+fn handoff_kept(lang: Lang) -> String {
+    lang.pick(
+        "ccnm：交接已记下。敲 /clear 开新对话接着做；在这里接着聊的话，这份交接就作废".to_string(),
+        "ccnm: handoff kept. Type /clear to go on in a fresh conversation; carry on here and it is dropped"
+            .to_string(),
+    )
+}
+
 /// Said at every start, and again after each compaction (the summary may
-/// not keep it): what a handoff is and how it gets to the next
-/// conversation.
+/// not keep it): what a handoff is, when to write one, and how it gets to
+/// the next conversation.
 fn how_to_hand_off() -> String {
     format!(
-        "ccnm: when the user wants to move on to a fresh conversation, or you suggest one, end your reply with a handoff: a line that is exactly {MARKER}, then the goal; what is done (files changed, by workspace-relative path, and commits); what is not done or not verified; the exact commands that check the work; decisions and limits the user set; the next step. Then ask the user to type /clear, and ccnm gives the handoff to the new conversation. Only a handoff in your last reply is carried over."
+        "ccnm: when the user asks for a handoff or to go on in a fresh conversation, end your reply with a handoff: a line that is exactly {MARKER}, then the goal; what is done (files changed, by workspace-relative path, and commits); what is not done or not verified; the exact commands that check the work; decisions and limits the user set; the next step. ccnm keeps it, tells the user to type /clear, and gives it to the new conversation. Only a handoff in your last reply is carried over. Do not suggest a fresh conversation, or write a handoff, unless the user asks: ccnm tells them when the conversation has been compacted often enough for one to help."
     )
 }
 
 /// Keep the handoff a reply ends with, or forget an older one when the
 /// last reply has none: only a handoff that was the last word is carried.
-fn keep_handoff(dir: &Dir, reply: &str) {
+/// Whether one was kept.
+fn keep_handoff(dir: &Dir, reply: &str) -> bool {
     let Some(start) = reply
         .match_indices(MARKER)
         .map(|(at, _)| at)
         .find(|&at| at == 0 || reply[..at].ends_with('\n'))
     else {
         let _ = fs::remove_file(dir.handoff());
-        return;
+        return false;
     };
     let mut handoff = reply[start..].trim_end().to_string();
     if handoff.len() > HANDOFF_MAX {
@@ -256,9 +355,7 @@ fn keep_handoff(dir: &Dir, reply: &str) {
     }
     let path = dir.handoff();
     let tmp = path.with_extension("md.tmp");
-    if fs::write(&tmp, handoff).is_ok() {
-        let _ = fs::rename(&tmp, &path);
-    }
+    fs::write(&tmp, handoff).is_ok() && fs::rename(&tmp, &path).is_ok()
 }
 
 /// The kept handoff, once: given to one conversation and gone.
@@ -266,6 +363,19 @@ fn take_handoff(dir: &Dir) -> Option<String> {
     let text = fs::read_to_string(dir.handoff()).ok()?;
     let _ = fs::remove_file(dir.handoff());
     Some(text).filter(|text| !text.trim().is_empty())
+}
+
+/// The end of the conversation a `/clear` left, from its transcript: the
+/// one named by its id, beside the new conversation's (2.1.318 keeps both
+/// in the directory of the session's cwd). An id that is not a UUID never
+/// becomes a path.
+fn previous_tail(transcript: Option<&str>, previous: Option<&str>) -> Option<String> {
+    let previous = previous.filter(|id| is_uuid(id))?;
+    let path = Path::new(transcript?)
+        .parent()?
+        .join(format!("{previous}.jsonl"));
+    let file = fs::File::open(path).ok()?;
+    crate::session::carry::conversation_tail(std::io::BufReader::new(file))
 }
 
 #[cfg(test)]
@@ -294,6 +404,39 @@ mod tests {
             .to_string()
     }
 
+    /// A `SessionStart` as 2.1.318 sends it, with the transcript of the
+    /// conversation that is starting.
+    fn start_at(id: &str, source: &str, transcript: &Path) -> String {
+        serde_json::json!({"hook_event_name": "SessionStart", "session_id": id, "source": source, "cwd": "/x", "transcript_path": transcript})
+            .to_string()
+    }
+
+    /// The hook, with the person's language fixed: [`handle`] would read
+    /// this machine's config for it.
+    fn hook(dir: &Dir, input: &str) -> String {
+        handle_in(dir, input, &|| Lang::En)
+    }
+
+    /// What reaches the model: plain stdout, or the JSON's context.
+    fn model_text(out: &str) -> String {
+        match serde_json::from_str::<serde_json::Value>(out) {
+            Ok(v) if v.is_object() => v["hookSpecificOutput"]["additionalContext"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string(),
+            _ => out.to_string(),
+        }
+    }
+
+    /// The line the person sees, if any.
+    fn notice(out: &str) -> Option<String> {
+        serde_json::from_str::<serde_json::Value>(out)
+            .ok()?
+            .get("systemMessage")?
+            .as_str()
+            .map(str::to_string)
+    }
+
     /// P115: what the project's previous session left goes to the new
     /// session's first conversation, once -- not to one after `/clear`, nor
     /// to a resumed one, which already has its own history.
@@ -311,9 +454,9 @@ mod tests {
                 text: "[ccnm handoff]\nfinish the parser".into(),
             },
         );
-        let resumed = handle(&dir, &start(FIRST, "resume"));
+        let resumed = hook(&dir, &start(FIRST, "resume"));
         assert!(!resumed.contains("finish the parser"), "{resumed}");
-        let first = handle(&dir, &start(FIRST, "startup"));
+        let first = hook(&dir, &start(FIRST, "startup"));
         assert!(
             first.contains("previous session, on the AI machine hpsrv"),
             "{first}"
@@ -323,7 +466,7 @@ mod tests {
             first.contains(MARKER),
             "how to hand off is still said: {first}"
         );
-        let again = handle(&dir, &start(SECOND, "clear"));
+        let again = hook(&dir, &start(SECOND, "clear"));
         assert!(!again.contains("finish the parser"), "{again}");
     }
 
@@ -336,8 +479,8 @@ mod tests {
     fn a_background_agents_hooks_leave_the_session_alone() {
         use crate::protocol::run::{Carried, CarriedKind};
         let (_t, dir) = dir("background");
-        handle(&dir, &start(FIRST, "startup"));
-        handle(&dir, &stop("[ccnm handoff]\nGoal: the session's own."));
+        hook(&dir, &start(FIRST, "startup"));
+        hook(&dir, &stop("[ccnm handoff]\nGoal: the session's own."));
         crate::session::carry::leave(
             &dir,
             &Carried {
@@ -350,9 +493,9 @@ mod tests {
         );
 
         crate::session::write_agent_pid(&dir, std::process::id()).unwrap();
-        assert_eq!(handle(&dir, &start(SECOND, "startup")), "");
-        assert_eq!(handle(&dir, &stop("Background work done.")), "");
-        handle(&dir, &stop("[ccnm handoff]\nGoal: the background agent's."));
+        assert_eq!(hook(&dir, &start(SECOND, "startup")), "");
+        assert_eq!(hook(&dir, &stop("Background work done.")), "");
+        hook(&dir, &stop("[ccnm handoff]\nGoal: the background agent's."));
         assert_eq!(read(&dir).unwrap().ids, [FIRST]);
         assert_eq!(
             fs::read_to_string(dir.handoff()).unwrap(),
@@ -362,7 +505,7 @@ mod tests {
 
         // The session's own Claude is this test's parent here.
         crate::session::write_agent_pid(&dir, std::os::unix::process::parent_id()).unwrap();
-        handle(&dir, &start(SECOND, "clear"));
+        hook(&dir, &start(SECOND, "clear"));
         assert_eq!(read(&dir).unwrap().ids, [FIRST, SECOND]);
     }
 
@@ -371,9 +514,9 @@ mod tests {
     #[test]
     fn every_conversation_is_written_down_as_it_begins() {
         let (_t, dir) = dir("ids");
-        handle(&dir, &start(FIRST, "startup"));
-        handle(&dir, &start(FIRST, "compact"));
-        handle(&dir, &start(SECOND, "clear"));
+        hook(&dir, &start(FIRST, "startup"));
+        hook(&dir, &start(FIRST, "compact"));
+        hook(&dir, &start(SECOND, "clear"));
         let kept = read(&dir).unwrap();
         assert_eq!(kept.ids, [FIRST, SECOND]);
         assert_eq!(kept.compactions, 0, "a new conversation after /clear");
@@ -384,9 +527,9 @@ mod tests {
     #[test]
     fn bad_input_is_ignored_silently() {
         let (_t, dir) = dir("bad");
-        assert_eq!(handle(&dir, "not json"), "");
-        assert_eq!(handle(&dir, "{}"), "");
-        handle(&dir, &start("../../etc/passwd", "startup"));
+        assert_eq!(hook(&dir, "not json"), "");
+        assert_eq!(hook(&dir, "{}"), "");
+        hook(&dir, &start("../../etc/passwd", "startup"));
         handle(
             &dir,
             &start("0b4c7a1e-2d3f-4a5b-8c6d-7e8f9a0b1c2dX", "clear"),
@@ -394,29 +537,118 @@ mod tests {
         assert!(read(&dir).unwrap().ids.is_empty());
     }
 
-    /// P102: after each compaction the model hears how many there have
-    /// been, and from the third on, not to wait for the task to finish.
+    /// P102, P120: after each compaction the model hears how many there
+    /// have been; from the third on the person gets one line, once per
+    /// compaction, and stdout turns into JSON to carry it.
     #[test]
     fn compactions_are_counted_and_said() {
         let (_t, dir) = dir("compact");
-        let first = handle(&dir, &start(FIRST, "startup"));
+        let first = hook(&dir, &start(FIRST, "startup"));
         assert!(first.contains(MARKER), "{first}");
-        assert!(!first.contains("compacted"), "{first}");
-        let once = handle(&dir, &start(FIRST, "compact"));
+        assert!(!first.contains("has now been compacted"), "{first}");
+        let once = hook(&dir, &start(FIRST, "compact"));
         assert!(once.contains("compacted once"), "{once}");
-        assert!(
-            once.contains("When the task the user gave you is finished"),
-            "{once}"
-        );
+        assert_eq!(notice(&once), None, "plain stdout, as before P120: {once}");
         assert!(once.contains(MARKER), "said again: the summary may drop it");
-        handle(&dir, &start(FIRST, "compact"));
-        let third = handle(&dir, &start(FIRST, "compact"));
-        assert!(third.contains("compacted 3 times"), "{third}");
-        assert!(
-            third.contains("Do not wait for the task to be finished"),
-            "{third}"
+        let twice = hook(&dir, &start(FIRST, "compact"));
+        assert_eq!(notice(&twice), None, "{twice}");
+        for times in [3, 4] {
+            let out = handle_in(&dir, &start(FIRST, "compact"), &|| Lang::Zh);
+            let said = notice(&out).expect("a line for the person");
+            assert!(
+                said.contains(&format!("压缩 {times} 次")) && said.contains("/clear"),
+                "{said}"
+            );
+            let model = model_text(&out);
+            assert!(
+                model.contains(&format!("compacted {times} times")),
+                "{model}"
+            );
+            assert!(model.contains(MARKER), "{model}");
+        }
+        assert_eq!(read(&dir).unwrap().compactions, 4);
+    }
+
+    /// P120: nothing the model hears tells it to suggest a fresh
+    /// conversation on its own. Before P120 the first compaction told it to
+    /// at the end of every task, and the third at every stopping point.
+    #[test]
+    fn the_model_is_not_told_to_suggest_a_fresh_conversation() {
+        let (_t, dir) = dir("no-nagging");
+        let first = handle(&dir, &start(FIRST, "startup"));
+        let once = handle(&dir, &start(FIRST, "compact"));
+        for said in [&first, &once] {
+            assert!(!said.contains("suggest they type /clear"), "{said}");
+            assert!(
+                !said.contains("When the task the user gave you is finished"),
+                "{said}"
+            );
+            assert!(said.contains("unless the user asks"), "{said}");
+        }
+    }
+
+    /// P120: a conversation compacted often enough, cleared without a
+    /// handoff, hands the new one its end -- read from its own transcript,
+    /// beside the new one's -- and the person is told; one compacted less
+    /// hands over nothing, as before.
+    #[test]
+    fn a_clear_hands_over_the_end_of_a_long_conversation() {
+        let (_t, dir) = dir("tail");
+        let projects = dir.path().join("projects/-x");
+        fs::create_dir_all(&projects).unwrap();
+        let line = |v: serde_json::Value| v.to_string();
+        let transcript = [
+            line(serde_json::json!({"type": "user", "message": {"content": "fix the parser"}})),
+            line(
+                serde_json::json!({"type": "assistant", "message": {"content": [
+                    {"type": "text", "text": "Parser fixed; tests 4 and 5 still fail."}
+                ]}}),
+            ),
+        ]
+        .join("\n");
+        fs::write(projects.join(format!("{FIRST}.jsonl")), transcript).unwrap();
+        let cleared = projects.join(format!("{SECOND}.jsonl"));
+
+        hook(&dir, &start(FIRST, "startup"));
+        hook(&dir, &start(FIRST, "compact"));
+        hook(&dir, &start(FIRST, "compact"));
+        let short = hook(&dir, &start_at(SECOND, "clear", &cleared));
+        assert!(!short.contains("tests 4 and 5"), "{short}");
+        assert_eq!(notice(&short), None, "{short}");
+
+        hook(
+            &dir,
+            &start_at(FIRST, "startup", &projects.join(format!("{FIRST}.jsonl"))),
         );
-        assert_eq!(read(&dir).unwrap().compactions, 3);
+        for _ in 0..3 {
+            hook(&dir, &start(FIRST, "compact"));
+        }
+        let out = hook(&dir, &start_at(SECOND, "clear", &cleared));
+        let model = model_text(&out);
+        assert!(model.contains("compacted 3 times"), "{model}");
+        assert!(
+            model.contains("[AI]\nParser fixed; tests 4 and 5 still fail."),
+            "{model}"
+        );
+        assert!(model.contains("raw, not a summary"), "{model}");
+        assert!(notice(&out).is_some_and(|n| n.contains("its end")), "{out}");
+        assert_eq!(read(&dir).unwrap().compactions, 0);
+    }
+
+    /// P120: the person sees one line when a reply ends with a handoff,
+    /// and nothing otherwise.
+    #[test]
+    fn a_kept_handoff_is_announced() {
+        let (_t, dir) = dir("announced");
+        let out = handle_in(&dir, &stop("Done.\n\n[ccnm handoff]\nGoal: x."), &|| {
+            Lang::Zh
+        });
+        assert!(
+            notice(&out).is_some_and(|n| n.contains("交接已记下") && n.contains("/clear")),
+            "{out}"
+        );
+        assert_eq!(hook(&dir, &stop("Sure.")), "");
+        assert!(!dir.handoff().exists());
     }
 
     /// A `--continue` session carries on the count it was seeded with.
@@ -424,9 +656,9 @@ mod tests {
     fn a_fork_keeps_the_seeded_count() {
         let (_t, dir) = dir("fork");
         seed(&dir, 2).unwrap();
-        handle(&dir, &start(FIRST, "fork"));
-        let next = handle(&dir, &start(FIRST, "compact"));
-        assert!(next.contains("compacted 3 times"), "{next}");
+        hook(&dir, &start(FIRST, "fork"));
+        let next = hook(&dir, &start(FIRST, "compact"));
+        assert!(model_text(&next).contains("compacted 3 times"), "{next}");
         assert_eq!(read(&dir).unwrap().ids, [FIRST]);
     }
 
@@ -434,20 +666,25 @@ mod tests {
     #[test]
     fn a_handoff_that_was_the_last_word_is_carried_over_once() {
         let (_t, dir) = dir("handoff");
-        handle(&dir, &start(FIRST, "startup"));
+        hook(&dir, &start(FIRST, "startup"));
         handle(
             &dir,
             &stop("Done with this part.\n\n[ccnm handoff]\nGoal: P102.\nNext: run the probe."),
         );
-        let next = handle(&dir, &start(SECOND, "clear"));
+        let out = hook(&dir, &start(SECOND, "clear"));
+        let next = model_text(&out);
         assert!(next.contains("the user typed /clear"), "{next}");
         assert!(
             next.contains("[ccnm handoff]\nGoal: P102.\nNext: run the probe."),
             "{next}"
         );
         assert!(!next.contains("Done with this part"), "{next}");
+        assert!(
+            notice(&out).is_some_and(|n| n.contains("handoff went")),
+            "{out}"
+        );
         assert!(!dir.handoff().exists(), "given once");
-        let again = handle(&dir, &start(FIRST, "clear"));
+        let again = hook(&dir, &start(FIRST, "clear"));
         assert!(!again.contains("the user typed /clear"), "{again}");
     }
 
@@ -456,13 +693,13 @@ mod tests {
     #[test]
     fn only_a_handoff_in_the_last_reply_counts() {
         let (_t, dir) = dir("stale");
-        handle(&dir, &stop("[ccnm handoff]\nGoal: old."));
+        hook(&dir, &stop("[ccnm handoff]\nGoal: old."));
         assert!(dir.handoff().exists());
-        handle(&dir, &stop("Sure, the test command is cargo test."));
+        hook(&dir, &stop("Sure, the test command is cargo test."));
         assert!(!dir.handoff().exists());
-        handle(&dir, &stop("I would write [ccnm handoff] at the end."));
+        hook(&dir, &stop("I would write [ccnm handoff] at the end."));
         assert!(!dir.handoff().exists());
-        let next = handle(&dir, &start(SECOND, "clear"));
+        let next = hook(&dir, &start(SECOND, "clear"));
         assert!(!next.contains("the user typed /clear"), "{next}");
     }
 
@@ -470,7 +707,7 @@ mod tests {
     fn a_long_handoff_is_cut_on_a_character() {
         let (_t, dir) = dir("long");
         let body = "交".repeat(HANDOFF_MAX);
-        handle(&dir, &stop(&format!("{MARKER}\n{body}")));
+        hook(&dir, &stop(&format!("{MARKER}\n{body}")));
         let kept = fs::read_to_string(dir.handoff()).unwrap();
         assert!(kept.len() <= HANDOFF_MAX + 40, "{}", kept.len());
         assert!(kept.ends_with("[cut by ccnm at 32 KiB]"));

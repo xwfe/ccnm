@@ -7,6 +7,8 @@
   2. SessionStart 的 `hookSpecificOutput.additionalContext` 有没有进下一次发给模型的请求；
   3. 钩子 stdin 里有没有 `transcript_path`，指向哪段对话的记录。
 
+P121 起 ccnm 给人的行带彩色的 `ccnm` 标签，最后一步另用 `capture-pane -e` 看颜色码在不在。
+
 加 `--ccnm <ccnm 二进制>` 时另跑一轮：真的 `ccnm internal session-hook` 挂在 SessionStart 和
 Stop 上（会话目录是临时的，HOME 也是，所以语言按默认的中文），看 P120 的几件事：第 1、2 次
 压缩界面上没有提醒、第 3 次有；给模型的话里没有让它建议换新对话；写了交接时界面上有一行、
@@ -129,7 +131,15 @@ class CcnmNoticeProbe(NoticeProbe):
         (out / "settings.json").write_text(json.dumps(doc))
 
     def ccnm_says(self, text, event):
-        return [line.strip() for line in text.splitlines() if f"{event} says: ccnm" in line]
+        return [line.strip() for line in text.splitlines()
+                if f"{event} says:" in line and "ccnm" in line]
+
+    def coloured(self, name):
+        """P121: the tags as drawn, from a capture that keeps colour codes."""
+        raw = subprocess.run(self.tmux + ["capture-pane", "-p", "-e", "-S", "-200", "-t", name],
+                             capture_output=True, text=True).stdout
+        return {"yellow_tag": "\x1b[1;30;43m ccnm" in raw or "\x1b[1m\x1b[30m\x1b[43m ccnm" in raw,
+                "green_tag": "\x1b[1;30;42m ccnm" in raw or "\x1b[1m\x1b[30m\x1b[42m ccnm" in raw}
 
     def run(self):
         s1 = str(uuid.uuid4())
@@ -142,10 +152,13 @@ class CcnmNoticeProbe(NoticeProbe):
                 self.say(name, "/compact")
                 time.sleep(3)
                 screen = self.screen(name, f"c{n}-after-compact")
+                # /clear redraws the screen, so the colours are looked at here.
+                colours = self.coloured(name) if n == 3 else None
                 since = self.say(name, f"after compact {n}")
                 self.step(f"compact-{n}", ccnm_line=self.ccnm_says(screen, "SessionStart:compact"),
                           nag_in_requests=self.requests_with(nag, since),
-                          count_in_requests=self.requests_with(f"compacted {'once' if n == 1 else f'{n} times'}", since))
+                          count_in_requests=self.requests_with(f"compacted {'once' if n == 1 else f'{n} times'}", since),
+                          colours=colours)
             # Cleared with no handoff after three compactions: the end goes.
             self.say(name, "/clear", 10)
             time.sleep(3)
@@ -164,7 +177,8 @@ class CcnmNoticeProbe(NoticeProbe):
             screen = self.screen(name, "c6-after-clear-handoff")
             since = self.say(name, "first after the second clear")
             self.step("clear-handoff", ccnm_line=self.ccnm_says(screen, "SessionStart:clear"),
-                      handoff_in_requests=self.requests_with("Goal: P100 probe", since))
+                      handoff_in_requests=self.requests_with("Goal: P100 probe", since),
+                      colours=self.coloured(name))
             self.keys(name, "/exit")
             time.sleep(3)
         finally:

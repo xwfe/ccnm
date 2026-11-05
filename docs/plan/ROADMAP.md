@@ -1566,7 +1566,7 @@ P112.2 真实模型时查出的（[记录](../research/2026-10-28-release-0.21.0
 
 **依赖 P117。** Codex 当 Agent 的那一套（`provider = "codex"` 的实例，Codex 会话的启动、续接、`--print` 和结果解析，Codex 的登录目录、额度、doctor 行，P7 对照与测量脚本）散在 provider、work、doctor、quota、overview、controller、instance、rpc 等四十多个文件里，每改一处共享机制都得同时照顾它。
 
-- **P118.1** 删代码：`provider/codex/` 整个目录、`AgentProvider::Codex` 和所有只为它走的分支。名字带 codex、服务的却是 Claude 会话和外部入口的三样留下：`exec_sandbox = "codex"`（借 `codex sandbox` 给 `exec_command` 套 OS 沙箱，P33）；列 Runtime 账号给 Codex 装的 MCP server、读 `.codex/skills`（共享库 toexec-mcp 和 gld 也这么读）；凭据保护（命令环境去掉 Codex 的变量、`.codex` 不让工具读写、doctor 查 Codex 凭据）。项目机器上装没装 Codex 和 ccnm 驱不驱动它无关，凭据照样不能让模型的命令读到。
+- **P118.1** 删代码：`provider/codex/` 整个目录、`AgentProvider::Codex` 和所有只为它走的分支。名字带 codex、服务的却是 Claude 会话和外部入口的三样留下：`exec_sandbox = "codex"`（借 `codex sandbox` 给 `exec_command` 套 OS 沙箱，P33）；列给 Codex 装的 MCP server（Runtime、Agent 两边都读 `~/.codex/config.toml`）、读 `.codex/skills`（共享库 toexec-mcp 和 gld 也这么读）；凭据保护（命令环境去掉 Codex 的变量、`.codex` 不让工具读写、doctor 查 Codex 凭据）。项目机器上装没装 Codex 和 ccnm 驱不驱动它无关，凭据照样不能让模型的命令读到。
 - **P118.2** 写了 `provider = "codex"` 的实例，配置解析失败，报 `CCNM_E_CONFIG`、指名这一项、说怎么改；Machine API 点名这种实例也就起不来。ccnm 给 Codex 建过的登录目录不自动删，文档写怎么手动删。这是不兼容改动，下一次发版升主版本到 1.0.0。先有在旧代码上红的用例。
 - **P118.3** 删只测 Codex Agent 的测试、夹具和脚本；沙箱用的 `tests/fixtures/codex-0.154.0/exec-server/process-start-workspace-write.json` 留下。文档同步：README、快速开始、使用说明、配置说明、支持矩阵、排错手册、架构、AGENTS.md 里"三种客户端"那句；研究记录保留。
 - **P118.4** Rust、Python、协议与计划门禁通过；记下删了多少行、哪些共享文件动了。

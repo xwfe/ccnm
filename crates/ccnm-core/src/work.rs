@@ -89,17 +89,13 @@ fn select_agent(
     tools: &Tools<'_>,
 ) -> Result<SelectedAgent> {
     let Some(reference) = reference else {
-        validate_provider_request(provider, config_dir, permission)?;
         return Ok(SelectedAgent {
             provider,
             identity: None,
             profile_dir: config_dir.map(Path::to_path_buf),
         });
     };
-    if provider != AgentProvider::Claude
-        || config_dir.is_some()
-        || permission != crate::config::PermissionMode::default()
-    {
+    if config_dir.is_some() || permission != crate::config::PermissionMode::default() {
         return Err(Error::invalid_args(
             "instance requests select provider/profile on the Agent and cannot carry legacy provider, path or permission overrides",
         ));
@@ -366,17 +362,12 @@ pub fn run(req: &RunRequest, tools: &Tools<'_>) -> Result<RunReport> {
         return Err(Error::new(
             ErrorCode::NotReady,
             format!(
-                "the controller answers from {}, not from a login session, so a {} it started could not read its credentials\nrun on the Agent Node: ccnm controller install",
+                "the controller answers from {}, not from a login session, so a Claude it started could not read its credentials\nrun on the Agent Node: ccnm controller install",
                 ctx.describe(),
-                if selected.provider == AgentProvider::Claude {
-                    "Claude"
-                } else {
-                    "Codex"
-                }
             ),
         ));
     }
-    if selected.identity.is_some() || selected.provider == AgentProvider::Codex {
+    if selected.identity.is_some() {
         agent_readiness(&selected, tools)?;
     }
     let ssh = tools.dial_runtime(
@@ -385,7 +376,7 @@ pub fn run(req: &RunRequest, tools: &Tools<'_>) -> Result<RunReport> {
         &req.root,
         selected.provider,
     )?;
-    if selected.identity.is_some() || selected.provider == AgentProvider::Codex {
+    if selected.identity.is_some() {
         let ssh = ssh.as_ref().ok_or_else(|| {
             Error::new(
                 ErrorCode::NotReady,
@@ -436,7 +427,6 @@ pub fn run(req: &RunRequest, tools: &Tools<'_>) -> Result<RunReport> {
         timeout_secs: req.timeout_secs,
         cwd,
         agent_tools: req.agent_tools.clone(),
-        ask_before: Vec::new(),
     };
     let dir = session::create(
         &tools.state,
@@ -530,11 +520,6 @@ pub fn start(req: &StartRequest, tools: &Tools<'_>) -> Result<StartReport> {
         tools,
     )?;
     require_remote_topology(&req.runtime_node, &selected, tools)?;
-    if req.continue_last && selected.provider != AgentProvider::Claude {
-        return Err(Error::invalid_args(
-            "--continue works with Claude only for now; a Codex session starts a new conversation",
-        ));
-    }
     let tmux = tools.tmux()?;
     let name = tmux::session_name(&req.workspace);
     tmux::check_name(&name)?;
@@ -626,8 +611,8 @@ pub fn start(req: &StartRequest, tools: &Tools<'_>) -> Result<StartReport> {
     } else {
         None
     };
-    let (ctx, ssh, ask_before) = preflight(req, &selected, tools)?;
-    start_fresh(req, &selected, tools, name, ctx, ssh, ask_before, continues)
+    let (ctx, ssh) = preflight(req, &selected, tools)?;
+    start_fresh(req, &selected, tools, name, ctx, ssh, continues)
 }
 
 /// How long entering a session waits on a reconnect (P100).
@@ -683,9 +668,6 @@ const WATCH_BACKOFF: [u64; 4] = [30, 60, 120, 300];
 /// same consequence: a new remote session, output references from before
 /// gone. This is not P98, which would have kept the connection itself from
 /// breaking; that is still not done.
-///
-/// Codex sessions are not watched: Codex cannot reconnect a running session
-/// (P96).
 pub fn watch_tools(tools: &Tools<'_>) {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -704,7 +686,7 @@ pub fn watch_tools(tools: &Tools<'_>) {
         let Ok(spec) = session::load(&dir) else {
             continue;
         };
-        if spec.runtime.is_none() || spec.provider() != AgentProvider::Claude {
+        if spec.runtime.is_none() {
             continue;
         }
         watch_one(&spec, &dir, &tmux, &live.name, tools, now, &WATCH_PATIENCE);
@@ -847,13 +829,6 @@ fn reconnect_down(
         }
         Err(_) => None,
     };
-    if spec.provider() != AgentProvider::Claude {
-        // Codex has no way to reconnect a running session; the person is
-        // told the way back (P96) rather than put into it.
-        return Some(ToolsOnEntry::Failed(
-            Error::new(ErrorCode::NotReady, "Codex cannot reconnect its tools").into(),
-        ));
-    }
     let link = spec.runtime.as_ref()?;
     if let Err(error) = tools.dial_link(link, &spec.workspace, &spec.root, spec.provider()) {
         return Some(ToolsOnEntry::Failed(error.into()));
@@ -1018,21 +993,6 @@ fn latest_kept_conversation(
     })
 }
 
-/// What the session opens with. For Codex, what the project's previous
-/// session left goes in front of it (P115): no hook can hand it over later.
-fn opening_with(req: &StartRequest, provider: AgentProvider) -> Option<String> {
-    match (&req.carried, provider) {
-        (Some(carried), AgentProvider::Codex) => {
-            let carried = session::carry::message(carried);
-            Some(match &req.prompt {
-                Some(prompt) => format!("{carried}\n\n{prompt}"),
-                None => carried,
-            })
-        }
-        _ => req.prompt.clone(),
-    }
-}
-
 /// Claude keeps a conversation as `projects/<its cwd, flattened>/<id>.jsonl`
 /// under its config directory. How it flattens the cwd is Claude's own
 /// business, so every project directory is looked in; the id is a UUID, so
@@ -1072,11 +1032,6 @@ pub fn handoff(req: &HandoffRequest, tools: &Tools<'_>) -> Result<HandoffReport>
         protocol: PROTOCOL,
         carried,
     };
-    // A Codex session has no hooks to keep a handoff with (P102), and its
-    // transcript is not one ccnm reads.
-    if selected.provider != AgentProvider::Claude {
-        return Ok(report(None));
-    }
     let claude_home = match &selected.profile_dir {
         Some(dir) => dir.clone(),
         None => paths::home_dir()?.join(".claude"),
@@ -1169,8 +1124,6 @@ fn require_remote_topology(
     }
     let detail = if selected.identity.is_some() {
         "instance colocated execution has not been measured and is not enabled"
-    } else if selected.provider == AgentProvider::Codex {
-        "Codex colocated execution has not been measured and is not enabled"
     } else {
         "Claude colocated execution is disabled until the corrected native-tool launch is verified with the installed CLI"
     };
@@ -1277,23 +1230,18 @@ fn preflight(
     req: &StartRequest,
     selected: &SelectedAgent,
     tools: &Tools<'_>,
-) -> Result<(controller::Context, Option<Ssh>, Vec<String>)> {
+) -> Result<(controller::Context, Option<Ssh>)> {
     let ctx = controller::context(&tools.controller)?;
     if !ctx.login_session() {
         return Err(Error::new(
             ErrorCode::NotReady,
             format!(
-                "the controller answers from {}, not from a login session, so a {} it started could not read its credentials\nrun on the Agent Node: ccnm controller install",
+                "the controller answers from {}, not from a login session, so a Claude it started could not read its credentials\nrun on the Agent Node: ccnm controller install",
                 ctx.describe(),
-                if selected.provider == AgentProvider::Claude {
-                    "Claude"
-                } else {
-                    "Codex"
-                }
             ),
         ));
     }
-    if selected.identity.is_some() || selected.provider == AgentProvider::Codex {
+    if selected.identity.is_some() {
         agent_readiness(selected, tools)?;
     }
     let ssh = tools.dial_runtime(
@@ -1302,15 +1250,14 @@ fn preflight(
         &req.root,
         selected.provider,
     )?;
-    let mut ask_before = Vec::new();
-    if selected.identity.is_some() || selected.provider == AgentProvider::Codex {
+    if selected.identity.is_some() {
         let ssh = ssh.as_ref().ok_or_else(|| {
             Error::new(
                 ErrorCode::NotReady,
                 "selected Agent topology requires the measured remote SSH MCP path",
             )
         })?;
-        ask_before = provider_runtime_preflight(
+        provider_runtime_preflight(
             selected,
             &req.workspace,
             &req.root,
@@ -1320,7 +1267,7 @@ fn preflight(
         )?;
     }
 
-    Ok((ctx, ssh, ask_before))
+    Ok((ctx, ssh))
 }
 
 /// Create the session and have the controller start it.
@@ -1332,7 +1279,6 @@ fn start_fresh(
     name: String,
     ctx: controller::Context,
     ssh: Option<Ssh>,
-    ask_before: Vec<String>,
     continues: Option<Earlier>,
 ) -> Result<StartReport> {
     let runtime = tools.runtime_link(&req.runtime_node)?;
@@ -1364,20 +1310,13 @@ fn start_fresh(
             .flatten(),
         permission_mode: req.permission_mode,
         mode: Mode::Interactive {
-            prompt: opening_with(req, selected.provider),
+            prompt: req.prompt.clone(),
             continues: continues.as_ref().map(|e| e.conversation.clone()),
         },
         // Not used interactively: nothing kills this session on a clock.
         timeout_secs: 0,
         cwd,
         agent_tools: req.agent_tools.clone(),
-        // Only a Codex session reads it (P71): Claude takes the marker off
-        // the tool list.
-        ask_before: if selected.provider == AgentProvider::Codex {
-            ask_before
-        } else {
-            Vec::new()
-        },
     };
     let dir = session::create(
         &tools.state,
@@ -1390,11 +1329,8 @@ fn start_fresh(
         // Not worth failing a start over: without it the count starts at 0.
         let _ = session::hook::seed(&dir, earlier.compactions);
     }
-    // Claude's first conversation takes it through the session hook;
-    // Codex, which has no hooks, has it in its opening prompt instead.
-    if let Some(carried) = req.carried.as_ref()
-        && selected.provider == AgentProvider::Claude
-    {
+    // The first conversation takes it through the session hook.
+    if let Some(carried) = req.carried.as_ref() {
         session::carry::leave(&dir, carried);
     }
     let server_pid = match controller::start_for_identity(
@@ -1977,7 +1913,7 @@ fn confirm_recorded_print_groups_ended(dir: &session::Dir, tools: &Tools<'_>) ->
 /// The check used to run the instant `kill` returned, and on the P62
 /// machines it found the group still there on every real stop -- so a stop
 /// that worked answered NotReady, and the Machine API dropped the stop
-/// flag with it. Five seconds is long past what Claude and Codex took there;
+/// flag with it. Five seconds is long past what Claude took there;
 /// a group that is still alive after it is reported as before, and is never
 /// escalated to SIGKILL here.
 const STOP_GRACE: Duration = Duration::from_secs(5);
@@ -1988,7 +1924,7 @@ const STOP_POLL: Duration = Duration::from_millis(100);
 ///
 /// tmux reports the terminal gone at once; the ssh it carried takes a moment
 /// longer. Looking once, right after the kill, found it still there on every
-/// Codex stop on the P62 machines, and a stop that had worked answered
+/// stop on the P62 machines, and a stop that had worked answered
 /// NotReady. `None` is [`transport_alive`]'s "cannot tell", returned without
 /// waiting: a `ps` that cannot be read does not become readable by asking
 /// again, and an answer nobody could check is not a confirmation.
@@ -3002,26 +2938,11 @@ fn mcp_handshake(
     )
 }
 
-fn validate_provider_request(
-    provider: AgentProvider,
-    config_dir: Option<&Path>,
-    permission: crate::config::PermissionMode,
-) -> Result<()> {
-    if provider == AgentProvider::Codex
-        && (config_dir.is_some() || permission != crate::config::PermissionMode::default())
-    {
-        return Err(Error::invalid_args(
-            "Codex requests cannot supply an Agent home or Claude permission mode",
-        ));
-    }
-    Ok(())
-}
-/// Open the workspace on the Runtime the way the session will, and return
-/// the tools the Runtime says need a person's approval before every call.
+/// Open the workspace on the Runtime the way the session will, so a
+/// Runtime that would refuse it does so before anything is started.
 ///
-/// `interactive` is the session's: the Runtime marks those tools only when
-/// somebody is at a terminal (and the workspace has no
-/// `allow_unattended_exec`), so a print preflight gets an empty list.
+/// `interactive` is the session's: the Runtime answers for the kind of
+/// session it will actually serve.
 fn provider_runtime_preflight(
     selected: &SelectedAgent,
     workspace: &str,
@@ -3029,7 +2950,7 @@ fn provider_runtime_preflight(
     runtime_node: &str,
     ssh: &Ssh,
     interactive: bool,
-) -> Result<Vec<String>> {
+) -> Result<()> {
     let wire = match selected.binding(workspace, root, runtime_node)? {
         Some(binding) => crate::protocol::payload::encode(
             &crate::runtime::OpenPayload::new(workspace, binding.agent, "provider-preflight")
@@ -3042,13 +2963,13 @@ fn provider_runtime_preflight(
         )?,
     };
     let cmd = ssh.mcp_transport_cmd(&wire)?;
-    let report = mcp::probe::probe(
+    mcp::probe::probe(
         &cmd,
         1,
         Duration::from_secs(30),
         ErrorCode::RuntimeUnreachable,
     )?;
-    Ok(report.asks_user)
+    Ok(())
 }
 
 /// Would the Runtime turn this session down? Asked before anything is
@@ -3754,7 +3675,6 @@ mod tests {
             timeout_secs: 0,
             cwd: dir.to_path_buf(),
             agent_tools: Default::default(),
-            ask_before: Vec::new(),
         };
         std::fs::write(sdir.meta(), serde_json::to_string(&spec).unwrap()).unwrap();
 
@@ -3885,7 +3805,6 @@ mod tests {
             timeout_secs: 0,
             cwd: state.join("workspaces").join(workspace),
             agent_tools: Default::default(),
-            ask_before: Vec::new(),
         };
         std::fs::write(dir.meta(), serde_json::to_string(&spec).unwrap()).unwrap();
         std::fs::File::options()
@@ -3946,43 +3865,6 @@ mod tests {
         let found = latest_kept_conversation(&state, &home, &start_request(), &claude)
             .map(|e| e.conversation);
         assert_eq!(found.as_deref(), Some(wanted.as_str()), "not {older}");
-    }
-
-    /// P115: Codex has no hook to hand it over later, so it opens with what
-    /// was carried, then the person's own opening; Claude's opening is left
-    /// as typed and its session hook hands the rest over.
-    #[test]
-    fn codex_opens_with_what_was_carried() {
-        let carried = Carried {
-            kind: CarriedKind::Handoff,
-            from: "fodelf".into(),
-            session: "old".into(),
-            written: 1,
-            text: "[ccnm handoff]\ngoal".into(),
-        };
-        let req = StartRequest {
-            prompt: Some("go on".into()),
-            carried: Some(carried.clone()),
-            ..start_request()
-        };
-        let codex = opening_with(&req, AgentProvider::Codex).unwrap();
-        assert!(
-            codex.starts_with(&session::carry::message(&carried)),
-            "{codex}"
-        );
-        assert!(codex.ends_with("\n\ngo on"), "{codex}");
-        assert_eq!(
-            opening_with(&req, AgentProvider::Claude).as_deref(),
-            Some("go on")
-        );
-        let req = StartRequest {
-            prompt: None,
-            ..req
-        };
-        assert_eq!(
-            opening_with(&req, AgentProvider::Codex),
-            Some(session::carry::message(&carried))
-        );
     }
 
     /// P115: what the latest session left for the next one -- its handoff,
@@ -4060,14 +3942,6 @@ mod tests {
             got.from.is_empty(),
             "the machine holding the project names the source"
         );
-
-        // Codex keeps neither.
-        let codex = SelectedAgent {
-            provider: AgentProvider::Codex,
-            identity: None,
-            profile_dir: None,
-        };
-        assert_eq!(left_by_latest_session(&state, &home, &req, &codex), None);
     }
 
     /// P111.1: an instance session whose Runtime is Windows. Its root is
@@ -4233,22 +4107,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn continue_is_refused_for_codex_before_anything_runs() {
-        let dir = temp("continue-codex");
-        let fake = FakeRunner::new();
-        let req = StartRequest {
-            provider: AgentProvider::Codex,
-            continue_last: true,
-            carried: None,
-            ..start_request()
-        };
-        let err = start(&req, &tmux_tools(&fake, &dir, "continue-codex")).unwrap_err();
-        assert_eq!(err.code(), ErrorCode::InvalidArgs, "{err}");
-        assert!(err.message().contains("Claude only"), "{err}");
-        assert!(fake.calls().is_empty());
-    }
-
     fn tmux_tools<'a>(fake: &'a FakeRunner, dir: &Path, test: &str) -> Tools<'a> {
         Tools {
             local: None,
@@ -4330,7 +4188,6 @@ mod tests {
             timeout_secs: 0,
             cwd: dir.join("workspaces/xshun"),
             agent_tools: Default::default(),
-            ask_before: Vec::new(),
         };
         std::fs::write(sdir.meta(), serde_json::to_string(&spec).unwrap()).unwrap();
         let wire = provider
@@ -4622,8 +4479,7 @@ mod tests {
         let check = attach_check(&attach_req(), &tmux_tools(&fake, &dir, "attach-down")).unwrap();
         let tools = check.tools.unwrap();
         let (why, code) =
-            crate::protocol::run::tools_refused(&tools, check.provider, "xshun", crate::Lang::En)
-                .unwrap();
+            crate::protocol::run::tools_refused(&tools, "xshun", crate::Lang::En).unwrap();
         assert!(why.contains("Operation timed out"), "{why}");
         assert!(why.contains("ccnm attach xshun --force"), "{why}");
         assert_eq!(code, ErrorCode::RuntimeUnreachable.exit_code());
@@ -4734,38 +4590,6 @@ mod tests {
         assert!(why.message.contains("were not back"), "{why}");
     }
 
-    /// Codex cannot reconnect a running session; nothing is asked or typed,
-    /// and the refusal is P96's way back.
-    #[test]
-    fn a_codex_session_with_its_tools_down_is_refused() {
-        let dir = temp("entry-codex");
-        live_remote(&dir, AgentProvider::Codex);
-        let fake = FakeRunner::new();
-        fake.push(Output::exited(0, "/bin/zsh\n"));
-        let found = entry(&dir, &fake, "entry-codex");
-        assert!(matches!(found, Some(ToolsOnEntry::Failed(_))), "{found:?}");
-        assert_eq!(fake.calls().len(), 1, "{:?}", ran(&fake));
-        let rep = StartReport {
-            protocol: PROTOCOL,
-            provider: AgentProvider::Codex,
-            agent_identity: None,
-            session: Some(LIVE.into()),
-            session_dir: None,
-            tmux_session: "ccnm-xshun".into(),
-            server_pid: 1,
-            already_running: true,
-            replaced: None,
-            controller: None,
-            context: None,
-            continues: None,
-            tools: found,
-        };
-        let (text, code) = rep.refusal("xshun", crate::Lang::Zh).unwrap();
-        assert!(text.contains("ccnm stop xshun"), "{text}");
-        assert!(text.contains("ccnm attach xshun"), "{text}");
-        assert_eq!(code, ErrorCode::NotReady.exit_code());
-    }
-
     /// With nothing running, starting one needs the controller, and the
     /// same login-session rule print mode has: a Claude started anywhere
     /// else cannot read its own credentials.
@@ -4811,7 +4635,6 @@ mod tests {
             timeout_secs: 0,
             cwd: dir.to_path_buf(),
             agent_tools: Default::default(),
-            ask_before: Vec::new(),
         };
         std::fs::write(sdir.meta(), serde_json::to_string(&spec).unwrap()).unwrap();
 
@@ -5076,7 +4899,6 @@ mod tests {
                 timeout_secs: 600,
                 cwd: dir.to_path_buf(),
                 agent_tools: Default::default(),
-                ask_before: Vec::new(),
             };
             std::fs::write(sdir.meta(), serde_json::to_string(&spec).unwrap()).unwrap();
             if let Some(text) = stdout {

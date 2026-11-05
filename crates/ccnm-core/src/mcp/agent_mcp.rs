@@ -1,8 +1,8 @@
 //! MCP servers installed on the Agent Node, for a remote session (P50,
 //! toexec v4 plan step 4).
 //!
-//! `ccnm internal agent-skills`, the small server Claude Code or Codex
-//! start on the Agent Node next to ccnm's (P48), gets two more tools:
+//! `ccnm internal agent-skills`, the small server Claude Code starts on
+//! the Agent Node next to ccnm's (P48), gets two more tools:
 //! `call_mcp_tool` -- the Runtime's own (P49) in shape and arguments -- over
 //! the servers this account installed for Claude Code (`~/.claude.json`) or
 //! Codex (`~/.codex/config.toml`), and `read_mcp_result` for a result too
@@ -14,8 +14,7 @@
 //! Measured with a fake model (toexec `evidence/v4-mcp/agent-mcp/`):
 //! Claude Code 2.1.278 saves any MCP result over about 50 000 characters to
 //! this machine's disk and gives the model a 2 KB preview, to be read with
-//! `Read` -- which a remote session does not have; Codex keeps 12 KB of it
-//! (top-level tools) or 40 KB (Code Mode). And every tool of every server
+//! `Read` -- which a remote session does not have. And every tool of every server
 //! would sit in every request: Playwright's are 21 KB. Here a result is
 //! paged ([`INLINE_BYTES`] at a time, the rest kept in memory), and the
 //! model sees one tool with the servers' names.
@@ -37,9 +36,7 @@
 //! `SSH_AUTH_SOCK`, plus the `env` its config gives it. Unlike on the
 //! Runtime, a credential-looking name is not stripped and `${VAR}` looks
 //! everything up: these configs are the account's own, not a project's,
-//! and a GitHub server started natively gets `GITHUB_TOKEN` too. Codex hands
-//! an MCP server only some of its environment, so under Codex a server that
-//! needs another variable reports it missing.
+//! and a GitHub server started natively gets `GITHUB_TOKEN` too.
 //!
 //! Deleting the feature: this file and `curl.rs`, the two tools and the
 //! `mcp` half of the payload in `agent_skills.rs`, `AgentTool::McpServers`
@@ -96,9 +93,11 @@ pub struct McpPayload {
     pub local: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hidden: Vec<String>,
-    /// `$CODEX_HOME` when the session was created, `None` for `~/.codex`.
-    /// Carried because Codex starts this server with the session's private
-    /// home in its place.
+    /// `$CODEX_HOME` when the session was created, `None` for `~/.codex`:
+    /// where the servers installed for Codex are listed from. P50 carried
+    /// it because a Codex session started this server with ccnm's own home
+    /// in its place; kept so the list still comes from where the session
+    /// was created.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub codex_home: Option<PathBuf>,
 }

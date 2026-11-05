@@ -24,12 +24,7 @@ impl Fixture {
         let home = root.join("home");
         let state = root.join("state");
         std::fs::create_dir_all(home.join(".claude")).unwrap();
-        std::fs::create_dir_all(home.join(".config/ccnm/agents/codex")).unwrap();
-        for path in [
-            &home,
-            &home.join(".claude"),
-            &home.join(".config/ccnm/agents/codex"),
-        ] {
+        for path in [&home, &home.join(".claude")] {
             std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
         }
         std::fs::create_dir_all(paths::sessions_dir(&state)).unwrap();
@@ -72,7 +67,6 @@ impl Fixture {
             timeout_secs: 60,
             cwd: self.root.join("cwd"),
             agent_tools: Default::default(),
-            ask_before: Vec::new(),
         };
         std::fs::write(dir.meta(), serde_json::to_vec(&spec).unwrap()).unwrap();
         dir
@@ -149,7 +143,7 @@ fn exact_result_never_crosses_workspace_or_instance_and_keeps_provider_id_separa
     );
     assert_ne!(report.session, "provider-thread");
     assert!(work::result(&request("other", "claude-main"), &tools).is_err());
-    assert!(work::result(&request("demo", "codex-main"), &tools).is_err());
+    assert!(work::result(&request("demo", "claude-second"), &tools).is_err());
     assert!(
         work::result(
             &ResultRequest {
@@ -236,9 +230,10 @@ fn exact_status_distinguishes_terminal_starting_and_unknown_without_guessing() {
 
 /// F6. A workspace has one terminal, and whichever instance started it has
 /// it. On the P62 machine `ccnm status p62rust` -- no `--agent`, so the
-/// default instance -- said "no live sessions" while a Codex session of that
-/// very workspace was running. The filter is right (the question named an
-/// instance); the answer left out the one thing the person was looking for.
+/// default instance -- said "no live sessions" while a session of another
+/// instance in that very workspace was running. The filter is right (the
+/// question named an instance); the answer left out the one thing the
+/// person was looking for.
 #[test]
 fn status_for_one_instance_says_when_another_instance_has_the_workspace() {
     let f = Fixture::new();
@@ -246,7 +241,7 @@ fn status_for_one_instance_says_when_another_instance_has_the_workspace() {
     f.record(
         id,
         "demo",
-        Some(f.identity("codex-main", AgentProvider::Codex)),
+        Some(f.identity("claude-second", AgentProvider::Claude)),
         Mode::Interactive {
             prompt: None,
             continues: None,
@@ -275,7 +270,10 @@ fn status_for_one_instance_says_when_another_instance_has_the_workspace() {
         claude.sessions.is_empty(),
         "it is not claude-main's session"
     );
-    for (lang, hint) in [(Lang::En, "--on codex-main"), (Lang::Zh, "--on codex-main")] {
+    for (lang, hint) in [
+        (Lang::En, "--on claude-second"),
+        (Lang::Zh, "--on claude-second"),
+    ] {
         let said = claude.render_in(lang);
         assert!(said.contains(hint), "{said}");
         // And it no longer reads as "nothing is running for this project".
@@ -283,9 +281,9 @@ fn status_for_one_instance_says_when_another_instance_has_the_workspace() {
     }
 
     // Asked about the instance that has it: the session, and no hint.
-    let codex = asked("codex-main");
-    assert_eq!(codex.sessions.len(), 1);
-    assert!(!codex.render_in(Lang::En).contains("--on"));
+    let second = asked("claude-second");
+    assert_eq!(second.sessions.len(), 1);
+    assert!(!second.render_in(Lang::En).contains("--on"));
 }
 
 #[test]
@@ -309,7 +307,7 @@ fn exact_stop_checks_identity_before_kill_and_records_confirmed_terminal_state()
         &StopRequest {
             protocol: 3,
             workspace: "demo".into(),
-            agent: Some(reference("codex-main")),
+            agent: Some(reference("claude-second")),
             session: Some(id.into()),
             assigned: false,
         },
@@ -1110,7 +1108,7 @@ fn active_session_with_another_identity_is_never_reused_or_replaced() {
     let request = StartRequest {
         protocol: 3,
         provider: AgentProvider::Claude,
-        agent: Some(reference("codex-main")),
+        agent: Some(reference("claude-second")),
         workspace: "demo".into(),
         root: "/runtime/project".into(),
         runtime_node: "runtime".into(),
@@ -1188,7 +1186,7 @@ fn completed_print_stop_distinguishes_missing_and_invalid_pid_records() {
     let dir = f.record(
         id,
         "demo",
-        Some(f.identity("codex-main", AgentProvider::Codex)),
+        Some(f.identity("claude-second", AgentProvider::Claude)),
         Mode::Print {
             prompt: "fixture".into(),
         },
@@ -1197,7 +1195,7 @@ fn completed_print_stop_distinguishes_missing_and_invalid_pid_records() {
     let request = StopRequest {
         protocol: 3,
         workspace: "demo".into(),
-        agent: Some(reference("codex-main")),
+        agent: Some(reference("claude-second")),
         session: Some(id.into()),
         assigned: false,
     };
@@ -1655,7 +1653,7 @@ fn agent_output_never_crosses_workspace_instance_or_mode() {
         "{wrong_workspace}"
     );
     let mut wrong_instance = output_request(&print, "demo", session::view::Stream::Stdout, 0, 10);
-    wrong_instance.agent = reference("codex-main");
+    wrong_instance.agent = reference("claude-second");
     assert!(work::output(&wrong_instance, &f.tools(&runner)).is_err());
 
     let interactive = session::new_id();

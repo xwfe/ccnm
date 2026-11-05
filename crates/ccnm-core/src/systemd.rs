@@ -20,7 +20,7 @@
 //! One unit file in the account's own `$XDG_CONFIG_HOME/systemd/user/`,
 //! removed by `ccnm controller uninstall`. Like the plist, it carries the
 //! [`crate::paths::location_overrides`] of the install and no `PATH`: the
-//! controller looks for `claude` and `codex` in the service's environment
+//! controller looks for `claude` in the service's environment
 //! and then in the usual install locations (`~/.local/bin`, ...), which is
 //! the answer a session will actually get.
 

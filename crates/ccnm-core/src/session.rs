@@ -142,14 +142,6 @@ pub struct Spec {
         skip_serializing_if = "crate::config::AgentTools::is_omitted"
     )]
     pub agent_tools: crate::config::AgentTools,
-    /// The ccnm tools a person approves before every call (P71), as the
-    /// Runtime answered when this session was preflighted. Only a Codex
-    /// session needs it written down: Claude Code reads the Runtime's
-    /// marker off the tool list itself, Codex has to be launched with
-    /// `approval_mode = "prompt"` for each. Empty in every print session --
-    /// nobody is there to answer -- and in every record from before P71.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub ask_before: Vec<String>,
 }
 
 impl Spec {
@@ -562,17 +554,7 @@ pub fn create(
             "bound Agent session requires its verified remote SSH transport",
         ));
     }
-    if spec.provider() == AgentProvider::Codex {
-        crate::provider::codex::validate_spec(spec)?;
-    }
     let dir = Dir::at(paths::session_dir(state, &spec.id));
-    if spec.provider() == AgentProvider::Codex
-        && dir.path().starts_with(crate::provider::codex::home()?)
-    {
-        return Err(Error::invalid_args(
-            "session state cannot live in Codex's private authentication directory",
-        ));
-    }
     fs::create_dir_all(paths::sessions_dir(state))?;
     // `create_dir`, not a check followed by `create_dir_all`: two callers
     // racing for one id -- a run and a stop that fenced it (P58) -- must not
@@ -657,11 +639,6 @@ pub(crate) fn pretty<T: Serialize>(value: &T) -> Result<String> {
 /// Compatibility encoder for a direct SSH MCP command. Product sessions use
 /// the Agent-local transport launcher; a JSON document cannot carry env_remove.
 pub fn mcp_config(spec: &Spec, ssh: &Ssh) -> Result<serde_json::Value> {
-    if spec.provider() != AgentProvider::Claude {
-        return Err(Error::invalid_args(
-            "Codex injects MCP configuration through its CLI, not a Claude JSON file",
-        ));
-    }
     Ok(crate::provider::claude::mcp_config(
         &mcp_transport(spec, ssh)?,
         None,
@@ -1017,9 +994,9 @@ pub fn supervise(req: &SuperviseRequest) -> Result<Outcome> {
                 "supervisor provider does not match session",
             ));
         }
-        // The profile directory and the model both come from the Agent's own
-        // registry, re-read here rather than carried in the session record:
-        // they are local facts, and the record crosses machines.
+        // The profile directory comes from the Agent's own registry, re-read
+        // here rather than carried in the session record: it is a local
+        // fact, and the record crosses machines.
         let local = req
             .identity
             .as_ref()
@@ -1032,21 +1009,15 @@ pub fn supervise(req: &SuperviseRequest) -> Result<Outcome> {
                     ));
                 }
                 resolved.profile().validate_private_directory()?;
-                Ok((
-                    resolved.profile().directory().to_path_buf(),
-                    resolved.model().map(str::to_string),
-                ))
+                Ok(resolved.profile().directory().to_path_buf())
             })
             .transpose()?;
         // A legacy session has no instance, and its login is the caller's
         // `claude_config_dir`, which the record does carry. Dropping it ran
         // Claude on the default login while doctor checked the other one.
-        let (profile, model) = match &local {
-            Some((dir, model)) => (Some(dir.as_path()), model.as_deref()),
-            None => (spec.provider_config_dir.as_deref(), None),
-        };
+        let profile = local.as_deref().or(spec.provider_config_dir.as_deref());
         spec.provider()
-            .launch_cmd_at(&req.agent_bin, &spec, &dir, profile, model)
+            .launch_cmd_at(&req.agent_bin, &spec, &dir, profile)
     })();
     // Measured here rather than assumed, because here is the one place
     // that is inside whatever context Claude will run in: under tmux, that
@@ -1248,7 +1219,6 @@ mod tests {
             timeout_secs: 600,
             cwd: PathBuf::from("/Users/fodelf/.local/state/ccnm/workspaces/fixture"),
             agent_tools: Default::default(),
-            ask_before: Vec::new(),
         }
     }
 

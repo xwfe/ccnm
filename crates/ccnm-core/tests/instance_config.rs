@@ -1,6 +1,6 @@
-use ccnm_core::Config;
 use ccnm_core::instance::{AgentProfiles, InstanceRef, WorkspaceBinding};
 use ccnm_core::provider::AgentProvider;
+use ccnm_core::{Config, ErrorCode};
 use std::path::{Path, PathBuf};
 
 struct Fixture(PathBuf);
@@ -31,8 +31,34 @@ fn runtime_accepts_a_reference_without_a_copy_of_the_agent_registry() {
 }
 
 #[test]
-fn one_node_can_register_two_provider_instances_without_workspace_roots() {
+fn one_node_can_register_two_instances_without_workspace_roots() {
     assert!(Config::parse(AGENT).is_ok());
+}
+
+/// P118.2: ccnm no longer starts Codex. A config that still names it fails
+/// to load as a config error that says so, instead of being read as Claude.
+/// The words are spelled out rather than taken from `provider::CODEX_REMOVED`
+/// so that this compiles, and fails, on the code from before the removal.
+#[test]
+fn a_codex_instance_is_refused_by_name() {
+    let error = Config::parse(&format!(
+        "{AGENT}[agents.x]\nprovider = \"codex\"\nprofile_ref = \"default\"\n"
+    ))
+    .unwrap_err();
+    assert_eq!(error.code(), ErrorCode::Config, "{error}");
+    assert!(error.message().contains("no longer supported"), "{error}");
+}
+
+/// The same for a named profile in the Agent-local registry (P118.2).
+#[test]
+fn a_codex_profile_is_refused_by_name() {
+    let error = AgentProfiles::parse(
+        "[profiles.x]\nprovider = \"codex\"\ndirectory = \"/synthetic/agent/private/x\"\n",
+    )
+    .err()
+    .unwrap();
+    assert_eq!(error.code(), ErrorCode::Config, "{error}");
+    assert!(error.message().contains("no longer supported"), "{error}");
 }
 
 fn reference(instance: &str) -> InstanceRef {
@@ -47,31 +73,21 @@ fn both_instances_resolve_without_creating_or_moving_profile_state() {
     let config = Config::parse(AGENT).unwrap();
     let profiles = AgentProfiles::default();
     let f = Fixture::new();
-    for (name, provider, suffix) in [
-        ("claude-main", AgentProvider::Claude, ".claude"),
-        (
-            "codex-main",
-            AgentProvider::Codex,
-            ".config/ccnm/agents/codex",
-        ),
-    ] {
-        let resolved = config
-            .resolve_instance(&reference(name), &profiles, &f.0, None)
-            .unwrap();
-        assert_eq!(resolved.identity().provider, provider);
-        assert_eq!(resolved.identity().node, "worker");
-        assert_eq!(resolved.identity().profile_ref, "default");
-        assert_eq!(resolved.profile().directory(), f.0.join(suffix));
-        assert!(!resolved.profile().directory().exists());
-    }
+    // Claude's default login is `~/.claude` whatever XDG_CONFIG_HOME says.
     let xdg = f.0.join("xdg");
-    let resolved = config
-        .resolve_instance(&reference("codex-main"), &profiles, &f.0, Some(&xdg))
-        .unwrap();
-    assert_eq!(
-        resolved.profile().directory(),
-        xdg.join("ccnm/agents/codex")
-    );
+    for name in ["claude-main", "claude-second"] {
+        for xdg in [None, Some(xdg.as_path())] {
+            let resolved = config
+                .resolve_instance(&reference(name), &profiles, &f.0, xdg)
+                .unwrap();
+            assert_eq!(resolved.identity().provider, AgentProvider::Claude);
+            assert_eq!(resolved.identity().instance, name);
+            assert_eq!(resolved.identity().node, "worker");
+            assert_eq!(resolved.identity().profile_ref, "default");
+            assert_eq!(resolved.profile().directory(), f.0.join(".claude"));
+            assert!(!resolved.profile().directory().exists());
+        }
+    }
     assert!(!xdg.exists());
 }
 
@@ -85,7 +101,7 @@ fn configuration_roundtrips_without_private_profile_definitions() {
     }
     assert!(Config::parse(LEGACY).unwrap().workspace("demo").is_ok());
     let registered = Config::parse(&format!(
-        "{LEGACY}\n[agents.local-codex]\nprovider='codex'\nprofile_ref='default'\n"
+        "{LEGACY}\n[agents.local-claude]\nprovider='claude'\nprofile_ref='default'\n"
     ))
     .unwrap();
     assert_eq!(
@@ -131,12 +147,13 @@ fn new_and_legacy_selectors_and_permissions_do_not_mix() {
 #[test]
 fn unknown_duplicate_conflicting_and_path_shaped_references_are_rejected() {
     for text in [
-        AGENT.replace("provider = \"codex\"", "provider = \"unknown\""),
-        AGENT.replace(
-            "provider = \"codex\"",
-            "provider = \"codex\"\nprovider = \"claude\"",
+        AGENT.replacen("provider = \"claude\"", "provider = \"unknown\"", 1),
+        AGENT.replacen(
+            "provider = \"claude\"",
+            "provider = \"claude\"\nprovider = \"claude\"",
+            1,
         ),
-        format!("{AGENT}\n[agents.codex-main]\nprovider=\"codex\"\nprofile_ref=\"default\""),
+        format!("{AGENT}\n[agents.claude-second]\nprovider=\"claude\"\nprofile_ref=\"default\""),
         AGENT.replace(
             "profile_ref = \"default\"",
             "profile_ref = \"/private/path\"",
@@ -145,9 +162,15 @@ fn unknown_duplicate_conflicting_and_path_shaped_references_are_rejected() {
             "profile_ref = \"default\"",
             "profile_ref = \"default\"\ndirectory=\"/private/path\"",
         ),
+        // Claude's model is its own configuration; ccnm never passed one.
+        AGENT.replacen(
+            "profile_ref = \"default\"",
+            "profile_ref = \"default\"\nmodel=\"whatever\"",
+            1,
+        ),
         AGENT.replace(
-            "[agents.codex-main]",
-            "[agents.codex-main]\nnode=\"another-node\"",
+            "[agents.claude-second]",
+            "[agents.claude-second]\nnode=\"another-node\"",
         ),
         RUNTIME.replace("node = \"worker\"", "node = \"unknown\""),
         RUNTIME.replace(
@@ -180,14 +203,14 @@ fn unknown_remote_instances_fail_on_agent_and_wrong_node_never_loads_profiles() 
     );
     let wrong = InstanceRef {
         node: "elsewhere".into(),
-        instance: "codex-main".into(),
+        instance: "claude-second".into(),
     };
     let error = agent.resolve_instance_local(&wrong).err().unwrap();
     assert!(error.message().contains("another Agent Node"));
 }
 
 #[test]
-fn profile_provider_mismatch_and_unknown_reference_never_fall_back() {
+fn unknown_profile_reference_never_falls_back() {
     let profiles = AgentProfiles::parse(PROFILES).unwrap();
     let agent = Config::parse(&AGENT.replace(
         "profile_ref = \"default\"",
@@ -204,11 +227,6 @@ fn profile_provider_mismatch_and_unknown_reference_never_fall_back() {
     );
     assert!(
         agent
-            .resolve_instance(&reference("codex-main"), &profiles, home, None)
-            .is_err()
-    );
-    assert!(
-        agent
             .resolve_instance(
                 &reference("claude-main"),
                 &AgentProfiles::default(),
@@ -221,7 +239,7 @@ fn profile_provider_mismatch_and_unknown_reference_never_fall_back() {
         PROFILES.replace("claude-extra", "default"),
         PROFILES.replace("/synthetic/agent/private/claude-extra", "../private"),
         format!("{PROFILES}\n[profiles.claude-extra]\nprovider='claude'\ndirectory='/other'"),
-        "[profiles.extra]\nprovider='codex'\ndirectory='/private'\nauth='SYNTHETIC_SECRET'".into(),
+        "[profiles.extra]\nprovider='claude'\ndirectory='/private'\nauth='SYNTHETIC_SECRET'".into(),
     ] {
         let error = AgentProfiles::parse(&text).err().unwrap();
         assert!(!error.message().contains("SYNTHETIC_SECRET"));
@@ -239,7 +257,7 @@ fn named_profile_preflight_rejects_symlinks_without_copying_auth() {
     let link = f.0.join("link");
     symlink(&real, &link).unwrap();
     let text = format!(
-        "[profiles.extra]\nprovider='codex'\ndirectory='{}'",
+        "[profiles.extra]\nprovider='claude'\ndirectory='{}'",
         link.display()
     );
     let profiles = AgentProfiles::parse(&text).unwrap();
@@ -247,14 +265,16 @@ fn named_profile_preflight_rejects_symlinks_without_copying_auth() {
         Config::parse(&AGENT.replace("profile_ref = \"default\"", "profile_ref = \"extra\""))
             .unwrap();
     let resolved = agent
-        .resolve_instance(&reference("codex-main"), &profiles, &f.0, None)
+        .resolve_instance(&reference("claude-second"), &profiles, &f.0, None)
         .unwrap();
     assert!(resolved.profile().validate_private_directory().is_err());
-    assert!(!real.join("auth.json").exists());
+    for login in AgentProvider::Claude.credentials().files {
+        assert!(!real.join(login).exists(), "{login}");
+    }
 }
 
 fn bound() -> (Config, Config, WorkspaceBinding) {
-    let runtime = Config::parse(&RUNTIME.replace("claude-main", "codex-main")).unwrap();
+    let runtime = Config::parse(&RUNTIME.replace("claude-main", "claude-second")).unwrap();
     let agent = Config::parse(AGENT).unwrap();
     let resolved = agent
         .resolve_instance(
@@ -292,9 +312,9 @@ fn two_authorities_bind_identity_and_runtime_root_without_private_fields() {
     let text = value.to_string();
     for private in [
         "directory",
-        "CODEX_HOME",
+        "CLAUDE_CONFIG_DIR",
         "claude_config_dir",
-        "/agent/.config",
+        "/agent/.claude",
     ] {
         assert!(!text.contains(private));
     }
@@ -310,19 +330,25 @@ fn substitutions_and_stale_registry_identity_fail_on_the_authoritative_side() {
     let mut changed = binding.clone();
     changed.root = "/runtime/other".into();
     assert!(runtime.verify_runtime_binding(&changed).is_err());
-    let mut changed = binding.clone();
-    changed.agent.provider = AgentProvider::Claude;
-    assert!(
-        agent
-            .resolve_bound_instance(&changed, &profiles, home, None)
-            .is_err()
-    );
+    // The binding still carries claude-second's profile; in this registry
+    // claude-main has another one.
     let mut changed = binding.clone();
     changed.agent.instance = "claude-main".into();
     runtime.verify_runtime_binding(&changed).unwrap();
+    let registry = Config::parse(&AGENT.replacen(
+        "profile_ref = \"default\"",
+        "profile_ref = \"claude-extra\"",
+        1,
+    ))
+    .unwrap();
     assert!(
-        agent
-            .resolve_bound_instance(&changed, &profiles, home, None)
+        registry
+            .resolve_bound_instance(
+                &changed,
+                &AgentProfiles::parse(PROFILES).unwrap(),
+                home,
+                None
+            )
             .is_err(),
         "same-node override is Runtime-authorized but still Agent-resolved"
     );
@@ -355,7 +381,7 @@ fn another_registered_ai_machine_binds_the_same_project() {
     let (_, _, binding) = bound();
     let runtime = Config::parse(&format!(
         "{}[nodes.second]\nssh = \"second-alias\"\n[nodes.cold]\n",
-        RUNTIME.replace("claude-main", "codex-main")
+        RUNTIME.replace("claude-main", "claude-second")
     ))
     .unwrap();
     let mut elsewhere = binding.agent.clone();
@@ -398,49 +424,10 @@ fn a_windows_runtime_root_binds_on_an_agent_of_another_system() {
     }
 }
 
-/// `model` is Codex's, and only Codex's.
-///
-/// ccnm passes nothing of the sort to Claude -- its model is part of its own
-/// configuration -- so accepting the key there would set something no launch
-/// ever reads. It is also going onto a command line, so it is checked for
-/// that before anything tries to use it.
-#[test]
-fn only_codex_instances_may_name_a_model_and_the_value_is_checked() {
-    let base = "this='agent'\nruntime_node='runtime'\n[nodes.agent]\n[nodes.runtime]\nssh='r'\n";
-    let codex = Config::parse(&format!(
-        "{base}[agents.codex-main]\nprovider='codex'\nprofile_ref='default'\nmodel='gpt-5.3-codex-spark'\n"
-    ))
-    .expect("a Codex instance may name a model");
-    assert_eq!(
-        codex.agents["codex-main"].model.as_deref(),
-        Some("gpt-5.3-codex-spark")
-    );
-
-    let claude = Config::parse(&format!(
-        "{base}[agents.claude-main]\nprovider='claude'\nprofile_ref='default'\nmodel='whatever'\n"
-    ));
-    assert!(claude.is_err(), "Claude instances must refuse it");
-
-    for bad in ["", "gpt 5", "a;b", "$(x)"] {
-        let refused = Config::parse(&format!(
-            "{base}[agents.codex-main]\nprovider='codex'\nprofile_ref='default'\nmodel='{bad}'\n"
-        ));
-        assert!(refused.is_err(), "{bad:?} must not reach a command line");
-    }
-
-    // Omitting it stays the default: nothing is added anywhere.
-    let plain = Config::parse(&format!(
-        "{base}[agents.codex-main]\nprovider='codex'\nprofile_ref='default'\n"
-    ))
-    .unwrap();
-    assert_eq!(plain.agents["codex-main"].model, None);
-}
-
 #[test]
 fn unsupported_instance_topologies_are_not_claimed_as_capabilities() {
     let native = "this='runtime'\n[nodes.runtime]\n[agents.main]\nprovider='claude'\nprofile_ref='default'\n[workspaces.demo]\nroot='/project'\nagent={node='runtime',instance='main'}\n";
     assert!(Config::parse(native).is_err());
-    assert!(Config::parse(&native.replace("provider='claude'", "provider='codex'")).is_err());
     let hybrid = RUNTIME.replace("[nodes.runtime]", "[nodes.runtime]\nsmb_user='fixture'")
         .replace("[workspaces.demo]", "[workspaces.demo]\nbackend='hybrid-smb'\nshare='fixture'\nruntime_root='/runtime/build'\nmount_mode='coherence'");
     assert!(Config::parse(&hybrid).is_err());
@@ -494,7 +481,7 @@ fn preview_preserves_comments_other_workspaces_and_disk_and_is_idempotent() {
     );
     assert!(
         next_edit
-            .preview_instance("demo", &reference("codex-main"))
+            .preview_instance("demo", &reference("claude-second"))
             .is_err()
     );
 }
@@ -525,19 +512,18 @@ fn preview_refuses_legacy_custom_security_semantics_without_writing() {
 
 #[test]
 fn profiles_cannot_alias_each_other_or_the_existing_default_login() {
-    let duplicate = "[profiles.a]\nprovider='claude'\ndirectory='/same'\n[profiles.b]\nprovider='codex'\ndirectory='/same'";
+    let duplicate = "[profiles.a]\nprovider='claude'\ndirectory='/same'\n[profiles.b]\nprovider='claude'\ndirectory='/same'";
     assert!(AgentProfiles::parse(duplicate).is_err());
-    let profiles = AgentProfiles::parse(
-        "[profiles.extra]\nprovider='codex'\ndirectory='/agent/.config/ccnm/agents/codex'",
-    )
-    .unwrap();
+    let profiles =
+        AgentProfiles::parse("[profiles.extra]\nprovider='claude'\ndirectory='/agent/.claude'")
+            .unwrap();
     let agent =
         Config::parse(&AGENT.replace("profile_ref = \"default\"", "profile_ref = \"extra\""))
             .unwrap();
     assert!(
         agent
             .resolve_instance(
-                &reference("codex-main"),
+                &reference("claude-second"),
                 &profiles,
                 Path::new("/agent"),
                 None
@@ -549,7 +535,7 @@ fn profiles_cannot_alias_each_other_or_the_existing_default_login() {
 #[test]
 fn root_authority_is_not_a_second_workspace_registry_on_the_agent() {
     let copy = format!(
-        "{AGENT}\n[workspaces.demo]\nroot='/runtime/project'\nagent={{node='worker',instance='codex-main'}}"
+        "{AGENT}\n[workspaces.demo]\nroot='/runtime/project'\nagent={{node='worker',instance='claude-second'}}"
     );
     assert!(Config::parse(&copy).is_err());
     let (runtime, _, binding) = bound();
@@ -566,7 +552,7 @@ fn root_authority_is_not_a_second_workspace_registry_on_the_agent() {
     assert!(agent.instance_reference("demo").is_err());
     assert!(
         runtime
-            .resolve_instance_local(&reference("codex-main"))
+            .resolve_instance_local(&reference("claude-second"))
             .is_err()
     );
 }
@@ -583,7 +569,7 @@ fn session_identity_requires_version_three_and_a_verified_remote_transport() {
         runtime_node: Some("runtime".into()),
         protocol: 3,
         agent_identity: Some(binding.agent.clone()),
-        provider: AgentProvider::Codex,
+        provider: AgentProvider::Claude,
         id: "fixture".into(),
         workspace: binding.workspace,
         root: binding.root,
@@ -599,7 +585,6 @@ fn session_identity_requires_version_three_and_a_verified_remote_transport() {
         timeout_secs: 10,
         cwd: f.0.clone(),
         agent_tools: Default::default(),
-        ask_before: Vec::new(),
     };
     let dir = Dir::at(f.0.join("record"));
     std::fs::create_dir(dir.path()).unwrap();
@@ -627,10 +612,12 @@ fn session_identity_requires_version_three_and_a_verified_remote_transport() {
     wrong.protocol = 2;
     assert!(payload::decode_json::<Spec>(&serde_json::to_vec(&wrong).unwrap()).is_err());
     wrong.protocol = 3;
-    wrong.provider = AgentProvider::Claude;
-    std::fs::write(dir.meta(), serde_json::to_vec(&wrong).unwrap()).unwrap();
+    // A record from before P118 that names Codex is not read as Claude.
+    let mut codex = serde_json::to_value(&wrong).unwrap();
+    codex["provider"] = "codex".into();
+    codex["agent_identity"]["provider"] = "codex".into();
+    std::fs::write(dir.meta(), serde_json::to_vec(&codex).unwrap()).unwrap();
     assert!(ccnm_core::session::load(&dir).is_err());
-    wrong.provider = AgentProvider::Codex;
     wrong.provider_config_dir = Some("/private/injected".into());
     assert!(wrong.validate_identity().is_err());
     wrong.provider_config_dir = None;
@@ -653,14 +640,14 @@ fn session_identity_requires_version_three_and_a_verified_remote_transport() {
 
 #[test]
 fn instance_identity_cannot_be_smuggled_into_legacy_run_requests() {
-    let request = serde_json::json!({"protocol":1,"provider":"claude","workspace":"demo","runtime_node":"runtime","root":"/project","claude_config_dir":null,"permission_mode":"acceptEdits","prompt":"never sent","timeout_secs":10,"agent_identity":{"node":"worker","instance":"codex-main","provider":"codex","profile_ref":"default"}});
+    let request = serde_json::json!({"protocol":1,"provider":"claude","workspace":"demo","runtime_node":"runtime","root":"/project","claude_config_dir":null,"permission_mode":"acceptEdits","prompt":"never sent","timeout_secs":10,"agent_identity":{"node":"worker","instance":"claude-second","provider":"claude","profile_ref":"default"}});
     assert!(
         serde_json::from_value::<ccnm_core::protocol::run::RunRequest>(request.clone()).is_err()
     );
     let mut start = request;
     start.as_object_mut().unwrap().remove("timeout_secs");
     assert!(serde_json::from_value::<ccnm_core::protocol::run::StartRequest>(start).is_err());
-    let identity = serde_json::json!({"node":"worker","instance":"codex-main","provider":"codex","profile_ref":"default"});
+    let identity = serde_json::json!({"node":"worker","instance":"claude-second","provider":"claude","profile_ref":"default"});
     let supervise = serde_json::json!({"protocol":1,"session_dir":"/state","claude_bin":"/agent/claude","agent_identity":identity});
     assert!(serde_json::from_value::<ccnm_core::session::SuperviseRequest>(supervise).is_err());
     let transport =
@@ -696,18 +683,12 @@ fn local_profile_file_uses_agent_xdg_not_ccnm_config_and_preserves_codex_login()
                 .resolve_instance_local(&reference("claude-main"))
                 .unwrap();
             assert_eq!(claude.profile().directory(), root.join("private-selected"));
-            let codex = agent
-                .resolve_instance_local(&reference("codex-main"))
-                .unwrap();
-            assert_eq!(
-                codex.profile().directory(),
-                root.join("xdg/ccnm/agents/codex")
-            );
         }
         return;
     }
     let f = Fixture::new();
     let config_dir = f.0.join("xdg/ccnm");
+    // The login ccnm made for Codex before P118: left in place, never read.
     let codex_home = config_dir.join("agents/codex");
     std::fs::create_dir_all(&codex_home).unwrap();
     let auth = codex_home.join("auth.json");

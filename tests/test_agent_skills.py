@@ -1,7 +1,7 @@
 """P48：Agent 机器上装好的 skills，由 `ccnm internal agent-skills` 交给会话。
 
 真实二进制 + 与 ccnm 无关的 MCP 客户端（和 test_remote_workspace_mcp 同一个），
-payload 由测试自己拼。Claude Code / Codex 在受管会话里就是这样起它的：同一台机器、
+payload 由测试自己拼。Claude Code 在受管会话里就是这样起它的：同一台机器、
 stdin/stdout，不经 ssh。
 """
 

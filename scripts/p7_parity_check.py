@@ -440,7 +440,7 @@ def main() -> int:
     parser.add_argument("--root", required=True, type=Path, help="该 workspace 在本机的工作树路径")
     parser.add_argument("--instance", help="覆盖 workspace 默认的 Agent Instance")
     parser.add_argument("--node", help="Agent Node 名，只在需要显式指定时给")
-    parser.add_argument("--provider", help="这个 instance 应该是谁（claude / codex），用来比对 Agent 自报身份")
+    parser.add_argument("--provider", help="这个 instance 应该是谁（claude），用来比对 Agent 自报身份")
     parser.add_argument("--ccnm", default=os.environ.get("CCNM_BIN", "ccnm"), help="ccnm 二进制")
     parser.add_argument("--config", default=os.environ.get("CCNM_CONFIG"), help="配置文件路径")
     parser.add_argument("--timeout", type=int, default=600, help="单条腿的秒数上限，默认 600")

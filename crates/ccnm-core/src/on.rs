@@ -371,17 +371,19 @@ mod tests {
     fn machine_slash_instance_picks_both() {
         assert_eq!(
             config()
-                .on_target("inst", "hpsrv/codex-main", Lang::En)
+                .on_target("inst", "hpsrv/claude-second", Lang::En)
                 .unwrap(),
-            target(Some("hpsrv"), Some("codex-main"))
+            target(Some("hpsrv"), Some("claude-second"))
         );
     }
 
     #[test]
     fn a_name_that_is_no_machine_is_an_instance_on_the_projects_own() {
         assert_eq!(
-            config().on_target("inst", "codex-main", Lang::En).unwrap(),
-            target(None, Some("codex-main"))
+            config()
+                .on_target("inst", "claude-second", Lang::En)
+                .unwrap(),
+            target(None, Some("claude-second"))
         );
     }
 
@@ -424,7 +426,7 @@ mod tests {
             err.message()
         );
         let err = c
-            .on_target("inst", "nowhere/codex-main", Lang::En)
+            .on_target("inst", "nowhere/claude-second", Lang::En)
             .unwrap_err();
         assert!(
             err.message().contains("no machine called nowhere"),
@@ -527,23 +529,23 @@ mod tests {
     #[test]
     fn on_an_ai_machine_only_its_own_instances_can_be_picked() {
         let agent = Config::parse(
-            "this = \"agent\"\nruntime_node = \"runtime\"\n[nodes.agent]\n[nodes.runtime]\nssh = \"xdwmbp\"\n[agents.codex-main]\nprovider = \"codex\"\nprofile_ref = \"main\"\n",
+            "this = \"agent\"\nruntime_node = \"runtime\"\n[nodes.agent]\n[nodes.runtime]\nssh = \"xdwmbp\"\n[agents.claude-second]\nprovider = \"claude\"\nprofile_ref = \"main\"\n",
         )
         .unwrap();
         assert_eq!(
-            local_instance(&agent, "codex-main", Lang::En)
+            local_instance(&agent, "claude-second", Lang::En)
                 .unwrap()
                 .as_deref(),
-            Some("codex-main")
+            Some("claude-second")
         );
         assert_eq!(local_instance(&agent, "agent", Lang::En).unwrap(), None);
         assert_eq!(
-            local_instance(&agent, "agent/codex-main", Lang::En)
+            local_instance(&agent, "agent/claude-second", Lang::En)
                 .unwrap()
                 .as_deref(),
-            Some("codex-main")
+            Some("claude-second")
         );
-        let err = local_instance(&agent, "hpsrv/codex-main", Lang::En).unwrap_err();
+        let err = local_instance(&agent, "hpsrv/claude-second", Lang::En).unwrap_err();
         assert!(err.message().contains("ssh xdwmbp"), "{}", err.message());
         let err = local_instance(&agent, "xdwmbp", Lang::En).unwrap_err();
         assert!(

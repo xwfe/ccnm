@@ -37,21 +37,6 @@ pub struct InstanceRef {
 pub struct AgentInstance {
     pub provider: AgentProvider,
     pub profile_ref: String,
-    /// Which model this instance runs, when the official CLI takes one.
-    ///
-    /// Agent-local, like `provider` and the profile: it never enters
-    /// [`AgentIdentity`], the binding, or any wire message, and the Runtime
-    /// has no opinion about it. The supervisor reads it from this registry
-    /// again at launch, next to the profile directory.
-    ///
-    /// Codex only. ccnm starts Codex with `--ignore-user-config`, so the
-    /// model in the CLI's own config file is deliberately not consulted --
-    /// which left no way at all to choose one until this field existed.
-    /// Claude's model selection is part of its own configuration and is not
-    /// something ccnm passes, so setting this on a Claude instance is
-    /// refused rather than ignored.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
@@ -102,7 +87,7 @@ pub struct Capabilities {
 impl AgentProvider {
     pub fn instance_capabilities(self) -> Capabilities {
         match self {
-            Self::Claude | Self::Codex => Capabilities {
+            Self::Claude => Capabilities {
                 ssh_mcp: true,
                 print: true,
                 interactive: true,
@@ -137,7 +122,6 @@ impl AgentIdentity {
 pub struct ResolvedAgent {
     identity: AgentIdentity,
     profile: ResolvedProfile,
-    model: Option<String>,
 }
 
 pub struct AgentLocal {
@@ -184,11 +168,6 @@ impl ResolvedAgent {
     pub fn profile(&self) -> &ResolvedProfile {
         &self.profile
     }
-    /// The model this instance declares, if any. Agent-local: resolved here
-    /// and consumed at launch, never sent anywhere.
-    pub fn model(&self) -> Option<&str> {
-        self.model.as_deref()
-    }
 }
 
 /// Validate a node, instance or profile reference before it crosses an argv
@@ -212,23 +191,6 @@ pub(crate) fn validate_config(config: &Config, problems: &mut Vec<String>) {
     for (name, instance) in &config.agents {
         if identifier(name).is_err() || identifier(&instance.profile_ref).is_err() {
             problems.push("invalid local Agent instance/profile reference".into());
-        }
-        // Codex takes `--model`; ccnm passes nothing of the sort to Claude,
-        // whose model is part of its own configuration. Accepting the field
-        // there would set something no launch ever reads.
-        if instance.model.is_some() && instance.provider != AgentProvider::Codex {
-            problems.push(format!(
-                "agents.{name}.model is only supported by Codex instances"
-            ));
-        }
-        if instance
-            .model
-            .as_deref()
-            .is_some_and(|model| model.is_empty() || !crate::ssh::is_remote_safe(model))
-        {
-            problems.push(format!(
-                "agents.{name}.model must be a non-empty value safe to pass on a command line"
-            ));
         }
     }
     for (name, ws) in &config.workspaces {
@@ -348,15 +310,7 @@ impl Config {
     ) -> Result<ResolvedAgent> {
         let identity = self.resolve_identity(reference)?;
         let profile = profiles.resolve(identity.provider, &identity.profile_ref, home, xdg)?;
-        let model = self
-            .agents
-            .get(&reference.instance)
-            .and_then(|instance| instance.model.clone());
-        Ok(ResolvedAgent {
-            identity,
-            profile,
-            model,
-        })
+        Ok(ResolvedAgent { identity, profile })
     }
 
     /// Check node authority before opening any Agent-private configuration.

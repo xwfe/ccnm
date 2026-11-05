@@ -83,6 +83,66 @@ pub const PROBE: [&str; 3] = ["/bin/sh", "-c", "exit 0"];
 /// The line every `exec_command` result carries while the sandbox is on.
 pub const NOTE: &str = "sandboxed: this command could write only inside the workspace (not .git), $TMPDIR and /tmp, and had no network; a refusal shows as `Operation not permitted` or `Read-only file system`";
 
+/// The one Codex release whose `codex sandbox` and workspace-write profile
+/// were measured (P21, P33). Moved here from the Codex provider when P118
+/// removed it: the sandbox is the last thing ccnm runs Codex for.
+pub const CODEX_VERSION: &str = "0.154.0";
+
+/// Refuse any `codex_bin` other than [`CODEX_VERSION`]. `base` carries the
+/// cwd and environment the binary will run with; only its arguments are
+/// replaced. Another release may name the same profile fields differently
+/// or confine differently, and nothing would say so until a command it
+/// should have stopped had run.
+fn check_measured(base: &Cmd, runner: &dyn ProcessRunner) -> Result<()> {
+    let mut cmd = base.clone();
+    cmd.args = vec!["--version".into()];
+    let out = runner.run(&cmd.timeout(Duration::from_secs(20)))?;
+    let version = parse_version(&out)?;
+    if version != CODEX_VERSION {
+        return Err(Error::new(
+            crate::error::ErrorCode::Version,
+            format!(
+                "codex_bin is Codex {version}; the exec_command sandbox has been measured only with {CODEX_VERSION}"
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// `codex-cli 0.154.0` -> `0.154.0`. A failure says how it failed: the
+/// operator reading it has to tell a binary that is not there from one
+/// whose interpreter is not.
+fn parse_version(out: &crate::process::Output) -> Result<String> {
+    if !out.success() {
+        let how = match out.exit_code {
+            Some(code) => format!("exit {code}"),
+            None if out.timed_out => "timed out".to_string(),
+            None => "killed by a signal".to_string(),
+        };
+        let stderr = out.stderr_lossy();
+        let stderr = stderr.trim();
+        return Err(Error::new(
+            crate::error::ErrorCode::Version,
+            if stderr.is_empty() {
+                format!("codex --version failed ({how})")
+            } else {
+                format!("codex --version failed ({how}): {stderr}")
+            },
+        ));
+    }
+    let text = out.stdout_lossy();
+    text.trim()
+        .strip_prefix("codex-cli ")
+        .filter(|s| !s.is_empty() && !s.contains(char::is_whitespace))
+        .map(str::to_string)
+        .ok_or_else(|| {
+            Error::new(
+                crate::error::ErrorCode::Version,
+                "unexpected codex --version output",
+            )
+        })
+}
+
 /// One workspace's sandbox, resolved once when the MCP server starts.
 pub struct Sandbox {
     codex_bin: PathBuf,
@@ -146,7 +206,7 @@ impl Sandbox {
         )?;
         let base = crate::safety::environment::runtime_child(Cmd::new(&codex_bin).cwd(root))
             .env("CODEX_HOME", home.path());
-        crate::provider::codex::check_measured(&base, runner, "the exec_command sandbox")?;
+        check_measured(&base, runner)?;
         let sandbox = Sandbox {
             codex_bin,
             root: root.to_path_buf(),
@@ -286,6 +346,29 @@ pub fn locate(program: &str, cwd: &Path, path: Option<&OsStr>) -> Option<PathBuf
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::process::{FakeRunner, Output};
+
+    /// Exact match or nothing: the release this used to require is refused
+    /// like any other unmeasured build, which is what "pinned" has to mean
+    /// to be worth anything.
+    #[test]
+    fn only_the_measured_codex_runs_the_sandbox() {
+        let base = Cmd::new("/opt/codex/bin/codex");
+        let runner = FakeRunner::new();
+        runner.push(Output::exited(0, "codex-cli 0.154.0\n"));
+        check_measured(&base, &runner).unwrap();
+        for (code, text) in [
+            (0, "codex-cli 0.154.1"),
+            (0, "codex-cli 0.153.4"),
+            (1, "codex-cli 0.154.0"),
+            (0, "0.154.0"),
+        ] {
+            let runner = FakeRunner::new();
+            runner.push(Output::exited(code, text));
+            let err = check_measured(&base, &runner).unwrap_err();
+            assert_eq!(err.code(), crate::error::ErrorCode::Version, "{err}");
+        }
+    }
 
     fn captured_profile() -> Value {
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(

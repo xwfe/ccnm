@@ -6,6 +6,6 @@ ssh = "runtime-alias"
 [agents.claude-main]
 provider = "claude"
 profile_ref = "default"
-[agents.codex-main]
-provider = "codex"
+[agents.claude-second]
+provider = "claude"
 profile_ref = "default"

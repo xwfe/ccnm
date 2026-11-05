@@ -38,19 +38,6 @@ pub fn agent_profiles_path() -> Result<PathBuf> {
     Ok(config_path()?.with_file_name("profiles.toml"))
 }
 
-pub fn codex_home() -> Result<PathBuf> {
-    Ok(codex_home_in(
-        &home_dir()?,
-        env_path("XDG_CONFIG_HOME").as_deref(),
-    ))
-}
-
-pub(crate) fn codex_home_in(home: &Path, xdg: Option<&Path>) -> PathBuf {
-    config_path_in(home, xdg)
-        .with_file_name("agents")
-        .join("codex")
-}
-
 /// What lives under the state root, and nothing else.
 ///
 /// ```text

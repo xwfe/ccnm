@@ -1,5 +1,7 @@
-//! Internal Agent Provider boundary. Legacy workspaces still default to Claude;
-//! instance workspaces select a measured provider through Agent-local config.
+//! Internal Agent Provider boundary. Claude Code is the only Agent ccnm
+//! starts: P118 removed Codex. The type stays because `provider` is written
+//! in the instance config, the session record and the wire, and a `codex`
+//! in any of them has to be refused by name rather than read as Claude.
 //!
 //! Providers own official CLI syntax, observations, policy and project context.
 //! They do not own topology, SSH aliases, process supervision or runtime tools.
@@ -13,7 +15,6 @@ use crate::process::{Cmd, ProcessRunner};
 use crate::session::{Dir, Spec};
 
 pub mod claude;
-pub mod codex;
 mod result;
 pub use result::AgentResult;
 pub mod context;
@@ -32,16 +33,32 @@ pub enum Redaction {
     Keep,
     /// Replace every occurrence of this path with [`REDACTED`].
     Replace(String),
-    /// Send this sentence instead of the output.
-    Withhold(&'static str),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AgentProvider {
     #[default]
     Claude,
-    Codex,
+}
+
+/// What a `codex` provider meets since P118, wherever it is read: an
+/// instance or profile in the config, a session record, a result, a message
+/// from an older ccnm. One sentence, so every place refuses it the same way
+/// and the person editing the config learns what to do instead.
+pub const CODEX_REMOVED: &str = "provider \"codex\" is no longer supported: since 1.0 ccnm starts Claude Code sessions only. Delete the [agents.*] or [profiles.*] table that names it and point the workspaces using it at a Claude instance; the Codex login directory is left in place for you to delete";
+
+impl<'de> serde::Deserialize<'de> for AgentProvider {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        let name = String::deserialize(deserializer)?;
+        match name.as_str() {
+            "claude" => Ok(Self::Claude),
+            "codex" => Err(serde::de::Error::custom(CODEX_REMOVED)),
+            other => Err(serde::de::Error::unknown_variant(other, &["claude"])),
+        }
+    }
 }
 
 /// Names and locations only. This describes existing checks; it grants no
@@ -79,65 +96,61 @@ impl CredentialMetadata {
     }
 }
 
-impl AgentProvider {
-    pub const ALL: [Self; 2] = [Self::Claude, Self::Codex];
+/// Codex's login, by name and place only. ccnm no longer starts Codex
+/// (P118), but a Runtime account can still have it installed and logged in
+/// -- `exec_sandbox = "codex"` runs one -- and a model's command must reach
+/// that login no more than Claude's. Dropping this would quietly let
+/// `OPENAI_*` variables into every command and take the `.codex` check out
+/// of doctor.
+pub const CODEX_CREDENTIALS: CredentialMetadata = CredentialMetadata {
+    env_prefixes: &["CODEX_", "OPENAI_"],
+    config_env: "CODEX_HOME",
+    default_directory: ".config/ccnm/agents/codex",
+    additional_directories: &[".codex"],
+    xdg_config_directory: Some("ccnm/agents/codex"),
+    containers: &[],
+    files: &["auth.json"],
+    agent_name: "Codex",
+    vendor_name: "OpenAI",
+    login_command: "codex login",
+    egress_host: "api.openai.com",
+};
 
-    /// Preserve the measured executable selection; safety options are shared.
+/// Every Agent login the safety checks keep away from the Runtime's tools.
+pub const KNOWN_CREDENTIALS: [&CredentialMetadata; 2] = [&claude::CREDENTIALS, &CODEX_CREDENTIALS];
+
+impl AgentProvider {
+    pub const ALL: [Self; 1] = [Self::Claude];
+
     pub const fn transport_program(self) -> &'static str {
-        match self {
-            Self::Claude => "ssh",
-            Self::Codex => crate::session::SSH_BIN,
-        }
+        "ssh"
     }
     pub const fn cli_name(self) -> &'static str {
-        match self {
-            Self::Claude => "claude",
-            Self::Codex => "codex",
-        }
+        "claude"
     }
     /// What a session whose tools are gone should be told. The English
     /// keeps `TOOLS DOWN`: that is the heading people search
     /// docs/troubleshooting.md for.
-    pub fn tools_down_hint(self, workspace: &str, lang: crate::Lang) -> String {
-        let back = self.way_back(workspace, lang);
+    pub fn tools_down_hint(self, lang: crate::Lang) -> String {
+        let back = self.way_back(lang);
         lang.pick(format!("断了——{back}"), format!("TOOLS DOWN ({back})"))
     }
 
-    /// How a session of this provider gets its tools back, as something a
-    /// person can type without it going wrong.
-    ///
-    /// Codex has no `/mcp` reconnect, so the way back ccnm supports is a
-    /// new session. Not "resume it": a bare `codex resume <id>` (P95's
-    /// wording) opens the everyday `~/.codex`, without ccnm's tools and
-    /// with Codex's own shell on, so commands run on the AI machine (P96).
-    /// Resuming inside ccnm's profile is in docs/troubleshooting.md.
-    pub fn way_back(self, workspace: &str, lang: crate::Lang) -> String {
-        match self {
-            Self::Claude => lang
-                .pick(
-                    "在 Claude 里：/mcp → ccnm → Reconnect",
-                    "in Claude: /mcp -> ccnm -> Reconnect",
-                )
-                .to_string(),
-            Self::Codex => lang.pick(
-                format!(
-                    "Codex 里没法重连：ccnm stop {workspace} 再 ccnm {workspace} 开新会话，对话不带过来"
-                ),
-                format!(
-                    "Codex cannot reconnect: ccnm stop {workspace}, then ccnm {workspace} for a new session; the conversation does not carry over"
-                ),
-            ),
-        }
+    /// How a session gets its tools back, as something a person can type
+    /// without it going wrong.
+    pub fn way_back(self, lang: crate::Lang) -> String {
+        lang.pick(
+            "在 Claude 里：/mcp → ccnm → Reconnect",
+            "in Claude: /mcp -> ccnm -> Reconnect",
+        )
+        .to_string()
     }
 
     pub fn is_claude(&self) -> bool {
         *self == Self::Claude
     }
     pub const fn control_protocol(self) -> u32 {
-        match self {
-            Self::Claude => 1,
-            Self::Codex => 2,
-        }
+        1
     }
 
     /// v1 has exactly one provider, including when reading an older session.
@@ -146,10 +159,7 @@ impl AgentProvider {
     }
 
     pub fn locate(self, path_var: Option<&OsStr>, home: Option<&Path>) -> Option<PathBuf> {
-        match self {
-            Self::Claude => claude::locate(path_var, home),
-            Self::Codex => codex::locate(path_var, home),
-        }
+        claude::locate(path_var, home)
     }
 
     pub fn locate_from_env(self) -> Option<PathBuf> {
@@ -159,26 +169,15 @@ impl AgentProvider {
 
     /// Translate the existing config at the boundary, without renaming it.
     pub fn config_dir(self, node: &Node) -> Option<&Path> {
-        match self {
-            Self::Claude => node.claude_config_dir.as_deref(),
-            Self::Codex => None,
-        }
+        node.claude_config_dir.as_deref()
     }
 
     pub fn permission_mode(self, workspace: &Workspace) -> PermissionMode {
-        match self {
-            Self::Claude => workspace.claude_permission_mode,
-            Self::Codex => PermissionMode::default(),
-        }
+        workspace.claude_permission_mode
     }
 
     pub fn parse_permission_mode(self, raw: &str) -> Result<PermissionMode> {
-        match self {
-            Self::Claude => claude::parse_permission_mode(raw),
-            Self::Codex => Err(Error::invalid_args(
-                "Codex uses its measured fixed tool policy",
-            )),
-        }
+        claude::parse_permission_mode(raw)
     }
 
     pub fn report(
@@ -198,10 +197,7 @@ impl AgentProvider {
         runner: &dyn ProcessRunner,
         ask: Ask,
     ) -> AgentReport {
-        match self {
-            Self::Claude => claude::report(bin, profile_dir, runner, ask),
-            Self::Codex => codex::report_at(bin, profile_dir, runner, ask),
-        }
+        claude::report(bin, profile_dir, runner, ask)
     }
 
     /// The login's subscription limits, from its own CLI (P105). Only from a
@@ -227,32 +223,21 @@ impl AgentProvider {
         let bin = report
             .path
             .ok_or_else(|| Error::internal("a CLI answered without a path"))?;
-        match self {
-            Self::Claude => {
-                if !claude::usage::measured(&version) {
-                    return Err(Error::new(
-                        ErrorCode::Version,
-                        format!(
-                            "Claude Code {version} is older than {}, the first `claude --print /usage` was measured on; not asking it, since an older one may send /usage to the model as a prompt\nupgrade Claude Code there, or open claude on that machine and type /usage",
-                            claude::usage::MIN_VERSION
-                        ),
-                    ));
-                }
-                let out = runner.run(&claude::usage::cmd(&bin, profile_dir, workdir))?;
-                claude::usage::parse(&out, &version, auth.subscription_type)
-            }
-            Self::Codex => {
-                let home = profile_dir
-                    .map(Path::to_path_buf)
-                    .map_or_else(codex::home, Ok)?;
-                codex::validate_home(&home)?;
-                codex::usage::ask(&bin, &home, &version)
-            }
+        if !claude::usage::measured(&version) {
+            return Err(Error::new(
+                ErrorCode::Version,
+                format!(
+                    "Claude Code {version} is older than {}, the first `claude --print /usage` was measured on; not asking it, since an older one may send /usage to the model as a prompt\nupgrade Claude Code there, or open claude on that machine and type /usage",
+                    claude::usage::MIN_VERSION
+                ),
+            ));
         }
+        let out = runner.run(&claude::usage::cmd(&bin, profile_dir, workdir))?;
+        claude::usage::parse(&out, &version, auth.subscription_type)
     }
 
     pub fn launch_cmd(self, bin: &Path, spec: &Spec, dir: &Dir) -> Result<Cmd> {
-        self.launch_cmd_at(bin, spec, dir, spec.provider_config_dir.as_deref(), None)
+        self.launch_cmd_at(bin, spec, dir, spec.provider_config_dir.as_deref())
     }
 
     pub fn launch_cmd_at(
@@ -261,18 +246,10 @@ impl AgentProvider {
         spec: &Spec,
         dir: &Dir,
         profile_dir: Option<&Path>,
-        // Agent-local, from the instance registry the supervisor just
-        // re-read. Not in the session record and not on any wire.
-        model: Option<&str>,
     ) -> Result<Cmd> {
-        match self {
-            Self::Claude => {
-                let mut local = spec.clone();
-                local.provider_config_dir = profile_dir.map(Path::to_path_buf);
-                Ok(claude::launch_cmd(bin, &local, dir))
-            }
-            Self::Codex => codex::launch_cmd_at(bin, spec, dir, profile_dir, model),
-        }
+        let mut local = spec.clone();
+        local.provider_config_dir = profile_dir.map(Path::to_path_buf);
+        Ok(claude::launch_cmd(bin, &local, dir))
     }
 
     pub fn parse_result(self, stdout: &[u8]) -> Result<AgentResult> {
@@ -280,49 +257,29 @@ impl AgentProvider {
     }
 
     pub fn parse_result_at(self, stdout: &[u8], profile_dir: Option<&Path>) -> Result<AgentResult> {
-        match self {
-            Self::Claude => {
-                let mut result = claude::parse_print(stdout)?;
-                if let Some(dir) = profile_dir {
-                    result.redact(&dir.to_string_lossy());
-                }
-                Ok(AgentResult::Claude(result))
-            }
-            Self::Codex => {
-                let mut result = codex::result::parse(stdout)?;
-                let home = profile_dir
-                    .map(Path::to_path_buf)
-                    .map_or_else(codex::home, Ok)?;
-                result.redact(&home.to_string_lossy());
-                Ok(AgentResult::Codex(result))
-            }
+        let mut result = claude::parse_print(stdout)?;
+        if let Some(dir) = profile_dir {
+            result.redact(&dir.to_string_lossy());
         }
+        Ok(AgentResult::Claude(result))
     }
 
     pub fn redact_output_at(self, text: String, profile_dir: Option<&Path>) -> String {
         match self.output_redaction(profile_dir) {
             Redaction::Keep => text,
             Redaction::Replace(private) => text.replace(&private, REDACTED),
-            Redaction::Withhold(why) => why.to_string(),
         }
     }
 
     /// What has to go before this provider's output leaves the Agent.
     ///
     /// The one rule both the short tails in a report and the full retained
-    /// output view (P59) apply, so the two cannot drift apart. At most one
-    /// directory is ever replaced: the profile when there is one, Codex's
-    /// home when there is not.
+    /// output view (P59) apply, so the two cannot drift apart: the profile
+    /// directory, when there is one.
     pub fn output_redaction(self, profile_dir: Option<&Path>) -> Redaction {
-        if let Some(dir) = profile_dir {
-            return Redaction::Replace(dir.to_string_lossy().into_owned());
-        }
-        match self {
-            Self::Claude => Redaction::Keep,
-            Self::Codex => codex::home().map_or(
-                Redaction::Withhold("Codex output withheld: Agent home unavailable"),
-                |home| Redaction::Replace(home.to_string_lossy().into_owned()),
-            ),
+        match profile_dir {
+            Some(dir) => Redaction::Replace(dir.to_string_lossy().into_owned()),
+            None => Redaction::Keep,
         }
     }
 
@@ -336,13 +293,7 @@ impl AgentProvider {
                     .and_then(|arg| arg.to_str())
                     .map(str::to_owned)
             });
-        wire.or_else(|| {
-            if self == Self::Claude {
-                claude::transport_payload(dir)
-            } else {
-                None
-            }
-        })
+        wire.or_else(|| claude::transport_payload(dir))
     }
 
     pub(crate) fn write_session_files(
@@ -353,89 +304,38 @@ impl AgentProvider {
         agent_server: Option<&crate::mcp::agent_skills::Recorded>,
         session_hook: Option<&str>,
     ) -> Result<()> {
-        match self {
-            Self::Claude => {
-                claude::write_session_files(dir, transport, agent_tools, agent_server, session_hook)
-            }
-            Self::Codex => Ok(()),
-        }
+        claude::write_session_files(dir, transport, agent_tools, agent_server, session_hook)
     }
 
     pub const fn project_file(self) -> &'static str {
-        match self {
-            Self::Claude => claude::context::PROJECT_FILE,
-            Self::Codex => "AGENTS.md",
-        }
+        claude::context::PROJECT_FILE
     }
 
     pub const fn credentials(self) -> &'static CredentialMetadata {
-        match self {
-            Self::Claude => &claude::CREDENTIALS,
-            Self::Codex => &codex::CREDENTIALS,
-        }
+        &claude::CREDENTIALS
     }
 
     pub const fn display_name(self) -> &'static str {
-        match self {
-            Self::Claude => "Claude Code",
-            Self::Codex => "Codex",
-        }
+        "Claude Code"
     }
 
     pub const fn authentication_check(self) -> &'static str {
-        match self {
-            Self::Claude => "Claude authentication",
-            Self::Codex => "Codex authentication",
-        }
-    }
-
-    /// What a "logged in" answer from this provider's CLI does **not**
-    /// establish, when that has been measured.
-    ///
-    /// Codex: `codex login status` reads the local login and never asks the
-    /// server. On the P62 machine (Codex 0.154.0) a profile whose refresh
-    /// token had been revoked still said "Logged in using ChatGPT", doctor
-    /// reported OK, and the first message of the session was where it
-    /// surfaced (F5). ccnm has nothing better to ask: it does not read login
-    /// files, and no official command has been measured to verify a token
-    /// without also changing it.
-    ///
-    /// Claude has no entry because nobody has measured it either way, and a
-    /// caveat made up here would be one more unverified claim.
-    pub const fn login_caveat(self) -> Option<&'static str> {
-        match self {
-            Self::Claude => None,
-            Self::Codex => Some(
-                "local login state only, not checked with the server: a revoked or expired token still reads as logged in, and the first message of a session is what shows it",
-            ),
-        }
+        "Claude authentication"
     }
 
     pub fn auth_hint(self, config_dir: Option<&Path>) -> String {
-        match self {
-            Self::Claude => claude::auth_hint(config_dir),
-            Self::Codex => "In the Agent Node login session, independently run official codex login using ccnm's dedicated Agent-local home; never copy credentials".into(),
-        }
+        claude::auth_hint(config_dir)
     }
 
     pub(crate) fn unexpected_probe_reply(self, report: &AgentReport) -> String {
-        match self {
-            Self::Claude => claude::unexpected_probe_reply(report),
-            Self::Codex => format!("Codex({report:?})"),
-        }
+        claude::unexpected_probe_reply(report)
     }
 
     pub fn missing_controller_cli(self) -> Error {
-        match self {
-            Self::Claude => Error::new(
-                ErrorCode::Version,
-                "claude not found in the controller's environment; it looked in the controller service's PATH (launchd or systemd, not your shell's), ~/.local/bin, ~/.claude/local, /usr/local/bin, /opt/homebrew/bin",
-            ),
-            Self::Codex => Error::new(
-                ErrorCode::Version,
-                "codex not found in the controller environment",
-            ),
-        }
+        Error::new(
+            ErrorCode::Version,
+            "claude not found in the controller's environment; it looked in the controller service's PATH (launchd or systemd, not your shell's), ~/.local/bin, ~/.claude/local, /usr/local/bin, /opt/homebrew/bin",
+        )
     }
 }
 
@@ -443,25 +343,54 @@ impl AgentProvider {
 #[derive(Debug, Clone, Default)]
 pub struct AgentBinaries {
     claude: Option<PathBuf>,
-    codex: Option<PathBuf>,
 }
 impl AgentBinaries {
     pub fn discover() -> Self {
         Self {
             claude: AgentProvider::Claude.locate_from_env(),
-            codex: AgentProvider::Codex.locate_from_env(),
         }
     }
     pub fn with_claude(claude: Option<PathBuf>) -> Self {
-        Self {
-            claude,
-            codex: None,
-        }
+        Self { claude }
     }
-    pub fn get(&self, provider: AgentProvider) -> Option<&Path> {
-        match provider {
-            AgentProvider::Claude => self.claude.as_deref(),
-            AgentProvider::Codex => self.codex.as_deref(),
-        }
+    pub fn get(&self, _provider: AgentProvider) -> Option<&Path> {
+        self.claude.as_deref()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// P118: a `codex` provider, wherever it is read, is refused with the
+    /// sentence that says what to do -- not with serde's "expected claude",
+    /// which reads as "rename it" and would point a Codex login at Claude.
+    #[test]
+    fn a_codex_provider_is_refused_by_name() {
+        let err = serde_json::from_str::<AgentProvider>("\"codex\"").unwrap_err();
+        assert!(err.to_string().contains(CODEX_REMOVED), "{err}");
+        let err = serde_json::from_str::<AgentProvider>("\"gemini\"").unwrap_err();
+        assert!(
+            err.to_string().contains("unknown variant `gemini`"),
+            "{err}"
+        );
+        assert_eq!(
+            serde_json::from_str::<AgentProvider>("\"claude\"").unwrap(),
+            AgentProvider::Claude
+        );
+        assert_eq!(
+            serde_json::to_string(&AgentProvider::Claude).unwrap(),
+            "\"claude\""
+        );
+    }
+
+    /// Codex's login stays on the list the Runtime is checked against,
+    /// though ccnm no longer starts Codex: the Runtime account may still
+    /// have one (P118.1).
+    #[test]
+    fn codex_credentials_are_still_kept_out() {
+        let names: Vec<_> = KNOWN_CREDENTIALS.iter().map(|c| c.agent_name).collect();
+        assert_eq!(names, ["Claude", "Codex"]);
+        assert!(CODEX_CREDENTIALS.is_environment_name(OsStr::new("OPENAI_API_KEY")));
     }
 }

@@ -4,12 +4,14 @@ use std::ffi::{OsStr, OsString};
 
 use crate::error::{Error, Result};
 use crate::process::Cmd;
-use crate::provider::AgentProvider;
+use crate::provider::KNOWN_CREDENTIALS;
 
+/// Every known Agent login's variables, Codex's included though ccnm no
+/// longer starts it (P118): the Runtime account may still have one.
 pub fn agent_private(name: &OsStr) -> bool {
-    AgentProvider::ALL
+    KNOWN_CREDENTIALS
         .iter()
-        .any(|p| p.credentials().is_environment_name(name))
+        .any(|c| c.is_environment_name(name))
 }
 
 /// Conservative unknown-credential classification, not a secret scanner.

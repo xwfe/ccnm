@@ -893,8 +893,7 @@ impl Overview {
                     ),
                 });
             }
-            // The provider's own way back: a Codex session was told to type
-            // a Claude command here (P95).
+            // The way back, as something a person can type (P95).
             if let Some(s) = ws.sessions.first().filter(|s| s.tools == Some(false))
                 && ws.orphans().next().is_none()
             {
@@ -1349,12 +1348,9 @@ mod tests {
     }
 
     /// P95: `ccnm ls` tells a session whose tools are down how to get them
-    /// back in its own provider's terms; a Codex one was told to type
-    /// `/mcp` in Claude.
+    /// back.
     #[test]
-    fn the_list_says_how_each_provider_gets_its_tools_back() {
-        let mut codex = live("gld", "95d6516e", Some(false));
-        codex.provider = crate::provider::AgentProvider::Codex;
+    fn the_list_says_how_to_get_the_tools_back() {
         let overview = |session: LiveSession| Overview {
             agents: vec![],
             workspaces: vec![WorkspaceView {
@@ -1368,15 +1364,6 @@ mod tests {
             }],
             now: 1_000,
         };
-        // P96: and not to a bare `codex resume`, which lands in the
-        // everyday ~/.codex with no ccnm tools.
-        let status = overview(codex.clone()).render_status(Lang::Zh);
-        let said = overview(codex).render_list(Lang::Zh);
-        for text in [&said, &status] {
-            assert!(text.contains("ccnm stop gld 再 ccnm gld"), "{text}");
-            assert!(!text.contains("/mcp"), "{text}");
-            assert!(!text.contains("resume"), "{text}");
-        }
         let said = overview(live("gld", "95d6516e", Some(false))).render_list(Lang::Zh);
         assert!(
             said.contains("! gld：工具断了——在 Claude 里：/mcp → ccnm → Reconnect"),
@@ -1386,9 +1373,7 @@ mod tests {
 
     /// P95: `ccnm status` and `ccnm status <ws>` describe a session in the
     /// same rows, and those rows leave out the tmux session name and the
-    /// launchd domain. The Keychain gets a row only when it is in the way,
-    /// and a Codex session whose tools are down is not told to type a
-    /// Claude command.
+    /// launchd domain. The Keychain gets a row only when it is in the way.
     #[test]
     fn a_session_is_described_without_tmux_names_or_launchd_domains() {
         let mut s = live("keex", "d13df3ae-8716-4874-bee3-9399c1f34561", Some(true));
@@ -1426,14 +1411,6 @@ mod tests {
         let blocked = block(&session_rows(&s, 1_000, Lang::Zh));
         assert!(blocked.contains("钥匙串"), "{blocked}");
         assert!(!blocked.contains("Background"), "{blocked}");
-
-        s.provider = crate::provider::AgentProvider::Codex;
-        s.tools = Some(false);
-        let codex = block(&session_rows(&s, 1_000, Lang::Zh));
-        // P96: the way back ccnm supports, not a bare `codex resume`.
-        assert!(codex.contains("ccnm stop keex 再 ccnm keex"), "{codex}");
-        assert!(!codex.contains("/mcp"), "{codex}");
-        assert!(!codex.contains("resume"), "{codex}");
     }
 
     /// P116: what the Controller's watch did shows beside what is -- how

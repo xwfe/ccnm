@@ -4,8 +4,8 @@
   "root": "/runtime/project",
   "agent": {
     "node": "worker",
-    "instance": "codex-main",
-    "provider": "codex",
+    "instance": "claude-second",
+    "provider": "claude",
     "profile_ref": "default"
   }
 }

@@ -178,10 +178,7 @@ fn window(line: &str) -> Option<Window> {
         .filter(|when| !when.is_empty());
     Some(Window {
         label: Some(label.trim().to_string()),
-        limit: None,
-        minutes: None,
         used_percent: used.round().max(0.0) as u32,
-        resets_at: None,
         resets,
     })
 }
@@ -383,23 +380,6 @@ mod tests {
         let err = quota_at(&fake, None).unwrap_err();
         assert_eq!(err.code(), ErrorCode::Version);
         assert!(fake.calls().is_empty());
-    }
-
-    #[test]
-    fn codex_other_than_the_pinned_release_is_not_asked() {
-        let fake = FakeRunner::new();
-        fake.push(Output::exited(0, "codex-cli 0.162.1\n"));
-        let err = AgentProvider::Codex
-            .quota_at(
-                Some(Path::new("/opt/codex")),
-                Some(Path::new("/profile")),
-                &fake,
-                Path::new("/state/usage"),
-            )
-            .unwrap_err();
-        assert_eq!(err.code(), ErrorCode::Version);
-        assert!(err.message().contains("0.154.0"), "{err}");
-        assert_eq!(fake.calls().len(), 1, "only --version ran");
     }
 
     #[test]

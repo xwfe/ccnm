@@ -918,8 +918,8 @@ this = "worker"
 [nodes.worker]
 [nodes.runtime]
 ssh = "runtime-alias"
-[agents.codex-main]
-provider = "codex"
+[agents.claude-second]
+provider = "claude"
 profile_ref = "default"
 [agents.claude-main]
 provider = "claude"
@@ -1807,14 +1807,14 @@ root = "/runtime/legacy"
     fn the_caller_picks_the_instance_but_never_the_node() {
         let peer = Peer::new("override", FakeRuns::ok(0, "x"));
         let out = peer.call(&[&start_call(
-            ",\"agent\":{\"node\":\"worker\",\"instance\":\"codex-main\"}",
+            ",\"agent\":{\"node\":\"worker\",\"instance\":\"claude-second\"}",
         )]);
-        assert_eq!(out[0]["result"]["agent"]["instance"], "codex-main");
+        assert_eq!(out[0]["result"]["agent"]["instance"], "claude-second");
         assert_eq!(out[0]["result"]["agent"]["node"], "worker");
         let session = out[0]["result"]["session"].as_str().unwrap().to_string();
         peer.settle(&session);
         let asks = peer.runs.asks.lock().unwrap();
-        assert_eq!(asks[0].instance.as_deref(), Some("codex-main"));
+        assert_eq!(asks[0].instance.as_deref(), Some("claude-second"));
     }
 
     // ---- P58: exact control, atomic state, keys and handles ----

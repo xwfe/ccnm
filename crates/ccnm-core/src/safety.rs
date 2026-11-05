@@ -104,9 +104,9 @@ impl Finding {
     /// [`Accepted::unisolated_credentials`] and the field it comes from,
     /// `allow_unisolated_credentials`.
     pub fn is_agent_credential(&self) -> bool {
-        crate::provider::AgentProvider::ALL
+        crate::provider::KNOWN_CREDENTIALS
             .iter()
-            .any(|p| self.check == format!("No {} credential", p.credentials().agent_name))
+            .any(|c| self.check == format!("No {} credential", c.agent_name))
     }
 
     /// Has this workspace accepted *this* finding? Confinement findings

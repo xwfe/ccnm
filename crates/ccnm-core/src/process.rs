@@ -543,8 +543,9 @@ pub const STREAM_STDERR_KEEP: usize = 8 * 1024;
 ///
 /// The command's `stdin`, when it has one, is written and then **kept
 /// open** until `on_line` says [`Flow::Close`] or the child is done. That is
-/// for `codex app-server` (P105): it drops a request still in flight when
-/// its input ends, so input closed straight after writing loses the answer.
+/// for `codex app-server` (P105, gone with Codex in P118): it dropped a
+/// request still in flight when its input ended, so input closed straight
+/// after writing lost the answer.
 pub fn stream_lines(cmd: &Cmd, mut on_line: impl FnMut(&[u8]) -> Flow) -> Result<Streamed> {
     let started = Instant::now();
     let mut command = Command::new(&cmd.program);

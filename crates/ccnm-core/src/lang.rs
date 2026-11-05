@@ -15,8 +15,8 @@
 //!   instructions a coding agent acts on, verified in English on the P7,
 //!   P11 and P12 rounds. Translating them changes measured behaviour with
 //!   nothing going red.
-//! - **Other people's programs.** ccnm matches English from `git`, `ssh`,
-//!   `tmux` and Codex. This is why the language must never be selected by
+//! - **Other people's programs.** ccnm matches English from `git`, `ssh`
+//!   and `tmux`. This is why the language must never be selected by
 //!   setting `LANG`/`LC_ALL` for child processes: that would silently
 //!   break those matches — a root check degrading to "unknown", a login
 //!   state that cannot be read — with no error anywhere.

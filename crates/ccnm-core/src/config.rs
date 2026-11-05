@@ -104,8 +104,8 @@ pub struct Config {
 ///
 /// Read on both nodes, each for its own: on the Runtime Node by the MCP
 /// server, which adds them to `load_skill` next to the project's; on the
-/// Agent Node when a session starts, which decides whether Claude or Codex
-/// get the small server that reads this machine's (`ccnm internal
+/// Agent Node when a session starts, which decides whether Claude gets
+/// the small server that reads this machine's (`ccnm internal
 /// agent-skills`). On by default: the user's call (2026-09-22).
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]

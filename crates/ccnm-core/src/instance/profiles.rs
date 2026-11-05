@@ -48,8 +48,20 @@ pub(crate) fn absolute(path: &Path) -> bool {
 impl AgentProfiles {
     pub fn parse(text: &str) -> Result<Self> {
         // TOML errors can quote paths/values. Do not return the private source.
-        let profiles: Self = toml::from_str(text).map_err(|_| {
-            Error::config("invalid Agent-local profiles configuration (private content withheld)")
+        // The one exception is a `codex` provider (P118): the sentence that
+        // says what to do quotes nothing from the file, and without it the
+        // person is left guessing which line broke after an upgrade.
+        let profiles: Self = toml::from_str(text).map_err(|e| {
+            if e.message().contains(crate::provider::CODEX_REMOVED) {
+                Error::config(format!(
+                    "invalid Agent-local profiles configuration: {}",
+                    crate::provider::CODEX_REMOVED
+                ))
+            } else {
+                Error::config(
+                    "invalid Agent-local profiles configuration (private content withheld)",
+                )
+            }
         })?;
         let mut directories = std::collections::BTreeSet::new();
         for (name, profile) in &profiles.profiles {
@@ -107,12 +119,7 @@ impl AgentProfiles {
             ));
         }
         let directory = if reference == "default" {
-            match provider {
-                AgentProvider::Claude => home.join(".claude"),
-                AgentProvider::Codex => {
-                    crate::paths::codex_home_in(home, xdg.filter(|p| !p.as_os_str().is_empty()))
-                }
-            }
+            home.join(".claude")
         } else {
             let profile = self.profiles.get(reference).ok_or_else(|| {
                 Error::config("unknown Agent-local profile reference; no fallback to default")
@@ -122,10 +129,7 @@ impl AgentProfiles {
                     "profile provider differs from the Agent instance",
                 ));
             }
-            if profile.directory == home.join(".claude")
-                || profile.directory
-                    == crate::paths::codex_home_in(home, xdg.filter(|p| !p.as_os_str().is_empty()))
-            {
+            if profile.directory == home.join(".claude") {
                 return Err(Error::config(
                     "named profile must not alias an existing default; use the explicit default reference instead",
                 ));

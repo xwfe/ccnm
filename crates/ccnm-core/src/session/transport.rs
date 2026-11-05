@@ -86,8 +86,8 @@ fn command_for(spec: &Spec, own: bool) -> Result<Cmd> {
         }
     };
     let mut cmd = ssh.mcp_transport_cmd(&wire)?;
-    // Claude's previous MCP JSON and measured Codex transport both pinned the
-    // system OpenSSH; do not accidentally replace that with a PATH lookup.
+    // Claude's previous MCP JSON pinned the system OpenSSH; do not
+    // accidentally replace that with a PATH lookup.
     cmd.program = session::SSH_BIN.into();
     Ok(cmd)
 }
@@ -100,10 +100,7 @@ fn remote(spec: &Spec) -> Result<&session::RuntimeLink> {
 
 pub fn exec(request: &Request) -> Result<()> {
     let spec = load_for(request)?;
-    // Codex has no background agents, and its MCP servers are not measured
-    // to be its direct children; only Claude's channels are asked about.
-    let own = spec.provider() != crate::provider::AgentProvider::Claude
-        || session::from_own_agent(&Dir::at(&request.session_dir));
+    let own = session::from_own_agent(&Dir::at(&request.session_dir));
     exec_ssh(command_for(&spec, own)?)
 }
 
@@ -172,7 +169,6 @@ mod tests {
             timeout_secs: 600,
             cwd: PathBuf::from("/Users/fodelf/.local/state/ccnm/workspaces/fixture"),
             agent_tools: Default::default(),
-            ask_before: Vec::new(),
         }
     }
 

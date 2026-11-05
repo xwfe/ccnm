@@ -2,7 +2,3 @@
 [profiles.claude-extra]
 provider = "claude"
 directory = "/synthetic/agent/private/claude-extra"
-
-[profiles.codex-extra]
-provider = "codex"
-directory = "/synthetic/agent/private/codex-extra"

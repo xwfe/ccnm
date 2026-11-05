@@ -1507,7 +1507,7 @@ mod tests {
             "to-home",
             "/opt/home/ccnm",
             "xshun",
-            Some("codex-main"),
+            Some("claude-second"),
             &env,
         )
         .unwrap();

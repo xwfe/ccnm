@@ -858,7 +858,7 @@ fn probe_rows(r: &Subject<'_>, rep: &ProbeReport) -> Vec<Check> {
 fn executor_rows(r: &Subject<'_>, rep: &ProbeReport) -> Vec<Check> {
     match &rep.runtime_audit {
         Some(Ok(report)) => {
-            let mut rows = runtime_safety_rows(report, rep.provider);
+            let mut rows = runtime_safety_rows(report);
             rows.push(executor_root_row(r, &report.root, &report.audit.user));
             rows
         }
@@ -1028,7 +1028,7 @@ fn terminal_row(r: &Subject<'_>, rep: &ProbeReport) -> Check {
             format!(
                 "tmux {version}, {}\nthe session has lost its tools; {}",
                 live.describe(),
-                live.provider.way_back(r.workspace, crate::Lang::En)
+                live.provider.way_back(crate::Lang::En)
             ),
         ),
         Some(live) => Check::ok(NAME, format!("tmux {version}, {}", live.describe())),
@@ -1129,10 +1129,7 @@ fn mcp_row(rep: &ProbeReport) -> Check {
 ///
 /// A failure is a FAIL row, not a SKIP: nothing is unknown here. The
 /// property was checked and it does not hold.
-fn runtime_safety_rows(
-    report: &crate::runtime::AuditReport,
-    provider: AgentProvider,
-) -> Vec<Check> {
+fn runtime_safety_rows(report: &crate::runtime::AuditReport) -> Vec<Check> {
     let audit = &report.audit;
     // A workspace that has accepted an unconfined runtime gets warnings,
     // not failures. The runtime will run its commands either way, and a
@@ -1212,23 +1209,10 @@ fn runtime_safety_rows(
     // interrupt me?" is a question with two useful answers, and because a
     // warning nobody ever sees the other half of reads like noise.
     //
-    // Codex asks too since P71 (F21), but not the way Claude does: the Agent
-    // launches it with `approval_mode = "prompt"` for the tools this Runtime
-    // marks, and the person at the terminal can hand that back to Codex in
-    // `/permissions` -- Full Access stops asking, Approve for me lets Codex's
-    // own review decide (measured on 0.154.0, docs/research/probes/
-    // p71-codex-approval.py). Claude's key holds in every permission mode.
-    // That switch lasts one session since P72 (F27): Codex stores Approve for
-    // me in the profile, and the launch now pins who answers over it.
     rows.push(if accepted.unattended_exec {
         Check::warn(
             "Command approval",
             "this workspace sets allow_unattended_exec: interactive sessions run every command without asking\nthe runtime account's own permissions and the workspace root are what still bound them",
-        )
-    } else if provider == AgentProvider::Codex {
-        Check::ok(
-            "Command approval",
-            "interactive sessions ask before each exec_command; the person at the terminal can stop that for one session with Full Access or Approve for me in /permissions, and the next session asks again\n--print and ccnm mcp bridge never ask: nobody is waiting at either",
         )
     } else {
         Check::ok(
@@ -1448,13 +1432,7 @@ fn auth_row(r: &Subject<'_>, rep: &ProbeReport) -> Check {
     match &rep.agent.auth {
         // OK is about what was checked, so the row says what that was when
         // it is less than "this login works" (F5).
-        Ok(a) if a.logged_in => Check::ok(
-            name,
-            match rep.provider.login_caveat() {
-                Some(caveat) => format!("{}\n{caveat}", a.describe()),
-                None => a.describe(),
-            },
-        ),
+        Ok(a) if a.logged_in => Check::ok(name, a.describe()),
         Ok(_) if !from_login_session => Check::skip(
             name,
             "a controller answered, but not from a login session, so \"not logged in\" here means nothing\nfix the Controller row first",
@@ -1886,7 +1864,7 @@ mod tests {
             },
             ..confined_report()
         };
-        let rows = runtime_safety_rows(&report, AgentProvider::Claude);
+        let rows = runtime_safety_rows(&report);
         for row in &rows {
             assert!(!matches!(row.status, Status::Fail(_)), "{row:?}");
         }
@@ -1903,7 +1881,7 @@ mod tests {
     /// is the only place the decision is still visible.
     #[test]
     fn the_approval_row_says_which_way_this_workspace_set_it() {
-        let asking = runtime_safety_rows(&confined_report(), AgentProvider::Claude);
+        let asking = runtime_safety_rows(&confined_report());
         let row = asking
             .iter()
             .find(|r| r.name == "Command approval")
@@ -1914,13 +1892,10 @@ mod tests {
             "{row:?}"
         );
 
-        let unattended = runtime_safety_rows(
-            &crate::runtime::AuditReport {
-                allow_unattended_exec: true,
-                ..confined_report()
-            },
-            AgentProvider::Claude,
-        );
+        let unattended = runtime_safety_rows(&crate::runtime::AuditReport {
+            allow_unattended_exec: true,
+            ..confined_report()
+        });
         let row = unattended
             .iter()
             .find(|r| r.name == "Command approval")
@@ -1940,57 +1915,6 @@ mod tests {
                 .clone()
         };
         assert_eq!(exec(&asking), exec(&unattended));
-    }
-
-    /// F21. On the P62 machines a managed Codex session ran `exec_command`
-    /// without asking while this row said it would ask; P69 made the row say
-    /// "does not ask". Since P71 it asks -- with the one difference from
-    /// Claude the row has to name: the person can hand the decision back to
-    /// Codex in `/permissions`. With `allow_unattended_exec` both say WARN.
-    #[test]
-    fn the_approval_row_says_how_codex_sessions_ask() {
-        let (dir, config) = setup("approval-codex", true, true);
-        let authority = authority(&dir.join("root"));
-        let report = from_agent(&config, "xshun", Ok((&authority, &codex_probe())));
-        let text = report.render();
-        let approval = row(&report, "Command approval");
-        assert_eq!(approval.status, Status::Ok, "{text}");
-        assert!(
-            approval.detail.contains("ask before each exec_command"),
-            "{text}"
-        );
-        assert!(approval.detail.contains("/permissions"), "{text}");
-        assert!(
-            !approval.detail.contains("in every permission mode"),
-            "{text}"
-        );
-        // P72 (F27): the switch is no longer remembered across sessions.
-        assert!(
-            approval.detail.contains("the next session asks again"),
-            "{text}"
-        );
-
-        let claude = from_agent(&config, "xshun", Ok((&authority, &good_probe())));
-        let approval = row(&claude, "Command approval");
-        assert_eq!(approval.status, Status::Ok);
-        assert!(approval.detail.contains("in every permission mode"));
-
-        let unattended = runtime_safety_rows(
-            &crate::runtime::AuditReport {
-                allow_unattended_exec: true,
-                ..confined_report()
-            },
-            AgentProvider::Codex,
-        );
-        let approval = unattended
-            .iter()
-            .find(|r| r.name == "Command approval")
-            .unwrap();
-        assert_eq!(approval.status, Status::Warn, "{approval:?}");
-        assert!(
-            approval.detail.contains("allow_unattended_exec"),
-            "{approval:?}"
-        );
     }
 
     /// An accepted risk is a WARN, never an OK.
@@ -2017,7 +1941,7 @@ mod tests {
             allow_unisolated_credentials: true,
             ..confined_report()
         };
-        let rows = runtime_safety_rows(&report, AgentProvider::Claude);
+        let rows = runtime_safety_rows(&report);
         let row = rows
             .iter()
             .find(|r| r.name == "No Claude credential")
@@ -2037,7 +1961,7 @@ mod tests {
             allow_unisolated_credentials: false,
             ..report
         };
-        let rows = runtime_safety_rows(&refused, AgentProvider::Claude);
+        let rows = runtime_safety_rows(&refused);
         let row = rows
             .iter()
             .find(|r| r.name == "No Claude credential")
@@ -2057,7 +1981,7 @@ mod tests {
         }
         wire["audit"]["shared_account"] = serde_json::json!(shared);
         let report = serde_json::from_value(wire).unwrap();
-        runtime_safety_rows(&report, AgentProvider::Claude)
+        runtime_safety_rows(&report)
     }
 
     /// P85: with a dedicated account the project belongs to it, so what it
@@ -2530,14 +2454,6 @@ mod tests {
         }
     }
 
-    /// A probe from a Codex Agent.
-    fn codex_probe() -> ProbeReport {
-        ProbeReport {
-            provider: AgentProvider::Codex,
-            ..good_probe()
-        }
-    }
-
     /// What an Agent Node answers when it refuses the instance it was asked
     /// to probe -- here because the profile directory is not private -- as
     /// JSON, the way it arrives.
@@ -2741,8 +2657,8 @@ mod tests {
         probe.protocol = 3;
         probe.agent_identity = Some(crate::instance::AgentIdentity {
             node: "agent".into(),
-            instance: "codex-main".into(),
-            provider: AgentProvider::Codex,
+            instance: "claude-other".into(),
+            provider: AgentProvider::Claude,
             profile_ref: "default".into(),
         });
         let report = doctor_with_probe("other-instance", serde_json::to_value(probe).unwrap());
@@ -2769,43 +2685,6 @@ mod tests {
         let reverse = row(&report, "Reverse SSH");
         assert_eq!(reverse.status, Status::Skip, "{text}");
         assert!(reverse.detail.contains("refused"), "{text}");
-    }
-
-    /// F5. On the P62 machine the refresh token of ccnm's Codex profile had
-    /// been revoked; `codex login status` said "Logged in using ChatGPT",
-    /// doctor passed that on as OK, and the session's first message was
-    /// where it came out. doctor cannot verify a token -- it may not read
-    /// the login file, and the one official command it has does not ask the
-    /// server -- so the row has to say what it did look at.
-    #[test]
-    fn the_codex_login_row_says_it_only_saw_the_local_login() {
-        let (dir, config) = setup("codex-auth-local", true, true);
-        let authority = authority(&dir.join("root"));
-        let mut probe = codex_probe();
-        probe.agent.auth = Ok(crate::provider::AuthStatus {
-            logged_in: true,
-            auth_method: Some("ChatGPT".into()),
-            email: None,
-            subscription_type: None,
-        });
-        let report = from_agent(&config, "xshun", Ok((&authority, &probe)));
-        let auth = row(&report, "Codex authentication");
-        // Still OK: what it checks did pass. The claim is what changes.
-        assert_eq!(auth.status, Status::Ok, "{auth:?}");
-        assert!(auth.detail.starts_with("logged in via ChatGPT"), "{auth:?}");
-        assert!(
-            auth.detail.contains("local login state only")
-                && auth.detail.contains("not checked with the server"),
-            "{auth:?}"
-        );
-
-        // Claude's row is not given a caveat nobody measured.
-        let report = from_agent(&config, "xshun", Ok((&authority, &good_probe())));
-        let claude = row(&report, "Claude authentication");
-        assert!(
-            !claude.detail.contains("local login state only"),
-            "{claude:?}"
-        );
     }
 
     /// A Windows Runtime as the Agent's doctor shows it (P111): the test
@@ -3006,43 +2885,28 @@ mod tests {
         assert!(bad.detail.contains("CLAUDE.md"), "{bad:?}");
     }
 
-    /// P96: a session whose tools are gone is told its own provider's way
-    /// back. The row used to say "in Claude: /mcp" for every session, and
-    /// the Codex hint before that pointed at a bare `codex resume`.
+    /// P96: a session whose tools are gone is told the way back, as
+    /// something a person can type.
     #[test]
-    fn a_dead_transport_names_its_own_providers_way_back() {
-        use crate::provider::AgentProvider;
-        for (name, provider, wanted, unwanted) in [
-            (
-                "dead-claude",
-                AgentProvider::Claude,
-                "/mcp -> ccnm -> Reconnect",
-                "ccnm stop",
-            ),
-            (
-                "dead-codex",
-                AgentProvider::Codex,
-                "ccnm stop xshun, then ccnm xshun",
-                "/mcp",
-            ),
-        ] {
-            let (dir, config) = setup(name, true, true);
-            let mut probe = good_probe();
-            let session = &mut probe.terminal.as_mut().unwrap().sessions[0];
-            session.tools = Some(false);
-            session.provider = provider;
-            let fake = FakeRunner::new();
-            fake.push(Output::exited(0, format!("ccnm {}\n", crate::VERSION)));
-            fake.push(Output::exited(0, "hostname workmac\nuser me\n"));
-            fake.push(Output::exited(0, serde_json::to_string(&probe).unwrap()));
+    fn a_dead_transport_says_the_way_back() {
+        let (dir, config) = setup("dead-claude", true, true);
+        let mut probe = good_probe();
+        let session = &mut probe.terminal.as_mut().unwrap().sessions[0];
+        session.tools = Some(false);
+        let fake = FakeRunner::new();
+        fake.push(Output::exited(0, format!("ccnm {}\n", crate::VERSION)));
+        fake.push(Output::exited(0, "hostname workmac\nuser me\n"));
+        fake.push(Output::exited(0, serde_json::to_string(&probe).unwrap()));
 
-            let report = run(&config, Some("xshun"), &env(&fake, &dir));
-            let terminal = row(&report, "Terminal session");
-            assert_eq!(terminal.status, Status::Warn, "{}", terminal.detail);
-            assert!(terminal.detail.contains(wanted), "{}", terminal.detail);
-            assert!(!terminal.detail.contains(unwanted), "{}", terminal.detail);
-            assert!(!terminal.detail.contains("resume"), "{}", terminal.detail);
-        }
+        let report = run(&config, Some("xshun"), &env(&fake, &dir));
+        let terminal = row(&report, "Terminal session");
+        assert_eq!(terminal.status, Status::Warn, "{}", terminal.detail);
+        assert!(
+            terminal.detail.contains("/mcp -> ccnm -> Reconnect"),
+            "{}",
+            terminal.detail
+        );
+        assert!(!terminal.detail.contains("resume"), "{}", terminal.detail);
     }
 
     #[test]

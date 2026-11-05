@@ -112,10 +112,6 @@ impl Cap {
 /// from 4600 to 2048 chars" for the old ccnm handshake). ccnm cuts first,
 /// so what gets dropped is chosen here and the marker line can say so.
 pub const CLAUDE_CODE_CAP: Cap = Cap::Utf16(2048);
-/// Codex puts the whole text into its tool namespace description on the
-/// code-mode path ccnm launches, with no cut found in 0.154, so the budget
-/// ccnm always had stays.
-pub const CODEX_CAP: Cap = Cap::Bytes(16 * 1024);
 /// A bridge cannot know which Host is on the other end, so the strictest
 /// one it knows about.
 pub const EXTERNAL_CAP: Cap = CLAUDE_CODE_CAP;
@@ -131,55 +127,31 @@ pub const MAX_NAMED: usize = claude::context::MAX_NAMED;
 pub const MAX_NAMED_UNITS: usize = 768;
 
 pub fn find(root: &Path, budget: Cap) -> Result<Option<Project>> {
-    match AgentProvider::current() {
-        AgentProvider::Claude => claude::context::find(root, budget),
-        AgentProvider::Codex => super::codex::context::find(root, budget),
-    }
+    claude::context::find(root, budget)
 }
 pub fn named(root: &Path) -> Vec<Named> {
-    match AgentProvider::current() {
-        AgentProvider::Claude => claude::context::named(root),
-        AgentProvider::Codex => Vec::new(),
-    }
+    claude::context::named(root)
 }
 pub fn budget(workspace: &str, named: &[Named]) -> Cap {
-    match AgentProvider::current() {
-        AgentProvider::Claude => claude::context::budget(workspace, named),
-        AgentProvider::Codex => super::codex::context::budget(workspace),
-    }
+    claude::context::budget(workspace, named)
 }
 pub fn instructions(workspace: &str, project: Option<&Project>, named: &[Named]) -> String {
-    match AgentProvider::current() {
-        AgentProvider::Claude => claude::context::instructions(workspace, project, named),
-        AgentProvider::Codex => super::codex::context::instructions(workspace, project),
-    }
+    claude::context::instructions(workspace, project, named)
 }
 pub fn marker(project: Option<&Project>) -> String {
-    match AgentProvider::current() {
-        AgentProvider::Claude => claude::context::marker(project),
-        AgentProvider::Codex => marker_file(project.map_or("AGENTS.md", |p| p.source), project),
-    }
+    claude::context::marker(project)
 }
 pub fn parse_marker(instructions: &str) -> Option<String> {
-    match AgentProvider::current() {
-        AgentProvider::Claude => claude::context::parse_marker(instructions),
-        AgentProvider::Codex => claude::context::parse_marker(instructions),
-    }
+    claude::context::parse_marker(instructions)
 }
 
 impl AgentProvider {
     /// What the Host this provider launches keeps of the handshake text.
     pub const fn instructions_cap(self) -> Cap {
-        match self {
-            Self::Claude => CLAUDE_CODE_CAP,
-            Self::Codex => CODEX_CAP,
-        }
+        CLAUDE_CODE_CAP
     }
     pub fn project_named(self, root: &Path) -> Vec<Named> {
-        match self {
-            Self::Claude => named(root),
-            Self::Codex => Vec::new(),
-        }
+        named(root)
     }
     pub fn project_find(
         self,
@@ -187,12 +159,7 @@ impl AgentProvider {
         workspace: &str,
         named: &[Named],
     ) -> Result<Option<Project>> {
-        match self {
-            Self::Claude => find(root, budget(workspace, named)),
-            Self::Codex => {
-                super::codex::context::find(root, super::codex::context::budget(workspace))
-            }
-        }
+        find(root, budget(workspace, named))
     }
     pub fn project_instructions(
         self,
@@ -200,10 +167,7 @@ impl AgentProvider {
         project: Option<&Project>,
         named: &[Named],
     ) -> String {
-        match self {
-            Self::Claude => instructions(workspace, project, named),
-            Self::Codex => super::codex::context::instructions(workspace, project),
-        }
+        instructions(workspace, project, named)
     }
 }
 

@@ -207,7 +207,7 @@ class ResolveAgentTests(unittest.TestCase):
 
     LISTED = [
         {"node": "agent", "instance": "claude-main", "workspaces": ["p7parity"]},
-        {"node": "agent", "instance": "codex-main", "workspaces": ["other"]},
+        {"node": "agent", "instance": "claude-second", "workspaces": ["other"]},
     ]
 
     def test_neither_given_means_use_the_configured_default(self):

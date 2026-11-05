@@ -185,7 +185,7 @@ enum Command {
         limit: u32,
     },
     /// How much of the AI login's subscription limits is used and when
-    /// each resets, as Claude Code's /usage or Codex reports it. Without a
+    /// each resets, as Claude Code's /usage reports it. Without a
     /// workspace: every login this machine's projects use, each asked once
     Usage {
         /// Only the login this workspace's Agent runs under
@@ -399,7 +399,7 @@ enum InternalCommand {
         payload: String,
     },
     /// Serve this Agent Node's installed skills on stdin/stdout, for the
-    /// Claude Code or Codex of one remote session (P48). Started by them,
+    /// Claude Code of one remote session (P48). Started by it,
     /// on this machine, not over ssh
     AgentSkills {
         #[arg(long)]
@@ -639,8 +639,8 @@ fn help_lang(args: &[std::ffi::OsString]) -> Lang {
 /// would be a poor trade for one preference.
 ///
 /// `LANG`/`LC_ALL` are deliberately not consulted — see the module docs
-/// of [`ccnm_core::lang`]: ccnm parses English from `git`, `ssh`, `tmux`
-/// and Codex, so locale must keep meaning what those programs mean by it.
+/// of [`ccnm_core::lang`]: ccnm parses English from `git`, `ssh` and
+/// `tmux`, so locale must keep meaning what those programs mean by it.
 fn ui_lang(cli: &Cli) -> Result<Lang> {
     if let Some(text) = &cli.lang {
         return Lang::parse(text).ok_or_else(|| {
@@ -814,7 +814,7 @@ fn zh_help(command: clap::Command) -> clap::Command {
                 .mut_arg("limit", |a| a.help("最多列几条"))
         })
         .mut_subcommand("usage", |c| {
-            c.about("AI 那台登录的订阅额度用了多少、什么时候重置，数是 Claude Code 的 /usage 或 Codex 自己报的。不给项目名：这台机器的项目用到的每个登录各问一次")
+            c.about("AI 那台登录的订阅额度用了多少、什么时候重置，数是 Claude Code 的 /usage 报的。不给项目名：这台机器的项目用到的每个登录各问一次")
                 .mut_arg("workspace", |a| a.help("只问这个 workspace 的 Agent 用的那个登录"))
                 .mut_arg("on", |a| {
                     a.help("在哪台 AI 机器上：<机器>、<机器>/<实例>，或项目默认那台上的实例。原来叫 --agent")
@@ -2835,9 +2835,7 @@ fn tools_before_attach(
     let Some(tools) = check.tools else {
         return Ok(None);
     };
-    if let Some((why, code)) =
-        ccnm_core::protocol::run::tools_refused(&tools, check.provider, workspace, lang)
-    {
+    if let Some((why, code)) = ccnm_core::protocol::run::tools_refused(&tools, workspace, lang) {
         eprintln!("{why}");
         return Ok(Some(code));
     }
@@ -3559,18 +3557,13 @@ fn usage_command(
             answers
         }
     };
-    let now = ccnm_core::overview::now_secs();
-    let offset = ccnm_core::overview::utc_offset(&SystemRunner);
     let mut code = 0;
     for (i, (who, answer)) in answers.iter().enumerate() {
         if i > 0 {
             println!();
         }
         match answer {
-            Ok(report) => print!(
-                "{}",
-                ccnm_core::quota::render(who, &report.quota, now, offset, lang)
-            ),
+            Ok(report) => print!("{}", ccnm_core::quota::render(who, &report.quota, lang)),
             Err(e) => {
                 let message = e.message().replace('\n', "\n    ");
                 println!("{who}\n  ! {}: {message}", e.code());

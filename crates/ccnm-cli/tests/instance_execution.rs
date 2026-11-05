@@ -99,7 +99,7 @@ fn agent_side_diagnostics_ask_the_runtime_instead_of_delegating_to_it() {
             "probe",
             "demo",
             "--agent",
-            "codex-main",
+            "claude-second",
             "--calls",
             "1",
         ])
@@ -289,16 +289,16 @@ fn public_default_and_explicit_instance_selection_use_v3_without_private_paths()
         stdout_tail: String::new(),
         stderr_tail: String::new(),
     };
-    let codex = AgentIdentity {
+    let second = AgentIdentity {
         node: "worker".into(),
-        instance: "codex-main".into(),
-        provider: AgentProvider::Codex,
+        instance: "claude-second".into(),
+        provider: AgentProvider::Claude,
         profile_ref: "default".into(),
     };
     let start = StartReport {
         protocol: 3,
-        provider: AgentProvider::Codex,
-        agent_identity: Some(codex),
+        provider: AgentProvider::Claude,
+        agent_identity: Some(second),
         session: Some("00000000-0000-4000-8000-000000000002".into()),
         session_dir: Some("/synthetic/agent/session-two".into()),
         tmux_session: "ccnm-demo".into(),
@@ -341,7 +341,7 @@ fn public_default_and_explicit_instance_selection_use_v3_without_private_paths()
         .command()
         .arg("--config")
         .arg(&config)
-        .args(["run", "demo", "--agent", "codex-main", "--detached"])
+        .args(["run", "demo", "--agent", "claude-second", "--detached"])
         .output()
         .unwrap();
     assert!(
@@ -369,13 +369,13 @@ fn public_default_and_explicit_instance_selection_use_v3_without_private_paths()
     assert_eq!(run.agent.unwrap().instance, "claude-main");
     assert_eq!(handoff.agent.unwrap().instance, "claude-main");
     assert_eq!(handoff.provider_config_dir, None);
-    assert_eq!(start.agent.unwrap().instance, "codex-main");
+    assert_eq!(start.agent.unwrap().instance, "claude-second");
     assert_eq!(run.protocol, 3);
     assert_eq!(handoff.protocol, 3);
     assert_eq!(start.protocol, 3);
     for private in [
         "profile",
-        "CODEX_HOME",
+        "CLAUDE_CONFIG_DIR",
         "claude_config_dir",
         "/synthetic/agent/session",
     ] {
@@ -418,7 +418,6 @@ fn identity_mismatched_supervisor_transport_and_controller_requests_fail_before_
         timeout_secs: 10,
         cwd: f.0.clone(),
         agent_tools: Default::default(),
-        ask_before: Vec::new(),
     };
     std::fs::write(dir.meta(), serde_json::to_vec(&spec).unwrap()).unwrap();
     let supervise = SuperviseRequest::new(dir.path().to_path_buf(), fake_agent.clone());
@@ -740,12 +739,11 @@ fn a_supervisor_that_dies_without_an_outcome_is_noticed_in_seconds() {
     );
 }
 
-/// P71: what an Agent reads off the Runtime's tool list before it launches
-/// a Codex session. The real binary's `mcp-serve`, probed the way the
-/// preflight probes it: an interactive open is told `exec_command` asks a
-/// person; a non-interactive one, and one on a workspace with
-/// `allow_unattended_exec`, are told nothing asks. The Runtime decides; the
-/// Agent only carries the answer to Codex.
+/// P71: which tools the Runtime's tool list says ask a person. The real
+/// binary's `mcp-serve`, probed the way the preflight probes it: an
+/// interactive open is told `exec_command` asks a person; a non-interactive
+/// one, and one on a workspace with `allow_unattended_exec`, are told nothing
+/// asks. The Runtime decides.
 #[test]
 fn an_interactive_preflight_learns_which_tools_ask_from_the_runtime() {
     let f = Fixture::new();
@@ -1099,7 +1097,6 @@ fn supervisor_re_resolves_named_profile_without_storing_it_in_public_identity() 
         timeout_secs: 10,
         cwd,
         agent_tools: Default::default(),
-        ask_before: Vec::new(),
     };
     let stored = serde_json::to_string(&spec).unwrap();
     assert!(!stored.contains(profile.to_str().unwrap()));

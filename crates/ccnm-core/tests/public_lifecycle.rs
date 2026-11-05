@@ -61,13 +61,13 @@ fn request<T: serde::de::DeserializeOwned + payload::Protocol>(call: &ccnm_core:
 fn default_and_override_flow_through_attach_status_result_and_stop_with_exact_id() {
     let f = Fixture::new();
     let id = "00000000-0000-4000-8000-000000000030";
-    let codex = identity("codex-main", AgentProvider::Codex);
+    let second = identity("claude-second", AgentProvider::Claude);
     let runner = FakeRunner::new();
     runner.push(Output::exited(
         0,
         serde_json::to_vec(&StatusReport {
             protocol: 3,
-            agent_identity: Some(codex.clone()),
+            agent_identity: Some(second.clone()),
             tmux: Ok("3.7c".into()),
             sessions: vec![],
             records: vec![],
@@ -79,8 +79,8 @@ fn default_and_override_flow_through_attach_status_result_and_stop_with_exact_id
         0,
         serde_json::to_vec(&ResultReport {
             protocol: 3,
-            provider: AgentProvider::Codex,
-            agent_identity: Some(codex.clone()),
+            provider: AgentProvider::Claude,
+            agent_identity: Some(second.clone()),
             session: id.into(),
             session_dir: "/synthetic/agent/session".into(),
             mode: "print".into(),
@@ -98,17 +98,18 @@ fn default_and_override_flow_through_attach_status_result_and_stop_with_exact_id
             protocol: 3,
             tmux_session: "ccnm-demo".into(),
             session: Some(id.into()),
-            agent_identity: Some(codex),
+            agent_identity: Some(second),
             killed: true,
         })
         .unwrap(),
     ));
     let env = f.env(&runner);
-    launcher::status_selected(&f.resolved(), &env, false, Some("codex-main"), Some(id)).unwrap();
-    launcher::result_selected(&f.resolved(), &env, Some(id), Some("codex-main")).unwrap();
-    launcher::stop_selected(&f.resolved(), &env, Some("codex-main"), Some(id)).unwrap();
+    launcher::status_selected(&f.resolved(), &env, false, Some("claude-second"), Some(id)).unwrap();
+    launcher::result_selected(&f.resolved(), &env, Some(id), Some("claude-second")).unwrap();
+    launcher::stop_selected(&f.resolved(), &env, Some("claude-second"), Some(id)).unwrap();
     let attach =
-        launcher::attach_cmd_selected(&f.resolved(), &env, Some("codex-main"), Some(id)).unwrap();
+        launcher::attach_cmd_selected(&f.resolved(), &env, Some("claude-second"), Some(id))
+            .unwrap();
 
     let calls = runner.calls();
     let status: StatusRequest = request(&calls[0]);
@@ -116,7 +117,7 @@ fn default_and_override_flow_through_attach_status_result_and_stop_with_exact_id
     let stop: StopRequest = request(&calls[2]);
     let attach: AttachRequest = request(&attach);
     for selected in [status.agent, result.agent, stop.agent, attach.agent] {
-        assert_eq!(selected.unwrap().instance, "codex-main");
+        assert_eq!(selected.unwrap().instance, "claude-second");
     }
     assert_eq!(status.session.as_deref(), Some(id));
     assert_eq!(result.session.as_deref(), Some(id));
@@ -132,7 +133,10 @@ fn default_and_override_flow_through_attach_status_result_and_stop_with_exact_id
         .iter()
         .all(|v| *v == 3)
     );
-    assert!(!calls.iter().any(|call| call.display().contains("profile") || call.display().contains("CODEX_HOME")));
+    assert!(
+        !calls.iter().any(|call| call.display().contains("profile")
+            || call.display().contains("CLAUDE_CONFIG_DIR"))
+    );
 
     let default = identity("claude-main", AgentProvider::Claude);
     runner.push(Output::exited(
@@ -180,13 +184,14 @@ fn runtime_rejects_a_response_for_another_instance() {
             protocol: 3,
             tmux_session: "ccnm-demo".into(),
             session: None,
-            agent_identity: Some(identity("other", AgentProvider::Codex)),
+            agent_identity: Some(identity("other", AgentProvider::Claude)),
             killed: false,
         })
         .unwrap(),
     ));
-    let error = launcher::stop_selected(&f.resolved(), &f.env(&runner), Some("codex-main"), None)
-        .unwrap_err();
+    let error =
+        launcher::stop_selected(&f.resolved(), &f.env(&runner), Some("claude-second"), None)
+            .unwrap_err();
     assert_eq!(error.code(), ErrorCode::Version);
 }
 
@@ -195,10 +200,10 @@ fn agent_override_is_an_id_not_a_node_path_provider_or_argv_channel() {
     let f = Fixture::new();
     let runner = FakeRunner::new();
     for bad in [
-        "../codex",
-        "worker/codex",
-        "codex --danger",
-        "codex:provider",
+        "../claude",
+        "worker/claude",
+        "claude --danger",
+        "claude:provider",
         "",
     ] {
         assert!(

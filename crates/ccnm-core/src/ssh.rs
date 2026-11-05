@@ -812,19 +812,16 @@ mod tests {
         assert!(control.contains("ServerAliveCountMax=3"), "{control}");
     }
 
+    /// Neither login rides along to the Runtime: Codex's is scrubbed too,
+    /// though ccnm no longer starts Codex (P118).
     #[test]
-    fn preflight_and_transport_isolate_both_providers() {
-        for provider in [
-            crate::provider::AgentProvider::Claude,
-            crate::provider::AgentProvider::Codex,
-        ] {
-            let ssh = ssh().for_provider(provider);
-            for cmd in [ssh.resolve_cmd(), ssh.mcp_transport_cmd("abc").unwrap()] {
-                assert!(cmd.args.iter().any(|v| v == "ForwardAgent=no"));
-                assert!(cmd.args.iter().any(|v| v == "SendEnv=-*"));
-                assert!(cmd.env_remove.iter().any(|v| v == "CODEX_HOME"));
-                assert!(cmd.env_remove.iter().any(|v| v == "CLAUDE_CONFIG_DIR"));
-            }
+    fn preflight_and_transport_carry_no_agent_login() {
+        let ssh = ssh().for_provider(crate::provider::AgentProvider::Claude);
+        for cmd in [ssh.resolve_cmd(), ssh.mcp_transport_cmd("abc").unwrap()] {
+            assert!(cmd.args.iter().any(|v| v == "ForwardAgent=no"));
+            assert!(cmd.args.iter().any(|v| v == "SendEnv=-*"));
+            assert!(cmd.env_remove.iter().any(|v| v == "CODEX_HOME"));
+            assert!(cmd.env_remove.iter().any(|v| v == "CLAUDE_CONFIG_DIR"));
         }
     }
 

@@ -2,7 +2,7 @@
 //! remote session.
 //!
 //! `ccnm internal agent-skills` is a second, small MCP server that Claude
-//! Code or Codex start next to ccnm's, **on the Agent Node**: the skills in
+//! Code starts next to ccnm's, **on the Agent Node**: the skills in
 //! this account's home are here, and the Runtime cannot read this disk.
 //! `load_skill`, the same code as the Runtime's over a different scope,
 //! plus the same prompts; since P50 also `call_mcp_tool` and
@@ -10,14 +10,12 @@
 //! Each half is there only when this machine and the workspace allow it;
 //! the command keeps its P48 name, which sessions already created carry.
 //!
-//! Why not the natives' own skills: measured on Claude Code 2.1.278 and
-//! Codex 0.154.0 with ccnm's launch flags (toexec
-//! `evidence/v3-parity/machine-skills/`). Claude's `Skill` loads the text
-//! but its files need `Read`, and a `Read` narrowed to the skills
+//! Why not Claude Code's own skills: measured on 2.1.278 with ccnm's launch
+//! flags (toexec `evidence/v3-parity/machine-skills/`). Its `Skill` loads
+//! the text but the files need `Read`, and a `Read` narrowed to the skills
 //! directories still reads the session's working directory -- ccnm's state
-//! for the session -- without asking. Codex lists them and expects its
-//! shell to open them, and ccnm turns that shell off. Both also bring
-//! skills of their own that assume the tools ccnm takes away. This reads
+//! for the session -- without asking. It also brings skills of its own
+//! that assume the tools ccnm takes away. This reads
 //! only inside one skill's own directory, never a dotfile, only text.
 //!
 //! Nothing here reaches the project. A script of one of these skills runs
@@ -56,8 +54,9 @@ use crate::protocol::payload::Protocol;
 type CcnmResult<T> = crate::error::Result<T>;
 
 /// The server's name in the session's MCP config, so its tool reaches the
-/// model as `mcp__ccnm_agent__load_skill`. An underscore, not a hyphen:
-/// the same name is a TOML key for Codex.
+/// model as `mcp__ccnm_agent__load_skill`. An underscore, not a hyphen: it
+/// was also a TOML key for Codex (before P118), and renaming it would
+/// change the tool name every session's permissions refer to.
 pub const SERVER_NAME: &str = "ccnm_agent";
 /// What `settings.json` has to allow for its skill tool (print mode asks
 /// nobody). Each tool is allowed by the name [`permission`] gives it.
@@ -77,10 +76,9 @@ pub const AGENT: Wording = Wording {
 };
 
 /// What `ccnm internal agent-skills --payload` carries. It is started on
-/// this machine by Claude Code or Codex, not over ssh, but the payload is
-/// how every internal command is called, and it keeps the home and the
-/// session out of the environment: Codex hands an MCP server only some of
-/// its own.
+/// this machine by Claude Code, not over ssh, but the payload is how every
+/// internal command is called, and it keeps the home and the session out
+/// of the environment.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Payload {
@@ -116,7 +114,7 @@ impl Protocol for Payload {
     }
 }
 
-/// How Claude Code or Codex start this server for one session, and the
+/// How Claude Code starts this server for one session, and the
 /// tools it may offer; `None` when this machine shares neither its
 /// installed skills nor its MCP servers with it. `mcp` is this machine's
 /// `[agent_mcp]` when the workspace lets its sessions use them.
@@ -159,9 +157,8 @@ pub fn launcher(
     }))
 }
 
-/// The launcher as the session directory keeps it, for a provider that
-/// builds its command line at launch rather than writing files at create
-/// (Codex). Its presence is the record that the session got the server.
+/// The launcher as the session directory keeps it. Its presence is the
+/// record that the session got the server.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Recorded {
     pub command: String,

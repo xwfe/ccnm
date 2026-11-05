@@ -2,8 +2,8 @@
 //!
 //! The previous session may be on another AI machine -- the point of `--on`
 //! is to move to one when a login runs out -- so the conversation itself
-//! cannot follow: another login has no cache of it, and Claude and Codex
-//! cannot read each other's. What follows is text. Best is the handoff the
+//! cannot follow: another login has no cache of it. What follows is
+//! text. Best is the handoff the
 //! last reply ended with (P102); a session whose login ran out never got to
 //! write one, and then the tail of what the person and the AI said is the
 //! next best thing, marked as raw so the model checks before it trusts it.

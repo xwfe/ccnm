@@ -27,8 +27,8 @@
 //! # On Linux
 //!
 //! There is no login Keychain to reach: Claude Code keeps its login in
-//! `~/.claude/.credentials.json` and Codex in `auth.json`, files any process
-//! of the account can read. The controller is still needed -- it is what
+//! `~/.claude/.credentials.json`, a file any process of the account can
+//! read. The controller is still needed -- it is what
 //! keeps a session alive after the ssh connection that asked for it is
 //! gone -- but "is it in the login session" is not the question there.
 //! It runs as a systemd user service ([`crate::systemd`]), reports
@@ -542,10 +542,7 @@ fn start_session(
         ));
     }
     let profile = resolve_profile(tools, provider, identity)?;
-    if provider == AgentProvider::Codex {
-        crate::provider::codex::validate_spec(&spec)?;
-    }
-    if identity.is_some() || provider == AgentProvider::Codex {
+    if identity.is_some() {
         let report = provider.report_at(
             Some(agent_bin),
             profile.as_deref().or(spec.provider_config_dir.as_deref()),
@@ -555,14 +552,6 @@ fn start_session(
         report.version.map_err(Error::from)?;
         if !report.auth.map_err(Error::from)?.logged_in {
             return Err(Error::new(ErrorCode::Auth, provider.auth_hint(None)));
-        }
-        if provider == AgentProvider::Codex {
-            crate::provider::codex::check_inventory_at(
-                agent_bin,
-                &spec,
-                profile.as_deref(),
-                tools.runner,
-            )?;
         }
     }
     let mut req = SuperviseRequest::new(session_dir.to_path_buf(), agent_bin.to_path_buf());
@@ -624,8 +613,7 @@ fn start_session(
 
 /// The profile directory a question about the login is asked in: the
 /// instance's, resolved here, or a legacy Claude caller's
-/// `claude_config_dir`. Never both, and never a caller's directory for
-/// Codex, whose home is Agent-local.
+/// `claude_config_dir`. Never both.
 fn asked_profile(
     tools: &Tools<'_>,
     provider: AgentProvider,
@@ -637,9 +625,6 @@ fn asked_profile(
         return Err(Error::invalid_args(
             "bound Agent auth cannot accept a caller-supplied profile directory",
         ));
-    }
-    if identity.is_none() && provider == AgentProvider::Codex && config_dir.is_some() {
-        return Err(Error::invalid_args("Codex home is Agent-local"));
     }
     Ok(profile.or_else(|| config_dir.map(Path::to_path_buf)))
 }
@@ -1009,8 +994,8 @@ pub fn agent_auth_instance(
 /// [`RequestBody::Usage`], typed.
 ///
 /// The slowest question the controller answers: `--version`, `auth
-/// status` (20 seconds each at most) and then `claude --print /usage` (60)
-/// or Codex's app-server (30). Measured around a second for `/usage` on
+/// status` (20 seconds each at most) and then `claude --print /usage` (60).
+/// Measured around a second for `/usage` on
 /// fodelf; the controller answers one request at a time, so a session
 /// start waits behind it.
 pub fn usage(
@@ -1068,13 +1053,9 @@ pub fn start_for_identity(
         identity: identity.cloned(),
         session_dir: session_dir.to_path_buf(),
     };
-    // Codex revalidates version, auth and MCP inventory before spawning; each
-    // probe has a 20-second bound. Keep the existing Claude timeout unchanged.
-    let timeout = if identity.is_some() || provider == AgentProvider::Codex {
-        75
-    } else {
-        20
-    };
+    // A bound instance revalidates version and auth before spawning, each
+    // probe with a 20-second bound; a legacy start probes nothing.
+    let timeout = if identity.is_some() { 75 } else { 20 };
     match call(path, body, Duration::from_secs(timeout))? {
         ReplyBody::Started { pid } => Ok(pid),
         other => Err(unexpected(&other)),
@@ -1313,7 +1294,6 @@ mod tests {
             timeout_secs: 0,
             cwd: dir.join("cwd"),
             agent_tools: Default::default(),
-            ask_before: Vec::new(),
         };
         std::fs::write(
             session::Dir::at(&dir).meta(),
@@ -1695,26 +1675,6 @@ mod tests {
                 call.display()
             );
         }
-    }
-
-    /// `usage` takes a profile directory on the same terms as `claude-auth`
-    /// and refuses before running anything (P105). The success path is
-    /// tested in `provider::claude::usage`, where no state directory is
-    /// created on the machine running the tests.
-    #[test]
-    fn usage_refuses_a_caller_directory_where_auth_would() {
-        let fake = FakeRunner::new();
-        let codex = Request::new(RequestBody::Usage {
-            provider: AgentProvider::Codex,
-            identity: None,
-            config_dir: Some(PathBuf::from("/x/codex")),
-        });
-        let ReplyBody::Error(report) = answer(&codex, &tools(&fake, true)).body else {
-            panic!("expected an error reply")
-        };
-        assert_eq!(report.code(), ErrorCode::InvalidArgs);
-        assert!(report.message.contains("Agent-local"), "{report}");
-        assert!(fake.calls().is_empty(), "nothing ran");
     }
 
     #[test]

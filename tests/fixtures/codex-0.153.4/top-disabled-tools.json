@@ -1,5 +1,0 @@
-{
-  "exit_code": 1,
-  "stdout": "",
-  "stderr": "Error loading config.toml: unknown configuration field `disabled_tools` in -c/--config override\n"
-}

@@ -203,10 +203,6 @@ pub(crate) fn build<R: Read + Seek, W: Write>(
     out: &mut W,
 ) -> Result<(u64, bool)> {
     let pattern = match redaction {
-        Redaction::Withhold(why) => {
-            out.write_all(why.as_bytes())?;
-            return Ok((why.len() as u64, true));
-        }
         Redaction::Keep => None,
         Redaction::Replace(private) => Some(private.as_bytes().to_vec()),
     };
@@ -488,13 +484,6 @@ mod tests {
         let (view, truncated) = view_of(raw, &Redaction::Keep, 5);
         assert!(truncated);
         assert_eq!(view, "文");
-    }
-
-    #[test]
-    fn a_withheld_stream_says_why_and_counts_as_incomplete() {
-        let (view, truncated) = view_of(b"secret", &Redaction::Withhold("withheld: reason"), 1024);
-        assert_eq!(view, "withheld: reason");
-        assert!(truncated);
     }
 
     fn session_dir(test: &str) -> ccnm_testdir::TestDir {

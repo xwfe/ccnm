@@ -1,5 +1,7 @@
 # codex-cli 0.154.0：适配器当前要求的版本
 
+> **P118（2026-11-05）删掉 Codex Agent 之后，这个目录只剩 `exec-server/process-start-workspace-write.json`**：`exec_sandbox = "codex"` 照抄的权限配置，`crates/ccnm-core/src/mcp/sandbox.rs` 的测试钉着它，别删。下面说的其他文件、`../codex-0.153.4/` 和 `scripts/measure_codex.py` 都已删掉，要看去 P118 之前的提交。
+
 按[支持矩阵](../../../docs/support-matrix.md)的五步流程测出来的。差异比对写在
 [0.154.0 研究记录](../../../docs/research/codex-0.154.0-2026-09-10.md)，Code Mode 那次改动写在
 [P7.5 记录](../../../docs/research/p7-5-freeze-2026-09-10.md)。

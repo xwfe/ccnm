@@ -146,7 +146,7 @@ impl RunReport {
 
 /// `claude <how it ended>, <turns, cost>`, for [`RunReport`] and
 /// [`ResultReport`] alike. The provider's name is never translated:
-/// `claude` and `codex` are the binaries.
+/// `claude` is the binary.
 fn how_it_went(
     provider: crate::provider::AgentProvider,
     outcome: Option<&Outcome>,
@@ -367,7 +367,7 @@ impl StartReport {
     /// (P100): what to tell the person instead of putting them into it, and
     /// the exit code. `None` when there is nothing to refuse.
     pub fn refusal(&self, workspace: &str, lang: Lang) -> Option<(String, i32)> {
-        tools_refused(self.tools.as_ref()?, self.provider, workspace, lang)
+        tools_refused(self.tools.as_ref()?, workspace, lang)
     }
 }
 
@@ -395,21 +395,11 @@ pub fn tools_said(tools: &ToolsOnEntry, lang: Lang) -> Option<String> {
 /// Tools that stayed down: what to tell the person instead of putting them
 /// into the session, and the exit code. The way in regardless is
 /// `ccnm attach --force` (P116): plain `attach` checks too.
-pub fn tools_refused(
-    tools: &ToolsOnEntry,
-    provider: crate::provider::AgentProvider,
-    workspace: &str,
-    lang: Lang,
-) -> Option<(String, i32)> {
+pub fn tools_refused(tools: &ToolsOnEntry, workspace: &str, lang: Lang) -> Option<(String, i32)> {
     let ToolsOnEntry::Failed(why) = tools else {
         return None;
     };
-    let reason = match provider {
-        // Nothing was tried: Codex has no way to reconnect a running
-        // session, so the reason is the way back.
-        crate::provider::AgentProvider::Codex => provider.way_back(workspace, lang),
-        crate::provider::AgentProvider::Claude => why.message.clone(),
-    };
+    let reason = &why.message;
     let text = lang.pick(
         format!(
             "这个会话的工具断了，ccnm 没能替你接上，所以没让你进去。\n原因：{reason}\n网络或项目机器好了再 ccnm {workspace}；不管工具先进去看：ccnm attach {workspace} --force"
@@ -1010,14 +1000,9 @@ pub struct Failing {
 
 impl LiveSession {
     /// [`AgentProvider::tools_down_hint`](crate::provider::AgentProvider::tools_down_hint)
-    /// for this session, naming its own workspace. A session from a build
-    /// that did not record one gets a placeholder rather than a wrong name.
+    /// for this session.
     pub fn tools_down_hint(&self, lang: Lang) -> String {
-        let workspace = self
-            .workspace
-            .as_deref()
-            .unwrap_or(lang.pick("<项目>", "<workspace>"));
-        self.provider.tools_down_hint(workspace, lang)
+        self.provider.tools_down_hint(lang)
     }
 
     /// The session in one diagnostic line, for doctor's `Terminal session`

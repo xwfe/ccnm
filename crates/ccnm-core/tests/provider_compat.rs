@@ -29,7 +29,6 @@ fn spec(remote: bool, mode: session::Mode) -> session::Spec {
             "/project"
         }),
         agent_tools: Default::default(),
-        ask_before: Vec::new(),
     }
 }
 

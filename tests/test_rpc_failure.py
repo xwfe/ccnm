@@ -91,12 +91,12 @@ class FailureReasonTests(RpcSandbox):
                 "refuse": {
                     "ccnm_code": "CCNM_E_CONFIG",
                     "exit": 10,
-                    "message": "profile /Users/agentuser/.config/ccnm/agents/codex must be a private directory",
+                    "message": "profile /Users/agentuser/.claude must be a private directory",
                 }
             },
         )
         detail = result["failure"]["detail"]
-        self.assertIn("~/.config/ccnm/agents/codex", detail)
+        self.assertIn("~/.claude", detail)
         self.assertNotIn("agentuser", detail)
 
     def test_a_lost_run_says_why_it_is_unknown_and_stays_unknown(self):

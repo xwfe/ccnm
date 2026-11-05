@@ -70,7 +70,7 @@ root = "{root}"
 agent = {{ node = "worker", instance = "claude-main" }}
 [workspaces.other]
 root = "{other}"
-agent = {{ node = "worker", instance = "codex-main" }}
+agent = {{ node = "worker", instance = "claude-second" }}
 """
 
 LEGACY_CONFIG = """
@@ -150,7 +150,7 @@ class BlackBoxTests(unittest.TestCase):
         agents = client.agents_list()
         self.assertEqual(
             sorted((a["node"], a["instance"]) for a in agents),
-            [("worker", "claude-main"), ("worker", "codex-main")],
+            [("worker", "claude-main"), ("worker", "claude-second")],
         )
 
         started = client.session_start("demo", "go")
@@ -183,12 +183,12 @@ class BlackBoxTests(unittest.TestCase):
         # node 上换 instance。
         client = self.client()
         self.assertEqual(
-            client.session_start("other", "go")["agent"]["instance"], "codex-main"
+            client.session_start("other", "go")["agent"]["instance"], "claude-second"
         )
         picked = client.session_start(
-            "demo", "go", agent={"node": "worker", "instance": "codex-main"}
+            "demo", "go", agent={"node": "worker", "instance": "claude-second"}
         )
-        self.assertEqual(picked["agent"]["instance"], "codex-main")
+        self.assertEqual(picked["agent"]["instance"], "claude-second")
 
     def test_the_client_file_stands_alone(self):
         # P6.1 的字面要求：把那一个文件复制到一个跟仓库无关的目录，照样跑。
@@ -282,7 +282,7 @@ class BlackBoxTests(unittest.TestCase):
             client.session_result(a)["agent"]["instance"], "claude-main"
         )
         self.assertEqual(
-            client.session_result(b)["agent"]["instance"], "codex-main"
+            client.session_result(b)["agent"]["instance"], "claude-second"
         )
 
     def test_an_unreachable_runtime_ends_as_a_terminal_state(self):

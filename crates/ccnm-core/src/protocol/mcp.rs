@@ -193,8 +193,8 @@ pub struct ProbeReport {
     /// every call (`anthropic/requiresUserInteraction`). The server decides:
     /// only in an interactive session, never to an external client, and not
     /// on a workspace with `allow_unattended_exec`. Claude Code reads the
-    /// marker itself; Codex does not, so a Codex session is launched with
-    /// `approval_mode = "prompt"` for exactly these (P71). Empty from a build
+    /// marker off the tool list itself; the list is kept for callers that
+    /// do not (P71 added it for Codex, removed in P118). Empty from a build
     /// that does not report it, which is also what a non-interactive probe
     /// gets.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

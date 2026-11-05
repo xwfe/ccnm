@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use super::{Finding, PROBE_TIMEOUT, Severity};
 use crate::error::{Error, ErrorCode, Result};
 use crate::process::{Cmd, ProcessRunner, SystemRunner};
-use crate::provider::AgentProvider;
+use crate::provider::KNOWN_CREDENTIALS;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Access {
@@ -72,14 +72,9 @@ pub fn findings(home: &Path, runner: &dyn ProcessRunner) -> Vec<Finding> {
 }
 
 pub fn local_references() -> Vec<(String, Option<OsString>)> {
-    AgentProvider::ALL
+    KNOWN_CREDENTIALS
         .iter()
-        .map(|p| {
-            (
-                p.credentials().config_env.to_string(),
-                std::env::var_os(p.credentials().config_env),
-            )
-        })
+        .map(|c| (c.config_env.to_string(), std::env::var_os(c.config_env)))
         .chain(std::iter::once((
             "XDG_CONFIG_HOME".into(),
             std::env::var_os("XDG_CONFIG_HOME"),
@@ -98,8 +93,7 @@ pub fn findings_with(
             .find(|(key, _)| key == name)
             .and_then(|(_, value)| value.as_ref())
     };
-    AgentProvider::ALL.into_iter().map(|provider| {
-        let metadata = provider.credentials();
+    KNOWN_CREDENTIALS.into_iter().map(|metadata| {
         let name = format!("No {} credential", metadata.agent_name);
         let mut dirs = metadata.config_directories(home, get(metadata.config_env).map(|v| v.as_os_str()));
         dirs.extend(metadata.additional_directories.iter().map(|p| home.join(p)));

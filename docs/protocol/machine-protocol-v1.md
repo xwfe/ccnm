@@ -13,7 +13,7 @@
 ← {"jsonrpc":"2.0","id":1,"result":{"protocol":"ccnm.machine/1","server":{"name":"ccnm","version":"0.2.0"},"capabilities":{"modes":["print"],"session_output":true,"start_key":true}}}
 
 → {"jsonrpc":"2.0","id":2,"method":"agents.list","params":{}}
-← {"jsonrpc":"2.0","id":2,"result":{"agents":[{"node":"work","instance":"claude-main","provider":"claude","capabilities":{"print":true,"interactive":true,"ssh_mcp":true,"native_colocated":false},"workspaces":["ccnm"]}]}}
+← {"jsonrpc":"2.0","id":2,"result":{"agents":[{"node":"work","instance":"claude-main","workspaces":["ccnm"]}]}}
 
 → {"jsonrpc":"2.0","id":3,"method":"session.start","params":{"workspace":"ccnm","agent":{"node":"work","instance":"claude-main"},"mode":"print","input":{"prompt":"跑一遍测试"},"start_key":"task-4821-attempt-1"}}
 ← {"jsonrpc":"2.0","id":3,"result":{"session":"s-2026091012-7f3a","state":"starting","reused":false,"agent":{...},"workspace":"ccnm","accepted_at":"2026-09-10T12:00:03+09:00"}}
@@ -181,12 +181,12 @@ v1 只有六个方法，名字在本阶段定稿：
   {
     "node":"work",
     "instance":"claude-main",
-    "provider":"claude",
-    "capabilities":{"print":true,"interactive":true,"ssh_mcp":true,"native_colocated":false},
     "workspaces":["ccnm"]
   }
 ]}}
 ```
+
+每一项只有这三个字段，schema 里的 `agent_entry` 不收别的字段。
 
 - `node` + `instance` 一起构成寻址用的 instance 引用，`session.start` 就用这两个字段。
 - `workspaces` 是这个 instance 被绑定为默认 Agent 的 workspace 名字。空数组表示配置里定义了它，但还没有 workspace 用它。

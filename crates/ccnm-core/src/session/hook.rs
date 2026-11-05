@@ -239,9 +239,13 @@ fn session_start(
                 say.push(format!(
                     "ccnm: the user typed /clear, and the conversation before it in this terminal ended with the handoff below. Pick the work up from it. If the user's next message asks for something else, follow the user.\n\n{handoff}"
                 ));
-                notice = Some(lang().pick(
-                    "ccnm：交接已经交给这段新对话".to_string(),
-                    "ccnm: the handoff went to this new conversation".to_string(),
+                notice = Some(person_line(
+                    Tone::Done,
+                    lang().pick(
+                        "交接已交给这段新对话",
+                        "The handoff went to this new conversation",
+                    ),
+                    None,
                 ));
             } else if compacted >= HAND_OFF_AFTER
                 && let Some(tail) = previous_tail(transcript, previous.as_deref())
@@ -249,10 +253,17 @@ fn session_start(
                 say.push(format!(
                     "ccnm: the user typed /clear after the conversation before it in this terminal had been compacted {compacted} times, and it ended without a handoff. Below is the end of that conversation: what the user and the AI said, without tool calls or their output. It is raw, not a summary: use it to learn where the work stood, check the project itself before relying on any of it (git status, the files it names), then carry on. If the user's next message asks for something else, follow the user.\n\n{tail}"
                 ));
-                notice = Some(lang().pick(
-                    "ccnm：上一段对话没写交接，把它最后的部分交给了这段新对话".to_string(),
-                    "ccnm: the last conversation wrote no handoff; its end went to this new one"
-                        .to_string(),
+                let lang = lang();
+                notice = Some(person_line(
+                    Tone::Done,
+                    lang.pick(
+                        "上一段没写交接，已把它的结尾交给这段新对话",
+                        "No handoff was written; the end of the last conversation went to this one",
+                    ),
+                    Some(lang.pick(
+                        "那是原始记录，模型会先核对项目再用",
+                        "It is the raw record; the model checks the project before relying on it",
+                    )),
                 ));
             }
         }
@@ -301,34 +312,88 @@ fn compacted(times: u32) -> String {
     }
 }
 
-/// The one line the person gets after a compaction, from the
-/// [`HAND_OFF_AFTER`]th on.
+/// The kind of line ccnm shows the person, which decides its colour.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Tone {
+    /// Something for the person to do: yellow.
+    Act,
+    /// Something done for them: green.
+    Done,
+}
+
+/// A line for the person, made to stand out (P121). Claude Code draws a
+/// hook's `systemMessage` in grey (colour 246 on 2.1.318) after `… says:`,
+/// which is easy to read past; ANSI codes in it are drawn as they are, and
+/// the lines after the first stay grey. So: a coloured `ccnm` tag, the part
+/// that matters in bold colour, the explanation under it in Claude Code's
+/// own grey. 16-colour codes only, which every terminal tmux runs in has.
+fn person_line(tone: Tone, head: &str, detail: Option<&str>) -> String {
+    let (tag, text) = match tone {
+        Tone::Act => ("\x1b[1;30;43m", "\x1b[1;33m"),
+        Tone::Done => ("\x1b[1;30;42m", "\x1b[1;32m"),
+    };
+    let mut line = format!("{tag} ccnm \x1b[0m {text}{head}\x1b[0m");
+    if let Some(detail) = detail {
+        line.push('\n');
+        line.push_str(detail);
+    }
+    line
+}
+
+/// What the person sees after a compaction, from the [`HAND_OFF_AFTER`]th
+/// on.
 fn compacted_notice(times: u32, lang: Lang) -> String {
-    lang.pick(
-        format!(
-            "ccnm：这段对话已压缩 {times} 次，早期细节只剩摘要。敲 /clear 开新对话，会带上这段的结尾（要完整交接，先说“写交接”）"
+    person_line(
+        Tone::Act,
+        &lang.pick(
+            format!("这段对话已压缩 {times} 次，建议敲 /clear 开新对话"),
+            format!("Compacted {times} times: type /clear for a fresh conversation"),
         ),
-        format!(
-            "ccnm: compacted {times} times, early detail is only a summary now. Type /clear for a fresh conversation; it gets the end of this one (for a full handoff, ask for one first)"
-        ),
+        Some(lang.pick(
+            "早期细节只剩摘要。/clear 会把这段对话的结尾带过去；要完整交接，先说“写交接”",
+            "Early detail is only a summary now. /clear hands the new one the end of this conversation; for a full handoff, ask for one first",
+        )),
     )
 }
 
 /// What the person sees when the last reply ended with a handoff.
 fn handoff_kept(lang: Lang) -> String {
-    lang.pick(
-        "ccnm：交接已记下。敲 /clear 开新对话接着做；在这里接着聊的话，这份交接就作废".to_string(),
-        "ccnm: handoff kept. Type /clear to go on in a fresh conversation; carry on here and it is dropped"
-            .to_string(),
+    person_line(
+        Tone::Done,
+        lang.pick(
+            "交接已记下，敲 /clear 开新对话接着做",
+            "Handoff kept: type /clear to go on in a fresh conversation",
+        ),
+        Some(lang.pick(
+            "在这里接着聊的话，这份交接就作废",
+            "Carry on here instead and it is dropped",
+        )),
     )
 }
 
 /// Said at every start, and again after each compaction (the summary may
-/// not keep it): what a handoff is, when to write one, and how it gets to
+/// not keep it): when to write a handoff, its one shape, and how it gets to
 /// the next conversation.
+///
+/// The fields are a compaction summary's Status block (goal, done, in
+/// progress, blocked, next; see `COMPACT_INSTRUCTIONS`) plus the two things
+/// a fresh conversation cannot find out on its own: how to check the work,
+/// and what the user decided. One shape, so the next model knows where to
+/// look and the person can skim it; lines, not prose, so it stays short.
 fn how_to_hand_off() -> String {
     format!(
-        "ccnm: when the user asks for a handoff or to go on in a fresh conversation, end your reply with a handoff: a line that is exactly {MARKER}, then the goal; what is done (files changed, by workspace-relative path, and commits); what is not done or not verified; the exact commands that check the work; decisions and limits the user set; the next step. ccnm keeps it, tells the user to type /clear, and gives it to the new conversation. Only a handoff in your last reply is carried over. Do not suggest a fresh conversation, or write a handoff, unless the user asks: ccnm tells them when the conversation has been compacted often enough for one to help."
+        "ccnm: write a handoff only when the user asks for one or asks to go on in a fresh conversation. Do not suggest either yourself: ccnm tells the user when the conversation has been compacted often enough for it to help. A handoff ends your reply, in exactly this shape:
+
+{MARKER}
+Goal: the task, in one sentence.
+Done: what changed, by workspace-relative path; commits (short hash and subject); what is still uncommitted.
+In progress: what you were doing and how far it got.
+Blocked: what waits on the user or on something else, and what would unblock it.
+Check: the exact commands that verify the work, and what still fails (test names, the decisive error line).
+Keep: the user's decisions and limits that still hold, close to their words.
+Next: the first step, as a command or tool call.
+
+Each field on its own line, a list one item per line under it. Facts, not narrative; paths and commands exactly as they are; no code or long output, the files are in the project. Write none for an empty field. At most 40 lines, in the language the user writes in. Only a handoff in your last reply is carried over: ccnm keeps it and gives it to the new conversation when the user types /clear."
     )
 }
 
@@ -583,7 +648,7 @@ mod tests {
                 !said.contains("When the task the user gave you is finished"),
                 "{said}"
             );
-            assert!(said.contains("unless the user asks"), "{said}");
+            assert!(said.contains("only when the user asks"), "{said}");
         }
     }
 
@@ -631,8 +696,59 @@ mod tests {
             "{model}"
         );
         assert!(model.contains("raw, not a summary"), "{model}");
-        assert!(notice(&out).is_some_and(|n| n.contains("its end")), "{out}");
+        assert!(
+            notice(&out).is_some_and(|n| n.contains("end of the last conversation")),
+            "{out}"
+        );
         assert_eq!(read(&dir).unwrap().compactions, 0);
+    }
+
+    /// P121: a handoff has one shape, in the terms a compaction summary's
+    /// Status block uses, and it is asked for, not offered.
+    #[test]
+    fn the_handoff_has_one_shape() {
+        let said = how_to_hand_off();
+        assert!(said.contains(&format!("\n{MARKER}\nGoal:")), "{said}");
+        for field in [
+            "\nGoal: ",
+            "\nDone: ",
+            "\nIn progress: ",
+            "\nBlocked: ",
+            "\nCheck: ",
+            "\nKeep: ",
+            "\nNext: ",
+        ] {
+            assert!(said.contains(field), "{field:?} missing: {said}");
+        }
+        assert!(said.contains("At most 40 lines"), "{said}");
+        assert!(said.contains("only when the user asks"), "{said}");
+    }
+
+    /// P121: what ccnm tells the person stands out from Claude Code's grey:
+    /// a coloured tag, the part that matters in bold colour, the reason on
+    /// a line of its own.
+    #[test]
+    fn lines_for_the_person_stand_out() {
+        let compacted = compacted_notice(3, Lang::Zh);
+        assert!(
+            compacted.starts_with("\x1b[1;30;43m ccnm \x1b[0m \x1b[1;33m这段对话已压缩 3 次"),
+            "{compacted:?}"
+        );
+        let (head, detail) = compacted.split_once('\n').expect("two lines");
+        assert!(
+            head.ends_with("\x1b[0m") && head.contains("/clear"),
+            "{head:?}"
+        );
+        assert!(
+            detail.contains("写交接") && !detail.contains('\x1b'),
+            "{detail:?}"
+        );
+        let kept = handoff_kept(Lang::En);
+        assert!(kept.starts_with("\x1b[1;30;42m ccnm"), "{kept:?}");
+        assert!(kept.contains("Handoff kept"), "{kept:?}");
+        assert_eq!(kept.lines().count(), 2, "{kept:?}");
+        let done = person_line(Tone::Done, "x", None);
+        assert_eq!(done, "\x1b[1;30;42m ccnm \x1b[0m \x1b[1;32mx\x1b[0m");
     }
 
     /// P120: the person sees one line when a reply ends with a handoff,

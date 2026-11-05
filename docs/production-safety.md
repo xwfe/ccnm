@@ -177,15 +177,18 @@ No sudo                 不能 passwordless sudo
 Not an admin            不应属于 admin / wheel / sudo 等管理组
 No SSH keys             ~/.ssh 和 ~/.config/ccnm 里都不该有该账号可读的私钥
 No Claude credential    Runtime identity 不应持有 Claude 凭证
+No Codex credential     也不应持有 Codex 凭证（默认、专用及本地引用目录）；1.0.0 起 ccnm 不起 Codex，这一行照查，原因见 provider-safety.md 开头
+No authentication environment
+                        继承来的认证环境变量（只看名称，不打印值）
 No Docker socket        当前账号不应能写 Docker socket
-Runtime safety          身份能否识别、Codex 凭据（默认、专用及本地引用目录）、继承来的认证环境变量（只看名称，不打印值），都归在这一行
+Runtime safety          执行身份能否识别；没有单独一行的结论也归在这里
 Workspace root          项目目录对该账号是可用的（存在、是目录、git 不因属主拒绝）
 exec_command            confinement 通过后才正常允许
 Command approval        交互会话跑命令前问不问人
 Files that act as you   专用账号时，列出项目里你打开就以你身份生效的文件（注意，不挡）
 ```
 
-**没写 `runtime_user`（默认的共用账号）时**，除了 `Runs as root`、继承来的认证环境和执行身份未知（后两个在 `Runtime safety` 行），其余各行没通过也只显示为"注意"：不挡会话、不挡 `exec_command`，命令结果也不加 unconfined 那一行。下面说的开关都是**写了 `runtime_user` 之后**才用得上的。
+**没写 `runtime_user`（默认的共用账号）时**，除了 `Runs as root`、`No authentication environment`（继承来的认证环境变量）和 `Runtime safety`（执行身份未知），其余各行没通过也只显示为"注意"：不挡会话、不挡 `exec_command`，命令结果也不加 unconfined 那一行。下面说的开关都是**写了 `runtime_user` 之后**才用得上的。
 
 专用账号模式下，`allow_unconfined_exec = true` 是逃生开关，不是生产配置。
 

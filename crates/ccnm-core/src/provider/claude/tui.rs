@@ -169,6 +169,18 @@ pub struct ReconnectAnswers {
     pub failed: usize,
 }
 
+/// Whether the model is answering: Claude Code's footer says `esc to
+/// interrupt` from the first token until the turn ends, a tool call in
+/// between included (2.1.300, `BUSY` below). What the Controller asks before
+/// bringing back the tools of a session nobody is attached to (P119). A
+/// screen this does not recognise reads as idle, so the cost of a misread is
+/// tools that wait for someone to come back, never keys typed.
+pub fn working(screen: &str) -> bool {
+    screen
+        .lines()
+        .any(|line| Line::read(line).plain.contains("esc to interrupt"))
+}
+
 /// `Successfully reconnected to ccnm` / `Failed to reconnect to ccnm`
 /// (2.1.300). The success can be cut short: typed while the model was
 /// answering, it showed on the right edge as `Successfully reconnected`.
@@ -212,6 +224,22 @@ mod tests {
         // was measured to run at once.
         let busy = screen(&["❯ SLOW one", "✽ Flibbertigibbeting…"], "", BUSY);
         assert_eq!(input_box(&busy), InputBox::Empty);
+    }
+
+    /// P119: only the footer of a turn in progress counts, colour codes or
+    /// not; the words in the conversation above do not.
+    #[test]
+    fn working_is_read_off_the_footer() {
+        let busy = screen(&["❯ SLOW one", "✽ Flibbertigibbeting…"], "", BUSY);
+        assert!(working(&busy));
+        let coloured = busy.replace(
+            "esc to interrupt",
+            "\x1b[2mesc\x1b[22m\x1b[2m to interrupt\x1b[22m",
+        );
+        assert!(working(&coloured), "{coloured}");
+        let idle = screen(&["❯ hello one", "⏺ reply 0"], "", IDLE);
+        assert!(!working(&idle));
+        assert!(!working(""));
     }
 
     #[test]

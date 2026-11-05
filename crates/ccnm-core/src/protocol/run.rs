@@ -984,6 +984,12 @@ pub struct Reconnects {
     /// While they are down and still being tried.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failing: Option<Failing>,
+    /// Unix seconds: since when they have been down with nobody attached
+    /// and the model idle, so the watch waits for someone instead of
+    /// typing a reconnect nobody would use (P119). A build without it
+    /// leaves it out and reads it as `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waiting_since: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -668,6 +668,14 @@ const WATCH_BACKOFF: [u64; 4] = [30, 60, 120, 300];
 /// same consequence: a new remote session, output references from before
 /// gone. This is not P98, which would have kept the connection itself from
 /// breaking; that is still not done.
+///
+/// Only for a session somebody can use them in (P119): a terminal attached,
+/// or the model in the middle of a turn. Each reconnect leaves two lines in
+/// the conversation that ccnm cannot take back, and a project machine that
+/// sleeps put dozens of them into sessions nobody was looking at (keex: 40
+/// in 20 days). One nobody is in waits: `ccnm attach` and `ccnm <ws>`
+/// reconnect before they let anyone in, and an attach the watch sees next
+/// round, at most 30 seconds later.
 pub fn watch_tools(tools: &Tools<'_>) {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -689,15 +697,38 @@ pub fn watch_tools(tools: &Tools<'_>) {
         if spec.runtime.is_none() {
             continue;
         }
-        watch_one(&spec, &dir, &tmux, &live.name, tools, now, &WATCH_PATIENCE);
+        watch_one(
+            &spec,
+            &dir,
+            &tmux,
+            &live.name,
+            live.attached,
+            tools,
+            now,
+            &WATCH_PATIENCE,
+        );
     }
 }
 
+/// Is the model in the middle of a turn? A screen that cannot be read
+/// counts as idle: then the tools wait for someone, which is the cheap
+/// mistake.
+fn model_working(tmux: &tmux::Tmux, name: &str, tools: &Tools<'_>) -> bool {
+    tools
+        .runner
+        .run(&tmux.capture_cmd(name))
+        .ok()
+        .filter(Output::success)
+        .is_some_and(|out| crate::provider::claude::tui::working(&out.stdout_lossy()))
+}
+
+#[allow(clippy::too_many_arguments)]
 fn watch_one(
     spec: &Spec,
     dir: &session::Dir,
     tmux: &tmux::Tmux,
     name: &str,
+    attached: u32,
     tools: &Tools<'_>,
     now: u64,
     patience: &Patience,
@@ -705,9 +736,20 @@ fn watch_one(
     let before = read_reconnects(dir);
     let mut after = before.clone();
     match transport_alive(dir, tools) {
-        Some(true) => after.failing = None,
+        Some(true) => {
+            after.failing = None;
+            after.waiting_since = None;
+        }
         None => return,
+        // Nobody to use them: wait for someone instead (P119). Whatever an
+        // earlier round was backing off from goes too, so the first round
+        // after somebody arrives tries at once.
+        Some(false) if attached == 0 && !model_working(tmux, name, tools) => {
+            after.failing = None;
+            after.waiting_since.get_or_insert(now);
+        }
         Some(false) => {
+            after.waiting_since = None;
             if after.failing.as_ref().is_some_and(|f| now < f.next) {
                 return;
             }
@@ -4289,7 +4331,19 @@ mod tests {
         ..NO_WAIT
     };
 
+    /// One round of the watch over the live session, with a terminal
+    /// attached: P116's tests, unchanged by P119.
     fn watched(dir: &Path, fake: &FakeRunner, test: &str, now: u64) -> Reconnects {
+        watched_with(dir, fake, test, now, 1)
+    }
+
+    fn watched_with(
+        dir: &Path,
+        fake: &FakeRunner,
+        test: &str,
+        now: u64,
+        attached: u32,
+    ) -> Reconnects {
         let sdir = session::Dir::at(paths::session_dir(dir, LIVE));
         let spec = session::load(&sdir).unwrap();
         let tools = tmux_tools(fake, dir, test);
@@ -4298,6 +4352,7 @@ mod tests {
             &sdir,
             &tools.tmux().unwrap(),
             "ccnm-xshun",
+            attached,
             &tools,
             now,
             &WATCH_NO_WAIT,
@@ -4328,6 +4383,7 @@ mod tests {
                     tries: 3,
                     next: 20,
                 }),
+                waiting_since: Some(7),
             },
         );
         let fake = FakeRunner::new();
@@ -4335,6 +4391,90 @@ mod tests {
         let after = watched(&dir, &fake, "watch-up", 100);
         assert_eq!(fake.calls().len(), 1, "{:?}", ran(&fake));
         assert_eq!((after.count, after.last, after.failing), (1, Some(5), None));
+        assert_eq!(after.waiting_since, None);
+    }
+
+    /// P119: a session nobody is attached to, its model idle, is left
+    /// alone: one `ps`, one look at the screen, and nothing asked of the
+    /// Runtime or typed. Through `watch_tools`, the way the Controller calls
+    /// it, so the attached count is the one tmux reports.
+    #[test]
+    fn the_watch_leaves_tools_down_while_nobody_is_there() {
+        let dir = temp("watch-nobody");
+        live_remote(&dir, AgentProvider::Claude);
+        let fake = FakeRunner::new();
+        fake.push(Output::exited(0, "ccnm-xshun|1700000000|0|1\n")); // nobody attached
+        fake.push(Output::exited(0, format!("CCNM_SESSION={LIVE}\n")));
+        fake.push(Output::exited(0, "/bin/zsh\n")); // ps: down
+        fake.push(Output::exited(0, claude_screen("⏺ reply 0", ""))); // idle
+        watch_tools(&tmux_tools(&fake, &dir, "watch-nobody"));
+        let ran = ran(&fake);
+        assert_eq!(ran.len(), 4, "{ran:?}");
+        assert!(ran[3].contains("capture-pane"), "{ran:?}");
+    }
+
+    /// P119: what that round leaves behind -- since when it has been waiting,
+    /// and no backoff, so the first round after someone arrives tries at
+    /// once -- and that a later round keeps the first time.
+    #[test]
+    fn the_watch_records_since_when_it_waits() {
+        let dir = temp("watch-waits");
+        let (sdir, _) = live_remote(&dir, AgentProvider::Claude);
+        write_reconnects(
+            &sdir,
+            &Reconnects {
+                count: 3,
+                last: Some(5),
+                failing: Some(Failing {
+                    since: 10,
+                    reason: "gone".into(),
+                    tries: 2,
+                    next: 9_999,
+                }),
+                waiting_since: None,
+            },
+        );
+        for now in [500, 800] {
+            let fake = FakeRunner::new();
+            fake.push(Output::exited(0, "/bin/zsh\n"));
+            fake.push(Output::exited(0, claude_screen("⏺ reply 0", "")));
+            let after = watched_with(&dir, &fake, "watch-waits", now, 0);
+            assert_eq!(fake.calls().len(), 2, "{:?}", ran(&fake));
+            assert_eq!(
+                (after.count, after.failing, after.waiting_since),
+                (3, None, Some(500))
+            );
+        }
+    }
+
+    /// P119: nobody attached, but the model is in the middle of a turn --
+    /// a long task left running -- so the tools are brought back as before.
+    #[test]
+    fn the_watch_reconnects_a_session_whose_model_is_working() {
+        let dir = temp("watch-working");
+        let (_, up) = live_remote(&dir, AgentProvider::Claude);
+        let busy =
+            |above: &str| claude_screen(above, "").replace("? for shortcuts", "esc to interrupt");
+        let fake = FakeRunner::new();
+        fake.push(Output::exited(0, "/bin/zsh\n")); // ps: down
+        fake.push(Output::exited(0, busy("✽ Working…"))); // the watch's look
+        fake.push(Output::exited(0, hello_json(true)));
+        fake.push(Output::exited(0, audit_json()));
+        fake.push(Output::exited(0, busy("✽ Working…"))); // the input box
+        fake.push(Output::exited(0, "")); // send-keys -l
+        fake.push(Output::exited(0, "")); // send-keys Enter
+        fake.push(Output::exited(0, up)); // ps: back
+        fake.push(Output::exited(
+            0,
+            busy("❯ /mcp reconnect ccnm\n  ⎿  Successfully reconnected to ccnm"),
+        ));
+        let after = watched_with(&dir, &fake, "watch-working", 500, 0);
+        assert_eq!(
+            (after.count, after.last, after.waiting_since),
+            (1, Some(500), None),
+            "{:?}",
+            ran(&fake)
+        );
     }
 
     /// P116: a Runtime that cannot be reached is tried again 30 s, 1, 2

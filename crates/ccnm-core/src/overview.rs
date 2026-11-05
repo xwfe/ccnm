@@ -717,6 +717,15 @@ pub(crate) fn session_rows(s: &LiveSession, now: u64, lang: Lang) -> Vec<Vec<Str
                     )
                 }
                 (Some(true), _) => lang.pick("通", "connected").into(),
+                // P119: nobody was there to use them, so the Controller is
+                // waiting for someone rather than retrying; entering brings
+                // them back, nothing has to be typed by hand.
+                (Some(false), Some(r)) if r.waiting_since.is_some() => lang
+                    .pick(
+                        "断了（没人接着，有人进来时接上）",
+                        "TOOLS DOWN (nobody is attached; they come back when someone enters)",
+                    )
+                    .into(),
                 // The Controller is already retrying and the next row says
                 // why it failed; reconnecting by hand fails the same way.
                 // A draft in the box (tries 0) still needs the person.
@@ -1424,6 +1433,7 @@ mod tests {
             count: 2,
             last: Some(1_000),
             failing: None,
+            waiting_since: None,
         });
         let said = block(&session_rows(&s, 1_000 + 180, Lang::Zh));
         assert!(
@@ -1443,6 +1453,7 @@ mod tests {
                 tries: 3,
                 next: 1_300,
             }),
+            waiting_since: None,
         });
         let said = block(&session_rows(&s, 1_180, Lang::Zh));
         let lines: Vec<&str> = said.lines().collect();
@@ -1453,6 +1464,28 @@ mod tests {
         assert!(!said.contains("/mcp"), "{said}");
         assert!(
             lines[2].starts_with("                    Controller 在自动接：上一次没接上（ssh: connect to host xdwmbp port 22: Operation timed out），2 分钟后再试"),
+            "{said}"
+        );
+    }
+
+    /// P119: down with nobody there, the Controller waits for someone; the
+    /// row says so instead of sending the person to `/mcp`.
+    #[test]
+    fn the_tools_row_says_they_wait_for_someone() {
+        use crate::protocol::run::Reconnects;
+        let mut s = live("keex", "d13df3ae-8716-4874-bee3-9399c1f34561", Some(false));
+        s.reconnects = Some(Reconnects {
+            count: 40,
+            last: Some(900),
+            failing: None,
+            waiting_since: Some(1_000),
+        });
+        let said = block(&session_rows(&s, 1_180, Lang::Zh));
+        assert!(said.contains("断了（没人接着，有人进来时接上）"), "{said}");
+        assert!(!said.contains("/mcp"), "{said}");
+        let said = block(&session_rows(&s, 1_180, Lang::En));
+        assert!(
+            said.contains("they come back when someone enters"),
             "{said}"
         );
     }

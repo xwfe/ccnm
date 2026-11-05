@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-11-05T15:30:00+09:00",
-  "current_task": null,
+  "last_updated": "2026-11-05T16:00:00+09:00",
+  "current_task": "P119",
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
     "source": "docs/research/codex-internal-wiring-2026-09-07.md",
@@ -5834,6 +5834,34 @@
         }
       ],
       "blockers": []
+    },
+    {
+      "id": "P119",
+      "title": "没人接着、模型也没在干活的会话，工具断了先不接",
+      "status": "in_progress",
+      "depends_on": [
+        "P118"
+      ],
+      "owner": "Claude Code（claude-opus-5-5）",
+      "started_at": "2026-11-05T16:00:00+09:00",
+      "last_updated": "2026-11-05T16:00:00+09:00",
+      "completed_criteria": [],
+      "evidence": [],
+      "blockers": []
+    },
+    {
+      "id": "P120",
+      "title": "交接提醒由 ccnm 说一次，不再让模型反复提",
+      "status": "pending",
+      "depends_on": [
+        "P119"
+      ],
+      "owner": null,
+      "started_at": null,
+      "last_updated": "2026-11-05T16:00:00+09:00",
+      "completed_criteria": [],
+      "evidence": [],
+      "blockers": []
     }
   ],
   "observed_gaps": [
@@ -5905,7 +5933,7 @@
     "【2026-10-28 P112.2 真机看到 / 同日 P113 已修，v0.21.1】装了 WSL 的 Windows Runtime 上，模型用 exec_command 的 cmd 写 bash …，按 PATH 起的是 System32\\bash.exe（WSL 的启动器），不是 Git Bash；shell 不受影响（只用 Git Bash）。两个模型都这么写了，Codex 跑进 WSL 后 WSL 里的 mise 装了 233 MB 工具。可选改法：Windows Runtime 的 workspace_info 或工具说明里提醒；或 cmd 的程序是裸 bash 时换成 shell 用的 Git Bash 并说一声。安装文档已加提醒。依据 docs/research/2026-10-28-release-0.21.0.md 第 5.1 节。"
   ],
   "handoff": {
-    "next_action": "**2026-11-05 P118 完成（离线）。** Codex Agent 删掉，ccnm 只起 Claude Code 会话；写 provider = \"codex\" 的配置报 CCNM_E_CONFIG 并说怎么改。留下 exec_sandbox、读给 Codex 装的 MCP server 与 skills、Codex 凭据保护。提交 6d4691d（代码）、cb5ce8f（文档），记录 docs/research/2026-11-05-p118-remove-codex.md。未推送、未发版、没换装。下一步：用户同日要的另两处（没人接着的会话不自动接回刷屏、交接提醒改由 ccnm 提示并减少次数）另立阶段，然后发 1.0.0。\n\n之前的交接：\n**2026-11-05 认领 P118。** 用户定：发大版本、删掉 Codex，ccnm 只起 Claude Code 会话；外部 MCP 入口（gld hub 用）、ccnm rpc、Windows Runtime 不动。留下三样名字带 codex 的共用件：exec_sandbox = \"codex\"、列 Codex 装的 MCP server 和 .codex/skills、Codex 凭据保护。做法与验收见 ROADMAP P118。基线：改动前 cargo test --workspace 全过、0 失败。用户同日另提两处改法（交接提醒太频繁且内容不必显示、没人接着的会话也自动接回刷屏），等用户定，不在 P118 里做。\n\n之前的交接：\n**2026-10-30 v0.22.0 已发、三台已换。** 含 P114 --on、P115 新会话带交接、P116 Controller 自动接回与 attach --force、legacy claude_config_dir 修复、P117 后台 agent 只读。发版提交 2cc71f6 的 CI 与 release 全绿、6 个产物齐。本机、AI 机器、Linux 测试机执行账号都换成发布包（会话没停只换文件），AI 机器 Controller 已重启并报 0.22.0；doctor 四个空闲项目可以用、四个开着会话的项目写锁被占是预期。记录 docs/research/2026-10-30-release-0.22.0.md。路线排定阶段全部完成，没有排定的下一阶段。\n\n之前的交接：\n**2026-10-30 P117 完成（零额度真机通过），路线排定阶段全部完成。** Claude 会话的通道和钩子按父/祖父进程是不是 agent.pid 认主会话：不是就要 policy read（Runtime 侧 Entry::Companion：read 模式 7 工具、不拿写锁、说明讲原因），钩子不做事，不再改主会话的 conversations.json 和 handoff.md。协议文档、写锁报错末两行、样本、排错手册、使用说明、支持矩阵已改。模拟真机：照抄参数另起的 claude 拿到只读工具、读得到项目，主会话记录与写锁不变、之后照常写。未推送、未发版，两台日用二进制没换。下一步要用户定：推送；发 v0.22.0（含 --on、handoff、attach --force、claude_config_dir 修复、P117）并换装三台。",
+    "next_action": "**2026-11-05 排定 P119、P120，认领 P119。** 用户同日提了两处、随后说继续：没人接着的会话也自动接回，Claude Code 在对话里攒一堆重连行；交接提醒由模型反复提、内容又长。P119 让 Controller 只在有终端接着或模型在干活时接；P120 改成 ccnm 用钩子的 systemMessage 在第 3 次压缩起提醒一次（2.1.318 零额度实测这个字段显示得出来），没写交接时 /clear 带上一段的尾巴。做法与验收见 ROADMAP。\n\n之前的交接：\n**2026-11-05 P118 完成（离线）。** Codex Agent 删掉，ccnm 只起 Claude Code 会话；写 provider = \"codex\" 的配置报 CCNM_E_CONFIG 并说怎么改。留下 exec_sandbox、读给 Codex 装的 MCP server 与 skills、Codex 凭据保护。提交 6d4691d（代码）、cb5ce8f（文档），记录 docs/research/2026-11-05-p118-remove-codex.md。未推送、未发版、没换装。下一步：用户同日要的另两处（没人接着的会话不自动接回刷屏、交接提醒改由 ccnm 提示并减少次数）另立阶段，然后发 1.0.0。\n\n之前的交接：\n**2026-11-05 认领 P118。** 用户定：发大版本、删掉 Codex，ccnm 只起 Claude Code 会话；外部 MCP 入口（gld hub 用）、ccnm rpc、Windows Runtime 不动。留下三样名字带 codex 的共用件：exec_sandbox = \"codex\"、列 Codex 装的 MCP server 和 .codex/skills、Codex 凭据保护。做法与验收见 ROADMAP P118。基线：改动前 cargo test --workspace 全过、0 失败。用户同日另提两处改法（交接提醒太频繁且内容不必显示、没人接着的会话也自动接回刷屏），等用户定，不在 P118 里做。\n\n之前的交接：\n**2026-10-30 v0.22.0 已发、三台已换。** 含 P114 --on、P115 新会话带交接、P116 Controller 自动接回与 attach --force、legacy claude_config_dir 修复、P117 后台 agent 只读。发版提交 2cc71f6 的 CI 与 release 全绿、6 个产物齐。本机、AI 机器、Linux 测试机执行账号都换成发布包（会话没停只换文件），AI 机器 Controller 已重启并报 0.22.0；doctor 四个空闲项目可以用、四个开着会话的项目写锁被占是预期。记录 docs/research/2026-10-30-release-0.22.0.md。路线排定阶段全部完成，没有排定的下一阶段。",
     "scope": "2026-10-08 用户要求：零额度复现 Codex 300 秒工具超时、选修法、补外部入口文档、跑门禁、更新状态、粒度提交、不推送。改动：crates/ccnm-core（provider/codex 的 TOOL_TIMEOUT 与启动参数、测试；mcp/hooks 的 MAX_TIMEOUT 改 pub(crate)；mcp/output 注释）、docs/protocol/remote-workspace-mcp-v1.md、docs/usage.md、docs/troubleshooting.md、docs/research 的 P80 记录与夹具、ROADMAP、status。没动任何机器、已装的 ccnm 与配置；Codex 0.154.0 包和源码只下到会话 scratchpad。",
     "planning_validation": {
       "at": "2026-09-08T21:22:43+09:00",

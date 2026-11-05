@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "plan_id": "ccnm-execution-v1",
-  "last_updated": "2026-11-05T17:40:00+09:00",
-  "current_task": null,
+  "last_updated": "2026-11-05T18:30:00+09:00",
+  "current_task": "P121",
   "baseline": {
     "implementation_commit": "4f8e6786229d32cb3eb02a3fac1379b82b63cd2e",
     "source": "docs/research/codex-internal-wiring-2026-09-07.md",
@@ -5910,6 +5910,20 @@
         }
       ],
       "blockers": []
+    },
+    {
+      "id": "P121",
+      "title": "压缩窗口改 80 万；交接写成固定格式；提醒做得醒目",
+      "status": "in_progress",
+      "depends_on": [
+        "P120"
+      ],
+      "owner": "Claude Code（claude-opus-5-5）",
+      "started_at": "2026-11-05T18:30:00+09:00",
+      "last_updated": "2026-11-05T18:30:00+09:00",
+      "completed_criteria": [],
+      "evidence": [],
+      "blockers": []
     }
   ],
   "observed_gaps": [
@@ -5981,7 +5995,7 @@
     "【2026-10-28 P112.2 真机看到 / 同日 P113 已修，v0.21.1】装了 WSL 的 Windows Runtime 上，模型用 exec_command 的 cmd 写 bash …，按 PATH 起的是 System32\\bash.exe（WSL 的启动器），不是 Git Bash；shell 不受影响（只用 Git Bash）。两个模型都这么写了，Codex 跑进 WSL 后 WSL 里的 mise 装了 233 MB 工具。可选改法：Windows Runtime 的 workspace_info 或工具说明里提醒；或 cmd 的程序是裸 bash 时换成 shell 用的 Git Bash 并说一声。安装文档已加提醒。依据 docs/research/2026-10-28-release-0.21.0.md 第 5.1 节。"
   ],
   "handoff": {
-    "next_action": "**2026-11-05 P120 完成（离线 + 零额度端到端）。** 交接提醒改由 ccnm 在界面上说一次（第 3 次压缩起），模型不再反复建议换新对话；没写交接时 /clear 带上一段对话的结尾（cc5778d、97bcacd）。P118–P120 都没推送、没发版、没换装。下一步要用户点头：版本号升 1.0.0、推送、打 v1.0.0 tag 触发 release.yml，再换装三台（AI 机器上的配置要先删掉 provider = \"codex\" 的实例）。\n\n之前的交接：\n**2026-11-05 P119 完成（离线），认领 P120。** 没人接着、模型也没在干活的会话，工具断了先不接，等人进来（4f0f845、4cb8851）。P120：钩子的 systemMessage 在 2.1.318 上零额度实测显示得出来（探针在 scratchpad，做 P120 时放进 docs/research/probes/），下一步改 session/hook.rs。\n\n之前的交接：\n**2026-11-05 排定 P119、P120，认领 P119。** 用户同日提了两处、随后说继续：没人接着的会话也自动接回，Claude Code 在对话里攒一堆重连行；交接提醒由模型反复提、内容又长。P119 让 Controller 只在有终端接着或模型在干活时接；P120 改成 ccnm 用钩子的 systemMessage 在第 3 次压缩起提醒一次（2.1.318 零额度实测这个字段显示得出来），没写交接时 /clear 带上一段的尾巴。做法与验收见 ROADMAP。\n\n之前的交接：\n**2026-11-05 P118 完成（离线）。** Codex Agent 删掉，ccnm 只起 Claude Code 会话；写 provider = \"codex\" 的配置报 CCNM_E_CONFIG 并说怎么改。留下 exec_sandbox、读给 Codex 装的 MCP server 与 skills、Codex 凭据保护。提交 6d4691d（代码）、cb5ce8f（文档），记录 docs/research/2026-11-05-p118-remove-codex.md。未推送、未发版、没换装。下一步：用户同日要的另两处（没人接着的会话不自动接回刷屏、交接提醒改由 ccnm 提示并减少次数）另立阶段，然后发 1.0.0。",
+    "next_action": "**2026-11-05 认领 P121。** 用户要：默认 80 万压缩、交接要求设计合理优雅、提醒醒目、同步文档和 README、最后推送。2.1.318 零额度实测 systemMessage 默认灰色、ANSI 颜色码原样生效。做法：窗口 800 000；交接七个字段对齐压缩总结的 Status 块；提醒加彩色 ccnm 标签、要动手的那句加粗上色。推送 main，不打 tag。\n\n之前的交接：\n**2026-11-05 P120 完成（离线 + 零额度端到端）。** 交接提醒改由 ccnm 在界面上说一次（第 3 次压缩起），模型不再反复建议换新对话；没写交接时 /clear 带上一段对话的结尾（cc5778d、97bcacd）。P118–P120 都没推送、没发版、没换装。下一步要用户点头：版本号升 1.0.0、推送、打 v1.0.0 tag 触发 release.yml，再换装三台（AI 机器上的配置要先删掉 provider = \"codex\" 的实例）。\n\n之前的交接：\n**2026-11-05 P119 完成（离线），认领 P120。** 没人接着、模型也没在干活的会话，工具断了先不接，等人进来（4f0f845、4cb8851）。P120：钩子的 systemMessage 在 2.1.318 上零额度实测显示得出来（探针在 scratchpad，做 P120 时放进 docs/research/probes/），下一步改 session/hook.rs。\n\n之前的交接：\n**2026-11-05 排定 P119、P120，认领 P119。** 用户同日提了两处、随后说继续：没人接着的会话也自动接回，Claude Code 在对话里攒一堆重连行；交接提醒由模型反复提、内容又长。P119 让 Controller 只在有终端接着或模型在干活时接；P120 改成 ccnm 用钩子的 systemMessage 在第 3 次压缩起提醒一次（2.1.318 零额度实测这个字段显示得出来），没写交接时 /clear 带上一段的尾巴。做法与验收见 ROADMAP。",
     "scope": "2026-10-08 用户要求：零额度复现 Codex 300 秒工具超时、选修法、补外部入口文档、跑门禁、更新状态、粒度提交、不推送。改动：crates/ccnm-core（provider/codex 的 TOOL_TIMEOUT 与启动参数、测试；mcp/hooks 的 MAX_TIMEOUT 改 pub(crate)；mcp/output 注释）、docs/protocol/remote-workspace-mcp-v1.md、docs/usage.md、docs/troubleshooting.md、docs/research 的 P80 记录与夹具、ROADMAP、status。没动任何机器、已装的 ccnm 与配置；Codex 0.154.0 包和源码只下到会话 scratchpad。",
     "planning_validation": {
       "at": "2026-09-08T21:22:43+09:00",

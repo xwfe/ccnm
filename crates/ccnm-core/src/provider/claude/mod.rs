@@ -614,8 +614,8 @@ mod tests {
         );
     }
 
-    /// P87: a remote session compacts at a 560 000-token window (P88; 300 000
-    /// in P87) instead of the model's 1M, and every compaction, automatic or
+    /// P87: a remote session compacts at an 800 000-token window (P121;
+    /// 300 000 in P87, 560 000 in P88) instead of the model's 1M, and every compaction, automatic or
     /// `/compact`, gets ccnm's instructions through a PreCompact hook. The
     /// hook is run the way Claude Code runs one, through a shell, and must
     /// print exactly the text and nothing else. A colocated session gets
@@ -623,7 +623,7 @@ mod tests {
     #[test]
     fn settings_compact_early_and_say_what_to_keep() {
         let s = settings(true, &AgentTools::none(), &[], None);
-        assert_eq!(s["autoCompactWindow"], 560_000);
+        assert_eq!(s["autoCompactWindow"], 800_000);
         let groups = s["hooks"]["PreCompact"]
             .as_array()
             .expect("a PreCompact hook");

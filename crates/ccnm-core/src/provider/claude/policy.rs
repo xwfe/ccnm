@@ -113,10 +113,11 @@ pub fn mcp_config(cmd: &Cmd, agent_server: Option<&agent_skills::Recorded>) -> s
 /// own, but never of `mcp__ccnm__*` (2.1.286 bundle), so a remote session
 /// leans on compaction more than a native one. Lower means cheaper requests
 /// and more compactions, each losing detail; the user chose 300 000 (P87),
-/// then 560 000 (P88). Claude Code compacts a little below it: at 560 000,
+/// 560 000 (P88), then 800 000 (P121): fewer compactions, each request
+/// dearer near the top. Claude Code compacts a little below it: at 560 000,
 /// a reported 550 000 compacted and 490 000 did not (2.1.286 and 2.1.296).
 /// `CLAUDE_CODE_AUTO_COMPACT_WINDOW` in the environment still wins over it.
-pub const AUTO_COMPACT_WINDOW: u32 = 560_000;
+pub const AUTO_COMPACT_WINDOW: u32 = 800_000;
 
 /// What a compaction is told to keep, on top of Claude Code's own summary
 /// structure: the state a remote session cannot get back by itself after
